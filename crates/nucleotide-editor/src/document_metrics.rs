@@ -1,9 +1,12 @@
 // ABOUTME: Native editor document viewport metrics
 // ABOUTME: Computes visual row counts and text formatting for GPUI editor surfaces
 
+use std::time::Duration;
+
 use gpui::{Bounds, Pixels};
 use helix_core::{RopeSlice, doc_formatter::TextFormat, softwrapped_dimensions};
 use helix_view::{Document, Theme};
+use nucleotide_logging::PerfTimer;
 
 use crate::EditorSurfaceGeometry;
 
@@ -23,6 +26,8 @@ impl EditorDocumentMetrics {
         cell_width: Pixels,
         minimum_columns: u16,
     ) -> Self {
+        let _timer = PerfTimer::new("EditorDocumentMetrics::resolve")
+            .with_warn_threshold(Duration::from_millis(4));
         let (viewport_columns, text_format) = document_text_format_for_surface(
             document,
             theme,

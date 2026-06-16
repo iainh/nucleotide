@@ -16,7 +16,7 @@ use helix_view::{
     graphics::{Color, CursorKind, Style},
     view::ViewPosition,
 };
-use nucleotide_logging::debug;
+use nucleotide_logging::trace;
 
 use crate::{
     line_plan::VisibleLinePlan,
@@ -295,7 +295,7 @@ fn doc_syntax_highlights<'d>(
     syntax_loader: &'d helix_core::syntax::Loader,
 ) -> Option<syntax::Highlighter<'d>> {
     let syntax = doc.syntax()?;
-    debug!(language = ?doc.language_name(), "Document has syntax support");
+    trace!(language = ?doc.language_name(), "Document has syntax support");
 
     let text = doc.text().slice(..);
     let anchor = anchor.min(text.len_chars().saturating_sub(1));
@@ -516,7 +516,7 @@ impl<'h, 'r, 't> SyntaxHighlighter<'h, 'r, 't> {
                 let highlight_style = safe_highlight(self.theme, highlight);
                 let patched = acc.patch(highlight_style);
                 if patched != acc {
-                    debug!(
+                    trace!(
                         "Applying highlight: {:?} -> style: {:?}",
                         highlight, patched.fg
                     );

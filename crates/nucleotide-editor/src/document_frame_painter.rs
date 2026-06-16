@@ -1,6 +1,8 @@
 // ABOUTME: Paint helpers for frame-owned native editor render state
 // ABOUTME: Converts EditorDocumentFrame plans into GPUI paint calls
 
+use std::time::Duration;
+
 use gpui::{App, Bounds, FocusHandle, Hsla, Pixels, TextStyle, Window, px};
 use helix_core::{Rope, RopeSlice};
 use helix_view::{
@@ -9,7 +11,7 @@ use helix_view::{
     editor::CursorShapeConfig,
     graphics::{CursorKind, Style},
 };
-use nucleotide_logging::{debug, error};
+use nucleotide_logging::{PerfTimer, error, trace};
 
 use crate::{
     CursorOverlayPlan, DiagnosticGutterMarkersPaintParams, EditorCursorTextPaintParams,
@@ -311,6 +313,8 @@ struct SoftWrapDocumentFramePaintParams<'a> {
 pub fn prepare_native_editor_frame(
     params: NativeEditorFramePrepareParams<'_>,
 ) -> Option<NativeEditorPreparedFrame> {
+    let _timer = PerfTimer::new("prepare_native_editor_frame")
+        .with_warn_threshold(Duration::from_millis(12));
     let doc_id = params.editor.tree.try_get(params.view_id)?.doc;
     let scrolloff = params.editor.config().scrolloff;
     let frame_state = params.editor_state.sync_frame_layout(
@@ -396,6 +400,8 @@ pub fn render_native_editor_frame(
     cx: &mut App,
     params: NativeEditorFrameRenderParams<'_>,
 ) -> Option<CursorOverlayPlan> {
+    let _timer =
+        PerfTimer::new("render_native_editor_frame").with_warn_threshold(Duration::from_millis(16));
     let NativeEditorFrameRenderParams {
         editor,
         view_id,
@@ -421,7 +427,7 @@ pub fn render_native_editor_frame(
             text_system: text_system.as_ref(),
             text_style,
         })?;
-    debug!(
+    trace!(
         physical_lines = content_state.physical_lines,
         visual_rows = content_state.update.visual_rows,
         soft_wrap = content_state.update.soft_wrap,
@@ -496,7 +502,7 @@ pub fn native_editor_frame_paint_plan(
         is_focused: params.is_focused,
     });
 
-    debug!(
+    trace!(
         "Cursorline check - focused: {}, enabled: {}",
         params.is_focused, frame.cursorline_enabled
     );
@@ -504,11 +510,11 @@ pub fn native_editor_frame_paint_plan(
     let text = params.document.text();
     let cursor_char_idx = frame.cursor_presentation.cursor_char_idx;
     let cursor_line_num = frame.render_snapshot.cursor_line;
-    debug!(
+    trace!(
         "Cursor position: line={}, char_idx={}",
         cursor_line_num, cursor_char_idx
     );
-    debug!(
+    trace!(
         "Cursor position - line: {}, col_in_line: {}, primary_idx: {}, gutter_width: {}",
         frame.primary_cursor_line,
         frame.primary_cursor_col,
@@ -516,7 +522,7 @@ pub fn native_editor_frame_paint_plan(
         frame.gutter_width
     );
     if frame.gutter_width != 0 {
-        debug!("need to render gutter {}", frame.gutter_width);
+        trace!("need to render gutter {}", frame.gutter_width);
     }
 
     let line_viewport = frame.render_snapshot.line_viewport;
@@ -524,7 +530,7 @@ pub fn native_editor_frame_paint_plan(
     let cursor_at_end = line_viewport.cursor_at_end;
     let file_ends_with_newline = line_viewport.file_ends_with_newline;
 
-    debug!(
+    trace!(
         "End of file check - cursor_char_idx: {}, text.len_chars(): {}, last_char: {:?}, cursor_at_end: {}, ends_with_newline: {}",
         cursor_char_idx,
         text.len_chars(),
@@ -539,7 +545,7 @@ pub fn native_editor_frame_paint_plan(
 
     if cursor_at_end && file_ends_with_newline {
         let cursor_line = text.char_to_line(cursor_char_idx.saturating_sub(1));
-        debug!(
+        trace!(
             "Cursor at EOF with newline - cursor_line: {cursor_line}, last_row: {last_row}, total_lines: {}",
             frame.total_lines
         );
@@ -661,6 +667,8 @@ fn paint_soft_wrap_document_frame(
     cx: &mut App,
     params: SoftWrapDocumentFramePaintParams<'_>,
 ) -> Option<CursorOverlayPlan> {
+    let _timer = PerfTimer::new("paint_soft_wrap_document_frame")
+        .with_warn_threshold(Duration::from_millis(8));
     let frame = params.frame;
     let soft_wrap_render_plan = frame.soft_wrap_render_plan.as_ref()?;
 
@@ -722,6 +730,8 @@ fn paint_unwrapped_document_frame(
     cx: &mut App,
     params: UnwrappedDocumentFramePaintParams<'_>,
 ) -> Option<CursorOverlayPlan> {
+    let _timer = PerfTimer::new("paint_unwrapped_document_frame")
+        .with_warn_threshold(Duration::from_millis(8));
     let frame = params.frame;
     let unwrapped_plan = frame.unwrapped_render_plan.as_ref()?;
 
@@ -738,7 +748,7 @@ fn paint_unwrapped_document_frame(
         let line_runs = &highlighted_line.line_runs;
 
         if unwrapped_plan.is_cursor_line && params.cursorline_color.is_some() {
-            debug!(
+            trace!(
                 "Painting cursorline for line {} (cursor at line {})",
                 line_idx, frame.render_snapshot.cursor_line
             );
@@ -770,7 +780,7 @@ fn paint_unwrapped_document_frame(
             }
         };
 
-        debug!(
+        trace!(
             "LINE LAYOUT CACHED: line_idx={}, y_offset={:?}, is_phantom={}",
             line_idx, y_offset, false
         );
@@ -873,17 +883,17 @@ fn paint_unwrapped_cursor(
 ) -> Option<CursorOverlayPlan> {
     let frame = params.frame;
     let cursor_viewport_pos = frame.render_snapshot.cursor_viewport_position;
-    debug!(
+    trace!(
         "Cursor rendering check - is_focused: {}, element_focused: {}, cursor_viewport_pos: {:?}",
         params.is_focused, params.element_focused, cursor_viewport_pos
     );
-    debug!(
+    trace!(
         "Cursor char idx: {}, line: {}",
         frame.render_snapshot.cursor_char_idx, frame.render_snapshot.cursor_line
     );
 
     let Some(cursor_viewport_pos) = cursor_viewport_pos else {
-        debug!(
+        trace!(
             "Cursor line {} is outside rendered range {}..{}",
             frame.render_snapshot.cursor_doc_line,
             frame.render_snapshot.line_viewport.first_row,
@@ -893,7 +903,7 @@ fn paint_unwrapped_cursor(
     };
 
     let cursor_line = cursor_viewport_pos.line;
-    debug!(
+    trace!(
         "Looking for cursor line {cursor_line} in range {}..{}",
         frame.render_snapshot.line_viewport.first_row, frame.render_snapshot.last_row
     );
@@ -917,7 +927,7 @@ fn paint_unwrapped_cursor(
     });
 
     let Some(cursor_paint_plan) = cursor_paint_plan else {
-        debug!(
+        trace!(
             "Cursor paint plan unavailable for visible line {} (at_eof: {})",
             cursor_line,
             line_viewport.cursor_at_end && line_viewport.file_ends_with_newline
@@ -927,7 +937,7 @@ fn paint_unwrapped_cursor(
 
     let cursor_paint_position = cursor_paint_plan.paint_position;
     if let Some(line_position) = &cursor_paint_plan.line_position {
-        debug!(
+        trace!(
             "Cursor rendering - line: {}, char_offset: {}, byte_offset: {}, x_relative: {:?}, x_absolute: {:?}, viewport_row: {}",
             line_position.line,
             line_position.cursor_char_offset,
@@ -937,14 +947,14 @@ fn paint_unwrapped_cursor(
             cursor_viewport_pos.viewport_row
         );
     } else {
-        debug!(
+        trace!(
             "Cursor rendering - source: {:?}, x_absolute: {:?}, viewport_row: {}",
             cursor_paint_plan.source,
             cursor_paint_position.cursor_point().x,
             cursor_viewport_pos.viewport_row
         );
     }
-    debug!("Cursor paint plan selected: {:?}", cursor_paint_plan.source);
+    trace!("Cursor paint plan selected: {:?}", cursor_paint_plan.source);
 
     let font = params.text_style.font();
     Some(shape_and_paint_editor_cursor(

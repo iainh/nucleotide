@@ -1,6 +1,8 @@
 // ABOUTME: Per-frame document/view facts for native editor rendering
 // ABOUTME: Builds owned render state from Helix document and view inputs
 
+use std::time::Duration;
+
 use gpui::{Bounds, Font, Hsla, Pixels, TextRun};
 use helix_view::{
     Document, Theme, View, ViewId,
@@ -21,6 +23,7 @@ use crate::{
     editor_cursor_presentation, soft_wrap_highlighted_line_runs, unwrapped_highlighted_line,
     unwrapped_render_plan,
 };
+use nucleotide_logging::PerfTimer;
 
 pub struct EditorDocumentFrameParams<'a> {
     pub document: &'a Document,
@@ -77,6 +80,8 @@ pub struct EditorDocumentFrame {
 }
 
 pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDocumentFrame {
+    let _timer =
+        PerfTimer::new("editor_document_frame").with_warn_threshold(Duration::from_millis(12));
     let text = params.document.text();
     let render_snapshot = document_render_snapshot(
         params.document,
@@ -155,37 +160,45 @@ pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDoc
         diagnostic_overlay_spans: diagnostic_overlay_spans.as_ref(),
     };
 
-    let soft_wrap_line_runs = soft_wrap_render_plan
-        .as_ref()
-        .map(|plan| {
-            plan.visual_lines
-                .iter()
-                .map(|visual| {
-                    soft_wrap_highlighted_line_runs(SoftWrapHighlightedLineRunsParams {
-                        context: highlight_context(),
-                        visual,
-                        wrap_indicator_color: params.wrap_indicator_color,
+    let soft_wrap_line_runs = {
+        let _timer = PerfTimer::new("editor_document_frame.soft_wrap_highlights")
+            .with_warn_threshold(Duration::from_millis(6));
+        soft_wrap_render_plan
+            .as_ref()
+            .map(|plan| {
+                plan.visual_lines
+                    .iter()
+                    .map(|visual| {
+                        soft_wrap_highlighted_line_runs(SoftWrapHighlightedLineRunsParams {
+                            context: highlight_context(),
+                            visual,
+                            wrap_indicator_color: params.wrap_indicator_color,
+                        })
                     })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
 
-    let unwrapped_highlighted_lines = unwrapped_render_plan
-        .as_ref()
-        .map(|plan| {
-            plan.visible_lines
-                .iter()
-                .map(|line| {
-                    unwrapped_highlighted_line(UnwrappedHighlightedLineParams {
-                        context: highlight_context(),
-                        text: text.slice(..),
-                        line,
+    let unwrapped_highlighted_lines = {
+        let _timer = PerfTimer::new("editor_document_frame.unwrapped_highlights")
+            .with_warn_threshold(Duration::from_millis(6));
+        unwrapped_render_plan
+            .as_ref()
+            .map(|plan| {
+                plan.visible_lines
+                    .iter()
+                    .map(|line| {
+                        unwrapped_highlighted_line(UnwrappedHighlightedLineParams {
+                            context: highlight_context(),
+                            text: text.slice(..),
+                            line,
+                        })
                     })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
 
     EditorDocumentFrame {
         gutter_width,

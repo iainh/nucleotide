@@ -1,7 +1,7 @@
 // ABOUTME: Native GPUI editor viewport state for pixel and visual-row scrolling
 // ABOUTME: Owns GUI scroll state before it is synced into Helix view offsets
 
-use std::{cell::Cell, rc::Rc};
+use std::{cell::Cell, rc::Rc, time::Duration};
 
 use gpui::{Bounds, Pixels, Point, Size, point, px, size};
 use helix_core::{
@@ -9,7 +9,7 @@ use helix_core::{
     text_annotations::TextAnnotations, visual_offset_from_block,
 };
 use helix_view::{Document, DocumentId, Editor, Theme, ViewId, graphics::Rect, view::ViewPosition};
-use nucleotide_logging::debug;
+use nucleotide_logging::{PerfTimer, trace};
 
 use crate::{
     EDITOR_MINIMUM_VIEWPORT_COLUMNS, EditorDocumentMetrics, ScrollManager,
@@ -488,7 +488,7 @@ impl EditorViewport {
             return false;
         }
 
-        debug!(
+        trace!(
             view_id = ?view_id,
             top_visual_row = plan.top_visual_row,
             old_anchor = plan.previous_view_position.anchor,
@@ -543,6 +543,8 @@ impl EditorViewport {
         view_id: ViewId,
         layout: EditorViewportSurfaceLayout<'_>,
     ) -> EditorViewportSurfaceUpdate {
+        let _timer = PerfTimer::new("EditorViewport::sync_surface_layout_for_view")
+            .with_warn_threshold(Duration::from_millis(8));
         self.set_line_height(layout.line_height);
         self.set_viewport_size(editor_viewport_size_for_bounds(layout.bounds));
 
@@ -702,7 +704,7 @@ fn apply_helix_view_area_plan(
         return false;
     }
 
-    debug!(
+    trace!(
         old_area = ?plan.previous_area,
         new_area = ?plan.target_area,
         "Syncing native viewport dimensions to Helix view area"
