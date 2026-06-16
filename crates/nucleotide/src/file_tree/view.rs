@@ -4,13 +4,16 @@
 use crate::file_tree::watcher::FileTreeWatcher;
 use crate::file_tree::{
     FileTree, FileTreeConfig, FileTreeEntry, FileTreeEvent,
-    sidebar::{ProjectTreeRow, ProjectTreeRowAction, ProjectTreeRowEvent, render_project_tree_row},
+    sidebar::{
+        ProjectTreeRow, ProjectTreeRowAction, ProjectTreeRowEvent, project_tree_entry_min_width,
+        render_project_tree_row,
+    },
 };
 use gpui::prelude::FluentBuilder;
 use gpui::{
     App, Context, EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement,
-    MouseButton, MouseDownEvent, ParentElement, Render, StatefulInteractiveElement, Styled,
-    UniformListScrollHandle, Window, div, px, uniform_list,
+    ListHorizontalSizingBehavior, MouseButton, MouseDownEvent, ParentElement, Render,
+    StatefulInteractiveElement, Styled, UniformListScrollHandle, Window, div, px, uniform_list,
 };
 use nucleotide_logging::{debug, error, warn};
 use nucleotide_types::VcsStatus;
@@ -23,6 +26,16 @@ fn should_focus_editor_for_project_tree_open(click_count: usize) -> bool {
     click_count > 1
 }
 
+fn widest_project_tree_entry_index(entries: &[FileTreeEntry]) -> Option<usize> {
+    entries
+        .iter()
+        .enumerate()
+        .max_by(|(_, left), (_, right)| {
+            project_tree_entry_min_width(left).total_cmp(&project_tree_entry_min_width(right))
+        })
+        .map(|(index, _)| index)
+}
+
 /// File tree view component
 pub struct FileTreeView {
     /// The underlying file tree data
@@ -33,8 +46,10 @@ pub struct FileTreeView {
     focus_handle: FocusHandle,
     /// Scroll handle for the list
     scroll_handle: UniformListScrollHandle,
-    /// Scrollbar state for managing token-aware scrollbar UI
-    scrollbar_state: ScrollbarState,
+    /// Vertical scrollbar state for managing token-aware scrollbar UI
+    vertical_scrollbar_state: ScrollbarState,
+    /// Horizontal scrollbar state for managing token-aware scrollbar UI
+    horizontal_scrollbar_state: ScrollbarState,
     /// Tokio runtime handle for async VCS operations
     _tokio_handle: Option<tokio::runtime::Handle>,
     /// File system watcher for detecting changes
@@ -56,7 +71,8 @@ impl FileTreeView {
         }
 
         let scroll_handle = UniformListScrollHandle::new();
-        let scrollbar_state = ScrollbarState::new(scroll_handle.clone());
+        let vertical_scrollbar_state = ScrollbarState::new(scroll_handle.clone());
+        let horizontal_scrollbar_state = ScrollbarState::new(scroll_handle.clone());
         let focus_handle = cx.focus_handle();
         if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>().cloned() {
             coord.set_file_tree_focus(focus_handle.clone());
@@ -67,7 +83,8 @@ impl FileTreeView {
             selected_path: None,
             focus_handle,
             scroll_handle,
-            scrollbar_state,
+            vertical_scrollbar_state,
+            horizontal_scrollbar_state,
             _tokio_handle: None,
             file_watcher: None,
             pending_fs_events: std::collections::HashMap::new(),
@@ -119,7 +136,8 @@ impl FileTreeView {
         };
 
         let scroll_handle = UniformListScrollHandle::new();
-        let scrollbar_state = ScrollbarState::new(scroll_handle.clone());
+        let vertical_scrollbar_state = ScrollbarState::new(scroll_handle.clone());
+        let horizontal_scrollbar_state = ScrollbarState::new(scroll_handle.clone());
         let focus_handle = cx.focus_handle();
         if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>().cloned() {
             coord.set_file_tree_focus(focus_handle.clone());
@@ -130,7 +148,8 @@ impl FileTreeView {
             selected_path: None,
             focus_handle,
             scroll_handle,
-            scrollbar_state,
+            vertical_scrollbar_state,
+            horizontal_scrollbar_state,
             _tokio_handle: tokio_handle,
             file_watcher,
             pending_fs_events: std::collections::HashMap::new(),
@@ -1200,6 +1219,7 @@ impl FileTreeView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::file_tree::entry::FileTreeEntryId;
     use gpui::{AppContext, TestAppContext};
     use std::{cell::RefCell, rc::Rc};
 
@@ -1266,6 +1286,36 @@ mod tests {
         assert!(should_focus_editor_for_project_tree_open(3));
     }
 
+    #[test]
+    fn widest_project_tree_entry_index_uses_depth_and_filename_width() {
+        let mut shallow = FileTreeEntry::new_file(
+            FileTreeEntryId(1),
+            PathBuf::from("/workspace/main.rs"),
+            0,
+            None,
+        );
+        shallow.depth = 0;
+        let mut deep = FileTreeEntry::new_file(
+            FileTreeEntryId(2),
+            PathBuf::from("/workspace/src/nested/very_long_component_name.rs"),
+            0,
+            None,
+        );
+        deep.depth = 4;
+        let mut medium = FileTreeEntry::new_file(
+            FileTreeEntryId(3),
+            PathBuf::from("/workspace/src/lib.rs"),
+            0,
+            None,
+        );
+        medium.depth = 2;
+
+        assert_eq!(
+            widest_project_tree_entry_index(&[shallow, deep, medium]),
+            Some(1)
+        );
+    }
+
     #[gpui::test]
     async fn directory_activation_selects_entry_and_emits_toggle(cx: &mut TestAppContext) {
         let temp_dir = tempfile::tempdir().unwrap();
@@ -1317,6 +1367,7 @@ impl Render for FileTreeView {
         // Use nucleotide-ui theme access for consistent styling
         let theme = cx.theme().clone();
         let entries = self.tree.visible_entries();
+        let width_measure_item_index = widest_project_tree_entry_index(&entries);
 
         // (debug logging removed)
 
@@ -1386,41 +1437,70 @@ impl Render for FileTreeView {
             ))
             .child(
                 // Zed-style: wrap the list row in a flex_1 container with min_h(0)
-                div().flex_1().min_h(px(0.0)).child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .w_full()
-                        .h_full()
-                        .min_h(px(0.0))
-                        .child({
-                            let list = uniform_list("file-tree-list", entries.len(), {
-                                let entries = entries.clone();
-                                cx.processor(
-                                    move |this, range: std::ops::Range<usize>, _window, cx| {
-                                        let mut items = Vec::with_capacity(range.end - range.start);
-                                        for index in range {
-                                            if let Some(entry) = entries.get(index) {
-                                                items.push(this.render_entry(entry, cx));
+                div()
+                    .flex_1()
+                    .w_full()
+                    .min_w(px(0.0))
+                    .min_h(px(0.0))
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .w_full()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .min_h(px(0.0))
+                            .child({
+                                let list = uniform_list("file-tree-list", entries.len(), {
+                                    let entries = entries.clone();
+                                    cx.processor(
+                                        move |this, range: std::ops::Range<usize>, _window, cx| {
+                                            let mut items =
+                                                Vec::with_capacity(range.end - range.start);
+                                            for index in range {
+                                                if let Some(entry) = entries.get(index) {
+                                                    items.push(this.render_entry(entry, cx));
+                                                }
                                             }
-                                        }
-                                        items
-                                    },
+                                            items
+                                        },
+                                    )
+                                })
+                                .with_sizing_behavior(gpui::ListSizingBehavior::Infer)
+                                .with_horizontal_sizing_behavior(
+                                    ListHorizontalSizingBehavior::Unconstrained,
                                 )
+                                .with_width_from_item(width_measure_item_index)
+                                .track_scroll(&self.scroll_handle)
+                                .h_full();
+                                div()
+                                    .flex_1()
+                                    .w_full()
+                                    .min_w(px(0.0))
+                                    .h_full()
+                                    .min_h(px(0.0))
+                                    .overflow_hidden()
+                                    .child(list)
                             })
-                            .with_sizing_behavior(gpui::ListSizingBehavior::Infer)
-                            .with_horizontal_sizing_behavior(
-                                gpui::ListHorizontalSizingBehavior::FitList,
-                            )
-                            .track_scroll(&self.scroll_handle)
-                            .h_full();
-                            div().flex_1().h_full().min_h(px(0.0)).child(list)
-                        })
-                        .when_some(
-                            Scrollbar::vertical(self.scrollbar_state.clone()),
-                            gpui::ParentElement::child,
-                        ),
-                ),
+                            .when_some(
+                                Scrollbar::vertical(self.vertical_scrollbar_state.clone()),
+                                gpui::ParentElement::child,
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .w_full()
+                            .min_w(px(0.0))
+                            .flex_shrink_0()
+                            .child(div().flex_1().min_w(px(0.0)).when_some(
+                                Scrollbar::horizontal(self.horizontal_scrollbar_state.clone()),
+                                gpui::ParentElement::child,
+                            ))
+                            .child(div().flex_shrink_0().w(px(12.0)).h(px(12.0))),
+                    ),
             )
     }
 }

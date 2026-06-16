@@ -124,6 +124,7 @@ struct EditorViewportViewPositionPlanCacheKey {
     base: EditorViewportConversionBaseKey,
     previous_view_position: ViewPosition,
     top_visual_row: usize,
+    horizontal_offset: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -317,6 +318,7 @@ impl<'a> EditorViewportSurfaceLayout<'a> {
 pub struct EditorViewport {
     scroll: ScrollManager,
     cursor_reveal_request: Rc<Cell<Option<EditorCursorReveal>>>,
+    cell_width: Rc<Cell<Pixels>>,
     document_metrics_cache: Rc<RefCell<EditorDocumentMetricsCache>>,
     conversion_cache: Rc<RefCell<EditorViewportConversionCache>>,
 }
@@ -326,6 +328,7 @@ impl EditorViewport {
         Self {
             scroll: ScrollManager::new(line_height),
             cursor_reveal_request: Rc::new(Cell::new(None)),
+            cell_width: Rc::new(Cell::new(px(1.0))),
             document_metrics_cache: Rc::new(RefCell::new(EditorDocumentMetricsCache::default())),
             conversion_cache: Rc::new(RefCell::new(EditorViewportConversionCache::default())),
         }
@@ -354,8 +357,16 @@ impl EditorViewport {
         self.scroll.set_viewport_size(size);
     }
 
+    pub fn set_cell_width(&mut self, cell_width: Pixels) {
+        self.cell_width.set(cell_width.max(px(1.0)));
+    }
+
     pub fn set_content_visual_rows(&mut self, rows: usize) {
         self.scroll.set_total_lines(rows.max(1));
+    }
+
+    pub fn set_content_width(&mut self, width: Pixels) {
+        self.scroll.set_content_width(width);
     }
 
     pub fn content_visual_rows(&self) -> usize {
@@ -463,7 +474,24 @@ impl EditorViewport {
         let old_position = self.scroll_position();
         let old_top_visual_row = self.top_visual_row();
 
-        self.scroll.set_scroll_position(point(px(0.0), y));
+        self.scroll.set_scroll_position(point(old_position.x, y));
+
+        let new_position = self.scroll_position();
+        let new_top_visual_row = self.top_visual_row();
+
+        ViewportScrollUpdate {
+            changed: old_position != new_position,
+            crossed_visual_rows: new_top_visual_row as isize - old_top_visual_row as isize,
+            top_visual_row: new_top_visual_row,
+            offset_within_row: self.offset_within_row(),
+        }
+    }
+
+    pub fn scroll_to_horizontal_position_from_scrollbar(&self, x: Pixels) -> ViewportScrollUpdate {
+        let old_position = self.scroll_position();
+        let old_top_visual_row = self.top_visual_row();
+
+        self.scroll.set_scroll_position(point(x, old_position.y));
 
         let new_position = self.scroll_position();
         let new_top_visual_row = self.top_visual_row();
@@ -535,8 +563,10 @@ impl EditorViewport {
         };
 
         if let Some(target_top) = target_top {
-            self.scroll
-                .set_scroll_position(point(px(0.0), self.scroll.anchor_to_pixels(target_top)));
+            self.scroll.set_scroll_position(point(
+                old_position.x,
+                self.scroll.anchor_to_pixels(target_top),
+            ));
         }
 
         let new_position = self.scroll_position();
@@ -560,9 +590,10 @@ impl EditorViewport {
     }
 
     pub fn sync_from_helix_top_visual_row(&self, top_visual_row: usize) {
+        let current = self.scroll_position();
         let y = self.scroll.anchor_to_pixels(top_visual_row);
         self.scroll
-            .set_scroll_position_from_view_sync_preserving_subrow_offset(point(px(0.0), y));
+            .set_scroll_position_from_view_sync_preserving_subrow_offset(point(current.x, y));
     }
 
     pub fn sync_from_helix_view(
@@ -579,6 +610,7 @@ impl EditorViewport {
         };
 
         if let Some(snapshot) = self.conversion_cache.borrow().helix_snapshot(&key) {
+            self.sync_from_helix_horizontal_offset(view_position.horizontal_offset, text_format);
             self.sync_from_helix_top_visual_row(snapshot.top_visual_row);
             return snapshot;
         }
@@ -593,8 +625,37 @@ impl EditorViewport {
         self.conversion_cache
             .borrow_mut()
             .store_helix_snapshot(key, snapshot);
+        self.sync_from_helix_horizontal_offset(view_position.horizontal_offset, text_format);
         self.sync_from_helix_top_visual_row(snapshot.top_visual_row);
         snapshot
+    }
+
+    fn sync_from_helix_horizontal_offset(
+        &self,
+        horizontal_offset: usize,
+        text_format: &TextFormat,
+    ) {
+        let x = if text_format.soft_wrap {
+            px(0.0)
+        } else {
+            self.cell_width.get() * horizontal_offset as f32
+        };
+        let current = self.scroll_position();
+        self.scroll
+            .set_scroll_position_from_view_sync_preserving_subrow_offset(point(x, current.y));
+    }
+
+    fn horizontal_offset_columns(&self, text_format: &TextFormat) -> usize {
+        if text_format.soft_wrap {
+            return 0;
+        }
+
+        let cell_width = self.cell_width.get();
+        if cell_width <= px(0.0) {
+            return 0;
+        }
+
+        (self.scroll_position().x / cell_width).floor() as usize
     }
 
     pub fn sync_view_position(
@@ -604,7 +665,7 @@ impl EditorViewport {
         view_id: ViewId,
         text_format: &TextFormat,
     ) -> bool {
-        self.sync_view_position_with_plan(document, view, view_id, text_format)
+        self.sync_view_position_with_plan(document, view, view_id, text_format, true)
             .0
     }
 
@@ -614,8 +675,19 @@ impl EditorViewport {
         view: &helix_view::View,
         view_id: ViewId,
         text_format: &TextFormat,
+        use_native_horizontal_offset: bool,
     ) -> (bool, EditorViewportViewPositionPlan) {
-        let plan = self.plan_view_position(document, view, view_id, text_format);
+        let plan = if use_native_horizontal_offset {
+            self.plan_view_position_with_horizontal_offset(
+                document,
+                view,
+                view_id,
+                text_format,
+                self.horizontal_offset_columns(text_format),
+            )
+        } else {
+            self.plan_view_position(document, view, view_id, text_format)
+        };
         if !plan.changed {
             return (false, plan);
         }
@@ -654,7 +726,14 @@ impl EditorViewport {
             let mut metrics_cache = self.document_metrics_cache.borrow_mut();
             editor_viewport_content_metrics(&mut metrics_cache, document, view, layout)
         };
+        self.set_cell_width(layout.cell_width);
         self.set_content_visual_rows(metrics.visual_rows);
+        self.set_viewport_size(editor_text_viewport_size_for_bounds(
+            layout.bounds,
+            gutter_columns,
+            layout.cell_width,
+        ));
+        self.set_content_width(metrics.content_columns as f32 * layout.cell_width);
 
         EditorViewportContentUpdate {
             gutter_columns,
@@ -692,6 +771,7 @@ impl EditorViewport {
         let _timer = PerfTimer::new("EditorViewport::sync_surface_layout_for_view")
             .with_warn_threshold(Duration::from_millis(8));
         self.set_line_height(layout.line_height);
+        self.set_cell_width(layout.cell_width);
         self.set_viewport_size(editor_viewport_size_for_bounds(layout.bounds));
 
         let content_layout = EditorViewportContentLayout {
@@ -711,6 +791,10 @@ impl EditorViewport {
             )
         };
         self.set_content_visual_rows(metrics.visual_rows);
+        let viewport_size =
+            editor_text_viewport_size_for_bounds(layout.bounds, gutter_columns, layout.cell_width);
+        self.set_viewport_size(viewport_size);
+        self.set_content_width(metrics.content_columns as f32 * layout.cell_width);
         let view_area_plan = helix_view_area_plan_for_surface(
             view.area,
             gutter_columns,
@@ -721,8 +805,13 @@ impl EditorViewport {
 
         let mut synced_view_position_plan = None;
         let mut helix_view_synced = if self.has_pending_view_sync() {
-            let (synced, plan) =
-                self.sync_view_position_with_plan(document, view, view_id, &metrics.text_format);
+            let (synced, plan) = self.sync_view_position_with_plan(
+                document,
+                view,
+                view_id,
+                &metrics.text_format,
+                true,
+            );
             self.clear_pending_view_sync();
             if synced {
                 synced_view_position_plan = Some(plan);
@@ -738,8 +827,13 @@ impl EditorViewport {
             let scroll_update =
                 self.reveal_visual_row(cursor_visual_row, cursor_reveal, layout.scrolloff);
 
-            let (synced, plan) =
-                self.sync_view_position_with_plan(document, view, view_id, &metrics.text_format);
+            let (synced, plan) = self.sync_view_position_with_plan(
+                document,
+                view,
+                view_id,
+                &metrics.text_format,
+                false,
+            );
             helix_view_synced |= synced;
             if synced {
                 synced_view_position_plan = Some(plan);
@@ -803,12 +897,31 @@ impl EditorViewport {
         view_id: ViewId,
         text_format: &TextFormat,
     ) -> EditorViewportViewPositionPlan {
+        let horizontal_offset = document.view_offset(view_id).horizontal_offset;
+        self.plan_view_position_with_horizontal_offset(
+            document,
+            view,
+            view_id,
+            text_format,
+            horizontal_offset,
+        )
+    }
+
+    fn plan_view_position_with_horizontal_offset(
+        &self,
+        document: &Document,
+        view: &helix_view::View,
+        view_id: ViewId,
+        text_format: &TextFormat,
+        horizontal_offset: usize,
+    ) -> EditorViewportViewPositionPlan {
         let previous_view_position = document.view_offset(view_id);
         let top_visual_row = self.top_visual_row();
         let key = EditorViewportViewPositionPlanCacheKey {
             base: viewport_conversion_base_key(document, view_id, text_format),
             previous_view_position,
             top_visual_row,
+            horizontal_offset,
         };
 
         if let Some(plan) = self.conversion_cache.borrow().view_position_plan(&key) {
@@ -820,6 +933,7 @@ impl EditorViewport {
             document.text().slice(..),
             previous_view_position,
             top_visual_row,
+            horizontal_offset,
             text_format,
             &annotations,
         );
@@ -840,6 +954,7 @@ impl EditorViewport {
             base: viewport_conversion_base_key(document, view_id, text_format),
             previous_view_position: plan.previous_view_position,
             top_visual_row: plan.top_visual_row,
+            horizontal_offset: plan.view_position.horizontal_offset,
         };
         self.conversion_cache
             .borrow_mut()
@@ -986,6 +1101,20 @@ pub fn editor_viewport_size_for_bounds(bounds: Bounds<Pixels>) -> Size<Pixels> {
     )
 }
 
+fn editor_text_viewport_size_for_bounds(
+    bounds: Bounds<Pixels>,
+    gutter_columns: u16,
+    cell_width: Pixels,
+) -> Size<Pixels> {
+    let geometry = crate::EditorSurfaceGeometry::new(bounds, gutter_columns, cell_width);
+    let text_bounds = geometry.text_bounds();
+
+    size(
+        text_bounds.size.width.max(px(0.0)),
+        (bounds.size.height - px(1.0)).max(px(0.0)),
+    )
+}
+
 fn viewport_conversion_base_key(
     document: &Document,
     view_id: ViewId,
@@ -1064,13 +1193,14 @@ pub fn view_position_plan_for_top_visual_row(
     text: RopeSlice<'_>,
     previous_view_position: ViewPosition,
     top_visual_row: usize,
+    horizontal_offset: usize,
     text_format: &TextFormat,
     annotations: &TextAnnotations<'_>,
 ) -> EditorViewportViewPositionPlan {
     let view_position = view_position_for_top_visual_row(
         text,
         top_visual_row,
-        previous_view_position.horizontal_offset,
+        horizontal_offset,
         text_format,
         annotations,
     );
@@ -2042,6 +2172,7 @@ mod tests {
             base: base.clone(),
             previous_view_position: ViewPosition::default(),
             top_visual_row: 3,
+            horizontal_offset: 0,
         };
         let plan = EditorViewportViewPositionPlan {
             top_visual_row: 3,
@@ -2111,6 +2242,7 @@ mod tests {
             text.slice(..),
             current_position,
             1,
+            current_position.horizontal_offset,
             &text_format,
             &annotations,
         );
@@ -2137,6 +2269,7 @@ mod tests {
             text.slice(..),
             current_position,
             eof_row,
+            current_position.horizontal_offset,
             &text_format,
             &annotations,
         );
@@ -2166,6 +2299,7 @@ mod tests {
             text.slice(..),
             current_position,
             0,
+            current_position.horizontal_offset,
             &text_format,
             &annotations,
         );
@@ -2218,6 +2352,37 @@ mod tests {
                 .char_to_line(document.view_offset(view.id).anchor),
             1
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn surface_layout_sync_applies_native_horizontal_scroll_to_view_position() {
+        let (mut editor, doc_id, view_id) =
+            test_editor_with_text("abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz\n");
+        let mut viewport = EditorViewport::new(px(20.0));
+        let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(120.0), px(100.0)));
+        let layout = EditorViewportSurfaceLayout {
+            theme: None,
+            bounds,
+            cell_width: px(10.0),
+            line_height: px(20.0),
+            minimum_columns: 1,
+            scrolloff: Config::default().scrolloff,
+            cursor_reveal: None,
+        };
+
+        viewport.sync_surface_layout(&mut editor, doc_id, view_id, layout);
+
+        let scroll_update = viewport.scroll_to_horizontal_position_from_scrollbar(px(30.0));
+        assert!(scroll_update.changed);
+        assert!(viewport.has_pending_view_sync());
+
+        let update = viewport
+            .sync_surface_layout(&mut editor, doc_id, view_id, layout)
+            .unwrap();
+        let doc = editor.document(doc_id).unwrap();
+
+        assert_eq!(update.view_position.horizontal_offset, 3);
+        assert_eq!(doc.view_offset(view_id).horizontal_offset, 3);
     }
 
     #[tokio::test(flavor = "current_thread")]

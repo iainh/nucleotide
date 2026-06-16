@@ -15,6 +15,8 @@ pub struct ScrollManager {
     line_height: Rc<Cell<Pixels>>,
     /// Total number of lines in the document
     total_lines: Rc<Cell<usize>>,
+    /// Content width in pixels for horizontal scrolling
+    content_width: Rc<Cell<Pixels>>,
     /// Current scroll position in pixels (positive when scrolled down/right)
     scroll_position: Rc<Cell<Point<Pixels>>>,
     /// Viewport size in pixels
@@ -32,6 +34,7 @@ impl ScrollManager {
             id: NEXT_ID.fetch_add(1, Ordering::SeqCst),
             line_height: Rc::new(Cell::new(line_height)),
             total_lines: Rc::new(Cell::new(1)),
+            content_width: Rc::new(Cell::new(px(0.0))),
             scroll_position: Rc::new(Cell::new(point(px(0.0), px(0.0)))),
             viewport_size: Rc::new(Cell::new(size(px(800.0), px(600.0)))),
             pending_view_sync: Rc::new(Cell::new(false)),
@@ -61,6 +64,12 @@ impl ScrollManager {
     /// Update the total number of lines in the document
     pub(crate) fn set_total_lines(&mut self, total_lines: usize) {
         self.total_lines.set(total_lines);
+        self.clamp_scroll_position_after_extent_change();
+    }
+
+    /// Update the horizontal content width in pixels.
+    pub(crate) fn set_content_width(&mut self, content_width: Pixels) {
+        self.content_width.set(content_width.max(px(0.0)));
         self.clamp_scroll_position_after_extent_change();
     }
 
@@ -105,8 +114,11 @@ impl ScrollManager {
         let content_height = line_height * (total_lines as f32);
         let viewport_height = self.viewport_size.get().height;
         let max_y = (content_height - viewport_height).max(px(0.0));
+        let content_width = self.content_width.get();
+        let viewport_width = self.viewport_size.get().width;
+        let max_x = (content_width - viewport_width).max(px(0.0));
 
-        size(px(0.0), max_y)
+        size(max_x, max_y)
     }
 
     /// Get the current scroll position in pixels (positive when scrolled down/right)
@@ -153,7 +165,7 @@ impl ScrollManager {
         let new_position = self.scroll_position.get();
         let new_line = self.pixels_to_anchor(new_position.y);
         let crossed_lines = new_line as isize - old_line as isize;
-        if crossed_lines != 0 {
+        if crossed_lines != 0 || old_position.x != new_position.x {
             self.pending_view_sync.set(true);
         }
 
@@ -219,7 +231,7 @@ impl ScrollManager {
         let new_position = self.scroll_position.get();
         if old_position != new_position {
             let new_top_line = self.pixels_to_anchor(new_position.y);
-            if old_top_line != new_top_line {
+            if old_top_line != new_top_line || old_position.x != new_position.x {
                 self.pending_view_sync.set(true);
             }
         }
@@ -431,6 +443,17 @@ mod scroll_manager_tests {
     }
 
     #[test]
+    fn test_horizontal_scroll_offset_calculation() {
+        let mut manager = ScrollManager::new(px(20.0));
+        manager.set_viewport_size(size(px(800.0), px(400.0)));
+        manager.set_content_width(px(1200.0));
+
+        let max_offset = manager.max_scroll_offset();
+
+        assert_eq!(max_offset.width, px(400.0));
+    }
+
+    #[test]
     fn test_max_scroll_offset_clamping_to_zero() {
         let mut manager = ScrollManager::new(px(20.0));
         manager.set_total_lines(10); // 10 lines * 20px = 200px content height
@@ -460,6 +483,45 @@ mod scroll_manager_tests {
         // Test position beyond max (should clamp to max)
         manager.set_scroll_position(point(px(0.0), px(800.0)));
         assert_eq!(manager.scroll_position(), point(px(0.0), px(600.0))); // Clamped to max
+    }
+
+    #[test]
+    fn test_horizontal_scroll_position_clamping() {
+        let mut manager = ScrollManager::new(px(20.0));
+        manager.set_viewport_size(size(px(800.0), px(400.0)));
+        manager.set_content_width(px(1200.0));
+
+        manager.set_scroll_position(point(px(500.0), px(0.0)));
+
+        assert_eq!(manager.scroll_position(), point(px(400.0), px(0.0)));
+    }
+
+    #[test]
+    fn test_horizontal_extent_clamp_marks_pending_sync() {
+        let mut manager = ScrollManager::new(px(20.0));
+        manager.set_viewport_size(size(px(800.0), px(400.0)));
+        manager.set_content_width(px(1200.0));
+        manager.set_scroll_position(point(px(400.0), px(0.0)));
+        manager.clear_pending_view_sync();
+
+        manager.set_content_width(px(900.0));
+
+        assert_eq!(manager.scroll_position(), point(px(100.0), px(0.0)));
+        assert!(manager.has_pending_view_sync());
+    }
+
+    #[test]
+    fn test_horizontal_scroll_delta_marks_pending_sync() {
+        let mut manager = ScrollManager::new(px(20.0));
+        manager.set_viewport_size(size(px(800.0), px(400.0)));
+        manager.set_content_width(px(1200.0));
+
+        let (changed, crossed_lines) = manager.scroll_by_delta(point(px(-40.0), px(0.0)));
+
+        assert!(changed);
+        assert_eq!(crossed_lines, 0);
+        assert_eq!(manager.scroll_position(), point(px(40.0), px(0.0)));
+        assert!(manager.has_pending_view_sync());
     }
 
     #[test]

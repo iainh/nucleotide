@@ -122,7 +122,11 @@ pub fn paint_unwrapped_editor_line(
         shaped_line
     };
 
-    Ok(LineLayout::from_visible_line(params.plan.line, shaped_line))
+    Ok(LineLayout::from_visible_line_with_origin_x(
+        params.plan.line,
+        shaped_line,
+        params.plan.line_origin.x,
+    ))
 }
 
 pub struct SoftWrapEditorLinePaintParams<'a, 'b> {

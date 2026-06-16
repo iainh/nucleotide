@@ -4,7 +4,13 @@
 use std::time::Duration;
 
 use gpui::{Bounds, Pixels};
-use helix_core::{RopeSlice, doc_formatter::TextFormat, softwrapped_dimensions};
+use helix_core::{
+    RopeSlice,
+    doc_formatter::TextFormat,
+    graphemes::{grapheme_width, tab_width_at},
+    softwrapped_dimensions,
+};
+use helix_stdx::rope::RopeSliceExt;
 use helix_view::{Document, Theme};
 use nucleotide_logging::PerfTimer;
 
@@ -13,6 +19,7 @@ use crate::EditorSurfaceGeometry;
 #[derive(Clone, Debug)]
 pub struct EditorDocumentMetrics {
     pub viewport_columns: u16,
+    pub content_columns: usize,
     pub soft_wrap: bool,
     pub visual_rows: usize,
     pub text_format: TextFormat,
@@ -95,8 +102,11 @@ impl EditorDocumentMetrics {
         text_format: TextFormat,
     ) -> Self {
         let visual_rows = visual_rows_for_text(document.text().slice(..), &text_format);
+        let content_columns =
+            content_columns_for_text(document.text().slice(..), &text_format, viewport_columns);
         Self {
             viewport_columns,
+            content_columns,
             soft_wrap: text_format.soft_wrap,
             visual_rows,
             text_format,
@@ -171,6 +181,46 @@ pub fn visual_rows_for_text(text: RopeSlice<'_>, text_format: &TextFormat) -> us
     }
 }
 
+pub fn content_columns_for_text(
+    text: RopeSlice<'_>,
+    text_format: &TextFormat,
+    viewport_columns: u16,
+) -> usize {
+    let viewport_columns = usize::from(viewport_columns).max(1);
+    if text_format.soft_wrap {
+        return viewport_columns;
+    }
+
+    let total_lines = text.len_lines();
+    let mut max_columns = viewport_columns;
+
+    for line_idx in 0..total_lines {
+        let line_start = text.line_to_char(line_idx);
+        let line_end = if line_idx + 1 < total_lines {
+            text.line_to_char(line_idx + 1).saturating_sub(1)
+        } else {
+            text.len_chars()
+        };
+        let line_end = line_end.max(line_start);
+        let mut visual_columns = 0;
+        for grapheme in text.slice(line_start..line_end).graphemes() {
+            if grapheme.len_chars() == 1 && grapheme.char(0) == '\t' {
+                visual_columns += tab_width_at(visual_columns, text_format.tab_width);
+            } else {
+                let width = if let Some(grapheme) = grapheme.as_str() {
+                    grapheme_width(grapheme)
+                } else {
+                    grapheme_width(&grapheme.to_string())
+                };
+                visual_columns += width;
+            }
+        }
+        max_columns = max_columns.max(visual_columns);
+    }
+
+    max_columns
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -218,6 +268,40 @@ mod tests {
         };
 
         assert!(visual_rows_for_text(text.slice(..), &text_format) > 1);
+    }
+
+    #[test]
+    fn content_columns_track_longest_unwrapped_line() {
+        let text = Rope::from("short\nmuch-longer");
+        let text_format = TextFormat::default();
+
+        assert_eq!(
+            content_columns_for_text(text.slice(..), &text_format, 4),
+            11
+        );
+    }
+
+    #[test]
+    fn content_columns_respect_tab_stops() {
+        let text = Rope::from("a\tb");
+        let text_format = TextFormat {
+            tab_width: 4,
+            ..TextFormat::default()
+        };
+
+        assert_eq!(content_columns_for_text(text.slice(..), &text_format, 1), 5);
+    }
+
+    #[test]
+    fn content_columns_use_viewport_for_soft_wrap() {
+        let text = Rope::from("abcdefghijklmnopqrstuvwxyz");
+        let text_format = TextFormat {
+            soft_wrap: true,
+            viewport_width: 3,
+            ..TextFormat::default()
+        };
+
+        assert_eq!(content_columns_for_text(text.slice(..), &text_format, 7), 7);
     }
 
     #[test]

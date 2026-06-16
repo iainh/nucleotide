@@ -22,6 +22,7 @@ const PROJECT_TREE_CHEVRON_SLOT_PX: f32 = 14.0;
 const PROJECT_TREE_ROW_RADIUS_PX: f32 = 4.0;
 const PROJECT_TREE_ROW_GAP_PX: f32 = 6.0;
 const PROJECT_TREE_ROW_PADDING_RIGHT_PX: f32 = 8.0;
+const PROJECT_TREE_FILENAME_CHAR_WIDTH_PX: f32 = 8.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProjectTreeRowAction {
@@ -331,10 +332,12 @@ pub fn render_project_tree_row(
         file_tree_tokens.item_text
     };
     let indentation = px(row.depth as f32 * PROJECT_TREE_ROW_INDENT_PX);
+    let min_row_width = project_tree_row_min_width(&row);
 
     div()
         .id(("file-tree-entry", row.id))
         .w_full()
+        .min_w(px(min_row_width))
         .h(px(PROJECT_TREE_ROW_HEIGHT_PX))
         .px(px(0.0))
         .py(px(0.0))
@@ -345,6 +348,7 @@ pub fn render_project_tree_row(
         .child(
             div()
                 .w_full()
+                .min_w(px(min_row_width))
                 .h_full()
                 .flex()
                 .items_center()
@@ -426,9 +430,8 @@ fn render_filename(row: &ProjectTreeRow, theme: &Theme) -> impl IntoElement {
     let is_root_directory = row.depth == 0 && row.is_directory();
 
     let mut node = div()
-        .flex_1()
-        .min_w(px(0.0))
-        .overflow_hidden()
+        .flex_shrink_0()
+        .whitespace_nowrap()
         .text_size(theme.tokens.sizes.text_md)
         .child(row.file_name.clone());
 
@@ -447,6 +450,25 @@ fn render_filename(row: &ProjectTreeRow, theme: &Theme) -> impl IntoElement {
     }
 
     node
+}
+
+fn project_tree_row_min_width(row: &ProjectTreeRow) -> f32 {
+    project_tree_row_min_width_for(row.depth, row.file_name.chars().count())
+}
+
+pub(crate) fn project_tree_entry_min_width(entry: &FileTreeEntry) -> f32 {
+    project_tree_row_min_width_for(entry.depth, display_name(entry).chars().count())
+}
+
+fn project_tree_row_min_width_for(depth: usize, filename_char_count: usize) -> f32 {
+    let indentation = depth as f32 * PROJECT_TREE_ROW_INDENT_PX;
+    let fixed_width = PROJECT_TREE_CHEVRON_SLOT_PX
+        + PROJECT_TREE_ICON_SIZE_PX
+        + PROJECT_TREE_ROW_PADDING_RIGHT_PX
+        + PROJECT_TREE_ROW_GAP_PX * 2.0;
+    let filename_width = filename_char_count as f32 * PROJECT_TREE_FILENAME_CHAR_WIDTH_PX;
+
+    indentation + fixed_width + filename_width
 }
 
 fn display_name(entry: &FileTreeEntry) -> String {
@@ -524,6 +546,26 @@ mod tests {
                 extension: Some("rs".to_string())
             }
         );
+    }
+
+    #[test]
+    fn row_min_width_grows_with_depth_and_filename() {
+        let mut shallow = ProjectTreeRow::from_entry(
+            &FileTreeEntry::new_file(
+                FileTreeEntryId(2),
+                PathBuf::from("/workspace/a.rs"),
+                42,
+                None,
+            ),
+            false,
+            None,
+        );
+        shallow.depth = 0;
+        let mut deep = shallow.clone();
+        deep.depth = 3;
+        deep.file_name = "very_long_nested_file_name.rs".to_string();
+
+        assert!(project_tree_row_min_width(&deep) > project_tree_row_min_width(&shallow));
     }
 
     #[test]
