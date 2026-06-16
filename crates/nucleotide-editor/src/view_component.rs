@@ -4,7 +4,7 @@
 use std::rc::Rc;
 
 use gpui::{
-    App, Bounds, Component, EntityId, FocusHandle, InteractiveElement as _, IntoElement,
+    App, Bounds, Component, EntityId, FocusHandle, Hsla, InteractiveElement as _, IntoElement,
     KeyDownEvent, ParentElement as _, Pixels, RenderOnce, Styled as _, TextStyle, Window, div,
 };
 
@@ -27,6 +27,7 @@ pub struct NativeEditorView<P> {
     text_style: TextStyle,
     paint: P,
     focus: Option<FocusHandle>,
+    scrollbar_thumb_color: Option<Hsla>,
     on_scroll: Option<ScrollCallback>,
     on_key_down: Option<KeyDownCallback>,
     on_cursor_overlay: Option<CursorOverlayCallback>,
@@ -59,6 +60,7 @@ where
             text_style,
             paint,
             focus: None,
+            scrollbar_thumb_color: None,
             on_scroll: None,
             on_key_down: None,
             on_cursor_overlay: None,
@@ -67,6 +69,11 @@ where
             on_mouse_drag: None,
             on_mouse_up: None,
         }
+    }
+
+    pub fn scrollbar_thumb_color(mut self, color: Hsla) -> Self {
+        self.scrollbar_thumb_color = Some(color);
+        self
     }
 
     pub fn track_focus(mut self, focus: FocusHandle) -> Self {
@@ -167,6 +174,7 @@ where
             text_style,
             mut paint,
             focus,
+            scrollbar_thumb_color,
             on_scroll,
             on_key_down,
             on_cursor_overlay,
@@ -199,6 +207,10 @@ where
             horizontal_scrollbar_state,
             document_element,
         );
+
+        if let Some(scrollbar_thumb_color) = scrollbar_thumb_color {
+            editor_surface = editor_surface.scrollbar_thumb_color(scrollbar_thumb_color);
+        }
 
         if let Some(on_scroll) = on_scroll {
             editor_surface = editor_surface.on_scroll(move |viewport, update, cx| {

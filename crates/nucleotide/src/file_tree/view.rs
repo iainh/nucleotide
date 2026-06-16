@@ -16,7 +16,7 @@ use gpui::{
     StatefulInteractiveElement, Styled, UniformListScrollHandle, Window, div, px, uniform_list,
 };
 use nucleotide_logging::{debug, error, warn};
-use nucleotide_types::VcsStatus;
+use nucleotide_types::{VcsStatus, scrollbar::SCROLLBAR_THICKNESS};
 use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::scrollbar::{Scrollbar, ScrollbarState};
 use nucleotide_vcs::VcsServiceHandle;
@@ -1444,63 +1444,64 @@ impl Render for FileTreeView {
                     .min_h(px(0.0))
                     .flex()
                     .flex_col()
-                    .child(
+                    .child({
+                        let list = uniform_list("file-tree-list", entries.len(), {
+                            let entries = entries.clone();
+                            cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
+                                let mut items = Vec::with_capacity(range.end - range.start);
+                                for index in range {
+                                    if let Some(entry) = entries.get(index) {
+                                        items.push(this.render_entry(entry, cx));
+                                    }
+                                }
+                                items
+                            })
+                        })
+                        .with_sizing_behavior(gpui::ListSizingBehavior::Infer)
+                        .with_horizontal_sizing_behavior(
+                            ListHorizontalSizingBehavior::Unconstrained,
+                        )
+                        .with_width_from_item(width_measure_item_index)
+                        .track_scroll(&self.scroll_handle)
+                        .h_full();
+
                         div()
-                            .flex()
-                            .flex_row()
+                            .relative()
                             .w_full()
                             .flex_1()
                             .min_w(px(0.0))
                             .min_h(px(0.0))
-                            .child({
-                                let list = uniform_list("file-tree-list", entries.len(), {
-                                    let entries = entries.clone();
-                                    cx.processor(
-                                        move |this, range: std::ops::Range<usize>, _window, cx| {
-                                            let mut items =
-                                                Vec::with_capacity(range.end - range.start);
-                                            for index in range {
-                                                if let Some(entry) = entries.get(index) {
-                                                    items.push(this.render_entry(entry, cx));
-                                                }
-                                            }
-                                            items
-                                        },
-                                    )
-                                })
-                                .with_sizing_behavior(gpui::ListSizingBehavior::Infer)
-                                .with_horizontal_sizing_behavior(
-                                    ListHorizontalSizingBehavior::Unconstrained,
-                                )
-                                .with_width_from_item(width_measure_item_index)
-                                .track_scroll(&self.scroll_handle)
-                                .h_full();
-                                div()
-                                    .flex_1()
-                                    .w_full()
-                                    .min_w(px(0.0))
-                                    .h_full()
-                                    .min_h(px(0.0))
-                                    .overflow_hidden()
-                                    .child(list)
-                            })
+                            .overflow_hidden()
+                            .child(div().size_full().min_w(px(0.0)).min_h(px(0.0)).child(list))
                             .when_some(
                                 Scrollbar::vertical(self.vertical_scrollbar_state.clone()),
-                                gpui::ParentElement::child,
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .w_full()
-                            .min_w(px(0.0))
-                            .flex_shrink_0()
-                            .child(div().flex_1().min_w(px(0.0)).when_some(
+                                |container, scrollbar| {
+                                    container.child(
+                                        div()
+                                            .absolute()
+                                            .top_0()
+                                            .right_0()
+                                            .bottom_0()
+                                            .w(SCROLLBAR_THICKNESS)
+                                            .child(scrollbar),
+                                    )
+                                },
+                            )
+                            .when_some(
                                 Scrollbar::horizontal(self.horizontal_scrollbar_state.clone()),
-                                gpui::ParentElement::child,
-                            ))
-                            .child(div().flex_shrink_0().w(px(12.0)).h(px(12.0))),
-                    ),
+                                |container, scrollbar| {
+                                    container.child(
+                                        div()
+                                            .absolute()
+                                            .left_0()
+                                            .right_0()
+                                            .bottom_0()
+                                            .h(SCROLLBAR_THICKNESS)
+                                            .child(scrollbar),
+                                    )
+                                },
+                            )
+                    }),
             )
     }
 }

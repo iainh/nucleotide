@@ -9,6 +9,7 @@ use gpui::{
     Context, FontWeight, InteractiveElement, IntoElement, ParentElement, Render, SharedString,
     Styled, UniformListScrollHandle, Window, div, px,
 }; // For into_any on elements
+use nucleotide_types::scrollbar::SCROLLBAR_THICKNESS;
 
 #[derive(Debug)]
 pub struct ThemeDebugView {
@@ -603,17 +604,27 @@ impl Render for ThemeDebugView {
                     // Content area (list + scrollbar)
                     .child(
                         div()
-                            .flex()
-                            .flex_row()
+                            .relative()
                             .w_full()
                             .h_full()
                             .min_h(px(0.0))
-                            .child(div().flex_1().min_h(px(0.0)).h_full().child(list))
+                            .overflow_hidden()
+                            .child(div().size_full().min_h(px(0.0)).child(list))
                             .when_some(
                                 crate::scrollbar::Scrollbar::vertical(
                                     crate::scrollbar::ScrollbarState::new(self.scroll.clone()),
                                 ),
-                                ParentElement::child,
+                                |container, scrollbar| {
+                                    container.child(
+                                        div()
+                                            .absolute()
+                                            .top_0()
+                                            .right_0()
+                                            .bottom_0()
+                                            .w(SCROLLBAR_THICKNESS)
+                                            .child(scrollbar),
+                                    )
+                                },
                             ),
                     )
                     .on_mouse_down(gpui::MouseButton::Left, |_event, _window, _cx| {}),

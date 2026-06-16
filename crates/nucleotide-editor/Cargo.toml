@@ -23,6 +23,7 @@ helix-view = { workspace = true }
 
 # Standard dependencies
 nucleotide-logging = { workspace = true }
+nucleotide-types = { workspace = true, features = ["gpui-bridge"] }
 
 [dev-dependencies]
 arc-swap.workspace = true
