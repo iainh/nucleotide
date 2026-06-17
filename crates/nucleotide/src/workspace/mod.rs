@@ -635,6 +635,7 @@ pub struct Workspace {
     file_tree: Option<Entity<FileTreeView>>,
     show_file_tree: bool,
     file_tree_width: f32,
+    file_tree_width_override: Option<f32>,
     is_resizing_file_tree: bool,
     resize_start_x: f32,
     resize_start_width: f32,
@@ -748,7 +749,7 @@ impl Render for DraggedSplitPaneResize {
 }
 
 const GLOBAL_SEARCH_RESULT_LIMIT: usize = 5000;
-const FILE_TREE_MIN_WIDTH: f32 = 150.0;
+const FILE_TREE_MIN_WIDTH: f32 = 96.0;
 const FILE_TREE_DEFAULT_WIDTH: f32 = 240.0;
 const FILE_TREE_MIN_EDITOR_WIDTH: f32 = 200.0;
 
@@ -2765,7 +2766,8 @@ impl Workspace {
             focus_handle,
             file_tree,
             show_file_tree: true,
-            file_tree_width: 250.0, // Default width
+            file_tree_width: FILE_TREE_DEFAULT_WIDTH,
+            file_tree_width_override: None,
             is_resizing_file_tree: false,
             resize_start_x: 0.0,
             resize_start_width: 0.0,
@@ -3567,6 +3569,43 @@ impl Workspace {
         (viewport_width - FILE_TREE_MIN_EDITOR_WIDTH).max(FILE_TREE_MIN_WIDTH)
     }
 
+    fn clamped_file_tree_auto_width(preferred_width: f32, viewport_width: f32) -> f32 {
+        preferred_width.clamp(
+            FILE_TREE_MIN_WIDTH,
+            Self::max_file_tree_width(viewport_width),
+        )
+    }
+
+    fn preferred_file_tree_width(&self, cx: &Context<Self>) -> f32 {
+        self.file_tree
+            .as_ref()
+            .map(|file_tree| file_tree.read(cx).preferred_width())
+            .unwrap_or(FILE_TREE_DEFAULT_WIDTH)
+    }
+
+    fn auto_file_tree_width(&self, viewport_width: f32, cx: &Context<Self>) -> f32 {
+        Self::clamped_file_tree_auto_width(self.preferred_file_tree_width(cx), viewport_width)
+    }
+
+    fn sync_file_tree_width_for_viewport(&mut self, viewport_width: f32, cx: &Context<Self>) {
+        let width = if self.file_tree_width_override.is_some() || self.is_resizing_file_tree {
+            self.file_tree_width.clamp(
+                FILE_TREE_MIN_WIDTH,
+                Self::max_file_tree_width(viewport_width),
+            )
+        } else {
+            self.auto_file_tree_width(viewport_width, cx)
+        };
+
+        if (self.file_tree_width - width).abs() > 0.5 {
+            self.file_tree_width = width;
+        }
+
+        if let Some(override_width) = &mut self.file_tree_width_override {
+            *override_width = self.file_tree_width;
+        }
+    }
+
     fn clamped_file_tree_resize_width(
         resize_start_width: f32,
         resize_start_x: f32,
@@ -3595,6 +3634,7 @@ impl Workspace {
 
         if (self.file_tree_width - new_width).abs() > 0.5 {
             self.file_tree_width = new_width;
+            self.file_tree_width_override = Some(new_width);
             cx.notify();
             true
         } else {
@@ -9950,6 +9990,8 @@ impl Render for Workspace {
         // Process completion results from the coordinator
         self.process_completion_results(cx);
 
+        self.sync_file_tree_width_for_viewport(f32::from(window.viewport_size().width), cx);
+
         // Failsafe: If the overlay is gone and no known element has focus, force-refocus.
         // We see cases in logs where overlay_empty=true and both workspace and doc view
         // report not focused, leaving the app with no key receiver. This block ensures
@@ -11052,12 +11094,6 @@ impl Render for Workspace {
                 root
             };
 
-            let viewport_w = f32::from(window.viewport_size().width);
-            let max_left = (viewport_w - 200.0).max(150.0);
-            if self.file_tree_width > max_left {
-                self.file_tree_width = max_left;
-            }
-
             if self.show_file_tree {
                 let handle_visual_w = SPLIT_PANE_HANDLE_VISUAL_PX;
                 let handle_hit_w = SPLIT_PANE_HANDLE_HITBOX_PX;
@@ -11175,9 +11211,8 @@ impl Render for Workspace {
                                 move |this: &mut Workspace, ev: &MouseDownEvent, window, cx| {
                                     if ev.click_count >= 2 {
                                         let viewport_w = f32::from(window.viewport_size().width);
-                                        let max_allowed = Self::max_file_tree_width(viewport_w);
-                                        let snap = FILE_TREE_DEFAULT_WIDTH
-                                            .clamp(FILE_TREE_MIN_WIDTH, max_allowed);
+                                        let snap = this.auto_file_tree_width(viewport_w, cx);
+                                        this.file_tree_width_override = None;
                                         if (this.file_tree_width - snap).abs() > 0.5 {
                                             this.file_tree_width = snap;
                                             cx.notify();
@@ -13059,6 +13094,22 @@ mod tests {
         );
         assert_eq!(
             Workspace::clamped_file_tree_resize_width(250.0, 300.0, 1200.0, 1000.0),
+            800.0
+        );
+    }
+
+    #[test]
+    fn file_tree_auto_width_uses_content_floor_and_viewport_limit() {
+        assert_eq!(
+            Workspace::clamped_file_tree_auto_width(72.0, 1000.0),
+            FILE_TREE_MIN_WIDTH
+        );
+        assert_eq!(
+            Workspace::clamped_file_tree_auto_width(180.0, 1000.0),
+            180.0
+        );
+        assert_eq!(
+            Workspace::clamped_file_tree_auto_width(900.0, 1000.0),
             800.0
         );
     }
