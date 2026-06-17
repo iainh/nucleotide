@@ -35,7 +35,7 @@ pub struct EditorDocumentFrameParams<'a> {
     pub last_row_from_scroll: usize,
     pub view_position: ViewPosition,
     pub soft_wrap_enabled: bool,
-    pub unwrapped_gutter_line_plans: Vec<GutterLinePlan>,
+    pub gutter_line_plans: Vec<GutterLinePlan>,
     pub bounds: Bounds<Pixels>,
     pub cell_width: Pixels,
     pub line_height: Pixels,
@@ -76,7 +76,7 @@ pub struct EditorDocumentFrame {
     pub soft_wrap_line_runs: Vec<Vec<TextRun>>,
     pub unwrapped_highlighted_lines: Vec<UnwrappedHighlightedLine>,
     pub ruler_paint_plans: Vec<RulerPaintPlan>,
-    pub unwrapped_gutter_line_plans: Vec<GutterLinePlan>,
+    pub gutter_line_plans: Vec<GutterLinePlan>,
 }
 
 pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDocumentFrame {
@@ -112,11 +112,6 @@ pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDoc
         geometry: ruler_geometry,
         color: params.ruler_color,
     });
-    let unwrapped_gutter_line_plans = if params.soft_wrap_enabled {
-        Vec::new()
-    } else {
-        params.unwrapped_gutter_line_plans
-    };
     let soft_wrap_render_plan = params.soft_wrap_enabled.then(|| {
         document_soft_wrap_render_plan(DocumentSoftWrapRenderPlanParams {
             document: params.document,
@@ -210,7 +205,7 @@ pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDoc
         soft_wrap_line_runs,
         unwrapped_highlighted_lines,
         ruler_paint_plans,
-        unwrapped_gutter_line_plans,
+        gutter_line_plans: params.gutter_line_plans,
     }
 }
 
@@ -294,7 +289,7 @@ mod tests {
             last_row_from_scroll: 2,
             view_position: document.view_offset(view.id),
             soft_wrap_enabled: true,
-            unwrapped_gutter_line_plans: Vec::new(),
+            gutter_line_plans: Vec::new(),
             bounds: Bounds::new(point(px(0.0), px(0.0)), size(px(240.0), px(120.0))),
             cell_width: px(8.0),
             line_height: px(20.0),
@@ -336,7 +331,7 @@ mod tests {
         );
         assert!(frame.unwrapped_highlighted_lines.is_empty());
         assert!(frame.ruler_paint_plans.is_empty());
-        assert!(frame.unwrapped_gutter_line_plans.is_empty());
+        assert!(frame.gutter_line_plans.is_empty());
     }
 
     #[test]
@@ -369,7 +364,7 @@ mod tests {
             last_row_from_scroll: 2,
             view_position,
             soft_wrap_enabled: true,
-            unwrapped_gutter_line_plans: Vec::new(),
+            gutter_line_plans: Vec::new(),
             bounds: Bounds::new(point(px(0.0), px(0.0)), size(px(240.0), px(120.0))),
             cell_width: px(8.0),
             line_height: px(20.0),
@@ -430,7 +425,7 @@ mod tests {
             last_row_from_scroll: 3,
             view_position,
             soft_wrap_enabled: false,
-            unwrapped_gutter_line_plans: Vec::new(),
+            gutter_line_plans: Vec::new(),
             bounds,
             cell_width: px(8.0),
             line_height: px(20.0),
@@ -484,7 +479,7 @@ mod tests {
             last_row_from_scroll: 3,
             view_position: document.view_offset(view.id),
             soft_wrap_enabled: false,
-            unwrapped_gutter_line_plans: Vec::new(),
+            gutter_line_plans: Vec::new(),
             bounds: Bounds::new(point(px(0.0), px(0.0)), size(px(1000.0), px(120.0))),
             cell_width: px(8.0),
             line_height: px(20.0),
@@ -521,7 +516,7 @@ mod tests {
         );
         assert!(frame.soft_wrap_line_runs.is_empty());
         assert!(!frame.ruler_paint_plans.is_empty());
-        assert!(frame.unwrapped_gutter_line_plans.is_empty());
+        assert!(frame.gutter_line_plans.is_empty());
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -545,20 +540,19 @@ mod tests {
             cell_width: px(8.0),
         };
         let render_snapshot = document_render_snapshot(document, view_id, 0, 2);
-        let unwrapped_gutter_line_plans =
-            build_unwrapped_gutter_line_plans(UnwrappedGutterLinePlanParams {
-                editor: &editor,
-                document,
-                view,
-                theme: &theme,
-                layout: &layout,
-                bounds: Bounds::new(point(px(0.0), px(0.0)), size(px(240.0), px(120.0))),
-                scroll_line_offset: px(0.0),
-                horizontal_offset: 0,
-                first_row: 0,
-                last_row: render_snapshot.last_row,
-                is_focused: true,
-            });
+        let gutter_line_plans = build_unwrapped_gutter_line_plans(UnwrappedGutterLinePlanParams {
+            editor: &editor,
+            document,
+            view,
+            theme: &theme,
+            layout: &layout,
+            bounds: Bounds::new(point(px(0.0), px(0.0)), size(px(240.0), px(120.0))),
+            scroll_line_offset: px(0.0),
+            horizontal_offset: 0,
+            first_row: 0,
+            last_row: render_snapshot.last_row,
+            is_focused: true,
+        });
 
         let frame = editor_document_frame(EditorDocumentFrameParams {
             document,
@@ -570,7 +564,7 @@ mod tests {
             last_row_from_scroll: 2,
             view_position: document.view_offset(view_id),
             soft_wrap_enabled: false,
-            unwrapped_gutter_line_plans,
+            gutter_line_plans,
             bounds: Bounds::new(point(px(0.0), px(0.0)), size(px(240.0), px(120.0))),
             cell_width: layout.cell_width,
             line_height: layout.line_height,
@@ -595,6 +589,6 @@ mod tests {
         assert_eq!(frame.editor_rulers, vec![2, 4]);
         assert!(frame.cursorline_enabled);
         assert_eq!(frame.cursor_presentation.kind, CursorKind::Block);
-        assert!(!frame.unwrapped_gutter_line_plans.is_empty());
+        assert!(!frame.gutter_line_plans.is_empty());
     }
 }

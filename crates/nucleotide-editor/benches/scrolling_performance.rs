@@ -121,7 +121,7 @@ impl FrameFixture {
             last_row_from_scroll: first_row.saturating_add(VISIBLE_ROWS),
             view_position,
             soft_wrap_enabled,
-            unwrapped_gutter_line_plans: Vec::new(),
+            gutter_line_plans: Vec::new(),
             bounds: self.bounds,
             cell_width: self.cell_width,
             line_height: self.line_height,
