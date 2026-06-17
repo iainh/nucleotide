@@ -82,6 +82,7 @@ appearance_follows_theme = false
 
 [file_tree]
 density = "relaxed"
+flatten_empty_directories = false
 "#;
 
         let config: GuiConfig = toml::from_str(config_content).expect("Failed to parse config");
@@ -109,6 +110,7 @@ density = "relaxed"
         assert!(config.window.blur_dark_themes);
         assert!(!config.window.appearance_follows_theme);
         assert_eq!(config.file_tree.density, FileTreeDisplayDensity::Relaxed);
+        assert!(!config.file_tree.flatten_empty_directories);
     }
 
     #[test]
@@ -135,6 +137,7 @@ mode = "light"
         // Test theme config
         assert_eq!(config.theme.mode, ThemeMode::Light);
         assert_eq!(config.file_tree.density, FileTreeDisplayDensity::Default);
+        assert!(config.file_tree.flatten_empty_directories);
         assert_eq!(config.theme.get_light_theme(), "nucleotide-outdoors"); // Default
         assert_eq!(config.theme.get_dark_theme(), "nucleotide-teal"); // Default
     }
@@ -426,6 +429,10 @@ dark_theme = "custom_dark"
         assert_eq!(
             original_config.file_tree.density,
             deserialized.file_tree.density
+        );
+        assert_eq!(
+            original_config.file_tree.flatten_empty_directories,
+            deserialized.file_tree.flatten_empty_directories
         );
     }
 

@@ -125,12 +125,13 @@ impl FileTree {
         let root_path = self.root_path.clone();
         let max_depth = self.config.initial_depth.max(1);
         let (mut entries, _) = self.scan_directory_recursive(&root_path, 1, max_depth)?;
+        let directory_child_parents = directory_child_parent_paths(&root_path, &entries);
 
         self.entries.clear();
         self.path_to_id.clear();
-        self.expanded_dirs.insert(root_path);
+        self.expanded_dirs.insert(root_path.clone());
         for entry in &mut entries {
-            if entry.is_directory() && entry.depth < max_depth {
+            if entry.is_directory() && directory_child_parents.contains(&entry.path) {
                 entry.is_expanded = true;
                 self.expanded_dirs.insert(entry.path.clone());
             }
@@ -1163,6 +1164,16 @@ fn display_name_for_path(path: &Path) -> String {
         .to_string()
 }
 
+fn directory_child_parent_paths(root_path: &Path, entries: &[FileTreeEntry]) -> HashSet<PathBuf> {
+    entries
+        .iter()
+        .filter(|entry| entry.is_directory())
+        .filter_map(|entry| entry.path.parent())
+        .filter(|parent| parent.starts_with(root_path))
+        .map(Path::to_path_buf)
+        .collect()
+}
+
 /// Statistics about the file tree.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -1206,6 +1217,60 @@ mod tests {
     }
 
     #[test]
+    fn initial_load_expands_root_and_exposes_child_directories() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path().to_path_buf();
+        let src = root.join("src");
+        let lib = src.join("lib.rs");
+        let readme = root.join("README.md");
+        fs::create_dir(&src).unwrap();
+        fs::write(&lib, "pub fn lib() {}\n").unwrap();
+        fs::write(&readme, "# Project\n").unwrap();
+
+        let mut tree = FileTree::new(root.clone(), config());
+        tree.load().unwrap();
+
+        let paths = visible_paths(&mut tree);
+        assert!(tree.is_expanded(&root));
+        assert!(paths.contains(&src));
+        assert!(paths.contains(&readme));
+        assert!(!paths.contains(&lib));
+        assert!(!tree.is_expanded(&src));
+    }
+
+    #[test]
+    fn initial_load_expands_parents_to_expose_directory_children() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path().to_path_buf();
+        let macros_dir = root.join("mp-config-sqlx-macros");
+        let macros_src = macros_dir.join("src");
+        let macros_lib = macros_src.join("lib.rs");
+        let macros_manifest = macros_dir.join("Cargo.toml");
+        let examples = root.join("examples");
+        let example = examples.join("basic.rs");
+        fs::create_dir_all(&macros_src).unwrap();
+        fs::create_dir_all(&examples).unwrap();
+        fs::write(&macros_lib, "pub fn lib() {}\n").unwrap();
+        fs::write(&macros_manifest, "[package]\n").unwrap();
+        fs::write(&example, "fn main() {}\n").unwrap();
+
+        let mut tree = FileTree::new(root.clone(), config());
+        tree.load().unwrap();
+
+        let paths = visible_paths(&mut tree);
+        assert!(tree.is_expanded(&root));
+        assert!(tree.is_expanded(&macros_dir));
+        assert!(!tree.is_expanded(&macros_src));
+        assert!(!tree.is_expanded(&examples));
+        assert!(paths.contains(&macros_dir));
+        assert!(paths.contains(&macros_src));
+        assert!(paths.contains(&macros_manifest));
+        assert!(paths.contains(&examples));
+        assert!(!paths.contains(&macros_lib));
+        assert!(!paths.contains(&example));
+    }
+
+    #[test]
     fn collapsed_loaded_directory_reexpands_with_children_visible() {
         let temp_dir = tempfile::tempdir().unwrap();
         let root = temp_dir.path().to_path_buf();
@@ -1217,6 +1282,7 @@ mod tests {
         let mut tree = FileTree::new(root.clone(), config());
         tree.load().unwrap();
 
+        tree.toggle_directory(&src).unwrap();
         assert!(visible_paths(&mut tree).contains(&lib));
 
         tree.collapse_directory(&src).unwrap();
@@ -1291,6 +1357,7 @@ mod tests {
             config_with_search_mode(FileTreeSearchMode::CollapseNonMatches),
         );
         tree.load().unwrap();
+        tree.toggle_directory(&alpha).unwrap();
         tree.set_search_query(Some("match".to_string()));
 
         let paths = visible_paths(&mut tree);
@@ -1344,6 +1411,7 @@ mod tests {
 
         let mut tree = FileTree::new(root.clone(), config());
         tree.load().unwrap();
+        tree.toggle_directory(&app).unwrap();
         let entries = tree.visible_entries();
 
         let root_entry = entries.iter().find(|entry| entry.path == root).unwrap();
@@ -1398,6 +1466,7 @@ mod tests {
         let mut tree = FileTree::new(root, config());
         tree.load().unwrap();
         let child_id = tree.entry_by_path(&child).unwrap().id;
+        tree.toggle_directory(&nested).unwrap();
 
         assert!(
             tree.move_entry(&src, &moved, FileTreeCollisionStrategy::Error)
