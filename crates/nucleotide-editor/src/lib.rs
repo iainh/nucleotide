@@ -74,9 +74,10 @@ pub use document_metrics::{
 };
 pub use geometry::{EditorLayout, EditorSurfaceGeometry};
 pub use gutter::{
-    GutterLine, GutterLineParams, GutterLinePlan, GutterLinePlanParams, GutterLinePosition,
-    SoftWrapGutterLinePlanParams, UnwrappedGutterLinePlanParams, build_gutter_line_plans,
-    build_gutter_lines, build_gutter_lines_from_plans, build_soft_wrap_gutter_line_plans,
+    DiffGutterStyle, GutterLine, GutterLineKind, GutterLineParams, GutterLinePlan,
+    GutterLinePlanParams, GutterLinePosition, SoftWrapGutterLinePlanParams,
+    UnwrappedGutterLinePlanParams, build_gutter_line_plans, build_gutter_lines,
+    build_gutter_lines_from_plans, build_soft_wrap_gutter_line_plans,
     build_unwrapped_gutter_line_plans, paint_gutter_lines, soft_wrap_gutter_line_positions,
     unwrapped_gutter_line_positions,
 };
