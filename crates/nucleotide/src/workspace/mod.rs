@@ -53,7 +53,9 @@ use crate::info_box::InfoBoxView;
 use crate::key_hint_view::KeyHintView;
 use crate::notification::NotificationView;
 use crate::overlay::OverlayView;
-use crate::types::{GlobalSearchLocation, HoverDocEntry, RegexSelectionAction};
+use crate::types::{
+    EditorStatus, GlobalSearchLocation, HoverDocEntry, RegexSelectionAction, Severity,
+};
 use crate::utils;
 use crate::{Core, Input, InputEvent};
 use nucleotide_core::EventBus;
@@ -631,6 +633,7 @@ pub struct Workspace {
     info_hidden: bool,
     key_hints: Entity<KeyHintView>,
     notifications: Entity<NotificationView>,
+    last_notified_editor_status: Option<EditorStatus>,
     focus_handle: FocusHandle,
     file_tree: Option<Entity<FileTreeView>>,
     show_file_tree: bool,
@@ -1103,6 +1106,60 @@ fn batch_close_document_order<T: Copy, P: Clone + Ord>(
     });
 
     documents.into_iter().map(|document| document.id).collect()
+}
+
+fn helix_status_to_editor_status(
+    status: &str,
+    severity: &helix_view::editor::Severity,
+) -> EditorStatus {
+    EditorStatus {
+        status: status.to_string(),
+        severity: match severity {
+            helix_view::editor::Severity::Hint => Severity::Hint,
+            helix_view::editor::Severity::Info => Severity::Info,
+            helix_view::editor::Severity::Warning => Severity::Warning,
+            helix_view::editor::Severity::Error => Severity::Error,
+        },
+    }
+}
+
+fn current_editor_status(editor: &helix_view::Editor) -> Option<EditorStatus> {
+    editor
+        .get_status()
+        .map(|(status, severity)| helix_status_to_editor_status(status, severity))
+}
+
+fn editor_status_matches(a: &EditorStatus, b: &EditorStatus) -> bool {
+    a.status == b.status && a.severity == b.severity
+}
+
+fn unsaved_buffers_remaining_status(names: Vec<String>) -> EditorStatus {
+    let buffer_count = names.len();
+    EditorStatus {
+        status: format!(
+            "{} unsaved buffer{} remaining: {:?}",
+            buffer_count,
+            if buffer_count == 1 { "" } else { "s" },
+            names
+        ),
+        severity: Severity::Error,
+    }
+}
+
+fn close_error_status(error: helix_view::editor::CloseError) -> EditorStatus {
+    match error {
+        helix_view::editor::CloseError::BufferModified(name) => {
+            unsaved_buffers_remaining_status(vec![name])
+        }
+        helix_view::editor::CloseError::DoesNotExist => EditorStatus {
+            status: "cannot close non-existent buffer".to_string(),
+            severity: Severity::Error,
+        },
+        helix_view::editor::CloseError::SaveError(err) => EditorStatus {
+            status: format!("failed to save buffer before closing: {err}"),
+            severity: Severity::Error,
+        },
+    }
 }
 
 fn tab_activation_target_after_close<T: Copy + Eq>(
@@ -1938,9 +1995,11 @@ impl Workspace {
         }
 
         let handle = self.handle.clone();
-        let closed_doc_ids = self.core.update(cx, |core, cx| {
+        let (closed_doc_ids, close_statuses) = self.core.update(cx, |core, cx| {
             let _guard = handle.enter();
             let mut closed_doc_ids = Vec::new();
+            let mut close_statuses = Vec::new();
+            let mut modified_names = Vec::new();
             let active_doc_id = core
                 .editor
                 .tree
@@ -1969,16 +2028,23 @@ impl Workspace {
                     Ok(()) => {
                         closed_doc_ids.push(doc_id);
                     }
-                    Err(helix_view::editor::CloseError::BufferModified(_)) => {
+                    Err(helix_view::editor::CloseError::BufferModified(name)) => {
                         info!("Cannot close document {:?}: has unsaved changes", doc_id);
+                        modified_names.push(name);
                     }
-                    Err(helix_view::editor::CloseError::DoesNotExist) => {
+                    Err(error @ helix_view::editor::CloseError::DoesNotExist) => {
                         info!("Document {:?} does not exist", doc_id);
+                        close_statuses.push(close_error_status(error));
                     }
-                    Err(_) => {
+                    Err(error @ helix_view::editor::CloseError::SaveError(_)) => {
                         info!("Failed to close document {:?}", doc_id);
+                        close_statuses.push(close_error_status(error));
                     }
                 }
+            }
+
+            if !modified_names.is_empty() {
+                close_statuses.insert(0, unsaved_buffers_remaining_status(modified_names));
             }
 
             if !closed_doc_ids.is_empty() {
@@ -1986,8 +2052,12 @@ impl Workspace {
                 cx.notify();
             }
 
-            closed_doc_ids
+            (closed_doc_ids, close_statuses)
         });
+
+        for status in close_statuses {
+            self.push_editor_status_notification(status, cx);
+        }
 
         if !closed_doc_ids.is_empty() {
             self.unregister_preview_documents(closed_doc_ids.iter().copied(), cx);
@@ -2011,7 +2081,7 @@ impl Workspace {
             activate_on_close,
         );
         let handle = self.handle.clone();
-        let closed = self.core.update(cx, |core, cx| {
+        let (closed, close_status) = self.core.update(cx, |core, cx| {
             let _guard = handle.enter();
 
             match core.editor.close_document(doc_id, false) {
@@ -2024,22 +2094,26 @@ impl Workspace {
                     }
                     cx.emit(crate::Update::Redraw);
                     cx.notify();
-                    true
+                    (true, None)
                 }
-                Err(helix_view::editor::CloseError::BufferModified(_)) => {
+                Err(error @ helix_view::editor::CloseError::BufferModified(_)) => {
                     info!("Cannot close document {:?}: has unsaved changes", doc_id);
-                    false
+                    (false, Some(close_error_status(error)))
                 }
-                Err(helix_view::editor::CloseError::DoesNotExist) => {
+                Err(error @ helix_view::editor::CloseError::DoesNotExist) => {
                     info!("Document {:?} does not exist", doc_id);
-                    false
+                    (false, Some(close_error_status(error)))
                 }
-                Err(_) => {
+                Err(error @ helix_view::editor::CloseError::SaveError(_)) => {
                     info!("Failed to close document {:?}", doc_id);
-                    false
+                    (false, Some(close_error_status(error)))
                 }
             }
         });
+
+        if let Some(status) = close_status {
+            self.push_editor_status_notification(status, cx);
+        }
 
         if closed {
             if activation_target.is_some() {
@@ -2776,6 +2850,7 @@ impl Workspace {
             info_hidden: true,
             key_hints,
             notifications,
+            last_notified_editor_status: None,
             focus_handle,
             file_tree,
             show_file_tree: true,
@@ -6365,10 +6440,15 @@ impl Workspace {
             }
             Err(e) => {
                 // Show error to user
+                let status = EditorStatus {
+                    status: format!("Invalid command: {e}"),
+                    severity: Severity::Error,
+                };
                 self.core.update(cx, |core, cx| {
-                    core.editor.set_error(format!("Invalid command: {e}"));
+                    core.editor.set_error(status.status.clone());
                     cx.notify();
                 });
+                self.push_editor_status_notification(status, cx);
             }
         }
     }
@@ -6447,9 +6527,10 @@ impl Workspace {
         let bufferline_before = core.read(cx).editor.config().bufferline.clone();
         info!(bufferline_config = ?bufferline_before, "Bufferline config before command execution");
 
-        core.update(cx, move |core, cx| {
+        let command_status = core.update(cx, move |core, cx| {
             let _guard = handle.enter();
 
+            core.editor.clear_status();
             crate::helix_command::execute_command_line(&mut core.editor, &mut core.jobs, command);
 
             // Check if the theme has changed after command execution
@@ -6474,7 +6555,13 @@ impl Workspace {
                     },
                 );
             }
+
+            current_editor_status(&core.editor)
         });
+
+        if let Some(status) = command_status {
+            self.push_editor_status_notification(status, cx);
+        }
 
         // Check if theme changed after command execution and handle accordingly
         let theme_name_after = core.read(cx).editor.theme.name().to_string();
@@ -6962,12 +7049,51 @@ impl Workspace {
         cx.notify();
     }
 
+    fn push_editor_status_notification(&mut self, status: EditorStatus, cx: &mut Context<Self>) {
+        self.last_notified_editor_status = Some(status.clone());
+        self.notifications.update(cx, |notifications, cx| {
+            notifications.push_editor_status(status, cx);
+        });
+    }
+
+    fn sync_current_editor_status_notification(&mut self, cx: &mut Context<Self>) {
+        let Some(status) = self
+            .core
+            .read(cx)
+            .editor
+            .get_status()
+            .map(|(message, severity)| helix_status_to_editor_status(message, severity))
+        else {
+            return;
+        };
+
+        if self
+            .last_notified_editor_status
+            .as_ref()
+            .is_some_and(|last_status| editor_status_matches(last_status, &status))
+        {
+            return;
+        }
+
+        self.push_editor_status_notification(status, cx);
+    }
+
     #[instrument(skip(self, cx), fields(event = ?ev))]
     pub fn handle_event(&mut self, ev: &crate::Update, cx: &mut Context<Self>) {
         info!("handling event {ev:?}");
+        let skip_editor_status_sync = matches!(
+            ev,
+            crate::Update::EditorStatus(_)
+                | crate::Update::Event(crate::types::AppEvent::Core(
+                    crate::types::CoreEvent::StatusChanged { .. }
+                ))
+        );
+
         match ev {
             crate::Update::EditorEvent(ev) => self.handle_editor_event(ev, cx),
-            crate::Update::EditorStatus(_) => {}
+            crate::Update::EditorStatus(status) => {
+                self.push_editor_status_notification(status.clone(), cx);
+            }
             crate::Update::Redraw => self.handle_redraw(cx),
             crate::Update::CompletionEvent(completion_event) => {
                 self.handle_completion_event(completion_event, cx);
@@ -7119,6 +7245,15 @@ impl Workspace {
                             crate::types::CoreEvent::SearchSubmitted { query } => {
                                 self.handle_search_submitted(query, cx);
                             }
+                            crate::types::CoreEvent::StatusChanged { message, severity } => {
+                                self.push_editor_status_notification(
+                                    EditorStatus {
+                                        status: message.clone(),
+                                        severity: *severity,
+                                    },
+                                    cx,
+                                );
+                            }
                             crate::types::CoreEvent::DocumentChanged { doc_id } => {
                                 self.handle_document_changed(*doc_id, cx);
                             }
@@ -7263,6 +7398,10 @@ impl Workspace {
                 }
                 self.forward_info_box_event(event, cx);
             }
+        }
+
+        if !skip_editor_status_sync {
+            self.sync_current_editor_status_notification(cx);
         }
     }
 
@@ -13482,6 +13621,18 @@ mod tests {
     fn close_others_unpreviews_retained_preview_tab() {
         assert!(should_unpreview_retained_tab_after_close_others(true));
         assert!(!should_unpreview_retained_tab_after_close_others(false));
+    }
+
+    #[test]
+    fn unsaved_buffers_status_matches_helix_close_error_shape() {
+        let status =
+            unsaved_buffers_remaining_status(vec!["main.rs".to_string(), "lib.rs".to_string()]);
+
+        assert_eq!(
+            status.status,
+            "2 unsaved buffers remaining: [\"main.rs\", \"lib.rs\"]"
+        );
+        assert_eq!(status.severity, Severity::Error);
     }
 
     #[test]

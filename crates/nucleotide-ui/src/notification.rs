@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::time::Duration;
 
 use crate::Theme;
 use gpui::{
@@ -9,7 +10,10 @@ use helix_lsp::LanguageServerId;
 use helix_view::document::DocumentSavedEvent;
 use nucleotide_types::EditorStatus;
 
-#[derive(Debug, Clone, Copy)]
+const DEFAULT_NOTIFICATION_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_TRANSIENT_NOTIFICATIONS: usize = 4;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NotificationSeverity {
     Info,
     Success,
@@ -31,14 +35,28 @@ impl LspStatus {
     }
 }
 
-#[derive(IntoElement)]
+#[derive(Clone, IntoElement)]
 struct Notification {
+    id: u64,
     title: String,
     message: Option<String>,
     severity: NotificationSeverity,
 }
 
 impl Notification {
+    fn new(
+        title: impl Into<String>,
+        message: Option<String>,
+        severity: NotificationSeverity,
+    ) -> Self {
+        Self {
+            id: 0,
+            title: title.into(),
+            message,
+            severity,
+        }
+    }
+
     fn from_save_event(event: &Result<DocumentSavedEvent, String>) -> Self {
         let (title, message, severity) = match event {
             Ok(saved) => (
@@ -53,11 +71,7 @@ impl Notification {
             ),
         };
 
-        Notification {
-            title,
-            message: Some(message),
-            severity,
-        }
+        Notification::new(title, Some(message), severity)
     }
 
     fn from_editor_status(status: &EditorStatus) -> Self {
@@ -69,11 +83,7 @@ impl Notification {
             Severity::Warning => ("warning", NotificationSeverity::Warning),
         };
 
-        Notification {
-            title: title.to_string(),
-            message: Some(status.status.clone()),
-            severity,
-        }
+        Notification::new(title, Some(status.status.clone()), severity)
     }
 
     fn from_lsp(status: &LspStatus) -> Self {
@@ -86,18 +96,18 @@ impl Notification {
                 .map(|s| format!("{s}%"))
                 .unwrap_or_default()
         );
-        Notification {
+        Notification::new(
             title,
-            message: status.message.clone(),
-            severity: NotificationSeverity::Info, // LSP notifications are typically informational
-        }
+            status.message.clone(),
+            NotificationSeverity::Info, // LSP notifications are typically informational
+        )
     }
 }
 
 pub struct NotificationView {
     lsp_status: HashMap<LanguageServerId, LspStatus>,
-    editor_status: Option<EditorStatus>,
-    saved: Option<Result<DocumentSavedEvent, String>>,
+    transient_notifications: Vec<Notification>,
+    next_notification_id: u64,
 }
 
 impl Default for NotificationView {
@@ -109,27 +119,86 @@ impl Default for NotificationView {
 impl NotificationView {
     pub fn new() -> Self {
         Self {
-            saved: None,
-            editor_status: None,
             lsp_status: HashMap::new(),
+            transient_notifications: Vec::new(),
+            next_notification_id: 1,
+        }
+    }
+
+    pub fn push_editor_status(&mut self, status: EditorStatus, cx: &mut Context<Self>) {
+        if status.status.trim().is_empty() {
+            return;
+        }
+
+        self.push_notification(Notification::from_editor_status(&status), cx);
+    }
+
+    pub fn push_document_saved(
+        &mut self,
+        event: Result<DocumentSavedEvent, String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.push_notification(Notification::from_save_event(&event), cx);
+    }
+
+    pub fn push_success(
+        &mut self,
+        title: impl Into<String>,
+        message: impl Into<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.push_notification(
+            Notification::new(title, Some(message.into()), NotificationSeverity::Success),
+            cx,
+        );
+    }
+
+    fn push_notification(&mut self, mut notification: Notification, cx: &mut Context<Self>) {
+        notification.id = self.next_notification_id;
+        self.next_notification_id = self.next_notification_id.wrapping_add(1).max(1);
+        let notification_id = notification.id;
+
+        self.transient_notifications.push(notification);
+        while self.transient_notifications.len() > MAX_TRANSIENT_NOTIFICATIONS {
+            self.transient_notifications.remove(0);
+        }
+
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(DEFAULT_NOTIFICATION_TIMEOUT)
+                .await;
+
+            if let Some(this) = this.upgrade() {
+                this.update(cx, |view, cx| {
+                    view.dismiss_notification(notification_id);
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+
+        cx.notify();
+    }
+
+    fn dismiss_notification(&mut self, notification_id: u64) {
+        if let Some(index) = self
+            .transient_notifications
+            .iter()
+            .position(|notification| notification.id == notification_id)
+        {
+            self.transient_notifications.remove(index);
         }
     }
 }
 
 impl Render for NotificationView {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        let mut notifications = vec![];
+        let mut notifications = self.transient_notifications.clone();
         for status in self.lsp_status.values() {
             if status.is_empty() {
                 continue;
             }
             notifications.push(Notification::from_lsp(status));
-        }
-        if let Some(status) = &self.editor_status {
-            notifications.push(Notification::from_editor_status(status));
-        }
-        if let Some(saved) = self.saved.take() {
-            notifications.push(Notification::from_save_event(&saved));
         }
         div()
             .absolute()
@@ -207,5 +276,50 @@ impl RenderOnce for Notification {
                     .child(self.title),
             )
             .when_some(message, gpui::ParentElement::child)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nucleotide_types::Severity;
+
+    #[test]
+    fn editor_status_maps_error_to_error_notification() {
+        let status = EditorStatus {
+            status: "1 unsaved buffer remaining: [\"main.rs\"]".to_string(),
+            severity: Severity::Error,
+        };
+
+        let notification = Notification::from_editor_status(&status);
+
+        assert_eq!(notification.title, "error");
+        assert_eq!(
+            notification.message.as_deref(),
+            Some(status.status.as_str())
+        );
+        assert_eq!(notification.severity, NotificationSeverity::Error);
+    }
+
+    #[test]
+    fn dismiss_notification_removes_matching_entry_only() {
+        let mut view = NotificationView::new();
+        view.transient_notifications.push(Notification {
+            id: 1,
+            title: "first".to_string(),
+            message: None,
+            severity: NotificationSeverity::Info,
+        });
+        view.transient_notifications.push(Notification {
+            id: 2,
+            title: "second".to_string(),
+            message: None,
+            severity: NotificationSeverity::Warning,
+        });
+
+        view.dismiss_notification(1);
+
+        assert_eq!(view.transient_notifications.len(), 1);
+        assert_eq!(view.transient_notifications[0].id, 2);
     }
 }
