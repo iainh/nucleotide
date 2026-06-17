@@ -7046,6 +7046,9 @@ impl Workspace {
             crate::Update::GlobalSearchSubmitted(query) => {
                 self.handle_global_search_submitted(query, cx)
             }
+            crate::Update::FileTreeSearchSubmitted(query) => {
+                self.handle_file_tree_search_submitted(query, cx)
+            }
             crate::Update::RegexSelectionSubmitted { action, regex } => {
                 self.handle_regex_selection_submitted(*action, regex, cx)
             }
@@ -7887,6 +7890,10 @@ impl Workspace {
                 // Update UI if needed for selection changes
                 cx.notify();
             }
+            FileTreeEvent::SelectionSetChanged { paths: _ } => {
+                // Update UI if needed for multi-selection changes
+                cx.notify();
+            }
             FileTreeEvent::DirectoryToggled {
                 path: _,
                 expanded: _,
@@ -7953,6 +7960,9 @@ impl Workspace {
                 info!("Toggle file tree visibility requested");
                 self.show_file_tree = !self.show_file_tree;
                 cx.notify();
+            }
+            FileTreeEvent::SearchRequested { initial_query } => {
+                self.start_file_tree_search(initial_query.clone(), cx);
             }
         }
     }
@@ -9366,6 +9376,31 @@ impl Workspace {
         self.core.update(cx, |_core, cx| {
             cx.emit(crate::Update::Prompt(prompt));
         });
+    }
+
+    fn start_file_tree_search(&mut self, initial_query: Option<String>, cx: &mut Context<Self>) {
+        nucleotide_logging::debug!("Starting file tree search");
+
+        let initial_query = initial_query.unwrap_or_default();
+        let prompt = crate::prompt::Prompt::native("file-tree-search:", initial_query, |_| {})
+            .with_cancel(|| {});
+        self.core.update(cx, |_core, cx| {
+            cx.emit(crate::Update::Prompt(prompt));
+        });
+    }
+
+    fn handle_file_tree_search_submitted(&mut self, query: &str, cx: &mut Context<Self>) {
+        let query = query.trim();
+        let query = (!query.is_empty()).then(|| query.to_string());
+
+        if let Some(file_tree) = &self.file_tree {
+            self.show_file_tree = true;
+            file_tree.update(cx, |tree, cx| {
+                tree.set_search_query(query, cx);
+            });
+        }
+
+        cx.notify();
     }
 
     fn update_document_views(&mut self, cx: &mut Context<Self>) {

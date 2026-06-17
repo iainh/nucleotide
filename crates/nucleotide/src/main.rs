@@ -1022,6 +1022,26 @@ fn gui_main(
                         Some("FileTree"),
                     ),
                     gpui::KeyBinding::new(
+                        "/",
+                        nucleotide::actions::file_tree::StartSearch,
+                        Some("FileTree"),
+                    ),
+                    gpui::KeyBinding::new(
+                        "escape",
+                        nucleotide::actions::file_tree::ClearSearch,
+                        Some("FileTree"),
+                    ),
+                    gpui::KeyBinding::new(
+                        "n",
+                        nucleotide::actions::file_tree::SelectNextSearchMatch,
+                        Some("FileTree"),
+                    ),
+                    gpui::KeyBinding::new(
+                        "shift-n",
+                        nucleotide::actions::file_tree::SelectPrevSearchMatch,
+                        Some("FileTree"),
+                    ),
+                    gpui::KeyBinding::new(
                         "left",
                         nucleotide::actions::file_tree::ToggleExpanded,
                         Some("FileTree"),

@@ -102,6 +102,7 @@ pub enum Update {
     CommandSubmitted(String),
     SearchSubmitted(String),
     GlobalSearchSubmitted(String),
+    FileTreeSearchSubmitted(String),
     RegexSelectionSubmitted {
         action: RegexSelectionAction,
         regex: String,
@@ -180,6 +181,9 @@ impl std::fmt::Debug for Update {
             Update::SearchSubmitted(query) => write!(f, "SearchSubmitted({query:?})"),
             Update::GlobalSearchSubmitted(query) => {
                 write!(f, "GlobalSearchSubmitted({query:?})")
+            }
+            Update::FileTreeSearchSubmitted(query) => {
+                write!(f, "FileTreeSearchSubmitted({query:?})")
             }
             Update::RegexSelectionSubmitted { action, regex } => {
                 write!(f, "RegexSelectionSubmitted({action:?}, {regex:?})")

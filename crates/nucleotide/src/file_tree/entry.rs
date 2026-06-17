@@ -1,9 +1,17 @@
 // ABOUTME: File tree entry types representing files and directories
-// ABOUTME: Implements SumTree traits for efficient tree operations
+// ABOUTME: Stores path-first metadata used by the sidebar tree projection
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::SystemTime;
-use zed_sum_tree::{Dimension, Item, KeyedItem};
+
+/// A path segment that is rendered as part of a flattened directory chain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileTreeFlattenedSegment {
+    pub name: String,
+    pub path: PathBuf,
+    pub is_terminal: bool,
+}
 
 /// A single entry in the file tree
 #[derive(Debug, Clone, PartialEq)]
@@ -30,6 +38,18 @@ pub struct FileTreeEntry {
     pub is_ignored: bool,
     /// Whether this is a hidden file (starts with .)
     pub is_hidden: bool,
+    /// Ancestor paths in the current visible projection.
+    pub ancestor_paths: Arc<[PathBuf]>,
+    /// ARIA-like tree level in the current visible projection.
+    pub level: usize,
+    /// 1-based position within its current sibling set.
+    pub pos_in_set: usize,
+    /// Number of siblings in its current sibling set.
+    pub set_size: usize,
+    /// Flattened directory segments represented by this visible row.
+    pub flattened_segments: Option<Arc<[FileTreeFlattenedSegment]>>,
+    /// Whether this row directly matches the current tree search query.
+    pub is_search_match: bool,
 }
 
 /// Unique identifier for file tree entries
@@ -86,6 +106,12 @@ impl FileTreeEntry {
             depth: 0,
             is_ignored: false,
             is_hidden,
+            ancestor_paths: Arc::from([]),
+            level: 1,
+            pos_in_set: 1,
+            set_size: 1,
+            flattened_segments: None,
+            is_search_match: false,
         }
     }
 
@@ -111,6 +137,12 @@ impl FileTreeEntry {
             depth: 0,
             is_ignored: false,
             is_hidden,
+            ancestor_paths: Arc::from([]),
+            level: 1,
+            pos_in_set: 1,
+            set_size: 1,
+            flattened_segments: None,
+            is_search_match: false,
         }
     }
 
@@ -142,6 +174,12 @@ impl FileTreeEntry {
             depth: 0,
             is_ignored: false,
             is_hidden,
+            ancestor_paths: Arc::from([]),
+            level: 1,
+            pos_in_set: 1,
+            set_size: 1,
+            flattened_segments: None,
+            is_search_match: false,
         }
     }
 
@@ -198,114 +236,6 @@ impl FileTreeEntry {
     #[allow(dead_code)]
     pub fn clear_git_status(&mut self) {
         self.git_status = None;
-    }
-}
-
-impl Item for FileTreeEntry {
-    type Summary = crate::file_tree::FileTreeSummary;
-
-    fn summary(&self, _cx: ()) -> Self::Summary {
-        crate::file_tree::FileTreeSummary {
-            count: 1,
-            visible_count: if self.is_visible { 1 } else { 0 },
-            file_count: if self.is_file() { 1 } else { 0 },
-            directory_count: if self.is_directory() { 1 } else { 0 },
-            total_size: self.size,
-            max_depth: self.depth,
-            max_path: self.path.clone(),
-        }
-    }
-}
-
-/// Key for path-based lookups in the file tree
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct FileTreePathKey(pub PathBuf);
-
-impl KeyedItem for FileTreeEntry {
-    type Key = FileTreePathKey;
-
-    fn key(&self) -> Self::Key {
-        FileTreePathKey(self.path.clone())
-    }
-}
-
-/// Index-based dimension for navigation by position
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
-pub struct IndexDimension(pub usize);
-
-/// Path-based dimension for lookups by path
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Default)]
-pub struct PathDimension(pub PathBuf);
-
-/// Depth-based dimension for tree operations
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
-pub struct DepthDimension(pub usize);
-
-/// Size-based dimension for sorting/filtering by file size
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
-pub struct SizeDimension(pub u64);
-
-impl<'a> Dimension<'a, crate::file_tree::FileTreeSummary> for IndexDimension {
-    fn zero(_cx: ()) -> Self {
-        IndexDimension(0)
-    }
-
-    fn add_summary(&mut self, summary: &'a crate::file_tree::FileTreeSummary, _cx: ()) {
-        self.0 += summary.visible_count;
-    }
-}
-
-impl<'a> Dimension<'a, crate::file_tree::FileTreeSummary> for PathDimension {
-    fn zero(_cx: ()) -> Self {
-        PathDimension(PathBuf::new())
-    }
-
-    fn add_summary(&mut self, summary: &'a crate::file_tree::FileTreeSummary, _cx: ()) {
-        self.0 = summary.max_path.clone();
-    }
-}
-
-impl<'a> Dimension<'a, crate::file_tree::FileTreeSummary> for DepthDimension {
-    fn zero(_cx: ()) -> Self {
-        DepthDimension(0)
-    }
-
-    fn add_summary(&mut self, summary: &'a crate::file_tree::FileTreeSummary, _cx: ()) {
-        self.0 = self.0.max(summary.max_depth);
-    }
-}
-
-impl<'a> Dimension<'a, crate::file_tree::FileTreeSummary> for SizeDimension {
-    fn zero(_cx: ()) -> Self {
-        SizeDimension(0)
-    }
-
-    fn add_summary(&mut self, summary: &'a crate::file_tree::FileTreeSummary, _cx: ()) {
-        self.0 += summary.total_size;
-    }
-}
-
-impl<'a> Dimension<'a, crate::file_tree::FileTreeSummary> for FileTreePathKey {
-    fn zero(_cx: ()) -> Self {
-        FileTreePathKey(PathBuf::new())
-    }
-
-    fn add_summary(&mut self, _summary: &'a crate::file_tree::FileTreeSummary, _cx: ()) {
-        // For path key, we don't update based on summary
-        // The key represents a specific path, not accumulated paths
-    }
-}
-
-impl PartialOrd for FileTreeEntry {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for FileTreeEntry {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        // Simple alphabetical path comparison
-        self.path.cmp(&other.path)
     }
 }
 

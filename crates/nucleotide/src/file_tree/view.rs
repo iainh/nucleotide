@@ -3,9 +3,10 @@
 
 use crate::file_tree::watcher::FileTreeWatcher;
 use crate::file_tree::{
-    FileTree, FileTreeConfig, FileTreeEntry, FileTreeEvent,
+    FileSystemEventKind, FileTree, FileTreeCollisionStrategy, FileTreeConfig, FileTreeEntry,
+    FileTreeEvent,
     sidebar::{
-        PROJECT_TREE_ROW_HEIGHT_PX, ProjectTreeRow, ProjectTreeRowAction, ProjectTreeRowEvent,
+        ProjectTreeDraggedEntry, ProjectTreeRow, ProjectTreeRowAction, ProjectTreeRowEvent,
         project_tree_entry_min_width, render_project_tree_row,
     },
 };
@@ -13,42 +14,79 @@ use gpui::prelude::FluentBuilder;
 use gpui::{
     App, Context, EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement,
     ListHorizontalSizingBehavior, MouseButton, MouseDownEvent, ParentElement, Render,
-    StatefulInteractiveElement, Styled, UniformListScrollHandle, Window, div, px, uniform_list,
+    ScrollStrategy, StatefulInteractiveElement, Styled, UniformListScrollHandle, Window, div, px,
+    uniform_list,
 };
 use nucleotide_logging::{debug, error, warn};
 use nucleotide_types::{VcsStatus, scrollbar::SCROLLBAR_THICKNESS};
 use nucleotide_ui::ThemedContext as UIThemedContext;
-use nucleotide_ui::scrollbar::{ScrollableHandle, Scrollbar, ScrollbarState};
+use nucleotide_ui::scrollbar::{Scrollbar, ScrollbarState};
 use nucleotide_vcs::VcsServiceHandle;
 use std::{
-    ops::Range,
+    collections::BTreeSet,
     path::{Path, PathBuf},
 };
 
 const PROJECT_TREE_SIDEBAR_WIDTH_PADDING_PX: f32 = 12.0;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum FileTreeScrollOffset {
+    Top,
+    Center,
+    #[default]
+    Nearest,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileTreeScrollToPathOptions {
+    pub focus: bool,
+    pub offset: FileTreeScrollOffset,
+}
+
+impl Default for FileTreeScrollToPathOptions {
+    fn default() -> Self {
+        Self {
+            focus: true,
+            offset: FileTreeScrollOffset::Nearest,
+        }
+    }
+}
+
 fn should_focus_editor_for_project_tree_open(click_count: usize) -> bool {
     click_count > 1
+}
+
+fn scroll_strategy_for_file_tree_offset(offset: FileTreeScrollOffset) -> ScrollStrategy {
+    match offset {
+        FileTreeScrollOffset::Top => ScrollStrategy::Top,
+        FileTreeScrollOffset::Center => ScrollStrategy::Center,
+        FileTreeScrollOffset::Nearest => ScrollStrategy::Nearest,
+    }
+}
+
+fn scroll_file_tree_index(
+    scroll_handle: &UniformListScrollHandle,
+    index: usize,
+    offset: FileTreeScrollOffset,
+) {
+    let strategy = scroll_strategy_for_file_tree_offset(offset);
+    match offset {
+        FileTreeScrollOffset::Top | FileTreeScrollOffset::Center => {
+            scroll_handle.scroll_to_item_strict(index, strategy);
+        }
+        FileTreeScrollOffset::Nearest => {
+            scroll_handle.scroll_to_item(index, strategy);
+        }
+    }
 }
 
 fn widest_project_tree_entry_index(entries: &[FileTreeEntry]) -> Option<usize> {
     widest_project_tree_entry_index_in_range(entries, 0..entries.len())
 }
 
-fn widest_visible_project_tree_entry_index(
-    entries: &[FileTreeEntry],
-    visible_range: Range<usize>,
-) -> Option<usize> {
-    if visible_range.start == 0 && visible_range.end >= entries.len() {
-        widest_project_tree_entry_index(entries)
-    } else {
-        widest_project_tree_entry_index_in_range(entries, visible_range)
-    }
-}
-
 fn widest_project_tree_entry_index_in_range(
     entries: &[FileTreeEntry],
-    range: Range<usize>,
+    range: std::ops::Range<usize>,
 ) -> Option<usize> {
     let start = range.start;
     entries
@@ -69,45 +107,18 @@ fn preferred_project_tree_width(entries: &[FileTreeEntry]) -> f32 {
         + PROJECT_TREE_SIDEBAR_WIDTH_PADDING_PX
 }
 
-fn preferred_project_tree_width_in_range(
-    entries: &[FileTreeEntry],
-    visible_range: Range<usize>,
-) -> f32 {
-    if visible_range.start == 0 && visible_range.end >= entries.len() {
-        return preferred_project_tree_width(entries);
-    }
-
-    entries
-        .get(visible_range)
-        .unwrap_or(&[])
-        .iter()
-        .map(project_tree_entry_min_width)
-        .fold(0.0_f32, f32::max)
-        + PROJECT_TREE_SIDEBAR_WIDTH_PADDING_PX
+fn rebase_file_tree_path(path: &Path, from: &Path, to: &Path) -> Option<PathBuf> {
+    path.strip_prefix(from).ok().map(|relative| {
+        if relative.as_os_str().is_empty() {
+            to.to_path_buf()
+        } else {
+            to.join(relative)
+        }
+    })
 }
 
-fn project_tree_visible_entry_range(
-    entry_count: usize,
-    scroll_offset_y: f32,
-    viewport_height: f32,
-) -> Range<usize> {
-    if entry_count == 0 {
-        return 0..0;
-    }
-
-    if viewport_height <= 0.0 {
-        return 0..entry_count;
-    }
-
-    let scroll_top = (-scroll_offset_y).max(0.0);
-    let first = (scroll_top / PROJECT_TREE_ROW_HEIGHT_PX).floor().max(0.0) as usize;
-    let last = ((scroll_top + viewport_height) / PROJECT_TREE_ROW_HEIGHT_PX)
-        .ceil()
-        .max(0.0) as usize;
-    let start = first.min(entry_count.saturating_sub(1));
-    let end = last.clamp(start + 1, entry_count);
-
-    start..end
+fn file_tree_drop_destination(from: &Path, target_dir: &Path) -> Option<PathBuf> {
+    from.file_name().map(|file_name| target_dir.join(file_name))
 }
 
 /// File tree view component
@@ -116,6 +127,8 @@ pub struct FileTreeView {
     tree: FileTree,
     /// Currently selected entry path
     selected_path: Option<PathBuf>,
+    /// Full set of selected entry paths, ordered for stable events.
+    selected_paths: BTreeSet<PathBuf>,
     /// Focus handle for keyboard navigation
     focus_handle: FocusHandle,
     /// Scroll handle for the list
@@ -155,6 +168,7 @@ impl FileTreeView {
         let mut instance = Self {
             tree,
             selected_path: None,
+            selected_paths: BTreeSet::new(),
             focus_handle,
             scroll_handle,
             vertical_scrollbar_state,
@@ -168,7 +182,9 @@ impl FileTreeView {
         // Auto-select the first entry if there are any entries
         let entries = instance.tree.visible_entries();
         if !entries.is_empty() {
-            instance.selected_path = Some(entries[0].path.clone());
+            let path = entries[0].path.clone();
+            instance.selected_path = Some(path.clone());
+            instance.selected_paths.insert(path);
         }
 
         // Apply test VCS statuses for demonstration
@@ -220,6 +236,7 @@ impl FileTreeView {
         let mut instance = Self {
             tree,
             selected_path: None,
+            selected_paths: BTreeSet::new(),
             focus_handle,
             scroll_handle,
             vertical_scrollbar_state,
@@ -233,7 +250,9 @@ impl FileTreeView {
         // Auto-select the first entry if there are any entries
         let entries = instance.tree.visible_entries();
         if !entries.is_empty() {
-            instance.selected_path = Some(entries[0].path.clone());
+            let path = entries[0].path.clone();
+            instance.selected_path = Some(path.clone());
+            instance.selected_paths.insert(path);
         }
 
         // VCS monitoring will be handled by the global VCS service
@@ -255,6 +274,16 @@ impl FileTreeView {
         self.selected_path.as_ref()
     }
 
+    /// Get all currently selected paths.
+    pub fn selected_paths(&self) -> Vec<PathBuf> {
+        self.selected_paths.iter().cloned().collect()
+    }
+
+    /// Get the current file-tree search query.
+    pub fn search_query(&self) -> Option<&str> {
+        self.tree.search_query()
+    }
+
     /// Return whether the tree knows about this path.
     pub fn contains_path(&self, path: &Path) -> bool {
         self.tree.entry_by_path(path).is_some()
@@ -262,11 +291,266 @@ impl FileTreeView {
 
     /// Set the selection
     pub fn select_path(&mut self, path: Option<PathBuf>, cx: &mut Context<Self>) {
-        if self.selected_path != path {
-            self.selected_path = path.clone();
-            cx.emit(FileTreeEvent::SelectionChanged { path });
-            cx.notify();
+        let path = path.map(|path| self.canonical_selection_path(path));
+        let mut selected_paths = BTreeSet::new();
+        if let Some(path) = &path {
+            selected_paths.insert(path.clone());
         }
+        self.apply_selection(path, selected_paths, cx);
+    }
+
+    /// Select a single path and clear any other selected paths.
+    pub fn select_only_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        self.select_path(Some(path), cx);
+    }
+
+    /// Add a path to the selected set and make it the primary selection.
+    pub fn select_additional_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        let path = self.canonical_selection_path(path);
+        let mut selected_paths = self.selected_paths.clone();
+        selected_paths.insert(path.clone());
+        self.apply_selection(Some(path), selected_paths, cx);
+    }
+
+    /// Remove a path from the selected set.
+    pub fn deselect_path(&mut self, path: &Path, cx: &mut Context<Self>) -> bool {
+        let path = self.canonical_selection_path(path.to_path_buf());
+        if !self.selected_paths.contains(&path) {
+            return false;
+        }
+
+        let mut selected_paths = self.selected_paths.clone();
+        selected_paths.remove(&path);
+        let selected_path = if self.selected_path.as_ref() == Some(&path) {
+            selected_paths.iter().next().cloned()
+        } else {
+            self.selected_path.clone()
+        };
+
+        self.apply_selection(selected_path, selected_paths, cx);
+        true
+    }
+
+    /// Toggle whether a path is selected.
+    pub fn toggle_path_selection(&mut self, path: PathBuf, cx: &mut Context<Self>) -> bool {
+        let path = self.canonical_selection_path(path);
+        let mut selected_paths = self.selected_paths.clone();
+
+        let selected_path = if selected_paths.contains(&path) {
+            selected_paths.remove(&path);
+            if self.selected_path.as_ref() == Some(&path) {
+                selected_paths.iter().next().cloned()
+            } else {
+                self.selected_path.clone()
+            }
+        } else {
+            selected_paths.insert(path.clone());
+            Some(path)
+        };
+
+        self.apply_selection(selected_path, selected_paths, cx);
+        true
+    }
+
+    /// Select the inclusive range between two currently visible paths.
+    pub fn select_path_range(
+        &mut self,
+        anchor: &Path,
+        target: &Path,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.select_visible_path_range(anchor, target, false, cx)
+    }
+
+    /// Add the inclusive range between two currently visible paths to the selection set.
+    pub fn add_path_range_to_selection(
+        &mut self,
+        anchor: &Path,
+        target: &Path,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.select_visible_path_range(anchor, target, true, cx)
+    }
+
+    fn canonical_selection_path(&self, path: PathBuf) -> PathBuf {
+        self.tree
+            .entry_by_path(&path)
+            .map(|entry| entry.path)
+            .unwrap_or(path)
+    }
+
+    fn apply_selection(
+        &mut self,
+        selected_path: Option<PathBuf>,
+        selected_paths: BTreeSet<PathBuf>,
+        cx: &mut Context<Self>,
+    ) {
+        let primary_changed = self.selected_path != selected_path;
+        let set_changed = self.selected_paths != selected_paths;
+
+        if !primary_changed && !set_changed {
+            return;
+        }
+
+        self.selected_path = selected_path.clone();
+        self.selected_paths = selected_paths;
+
+        if primary_changed {
+            cx.emit(FileTreeEvent::SelectionChanged {
+                path: selected_path,
+            });
+        }
+
+        if set_changed {
+            cx.emit(FileTreeEvent::SelectionSetChanged {
+                paths: self.selected_paths(),
+            });
+        }
+
+        cx.notify();
+    }
+
+    fn select_visible_path_range(
+        &mut self,
+        anchor: &Path,
+        target: &Path,
+        union: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let entries = self.tree.visible_entries();
+        let Some(anchor_index) = entries.iter().position(|entry| entry.path == anchor) else {
+            return false;
+        };
+        let Some(target_index) = entries.iter().position(|entry| entry.path == target) else {
+            return false;
+        };
+
+        let mut selected_paths = if union {
+            self.selected_paths.clone()
+        } else {
+            BTreeSet::new()
+        };
+        let range_start = anchor_index.min(target_index);
+        let range_end = anchor_index.max(target_index);
+        for entry in entries[range_start..=range_end].iter() {
+            selected_paths.insert(entry.path.clone());
+        }
+
+        self.apply_selection(Some(target.to_path_buf()), selected_paths, cx);
+        true
+    }
+
+    /// Open the workspace-owned search prompt for the file tree.
+    pub fn request_search(&mut self, cx: &mut Context<Self>) {
+        cx.emit(FileTreeEvent::SearchRequested {
+            initial_query: self.search_query().map(ToOwned::to_owned),
+        });
+    }
+
+    /// Set the search query and keep selection on a visible row.
+    pub fn set_search_query(&mut self, query: Option<String>, cx: &mut Context<Self>) {
+        self.tree.set_search_query(query);
+        self.select_valid_search_row(cx);
+        cx.notify();
+    }
+
+    /// Clear the search query.
+    pub fn clear_search_query(&mut self, cx: &mut Context<Self>) {
+        self.tree.clear_search_query();
+        self.select_valid_search_row(cx);
+        cx.notify();
+    }
+
+    /// Select the next visible search match.
+    pub fn select_next_search_match(&mut self, cx: &mut Context<Self>) {
+        self.select_relative_search_match(1, cx);
+    }
+
+    /// Select the previous visible search match.
+    pub fn select_previous_search_match(&mut self, cx: &mut Context<Self>) {
+        self.select_relative_search_match(-1, cx);
+    }
+
+    /// Scroll a currently visible path into view.
+    pub fn scroll_to_path(
+        &mut self,
+        path: &Path,
+        options: FileTreeScrollToPathOptions,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(target_entry) = self.tree.entry_by_path(path) else {
+            return false;
+        };
+
+        let entries = self.tree.visible_entries();
+        let Some(index) = entries
+            .iter()
+            .position(|entry| entry.path == target_entry.path)
+        else {
+            return false;
+        };
+
+        if options.focus {
+            self.select_path(Some(target_entry.path), cx);
+        }
+
+        scroll_file_tree_index(&self.scroll_handle, index, options.offset);
+        cx.notify();
+
+        true
+    }
+
+    fn select_valid_search_row(&mut self, cx: &mut Context<Self>) {
+        let entries = self.tree.visible_entries();
+        let search_active = self.tree.search_query().is_some();
+        let current_entry = self.selected_path.as_ref().and_then(|selected| {
+            entries
+                .iter()
+                .find(|entry| &entry.path == selected)
+                .cloned()
+        });
+
+        if current_entry
+            .as_ref()
+            .is_some_and(|entry| !search_active || entry.is_search_match)
+        {
+            return;
+        }
+
+        let next_selection = entries
+            .iter()
+            .find(|entry| entry.is_search_match)
+            .or_else(|| entries.first())
+            .map(|entry| entry.path.clone());
+
+        self.select_path(next_selection, cx);
+    }
+
+    fn select_relative_search_match(&mut self, direction: isize, cx: &mut Context<Self>) {
+        let entries = self.tree.visible_entries();
+        let matches: Vec<_> = entries
+            .iter()
+            .filter(|entry| entry.is_search_match)
+            .map(|entry| entry.path.clone())
+            .collect();
+
+        if matches.is_empty() {
+            return;
+        }
+
+        let current_index = self
+            .selected_path
+            .as_ref()
+            .and_then(|selected| matches.iter().position(|path| path == selected));
+        let next_index = match (current_index, direction.is_negative()) {
+            (Some(index), false) => (index + 1) % matches.len(),
+            (Some(0), true) => matches.len() - 1,
+            (Some(index), true) => index - 1,
+            (None, false) => 0,
+            (None, true) => matches.len() - 1,
+        };
+
+        self.select_path(Some(matches[next_index].clone()), cx);
     }
 
     /// Sync selection with the currently open file
@@ -610,15 +894,7 @@ impl FileTreeView {
     /// Preferred sidebar width for the current visible tree contents.
     pub fn preferred_width(&self) -> f32 {
         let entries = self.tree.visible_entries_snapshot();
-        preferred_project_tree_width_in_range(&entries, self.visible_entry_range(entries.len()))
-    }
-
-    fn visible_entry_range(&self, entry_count: usize) -> Range<usize> {
-        project_tree_visible_entry_range(
-            entry_count,
-            f32::from(self.scroll_handle.offset().y),
-            f32::from(self.scroll_handle.viewport().size.height),
-        )
+        preferred_project_tree_width(&entries)
     }
 
     /// Start async VCS refresh
@@ -1126,17 +1402,12 @@ impl FileTreeView {
 
         // Remove the entry from the tree
         if self.tree.remove_entry(path).is_some() {
-            // If the deleted file was selected, clear selection or select next available
-            if self.selected_path.as_ref() == Some(path) {
-                // Try to select the next available entry
-                let entries = self.tree.visible_entries();
-                let new_selection = if !entries.is_empty() {
-                    Some(entries[0].path.clone())
-                } else {
-                    None
-                };
-                self.select_path(new_selection, cx);
-            }
+            let fallback_selection = self
+                .tree
+                .visible_entries()
+                .first()
+                .map(|entry| entry.path.clone());
+            self.remove_selection_under_path(path, fallback_selection, cx);
             cx.notify();
         }
     }
@@ -1214,32 +1485,162 @@ impl FileTreeView {
         }
     }
 
+    fn selection_contains_path_under(&self, path: &Path) -> bool {
+        self.selected_path
+            .as_ref()
+            .is_some_and(|selected| selected.starts_with(path))
+            || self
+                .selected_paths
+                .iter()
+                .any(|selected| selected.starts_with(path))
+    }
+
+    fn remove_selection_under_path(
+        &mut self,
+        path: &Path,
+        fallback_selection: Option<PathBuf>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.selection_contains_path_under(path) {
+            return false;
+        }
+
+        let mut selected_paths = BTreeSet::new();
+        for selected in &self.selected_paths {
+            if !selected.starts_with(path) {
+                selected_paths.insert(selected.clone());
+            }
+        }
+
+        let selected_path = if self
+            .selected_path
+            .as_ref()
+            .is_some_and(|selected| selected.starts_with(path))
+        {
+            selected_paths.iter().next().cloned().or(fallback_selection)
+        } else {
+            self.selected_path.clone()
+        };
+
+        if selected_paths.is_empty()
+            && let Some(selected_path) = &selected_path
+        {
+            selected_paths.insert(selected_path.clone());
+        }
+
+        self.apply_selection(selected_path, selected_paths, cx);
+        true
+    }
+
+    fn rebase_selection_for_move(
+        &mut self,
+        from: &Path,
+        to: &Path,
+        fallback_selection: Option<PathBuf>,
+        require_known_paths: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.selection_contains_path_under(from) {
+            return false;
+        }
+
+        let mut selected_paths = BTreeSet::new();
+        for selected in &self.selected_paths {
+            if let Some(rebased) = rebase_file_tree_path(selected, from, to) {
+                if !require_known_paths || self.tree.entry_by_path(&rebased).is_some() {
+                    selected_paths.insert(rebased);
+                }
+            } else {
+                selected_paths.insert(selected.clone());
+            }
+        }
+
+        let selected_path = if let Some(selected) = self.selected_path.as_deref() {
+            if let Some(rebased) = rebase_file_tree_path(selected, from, to) {
+                if !require_known_paths || self.tree.entry_by_path(&rebased).is_some() {
+                    Some(rebased)
+                } else {
+                    selected_paths.iter().next().cloned().or(fallback_selection)
+                }
+            } else {
+                Some(selected.to_path_buf())
+            }
+        } else {
+            None
+        };
+
+        if selected_paths.is_empty()
+            && let Some(selected_path) = &selected_path
+        {
+            selected_paths.insert(selected_path.clone());
+        }
+
+        self.apply_selection(selected_path, selected_paths, cx);
+        true
+    }
+
     /// Handle file/directory rename
     fn handle_file_renamed(&mut self, from: &PathBuf, to: &PathBuf, cx: &mut Context<Self>) {
         debug!(from = ?from, to = ?to, "Handling file rename");
 
-        // Remove the old entry
-        if self.tree.remove_entry(from).is_some() {
-            // Update selection if the renamed file was selected
-            if self.selected_path.as_ref() == Some(from) {
-                self.select_path(Some(to.clone()), cx);
-            }
-
-            // Add the new entry if parent is expanded
-            if let Some(parent) = to.parent()
-                && self.tree.is_expanded(parent)
+        if to.starts_with(self.tree.root_path()) {
+            match self
+                .tree
+                .move_entry(from, to, FileTreeCollisionStrategy::Replace)
             {
-                debug!(parent = ?parent, "Parent directory is expanded, adding renamed entry");
-
-                if let Ok(metadata) = std::fs::metadata(to) {
-                    let entry = self.create_tree_entry(to, &metadata, parent);
-                    self.tree.upsert_entry(entry);
-                    debug!(path = ?to, "Successfully added renamed entry to tree");
-                } else {
-                    debug!(path = ?to, "Failed to get metadata for renamed file");
+                Ok(true) => {
+                    self.rebase_selection_for_move(from, to, None, false, cx);
+                    cx.notify();
+                    return;
+                }
+                Ok(false) => return,
+                Err(error) => {
+                    debug!(error = %error, "Unable to move known file tree entry, falling back to remove/add");
                 }
             }
+        } else if self.tree.remove_entry(from).is_some() {
+            let fallback_selection = self
+                .tree
+                .visible_entries()
+                .first()
+                .map(|entry| entry.path.clone());
+            self.remove_selection_under_path(from, fallback_selection, cx);
+            cx.notify();
+            return;
+        }
 
+        let removed = self.tree.remove_entry(from).is_some();
+        let mut changed = removed;
+
+        if to.starts_with(self.tree.root_path())
+            && let Some(parent) = to.parent()
+            && self.tree.is_expanded(parent)
+        {
+            debug!(parent = ?parent, "Parent directory is expanded, adding renamed entry");
+
+            if let Ok(metadata) = std::fs::metadata(to) {
+                let entry = self.create_tree_entry(to, &metadata, parent);
+                self.tree.upsert_entry(entry);
+                changed = true;
+                debug!(path = ?to, "Successfully added renamed entry to tree");
+            } else {
+                debug!(path = ?to, "Failed to get metadata for renamed file");
+            }
+        }
+
+        if changed {
+            let fallback_selection = if removed {
+                self.tree
+                    .visible_entries()
+                    .first()
+                    .map(|entry| entry.path.clone())
+            } else {
+                None
+            };
+            self.rebase_selection_for_move(from, to, fallback_selection, true, cx);
+        }
+
+        if changed {
             cx.notify();
         }
     }
@@ -1283,7 +1684,105 @@ impl FileTreeView {
                 self.request_entry_context_menu(path, position, window, cx);
                 window.prevent_default();
             }
+            ProjectTreeRowEvent::MoveRequested { from, target_dir } => {
+                self.focus_handle.focus(window, cx);
+                self.handle_entry_move_requested(&from, &target_dir, cx);
+                window.prevent_default();
+            }
         }
+    }
+
+    fn move_destination_for_drop(&self, from: &Path, target_dir: &Path) -> Option<PathBuf> {
+        let root_path = self.tree.root_path();
+
+        if from == root_path
+            || !from.starts_with(root_path)
+            || !target_dir.starts_with(root_path)
+            || from.parent() == Some(target_dir)
+            || target_dir == from
+            || target_dir.starts_with(from)
+        {
+            return None;
+        }
+
+        self.tree.entry_by_path(from)?;
+
+        if target_dir != root_path {
+            let target_entry = self.tree.entry_by_path(target_dir)?;
+            if !target_entry.is_directory() {
+                return None;
+            }
+        }
+
+        let destination = file_tree_drop_destination(from, target_dir)?;
+        if destination == from
+            || self.tree.entry_by_path(&destination).is_some()
+            || destination.exists()
+        {
+            return None;
+        }
+
+        Some(destination)
+    }
+
+    fn handle_entry_move_requested(
+        &mut self,
+        from: &Path,
+        target_dir: &Path,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(destination) = self.move_destination_for_drop(from, target_dir) else {
+            debug!(
+                from = ?from,
+                target_dir = ?target_dir,
+                "Ignoring unsupported file tree drop"
+            );
+            return;
+        };
+        let from_path = from.to_path_buf();
+
+        if let Err(error) = std::fs::rename(&from_path, &destination) {
+            warn!(
+                from = ?from_path,
+                to = ?destination,
+                error = %error,
+                "Failed to move file tree entry on disk"
+            );
+            return;
+        }
+
+        match self
+            .tree
+            .move_entry(&from_path, &destination, FileTreeCollisionStrategy::Error)
+        {
+            Ok(true) => {
+                self.rebase_selection_for_move(&from_path, &destination, None, false, cx);
+                self.emit_file_tree_move_event(from_path, destination, cx);
+                cx.notify();
+            }
+            Ok(false) => {}
+            Err(error) => {
+                warn!(
+                    from = ?from_path,
+                    to = ?destination,
+                    error = %error,
+                    "Disk move succeeded but file tree model move failed; applying rename fallback"
+                );
+                self.handle_file_renamed(&from_path, &destination, cx);
+                self.emit_file_tree_move_event(from_path, destination, cx);
+            }
+        }
+    }
+
+    fn emit_file_tree_move_event(&mut self, from: PathBuf, to: PathBuf, cx: &mut Context<Self>) {
+        if cx.has_global::<VcsServiceHandle>() {
+            self.refresh_vcs_for_file_system_changes(&[from.clone(), to.clone()], cx);
+        }
+
+        cx.emit(FileTreeEvent::FileSystemChanged {
+            path: to.clone(),
+            kind: FileSystemEventKind::Renamed { from, to },
+        });
     }
 
     fn request_entry_context_menu(
@@ -1308,12 +1807,13 @@ impl FileTreeView {
         entry: &FileTreeEntry,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
-        let is_selected = self.selected_path.as_ref() == Some(&entry.path);
+        let is_selected = self.selected_paths.contains(&entry.path);
         let vcs_status = self.get_vcs_status_for_entry(&entry.path, cx);
         let row = ProjectTreeRow::from_entry(entry, is_selected, vcs_status);
         let theme = cx.theme().clone();
         let context_menu_event = row.context_menu_event();
         let left_click_row = row.clone();
+        let drop_target_path = row.path.clone();
 
         render_project_tree_row(
             row,
@@ -1346,6 +1846,22 @@ impl FileTreeView {
                 })
             },
             |_, _, cx| cx.stop_propagation(),
+            {
+                let drop_target_path = drop_target_path.clone();
+                cx.listener(move |view, dragged: &ProjectTreeDraggedEntry, window, cx| {
+                    view.handle_project_tree_row_event(
+                        ProjectTreeRowEvent::MoveRequested {
+                            from: dragged.path.clone(),
+                            target_dir: drop_target_path.clone(),
+                        },
+                        None,
+                        1,
+                        window,
+                        cx,
+                    );
+                    cx.stop_propagation();
+                })
+            },
         )
     }
 }
@@ -1363,6 +1879,8 @@ mod tests {
             show_ignored: true,
             initial_depth: 3,
             watch_filesystem: false,
+            flatten_empty_directories: true,
+            search_mode: crate::file_tree::FileTreeSearchMode::ExpandMatches,
         }
     }
 
@@ -1385,6 +1903,107 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn initial_selection_is_exposed_as_path_set(cx: &mut TestAppContext) {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root_path = temp_dir.path().to_path_buf();
+        std::fs::write(root_path.join("main.rs"), "fn main() {}\n").unwrap();
+
+        let view = cx.new(|cx| FileTreeView::new(root_path.clone(), test_config(), cx));
+
+        view.read_with(cx, |view, _cx| {
+            assert_eq!(view.selected_path(), Some(&root_path));
+            assert_eq!(view.selected_paths(), vec![root_path]);
+        });
+    }
+
+    #[gpui::test]
+    async fn selection_set_supports_add_toggle_deselect_and_range(cx: &mut TestAppContext) {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root_path = temp_dir.path().to_path_buf();
+        let a_path = root_path.join("a.rs");
+        let b_path = root_path.join("b.rs");
+        let c_path = root_path.join("c.rs");
+        std::fs::write(&a_path, "a\n").unwrap();
+        std::fs::write(&b_path, "b\n").unwrap();
+        std::fs::write(&c_path, "c\n").unwrap();
+
+        let view = cx.new(|cx| FileTreeView::new(root_path.clone(), test_config(), cx));
+        let events = subscribe_file_tree_events(cx, &view);
+
+        view.update(cx, |view, cx| {
+            view.select_only_path(a_path.clone(), cx);
+            assert_eq!(view.selected_path(), Some(&a_path));
+            assert_eq!(view.selected_paths(), vec![a_path.clone()]);
+
+            view.select_additional_path(b_path.clone(), cx);
+            assert_eq!(view.selected_path(), Some(&b_path));
+            assert_eq!(view.selected_paths(), vec![a_path.clone(), b_path.clone()]);
+
+            assert!(view.toggle_path_selection(a_path.clone(), cx));
+            assert_eq!(view.selected_path(), Some(&b_path));
+            assert_eq!(view.selected_paths(), vec![b_path.clone()]);
+
+            assert!(view.deselect_path(&b_path, cx));
+            assert_eq!(view.selected_path(), None);
+            assert!(view.selected_paths().is_empty());
+
+            assert!(view.select_path_range(&a_path, &c_path, cx));
+            assert_eq!(view.selected_path(), Some(&c_path));
+            assert_eq!(
+                view.selected_paths(),
+                vec![a_path.clone(), b_path.clone(), c_path.clone()]
+            );
+
+            view.select_only_path(root_path.clone(), cx);
+            assert!(view.add_path_range_to_selection(&a_path, &b_path, cx));
+            assert_eq!(view.selected_path(), Some(&b_path));
+            assert_eq!(
+                view.selected_paths(),
+                vec![root_path.clone(), a_path.clone(), b_path.clone()]
+            );
+        });
+        cx.run_until_parked();
+
+        assert!(
+            events
+                .borrow()
+                .contains(&FileTreeEvent::SelectionSetChanged {
+                    paths: vec![a_path, b_path, c_path],
+                })
+        );
+    }
+
+    #[gpui::test]
+    async fn deleted_directory_removes_descendant_paths_from_selection_set(
+        cx: &mut TestAppContext,
+    ) {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root_path = temp_dir.path().to_path_buf();
+        let src_path = root_path.join("src");
+        let file_path = src_path.join("lib.rs");
+        let readme_path = root_path.join("README.md");
+        std::fs::create_dir_all(&src_path).unwrap();
+        std::fs::write(&file_path, "pub fn lib() {}\n").unwrap();
+        std::fs::write(&readme_path, "readme\n").unwrap();
+
+        let view = cx.new(|cx| FileTreeView::new(root_path, test_config(), cx));
+
+        view.update(cx, |view, cx| {
+            view.select_path(Some(file_path.clone()), cx);
+            view.select_additional_path(readme_path.clone(), cx);
+            assert_eq!(
+                view.selected_paths(),
+                vec![readme_path.clone(), file_path.clone()]
+            );
+
+            view.handle_file_deleted(&src_path, cx);
+            assert_eq!(view.selected_path(), Some(&readme_path));
+            assert_eq!(view.selected_paths(), vec![readme_path.clone()]);
+            assert!(!view.contains_path(&file_path));
+        });
+    }
+
+    #[gpui::test]
     async fn file_activation_selects_entry_and_emits_open_file(cx: &mut TestAppContext) {
         let temp_dir = tempfile::tempdir().unwrap();
         let file_path = temp_dir.path().join("main.rs");
@@ -1400,11 +2019,15 @@ mod tests {
 
         view.read_with(cx, |view, _cx| {
             assert_eq!(view.selected_path(), Some(&file_path));
+            assert_eq!(view.selected_paths(), vec![file_path.clone()]);
         });
 
         let events = events.borrow();
         assert!(events.contains(&FileTreeEvent::SelectionChanged {
             path: Some(file_path.clone()),
+        }));
+        assert!(events.contains(&FileTreeEvent::SelectionSetChanged {
+            paths: vec![file_path.clone()],
         }));
         assert!(events.contains(&FileTreeEvent::OpenFile {
             path: file_path,
@@ -1490,42 +2113,131 @@ mod tests {
     }
 
     #[test]
-    fn project_tree_visible_entry_range_uses_scroll_offset_and_viewport_height() {
-        assert_eq!(project_tree_visible_entry_range(20, 0.0, 90.0), 0..3);
-        assert_eq!(project_tree_visible_entry_range(20, -45.0, 90.0), 1..5);
-        assert_eq!(project_tree_visible_entry_range(20, -600.0, 90.0), 19..20);
-        assert_eq!(project_tree_visible_entry_range(20, 0.0, 0.0), 0..20);
+    fn file_tree_scroll_offset_maps_to_gpui_scroll_strategy() {
+        assert_eq!(
+            scroll_strategy_for_file_tree_offset(FileTreeScrollOffset::Top),
+            ScrollStrategy::Top
+        );
+        assert_eq!(
+            scroll_strategy_for_file_tree_offset(FileTreeScrollOffset::Center),
+            ScrollStrategy::Center
+        );
+        assert_eq!(
+            scroll_strategy_for_file_tree_offset(FileTreeScrollOffset::Nearest),
+            ScrollStrategy::Nearest
+        );
     }
 
     #[test]
-    fn preferred_project_tree_width_ignores_entries_outside_visible_range() {
-        let mut offscreen_long = FileTreeEntry::new_file(
+    fn preferred_project_tree_width_uses_longest_entry_across_full_tree() {
+        let mut long = FileTreeEntry::new_file(
             FileTreeEntryId(1),
-            PathBuf::from("/workspace/extremely_long_name_that_is_not_visible.rs"),
+            PathBuf::from("/workspace/extremely_long_name_that_can_scroll.rs"),
             0,
             None,
         );
-        offscreen_long.depth = 1;
-        let mut visible_short = FileTreeEntry::new_file(
+        long.depth = 1;
+        let mut short = FileTreeEntry::new_file(
             FileTreeEntryId(2),
             PathBuf::from("/workspace/lib.rs"),
             0,
             None,
         );
-        visible_short.depth = 1;
+        short.depth = 1;
 
-        let entries = [offscreen_long.clone(), visible_short.clone()];
-        let expected =
-            project_tree_entry_min_width(&visible_short) + PROJECT_TREE_SIDEBAR_WIDTH_PADDING_PX;
+        let entries = [long.clone(), short];
+        let expected = project_tree_entry_min_width(&long) + PROJECT_TREE_SIDEBAR_WIDTH_PADDING_PX;
 
-        assert_eq!(
-            preferred_project_tree_width_in_range(&entries, 1..2),
-            expected
-        );
-        assert_eq!(
-            widest_visible_project_tree_entry_index(&entries, 1..2),
-            Some(1)
-        );
+        assert_eq!(preferred_project_tree_width(&entries), expected);
+        assert_eq!(widest_project_tree_entry_index(&entries), Some(0));
+    }
+
+    #[gpui::test]
+    async fn scroll_to_path_selects_visible_path_and_schedules_offset(cx: &mut TestAppContext) {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root_path = temp_dir.path().to_path_buf();
+        let target_path = root_path.join("target.rs");
+        std::fs::write(root_path.join("a.rs"), "a\n").unwrap();
+        std::fs::write(&target_path, "target\n").unwrap();
+
+        let view = cx.new(|cx| FileTreeView::new(root_path, test_config(), cx));
+
+        view.update(cx, |view, cx| {
+            assert!(view.scroll_to_path(
+                &target_path,
+                FileTreeScrollToPathOptions {
+                    focus: true,
+                    offset: FileTreeScrollOffset::Center,
+                },
+                cx,
+            ));
+            assert_eq!(view.selected_path(), Some(&target_path));
+            assert_eq!(view.selected_paths(), vec![target_path.clone()]);
+
+            let scroll_state = view.scroll_handle.0.borrow();
+            let deferred = scroll_state.deferred_scroll_to_item.as_ref().unwrap();
+            assert_eq!(deferred.item_index, 2);
+            assert_eq!(deferred.strategy, ScrollStrategy::Center);
+            assert!(deferred.scroll_strict);
+        });
+    }
+
+    #[gpui::test]
+    async fn scroll_to_path_can_preserve_selection_with_nearest_offset(cx: &mut TestAppContext) {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root_path = temp_dir.path().to_path_buf();
+        let target_path = root_path.join("target.rs");
+        std::fs::write(root_path.join("a.rs"), "a\n").unwrap();
+        std::fs::write(&target_path, "target\n").unwrap();
+
+        let view = cx.new(|cx| FileTreeView::new(root_path.clone(), test_config(), cx));
+
+        view.update(cx, |view, cx| {
+            assert_eq!(view.selected_path(), Some(&root_path));
+            assert!(view.scroll_to_path(
+                &target_path,
+                FileTreeScrollToPathOptions {
+                    focus: false,
+                    offset: FileTreeScrollOffset::Nearest,
+                },
+                cx,
+            ));
+            assert_eq!(view.selected_path(), Some(&root_path));
+            assert_eq!(view.selected_paths(), vec![root_path.clone()]);
+
+            let scroll_state = view.scroll_handle.0.borrow();
+            let deferred = scroll_state.deferred_scroll_to_item.as_ref().unwrap();
+            assert_eq!(deferred.item_index, 2);
+            assert_eq!(deferred.strategy, ScrollStrategy::Nearest);
+            assert!(!deferred.scroll_strict);
+        });
+    }
+
+    #[gpui::test]
+    async fn scroll_to_path_ignores_known_paths_that_are_not_visible(cx: &mut TestAppContext) {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root_path = temp_dir.path().to_path_buf();
+        let src_path = root_path.join("src");
+        let target_path = src_path.join("lib.rs");
+        std::fs::create_dir(&src_path).unwrap();
+        std::fs::write(&target_path, "pub fn lib() {}\n").unwrap();
+
+        let view = cx.new(|cx| FileTreeView::new(root_path, test_config(), cx));
+
+        view.update(cx, |view, cx| {
+            view.tree.collapse_directory(&src_path).unwrap();
+
+            assert!(
+                !view.scroll_to_path(&target_path, FileTreeScrollToPathOptions::default(), cx,)
+            );
+            assert!(
+                view.scroll_handle
+                    .0
+                    .borrow()
+                    .deferred_scroll_to_item
+                    .is_none()
+            );
+        });
     }
 
     #[gpui::test]
@@ -1550,6 +2262,7 @@ mod tests {
 
         view.read_with(cx, |view, _cx| {
             assert_eq!(view.selected_path(), Some(&root_path));
+            assert_eq!(view.selected_paths(), vec![root_path.clone()]);
             assert!(!view.tree.is_expanded(&root_path));
         });
 
@@ -1557,6 +2270,126 @@ mod tests {
         assert!(events.contains(&FileTreeEvent::DirectoryToggled {
             path: root_path,
             expanded: false,
+        }));
+    }
+
+    #[gpui::test]
+    async fn search_query_selects_first_visible_match(cx: &mut TestAppContext) {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root_path = temp_dir.path().to_path_buf();
+        let button_path = root_path.join("button.rs");
+        let readme_path = root_path.join("README.md");
+        std::fs::write(&button_path, "button\n").unwrap();
+        std::fs::write(&readme_path, "readme\n").unwrap();
+
+        let view = cx.new(|cx| FileTreeView::new(root_path, test_config(), cx));
+
+        view.update(cx, |view, cx| {
+            view.set_search_query(Some("button".to_string()), cx);
+        });
+        cx.run_until_parked();
+
+        view.read_with(cx, |view, _cx| {
+            assert_eq!(view.search_query(), Some("button"));
+            assert_eq!(view.selected_path(), Some(&button_path));
+            assert_eq!(view.selected_paths(), vec![button_path.clone()]);
+        });
+
+        view.update(cx, |view, cx| {
+            view.clear_search_query(cx);
+        });
+        cx.run_until_parked();
+
+        view.read_with(cx, |view, _cx| {
+            assert_eq!(view.search_query(), None);
+        });
+    }
+
+    #[gpui::test]
+    async fn search_request_emits_current_query(cx: &mut TestAppContext) {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root_path = temp_dir.path().to_path_buf();
+        std::fs::write(root_path.join("button.rs"), "button\n").unwrap();
+
+        let view = cx.new(|cx| FileTreeView::new(root_path, test_config(), cx));
+        let events = subscribe_file_tree_events(cx, &view);
+
+        view.update(cx, |view, cx| {
+            view.set_search_query(Some("button".to_string()), cx);
+            view.request_search(cx);
+        });
+        cx.run_until_parked();
+
+        assert!(events.borrow().contains(&FileTreeEvent::SearchRequested {
+            initial_query: Some("button".to_string()),
+        }));
+    }
+
+    #[gpui::test]
+    async fn directory_rename_rebases_loaded_descendant_selection(cx: &mut TestAppContext) {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root_path = temp_dir.path().to_path_buf();
+        let src_path = root_path.join("src");
+        let nested_path = src_path.join("nested");
+        let file_path = nested_path.join("lib.rs");
+        let renamed_path = root_path.join("crates");
+        let renamed_file_path = renamed_path.join("nested").join("lib.rs");
+        std::fs::create_dir_all(&nested_path).unwrap();
+        std::fs::write(&file_path, "pub fn lib() {}\n").unwrap();
+
+        let view = cx.new(|cx| FileTreeView::new(root_path, test_config(), cx));
+        std::fs::rename(&src_path, &renamed_path).unwrap();
+
+        view.update(cx, |view, cx| {
+            view.select_path(Some(file_path.clone()), cx);
+            view.handle_file_renamed(&src_path, &renamed_path, cx);
+        });
+        cx.run_until_parked();
+
+        view.read_with(cx, |view, _cx| {
+            assert_eq!(view.selected_path(), Some(&renamed_file_path));
+            assert_eq!(view.selected_paths(), vec![renamed_file_path.clone()]);
+            assert!(view.contains_path(&renamed_file_path));
+            assert!(!view.contains_path(&file_path));
+        });
+    }
+
+    #[gpui::test]
+    async fn entry_drop_moves_file_into_target_directory(cx: &mut TestAppContext) {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root_path = temp_dir.path().to_path_buf();
+        let source_dir = root_path.join("src");
+        let target_dir = root_path.join("crates");
+        let file_path = source_dir.join("lib.rs");
+        let moved_file_path = target_dir.join("lib.rs");
+        std::fs::create_dir_all(&source_dir).unwrap();
+        std::fs::create_dir_all(&target_dir).unwrap();
+        std::fs::write(&file_path, "pub fn lib() {}\n").unwrap();
+
+        let view = cx.new(|cx| FileTreeView::new(root_path, test_config(), cx));
+        let events = subscribe_file_tree_events(cx, &view);
+
+        view.update(cx, |view, cx| {
+            view.select_path(Some(file_path.clone()), cx);
+            view.handle_entry_move_requested(&file_path, &target_dir, cx);
+        });
+        cx.run_until_parked();
+
+        view.read_with(cx, |view, _cx| {
+            assert_eq!(view.selected_path(), Some(&moved_file_path));
+            assert_eq!(view.selected_paths(), vec![moved_file_path.clone()]);
+            assert!(view.contains_path(&moved_file_path));
+            assert!(!view.contains_path(&file_path));
+        });
+        assert!(!file_path.exists());
+        assert!(moved_file_path.exists());
+
+        assert!(events.borrow().contains(&FileTreeEvent::FileSystemChanged {
+            path: moved_file_path.clone(),
+            kind: FileSystemEventKind::Renamed {
+                from: file_path,
+                to: moved_file_path,
+            },
         }));
     }
 }
@@ -1579,9 +2412,7 @@ impl Render for FileTreeView {
         // Use nucleotide-ui theme access for consistent styling
         let theme = cx.theme().clone();
         let entries = self.tree.visible_entries();
-        let visible_entry_range = self.visible_entry_range(entries.len());
-        let width_measure_item_index =
-            widest_visible_project_tree_entry_index(&entries, visible_entry_range);
+        let width_measure_item_index = widest_project_tree_entry_index(&entries);
 
         // (debug logging removed)
 
@@ -1631,6 +2462,26 @@ impl Render for FileTreeView {
             .on_action(cx.listener(
                 |view, _: &crate::actions::file_tree::SelectPrev, _window, cx| {
                     view.select_previous(cx);
+                },
+            ))
+            .on_action(cx.listener(
+                |view, _: &crate::actions::file_tree::StartSearch, _window, cx| {
+                    view.request_search(cx);
+                },
+            ))
+            .on_action(cx.listener(
+                |view, _: &crate::actions::file_tree::ClearSearch, _window, cx| {
+                    view.clear_search_query(cx);
+                },
+            ))
+            .on_action(cx.listener(
+                |view, _: &crate::actions::file_tree::SelectNextSearchMatch, _window, cx| {
+                    view.select_next_search_match(cx);
+                },
+            ))
+            .on_action(cx.listener(
+                |view, _: &crate::actions::file_tree::SelectPrevSearchMatch, _window, cx| {
+                    view.select_previous_search_match(cx);
                 },
             ))
             .on_action(cx.listener(
