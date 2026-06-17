@@ -5,9 +5,11 @@
 #[allow(clippy::field_reassign_with_default, clippy::assertions_on_constants)]
 mod tests {
     use crate::config::{
-        Config, EditorGuiConfig, FileOpsConfig, GuiConfig, LspConfig, PreviewTabsConfig,
-        TabBarConfig, TabsConfig, ThemeConfig, ThemeMode, UiConfig, WindowConfig,
+        Config, EditorGuiConfig, FileOpsConfig, FileTreeUiConfig, GuiConfig, LspConfig,
+        PreviewTabsConfig, TabBarConfig, TabsConfig, ThemeConfig, ThemeMode, UiConfig,
+        WindowConfig,
     };
+    use crate::file_tree::FileTreeDisplayDensity;
 
     use nucleotide_types::{FontConfig, FontWeight, ProjectMarkersConfig};
     use std::fs;
@@ -51,6 +53,7 @@ mod tests {
         assert_eq!(config.theme.dark_theme, None);
         assert!(!config.window.blur_dark_themes);
         assert!(config.window.appearance_follows_theme);
+        assert_eq!(config.file_tree.density, FileTreeDisplayDensity::Default);
     }
 
     #[test]
@@ -76,6 +79,9 @@ dark_theme = "tokyo_night"
 [window]
 blur_dark_themes = true
 appearance_follows_theme = false
+
+[file_tree]
+density = "relaxed"
 "#;
 
         let config: GuiConfig = toml::from_str(config_content).expect("Failed to parse config");
@@ -102,6 +108,7 @@ appearance_follows_theme = false
         // Test window config
         assert!(config.window.blur_dark_themes);
         assert!(!config.window.appearance_follows_theme);
+        assert_eq!(config.file_tree.density, FileTreeDisplayDensity::Relaxed);
     }
 
     #[test]
@@ -127,6 +134,7 @@ mode = "light"
 
         // Test theme config
         assert_eq!(config.theme.mode, ThemeMode::Light);
+        assert_eq!(config.file_tree.density, FileTreeDisplayDensity::Default);
         assert_eq!(config.theme.get_light_theme(), "nucleotide-outdoors"); // Default
         assert_eq!(config.theme.get_dark_theme(), "nucleotide-teal"); // Default
     }
@@ -392,6 +400,7 @@ dark_theme = "custom_dark"
             tab_bar: TabBarConfig::default(),
             tabs: TabsConfig::default(),
             preview_tabs: PreviewTabsConfig::default(),
+            file_tree: FileTreeUiConfig::default(),
             lsp: LspConfig::default(),
             project_markers: ProjectMarkersConfig::default(),
             file_ops: FileOpsConfig::default(),
@@ -413,6 +422,10 @@ dark_theme = "custom_dark"
         assert_eq!(
             original_config.window.blur_dark_themes,
             deserialized.window.blur_dark_themes
+        );
+        assert_eq!(
+            original_config.file_tree.density,
+            deserialized.file_tree.density
         );
     }
 

@@ -16,6 +16,7 @@ pub use tree::FileTree;
 pub use view::FileTreeView;
 pub use watcher::DebouncedFileTreeWatcher;
 
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Events emitted by the file tree
@@ -87,6 +88,37 @@ pub enum FileTreeCollisionStrategy {
     Skip,
 }
 
+/// Display density preset for project-tree rows.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FileTreeDisplayDensity {
+    /// Tighter rows and spacing.
+    Compact,
+    /// Standard project-tree rows and spacing.
+    #[default]
+    Default,
+    /// Roomier rows and spacing.
+    Relaxed,
+}
+
+impl FileTreeDisplayDensity {
+    pub fn spacing_factor(self) -> f32 {
+        match self {
+            Self::Compact => 0.8,
+            Self::Default => 1.0,
+            Self::Relaxed => 1.2,
+        }
+    }
+
+    pub fn row_height_px(self) -> f32 {
+        match self {
+            Self::Compact => 24.0,
+            Self::Default => 30.0,
+            Self::Relaxed => 36.0,
+        }
+    }
+}
+
 /// Configuration for file tree behavior
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -103,6 +135,8 @@ pub struct FileTreeConfig {
     pub flatten_empty_directories: bool,
     /// Search projection strategy.
     pub search_mode: FileTreeSearchMode,
+    /// Project-tree display density.
+    pub density: FileTreeDisplayDensity,
 }
 
 impl Default for FileTreeConfig {
@@ -114,6 +148,7 @@ impl Default for FileTreeConfig {
             watch_filesystem: true,
             flatten_empty_directories: true,
             search_mode: FileTreeSearchMode::ExpandMatches,
+            density: FileTreeDisplayDensity::Default,
         }
     }
 }

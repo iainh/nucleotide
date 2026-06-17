@@ -14,6 +14,10 @@ family = "SF Mono"           # Font family name
 weight = "medium"            # Options: thin, extralight, light, normal, medium, semibold, bold, extrabold, black
 size = 14.0                  # Font size in pixels
 
+# File tree display configuration
+[file_tree]
+density = "default"          # Options: compact, default, relaxed
+
 # Note: All standard Helix configuration options from config.toml are also supported here.
 # Any settings not specified in nucleotide.toml will fall back to values in config.toml.
 # 

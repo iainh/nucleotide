@@ -753,6 +753,13 @@ const FILE_TREE_MIN_WIDTH: f32 = 96.0;
 const FILE_TREE_DEFAULT_WIDTH: f32 = 240.0;
 const FILE_TREE_MIN_EDITOR_WIDTH: f32 = 200.0;
 
+fn file_tree_config_from_gui(config: &crate::config::GuiConfig) -> FileTreeConfig {
+    FileTreeConfig {
+        density: config.file_tree.density,
+        ..FileTreeConfig::default()
+    }
+}
+
 fn tab_bar_layout_height(
     row_height: Pixels,
     show_pinned_tabs_in_separate_row: bool,
@@ -2665,12 +2672,11 @@ impl Workspace {
         })
         .detach();
 
+        let file_tree_config = file_tree_config_from_gui(&core.read(cx).config.gui);
         let file_tree = root_path.map(|root_path| {
             let handle_clone = handle.clone();
-            cx.new(|cx| {
-                let config = FileTreeConfig::default();
-                FileTreeView::new_with_runtime(root_path, config, Some(handle_clone), cx)
-            })
+            let config = file_tree_config.clone();
+            cx.new(|cx| FileTreeView::new_with_runtime(root_path, config, Some(handle_clone), cx))
         });
 
         // Subscribe to file tree events if we have a file tree
@@ -6562,8 +6568,8 @@ impl Workspace {
 
         // Update the file tree with the new directory
         let handle_clone = self.handle.clone();
+        let config = file_tree_config_from_gui(&self.core.read(cx).config.gui);
         let new_file_tree = cx.new(|cx| {
-            let config = FileTreeConfig::default();
             FileTreeView::new_with_runtime(path.to_path_buf(), config, Some(handle_clone), cx)
         });
 
@@ -6693,6 +6699,7 @@ impl Workspace {
                 let old_max_tabs = self.core.read(cx).config.gui.max_tabs;
                 let new_max_tabs = new_config.gui.max_tabs;
                 let preview_tabs_enabled = new_config.gui.preview_tabs.enabled;
+                let file_tree_config = file_tree_config_from_gui(&new_config.gui);
                 let ui_font = new_config.ui_font();
 
                 let ui_font_config = cx.global_mut::<crate::types::UiFontConfig>();
@@ -6719,6 +6726,12 @@ impl Workspace {
                     core.config = new_config;
                     cx.notify();
                 });
+
+                if let Some(file_tree) = &self.file_tree {
+                    file_tree.update(cx, |tree, tree_cx| {
+                        tree.set_config(file_tree_config, tree_cx);
+                    });
+                }
 
                 if !preview_tabs_enabled {
                     self.clear_preview_documents(cx);
@@ -13182,6 +13195,19 @@ mod tests {
         assert_eq!(
             Workspace::clamped_file_tree_auto_width(900.0, 1000.0),
             800.0
+        );
+    }
+
+    #[test]
+    fn file_tree_config_from_gui_uses_configured_density() {
+        let mut gui_config = crate::config::GuiConfig::default();
+        gui_config.file_tree.density = crate::file_tree::FileTreeDisplayDensity::Relaxed;
+
+        let file_tree_config = file_tree_config_from_gui(&gui_config);
+
+        assert_eq!(
+            file_tree_config.density,
+            crate::file_tree::FileTreeDisplayDensity::Relaxed
         );
     }
 
