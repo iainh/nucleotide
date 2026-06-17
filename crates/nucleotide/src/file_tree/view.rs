@@ -5,8 +5,8 @@ use crate::file_tree::watcher::FileTreeWatcher;
 use crate::file_tree::{
     FileTree, FileTreeConfig, FileTreeEntry, FileTreeEvent,
     sidebar::{
-        ProjectTreeRow, ProjectTreeRowAction, ProjectTreeRowEvent, project_tree_entry_min_width,
-        render_project_tree_row,
+        PROJECT_TREE_ROW_HEIGHT_PX, ProjectTreeRow, ProjectTreeRowAction, ProjectTreeRowEvent,
+        project_tree_entry_min_width, render_project_tree_row,
     },
 };
 use gpui::prelude::FluentBuilder;
@@ -18,22 +18,96 @@ use gpui::{
 use nucleotide_logging::{debug, error, warn};
 use nucleotide_types::{VcsStatus, scrollbar::SCROLLBAR_THICKNESS};
 use nucleotide_ui::ThemedContext as UIThemedContext;
-use nucleotide_ui::scrollbar::{Scrollbar, ScrollbarState};
+use nucleotide_ui::scrollbar::{ScrollableHandle, Scrollbar, ScrollbarState};
 use nucleotide_vcs::VcsServiceHandle;
-use std::path::{Path, PathBuf};
+use std::{
+    ops::Range,
+    path::{Path, PathBuf},
+};
+
+const PROJECT_TREE_SIDEBAR_WIDTH_PADDING_PX: f32 = 12.0;
 
 fn should_focus_editor_for_project_tree_open(click_count: usize) -> bool {
     click_count > 1
 }
 
 fn widest_project_tree_entry_index(entries: &[FileTreeEntry]) -> Option<usize> {
+    widest_project_tree_entry_index_in_range(entries, 0..entries.len())
+}
+
+fn widest_visible_project_tree_entry_index(
+    entries: &[FileTreeEntry],
+    visible_range: Range<usize>,
+) -> Option<usize> {
+    if visible_range.start == 0 && visible_range.end >= entries.len() {
+        widest_project_tree_entry_index(entries)
+    } else {
+        widest_project_tree_entry_index_in_range(entries, visible_range)
+    }
+}
+
+fn widest_project_tree_entry_index_in_range(
+    entries: &[FileTreeEntry],
+    range: Range<usize>,
+) -> Option<usize> {
+    let start = range.start;
     entries
+        .get(range)?
         .iter()
         .enumerate()
         .max_by(|(_, left), (_, right)| {
             project_tree_entry_min_width(left).total_cmp(&project_tree_entry_min_width(right))
         })
-        .map(|(index, _)| index)
+        .map(|(range_index, _)| start + range_index)
+}
+
+fn preferred_project_tree_width(entries: &[FileTreeEntry]) -> f32 {
+    entries
+        .iter()
+        .map(project_tree_entry_min_width)
+        .fold(0.0_f32, f32::max)
+        + PROJECT_TREE_SIDEBAR_WIDTH_PADDING_PX
+}
+
+fn preferred_project_tree_width_in_range(
+    entries: &[FileTreeEntry],
+    visible_range: Range<usize>,
+) -> f32 {
+    if visible_range.start == 0 && visible_range.end >= entries.len() {
+        return preferred_project_tree_width(entries);
+    }
+
+    entries
+        .get(visible_range)
+        .unwrap_or(&[])
+        .iter()
+        .map(project_tree_entry_min_width)
+        .fold(0.0_f32, f32::max)
+        + PROJECT_TREE_SIDEBAR_WIDTH_PADDING_PX
+}
+
+fn project_tree_visible_entry_range(
+    entry_count: usize,
+    scroll_offset_y: f32,
+    viewport_height: f32,
+) -> Range<usize> {
+    if entry_count == 0 {
+        return 0..0;
+    }
+
+    if viewport_height <= 0.0 {
+        return 0..entry_count;
+    }
+
+    let scroll_top = (-scroll_offset_y).max(0.0);
+    let first = (scroll_top / PROJECT_TREE_ROW_HEIGHT_PX).floor().max(0.0) as usize;
+    let last = ((scroll_top + viewport_height) / PROJECT_TREE_ROW_HEIGHT_PX)
+        .ceil()
+        .max(0.0) as usize;
+    let start = first.min(entry_count.saturating_sub(1));
+    let end = last.clamp(start + 1, entry_count);
+
+    start..end
 }
 
 /// File tree view component
@@ -532,6 +606,20 @@ impl FileTreeView {
     /// Get tree statistics
     pub fn stats(&self) -> crate::file_tree::tree::FileTreeStats {
         self.tree.stats()
+    }
+
+    /// Preferred sidebar width for the current visible tree contents.
+    pub fn preferred_width(&self) -> f32 {
+        let entries = self.tree.visible_entries_snapshot();
+        preferred_project_tree_width_in_range(&entries, self.visible_entry_range(entries.len()))
+    }
+
+    fn visible_entry_range(&self, entry_count: usize) -> Range<usize> {
+        project_tree_visible_entry_range(
+            entry_count,
+            f32::from(self.scroll_handle.offset().y),
+            f32::from(self.scroll_handle.viewport().size.height),
+        )
     }
 
     /// Start async VCS refresh
@@ -1316,6 +1404,67 @@ mod tests {
         );
     }
 
+    #[test]
+    fn preferred_project_tree_width_uses_longest_visible_entry_plus_padding() {
+        let mut shallow = FileTreeEntry::new_file(
+            FileTreeEntryId(1),
+            PathBuf::from("/workspace/main.rs"),
+            0,
+            None,
+        );
+        shallow.depth = 0;
+        let mut deep = FileTreeEntry::new_file(
+            FileTreeEntryId(2),
+            PathBuf::from("/workspace/src/nested/very_long_component_name.rs"),
+            0,
+            None,
+        );
+        deep.depth = 4;
+
+        let expected = project_tree_entry_min_width(&deep) + PROJECT_TREE_SIDEBAR_WIDTH_PADDING_PX;
+
+        assert_eq!(preferred_project_tree_width(&[shallow, deep]), expected);
+    }
+
+    #[test]
+    fn project_tree_visible_entry_range_uses_scroll_offset_and_viewport_height() {
+        assert_eq!(project_tree_visible_entry_range(20, 0.0, 90.0), 0..3);
+        assert_eq!(project_tree_visible_entry_range(20, -45.0, 90.0), 1..5);
+        assert_eq!(project_tree_visible_entry_range(20, -600.0, 90.0), 19..20);
+        assert_eq!(project_tree_visible_entry_range(20, 0.0, 0.0), 0..20);
+    }
+
+    #[test]
+    fn preferred_project_tree_width_ignores_entries_outside_visible_range() {
+        let mut offscreen_long = FileTreeEntry::new_file(
+            FileTreeEntryId(1),
+            PathBuf::from("/workspace/extremely_long_name_that_is_not_visible.rs"),
+            0,
+            None,
+        );
+        offscreen_long.depth = 1;
+        let mut visible_short = FileTreeEntry::new_file(
+            FileTreeEntryId(2),
+            PathBuf::from("/workspace/lib.rs"),
+            0,
+            None,
+        );
+        visible_short.depth = 1;
+
+        let entries = [offscreen_long.clone(), visible_short.clone()];
+        let expected =
+            project_tree_entry_min_width(&visible_short) + PROJECT_TREE_SIDEBAR_WIDTH_PADDING_PX;
+
+        assert_eq!(
+            preferred_project_tree_width_in_range(&entries, 1..2),
+            expected
+        );
+        assert_eq!(
+            widest_visible_project_tree_entry_index(&entries, 1..2),
+            Some(1)
+        );
+    }
+
     #[gpui::test]
     async fn directory_activation_selects_entry_and_emits_toggle(cx: &mut TestAppContext) {
         let temp_dir = tempfile::tempdir().unwrap();
@@ -1367,7 +1516,9 @@ impl Render for FileTreeView {
         // Use nucleotide-ui theme access for consistent styling
         let theme = cx.theme().clone();
         let entries = self.tree.visible_entries();
-        let width_measure_item_index = widest_project_tree_entry_index(&entries);
+        let visible_entry_range = self.visible_entry_range(entries.len());
+        let width_measure_item_index =
+            widest_visible_project_tree_entry_index(&entries, visible_entry_range);
 
         // (debug logging removed)
 

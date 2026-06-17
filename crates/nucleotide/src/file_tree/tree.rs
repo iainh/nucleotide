@@ -113,6 +113,21 @@ impl FileTree {
             return cache.clone();
         }
 
+        let result = Arc::<[FileTreeEntry]>::from(self.collect_visible_entries());
+        self.visible_entries_cache = Some(result.clone());
+        result
+    }
+
+    /// Get a snapshot of visible entries without mutating the cache.
+    pub fn visible_entries_snapshot(&self) -> Arc<[FileTreeEntry]> {
+        if let Some(ref cache) = self.visible_entries_cache {
+            return cache.clone();
+        }
+
+        Arc::<[FileTreeEntry]>::from(self.collect_visible_entries())
+    }
+
+    fn collect_visible_entries(&self) -> Vec<FileTreeEntry> {
         let entries_by_parent = self.visible_entries_by_parent();
 
         // Create the root entry
@@ -144,8 +159,6 @@ impl FileTree {
             self.build_sorted_tree(&entries_by_parent, &self.root_path, &mut result);
         }
 
-        let result = Arc::<[FileTreeEntry]>::from(result);
-        self.visible_entries_cache = Some(result.clone());
         result
     }
 
