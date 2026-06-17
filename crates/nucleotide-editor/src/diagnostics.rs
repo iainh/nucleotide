@@ -1,7 +1,7 @@
 // ABOUTME: Native editor diagnostic metadata helpers
 // ABOUTME: Derives per-line diagnostic severity for gutter and highlight rendering
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use gpui::{
     BorderStyle, Bounds, Hsla, Pixels, Point, Window, fill, point, px, quad, size,
@@ -10,7 +10,7 @@ use gpui::{
 use helix_core::diagnostic::Severity;
 use helix_view::{Document, Theme};
 
-use crate::{gutter::SoftWrapGutterLine, style::helix_color_to_hsla};
+use crate::{GutterLine, style::helix_color_to_hsla};
 
 pub type DiagnosticSeverityByLine = BTreeMap<usize, Severity>;
 
@@ -73,7 +73,7 @@ pub struct DiagnosticGutterMarkerPaintPlanParams<'a> {
 
 pub struct DiagnosticGutterMarkersPaintParams<'a> {
     pub severity_by_line: &'a DiagnosticSeverityByLine,
-    pub gutter_lines: &'a [SoftWrapGutterLine],
+    pub gutter_lines: &'a [GutterLine],
     pub theme: &'a Theme,
     pub gutter_origin: Point<Pixels>,
     pub line_height: Pixels,
@@ -147,7 +147,14 @@ pub fn paint_diagnostic_gutter_markers(
     window: &mut Window,
     params: DiagnosticGutterMarkersPaintParams<'_>,
 ) {
+    let mut painted_rows = BTreeSet::new();
     for gutter_line in params.gutter_lines {
+        if !gutter_line.first_visual_line
+            || !painted_rows.insert((gutter_line.doc_line, gutter_line.visual_line))
+        {
+            continue;
+        }
+
         let Some(severity) = params.severity_by_line.get(&gutter_line.doc_line).copied() else {
             continue;
         };
