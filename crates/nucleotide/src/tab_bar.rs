@@ -236,7 +236,7 @@ impl TabBar {
             show_pinned_tabs_in_separate_row: false,
             show_close_button: TabCloseButtonVisibility::default(),
             close_position: TabClosePosition::default(),
-            file_icons: false,
+            file_icons: true,
             git_status: false,
             show_diagnostics: TabDiagnosticsVisibility::default(),
             deemphasized: false,
@@ -1169,15 +1169,14 @@ mod tests {
     }
 
     #[test]
-    fn build_tabs_propagates_file_icon_visibility() {
+    fn build_tabs_show_file_icons_by_default() {
         let tab_bar = TabBar::new(
             vec![doc(Some("/project/a.rs"), 0)],
             None,
             Some(PathBuf::from("/project")),
             |_, _, _| {},
             |_, _, _| {},
-        )
-        .file_icons(true);
+        );
 
         let documents = tab_bar.ordered_documents();
         let labels = tab_bar.document_labels(&documents);
@@ -1185,6 +1184,25 @@ mod tests {
 
         assert_eq!(tabs.len(), 1);
         assert!(tabs[0].file_icons_visible());
+    }
+
+    #[test]
+    fn build_tabs_allows_file_icons_to_be_disabled() {
+        let tab_bar = TabBar::new(
+            vec![doc(Some("/project/a.rs"), 0)],
+            None,
+            Some(PathBuf::from("/project")),
+            |_, _, _| {},
+            |_, _, _| {},
+        )
+        .file_icons(false);
+
+        let documents = tab_bar.ordered_documents();
+        let labels = tab_bar.document_labels(&documents);
+        let tabs = tab_bar.build_tabs(&documents, &labels, 0);
+
+        assert_eq!(tabs.len(), 1);
+        assert!(!tabs[0].file_icons_visible());
     }
 
     #[test]
@@ -1392,7 +1410,20 @@ mod tests {
         let tabs = default_tab_bar.build_tabs(&documents, &labels, 0);
         assert_eq!(tabs[0].diagnostic_severity(), None);
 
-        let no_icons_tab_bar = TabBar::new(
+        let all_tab_bar = TabBar::new(
+            documents.clone(),
+            None,
+            Some(PathBuf::from("/project")),
+            |_, _, _| {},
+            |_, _, _| {},
+        )
+        .file_icons(false)
+        .show_diagnostics(TabDiagnosticsVisibility::All);
+        let labels = all_tab_bar.document_labels(&documents);
+        let tabs = all_tab_bar.build_tabs(&documents, &labels, 0);
+        assert_eq!(tabs[0].diagnostic_severity(), None);
+
+        let all_tab_bar_with_icons = TabBar::new(
             documents.clone(),
             None,
             Some(PathBuf::from("/project")),
@@ -1400,9 +1431,12 @@ mod tests {
             |_, _, _| {},
         )
         .show_diagnostics(TabDiagnosticsVisibility::All);
-        let labels = no_icons_tab_bar.document_labels(&documents);
-        let tabs = no_icons_tab_bar.build_tabs(&documents, &labels, 0);
-        assert_eq!(tabs[0].diagnostic_severity(), None);
+        let labels = all_tab_bar_with_icons.document_labels(&documents);
+        let tabs = all_tab_bar_with_icons.build_tabs(&documents, &labels, 0);
+        assert_eq!(
+            tabs[0].diagnostic_severity(),
+            Some(DiagnosticSeverity::Warning)
+        );
 
         let errors_only_tab_bar = TabBar::new(
             documents.clone(),
@@ -1411,27 +1445,10 @@ mod tests {
             |_, _, _| {},
             |_, _, _| {},
         )
-        .file_icons(true)
         .show_diagnostics(TabDiagnosticsVisibility::Errors);
         let labels = errors_only_tab_bar.document_labels(&documents);
         let tabs = errors_only_tab_bar.build_tabs(&documents, &labels, 0);
         assert_eq!(tabs[0].diagnostic_severity(), None);
-
-        let all_tab_bar = TabBar::new(
-            documents.clone(),
-            None,
-            Some(PathBuf::from("/project")),
-            |_, _, _| {},
-            |_, _, _| {},
-        )
-        .file_icons(true)
-        .show_diagnostics(TabDiagnosticsVisibility::All);
-        let labels = all_tab_bar.document_labels(&documents);
-        let tabs = all_tab_bar.build_tabs(&documents, &labels, 0);
-        assert_eq!(
-            tabs[0].diagnostic_severity(),
-            Some(DiagnosticSeverity::Warning)
-        );
     }
 
     #[test]
@@ -1448,7 +1465,6 @@ mod tests {
             |_, _, _| {},
             |_, _, _| {},
         )
-        .file_icons(true)
         .show_diagnostics(TabDiagnosticsVisibility::Errors);
 
         let labels = tab_bar.document_labels(&documents);
