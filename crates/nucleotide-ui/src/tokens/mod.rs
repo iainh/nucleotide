@@ -152,6 +152,7 @@ pub struct SizeTokens {
 
     // Component sizes
     pub titlebar_height: Pixels,
+    pub statusbar_height: Pixels,
 }
 
 impl SizeTokens {
@@ -192,6 +193,7 @@ impl SizeTokens {
 
             // Component sizes
             titlebar_height: px(34.0),
+            statusbar_height: px(32.0),
         }
     }
 
