@@ -10,7 +10,7 @@ use nucleotide_events::{
 use nucleotide_logging::{debug, error, info, warn};
 use nucleotide_types::{DiffChangeType, DiffHunkInfo, VcsStatus};
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -285,14 +285,18 @@ impl VcsService {
         self.last_check = None;
     }
 
+    fn absolute_path(&self, path: &Path) -> Option<PathBuf> {
+        if path.is_absolute() {
+            Some(path.to_path_buf())
+        } else {
+            self.root_path.as_ref().map(|root| root.join(path))
+        }
+    }
+
     /// Get the VCS status for a specific file
     pub fn get_status(&self, path: &Path) -> Option<VcsStatus> {
         // Convert to absolute path if relative
-        let abs_path = if path.is_absolute() {
-            path.to_path_buf()
-        } else if let Some(ref root) = self.root_path {
-            root.join(path)
-        } else {
+        let Some(abs_path) = self.absolute_path(path) else {
             debug!(path = %path.display(), "No root path set for VCS service");
             return None;
         };
@@ -314,13 +318,7 @@ impl VcsService {
 
     /// Get diff hunks for a specific file
     pub fn get_diff_hunks(&self, path: &Path) -> Option<&[DiffHunkInfo]> {
-        let abs_path = if path.is_absolute() {
-            path.to_path_buf()
-        } else if let Some(ref root) = self.root_path {
-            root.join(path)
-        } else {
-            return None;
-        };
+        let abs_path = self.absolute_path(path)?;
 
         self.diff_hunks_cache.get(&abs_path).map(|v| v.as_slice())
     }
@@ -332,11 +330,7 @@ impl VcsService {
         file_content: Rope,
         cx: &mut Context<Self>,
     ) {
-        let abs_path = if file_path.is_absolute() {
-            file_path.to_path_buf()
-        } else if let Some(ref root) = self.root_path {
-            root.join(file_path)
-        } else {
+        let Some(abs_path) = self.absolute_path(file_path) else {
             debug!("Cannot update file diff without root path");
             return;
         };
@@ -399,15 +393,81 @@ impl VcsService {
         }
     }
 
+    /// Refresh VCS state after debounced filesystem watcher events.
+    pub fn refresh_after_file_system_changes(
+        &mut self,
+        changed_paths: &[PathBuf],
+        cx: &mut Context<Self>,
+    ) {
+        if !self.is_monitoring {
+            debug!("VCS: Ignoring filesystem changes while monitoring is disabled");
+            return;
+        }
+
+        let Some(root_path) = self.root_path.clone() else {
+            debug!("VCS: Ignoring filesystem changes without a monitored root");
+            return;
+        };
+
+        let mut seen = HashSet::new();
+        let affected_paths: Vec<PathBuf> = changed_paths
+            .iter()
+            .filter_map(|path| self.absolute_path(path))
+            .filter(|path| path.starts_with(&root_path))
+            .filter(|path| seen.insert(path.clone()))
+            .collect();
+
+        if affected_paths.is_empty() {
+            debug!("VCS: No filesystem changes within monitored root");
+            return;
+        }
+
+        debug!(
+            change_count = affected_paths.len(),
+            "VCS: Refreshing after filesystem changes"
+        );
+        self.refresh_status(cx);
+
+        for path in affected_paths {
+            self.refresh_diff_metadata_from_disk(&path, cx);
+        }
+    }
+
+    fn refresh_diff_metadata_from_disk(&mut self, abs_path: &Path, cx: &mut Context<Self>) {
+        if !abs_path.is_file() {
+            self.clear_file_diff(abs_path, cx);
+            return;
+        }
+
+        match std::fs::read_to_string(abs_path) {
+            Ok(content) => self.update_file_diff(abs_path, Rope::from_str(&content), cx),
+            Err(error) => {
+                debug!(
+                    file_path = %abs_path.display(),
+                    error = %error,
+                    "VCS: Could not refresh diff metadata from disk"
+                );
+                self.clear_file_diff(abs_path, cx);
+            }
+        }
+    }
+
+    fn clear_file_diff(&mut self, abs_path: &Path, cx: &mut Context<Self>) {
+        self.diff_handles.remove(abs_path);
+        if self.diff_hunks_cache.remove(abs_path).is_some() {
+            self.emit_vcs_event(
+                VcsEvent::DiffHunksUpdated {
+                    file_path: abs_path.to_path_buf(),
+                    hunks: Vec::new(),
+                },
+                cx,
+            );
+        }
+    }
+
     /// Get VCS status with automatic cache refresh if stale
     pub fn get_status_cached(&self, path: &Path) -> Option<VcsStatus> {
-        let abs_path = if path.is_absolute() {
-            path.to_path_buf()
-        } else if let Some(ref root) = self.root_path {
-            root.join(path)
-        } else {
-            return None;
-        };
+        let abs_path = self.absolute_path(path)?;
 
         // Check if cache entry exists and is still fresh
         if let Some(timestamp) = self.cache_timestamps.get(&abs_path) {
