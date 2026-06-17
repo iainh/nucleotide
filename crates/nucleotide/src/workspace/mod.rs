@@ -60,7 +60,7 @@ use nucleotide_core::EventBus;
 use nucleotide_events::v2::terminal::{Event as TerminalEvent, TerminalId};
 use nucleotide_terminal::TerminalBounds;
 // (no direct Workspace v2 items used here)
-use nucleotide_vcs::VcsServiceHandle;
+use nucleotide_vcs::{VcsEvent, VcsServiceHandle};
 
 type FileTreeContextMenuHandler = fn(&mut Workspace, &mut Context<Workspace>);
 type TabContextMenuHandler = fn(&mut Workspace, DocumentId, &mut Context<Workspace>);
@@ -2658,6 +2658,12 @@ impl Workspace {
                 service.start_monitoring(root_path_clone, cx);
             });
         }
+
+        let vcs_service = cx.global::<VcsServiceHandle>().service().clone();
+        cx.subscribe(&vcs_service, |workspace, _service, event: &VcsEvent, cx| {
+            workspace.handle_vcs_service_event(event, cx);
+        })
+        .detach();
 
         let file_tree = root_path.map(|root_path| {
             let handle_clone = handle.clone();
@@ -7901,12 +7907,8 @@ impl Workspace {
             }
             FileTreeEvent::FileSystemChanged { path, kind } => {
                 info!("File system change detected: {:?} - {:?}", path, kind);
-                // Handle file system changes by triggering VCS refresh
-                if let Some(ref mut file_tree) = self.file_tree {
-                    file_tree.update(cx, |tree, tree_cx| {
-                        tree.handle_file_system_change(path, tree_cx);
-                    });
-                }
+                // Tree updates and VCS refreshes are handled by the file tree at
+                // the debounced watcher batch boundary before this event is emitted.
                 cx.notify();
             }
             FileTreeEvent::VcsRefreshStarted { repository_root } => {
@@ -7951,6 +7953,40 @@ impl Workspace {
                 info!("Toggle file tree visibility requested");
                 self.show_file_tree = !self.show_file_tree;
                 cx.notify();
+            }
+        }
+    }
+
+    fn handle_vcs_service_event(&mut self, event: &VcsEvent, cx: &mut Context<Self>) {
+        match event {
+            VcsEvent::StatusUpdated { changes } => {
+                debug!(
+                    change_count = changes.len(),
+                    "Workspace: VCS status updated"
+                );
+                if let Some(file_tree) = self.file_tree.as_ref() {
+                    file_tree.update(cx, |_tree, tree_cx| {
+                        tree_cx.notify();
+                    });
+                }
+                cx.notify();
+            }
+            VcsEvent::DiffHunksUpdated { file_path, .. } => {
+                debug!(
+                    file_path = %file_path.display(),
+                    "Workspace: VCS diff metadata updated"
+                );
+                cx.notify();
+            }
+            VcsEvent::RepositoryStarted { root_path } => {
+                debug!(
+                    root_path = %root_path.display(),
+                    "Workspace: VCS repository monitoring started"
+                );
+                cx.notify();
+            }
+            VcsEvent::Error { message } => {
+                warn!(message = %message, "Workspace: VCS service error");
             }
         }
     }

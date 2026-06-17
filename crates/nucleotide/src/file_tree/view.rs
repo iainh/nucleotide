@@ -592,8 +592,7 @@ impl FileTreeView {
         let root_path = self.tree.root_path().to_path_buf();
         if path.starts_with(&root_path) {
             debug!("File system change is within repository, triggering VCS refresh");
-            // Trigger a VCS refresh after a file system change
-            self.handle_vcs_refresh(false, cx);
+            self.refresh_vcs_for_file_system_changes(&[path.to_path_buf()], cx);
         }
     }
 
@@ -954,12 +953,70 @@ impl FileTreeView {
         );
 
         // Process all collected events
+        let mut vcs_changed_paths = Vec::new();
         for (_, event) in events_to_process {
             debug!("Processing event: {:?}", event);
+            vcs_changed_paths.extend(Self::vcs_paths_for_file_system_event(&event));
             self.handle_file_system_event(event, cx);
         }
 
+        self.refresh_vcs_for_file_system_changes(&vcs_changed_paths, cx);
         self.last_fs_event_time = None;
+    }
+
+    fn vcs_paths_for_file_system_event(event: &FileTreeEvent) -> Vec<PathBuf> {
+        match event {
+            FileTreeEvent::FileSystemChanged { path, kind } => match kind {
+                crate::file_tree::FileSystemEventKind::Renamed { from, to } => {
+                    vec![from.clone(), to.clone()]
+                }
+                _ => vec![path.clone()],
+            },
+            _ => Vec::new(),
+        }
+    }
+
+    fn refresh_vcs_for_file_system_changes(
+        &mut self,
+        changed_paths: &[PathBuf],
+        cx: &mut Context<Self>,
+    ) {
+        if changed_paths.is_empty() {
+            return;
+        }
+
+        let root_path = self.tree.root_path().to_path_buf();
+        let changed_paths: Vec<PathBuf> = changed_paths
+            .iter()
+            .map(|path| {
+                if path.is_absolute() {
+                    path.clone()
+                } else {
+                    root_path.join(path)
+                }
+            })
+            .filter(|path| path.starts_with(&root_path))
+            .collect();
+
+        if changed_paths.is_empty() {
+            return;
+        }
+
+        debug!(
+            change_count = changed_paths.len(),
+            "Triggering VCS refresh for filesystem changes"
+        );
+
+        let vcs_handle = cx.global::<VcsServiceHandle>().service().clone();
+        vcs_handle.update(cx, |service, cx| {
+            if service.root_path() != Some(root_path.as_path()) {
+                service.start_monitoring(root_path, cx);
+            } else {
+                service.refresh_after_file_system_changes(&changed_paths, cx);
+            }
+        });
+
+        self.update_entries_with_vcs_status(cx);
     }
 
     /// Handle a file system event and update the tree structure
@@ -1005,10 +1062,6 @@ impl FileTreeView {
                     // Add the entry to the tree
                     self.tree.upsert_entry(entry);
                     debug!(path = ?path, "Successfully added new entry to tree");
-
-                    // Trigger VCS refresh to get correct status indicators for the new file
-                    debug!(path = ?path, "Triggering VCS refresh for newly added file");
-                    self.handle_vcs_refresh(false, cx);
 
                     cx.notify();
                 } else {
@@ -1103,10 +1156,7 @@ impl FileTreeView {
         if let Some(_existing_entry) = self.tree.entry_by_path(path) {
             // File exists in tree - this is a genuine modification
             debug!(path = ?path, "File exists in tree, treating as modification");
-
-            // For now, just refresh VCS status since file content changed
-            // We could also update metadata if needed (size, permissions, etc.)
-            self.handle_vcs_refresh(false, cx);
+            cx.notify();
         } else {
             // File doesn't exist in tree - this might be a new file creation
             // that was reported as "Modified" instead of "Created" by the OS
@@ -1185,10 +1235,6 @@ impl FileTreeView {
                     let entry = self.create_tree_entry(to, &metadata, parent);
                     self.tree.upsert_entry(entry);
                     debug!(path = ?to, "Successfully added renamed entry to tree");
-
-                    // Trigger VCS refresh to get correct status for the renamed file
-                    debug!(from = ?from, to = ?to, "Triggering VCS refresh for renamed file");
-                    self.handle_vcs_refresh(false, cx);
                 } else {
                     debug!(path = ?to, "Failed to get metadata for renamed file");
                 }
@@ -1372,6 +1418,23 @@ mod tests {
         assert!(!should_focus_editor_for_project_tree_open(1));
         assert!(should_focus_editor_for_project_tree_open(2));
         assert!(should_focus_editor_for_project_tree_open(3));
+    }
+
+    #[test]
+    fn renamed_file_system_event_refreshes_old_and_new_vcs_paths() {
+        let from = PathBuf::from("/workspace/old.rs");
+        let to = PathBuf::from("/workspace/new.rs");
+        let event = FileTreeEvent::FileSystemChanged {
+            path: to.clone(),
+            kind: crate::file_tree::FileSystemEventKind::Renamed {
+                from: from.clone(),
+                to: to.clone(),
+            },
+        };
+
+        let paths = FileTreeView::vcs_paths_for_file_system_event(&event);
+
+        assert_eq!(paths, vec![from, to]);
     }
 
     #[test]
