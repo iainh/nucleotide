@@ -4,10 +4,10 @@
 use std::sync::Arc;
 
 use gpui::{
-    App, Bounds, Pixels, Point, Result, ShapedLine, TextAlign, TextStyle, Window, WindowTextSystem,
-    black, px, white,
+    App, Bounds, Hsla, Pixels, Point, Result, ShapedLine, TextAlign, TextStyle, Window,
+    WindowTextSystem, black, fill, px, size, white,
 };
-use helix_view::{Document, Editor, Theme, View, graphics::Style};
+use helix_view::{Document, Editor, Theme, View, editor::GutterType, graphics::Style};
 
 use crate::{
     EditorLayout, SoftWrapVisualLine,
@@ -19,6 +19,8 @@ pub struct GutterLine {
     pub visual_line: u16,
     pub first_visual_line: bool,
     pub origin: Point<Pixels>,
+    pub kind: GutterLineKind,
+    pub color: Hsla,
     pub shaped_line: ShapedLine,
 }
 
@@ -30,7 +32,24 @@ pub struct GutterLinePlan {
     pub origin: Point<Pixels>,
     pub text: String,
     pub style: Style,
+    pub kind: GutterLineKind,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GutterLineKind {
+    Text,
+    DiffBar(DiffGutterStyle),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffGutterStyle {
+    Added,
+    Modified,
+}
+
+const DIFF_GUTTER_BAR_GLYPH: &str = "▍";
+const DIFF_PLUS_GUTTER_SCOPE: &str = "diff.plus.gutter";
+const DIFF_DELTA_GUTTER_SCOPE: &str = "diff.delta.gutter";
 
 pub struct GutterLineParams<'a> {
     pub layout: &'a EditorLayout,
@@ -224,6 +243,8 @@ pub fn build_gutter_lines_from_plans(
                 visual_line: plan.visual_line,
                 first_visual_line: plan.first_visual_line,
                 origin: plan.origin,
+                kind: plan.kind,
+                color: base_fg,
                 shaped_line: shaped,
             }
         })
@@ -235,9 +256,18 @@ pub fn paint_gutter_lines(
     cx: &mut App,
     lines: &[GutterLine],
     line_height: Pixels,
+    theme: &Theme,
     mut on_error: impl FnMut(Result<()>),
 ) {
     for line in lines {
+        if let GutterLineKind::DiffBar(style) = line.kind {
+            window.paint_quad(fill(
+                diff_gutter_bar_bounds(line.origin, line_height),
+                diff_gutter_bar_color(style, theme, line.color),
+            ));
+            continue;
+        }
+
         let result =
             line.shaped_line
                 .paint(line.origin, line_height, TextAlign::Left, None, window, cx);
@@ -276,8 +306,9 @@ impl<'a> GutterPlan<'a> {
         let gutter_style_virtual = theme.get("ui.gutter.virtual");
         let gutter_selected_style_virtual = theme.get("ui.gutter.selected.virtual");
 
-        for gutter_type in view.gutters() {
-            let mut gutter = gutter_type.style(editor, doc, view, theme, is_focused);
+        for &gutter_type in view.gutters() {
+            let mut gutter =
+                gutter_decoration_provider(gutter_type, editor, doc, view, theme, is_focused);
             let width = gutter_type.width(view, doc);
             let mut text = String::with_capacity(width);
             let cursors = cursors.clone();
@@ -293,12 +324,19 @@ impl<'a> GutterPlan<'a> {
                     (true, false) => gutter_selected_style_virtual,
                 };
 
-                if let Some(style) =
+                if let Some(decoration) =
                     gutter(pos.doc_line, selected, pos.first_visual_line, &mut text)
                 {
-                    renderer.render(pos, x, y, gutter_style.patch(style), Some(&text));
+                    renderer.render(
+                        pos,
+                        x,
+                        y,
+                        gutter_style.patch(decoration.style),
+                        decoration.kind,
+                        Some(&text),
+                    );
                 } else {
-                    renderer.render(pos, x, y, gutter_style, None);
+                    renderer.render(pos, x, y, gutter_style, GutterLineKind::Text, None);
                 }
                 text.clear();
             };
@@ -316,6 +354,7 @@ impl GutterRenderer for GutterPlan<'_> {
         x: u16,
         y: u16,
         style: helix_view::graphics::Style,
+        kind: GutterLineKind,
         text: Option<&str>,
     ) {
         let origin_y = self.origin.y + self.layout.line_height * f32::from(y);
@@ -335,6 +374,7 @@ impl GutterRenderer for GutterPlan<'_> {
             },
             text: text.to_string(),
             style,
+            kind,
         });
     }
 }
@@ -348,8 +388,117 @@ trait GutterRenderer {
         x: u16,
         y: u16,
         style: helix_view::graphics::Style,
+        kind: GutterLineKind,
         text: Option<&str>,
     );
+}
+
+#[derive(Debug, Clone, Copy)]
+struct GutterDecorationStyle {
+    style: Style,
+    kind: GutterLineKind,
+}
+
+type GutterDecorationProvider<'doc> =
+    Box<dyn FnMut(usize, bool, bool, &mut String) -> Option<GutterDecorationStyle> + 'doc>;
+
+fn gutter_decoration_provider<'doc>(
+    gutter_type: GutterType,
+    editor: &'doc Editor,
+    doc: &'doc Document,
+    view: &'doc View,
+    theme: &Theme,
+    is_focused: bool,
+) -> GutterDecorationProvider<'doc> {
+    if matches!(gutter_type, GutterType::Diff) {
+        return diff_gutter_decoration(doc, theme);
+    }
+
+    let mut gutter = gutter_type.style(editor, doc, view, theme, is_focused);
+    Box::new(move |line, selected, first_visual_line, out| {
+        gutter(line, selected, first_visual_line, out).map(|style| GutterDecorationStyle {
+            style,
+            kind: GutterLineKind::Text,
+        })
+    })
+}
+
+fn diff_gutter_decoration<'doc>(
+    doc: &'doc Document,
+    theme: &Theme,
+) -> GutterDecorationProvider<'doc> {
+    let added = theme.get(DIFF_PLUS_GUTTER_SCOPE);
+    let deleted = theme.get("diff.minus.gutter");
+    let modified = theme.get(DIFF_DELTA_GUTTER_SCOPE);
+
+    if let Some(diff_handle) = doc.diff_handle() {
+        let hunks = diff_handle.load();
+        let mut hunk_i = 0;
+        let mut hunk = hunks.nth_hunk(hunk_i);
+
+        Box::new(
+            move |line: usize, _selected: bool, first_visual_line: bool, out: &mut String| {
+                while hunk.after.end < line as u32
+                    || !hunk.is_pure_removal() && line as u32 == hunk.after.end
+                {
+                    hunk_i += 1;
+                    hunk = hunks.nth_hunk(hunk_i);
+                }
+
+                if hunk.after.start > line as u32 {
+                    return None;
+                }
+
+                if hunk.is_pure_insertion() {
+                    out.push_str(DIFF_GUTTER_BAR_GLYPH);
+                    Some(GutterDecorationStyle {
+                        style: added,
+                        kind: GutterLineKind::DiffBar(DiffGutterStyle::Added),
+                    })
+                } else if hunk.is_pure_removal() {
+                    if !first_visual_line {
+                        return None;
+                    }
+
+                    out.push('▔');
+                    Some(GutterDecorationStyle {
+                        style: deleted,
+                        kind: GutterLineKind::Text,
+                    })
+                } else {
+                    out.push_str(DIFF_GUTTER_BAR_GLYPH);
+                    Some(GutterDecorationStyle {
+                        style: modified,
+                        kind: GutterLineKind::DiffBar(DiffGutterStyle::Modified),
+                    })
+                }
+            },
+        )
+    } else {
+        Box::new(move |_, _, _, _| None)
+    }
+}
+
+fn diff_gutter_bar_bounds(origin: Point<Pixels>, line_height: Pixels) -> Bounds<Pixels> {
+    let width = (line_height * 0.24).max(px(3.0)).min(px(6.0));
+    Bounds::new(origin, size(width, line_height))
+}
+
+fn diff_gutter_bar_color(style: DiffGutterStyle, theme: &Theme, fallback: Hsla) -> Hsla {
+    diff_gutter_bar_color_from_style(theme.get(style.theme_scope()), fallback)
+}
+
+fn diff_gutter_bar_color_from_style(style: Style, fallback: Hsla) -> Hsla {
+    style.fg.and_then(helix_color_to_hsla).unwrap_or(fallback)
+}
+
+impl DiffGutterStyle {
+    fn theme_scope(self) -> &'static str {
+        match self {
+            Self::Added => DIFF_PLUS_GUTTER_SCOPE,
+            Self::Modified => DIFF_DELTA_GUTTER_SCOPE,
+        }
+    }
 }
 
 pub fn unwrapped_gutter_line_positions(
@@ -383,12 +532,14 @@ pub fn soft_wrap_gutter_line_positions(
 #[cfg(test)]
 mod tests {
     use gpui::{Bounds, point, px, size};
+    use helix_view::graphics::{Color, Style};
 
     use super::{
-        GutterLinePosition, gutter_origin, soft_wrap_gutter_line_positions,
-        unwrapped_gutter_line_positions,
+        DIFF_DELTA_GUTTER_SCOPE, DIFF_PLUS_GUTTER_SCOPE, DiffGutterStyle, GutterLinePosition,
+        diff_gutter_bar_bounds, diff_gutter_bar_color_from_style, gutter_origin,
+        soft_wrap_gutter_line_positions, unwrapped_gutter_line_positions,
     };
-    use crate::SoftWrapVisualLine;
+    use crate::{SoftWrapVisualLine, style::helix_color_to_hsla};
 
     #[test]
     fn gutter_positions_map_document_rows_to_visual_rows() {
@@ -431,6 +582,42 @@ mod tests {
         );
 
         assert_eq!(origin, point(px(78.0), px(36.0)));
+    }
+
+    #[test]
+    fn diff_gutter_styles_map_to_theme_scopes() {
+        assert_eq!(DiffGutterStyle::Added.theme_scope(), DIFF_PLUS_GUTTER_SCOPE);
+        assert_eq!(
+            DiffGutterStyle::Modified.theme_scope(),
+            DIFF_DELTA_GUTTER_SCOPE
+        );
+    }
+
+    #[test]
+    fn diff_gutter_bar_color_uses_themed_foreground() {
+        let fallback = helix_color_to_hsla(Color::Rgb(1, 2, 3)).unwrap();
+        let themed = helix_color_to_hsla(Color::Rgb(4, 5, 6)).unwrap();
+
+        assert_eq!(
+            diff_gutter_bar_color_from_style(Style::default().fg(Color::Rgb(4, 5, 6)), fallback),
+            themed
+        );
+        assert_eq!(
+            diff_gutter_bar_color_from_style(Style::default(), fallback),
+            fallback
+        );
+    }
+
+    #[test]
+    fn diff_gutter_bar_bounds_touch_on_adjacent_rows() {
+        let line_height = px(20.0);
+        let first = diff_gutter_bar_bounds(point(px(12.0), px(40.0)), line_height);
+        let second = diff_gutter_bar_bounds(point(px(12.0), px(60.0)), line_height);
+
+        assert_eq!(first.origin.x, second.origin.x);
+        assert_eq!(first.origin.y + first.size.height, second.origin.y);
+        assert_eq!(first.size.height, line_height);
+        assert_eq!(second.size.height, line_height);
     }
 
     fn visual_line(

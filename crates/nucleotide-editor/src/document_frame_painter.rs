@@ -846,6 +846,7 @@ fn paint_frame_gutter(
         cx,
         &gutter_lines,
         params.layout.line_height,
+        params.diagnostic_theme,
         |result| {
             let Err(e) = result else {
                 return;
