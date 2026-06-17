@@ -14,7 +14,8 @@ use nucleotide_ui::VcsIcon;
 use nucleotide_ui::{ListItem, ListItemSpacing, ListItemVariant, Theme};
 
 use crate::file_tree::{
-    FileKind, FileTreeEntry, entry::FileTreeFlattenedSegment, icons::chevron_icon,
+    FileKind, FileTreeDisplayDensity, FileTreeEntry, entry::FileTreeFlattenedSegment,
+    icons::chevron_icon,
 };
 
 pub const PROJECT_TREE_ROW_HEIGHT_PX: f32 = 30.0;
@@ -27,6 +28,28 @@ const PROJECT_TREE_ROW_PADDING_RIGHT_PX: f32 = 8.0;
 const PROJECT_TREE_GIT_STATUS_BADGE_PX: f32 = 22.0;
 const PROJECT_TREE_GIT_STATUS_LANE_PX: f32 = PROJECT_TREE_GIT_STATUS_BADGE_PX;
 const PROJECT_TREE_FILENAME_CHAR_WIDTH_PX: f32 = 8.0;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ProjectTreeDensityMetrics {
+    row_height_px: f32,
+    indent_px: f32,
+    row_gap_px: f32,
+    row_radius_px: f32,
+    padding_right_px: f32,
+}
+
+impl ProjectTreeDensityMetrics {
+    fn new(density: FileTreeDisplayDensity) -> Self {
+        let spacing_factor = density.spacing_factor();
+        Self {
+            row_height_px: density.row_height_px(),
+            indent_px: PROJECT_TREE_ROW_INDENT_PX * spacing_factor,
+            row_gap_px: PROJECT_TREE_ROW_GAP_PX * spacing_factor,
+            row_radius_px: PROJECT_TREE_ROW_RADIUS_PX * spacing_factor,
+            padding_right_px: PROJECT_TREE_ROW_PADDING_RIGHT_PX * spacing_factor,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProjectTreeRowAction {
@@ -399,6 +422,7 @@ impl From<&FileKind> for ProjectTreeRowKind {
 pub fn render_project_tree_row(
     row: ProjectTreeRow,
     theme: &Theme,
+    density: FileTreeDisplayDensity,
     on_left_mouse_down: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
     on_right_mouse_down: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
@@ -410,8 +434,9 @@ pub fn render_project_tree_row(
     } else {
         file_tree_tokens.item_text
     };
-    let indentation = px(row.depth as f32 * PROJECT_TREE_ROW_INDENT_PX);
-    let min_row_width = project_tree_row_min_width(&row);
+    let metrics = ProjectTreeDensityMetrics::new(density);
+    let indentation = px(row.depth as f32 * metrics.indent_px);
+    let min_row_width = project_tree_row_min_width(&row, density);
     let drop_target_row = row.clone();
     let drop_style_row = row.clone();
     let drop_event_row = row.clone();
@@ -423,10 +448,10 @@ pub fn render_project_tree_row(
         .id(("file-tree-entry", row.id))
         .w_full()
         .min_w(px(min_row_width))
-        .h(px(PROJECT_TREE_ROW_HEIGHT_PX))
+        .h(px(metrics.row_height_px))
         .px(px(0.0))
         .py(px(0.0))
-        .rounded(px(PROJECT_TREE_ROW_RADIUS_PX))
+        .rounded(px(metrics.row_radius_px))
         .can_drop(move |dragged, _, _| {
             dragged
                 .downcast_ref::<ProjectTreeDraggedEntry>()
@@ -459,9 +484,9 @@ pub fn render_project_tree_row(
                 .h_full()
                 .flex()
                 .items_center()
-                .gap(px(PROJECT_TREE_ROW_GAP_PX))
+                .gap(px(metrics.row_gap_px))
                 .pl(indentation)
-                .pr(px(PROJECT_TREE_ROW_PADDING_RIGHT_PX))
+                .pr(px(metrics.padding_right_px))
                 .text_color(row_foreground)
                 .when(row.is_selected, |row| {
                     row.bg(file_tree_tokens.item_background_selected)
@@ -652,21 +677,29 @@ fn git_status_badge_border_color(theme: &Theme) -> gpui::Hsla {
     theme.tokens.chrome.border_default
 }
 
-fn project_tree_row_min_width(row: &ProjectTreeRow) -> f32 {
-    project_tree_row_min_width_for(row.depth, row.file_name.chars().count())
+fn project_tree_row_min_width(row: &ProjectTreeRow, density: FileTreeDisplayDensity) -> f32 {
+    project_tree_row_min_width_for(row.depth, row.file_name.chars().count(), density)
 }
 
-pub(crate) fn project_tree_entry_min_width(entry: &FileTreeEntry) -> f32 {
-    project_tree_row_min_width_for(entry.depth, display_name(entry).chars().count())
+pub(crate) fn project_tree_entry_min_width(
+    entry: &FileTreeEntry,
+    density: FileTreeDisplayDensity,
+) -> f32 {
+    project_tree_row_min_width_for(entry.depth, display_name(entry).chars().count(), density)
 }
 
-fn project_tree_row_min_width_for(depth: usize, filename_char_count: usize) -> f32 {
-    let indentation = depth as f32 * PROJECT_TREE_ROW_INDENT_PX;
+fn project_tree_row_min_width_for(
+    depth: usize,
+    filename_char_count: usize,
+    density: FileTreeDisplayDensity,
+) -> f32 {
+    let metrics = ProjectTreeDensityMetrics::new(density);
+    let indentation = depth as f32 * metrics.indent_px;
     let fixed_width = PROJECT_TREE_CHEVRON_SLOT_PX
         + PROJECT_TREE_ICON_SIZE_PX
-        + PROJECT_TREE_ROW_PADDING_RIGHT_PX
-        + PROJECT_TREE_ROW_GAP_PX * 2.0;
-    let git_status_lane_width = PROJECT_TREE_GIT_STATUS_LANE_PX + PROJECT_TREE_ROW_GAP_PX;
+        + metrics.padding_right_px
+        + metrics.row_gap_px * 2.0;
+    let git_status_lane_width = PROJECT_TREE_GIT_STATUS_LANE_PX + metrics.row_gap_px;
     let filename_width = filename_char_count as f32 * PROJECT_TREE_FILENAME_CHAR_WIDTH_PX;
 
     indentation + fixed_width + git_status_lane_width + filename_width
@@ -786,12 +819,15 @@ mod tests {
         deep.depth = 3;
         deep.file_name = "very_long_nested_file_name.rs".to_string();
 
-        assert!(project_tree_row_min_width(&deep) > project_tree_row_min_width(&shallow));
+        assert!(
+            project_tree_row_min_width(&deep, FileTreeDisplayDensity::Default)
+                > project_tree_row_min_width(&shallow, FileTreeDisplayDensity::Default)
+        );
     }
 
     #[test]
     fn row_min_width_reserves_right_aligned_git_status_lane() {
-        let width = project_tree_row_min_width_for(0, 0);
+        let width = project_tree_row_min_width_for(0, 0, FileTreeDisplayDensity::Default);
         let expected = PROJECT_TREE_CHEVRON_SLOT_PX
             + PROJECT_TREE_ICON_SIZE_PX
             + PROJECT_TREE_ROW_PADDING_RIGHT_PX
@@ -799,6 +835,20 @@ mod tests {
             + PROJECT_TREE_ROW_GAP_PX * 3.0;
 
         assert_eq!(width, expected);
+    }
+
+    #[test]
+    fn density_metrics_match_tree_density_presets() {
+        let compact = ProjectTreeDensityMetrics::new(FileTreeDisplayDensity::Compact);
+        let default = ProjectTreeDensityMetrics::new(FileTreeDisplayDensity::Default);
+        let relaxed = ProjectTreeDensityMetrics::new(FileTreeDisplayDensity::Relaxed);
+
+        assert_eq!(compact.row_height_px, 24.0);
+        assert_eq!(default.row_height_px, PROJECT_TREE_ROW_HEIGHT_PX);
+        assert_eq!(relaxed.row_height_px, 36.0);
+        assert_eq!(compact.row_gap_px, PROJECT_TREE_ROW_GAP_PX * 0.8);
+        assert_eq!(default.row_gap_px, PROJECT_TREE_ROW_GAP_PX);
+        assert_eq!(relaxed.row_gap_px, PROJECT_TREE_ROW_GAP_PX * 1.2);
     }
 
     #[test]

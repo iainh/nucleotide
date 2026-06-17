@@ -1,6 +1,7 @@
 // ABOUTME: This file implements the GUI-specific configuration system for nucleotide
 // ABOUTME: It loads nucleotide.toml and falls back to config.toml for unspecified values
 
+use crate::file_tree::FileTreeDisplayDensity;
 use helix_loader::config_dir;
 use helix_term::config::Config as HelixConfig;
 use nucleotide_types::{FontConfig, FontWeight, ProjectMarkersConfig};
@@ -263,6 +264,22 @@ impl Default for PreviewTabsConfig {
     }
 }
 
+/// Project tree display configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileTreeUiConfig {
+    /// Density preset for project-tree rows.
+    #[serde(default)]
+    pub density: FileTreeDisplayDensity,
+}
+
+impl Default for FileTreeUiConfig {
+    fn default() -> Self {
+        Self {
+            density: FileTreeDisplayDensity::Default,
+        }
+    }
+}
+
 /// LSP feature flags configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LspConfig {
@@ -380,6 +397,10 @@ pub struct GuiConfig {
     /// Preview tab behaviour
     #[serde(default)]
     pub preview_tabs: PreviewTabsConfig,
+
+    /// File tree display settings
+    #[serde(default)]
+    pub file_tree: FileTreeUiConfig,
 
     /// LSP feature flags and configuration
     #[serde(default)]
@@ -702,6 +723,9 @@ fn load_project_markers_config(dir: &Path) -> anyhow::Result<ProjectMarkersConfi
 /// startup_timeout_ms = 5000
 /// enable_fallback = true
 ///
+/// [file_tree]
+/// density = "default" # compact, default, or relaxed
+///
 /// [project_markers]
 /// enable_project_markers = true
 /// detection_timeout_ms = 1000
@@ -797,6 +821,9 @@ enable_preview_from_multibuffer = false
 enable_preview_multibuffer_from_code_navigation = true
 enable_preview_file_from_code_navigation = false
 enable_keep_preview_on_code_navigation = true
+
+[file_tree]
+density = "compact"
 "#;
 
         let config: GuiConfig = toml::from_str(config_str).expect("Failed to parse GuiConfig");
@@ -842,6 +869,7 @@ enable_keep_preview_on_code_navigation = true
         );
         assert!(!config.preview_tabs.enable_preview_file_from_code_navigation);
         assert!(config.preview_tabs.enable_keep_preview_on_code_navigation);
+        assert_eq!(config.file_tree.density, FileTreeDisplayDensity::Compact);
     }
 
     #[test]
@@ -996,6 +1024,21 @@ enable_fallback = false
         );
         assert!(config.preview_tabs.enable_preview_file_from_code_navigation);
         assert!(!config.preview_tabs.enable_keep_preview_on_code_navigation);
+        assert_eq!(config.file_tree.density, FileTreeDisplayDensity::Default);
+    }
+
+    #[test]
+    fn test_file_tree_density_parsing() {
+        let compact: FileTreeUiConfig =
+            toml::from_str(r#"density = "compact""#).expect("should parse compact");
+        let default: FileTreeUiConfig =
+            toml::from_str(r#"density = "default""#).expect("should parse default");
+        let relaxed: FileTreeUiConfig =
+            toml::from_str(r#"density = "relaxed""#).expect("should parse relaxed");
+
+        assert_eq!(compact.density, FileTreeDisplayDensity::Compact);
+        assert_eq!(default.density, FileTreeDisplayDensity::Default);
+        assert_eq!(relaxed.density, FileTreeDisplayDensity::Relaxed);
     }
 
     #[test]

@@ -3,8 +3,8 @@
 
 use crate::file_tree::watcher::FileTreeWatcher;
 use crate::file_tree::{
-    FileSystemEventKind, FileTree, FileTreeCollisionStrategy, FileTreeConfig, FileTreeEntry,
-    FileTreeEvent,
+    FileSystemEventKind, FileTree, FileTreeCollisionStrategy, FileTreeConfig,
+    FileTreeDisplayDensity, FileTreeEntry, FileTreeEvent,
     sidebar::{
         ProjectTreeDraggedEntry, ProjectTreeRow, ProjectTreeRowAction, ProjectTreeRowEvent,
         project_tree_entry_min_width, render_project_tree_row,
@@ -80,13 +80,17 @@ fn scroll_file_tree_index(
     }
 }
 
-fn widest_project_tree_entry_index(entries: &[FileTreeEntry]) -> Option<usize> {
-    widest_project_tree_entry_index_in_range(entries, 0..entries.len())
+fn widest_project_tree_entry_index(
+    entries: &[FileTreeEntry],
+    density: FileTreeDisplayDensity,
+) -> Option<usize> {
+    widest_project_tree_entry_index_in_range(entries, 0..entries.len(), density)
 }
 
 fn widest_project_tree_entry_index_in_range(
     entries: &[FileTreeEntry],
     range: std::ops::Range<usize>,
+    density: FileTreeDisplayDensity,
 ) -> Option<usize> {
     let start = range.start;
     entries
@@ -94,15 +98,16 @@ fn widest_project_tree_entry_index_in_range(
         .iter()
         .enumerate()
         .max_by(|(_, left), (_, right)| {
-            project_tree_entry_min_width(left).total_cmp(&project_tree_entry_min_width(right))
+            project_tree_entry_min_width(left, density)
+                .total_cmp(&project_tree_entry_min_width(right, density))
         })
         .map(|(range_index, _)| start + range_index)
 }
 
-fn preferred_project_tree_width(entries: &[FileTreeEntry]) -> f32 {
+fn preferred_project_tree_width(entries: &[FileTreeEntry], density: FileTreeDisplayDensity) -> f32 {
     entries
         .iter()
-        .map(project_tree_entry_min_width)
+        .map(|entry| project_tree_entry_min_width(entry, density))
         .fold(0.0_f32, f32::max)
         + PROJECT_TREE_SIDEBAR_WIDTH_PADDING_PX
 }
@@ -282,6 +287,12 @@ impl FileTreeView {
     /// Get the current file-tree search query.
     pub fn search_query(&self) -> Option<&str> {
         self.tree.search_query()
+    }
+
+    /// Update file-tree configuration and redraw with the new rendering settings.
+    pub fn set_config(&mut self, config: FileTreeConfig, cx: &mut Context<Self>) {
+        self.tree.set_config(config);
+        cx.notify();
     }
 
     /// Return whether the tree knows about this path.
@@ -894,7 +905,7 @@ impl FileTreeView {
     /// Preferred sidebar width for the current visible tree contents.
     pub fn preferred_width(&self) -> f32 {
         let entries = self.tree.visible_entries_snapshot();
-        preferred_project_tree_width(&entries)
+        preferred_project_tree_width(&entries, self.tree.config().density)
     }
 
     /// Start async VCS refresh
@@ -1814,10 +1825,12 @@ impl FileTreeView {
         let context_menu_event = row.context_menu_event();
         let left_click_row = row.clone();
         let drop_target_path = row.path.clone();
+        let density = self.tree.config().density;
 
         render_project_tree_row(
             row,
             &theme,
+            density,
             {
                 let left_click_row = left_click_row.clone();
                 cx.listener(move |view, event: &MouseDownEvent, window, cx| {
@@ -1881,6 +1894,7 @@ mod tests {
             watch_filesystem: false,
             flatten_empty_directories: true,
             search_mode: crate::file_tree::FileTreeSearchMode::ExpandMatches,
+            density: FileTreeDisplayDensity::Default,
         }
     }
 
@@ -2085,7 +2099,10 @@ mod tests {
         medium.depth = 2;
 
         assert_eq!(
-            widest_project_tree_entry_index(&[shallow, deep, medium]),
+            widest_project_tree_entry_index(
+                &[shallow, deep, medium],
+                FileTreeDisplayDensity::Default
+            ),
             Some(1)
         );
     }
@@ -2107,9 +2124,33 @@ mod tests {
         );
         deep.depth = 4;
 
-        let expected = project_tree_entry_min_width(&deep) + PROJECT_TREE_SIDEBAR_WIDTH_PADDING_PX;
+        let expected = project_tree_entry_min_width(&deep, FileTreeDisplayDensity::Default)
+            + PROJECT_TREE_SIDEBAR_WIDTH_PADDING_PX;
 
-        assert_eq!(preferred_project_tree_width(&[shallow, deep]), expected);
+        assert_eq!(
+            preferred_project_tree_width(&[shallow, deep], FileTreeDisplayDensity::Default),
+            expected
+        );
+    }
+
+    #[test]
+    fn preferred_project_tree_width_scales_spacing_with_density() {
+        let mut entry = FileTreeEntry::new_file(
+            FileTreeEntryId(1),
+            PathBuf::from("/workspace/src/nested/main.rs"),
+            0,
+            None,
+        );
+        entry.depth = 4;
+
+        let compact =
+            preferred_project_tree_width(&[entry.clone()], FileTreeDisplayDensity::Compact);
+        let default =
+            preferred_project_tree_width(&[entry.clone()], FileTreeDisplayDensity::Default);
+        let relaxed = preferred_project_tree_width(&[entry], FileTreeDisplayDensity::Relaxed);
+
+        assert!(compact < default);
+        assert!(default < relaxed);
     }
 
     #[test]
@@ -2146,10 +2187,17 @@ mod tests {
         short.depth = 1;
 
         let entries = [long.clone(), short];
-        let expected = project_tree_entry_min_width(&long) + PROJECT_TREE_SIDEBAR_WIDTH_PADDING_PX;
+        let expected = project_tree_entry_min_width(&long, FileTreeDisplayDensity::Default)
+            + PROJECT_TREE_SIDEBAR_WIDTH_PADDING_PX;
 
-        assert_eq!(preferred_project_tree_width(&entries), expected);
-        assert_eq!(widest_project_tree_entry_index(&entries), Some(0));
+        assert_eq!(
+            preferred_project_tree_width(&entries, FileTreeDisplayDensity::Default),
+            expected
+        );
+        assert_eq!(
+            widest_project_tree_entry_index(&entries, FileTreeDisplayDensity::Default),
+            Some(0)
+        );
     }
 
     #[gpui::test]
@@ -2412,7 +2460,8 @@ impl Render for FileTreeView {
         // Use nucleotide-ui theme access for consistent styling
         let theme = cx.theme().clone();
         let entries = self.tree.visible_entries();
-        let width_measure_item_index = widest_project_tree_entry_index(&entries);
+        let density = self.tree.config().density;
+        let width_measure_item_index = widest_project_tree_entry_index(&entries, density);
 
         // (debug logging removed)
 
