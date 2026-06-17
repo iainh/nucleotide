@@ -270,12 +270,16 @@ pub struct FileTreeUiConfig {
     /// Density preset for project-tree rows.
     #[serde(default)]
     pub density: FileTreeDisplayDensity,
+    /// Collapse single-child directory chains into one visible row.
+    #[serde(default = "default_true")]
+    pub flatten_empty_directories: bool,
 }
 
 impl Default for FileTreeUiConfig {
     fn default() -> Self {
         Self {
             density: FileTreeDisplayDensity::Default,
+            flatten_empty_directories: true,
         }
     }
 }
@@ -725,6 +729,7 @@ fn load_project_markers_config(dir: &Path) -> anyhow::Result<ProjectMarkersConfi
 ///
 /// [file_tree]
 /// density = "default" # compact, default, or relaxed
+/// flatten_empty_directories = true
 ///
 /// [project_markers]
 /// enable_project_markers = true
@@ -824,6 +829,7 @@ enable_keep_preview_on_code_navigation = true
 
 [file_tree]
 density = "compact"
+flatten_empty_directories = false
 "#;
 
         let config: GuiConfig = toml::from_str(config_str).expect("Failed to parse GuiConfig");
@@ -870,6 +876,7 @@ density = "compact"
         assert!(!config.preview_tabs.enable_preview_file_from_code_navigation);
         assert!(config.preview_tabs.enable_keep_preview_on_code_navigation);
         assert_eq!(config.file_tree.density, FileTreeDisplayDensity::Compact);
+        assert!(!config.file_tree.flatten_empty_directories);
     }
 
     #[test]
@@ -1025,20 +1032,28 @@ enable_fallback = false
         assert!(config.preview_tabs.enable_preview_file_from_code_navigation);
         assert!(!config.preview_tabs.enable_keep_preview_on_code_navigation);
         assert_eq!(config.file_tree.density, FileTreeDisplayDensity::Default);
+        assert!(config.file_tree.flatten_empty_directories);
     }
 
     #[test]
-    fn test_file_tree_density_parsing() {
+    fn test_file_tree_config_parsing() {
         let compact: FileTreeUiConfig =
             toml::from_str(r#"density = "compact""#).expect("should parse compact");
         let default: FileTreeUiConfig =
             toml::from_str(r#"density = "default""#).expect("should parse default");
         let relaxed: FileTreeUiConfig =
             toml::from_str(r#"density = "relaxed""#).expect("should parse relaxed");
+        let unflattened: FileTreeUiConfig = toml::from_str(r#"flatten_empty_directories = false"#)
+            .expect("should parse flatten option");
 
         assert_eq!(compact.density, FileTreeDisplayDensity::Compact);
+        assert!(compact.flatten_empty_directories);
         assert_eq!(default.density, FileTreeDisplayDensity::Default);
+        assert!(default.flatten_empty_directories);
         assert_eq!(relaxed.density, FileTreeDisplayDensity::Relaxed);
+        assert!(relaxed.flatten_empty_directories);
+        assert_eq!(unflattened.density, FileTreeDisplayDensity::Default);
+        assert!(!unflattened.flatten_empty_directories);
     }
 
     #[test]

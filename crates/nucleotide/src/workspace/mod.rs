@@ -756,6 +756,7 @@ const FILE_TREE_MIN_EDITOR_WIDTH: f32 = 200.0;
 fn file_tree_config_from_gui(config: &crate::config::GuiConfig) -> FileTreeConfig {
     FileTreeConfig {
         density: config.file_tree.density,
+        flatten_empty_directories: config.file_tree.flatten_empty_directories,
         ..FileTreeConfig::default()
     }
 }
@@ -13199,9 +13200,10 @@ mod tests {
     }
 
     #[test]
-    fn file_tree_config_from_gui_uses_configured_density() {
+    fn file_tree_config_from_gui_uses_configured_file_tree_options() {
         let mut gui_config = crate::config::GuiConfig::default();
         gui_config.file_tree.density = crate::file_tree::FileTreeDisplayDensity::Relaxed;
+        gui_config.file_tree.flatten_empty_directories = false;
 
         let file_tree_config = file_tree_config_from_gui(&gui_config);
 
@@ -13209,6 +13211,7 @@ mod tests {
             file_tree_config.density,
             crate::file_tree::FileTreeDisplayDensity::Relaxed
         );
+        assert!(!file_tree_config.flatten_empty_directories);
     }
 
     #[test]
