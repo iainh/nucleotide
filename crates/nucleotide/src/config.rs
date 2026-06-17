@@ -192,7 +192,7 @@ pub struct TabsConfig {
     pub activate_on_close: TabActivateOnClose,
 
     /// Show file icons in tabs.
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub file_icons: bool,
 
     /// Show diagnostic decorations in tabs.
@@ -210,7 +210,7 @@ impl Default for TabsConfig {
             git_status: false,
             close_position: TabClosePosition::Right,
             activate_on_close: TabActivateOnClose::History,
-            file_icons: false,
+            file_icons: true,
             show_diagnostics: TabDiagnosticsVisibility::Off,
             show_close_button: TabCloseButtonVisibility::Hover,
         }
@@ -914,6 +914,23 @@ git_status = true
 
         assert!(config.file_icons);
         assert!(config.git_status);
+
+        let omitted_icons: TabsConfig = toml::from_str(
+            r#"
+git_status = true
+"#,
+        )
+        .expect("should default tab icons to visible");
+        assert!(omitted_icons.file_icons);
+        assert!(omitted_icons.git_status);
+
+        let disabled_icons: TabsConfig = toml::from_str(
+            r#"
+file_icons = false
+"#,
+        )
+        .expect("should allow disabling tab icons");
+        assert!(!disabled_icons.file_icons);
     }
 
     #[test]
@@ -965,7 +982,7 @@ enable_fallback = false
         );
         assert_eq!(config.tabs.close_position, TabClosePosition::Right);
         assert_eq!(config.tabs.activate_on_close, TabActivateOnClose::History);
-        assert!(!config.tabs.file_icons);
+        assert!(config.tabs.file_icons);
         assert!(!config.tabs.git_status);
         assert_eq!(config.tabs.show_diagnostics, TabDiagnosticsVisibility::Off);
         assert!(config.preview_tabs.enabled);

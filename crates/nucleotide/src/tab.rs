@@ -137,6 +137,12 @@ pub enum TabSize {
     Large,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TabContentIcon {
+    File,
+    Readonly,
+}
+
 /// Position of a tab relative to its siblings and the active tab.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum TabPosition {
@@ -256,7 +262,7 @@ impl Tab {
             position: TabPosition::First,
             close_button_visibility: TabCloseButtonVisibility::default(),
             close_position: TabClosePosition::default(),
-            show_file_icons: false,
+            show_file_icons: true,
             deemphasized: false,
             disabled: false,
             tooltip: None,
@@ -504,7 +510,7 @@ impl ComponentFactory for Tab {
             position: TabPosition::First,
             close_button_visibility: TabCloseButtonVisibility::default(),
             close_position: TabClosePosition::default(),
-            show_file_icons: false,
+            show_file_icons: true,
             deemphasized: false,
             disabled: false,
             tooltip: None,
@@ -808,12 +814,14 @@ impl Tab {
     fn build_readonly_icon(
         text_color: gpui::Hsla,
         tokens: nucleotide_ui::tokens::DesignTokens,
+        diagnostic_severity: Option<DiagnosticSeverity>,
         on_toggle_readonly: Option<MouseEventHandler>,
     ) -> gpui::AnyElement {
         let is_toggleable = on_toggle_readonly.is_some();
         let button_tokens = tokens.button_tokens();
         let icon = div()
             .id("tab-readonly-lock")
+            .relative()
             .size(tokens.sizes.text_lg)
             .flex_none()
             .flex()
@@ -828,6 +836,9 @@ impl Tab {
             .when(is_toggleable, |icon| {
                 icon.cursor(CursorStyle::PointingHand)
                     .hover(|icon| icon.bg(button_tokens.ghost_background_hover))
+            })
+            .when_some(diagnostic_severity, |icon, severity| {
+                icon.child(Tab::build_diagnostic_decoration(severity, tokens))
             })
             .tooltip(move |_window, cx| {
                 let title = Self::readonly_tooltip_title(is_toggleable);
@@ -874,6 +885,16 @@ impl Tab {
 
     fn readonly_content_tooltip_detail() -> &'static str {
         "Read-Only File"
+    }
+
+    fn content_icon_kind(is_readonly: bool, show_file_icons: bool) -> Option<TabContentIcon> {
+        if is_readonly {
+            Some(TabContentIcon::Readonly)
+        } else if show_file_icons {
+            Some(TabContentIcon::File)
+        } else {
+            None
+        }
     }
 
     fn build_diagnostic_decoration(
@@ -1142,6 +1163,8 @@ impl Tab {
         };
         let trailing_slot = div().flex_none().ml_auto().child(trailing_slot);
         let label_text_color = Tab::vcs_label_text_color(text_color, git_status, tokens);
+        let content_icon = Tab::content_icon_kind(is_readonly, show_file_icons);
+        let readonly_diagnostic_severity = show_file_icons.then_some(diagnostic_severity).flatten();
 
         div()
             .flex()
@@ -1151,21 +1174,20 @@ impl Tab {
             .min_w(px(0.0))
             .gap(tokens.sizes.space_2)
             .child(leading_slot)
-            .when(is_readonly && !show_file_icons, |row| {
-                row.child(Tab::build_readonly_icon(
-                    text_color,
-                    tokens,
-                    on_toggle_readonly.clone(),
-                ))
-            })
-            .when(show_file_icons, |row| {
-                row.child(Tab::build_icon(
+            .when_some(content_icon, |row, content_icon| match content_icon {
+                TabContentIcon::File => row.child(Tab::build_icon(
                     file_path,
                     diagnostic_severity,
                     text_color,
                     tokens,
                     cx,
-                ))
+                )),
+                TabContentIcon::Readonly => row.child(Tab::build_readonly_icon(
+                    text_color,
+                    tokens,
+                    readonly_diagnostic_severity,
+                    on_toggle_readonly.clone(),
+                )),
             })
             .child(Tab::build_label(
                 label,
@@ -1176,13 +1198,6 @@ impl Tab {
                 label_text_color,
                 tokens,
             ))
-            .when(is_readonly && show_file_icons, |row| {
-                row.child(Tab::build_readonly_icon(
-                    text_color,
-                    tokens,
-                    on_toggle_readonly.clone(),
-                ))
-            })
             .child(trailing_slot)
             .into_any_element()
     }
@@ -1265,6 +1280,23 @@ mod tests {
     #[test]
     fn readonly_content_tooltip_matches_zed_copy() {
         assert_eq!(Tab::readonly_content_tooltip_detail(), "Read-Only File");
+    }
+
+    #[test]
+    fn readonly_tabs_replace_file_icon_slot() {
+        assert_eq!(
+            Tab::content_icon_kind(false, true),
+            Some(TabContentIcon::File)
+        );
+        assert_eq!(
+            Tab::content_icon_kind(true, true),
+            Some(TabContentIcon::Readonly)
+        );
+        assert_eq!(
+            Tab::content_icon_kind(true, false),
+            Some(TabContentIcon::Readonly)
+        );
+        assert_eq!(Tab::content_icon_kind(false, false), None);
     }
 
     #[test]
