@@ -469,10 +469,9 @@ pub fn render_project_tree_row(
             }
         })
         .when(can_be_dragged, |row| {
-            row.cursor_move()
-                .on_drag(drag_payload, |dragged, position, _, cx| {
-                    cx.new(|_| ProjectTreeDragPreview::new(dragged.clone(), position))
-                })
+            row.on_drag(drag_payload, |dragged, position, _, cx| {
+                cx.new(|_| ProjectTreeDragPreview::new(dragged.clone(), position))
+            })
         })
         .on_mouse_down(MouseButton::Left, on_left_mouse_down)
         .on_mouse_down(MouseButton::Right, on_right_mouse_down)
@@ -663,13 +662,11 @@ fn git_status_label(status: VcsStatus) -> &'static str {
 
 fn git_status_color(status: VcsStatus, theme: &Theme) -> gpui::Hsla {
     match status {
-        VcsStatus::Modified => theme.tokens.editor.vcs_modified,
-        VcsStatus::Added => theme.tokens.editor.vcs_added,
+        VcsStatus::Modified | VcsStatus::Renamed => theme.tokens.editor.vcs_modified,
+        VcsStatus::Added | VcsStatus::Untracked => theme.tokens.editor.vcs_added,
         VcsStatus::Deleted => theme.tokens.editor.vcs_deleted,
-        VcsStatus::Untracked | VcsStatus::Unknown => theme.tokens.chrome.text_chrome_secondary,
-        VcsStatus::Renamed => theme.tokens.chrome.primary,
-        VcsStatus::Conflicted => theme.tokens.editor.error,
-        VcsStatus::Clean => theme.tokens.chrome.text_chrome_secondary,
+        VcsStatus::Conflicted | VcsStatus::Unknown => theme.tokens.editor.error,
+        VcsStatus::Clean => theme.tokens.file_tree_tokens().item_text,
     }
 }
 
@@ -882,7 +879,7 @@ mod tests {
         );
         assert_eq!(
             git_status_color(VcsStatus::Renamed, &theme),
-            theme.tokens.chrome.primary
+            theme.tokens.editor.vcs_modified
         );
         assert_eq!(
             git_status_color(VcsStatus::Conflicted, &theme),
@@ -890,7 +887,7 @@ mod tests {
         );
         assert_eq!(
             git_status_color(VcsStatus::Untracked, &theme),
-            theme.tokens.chrome.text_chrome_secondary
+            theme.tokens.editor.vcs_added
         );
     }
 
