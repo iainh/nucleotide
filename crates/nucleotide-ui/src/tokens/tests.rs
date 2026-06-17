@@ -166,6 +166,15 @@ mod titlebar_contrast_tests {
             titlebar_tokens.height
         );
     }
+
+    /// Test that status bar height is intentionally compact and independent of titlebar height
+    #[test]
+    fn test_statusbar_height_is_compact() {
+        let tokens = DesignTokens::light();
+
+        assert_eq!(tokens.sizes.statusbar_height, gpui::px(32.0));
+        assert!(tokens.sizes.statusbar_height < tokens.sizes.titlebar_height);
+    }
 }
 
 #[cfg(test)]

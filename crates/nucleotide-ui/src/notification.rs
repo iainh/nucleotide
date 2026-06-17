@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::time::Duration;
 
 use crate::Theme;
@@ -6,7 +5,6 @@ use gpui::{
     App, Context, FontWeight, IntoElement, ParentElement, Render, RenderOnce, Result, Styled,
     Window, div, prelude::FluentBuilder, px,
 };
-use helix_lsp::LanguageServerId;
 use helix_view::document::DocumentSavedEvent;
 use nucleotide_types::EditorStatus;
 
@@ -27,17 +25,42 @@ enum NotificationPlacement {
     Banner,
 }
 
-#[derive(Default, Debug)]
-struct LspStatus {
-    token: String,
-    title: String,
-    message: Option<String>,
-    percentage: Option<u32>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatusBarNotificationSeverity {
+    Info,
+    Success,
+    Warning,
+    Error,
 }
 
-impl LspStatus {
-    fn is_empty(&self) -> bool {
-        self.token.is_empty() && self.title.is_empty() && self.message.is_none()
+impl From<NotificationSeverity> for StatusBarNotificationSeverity {
+    fn from(severity: NotificationSeverity) -> Self {
+        match severity {
+            NotificationSeverity::Info => Self::Info,
+            NotificationSeverity::Success => Self::Success,
+            NotificationSeverity::Warning => Self::Warning,
+            NotificationSeverity::Error => Self::Error,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatusBarNotification {
+    pub label: String,
+    pub message: String,
+    pub severity: StatusBarNotificationSeverity,
+}
+
+impl StatusBarNotification {
+    fn from_notification(notification: &Notification) -> Self {
+        Self {
+            label: notification.title.to_uppercase(),
+            message: notification
+                .message
+                .clone()
+                .unwrap_or_else(|| notification.title.clone()),
+            severity: notification.severity.into(),
+        }
     }
 }
 
@@ -104,34 +127,12 @@ impl Notification {
             NotificationPlacement::StatusLine,
         )
     }
-
-    fn from_lsp(status: &LspStatus) -> Self {
-        let title = format!(
-            "{}: {} {}",
-            status.token,
-            status.title,
-            status
-                .percentage
-                .map(|s| format!("{s}%"))
-                .unwrap_or_default()
-        );
-        Notification::new(
-            title,
-            status.message.clone(),
-            NotificationSeverity::Info, // LSP notifications are typically informational
-            NotificationPlacement::StatusLine,
-        )
-    }
 }
-
-#[derive(IntoElement)]
-struct StatusLineNotification(Notification);
 
 #[derive(IntoElement)]
 struct BannerNotification(Notification);
 
 pub struct NotificationView {
-    lsp_status: HashMap<LanguageServerId, LspStatus>,
     transient_notifications: Vec<Notification>,
     next_notification_id: u64,
 }
@@ -145,7 +146,6 @@ impl Default for NotificationView {
 impl NotificationView {
     pub fn new() -> Self {
         Self {
-            lsp_status: HashMap::new(),
             transient_notifications: Vec::new(),
             next_notification_id: 1,
         }
@@ -239,120 +239,38 @@ impl NotificationView {
             self.transient_notifications.remove(index);
         }
     }
+
+    pub fn status_bar_notification(&self) -> Option<StatusBarNotification> {
+        self.transient_notifications
+            .iter()
+            .rev()
+            .find(|notification| notification.placement == NotificationPlacement::StatusLine)
+            .map(StatusBarNotification::from_notification)
+    }
 }
 
 impl Render for NotificationView {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        let mut notifications = self.transient_notifications.clone();
-        for status in self.lsp_status.values() {
-            if status.is_empty() {
-                continue;
-            }
-            notifications.push(Notification::from_lsp(status));
-        }
-
-        let mut banners = Vec::new();
-        let mut status_line = None;
-        for notification in notifications {
-            match notification.placement {
-                NotificationPlacement::StatusLine => status_line = Some(notification),
-                NotificationPlacement::Banner => banners.push(notification),
-            }
-        }
+        let banners = self
+            .transient_notifications
+            .iter()
+            .filter(|notification| notification.placement == NotificationPlacement::Banner)
+            .cloned()
+            .collect::<Vec<_>>();
 
         div()
             .absolute()
             .top_0()
-            .right_0()
-            .bottom_0()
             .left_0()
+            .right_0()
             .when(!banners.is_empty(), |view| {
                 view.child(
                     div()
-                        .absolute()
-                        .top_0()
-                        .left_0()
-                        .right_0()
                         .flex()
                         .flex_col()
                         .children(banners.into_iter().map(BannerNotification)),
                 )
             })
-            .when_some(status_line, |view, notification| {
-                view.child(StatusLineNotification(notification))
-            })
-    }
-}
-
-impl RenderOnce for StatusLineNotification {
-    fn render(mut self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let theme = cx.global::<Theme>();
-        let status_bar_tokens = theme.tokens.status_bar_tokens();
-        let notification_tokens = theme.tokens.notification_tokens();
-        let message = self
-            .0
-            .message
-            .take()
-            .unwrap_or_else(|| self.0.title.clone());
-        let label = self.0.title.to_uppercase();
-
-        let (accent_color, label_color) = match self.0.severity {
-            NotificationSeverity::Info => (
-                notification_tokens.info_border,
-                notification_tokens.info_text,
-            ),
-            NotificationSeverity::Success => (
-                notification_tokens.success_border,
-                notification_tokens.success_text,
-            ),
-            NotificationSeverity::Warning => (
-                notification_tokens.warning_border,
-                notification_tokens.warning_text,
-            ),
-            NotificationSeverity::Error => (
-                notification_tokens.error_border,
-                notification_tokens.error_text,
-            ),
-        };
-
-        div()
-            .absolute()
-            .left_0()
-            .right_0()
-            .bottom_0()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap_2()
-            .min_h(px(28.0))
-            .px_3()
-            .py_1()
-            .bg(status_bar_tokens.background_active)
-            .text_color(status_bar_tokens.text_primary)
-            .border_t_1()
-            .border_color(accent_color)
-            .font(
-                cx.global::<nucleotide_types::FontSettings>()
-                    .var_font
-                    .clone()
-                    .into(),
-            )
-            .text_size(px(cx.global::<nucleotide_types::UiFontConfig>().size - 1.0))
-            .child(
-                div()
-                    .flex_none()
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(label_color)
-                    .child(label),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .text_ellipsis()
-                    .child(message),
-            )
     }
 }
 
@@ -469,5 +387,37 @@ mod tests {
 
         assert_eq!(view.transient_notifications.len(), 1);
         assert_eq!(view.transient_notifications[0].id, 2);
+    }
+
+    #[test]
+    fn status_bar_notification_returns_latest_status_line() {
+        let mut view = NotificationView::new();
+        view.transient_notifications.push(Notification {
+            id: 1,
+            title: "info".to_string(),
+            message: Some("older".to_string()),
+            severity: NotificationSeverity::Info,
+            placement: NotificationPlacement::StatusLine,
+        });
+        view.transient_notifications.push(Notification {
+            id: 2,
+            title: "warning".to_string(),
+            message: Some("banner".to_string()),
+            severity: NotificationSeverity::Warning,
+            placement: NotificationPlacement::Banner,
+        });
+        view.transient_notifications.push(Notification {
+            id: 3,
+            title: "error".to_string(),
+            message: Some("latest".to_string()),
+            severity: NotificationSeverity::Error,
+            placement: NotificationPlacement::StatusLine,
+        });
+
+        let notification = view.status_bar_notification().unwrap();
+
+        assert_eq!(notification.label, "ERROR");
+        assert_eq!(notification.message, "latest");
+        assert_eq!(notification.severity, StatusBarNotificationSeverity::Error);
     }
 }

@@ -13,7 +13,6 @@ use std::hash::Hash;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use gpui::FontFeatures;
 use gpui::prelude::FluentBuilder;
 use gpui::{
     Anchor, App, AppContext, BorrowAppContext, Bounds, Context, DismissEvent, DragMoveEvent, Empty,
@@ -22,6 +21,7 @@ use gpui::{
     Render, ScrollHandle, Size, StatefulInteractiveElement, Styled, TextStyle, Window,
     WindowAppearance, WindowBackgroundAppearance, anchored, black, canvas, div, point, px, white,
 };
+use gpui::{FontFeatures, FontWeight};
 use helix_core::syntax::config::LanguageServerFeature;
 use helix_core::{Rope, RopeSlice, Selection};
 use helix_lsp::lsp;
@@ -35,6 +35,7 @@ use nucleotide_lsp::HelixLspBridge;
 use nucleotide_ui::ThemedContext as UIThemedContext;
 
 // ViewManager already imported above via pub use
+use nucleotide_ui::notification::{StatusBarNotification, StatusBarNotificationSeverity};
 use nucleotide_ui::{AboutWindow, Button, ButtonSize, ButtonVariant, Tooltipped};
 
 use crate::input_coordinator::{FocusGroup, InputContext, InputCoordinator};
@@ -1683,6 +1684,7 @@ impl Workspace {
         mode_name: &'static str,
         file_name: String,
         position_text: String,
+        notification: Option<StatusBarNotification>,
         lsp_indicator: Option<String>,
         divider_color: gpui::Hsla,
         status_bar_tokens: &nucleotide_ui::tokens::StatusBarTokens,
@@ -1709,7 +1711,7 @@ impl Workspace {
             .child(self.statusbar_divider(divider_color))
             .child(
                 // File name grows
-                gpui::div().flex_1().overflow_hidden().child(file_name),
+                self.statusbar_message_slot(file_name, notification, status_bar_tokens, cx),
             )
             .child(self.statusbar_divider(divider_color))
             .child(gpui::div().child(position_text).min_w(gpui::px(80.0)));
@@ -1734,6 +1736,57 @@ impl Workspace {
 
         row.into_any_element()
     }
+
+    fn statusbar_message_slot(
+        &self,
+        file_name: String,
+        notification: Option<StatusBarNotification>,
+        status_bar_tokens: &nucleotide_ui::tokens::StatusBarTokens,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let Some(notification) = notification else {
+            return gpui::div()
+                .flex_1()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .child(file_name)
+                .into_any_element();
+        };
+
+        let notification_tokens = cx.theme().tokens.notification_tokens();
+        let label_color = match notification.severity {
+            StatusBarNotificationSeverity::Info => notification_tokens.info_text,
+            StatusBarNotificationSeverity::Success => notification_tokens.success_text,
+            StatusBarNotificationSeverity::Warning => notification_tokens.warning_text,
+            StatusBarNotificationSeverity::Error => notification_tokens.error_text,
+        };
+
+        gpui::div()
+            .flex()
+            .flex_1()
+            .items_center()
+            .gap_2()
+            .overflow_hidden()
+            .child(
+                gpui::div()
+                    .flex_none()
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(label_color)
+                    .child(notification.label),
+            )
+            .child(
+                gpui::div()
+                    .flex_1()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .text_color(status_bar_tokens.text_primary)
+                    .child(notification.message),
+            )
+            .into_any_element()
+    }
+
     fn context_menu_intents() -> &'static [ProjectTreeContextMenuIntent] {
         ProjectTreeContextMenuIntent::common_file_operations()
     }
@@ -2712,6 +2765,11 @@ impl Workspace {
         cx.subscribe(&core, |workspace, _core, event: &crate::Update, cx| {
             debug!("Workspace: Received Update event from core: {:?}", event);
             workspace.handle_event(event, cx);
+        })
+        .detach();
+
+        cx.observe(&notifications, |_, _, cx| {
+            cx.notify();
         })
         .detach();
 
@@ -7902,7 +7960,7 @@ impl Workspace {
         // Use hybrid color system with StatusBarTokens
         let ui_theme = cx.global::<nucleotide_ui::Theme>();
         let status_bar_tokens = ui_theme.tokens.status_bar_tokens();
-        let status_bar_height = ui_theme.tokens.sizes.titlebar_height; // capture before mutable borrows
+        let status_bar_height = ui_theme.tokens.sizes.statusbar_height; // capture before mutable borrows
 
         // Use the hybrid chrome background colors for consistent visual hierarchy
         let bg_color = status_bar_tokens.background_active; // Always use active for unified bar
@@ -7910,8 +7968,8 @@ impl Workspace {
 
         // Extract design token values before any mutable borrows (none needed here)
 
-        // Use UI design token text sizing to match other chrome elements
-        let text_size = ui_theme.tokens.sizes.text_md;
+        // Keep status bar chrome compact and visually subordinate to editor content.
+        let text_size = ui_theme.tokens.sizes.text_sm;
 
         // Get current document info first (without LSP indicator to avoid borrow conflicts)
         let (mode, mode_name, file_name, position_text, has_lsp_state, preferred_server_id) =
@@ -7920,6 +7978,7 @@ impl Workspace {
         // Get LSP indicator separately to avoid borrowing conflicts
         let lsp_indicator =
             self.compute_statusbar_lsp_indicator(cx, has_lsp_state, preferred_server_id);
+        let notification = self.notifications.read(cx).status_bar_notification();
 
         // Use consistent border and divider colors from hybrid system
         // Status bar border color
@@ -8004,6 +8063,7 @@ impl Workspace {
                     mode_name,
                     file_name,
                     position_text,
+                    notification,
                     lsp_indicator,
                     divider_color,
                     &status_bar_tokens,
@@ -10380,7 +10440,7 @@ impl Render for Workspace {
         // Compute the editor content dimensions before reading Helix view areas,
         // so split panes use the current tree layout in this render pass.
         let ui_theme = cx.global::<nucleotide_ui::Theme>();
-        let status_bar_height = ui_theme.tokens.sizes.titlebar_height;
+        let status_bar_height = ui_theme.tokens.sizes.statusbar_height;
         let titlebar_height = self.rendered_titlebar_height(window);
         let tab_bar_height = self.visible_tab_bar_height(cx);
         let viewport_h = window.viewport_size().height;
