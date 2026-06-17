@@ -360,7 +360,6 @@ impl EditorTokens {
     /// Create editor tokens from Helix theme colors
     pub fn from_helix_colors(helix_colors: crate::theme_manager::HelixThemeColors) -> Self {
         // Prefer explicit text from theme; fallback computed below if required
-        let editor_bg = helix_colors.gutter_background;
         let text_primary = helix_colors.text_primary;
         let text_secondary = utils::with_alpha(text_primary, 0.7);
 
@@ -420,15 +419,10 @@ impl EditorTokens {
             line_number: helix_colors.line_number,
             line_number_active: helix_colors.line_number_active,
 
-            // VCS gutter indicators - use semantic colors
-            vcs_added: helix_colors.success,
-            vcs_modified: hsla(
-                210.0 / 360.0,
-                0.7,
-                if editor_bg.l > 0.5 { 0.5 } else { 0.6 },
-                1.0,
-            ), // Blue
-            vcs_deleted: helix_colors.error,
+            // VCS gutter indicators from Helix diff scopes
+            vcs_added: helix_colors.vcs_added,
+            vcs_modified: helix_colors.vcs_modified,
+            vcs_deleted: helix_colors.vcs_deleted,
 
             // Focus indicators for editor elements
             focus_ring: helix_colors.selection,

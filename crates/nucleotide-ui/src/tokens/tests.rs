@@ -100,6 +100,9 @@ mod titlebar_contrast_tests {
             error: gpui::hsla(0.0, 0.8, 0.5, 1.0),
             warning: gpui::hsla(40.0 / 360.0, 0.8, 0.5, 1.0),
             success: gpui::hsla(120.0 / 360.0, 0.6, 0.5, 1.0),
+            vcs_added: gpui::hsla(120.0 / 360.0, 0.6, 0.5, 1.0),
+            vcs_modified: gpui::hsla(210.0 / 360.0, 0.7, 0.5, 1.0),
+            vcs_deleted: gpui::hsla(0.0, 0.8, 0.5, 1.0),
             statusline: gpui::hsla(0.0, 0.0, 0.95, 1.0),
             statusline_inactive: gpui::hsla(0.0, 0.0, 0.9, 1.0),
             popup: gpui::hsla(0.0, 0.0, 0.98, 1.0),
@@ -182,6 +185,9 @@ mod component_token_tests {
             error: hsla(0.0, 0.7, 0.6, 1.0),
             warning: hsla(40.0 / 360.0, 0.8, 0.6, 1.0),
             success: hsla(120.0 / 360.0, 0.6, 0.5, 1.0),
+            vcs_added: hsla(145.0 / 360.0, 0.7, 0.5, 1.0),
+            vcs_modified: hsla(205.0 / 360.0, 0.75, 0.55, 1.0),
+            vcs_deleted: hsla(350.0 / 360.0, 0.8, 0.55, 1.0),
             statusline: hsla(0.0, 0.0, 0.2, 1.0),
             statusline_inactive: hsla(0.0, 0.0, 0.15, 1.0),
             popup: hsla(0.0, 0.0, 0.1, 1.0),
@@ -223,6 +229,9 @@ mod component_token_tests {
         // Verify that editor content colors are preserved from Helix where appropriate
         assert_eq!(file_tree.item_background_selected, helix_colors.selection);
         assert_eq!(tab_bar.tab_modified_indicator, helix_colors.warning);
+        assert_eq!(tokens.editor.vcs_added, helix_colors.vcs_added);
+        assert_eq!(tokens.editor.vcs_modified, helix_colors.vcs_modified);
+        assert_eq!(tokens.editor.vcs_deleted, helix_colors.vcs_deleted);
         assert_eq!(file_tree.background, tab_bar.container_background);
         assert_ne!(file_tree.background, titlebar.background);
 

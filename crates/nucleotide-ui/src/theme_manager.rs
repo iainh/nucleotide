@@ -21,6 +21,11 @@ pub struct HelixThemeColors {
     pub warning: Hsla,
     pub success: Hsla,
 
+    // VCS colors from Helix diff scopes
+    pub vcs_added: Hsla,
+    pub vcs_modified: Hsla,
+    pub vcs_deleted: Hsla,
+
     // UI component backgrounds
     pub statusline: Hsla,
     pub statusline_inactive: Hsla,
@@ -285,6 +290,18 @@ impl ThemeManager {
             },
             "hint" => Style {
                 fg: to_helix_color(ui_theme.tokens.editor.diagnostic_hint),
+                ..Default::default()
+            },
+            "diff.plus" => Style {
+                fg: to_helix_color(ui_theme.tokens.editor.vcs_added),
+                ..Default::default()
+            },
+            "diff.delta" => Style {
+                fg: to_helix_color(ui_theme.tokens.editor.vcs_modified),
+                ..Default::default()
+            },
+            "diff.minus" => Style {
+                fg: to_helix_color(ui_theme.tokens.editor.vcs_deleted),
                 ..Default::default()
             },
             // Enhanced cursor and selection mappings
@@ -621,6 +638,9 @@ impl ThemeManager {
             error_style,
             warning_style,
             info_style,
+            diff_plus_style,
+            diff_minus_style,
+            diff_delta_style,
         ) = if test_fallback {
             nucleotide_logging::warn!(
                 "TESTING MODE: Ignoring all theme colors to force fallback computation"
@@ -629,6 +649,9 @@ impl ThemeManager {
             use helix_view::graphics::Style;
             let empty_style = Style::default();
             (
+                empty_style,
+                empty_style,
+                empty_style,
                 empty_style,
                 empty_style,
                 empty_style,
@@ -659,6 +682,9 @@ impl ThemeManager {
             let error_style = helix_theme.get("error");
             let warning_style = helix_theme.get("warning");
             let info_style = helix_theme.get("info");
+            let diff_plus_style = helix_theme.get("diff.plus");
+            let diff_minus_style = helix_theme.get("diff.minus");
+            let diff_delta_style = helix_theme.get("diff.delta");
 
             nucleotide_logging::debug!(
                 "TITLEBAR THEME_MANAGER: Extracted Helix colors - ui.background={:?}, ui.text={:?}",
@@ -681,6 +707,9 @@ impl ThemeManager {
                 error_style,
                 warning_style,
                 info_style,
+                diff_plus_style,
+                diff_minus_style,
+                diff_delta_style,
             )
         };
 
@@ -700,6 +729,9 @@ impl ThemeManager {
                 error_available = error_style.fg.is_some(),
                 warning_available = warning_style.fg.is_some(),
                 info_available = info_style.fg.is_some(),
+                diff_plus_available = diff_plus_style.fg.is_some(),
+                diff_minus_available = diff_minus_style.fg.is_some(),
+                diff_delta_available = diff_delta_style.fg.is_some(),
                 "Theme color availability analysis (should all be false in test mode)"
             );
         }
@@ -821,6 +853,28 @@ impl ThemeManager {
         let success_from_theme = info_style.fg.and_then(color_to_hsla);
         let success = success_from_theme.unwrap_or_else(|| hsla(120.0 / 360.0, 0.6, 0.5, 1.0));
 
+        let diff_delta_fallback = hsla(
+            210.0 / 360.0,
+            0.7,
+            if background.l > 0.5 { 0.5 } else { 0.6 },
+            1.0,
+        );
+        let vcs_added_from_theme = diff_plus_style
+            .fg
+            .and_then(color_to_hsla)
+            .or_else(|| diff_plus_style.bg.and_then(color_to_hsla));
+        let vcs_deleted_from_theme = diff_minus_style
+            .fg
+            .and_then(color_to_hsla)
+            .or_else(|| diff_minus_style.bg.and_then(color_to_hsla));
+        let vcs_modified_from_theme = diff_delta_style
+            .fg
+            .and_then(color_to_hsla)
+            .or_else(|| diff_delta_style.bg.and_then(color_to_hsla));
+        let vcs_added = vcs_added_from_theme.unwrap_or(success);
+        let vcs_deleted = vcs_deleted_from_theme.unwrap_or(error);
+        let vcs_modified = vcs_modified_from_theme.unwrap_or(diff_delta_fallback);
+
         // Extract additional cursor colors from Helix theme
         let cursor_insert_from_theme = ui_cursor_insert.bg.and_then(color_to_hsla);
         let cursor_insert = cursor_insert_from_theme.unwrap_or(hsla(0.0, 1.0, 0.5, 1.0));
@@ -848,6 +902,9 @@ impl ThemeManager {
                 error_from_theme = error_from_theme.is_some(),
                 warning_from_theme = warning_from_theme.is_some(),
                 success_from_theme = success_from_theme.is_some(),
+                vcs_added_from_theme = vcs_added_from_theme.is_some(),
+                vcs_deleted_from_theme = vcs_deleted_from_theme.is_some(),
+                vcs_modified_from_theme = vcs_modified_from_theme.is_some(),
                 background_color = ?background,
                 text_color = ?text,
                 accent_color = ?accent,
@@ -893,6 +950,9 @@ impl ThemeManager {
             error,
             warning,
             success,
+            vcs_added,
+            vcs_modified,
+            vcs_deleted,
 
             // UI component backgrounds
             statusline,

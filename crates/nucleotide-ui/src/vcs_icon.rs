@@ -105,13 +105,10 @@ impl VcsIcon {
     fn get_vcs_status_color(&self, theme: &Theme) -> Option<Hsla> {
         let dt = &theme.tokens;
         match &self.vcs_status {
-            Some(VcsStatus::Modified) => Some(dt.editor.vcs_modified),
-            Some(VcsStatus::Added) => Some(dt.editor.vcs_added),
+            Some(VcsStatus::Modified | VcsStatus::Renamed) => Some(dt.editor.vcs_modified),
+            Some(VcsStatus::Added | VcsStatus::Untracked) => Some(dt.editor.vcs_added),
             Some(VcsStatus::Deleted) => Some(dt.editor.vcs_deleted),
-            Some(VcsStatus::Untracked) => Some(dt.chrome.text_chrome_secondary),
-            Some(VcsStatus::Renamed) => Some(dt.chrome.primary),
-            Some(VcsStatus::Conflicted) => Some(dt.editor.error),
-            Some(VcsStatus::Unknown) => Some(dt.chrome.text_chrome_secondary),
+            Some(VcsStatus::Conflicted | VcsStatus::Unknown) => Some(dt.editor.error),
             Some(VcsStatus::Clean) | None => None,
         }
     }
@@ -294,13 +291,11 @@ impl IntoElement for VcsIcon {
         if should_show {
             let tokens = crate::DesignTokens::dark();
             let fallback_color = match &vcs_status {
-                Some(VcsStatus::Modified) => tokens.editor.vcs_modified,
-                Some(VcsStatus::Added) => tokens.editor.vcs_added,
+                Some(VcsStatus::Modified | VcsStatus::Renamed) => tokens.editor.vcs_modified,
+                Some(VcsStatus::Added | VcsStatus::Untracked) => tokens.editor.vcs_added,
                 Some(VcsStatus::Deleted) => tokens.editor.vcs_deleted,
-                Some(VcsStatus::Untracked) => tokens.chrome.text_chrome_secondary,
-                Some(VcsStatus::Renamed) => tokens.chrome.primary,
-                Some(VcsStatus::Conflicted) => tokens.editor.error,
-                _ => tokens.chrome.text_chrome_secondary,
+                Some(VcsStatus::Conflicted | VcsStatus::Unknown) => tokens.editor.error,
+                _ => tokens.editor.text_secondary,
             };
 
             let indicator_size = (container_size * 0.5).max(6.0);
@@ -320,5 +315,51 @@ impl IntoElement for VcsIcon {
         }
 
         container
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vcs_status_color_uses_editor_vcs_tokens() {
+        let theme = Theme::from_tokens(crate::DesignTokens::dark());
+
+        let color_for = |status| {
+            VcsIcon::from_extension(Some("rs"))
+                .with_vcs_status(status)
+                .get_vcs_status_color(&theme)
+        };
+
+        assert_eq!(
+            color_for(VcsStatus::Added),
+            Some(theme.tokens.editor.vcs_added)
+        );
+        assert_eq!(
+            color_for(VcsStatus::Untracked),
+            Some(theme.tokens.editor.vcs_added)
+        );
+        assert_eq!(
+            color_for(VcsStatus::Modified),
+            Some(theme.tokens.editor.vcs_modified)
+        );
+        assert_eq!(
+            color_for(VcsStatus::Renamed),
+            Some(theme.tokens.editor.vcs_modified)
+        );
+        assert_eq!(
+            color_for(VcsStatus::Deleted),
+            Some(theme.tokens.editor.vcs_deleted)
+        );
+        assert_eq!(
+            color_for(VcsStatus::Conflicted),
+            Some(theme.tokens.editor.error)
+        );
+        assert_eq!(
+            color_for(VcsStatus::Unknown),
+            Some(theme.tokens.editor.error)
+        );
+        assert_eq!(color_for(VcsStatus::Clean), None);
     }
 }
