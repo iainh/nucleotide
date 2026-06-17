@@ -24,6 +24,8 @@ const PROJECT_TREE_CHEVRON_SLOT_PX: f32 = 14.0;
 const PROJECT_TREE_ROW_RADIUS_PX: f32 = 4.0;
 const PROJECT_TREE_ROW_GAP_PX: f32 = 6.0;
 const PROJECT_TREE_ROW_PADDING_RIGHT_PX: f32 = 8.0;
+const PROJECT_TREE_GIT_STATUS_BADGE_PX: f32 = 22.0;
+const PROJECT_TREE_GIT_STATUS_LANE_PX: f32 = PROJECT_TREE_GIT_STATUS_BADGE_PX;
 const PROJECT_TREE_FILENAME_CHAR_WIDTH_PX: f32 = 8.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -471,8 +473,9 @@ pub fn render_project_tree_row(
                     })
                 })
                 .child(render_chevron_slot(&row, theme))
-                .child(render_icon_with_vcs_status(&row, theme))
-                .child(render_filename(&row, theme)),
+                .child(render_icon(&row, theme))
+                .child(render_filename(&row, theme))
+                .child(render_git_status_lane(&row, theme)),
         )
         .into_any_element()
 }
@@ -503,7 +506,7 @@ fn render_chevron(row: &ProjectTreeRow, theme: &Theme) -> impl IntoElement {
         .text_color(chevron_color)
 }
 
-fn render_icon_with_vcs_status(row: &ProjectTreeRow, theme: &Theme) -> impl IntoElement {
+fn render_icon(row: &ProjectTreeRow, theme: &Theme) -> impl IntoElement {
     let file_tree_tokens = theme.tokens.file_tree_tokens();
     let icon_color = if row.is_selected {
         theme.tokens.editor.text_on_primary
@@ -527,12 +530,14 @@ fn render_icon_with_vcs_status(row: &ProjectTreeRow, theme: &Theme) -> impl Into
             }),
     };
 
-    vcs_icon.vcs_status(row.vcs_status).render_with_theme(theme)
+    vcs_icon.render_with_theme(theme)
 }
 
 fn render_filename(row: &ProjectTreeRow, theme: &Theme) -> impl IntoElement {
     let file_tree_tokens = theme.tokens.file_tree_tokens();
     let is_root_directory = row.depth == 0 && row.is_directory();
+    let display_status = git_status_for_display(row);
+    let text_color = filename_color(row, theme);
 
     let mut node = div()
         .flex_shrink_0()
@@ -540,21 +545,111 @@ fn render_filename(row: &ProjectTreeRow, theme: &Theme) -> impl IntoElement {
         .text_size(theme.tokens.sizes.text_md)
         .child(row.file_name.clone());
 
-    if row.is_selected {
-        node = node.text_color(theme.tokens.editor.text_on_primary);
+    if display_status.is_some() {
+        node = node.text_color(text_color);
+        if is_root_directory || row.is_search_match {
+            node = node.font_weight(gpui::FontWeight::MEDIUM);
+        }
+    } else if row.is_selected {
+        node = node.text_color(text_color);
     } else if is_root_directory || row.is_search_match {
         node = node
-            .text_color(file_tree_tokens.item_text)
+            .text_color(text_color)
             .font_weight(gpui::FontWeight::MEDIUM);
     } else if row.is_hidden {
         node = node
-            .text_color(file_tree_tokens.item_text_secondary)
+            .text_color(text_color)
             .hover(move |node| node.text_color(file_tree_tokens.item_text));
     } else {
-        node = node.text_color(file_tree_tokens.item_text);
+        node = node.text_color(text_color);
     }
 
     node
+}
+
+fn render_git_status_lane(row: &ProjectTreeRow, theme: &Theme) -> impl IntoElement {
+    let Some(status) = git_status_for_display(row) else {
+        return div()
+            .ml_auto()
+            .w(px(PROJECT_TREE_GIT_STATUS_LANE_PX))
+            .flex_shrink_0()
+            .into_any_element();
+    };
+
+    div()
+        .ml_auto()
+        .w(px(PROJECT_TREE_GIT_STATUS_LANE_PX))
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .justify_end()
+        .child(
+            div()
+                .size(px(PROJECT_TREE_GIT_STATUS_BADGE_PX))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(theme.tokens.sizes.radius_md)
+                .border_1()
+                .border_color(git_status_badge_border_color(theme))
+                .text_size(theme.tokens.sizes.text_xs)
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .text_color(git_status_color(status, theme))
+                .child(git_status_label(status)),
+        )
+        .into_any_element()
+}
+
+fn git_status_for_display(row: &ProjectTreeRow) -> Option<VcsStatus> {
+    row.vcs_status
+        .filter(|status| should_render_git_status(*status))
+}
+
+fn filename_color(row: &ProjectTreeRow, theme: &Theme) -> gpui::Hsla {
+    if let Some(status) = git_status_for_display(row) {
+        return git_status_color(status, theme);
+    }
+
+    if row.is_selected {
+        theme.tokens.editor.text_on_primary
+    } else if row.is_hidden {
+        theme.tokens.file_tree_tokens().item_text_secondary
+    } else {
+        theme.tokens.file_tree_tokens().item_text
+    }
+}
+
+fn should_render_git_status(status: VcsStatus) -> bool {
+    !matches!(status, VcsStatus::Clean)
+}
+
+fn git_status_label(status: VcsStatus) -> &'static str {
+    match status {
+        VcsStatus::Untracked => "?",
+        VcsStatus::Clean => "",
+        VcsStatus::Modified => "M",
+        VcsStatus::Added => "A",
+        VcsStatus::Deleted => "D",
+        VcsStatus::Renamed => "R",
+        VcsStatus::Conflicted => "C",
+        VcsStatus::Unknown => "!",
+    }
+}
+
+fn git_status_color(status: VcsStatus, theme: &Theme) -> gpui::Hsla {
+    match status {
+        VcsStatus::Modified => theme.tokens.editor.vcs_modified,
+        VcsStatus::Added => theme.tokens.editor.vcs_added,
+        VcsStatus::Deleted => theme.tokens.editor.vcs_deleted,
+        VcsStatus::Untracked | VcsStatus::Unknown => theme.tokens.chrome.text_chrome_secondary,
+        VcsStatus::Renamed => theme.tokens.chrome.primary,
+        VcsStatus::Conflicted => theme.tokens.editor.error,
+        VcsStatus::Clean => theme.tokens.chrome.text_chrome_secondary,
+    }
+}
+
+fn git_status_badge_border_color(theme: &Theme) -> gpui::Hsla {
+    theme.tokens.chrome.border_default
 }
 
 fn project_tree_row_min_width(row: &ProjectTreeRow) -> f32 {
@@ -571,9 +666,10 @@ fn project_tree_row_min_width_for(depth: usize, filename_char_count: usize) -> f
         + PROJECT_TREE_ICON_SIZE_PX
         + PROJECT_TREE_ROW_PADDING_RIGHT_PX
         + PROJECT_TREE_ROW_GAP_PX * 2.0;
+    let git_status_lane_width = PROJECT_TREE_GIT_STATUS_LANE_PX + PROJECT_TREE_ROW_GAP_PX;
     let filename_width = filename_char_count as f32 * PROJECT_TREE_FILENAME_CHAR_WIDTH_PX;
 
-    indentation + fixed_width + filename_width
+    indentation + fixed_width + git_status_lane_width + filename_width
 }
 
 fn display_name(entry: &FileTreeEntry) -> String {
@@ -691,6 +787,90 @@ mod tests {
         deep.file_name = "very_long_nested_file_name.rs".to_string();
 
         assert!(project_tree_row_min_width(&deep) > project_tree_row_min_width(&shallow));
+    }
+
+    #[test]
+    fn row_min_width_reserves_right_aligned_git_status_lane() {
+        let width = project_tree_row_min_width_for(0, 0);
+        let expected = PROJECT_TREE_CHEVRON_SLOT_PX
+            + PROJECT_TREE_ICON_SIZE_PX
+            + PROJECT_TREE_ROW_PADDING_RIGHT_PX
+            + PROJECT_TREE_GIT_STATUS_LANE_PX
+            + PROJECT_TREE_ROW_GAP_PX * 3.0;
+
+        assert_eq!(width, expected);
+    }
+
+    #[test]
+    fn git_status_labels_use_compact_tree_style_text() {
+        assert!(!should_render_git_status(VcsStatus::Clean));
+        assert!(should_render_git_status(VcsStatus::Modified));
+        assert_eq!(git_status_label(VcsStatus::Modified), "M");
+        assert_eq!(git_status_label(VcsStatus::Added), "A");
+        assert_eq!(git_status_label(VcsStatus::Deleted), "D");
+        assert_eq!(git_status_label(VcsStatus::Renamed), "R");
+        assert_eq!(git_status_label(VcsStatus::Untracked), "?");
+        assert_eq!(git_status_label(VcsStatus::Conflicted), "C");
+        assert_eq!(git_status_label(VcsStatus::Unknown), "!");
+    }
+
+    #[test]
+    fn git_status_colors_use_vcs_design_tokens() {
+        let theme = Theme::from_tokens(nucleotide_ui::DesignTokens::dark());
+
+        assert_eq!(
+            git_status_color(VcsStatus::Modified, &theme),
+            theme.tokens.editor.vcs_modified
+        );
+        assert_eq!(
+            git_status_color(VcsStatus::Added, &theme),
+            theme.tokens.editor.vcs_added
+        );
+        assert_eq!(
+            git_status_color(VcsStatus::Deleted, &theme),
+            theme.tokens.editor.vcs_deleted
+        );
+        assert_eq!(
+            git_status_color(VcsStatus::Renamed, &theme),
+            theme.tokens.chrome.primary
+        );
+        assert_eq!(
+            git_status_color(VcsStatus::Conflicted, &theme),
+            theme.tokens.editor.error
+        );
+        assert_eq!(
+            git_status_color(VcsStatus::Untracked, &theme),
+            theme.tokens.chrome.text_chrome_secondary
+        );
+    }
+
+    #[test]
+    fn filename_color_uses_displayable_git_status_color() {
+        let theme = Theme::from_tokens(nucleotide_ui::DesignTokens::dark());
+        let mut entry = FileTreeEntry::new_file(
+            FileTreeEntryId(3),
+            PathBuf::from("/workspace/main.rs"),
+            1,
+            None,
+        );
+        entry.git_status = Some(VcsStatus::Modified);
+
+        let row = ProjectTreeRow::from_entry(&entry, true, None);
+
+        assert_eq!(
+            filename_color(&row, &theme),
+            theme.tokens.editor.vcs_modified
+        );
+    }
+
+    #[test]
+    fn git_status_badge_border_uses_theme_token() {
+        let theme = Theme::from_tokens(nucleotide_ui::DesignTokens::dark());
+
+        assert_eq!(
+            git_status_badge_border_color(&theme),
+            theme.tokens.chrome.border_default
+        );
     }
 
     #[test]
