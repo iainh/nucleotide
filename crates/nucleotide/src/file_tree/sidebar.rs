@@ -1,19 +1,21 @@
 // ABOUTME: Sidebar row model derived from file tree entries
 // ABOUTME: Keeps project-tree rendering inputs separate from FileTreeView state
 
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    Anchor, App, ClickEvent, Context, InteractiveElement, IntoElement, MouseButton, MouseDownEvent,
-    MouseMoveEvent, ParentElement, StatefulInteractiveElement, Styled, Window, anchored, div,
-    point, px,
+    Anchor, App, AppContext, ClickEvent, Context, InteractiveElement, IntoElement, MouseButton,
+    MouseDownEvent, MouseMoveEvent, ParentElement, Pixels, Point, Render,
+    StatefulInteractiveElement, Styled, Window, anchored, div, point, px,
 };
 use nucleotide_types::VcsStatus;
 use nucleotide_ui::VcsIcon;
 use nucleotide_ui::{ListItem, ListItemSpacing, ListItemVariant, Theme};
 
-use crate::file_tree::{FileKind, FileTreeEntry, icons::chevron_icon};
+use crate::file_tree::{
+    FileKind, FileTreeEntry, entry::FileTreeFlattenedSegment, icons::chevron_icon,
+};
 
 pub const PROJECT_TREE_ROW_HEIGHT_PX: f32 = 30.0;
 pub const PROJECT_TREE_ROW_INDENT_PX: f32 = 16.0;
@@ -38,6 +40,10 @@ pub enum ProjectTreeRowEvent {
     },
     ContextMenuRequested {
         path: PathBuf,
+    },
+    MoveRequested {
+        from: PathBuf,
+        target_dir: PathBuf,
     },
 }
 
@@ -233,12 +239,53 @@ pub struct ProjectTreeRow {
     pub id: u64,
     pub path: PathBuf,
     pub depth: usize,
+    pub level: usize,
+    pub pos_in_set: usize,
+    pub set_size: usize,
     pub file_name: String,
+    pub ancestor_paths: Arc<[PathBuf]>,
+    pub flattened_segments: Option<Arc<[FileTreeFlattenedSegment]>>,
     pub kind: ProjectTreeRowKind,
     pub is_expanded: bool,
     pub is_selected: bool,
     pub is_hidden: bool,
+    pub is_search_match: bool,
     pub vcs_status: Option<VcsStatus>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectTreeDraggedEntry {
+    pub path: PathBuf,
+    pub file_name: String,
+    pub is_directory: bool,
+}
+
+struct ProjectTreeDragPreview {
+    entry: ProjectTreeDraggedEntry,
+    position: Point<Pixels>,
+}
+
+impl ProjectTreeDragPreview {
+    fn new(entry: ProjectTreeDraggedEntry, position: Point<Pixels>) -> Self {
+        Self { entry, position }
+    }
+}
+
+impl Render for ProjectTreeDragPreview {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div().pl(self.position.x).pt(self.position.y).child(
+            div()
+                .h(px(PROJECT_TREE_ROW_HEIGHT_PX))
+                .px(px(10.0))
+                .flex()
+                .items_center()
+                .rounded(px(PROJECT_TREE_ROW_RADIUS_PX))
+                .bg(gpui::black().opacity(0.72))
+                .text_color(gpui::white())
+                .text_size(px(13.0))
+                .child(self.entry.file_name.clone()),
+        )
+    }
 }
 
 impl ProjectTreeRow {
@@ -251,11 +298,17 @@ impl ProjectTreeRow {
             id: entry.id.0,
             path: entry.path.clone(),
             depth: entry.depth,
+            level: entry.level,
+            pos_in_set: entry.pos_in_set,
+            set_size: entry.set_size,
             file_name: display_name(entry),
+            ancestor_paths: entry.ancestor_paths.clone(),
+            flattened_segments: entry.flattened_segments.clone(),
             kind: ProjectTreeRowKind::from(&entry.kind),
             is_expanded: entry.is_expanded,
             is_selected,
             is_hidden: entry.is_hidden,
+            is_search_match: entry.is_search_match,
             vcs_status: vcs_status.or(entry.git_status),
         }
     }
@@ -292,6 +345,29 @@ impl ProjectTreeRow {
     pub fn is_directory(&self) -> bool {
         matches!(self.kind, ProjectTreeRowKind::Directory { .. })
     }
+
+    pub fn is_root(&self) -> bool {
+        self.depth == 0 && self.is_directory()
+    }
+
+    pub fn can_be_dragged(&self) -> bool {
+        !self.is_root()
+    }
+
+    pub fn dragged_entry(&self) -> ProjectTreeDraggedEntry {
+        ProjectTreeDraggedEntry {
+            path: self.path.clone(),
+            file_name: self.file_name.clone(),
+            is_directory: self.is_directory(),
+        }
+    }
+
+    pub fn can_accept_drop(&self, dragged: &ProjectTreeDraggedEntry) -> bool {
+        self.is_directory()
+            && self.path != dragged.path
+            && !self.path.starts_with(&dragged.path)
+            && dragged.path.parent() != Some(self.path.as_path())
+    }
 }
 
 impl From<&FileKind> for ProjectTreeRowKind {
@@ -324,6 +400,7 @@ pub fn render_project_tree_row(
     on_left_mouse_down: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
     on_right_mouse_down: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    on_drop: impl Fn(&ProjectTreeDraggedEntry, &mut Window, &mut App) + 'static,
 ) -> gpui::AnyElement {
     let file_tree_tokens = theme.tokens.file_tree_tokens();
     let row_foreground = if row.is_selected {
@@ -333,6 +410,12 @@ pub fn render_project_tree_row(
     };
     let indentation = px(row.depth as f32 * PROJECT_TREE_ROW_INDENT_PX);
     let min_row_width = project_tree_row_min_width(&row);
+    let drop_target_row = row.clone();
+    let drop_style_row = row.clone();
+    let drop_event_row = row.clone();
+    let drag_payload = row.dragged_entry();
+    let can_be_dragged = row.can_be_dragged();
+    let drop_background = file_tree_tokens.item_background_hover;
 
     div()
         .id(("file-tree-entry", row.id))
@@ -342,6 +425,28 @@ pub fn render_project_tree_row(
         .px(px(0.0))
         .py(px(0.0))
         .rounded(px(PROJECT_TREE_ROW_RADIUS_PX))
+        .can_drop(move |dragged, _, _| {
+            dragged
+                .downcast_ref::<ProjectTreeDraggedEntry>()
+                .is_some_and(|dragged| drop_target_row.can_accept_drop(dragged))
+        })
+        .drag_over::<ProjectTreeDraggedEntry>(move |mut style, dragged, _, _| {
+            if drop_style_row.can_accept_drop(dragged) {
+                style.background = Some(drop_background.into());
+            }
+            style
+        })
+        .on_drop(move |dragged: &ProjectTreeDraggedEntry, window, cx| {
+            if drop_event_row.can_accept_drop(dragged) {
+                on_drop(dragged, window, cx);
+            }
+        })
+        .when(can_be_dragged, |row| {
+            row.cursor_move()
+                .on_drag(drag_payload, |dragged, position, _, cx| {
+                    cx.new(|_| ProjectTreeDragPreview::new(dragged.clone(), position))
+                })
+        })
         .on_mouse_down(MouseButton::Left, on_left_mouse_down)
         .on_mouse_down(MouseButton::Right, on_right_mouse_down)
         .on_click(on_click)
@@ -437,7 +542,7 @@ fn render_filename(row: &ProjectTreeRow, theme: &Theme) -> impl IntoElement {
 
     if row.is_selected {
         node = node.text_color(theme.tokens.editor.text_on_primary);
-    } else if is_root_directory {
+    } else if is_root_directory || row.is_search_match {
         node = node
             .text_color(file_tree_tokens.item_text)
             .font_weight(gpui::FontWeight::MEDIUM);
@@ -472,6 +577,14 @@ fn project_tree_row_min_width_for(depth: usize, filename_char_count: usize) -> f
 }
 
 fn display_name(entry: &FileTreeEntry) -> String {
+    if let Some(segments) = &entry.flattened_segments {
+        return segments
+            .iter()
+            .map(|segment| segment.name.as_str())
+            .collect::<Vec<_>>()
+            .join("/");
+    }
+
     if entry.depth == 0 && entry.is_directory() {
         return entry
             .path
@@ -529,6 +642,11 @@ mod tests {
             None,
         );
         entry.depth = 2;
+        entry.level = 3;
+        entry.pos_in_set = 2;
+        entry.set_size = 5;
+        entry.ancestor_paths =
+            Arc::from([PathBuf::from("/workspace"), PathBuf::from("/workspace/src")]);
         entry.is_hidden = true;
         entry.git_status = Some(VcsStatus::Clean);
 
@@ -537,6 +655,13 @@ mod tests {
         assert_eq!(row.id, 2);
         assert_eq!(row.file_name, "main.rs");
         assert_eq!(row.depth, 2);
+        assert_eq!(row.level, 3);
+        assert_eq!(row.pos_in_set, 2);
+        assert_eq!(row.set_size, 5);
+        assert_eq!(
+            row.ancestor_paths.as_ref(),
+            [PathBuf::from("/workspace"), PathBuf::from("/workspace/src")]
+        );
         assert!(row.is_selected);
         assert!(row.is_hidden);
         assert_eq!(row.vcs_status, Some(VcsStatus::Modified));
@@ -656,6 +781,87 @@ mod tests {
                 path: PathBuf::from("/workspace"),
             }
         );
+    }
+
+    #[test]
+    fn row_drag_payload_preserves_move_identity() {
+        let mut entry =
+            FileTreeEntry::new_directory(FileTreeEntryId(9), PathBuf::from("/workspace/src"), None);
+        entry.depth = 1;
+        let row = ProjectTreeRow::from_entry(&entry, false, None);
+
+        assert!(row.can_be_dragged());
+        assert_eq!(
+            row.dragged_entry(),
+            ProjectTreeDraggedEntry {
+                path: PathBuf::from("/workspace/src"),
+                file_name: "src".to_string(),
+                is_directory: true,
+            }
+        );
+    }
+
+    #[test]
+    fn root_row_cannot_be_dragged_but_accepts_nested_drops() {
+        let mut root = FileTreeEntry::new_directory(
+            FileTreeEntryId(0),
+            PathBuf::from("/workspace/project"),
+            None,
+        );
+        root.depth = 0;
+        let root_row = ProjectTreeRow::from_entry(&root, false, None);
+        let dragged = ProjectTreeDraggedEntry {
+            path: PathBuf::from("/workspace/project/crates/src"),
+            file_name: "src".to_string(),
+            is_directory: true,
+        };
+
+        assert!(!root_row.can_be_dragged());
+        assert!(root_row.can_accept_drop(&dragged));
+    }
+
+    #[test]
+    fn row_rejects_invalid_drop_targets() {
+        let target = ProjectTreeRow::from_entry(
+            &FileTreeEntry::new_directory(
+                FileTreeEntryId(10),
+                PathBuf::from("/workspace/crates"),
+                None,
+            ),
+            false,
+            None,
+        );
+        let file_target = ProjectTreeRow::from_entry(
+            &FileTreeEntry::new_file(
+                FileTreeEntryId(11),
+                PathBuf::from("/workspace/main.rs"),
+                1,
+                None,
+            ),
+            false,
+            None,
+        );
+
+        assert!(!target.can_accept_drop(&ProjectTreeDraggedEntry {
+            path: PathBuf::from("/workspace/crates"),
+            file_name: "crates".to_string(),
+            is_directory: true,
+        }));
+        assert!(!target.can_accept_drop(&ProjectTreeDraggedEntry {
+            path: PathBuf::from("/workspace"),
+            file_name: "workspace".to_string(),
+            is_directory: true,
+        }));
+        assert!(!target.can_accept_drop(&ProjectTreeDraggedEntry {
+            path: PathBuf::from("/workspace/crates/lib.rs"),
+            file_name: "lib.rs".to_string(),
+            is_directory: false,
+        }));
+        assert!(!file_target.can_accept_drop(&ProjectTreeDraggedEntry {
+            path: PathBuf::from("/workspace/src"),
+            file_name: "src".to_string(),
+            is_directory: true,
+        }));
     }
 
     #[test]

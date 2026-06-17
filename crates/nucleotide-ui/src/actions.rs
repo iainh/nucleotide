@@ -67,6 +67,10 @@ pub mod file_tree {
             ToggleExpanded,
             SelectNext,
             SelectPrev,
+            StartSearch,
+            ClearSearch,
+            SelectNextSearchMatch,
+            SelectPrevSearchMatch,
             OpenFile,
             RefreshTree,
             // Context menu and common file ops

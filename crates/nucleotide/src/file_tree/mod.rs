@@ -1,11 +1,10 @@
-// ABOUTME: File tree implementation using Zed's SumTree for efficient navigation
+// ABOUTME: Path-first file tree implementation for sidebar navigation
 // ABOUTME: Provides hierarchical file system representation with git integration
 
 pub mod entry;
 pub mod icons;
 // pub mod project_header;
 pub mod sidebar;
-pub mod summary;
 pub mod tree;
 pub mod view;
 pub mod watcher;
@@ -13,7 +12,6 @@ pub mod watcher;
 pub use entry::{FileKind, FileTreeEntry};
 pub use icons::{get_file_icon, get_symlink_icon};
 // pub use project_header::{CompactProjectStatus, ProjectHeader, ProjectHeaderEvent};
-pub use summary::FileTreeSummary;
 pub use tree::FileTree;
 pub use view::FileTreeView;
 pub use watcher::DebouncedFileTreeWatcher;
@@ -25,6 +23,8 @@ use std::path::PathBuf;
 pub enum FileTreeEvent {
     /// A file or directory was selected
     SelectionChanged { path: Option<PathBuf> },
+    /// The selected file tree path set changed
+    SelectionSetChanged { paths: Vec<PathBuf> },
     /// A file should be opened
     OpenFile { path: PathBuf, focus_editor: bool },
     /// A directory was expanded or collapsed
@@ -52,6 +52,8 @@ pub enum FileTreeEvent {
     RefreshVcs { force: bool },
     /// Toggle file tree visibility
     ToggleVisibility,
+    /// Request that the workspace opens the file tree search prompt
+    SearchRequested { initial_query: Option<String> },
 }
 
 /// Types of file system events
@@ -61,6 +63,28 @@ pub enum FileSystemEventKind {
     Modified,
     Deleted,
     Renamed { from: PathBuf, to: PathBuf },
+}
+
+/// Search projection strategy for the file tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileTreeSearchMode {
+    /// Expand ancestors of matching rows and keep matching branches visible.
+    ExpandMatches,
+    /// Keep the normal tree shape but only expand branches that contain matches.
+    CollapseNonMatches,
+    /// Hide rows that are neither matches nor ancestors of matches.
+    HideNonMatches,
+}
+
+/// Collision behaviour for path-first file tree moves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileTreeCollisionStrategy {
+    /// Return an error when the destination already exists.
+    Error,
+    /// Remove the destination subtree before moving the source subtree.
+    Replace,
+    /// Leave both subtrees unchanged when the destination already exists.
+    Skip,
 }
 
 /// Configuration for file tree behavior
@@ -75,6 +99,10 @@ pub struct FileTreeConfig {
     pub initial_depth: usize,
     /// Enable file system watching
     pub watch_filesystem: bool,
+    /// Collapse single-child directory chains into one visible row.
+    pub flatten_empty_directories: bool,
+    /// Search projection strategy.
+    pub search_mode: FileTreeSearchMode,
 }
 
 impl Default for FileTreeConfig {
@@ -84,6 +112,8 @@ impl Default for FileTreeConfig {
             show_ignored: false,
             initial_depth: 3,
             watch_filesystem: true,
+            flatten_empty_directories: true,
+            search_mode: FileTreeSearchMode::ExpandMatches,
         }
     }
 }

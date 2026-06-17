@@ -2,6 +2,12 @@
 # Enable tokio_unstable for helix-event crate
 rustflags = ["--cfg", "tokio_unstable"]
 
+[env]
+# Helix's helix-term build script fetches every tree-sitter grammar by default.
+# Nucleotide manages runtime grammars separately, so keep Cargo builds offline
+# from grammar repository availability.
+HELIX_DISABLE_AUTO_GRAMMAR_BUILD = "1"
+
 # macOS targets - use faster linking options
 [target.x86_64-apple-darwin]
 rustflags = ["--cfg", "tokio_unstable", "-C", "link-arg=-Wl,-dead_strip"]

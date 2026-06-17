@@ -101,6 +101,7 @@ enum PromptSubmitAction {
     Command,
     Search,
     GlobalSearch,
+    FileTreeSearch,
     RegexSelection(RegexSelectionAction),
 }
 
@@ -108,6 +109,7 @@ fn prompt_submit_action(prompt_text: &str) -> PromptSubmitAction {
     match prompt_text {
         "search:" | "rsearch:" => PromptSubmitAction::Search,
         "global-search:" => PromptSubmitAction::GlobalSearch,
+        "file-tree-search:" => PromptSubmitAction::FileTreeSearch,
         "select:" => PromptSubmitAction::RegexSelection(RegexSelectionAction::Select),
         "split:" => PromptSubmitAction::RegexSelection(RegexSelectionAction::Split),
         "keep:" => PromptSubmitAction::RegexSelection(RegexSelectionAction::Keep),
@@ -388,6 +390,11 @@ impl OverlayView {
                                             }
                                             PromptSubmitAction::GlobalSearch => {
                                                 cx.emit(crate::Update::GlobalSearchSubmitted(
+                                                    input.to_string(),
+                                                ));
+                                            }
+                                            PromptSubmitAction::FileTreeSearch => {
+                                                cx.emit(crate::Update::FileTreeSearchSubmitted(
                                                     input.to_string(),
                                                 ));
                                             }

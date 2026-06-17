@@ -1,51 +1,54 @@
-// ABOUTME: Core file tree data structure using SumTree for efficient operations
-// ABOUTME: Manages file system hierarchy with support for lazy loading and filtering
+// ABOUTME: Path-first file tree model inspired by @pierre/trees
+// ABOUTME: Derives visible rows from canonical paths, expansion, search, and flattening
 
 use anyhow::{Context, Result};
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
-use zed_sum_tree::SumTree;
 
-use crate::file_tree::entry::FileTreeEntryId;
-use crate::file_tree::{FileKind, FileTreeConfig, FileTreeEntry};
+use crate::file_tree::entry::{FileTreeEntryId, FileTreeFlattenedSegment};
+use crate::file_tree::{
+    FileKind, FileTreeCollisionStrategy, FileTreeConfig, FileTreeEntry, FileTreeSearchMode,
+};
 
-/// Core file tree data structure
+/// Core file tree data structure.
 pub struct FileTree {
-    /// Root directory path
+    /// Root directory path.
     root_path: PathBuf,
-    /// SumTree containing all entries
-    entries: SumTree<FileTreeEntry>,
-    /// Map from path to entry ID
+    /// Canonical path keyed entries. Public identity is the path, not this map's storage.
+    entries: HashMap<PathBuf, FileTreeEntry>,
+    /// Map from canonical path to entry ID.
     path_to_id: HashMap<PathBuf, FileTreeEntryId>,
-    /// Set of expanded directory paths
+    /// Set of expanded directory paths.
     expanded_dirs: HashSet<PathBuf>,
-    /// Configuration
+    /// Configuration.
     config: FileTreeConfig,
-    /// Next available entry ID
+    /// Next available entry ID.
     next_id: u64,
-    /// Whether the tree has been initially loaded
+    /// Whether the tree has been initially loaded.
     is_loaded: bool,
-    /// Cache of visible entries to avoid recomputing
+    /// Cache of visible entries to avoid recomputing.
     visible_entries_cache: Option<Arc<[FileTreeEntry]>>,
-    /// Set of directories currently being loaded
+    /// Set of directories currently being loaded.
     loading_dirs: HashSet<PathBuf>,
-    /// Gitignore matcher for filtering files
+    /// Gitignore matcher for filtering files.
     gitignore: Option<Gitignore>,
+    /// Normalized search query.
+    search_query: Option<String>,
 }
 
 impl FileTree {
-    /// Create a new file tree for the given root path
+    /// Create a new file tree for the given root path.
     pub fn new(root_path: PathBuf, config: FileTreeConfig) -> Self {
-        // Build gitignore matcher using the same patterns as the file picker
+        let root_path = normalize_tree_path(&root_path);
         let gitignore = Self::build_gitignore_matcher(&root_path);
 
         Self {
             root_path,
-            entries: SumTree::new(()),
+            entries: HashMap::new(),
             path_to_id: HashMap::new(),
             expanded_dirs: HashSet::new(),
             config,
@@ -54,60 +57,104 @@ impl FileTree {
             visible_entries_cache: None,
             loading_dirs: HashSet::new(),
             gitignore,
+            search_query: None,
         }
     }
 
-    /// Get the root path
+    /// Get the root path.
     pub fn root_path(&self) -> &Path {
         &self.root_path
     }
 
-    /// Get the configuration
+    /// Get the configuration.
     pub fn config(&self) -> &FileTreeConfig {
         &self.config
     }
 
-    /// Update the configuration
+    /// Update the configuration.
     pub fn set_config(&mut self, config: FileTreeConfig) {
         self.config = config;
-        // Refresh visibility based on new config
-        self.refresh_visibility();
+        self.invalidate_cache();
     }
 
-    /// Load the initial file tree
+    /// Set the current search query.
+    pub fn set_search_query(&mut self, query: Option<String>) {
+        let normalized = query
+            .as_deref()
+            .map(normalize_search_query)
+            .filter(|query| !query.is_empty());
+
+        if self.search_query != normalized {
+            self.search_query = normalized;
+            self.invalidate_cache();
+        }
+    }
+
+    /// Get the current normalized search query.
+    pub fn search_query(&self) -> Option<&str> {
+        self.search_query.as_deref()
+    }
+
+    /// Clear the current search query.
+    pub fn clear_search_query(&mut self) {
+        self.set_search_query(None);
+    }
+
+    /// Return the canonical paths that directly match the current search query.
+    pub fn search_matching_paths(&self) -> Vec<PathBuf> {
+        let Some(query) = self.search_query.as_deref() else {
+            return Vec::new();
+        };
+
+        let mut matches: Vec<_> = self
+            .entries
+            .values()
+            .filter(|entry| self.entry_matches_search(entry, query))
+            .map(|entry| entry.path.clone())
+            .collect();
+        matches.sort();
+        matches
+    }
+
+    /// Load the initial file tree.
     pub fn load(&mut self) -> Result<()> {
         if self.is_loaded {
             return Ok(());
         }
 
-        // Only load immediate children of root initially
-        let entries = self.scan_directory(&self.root_path.clone(), 1, 1)?;
+        let root_path = self.root_path.clone();
+        let max_depth = self.config.initial_depth.max(1);
+        let (mut entries, _) = self.scan_directory_recursive(&root_path, 1, max_depth)?;
 
-        // Mark root as expanded since we're loading its children
-        self.expanded_dirs.insert(self.root_path.clone());
-
-        self.entries = SumTree::from_iter(entries, ());
+        self.entries.clear();
+        self.path_to_id.clear();
+        self.expanded_dirs.insert(root_path);
+        for entry in &mut entries {
+            if entry.is_directory() && entry.depth < max_depth {
+                entry.is_expanded = true;
+                self.expanded_dirs.insert(entry.path.clone());
+            }
+        }
+        self.insert_entries(entries);
         self.is_loaded = true;
-
-        // Don't refresh VCS status here - it needs to be done after Tokio runtime is available
-
         self.invalidate_cache();
 
         Ok(())
     }
 
-    /// Refresh the entire tree
+    /// Refresh the entire tree.
     pub fn refresh(&mut self) -> Result<()> {
-        self.entries = SumTree::new(());
+        self.entries.clear();
         self.path_to_id.clear();
+        self.expanded_dirs.clear();
+        self.loading_dirs.clear();
         self.next_id = 1;
         self.is_loaded = false;
-        // VCS status is now handled by the global VCS service
         self.invalidate_cache();
         self.load()
     }
 
-    /// Get all visible entries
+    /// Get all visible entries.
     pub fn visible_entries(&mut self) -> Arc<[FileTreeEntry]> {
         if let Some(ref cache) = self.visible_entries_cache {
             return cache.clone();
@@ -128,57 +175,222 @@ impl FileTree {
     }
 
     fn collect_visible_entries(&self) -> Vec<FileTreeEntry> {
-        let entries_by_parent = self.visible_entries_by_parent();
+        let entries_by_parent = self.entries_by_parent();
+        let matching_paths: HashSet<PathBuf> = self.search_matching_paths().into_iter().collect();
+        let search_active = self.search_query.is_some();
+        let included_paths = if search_active {
+            Some(self.search_projection_paths(&matching_paths))
+        } else {
+            None
+        };
 
-        // Create the root entry
-        let visible_entry_count = entries_by_parent.values().map(Vec::len).sum::<usize>();
-        let mut result = Vec::with_capacity(visible_entry_count + 1);
+        let mut result = Vec::new();
+        let mut root_entry = self.root_entry(&entries_by_parent);
+        root_entry.is_search_match = self
+            .search_query
+            .as_deref()
+            .is_some_and(|query| self.entry_matches_search(&root_entry, query));
+        result.push(root_entry);
 
-        // Add the root directory as the first entry
-        let root_id = FileTreeEntryId(0); // Special ID for root
+        if !self.should_descend(&self.root_path, search_active, &matching_paths) {
+            return result;
+        }
+
+        self.push_visible_children(
+            &self.root_path,
+            1,
+            Vec::new(),
+            &entries_by_parent,
+            included_paths.as_ref(),
+            &matching_paths,
+            search_active,
+            &mut result,
+        );
+
+        result
+    }
+
+    fn root_entry(&self, entries_by_parent: &HashMap<PathBuf, Vec<PathBuf>>) -> FileTreeEntry {
+        let root_id = FileTreeEntryId(0);
         let mut root_entry = FileTreeEntry::new_directory(root_id, self.root_path.clone(), None);
         root_entry.depth = 0;
+        root_entry.level = 1;
+        root_entry.pos_in_set = 1;
+        root_entry.set_size = 1;
         root_entry.is_expanded = self.is_expanded(&self.root_path);
-
-        // Count direct children
-        let children_count = entries_by_parent.get(&self.root_path).map_or(0, Vec::len);
+        root_entry.is_visible = true;
 
         if let FileKind::Directory {
             ref mut child_count,
             ref mut is_loaded,
         } = root_entry.kind
         {
-            *child_count = children_count;
+            *child_count = entries_by_parent.get(&self.root_path).map_or(0, Vec::len);
             *is_loaded = true;
         }
 
-        result.push(root_entry);
-
-        // Build sorted tree starting from root only if root is expanded
-        if self.is_expanded(&self.root_path) {
-            self.build_sorted_tree(&entries_by_parent, &self.root_path, &mut result);
-        }
-
-        result
+        root_entry
     }
 
-    fn visible_entries_by_parent(&self) -> HashMap<PathBuf, Vec<FileTreeEntry>> {
-        let mut entries_by_parent: HashMap<PathBuf, Vec<FileTreeEntry>> = HashMap::new();
+    #[allow(clippy::too_many_arguments)]
+    fn push_visible_children(
+        &self,
+        parent_path: &Path,
+        depth: usize,
+        ancestor_paths: Vec<PathBuf>,
+        entries_by_parent: &HashMap<PathBuf, Vec<PathBuf>>,
+        included_paths: Option<&HashSet<PathBuf>>,
+        matching_paths: &HashSet<PathBuf>,
+        search_active: bool,
+        result: &mut Vec<FileTreeEntry>,
+    ) {
+        let Some(children) = entries_by_parent.get(parent_path) else {
+            return;
+        };
 
-        for entry in self.entries.iter().filter(|entry| entry.is_visible) {
+        let visible_children: Vec<PathBuf> = children
+            .iter()
+            .filter(|path| included_paths.is_none_or(|included| included.contains(*path)))
+            .cloned()
+            .collect();
+        let set_size = visible_children.len();
+
+        for (index, child_path) in visible_children.iter().enumerate() {
+            let ProjectionRow {
+                path,
+                flattened_segments,
+            } = self.project_child_row(child_path, entries_by_parent, included_paths);
+
+            let Some(entry) = self.entries.get(&path) else {
+                continue;
+            };
+
+            let mut row = entry.clone();
+            row.depth = depth;
+            row.level = depth + 1;
+            row.pos_in_set = index + 1;
+            row.set_size = set_size;
+            row.ancestor_paths = Arc::<[PathBuf]>::from(ancestor_paths.clone());
+            row.flattened_segments = flattened_segments;
+            row.is_expanded = self.is_expanded(&row.path);
+            row.is_visible = true;
+            row.is_search_match = self.row_matches_search(&row, matching_paths);
+
+            result.push(row.clone());
+
+            if row.is_directory() && self.should_descend(&row.path, search_active, matching_paths) {
+                let mut child_ancestors = ancestor_paths.clone();
+                child_ancestors.push(row.path.clone());
+                self.push_visible_children(
+                    &row.path,
+                    depth + 1,
+                    child_ancestors,
+                    entries_by_parent,
+                    included_paths,
+                    matching_paths,
+                    search_active,
+                    result,
+                );
+            }
+        }
+    }
+
+    fn project_child_row(
+        &self,
+        child_path: &Path,
+        entries_by_parent: &HashMap<PathBuf, Vec<PathBuf>>,
+        included_paths: Option<&HashSet<PathBuf>>,
+    ) -> ProjectionRow {
+        if !self.config.flatten_empty_directories {
+            return ProjectionRow {
+                path: child_path.to_path_buf(),
+                flattened_segments: None,
+            };
+        }
+
+        let Some(entry) = self.entries.get(child_path) else {
+            return ProjectionRow {
+                path: child_path.to_path_buf(),
+                flattened_segments: None,
+            };
+        };
+
+        if !entry.is_directory() {
+            return ProjectionRow {
+                path: child_path.to_path_buf(),
+                flattened_segments: None,
+            };
+        }
+
+        let mut current_path = child_path.to_path_buf();
+        let mut segments = vec![FileTreeFlattenedSegment {
+            name: display_name_for_path(child_path),
+            path: current_path.clone(),
+            is_terminal: true,
+        }];
+
+        while let Some(children) = entries_by_parent.get(&current_path) {
+            let visible_children: Vec<&PathBuf> = children
+                .iter()
+                .filter(|path| included_paths.is_none_or(|included| included.contains(*path)))
+                .collect();
+
+            if visible_children.len() != 1 {
+                break;
+            }
+
+            let only_child = visible_children[0];
+            let Some(child_entry) = self.entries.get(only_child) else {
+                break;
+            };
+
+            if !child_entry.is_directory() {
+                break;
+            }
+
+            if let Some(last) = segments.last_mut() {
+                last.is_terminal = false;
+            }
+            current_path = only_child.clone();
+            segments.push(FileTreeFlattenedSegment {
+                name: display_name_for_path(only_child),
+                path: current_path.clone(),
+                is_terminal: true,
+            });
+        }
+
+        ProjectionRow {
+            path: current_path,
+            flattened_segments: (segments.len() > 1)
+                .then(|| Arc::<[FileTreeFlattenedSegment]>::from(segments)),
+        }
+    }
+
+    fn entries_by_parent(&self) -> HashMap<PathBuf, Vec<PathBuf>> {
+        let mut entries_by_parent: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
+
+        for entry in self
+            .entries
+            .values()
+            .filter(|entry| self.entry_is_included(entry))
+        {
             if let Some(parent) = entry.path.parent() {
-                let mut entry = entry.clone();
-                // The synthetic root row occupies depth 0, so visible children are offset by one.
-                entry.depth += 1;
                 entries_by_parent
                     .entry(parent.to_path_buf())
                     .or_default()
-                    .push(entry);
+                    .push(entry.path.clone());
             }
         }
 
         for entries in entries_by_parent.values_mut() {
-            entries.sort_by(Self::compare_tree_entries);
+            entries.sort_by(|left, right| {
+                let left = self.entries.get(left);
+                let right = self.entries.get(right);
+                match (left, right) {
+                    (Some(left), Some(right)) => Self::compare_tree_entries(left, right),
+                    _ => Ordering::Equal,
+                }
+            });
         }
 
         entries_by_parent
@@ -188,542 +400,665 @@ impl FileTree {
         match (a.is_directory(), b.is_directory()) {
             (true, false) => Ordering::Less,
             (false, true) => Ordering::Greater,
-            _ => a.path.file_name().cmp(&b.path.file_name()),
+            _ => display_name_for_path(&a.path)
+                .to_lowercase()
+                .cmp(&display_name_for_path(&b.path).to_lowercase())
+                .then_with(|| a.path.cmp(&b.path)),
         }
     }
 
-    /// Build sorted tree with directories first at each level
-    fn build_sorted_tree(
+    fn should_descend(
         &self,
-        entries_by_parent: &HashMap<PathBuf, Vec<FileTreeEntry>>,
-        parent_path: &Path,
-        result: &mut Vec<FileTreeEntry>,
-    ) {
-        let Some(children) = entries_by_parent.get(parent_path) else {
-            return;
-        };
+        path: &Path,
+        search_active: bool,
+        matching_paths: &HashSet<PathBuf>,
+    ) -> bool {
+        if search_active {
+            return path == self.root_path
+                || matching_paths.contains(path)
+                || matching_paths
+                    .iter()
+                    .any(|matching_path| matching_path.starts_with(path));
+        }
 
-        for entry in children {
-            result.push(entry.clone());
-            if entry.is_directory() && self.is_expanded(&entry.path) {
-                self.build_sorted_tree(entries_by_parent, &entry.path, result);
+        self.is_expanded(path)
+    }
+
+    fn search_projection_paths(&self, matching_paths: &HashSet<PathBuf>) -> HashSet<PathBuf> {
+        let mut included = HashSet::new();
+
+        for path in matching_paths {
+            included.insert(path.clone());
+            self.insert_ancestors(path, &mut included);
+
+            if matches!(self.config.search_mode, FileTreeSearchMode::ExpandMatches)
+                && self
+                    .entries
+                    .get(path)
+                    .is_some_and(FileTreeEntry::is_directory)
+            {
+                for descendant in self
+                    .entries
+                    .keys()
+                    .filter(|candidate| candidate.starts_with(path))
+                {
+                    included.insert(descendant.clone());
+                }
             }
         }
+
+        if matches!(
+            self.config.search_mode,
+            FileTreeSearchMode::CollapseNonMatches
+        ) {
+            for expanded in &self.expanded_dirs {
+                included.insert(expanded.clone());
+                self.insert_ancestors(expanded, &mut included);
+            }
+        }
+
+        included
     }
 
-    /// Invalidate the visible entries cache
+    fn insert_ancestors(&self, path: &Path, included: &mut HashSet<PathBuf>) {
+        let mut current = path.parent();
+        while let Some(parent) = current {
+            if parent < self.root_path.as_path() {
+                break;
+            }
+
+            if parent != self.root_path {
+                included.insert(parent.to_path_buf());
+            }
+
+            if parent == self.root_path {
+                break;
+            }
+
+            current = parent.parent();
+        }
+    }
+
+    fn row_matches_search(&self, row: &FileTreeEntry, matching_paths: &HashSet<PathBuf>) -> bool {
+        matching_paths.contains(&row.path)
+            || row.flattened_segments.as_ref().is_some_and(|segments| {
+                segments
+                    .iter()
+                    .any(|segment| matching_paths.contains(&segment.path))
+            })
+    }
+
+    fn entry_matches_search(&self, entry: &FileTreeEntry, query: &str) -> bool {
+        let name = display_name_for_path(&entry.path).to_lowercase();
+        if name.contains(query) {
+            return true;
+        }
+
+        let relative_path = entry
+            .path
+            .strip_prefix(&self.root_path)
+            .unwrap_or(&entry.path)
+            .to_string_lossy()
+            .replace(std::path::MAIN_SEPARATOR, "/")
+            .to_lowercase();
+
+        relative_path.contains(query)
+    }
+
+    /// Invalidate the visible entries cache.
     fn invalidate_cache(&mut self) {
         self.visible_entries_cache = None;
     }
 
-    /// Get entry by path
+    /// Get entry by path.
     pub fn entry_by_path(&self, path: &Path) -> Option<FileTreeEntry> {
-        // Special case for root path
+        let path = normalize_tree_path(path);
         if path == self.root_path {
-            return Some(FileTreeEntry {
-                id: FileTreeEntryId(0),
-                path: self.root_path.clone(),
-                kind: crate::file_tree::FileKind::Directory {
-                    child_count: self
-                        .entries
-                        .iter()
-                        .filter(|e| e.path.parent() == Some(&self.root_path))
-                        .count(),
-                    is_loaded: true,
-                },
-                size: 0,
-                mtime: None,
-                depth: 0,
-                is_expanded: self.is_expanded(&self.root_path),
-                is_visible: true,
-                is_hidden: false,
-                is_ignored: false,
-                git_status: None,
-            });
+            return Some(self.root_entry(&self.entries_by_parent()));
         }
 
-        let id = self.path_to_id.get(path)?;
-        self.entry_by_id(*id)
+        self.entries.get(&path).cloned()
     }
 
-    /// Get entry by ID
+    /// Get entry by ID.
     pub fn entry_by_id(&self, id: FileTreeEntryId) -> Option<FileTreeEntry> {
-        self.entries.iter().find(|entry| entry.id == id).cloned()
+        self.entries.values().find(|entry| entry.id == id).cloned()
     }
 
-    /// Toggle directory expansion
+    /// Toggle directory expansion.
     pub fn toggle_directory(&mut self, path: &Path) -> Result<bool> {
-        let entry = self.entry_by_path(path).context("Entry not found")?;
+        let path = normalize_tree_path(path);
+        let entry = self.entry_by_path(&path).context("Entry not found")?;
 
         if !entry.is_directory() {
             anyhow::bail!("Not a directory");
         }
 
-        let is_expanded = self.expanded_dirs.contains(path);
-
-        if is_expanded {
-            // Collapse directory
-            self.expanded_dirs.remove(path);
-
-            // For root directory, we don't need to update the entry in the tree
-            if path != self.root_path {
-                let mut entry = entry;
-                entry.is_expanded = false;
-                self.upsert_entry(entry);
-            }
-
-            self.hide_children(path);
-            self.invalidate_cache();
+        let was_expanded = self.expanded_dirs.contains(&path);
+        if was_expanded {
+            self.expanded_dirs.remove(&path);
         } else {
-            // Expand directory
-            self.expanded_dirs.insert(path.to_path_buf());
-
-            // For root directory, we don't need to update the entry in the tree
-            if path != self.root_path {
-                let mut entry = entry;
-                entry.is_expanded = true;
-                self.upsert_entry(entry);
-            }
-
-            self.load_directory(path)?;
-            self.invalidate_cache();
+            self.expanded_dirs.insert(path.clone());
+            self.load_directory(&path)?;
         }
 
-        Ok(!is_expanded)
+        self.invalidate_cache();
+        Ok(!was_expanded)
     }
 
-    /// Check if a directory is expanded
+    /// Check if a directory is expanded.
     pub fn is_expanded(&self, path: &Path) -> bool {
-        self.expanded_dirs.contains(path)
+        self.expanded_dirs.contains(&normalize_tree_path(path))
     }
 
-    /// Check if a directory is currently being loaded
+    /// Check if a directory is currently being loaded.
     pub fn is_directory_loading(&self, path: &Path) -> bool {
-        self.loading_dirs.contains(path)
+        self.loading_dirs.contains(&normalize_tree_path(path))
     }
 
-    /// Mark a directory as being loaded
+    /// Mark a directory as being loaded.
     pub fn mark_directory_loading(&mut self, path: &Path) {
-        self.loading_dirs.insert(path.to_path_buf());
+        self.loading_dirs.insert(normalize_tree_path(path));
     }
 
-    /// Unmark a directory as being loaded
+    /// Unmark a directory as being loaded.
     pub fn unmark_directory_loading(&mut self, path: &Path) {
-        self.loading_dirs.remove(path);
+        self.loading_dirs.remove(&normalize_tree_path(path));
     }
 
-    /// Collapse a directory (synchronous)
+    /// Collapse a directory.
     pub fn collapse_directory(&mut self, path: &Path) -> Result<()> {
-        let mut entry = self.entry_by_path(path).context("Entry not found")?;
+        let path = normalize_tree_path(path);
+        let entry = self.entry_by_path(&path).context("Entry not found")?;
 
         if !entry.is_directory() {
             anyhow::bail!("Not a directory");
         }
 
-        self.expanded_dirs.remove(path);
-        entry.is_expanded = false;
-        self.upsert_entry(entry);
-        self.hide_children(path);
+        self.expanded_dirs.remove(&path);
         self.invalidate_cache();
 
         Ok(())
     }
 
-    /// Expand a directory with pre-loaded entries
+    /// Expand a directory with pre-loaded entries.
     pub fn expand_directory_with_entries(
         &mut self,
         path: &Path,
         entries: Vec<(PathBuf, std::fs::Metadata)>,
     ) -> Result<()> {
-        let mut entry = self.entry_by_path(path).context("Entry not found")?;
+        let path = normalize_tree_path(path);
+        let mut parent_entry = self.entry_by_path(&path).context("Entry not found")?;
 
-        if !entry.is_directory() {
+        if !parent_entry.is_directory() {
             anyhow::bail!("Not a directory");
         }
 
-        // Mark as expanded
-        self.expanded_dirs.insert(path.to_path_buf());
-        entry.is_expanded = true;
+        self.expanded_dirs.insert(path.clone());
+        self.remove_descendants(&path);
 
-        // Process the entries
+        let parent_depth = if path == self.root_path {
+            0
+        } else {
+            parent_entry.depth
+        };
         let mut children = Vec::new();
+
         for (child_path, metadata) in entries {
-            // Skip hidden files unless configured
+            let child_path = normalize_tree_path(&child_path);
+
             if !self.config.show_hidden && self.is_hidden_file(&child_path) {
                 continue;
             }
 
-            let id = self.next_entry_id();
-            let mtime = metadata.modified().ok();
+            if !self.config.show_ignored && self.is_ignored_file(&child_path) {
+                continue;
+            }
 
-            let mut child_entry = if metadata.is_dir() {
-                FileTreeEntry::new_directory(id, child_path.clone(), mtime)
-            } else if metadata.is_file() {
-                FileTreeEntry::new_file(id, child_path.clone(), metadata.len(), mtime)
-            } else {
-                // Symlink
-                let target = std::fs::read_link(&child_path).ok();
-                let target_exists = target.as_ref().map(|t| t.exists()).unwrap_or(false);
-                FileTreeEntry::new_symlink(id, child_path.clone(), target, target_exists, mtime)
-            };
-
-            child_entry.depth = entry.depth + 1;
+            let mut child_entry = self.entry_from_metadata(child_path, metadata, parent_depth + 1);
             child_entry.is_visible = true;
-
-            // VCS status will be queried at render time via the global VCS service
-
             children.push(child_entry);
         }
 
-        // Update directory entry
-        if let FileKind::Directory {
-            ref mut child_count,
-            ref mut is_loaded,
-        } = entry.kind
-        {
-            *child_count = children.len();
-            *is_loaded = true;
+        if path != self.root_path {
+            parent_entry.is_expanded = true;
+            if let FileKind::Directory {
+                ref mut child_count,
+                ref mut is_loaded,
+            } = parent_entry.kind
+            {
+                *child_count = children.len();
+                *is_loaded = true;
+            }
+            self.upsert_entry(parent_entry);
         }
 
-        // Sort children before adding
-        children.sort();
-
-        // Add all entries at once (parent + children)
-        let mut all_entries = vec![entry];
-        all_entries.extend(children);
-        self.upsert_entries(all_entries);
-
-        // Don't refresh VCS status here - it will be done asynchronously
-
-        // Remove from loading set
-        self.loading_dirs.remove(path);
+        self.insert_entries(children);
+        self.loading_dirs.remove(&path);
+        self.invalidate_cache();
 
         Ok(())
     }
 
-    /// Get the total number of entries
+    /// Get the total number of entries.
     pub fn total_count(&self) -> usize {
-        self.entries.summary().count
+        self.entries.len()
     }
 
-    /// Get the number of visible entries
+    /// Get the number of visible entries.
     pub fn visible_count(&self) -> usize {
-        self.entries.summary().visible_count
+        self.visible_entries_snapshot().len()
     }
 
-    /// Get file statistics
+    /// Get file statistics.
     pub fn stats(&self) -> FileTreeStats {
-        let summary = self.entries.summary();
-        FileTreeStats {
-            total_entries: summary.count,
-            visible_entries: summary.visible_count,
-            file_count: summary.file_count,
-            directory_count: summary.directory_count,
-            total_size: summary.total_size,
-            max_depth: summary.max_depth,
+        let mut stats = FileTreeStats {
+            total_entries: self.entries.len(),
+            visible_entries: self.visible_entries_snapshot().len(),
+            file_count: 0,
+            directory_count: 0,
+            total_size: 0,
+            max_depth: 0,
+        };
+
+        for entry in self.entries.values() {
+            if entry.is_file() {
+                stats.file_count += 1;
+            }
+            if entry.is_directory() {
+                stats.directory_count += 1;
+            }
+            stats.total_size += entry.size;
+            stats.max_depth = stats.max_depth.max(entry.depth);
         }
+
+        stats
     }
 
-    /// Add or update an entry
+    /// Add or update an entry.
     pub fn upsert_entry(&mut self, entry: FileTreeEntry) {
         self.upsert_entries(vec![entry]);
     }
 
-    /// Add or update multiple entries at once
+    /// Add or update multiple entries at once.
     pub fn upsert_entries(&mut self, new_entries: Vec<FileTreeEntry>) {
-        // Remove existing entries if they exist
-        for entry in &new_entries {
-            if let Some(existing_id) = self.path_to_id.get(&entry.path) {
-                self.remove_entry_by_id(*existing_id);
-            }
-        }
-
-        // Collect all existing entries
-        let mut entries: Vec<_> = self.entries.iter().cloned().collect();
-
-        // Add new entries and update path_to_id map
         for entry in new_entries {
-            self.path_to_id.insert(entry.path.clone(), entry.id);
-            entries.push(entry);
+            self.remove_single_entry(&entry.path);
+            self.insert_entry(entry);
         }
-
-        // Sort all entries - the Ord implementation ensures parents come before children
-        entries.sort();
-        self.entries = SumTree::from_iter(entries, ());
         self.invalidate_cache();
     }
 
-    /// Remove an entry by path
+    /// Remove an entry by path, including any descendants.
     pub fn remove_entry(&mut self, path: &Path) -> Option<FileTreeEntry> {
-        let id = self.path_to_id.remove(path)?;
-        self.remove_entry_by_id(id)
+        let path = normalize_tree_path(path);
+        let removed = self.remove_single_entry(&path);
+        if removed.is_some() {
+            self.remove_descendants(&path);
+            self.expanded_dirs.remove(&path);
+            self.invalidate_cache();
+        }
+        removed
     }
 
-    /// Find the parent entry of a given path in the visible entries
+    /// Move an entry and all loaded descendants to a new canonical path.
+    ///
+    /// Returns `Ok(true)` when a subtree moved and `Ok(false)` when the move
+    /// was a no-op or skipped because of the selected collision strategy.
+    pub fn move_entry(
+        &mut self,
+        from: &Path,
+        to: &Path,
+        collision: FileTreeCollisionStrategy,
+    ) -> Result<bool> {
+        let from = normalize_tree_path(from);
+        let to = normalize_tree_path(to);
+
+        if from == to {
+            return Ok(false);
+        }
+
+        if from == self.root_path {
+            anyhow::bail!("Cannot move the file tree root");
+        }
+
+        if to.starts_with(&from) {
+            anyhow::bail!("Cannot move a directory into itself");
+        }
+
+        if !from.starts_with(&self.root_path) || !to.starts_with(&self.root_path) {
+            anyhow::bail!("File tree moves must stay within the tree root");
+        }
+
+        if !self.entries.contains_key(&from) {
+            anyhow::bail!("Entry not found: {}", from.display());
+        }
+
+        if self.entries.contains_key(&to) {
+            match collision {
+                FileTreeCollisionStrategy::Error => {
+                    anyhow::bail!("Destination already exists: {}", to.display());
+                }
+                FileTreeCollisionStrategy::Skip => return Ok(false),
+                FileTreeCollisionStrategy::Replace => {
+                    self.remove_entry(&to);
+                }
+            }
+        }
+
+        let affected_paths: Vec<_> = self
+            .entries
+            .keys()
+            .filter(|path| *path == &from || path.starts_with(&from))
+            .cloned()
+            .collect();
+
+        let mut moved_entries = Vec::with_capacity(affected_paths.len());
+        for old_path in &affected_paths {
+            if let Some(mut entry) = self.remove_single_entry(old_path) {
+                let new_path = rebase_path(old_path, &from, &to);
+                self.retarget_entry_path(&mut entry, new_path);
+                moved_entries.push(entry);
+            }
+        }
+
+        self.remap_path_set_prefix(&from, &to, PathSetKind::Expanded);
+        self.remap_path_set_prefix(&from, &to, PathSetKind::Loading);
+        self.insert_entries(moved_entries);
+
+        if let Some(parent) = from.parent() {
+            self.refresh_known_directory_child_count(parent);
+        }
+        if let Some(parent) = to.parent() {
+            self.refresh_known_directory_child_count(parent);
+        }
+
+        self.invalidate_cache();
+
+        Ok(true)
+    }
+
+    /// Find the parent entry of a given path in the visible entries.
     pub fn find_parent_entry(&mut self, path: &Path) -> Option<FileTreeEntry> {
-        let parent_path = path.parent()?;
-
-        // Clone root_path to avoid borrowing issues
-        let root_path = self.root_path.clone();
-
-        // Don't go above the root directory
-        if parent_path < root_path {
+        let parent_path = normalize_tree_path(path).parent()?.to_path_buf();
+        if parent_path < self.root_path {
             return None;
         }
 
-        // Use the root path itself if the parent would be outside the tree
-        let target_path = if parent_path == root_path {
-            root_path
+        let target_path = if parent_path == self.root_path {
+            self.root_path.clone()
         } else {
-            parent_path.to_path_buf()
+            parent_path
         };
 
-        // Find the parent in visible entries
-        let visible_entries = self.visible_entries();
-        visible_entries
+        self.visible_entries()
             .iter()
             .find(|entry| entry.path == target_path)
             .cloned()
     }
 
-    /// Find the first child entry of a directory in the visible entries
+    /// Find the first child entry of a directory in the visible entries.
     pub fn find_first_child_entry(&mut self, dir_path: &Path) -> Option<FileTreeEntry> {
-        // Only works for directories
-        if let Some(entry) = self.entry_by_path(dir_path) {
-            if !entry.is_directory() {
-                return None;
-            }
-        } else {
+        let dir_path = normalize_tree_path(dir_path);
+        let entry = self.entry_by_path(&dir_path)?;
+        if !entry.is_directory() {
             return None;
         }
 
-        // Find the first child in visible entries
         let visible_entries = self.visible_entries();
-        visible_entries
+        let parent_index = visible_entries
             .iter()
-            .find(|entry| {
-                if let Some(parent) = entry.path.parent() {
-                    parent == dir_path
-                } else {
-                    false
-                }
-            })
-            .cloned()
+            .position(|entry| entry.path == dir_path)?;
+
+        visible_entries.get(parent_index + 1).and_then(|candidate| {
+            candidate
+                .ancestor_paths
+                .iter()
+                .any(|ancestor| ancestor == &dir_path)
+                .then(|| candidate.clone())
+        })
     }
 
-    /// Generate next entry ID
+    /// Generate next entry ID.
     pub fn next_entry_id(&mut self) -> FileTreeEntryId {
         let id = FileTreeEntryId(self.next_id);
         self.next_id += 1;
         id
     }
 
-    /// Scan a directory recursively
-    fn scan_directory(
+    fn scan_directory_recursive(
         &mut self,
         dir_path: &Path,
         current_depth: usize,
         max_depth: usize,
-    ) -> Result<Vec<FileTreeEntry>> {
+    ) -> Result<(Vec<FileTreeEntry>, usize)> {
         let mut entries = Vec::new();
-
         let read_dir = fs::read_dir(dir_path)
             .with_context(|| format!("Failed to read directory: {}", dir_path.display()))?;
 
+        let mut immediate_count = 0;
         for entry in read_dir {
             let entry = entry?;
-            let path = entry.path();
+            let path = normalize_tree_path(&entry.path());
             let metadata = entry.metadata()?;
-            let mtime = metadata.modified().ok();
 
-            // Skip hidden files unless configured to show them
             if !self.config.show_hidden && self.is_hidden_file(&path) {
                 continue;
             }
 
-            // Skip ignored files unless configured to show them
             if !self.config.show_ignored && self.is_ignored_file(&path) {
                 continue;
             }
 
-            let id = self.next_entry_id();
-            let mut file_entry = if metadata.is_dir() {
-                let mut dir_entry = FileTreeEntry::new_directory(id, path.clone(), mtime);
-                dir_entry.depth = current_depth;
+            immediate_count += 1;
+            let mut file_entry = self.entry_from_metadata(path.clone(), metadata, current_depth);
 
-                // Recursively scan subdirectories if within depth limit
-                if current_depth < max_depth
-                    && let Ok(children) = self.scan_directory(&path, current_depth + 1, max_depth)
+            if file_entry.is_directory() && current_depth < max_depth {
+                let (children, child_count) =
+                    self.scan_directory_recursive(&path, current_depth + 1, max_depth)?;
+                if let FileKind::Directory {
+                    child_count: ref mut entry_child_count,
+                    ref mut is_loaded,
+                } = file_entry.kind
                 {
-                    // Update child count with actual number of children
-                    if let FileKind::Directory {
-                        ref mut child_count,
-                        ref mut is_loaded,
-                    } = dir_entry.kind
-                    {
-                        *child_count = children.len();
-                        *is_loaded = true;
-                    }
-                    entries.extend(children);
+                    *entry_child_count = child_count;
+                    *is_loaded = true;
                 }
+                entries.extend(children);
+            }
 
-                dir_entry
-            } else if metadata.is_file() {
-                let mut file_entry =
-                    FileTreeEntry::new_file(id, path.clone(), metadata.len(), mtime);
-                file_entry.depth = current_depth;
-                file_entry
-            } else {
-                // Handle symlinks
-                let target = fs::read_link(&path).ok();
-                let target_exists = target.as_ref().map(|t| t.exists()).unwrap_or(false);
-                let mut symlink_entry =
-                    FileTreeEntry::new_symlink(id, path.clone(), target, target_exists, mtime);
-                symlink_entry.depth = current_depth;
-                symlink_entry
-            };
-
-            // Set visibility based on current filter settings
-            file_entry.is_visible = self.should_be_visible(&file_entry);
-
-            // VCS status will be queried at render time via the global VCS service
-
-            self.path_to_id.insert(path, id);
             entries.push(file_entry);
         }
 
-        Ok(entries)
+        Ok((entries, immediate_count))
     }
 
-    /// Load a specific directory (for lazy loading)
     fn load_directory(&mut self, dir_path: &Path) -> Result<()> {
-        if let Some(mut entry) = self.entry_by_path(dir_path) {
-            // Check if already loaded
-            if let FileKind::Directory { is_loaded, .. } = &entry.kind
-                && *is_loaded
-            {
-                // Directory already loaded, nothing to do
-                return Ok(());
-            }
+        let path = normalize_tree_path(dir_path);
+        let mut entry = self.entry_by_path(&path).context("Entry not found")?;
 
-            let children = self.scan_directory(dir_path, entry.depth + 1, entry.depth + 2)?;
+        if let FileKind::Directory { is_loaded, .. } = &entry.kind
+            && *is_loaded
+        {
+            return Ok(());
+        }
 
-            // Update the directory entry
+        let parent_depth = if path == self.root_path {
+            0
+        } else {
+            entry.depth
+        };
+        let (children, child_count) =
+            self.scan_directory_recursive(&path, parent_depth + 1, parent_depth + 1)?;
+
+        if path != self.root_path {
+            entry.is_expanded = true;
             if let FileKind::Directory {
-                ref mut child_count,
+                child_count: ref mut entry_child_count,
                 ref mut is_loaded,
             } = entry.kind
             {
-                *child_count = children.len();
+                *entry_child_count = child_count;
                 *is_loaded = true;
             }
-
-            // Add children to tree
-            for child in children {
-                self.upsert_entry(child);
-            }
-
-            // Update the directory entry
             self.upsert_entry(entry);
         }
+
+        self.insert_entries(children);
 
         Ok(())
     }
 
-    /// Hide children of a directory
-    fn hide_children(&mut self, dir_path: &Path) {
-        let entries: Vec<_> = self.entries.iter().cloned().collect();
-        let mut updated_entries = Vec::new();
+    fn entry_from_metadata(
+        &mut self,
+        path: PathBuf,
+        metadata: std::fs::Metadata,
+        depth: usize,
+    ) -> FileTreeEntry {
+        let id = self.next_entry_id();
+        let mtime = metadata.modified().ok();
+        let mut entry = if metadata.is_dir() {
+            FileTreeEntry::new_directory(id, path.clone(), mtime)
+        } else if metadata.is_file() {
+            FileTreeEntry::new_file(id, path.clone(), metadata.len(), mtime)
+        } else {
+            let target = fs::read_link(&path).ok();
+            let target_exists = target
+                .as_ref()
+                .map(|target| target.exists())
+                .unwrap_or(false);
+            FileTreeEntry::new_symlink(id, path, target, target_exists, mtime)
+        };
 
-        for mut entry in entries {
-            if entry.path.starts_with(dir_path) && entry.path != dir_path {
-                entry.is_visible = false;
-            }
-            updated_entries.push(entry);
-        }
-
-        self.entries = SumTree::from_iter(updated_entries, ());
-        self.invalidate_cache();
+        entry.depth = depth;
+        entry.is_visible = true;
+        entry.is_ignored = self.is_ignored_file(&entry.path);
+        entry
     }
 
-    /// Remove entry by ID
-    fn remove_entry_by_id(&mut self, id: FileTreeEntryId) -> Option<FileTreeEntry> {
-        let entries: Vec<_> = self.entries.iter().cloned().collect();
-        let mut updated_entries = Vec::new();
-        let mut removed_entry = None;
-
+    fn insert_entries(&mut self, entries: Vec<FileTreeEntry>) {
         for entry in entries {
-            if entry.id == id {
-                removed_entry = Some(entry);
-            } else {
-                updated_entries.push(entry);
-            }
+            self.insert_entry(entry);
         }
-
-        if removed_entry.is_some() {
-            self.entries = SumTree::from_iter(updated_entries, ());
-            self.invalidate_cache();
-        }
-
-        removed_entry
     }
 
-    /// Refresh visibility of all entries
-    fn refresh_visibility(&mut self) {
-        let entries: Vec<_> = self.entries.iter().cloned().collect();
-        let mut updated_entries = Vec::new();
-
-        for mut entry in entries {
-            entry.is_visible = self.should_be_visible(&entry);
-            updated_entries.push(entry);
-        }
-
-        self.entries = SumTree::from_iter(updated_entries, ());
-        self.invalidate_cache();
+    fn insert_entry(&mut self, mut entry: FileTreeEntry) {
+        entry.path = normalize_tree_path(&entry.path);
+        self.path_to_id.insert(entry.path.clone(), entry.id);
+        self.entries.insert(entry.path.clone(), entry);
     }
 
-    /// Check if an entry should be visible based on current configuration
-    fn should_be_visible(&self, entry: &FileTreeEntry) -> bool {
-        // Hidden files
+    fn remove_single_entry(&mut self, path: &Path) -> Option<FileTreeEntry> {
+        let path = normalize_tree_path(path);
+        self.path_to_id.remove(&path);
+        self.entries.remove(&path)
+    }
+
+    fn remove_descendants(&mut self, path: &Path) {
+        let path = normalize_tree_path(path);
+        let descendants: Vec<_> = self
+            .entries
+            .keys()
+            .filter(|candidate| candidate.starts_with(&path) && *candidate != &path)
+            .cloned()
+            .collect();
+
+        for descendant in descendants {
+            self.path_to_id.remove(&descendant);
+            self.entries.remove(&descendant);
+            self.expanded_dirs.remove(&descendant);
+        }
+    }
+
+    fn retarget_entry_path(&self, entry: &mut FileTreeEntry, new_path: PathBuf) {
+        entry.path = normalize_tree_path(&new_path);
+        entry.depth = self.depth_for_path(&entry.path);
+        entry.is_hidden = self.is_hidden_file(&entry.path);
+        entry.is_ignored = self.is_ignored_file(&entry.path);
+        entry.flattened_segments = None;
+        entry.ancestor_paths = Arc::from([]);
+        entry.is_search_match = false;
+
+        if let FileKind::File { extension } = &mut entry.kind {
+            *extension = entry
+                .path
+                .extension()
+                .map(|extension| extension.to_string_lossy().to_string());
+        }
+    }
+
+    fn depth_for_path(&self, path: &Path) -> usize {
+        path.strip_prefix(&self.root_path)
+            .ok()
+            .map(|relative| relative.components().count())
+            .unwrap_or(0)
+    }
+
+    fn remap_path_set_prefix(&mut self, from: &Path, to: &Path, kind: PathSetKind) {
+        let set = match kind {
+            PathSetKind::Expanded => &mut self.expanded_dirs,
+            PathSetKind::Loading => &mut self.loading_dirs,
+        };
+        let moved_paths: Vec<_> = set
+            .iter()
+            .filter(|path| *path == from || path.starts_with(from))
+            .cloned()
+            .collect();
+
+        for old_path in moved_paths {
+            set.remove(&old_path);
+            set.insert(rebase_path(&old_path, from, to));
+        }
+    }
+
+    fn refresh_known_directory_child_count(&mut self, path: &Path) {
+        let path = normalize_tree_path(path);
+        let child_count = self
+            .entries
+            .values()
+            .filter(|entry| entry.path.parent() == Some(path.as_path()))
+            .count();
+
+        if let Some(entry) = self.entries.get_mut(&path)
+            && let FileKind::Directory {
+                child_count: entry_child_count,
+                is_loaded,
+            } = &mut entry.kind
+        {
+            *entry_child_count = child_count;
+            *is_loaded = true;
+        }
+    }
+
+    fn entry_is_included(&self, entry: &FileTreeEntry) -> bool {
         if entry.is_hidden && !self.config.show_hidden {
             return false;
         }
 
-        // Ignored files
         if entry.is_ignored && !self.config.show_ignored {
-            return false;
-        }
-
-        // Check if parent directory is expanded
-        if let Some(parent) = entry.path.parent()
-            && parent != self.root_path
-            && !self.is_expanded(parent)
-        {
             return false;
         }
 
         true
     }
 
-    /// Check if a file is hidden (starts with .)
+    /// Check if a file is hidden (starts with .).
     fn is_hidden_file(&self, path: &Path) -> bool {
         path.file_name()
             .map(|name| name.to_string_lossy().starts_with('.'))
             .unwrap_or(false)
     }
 
-    /// Build gitignore matcher using the same patterns as the file picker
+    /// Build gitignore matcher using the same patterns as the file picker.
     fn build_gitignore_matcher(root_path: &Path) -> Option<Gitignore> {
         let mut builder = GitignoreBuilder::new(root_path);
 
-        // Add .gitignore files
         if let Ok(gitignore_path) = root_path.join(".gitignore").canonicalize()
             && gitignore_path.exists()
         {
             let _ = builder.add(&gitignore_path);
         }
 
-        // Add global gitignore
         if let Some(git_config_dir) = dirs::config_dir() {
             let global_gitignore = git_config_dir.join("git").join("ignore");
             if global_gitignore.exists() {
@@ -731,19 +1066,16 @@ impl FileTree {
             }
         }
 
-        // Add .git/info/exclude
         let git_exclude = root_path.join(".git").join("info").join("exclude");
         if git_exclude.exists() {
             let _ = builder.add(&git_exclude);
         }
 
-        // Add .ignore files
         let ignore_file = root_path.join(".ignore");
         if ignore_file.exists() {
             let _ = builder.add(&ignore_file);
         }
 
-        // Add Helix-specific ignore files
         let helix_ignore = root_path.join(".helix").join("ignore");
         if helix_ignore.exists() {
             let _ = builder.add(&helix_ignore);
@@ -752,11 +1084,10 @@ impl FileTree {
         builder.build().ok()
     }
 
-    /// Check if a file is ignored using the same patterns as the file picker
+    /// Check if a file is ignored using the same patterns as the file picker.
     fn is_ignored_file(&self, path: &Path) -> bool {
-        // Check if path is inside VCS directories
         for component in path.components() {
-            if let std::path::Component::Normal(name) = component
+            if let Component::Normal(name) = component
                 && let Some(name_str) = name.to_str()
             {
                 match name_str {
@@ -766,7 +1097,6 @@ impl FileTree {
             }
         }
 
-        // Check gitignore patterns
         if let Some(ref gitignore) = self.gitignore
             && let Ok(relative_path) = path.strip_prefix(&self.root_path)
         {
@@ -776,12 +1106,64 @@ impl FileTree {
 
         false
     }
-
-    // VCS status is now handled by the global VCS service
-    // The view layer queries VCS status at render time via get_vcs_status_for_entry
 }
 
-/// Statistics about the file tree
+struct ProjectionRow {
+    path: PathBuf,
+    flattened_segments: Option<Arc<[FileTreeFlattenedSegment]>>,
+}
+
+enum PathSetKind {
+    Expanded,
+    Loading,
+}
+
+fn normalize_tree_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::Normal(part) => normalized.push(part),
+            Component::RootDir | Component::Prefix(_) => normalized.push(component.as_os_str()),
+        }
+    }
+
+    if normalized.as_os_str().is_empty() {
+        path.to_path_buf()
+    } else {
+        normalized
+    }
+}
+
+fn normalize_search_query(value: &str) -> String {
+    value.trim().to_lowercase()
+}
+
+fn rebase_path(path: &Path, from: &Path, to: &Path) -> PathBuf {
+    match path.strip_prefix(from) {
+        Ok(relative) if relative.as_os_str().is_empty() => to.to_path_buf(),
+        Ok(relative) => to.join(relative),
+        Err(_) => path.to_path_buf(),
+    }
+}
+
+fn display_name_for_path(path: &Path) -> String {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .or_else(|| {
+            path.components()
+                .next_back()
+                .and_then(|component| component.as_os_str().to_str())
+        })
+        .unwrap_or(".")
+        .to_string()
+}
+
+/// Statistics about the file tree.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct FileTreeStats {
@@ -791,4 +1173,299 @@ pub struct FileTreeStats {
     pub directory_count: usize,
     pub total_size: u64,
     pub max_depth: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config() -> FileTreeConfig {
+        FileTreeConfig {
+            show_hidden: true,
+            show_ignored: true,
+            initial_depth: 3,
+            watch_filesystem: false,
+            flatten_empty_directories: true,
+            search_mode: FileTreeSearchMode::ExpandMatches,
+        }
+    }
+
+    fn config_with_search_mode(search_mode: FileTreeSearchMode) -> FileTreeConfig {
+        FileTreeConfig {
+            search_mode,
+            ..config()
+        }
+    }
+
+    fn visible_paths(tree: &mut FileTree) -> Vec<PathBuf> {
+        tree.visible_entries()
+            .iter()
+            .map(|entry| entry.path.clone())
+            .collect()
+    }
+
+    #[test]
+    fn collapsed_loaded_directory_reexpands_with_children_visible() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path().to_path_buf();
+        let src = root.join("src");
+        let lib = src.join("lib.rs");
+        fs::create_dir(&src).unwrap();
+        fs::write(&lib, "pub fn lib() {}\n").unwrap();
+
+        let mut tree = FileTree::new(root.clone(), config());
+        tree.load().unwrap();
+
+        assert!(visible_paths(&mut tree).contains(&lib));
+
+        tree.collapse_directory(&src).unwrap();
+        assert!(!visible_paths(&mut tree).contains(&lib));
+
+        tree.toggle_directory(&src).unwrap();
+        assert!(visible_paths(&mut tree).contains(&lib));
+    }
+
+    #[test]
+    fn visible_projection_flattens_single_child_directory_chains() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path().to_path_buf();
+        let leaf_dir = root.join("src").join("features").join("tree");
+        fs::create_dir_all(&leaf_dir).unwrap();
+        fs::write(leaf_dir.join("mod.rs"), "mod tree;\n").unwrap();
+
+        let mut tree = FileTree::new(root.clone(), config());
+        tree.load().unwrap();
+        let rows = tree.visible_entries();
+        let flattened = rows.iter().find(|entry| entry.path == leaf_dir).unwrap();
+        let segments = flattened.flattened_segments.as_ref().unwrap();
+
+        assert_eq!(flattened.depth, 1);
+        assert_eq!(
+            segments
+                .iter()
+                .map(|segment| segment.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["src", "features", "tree"]
+        );
+        assert!(segments.last().unwrap().is_terminal);
+    }
+
+    #[test]
+    fn search_projection_expands_matching_ancestors_by_path() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path().to_path_buf();
+        let nested = root.join("src").join("ui");
+        let matched = nested.join("button.rs");
+        let other = root.join("README.md");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(&matched, "button\n").unwrap();
+        fs::write(&other, "readme\n").unwrap();
+
+        let mut tree = FileTree::new(root.clone(), config());
+        tree.load().unwrap();
+        tree.collapse_directory(&root).unwrap();
+        tree.set_search_query(Some("button".to_string()));
+
+        let paths = visible_paths(&mut tree);
+        assert!(paths.contains(&matched));
+        assert!(!paths.contains(&other));
+        assert_eq!(tree.search_matching_paths(), vec![matched]);
+    }
+
+    #[test]
+    fn search_projection_collapse_non_matches_keeps_expanded_sibling_rows() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path().to_path_buf();
+        let alpha = root.join("alpha");
+        let beta = root.join("beta");
+        let alpha_child = alpha.join("keep.rs");
+        let matched = beta.join("match.rs");
+        fs::create_dir_all(&alpha).unwrap();
+        fs::create_dir_all(&beta).unwrap();
+        fs::write(&alpha_child, "keep\n").unwrap();
+        fs::write(&matched, "match\n").unwrap();
+
+        let mut tree = FileTree::new(
+            root.clone(),
+            config_with_search_mode(FileTreeSearchMode::CollapseNonMatches),
+        );
+        tree.load().unwrap();
+        tree.set_search_query(Some("match".to_string()));
+
+        let paths = visible_paths(&mut tree);
+        assert!(paths.contains(&alpha));
+        assert!(!paths.contains(&alpha_child));
+        assert!(paths.contains(&beta));
+        assert!(paths.contains(&matched));
+    }
+
+    #[test]
+    fn search_projection_hide_non_matches_removes_unmatched_sibling_rows() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path().to_path_buf();
+        let alpha = root.join("alpha");
+        let beta = root.join("beta");
+        let alpha_child = alpha.join("keep.rs");
+        let matched = beta.join("match.rs");
+        fs::create_dir_all(&alpha).unwrap();
+        fs::create_dir_all(&beta).unwrap();
+        fs::write(&alpha_child, "keep\n").unwrap();
+        fs::write(&matched, "match\n").unwrap();
+
+        let mut tree = FileTree::new(
+            root.clone(),
+            config_with_search_mode(FileTreeSearchMode::HideNonMatches),
+        );
+        tree.load().unwrap();
+        tree.set_search_query(Some("match".to_string()));
+
+        let paths = visible_paths(&mut tree);
+        assert!(!paths.contains(&alpha));
+        assert!(!paths.contains(&alpha_child));
+        assert!(paths.contains(&beta));
+        assert!(paths.contains(&matched));
+    }
+
+    #[test]
+    fn visible_projection_assigns_tree_position_metadata() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path().to_path_buf();
+        let app = root.join("app");
+        let docs = root.join("docs");
+        let app_main = app.join("main.rs");
+        let app_mod = app.join("mod.rs");
+        let readme = root.join("README.md");
+        fs::create_dir_all(&app).unwrap();
+        fs::create_dir_all(&docs).unwrap();
+        fs::write(&app_main, "fn main() {}\n").unwrap();
+        fs::write(&app_mod, "mod main;\n").unwrap();
+        fs::write(&readme, "# Project\n").unwrap();
+
+        let mut tree = FileTree::new(root.clone(), config());
+        tree.load().unwrap();
+        let entries = tree.visible_entries();
+
+        let root_entry = entries.iter().find(|entry| entry.path == root).unwrap();
+        assert_eq!(root_entry.level, 1);
+        assert_eq!(root_entry.pos_in_set, 1);
+        assert_eq!(root_entry.set_size, 1);
+        assert!(root_entry.ancestor_paths.is_empty());
+
+        let app_entry = entries.iter().find(|entry| entry.path == app).unwrap();
+        assert_eq!(app_entry.level, 2);
+        assert_eq!(app_entry.pos_in_set, 1);
+        assert_eq!(app_entry.set_size, 3);
+        assert!(app_entry.ancestor_paths.is_empty());
+
+        let app_main_entry = entries.iter().find(|entry| entry.path == app_main).unwrap();
+        assert_eq!(app_main_entry.level, 3);
+        assert_eq!(app_main_entry.pos_in_set, 1);
+        assert_eq!(app_main_entry.set_size, 2);
+        assert_eq!(app_main_entry.ancestor_paths.as_ref(), [app]);
+    }
+
+    #[test]
+    fn remove_entry_removes_descendants_from_path_store() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path().to_path_buf();
+        let dir = root.join("src");
+        let child = dir.join("lib.rs");
+        fs::create_dir(&dir).unwrap();
+        fs::write(&child, "pub fn lib() {}\n").unwrap();
+
+        let mut tree = FileTree::new(root, config());
+        tree.load().unwrap();
+
+        assert!(tree.remove_entry(&dir).is_some());
+        assert!(tree.entry_by_path(&dir).is_none());
+        assert!(tree.entry_by_path(&child).is_none());
+    }
+
+    #[test]
+    fn move_entry_preserves_descendants_ids_and_expansion() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path().to_path_buf();
+        let src = root.join("src");
+        let nested = src.join("nested");
+        let child = nested.join("lib.rs");
+        let moved = root.join("crates");
+        let moved_nested = moved.join("nested");
+        let moved_child = moved_nested.join("lib.rs");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(&child, "pub fn lib() {}\n").unwrap();
+
+        let mut tree = FileTree::new(root, config());
+        tree.load().unwrap();
+        let child_id = tree.entry_by_path(&child).unwrap().id;
+
+        assert!(
+            tree.move_entry(&src, &moved, FileTreeCollisionStrategy::Error)
+                .unwrap()
+        );
+
+        assert!(tree.entry_by_path(&src).is_none());
+        assert!(tree.entry_by_path(&nested).is_none());
+        assert!(tree.entry_by_path(&child).is_none());
+        assert_eq!(tree.entry_by_path(&moved_child).unwrap().id, child_id);
+        assert!(tree.is_expanded(&moved));
+        assert!(tree.is_expanded(&moved_nested));
+    }
+
+    #[test]
+    fn move_entry_skip_collision_leaves_source_and_destination() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path().to_path_buf();
+        let src = root.join("src");
+        let dest = root.join("crates");
+        fs::create_dir_all(&src).unwrap();
+        fs::create_dir_all(&dest).unwrap();
+        fs::write(src.join("lib.rs"), "pub fn src() {}\n").unwrap();
+        fs::write(dest.join("lib.rs"), "pub fn dest() {}\n").unwrap();
+
+        let mut tree = FileTree::new(root, config());
+        tree.load().unwrap();
+        let source_id = tree.entry_by_path(&src).unwrap().id;
+        let destination_id = tree.entry_by_path(&dest).unwrap().id;
+
+        assert!(
+            !tree
+                .move_entry(&src, &dest, FileTreeCollisionStrategy::Skip)
+                .unwrap()
+        );
+
+        assert_eq!(tree.entry_by_path(&src).unwrap().id, source_id);
+        assert_eq!(tree.entry_by_path(&dest).unwrap().id, destination_id);
+    }
+
+    #[test]
+    fn move_entry_replace_collision_removes_destination_subtree() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path().to_path_buf();
+        let src = root.join("src");
+        let src_child = src.join("lib.rs");
+        let dest = root.join("crates");
+        let old_dest_child = dest.join("main.rs");
+        let new_dest_child = dest.join("lib.rs");
+        fs::create_dir_all(&src).unwrap();
+        fs::create_dir_all(&dest).unwrap();
+        fs::write(&src_child, "pub fn src() {}\n").unwrap();
+        fs::write(&old_dest_child, "pub fn dest() {}\n").unwrap();
+
+        let mut tree = FileTree::new(root, config());
+        tree.load().unwrap();
+        let source_child_id = tree.entry_by_path(&src_child).unwrap().id;
+
+        assert!(
+            tree.move_entry(&src, &dest, FileTreeCollisionStrategy::Replace)
+                .unwrap()
+        );
+
+        assert!(tree.entry_by_path(&src).is_none());
+        assert!(tree.entry_by_path(&src_child).is_none());
+        assert!(tree.entry_by_path(&old_dest_child).is_none());
+        assert_eq!(
+            tree.entry_by_path(&new_dest_child).unwrap().id,
+            source_child_id
+        );
+    }
 }

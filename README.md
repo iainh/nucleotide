@@ -32,6 +32,10 @@ cargo build --release
 ./target/release/nucl
 ```
 
+The repo-local Cargo config disables Helix's automatic grammar fetch during
+builds. Use `nucl --grammar fetch` / `nucl --grammar build` or the bundle script
+when you need to update packaged runtime grammars.
+
 ### macOS Bundle
 
 ```bash
