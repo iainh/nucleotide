@@ -1164,22 +1164,32 @@ fn close_error_status(error: helix_view::editor::CloseError) -> EditorStatus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CodeActionMenuAction {
+enum MenuKeyAction {
     Accept,
     Cancel,
     SelectNext,
     SelectPrevious,
 }
 
-fn code_action_menu_action(key: &str, control: bool, shift: bool) -> Option<CodeActionMenuAction> {
+fn completion_menu_action(key: &str, control: bool, shift: bool) -> Option<MenuKeyAction> {
     match (key, control, shift) {
-        ("escape", false, false) | ("c", true, false) => Some(CodeActionMenuAction::Cancel),
-        ("enter", false, false) => Some(CodeActionMenuAction::Accept),
+        ("escape", false, false) => Some(MenuKeyAction::Cancel),
+        ("tab", false, false) | ("y", true, false) => Some(MenuKeyAction::Accept),
+        ("down", false, false) | ("n", true, false) => Some(MenuKeyAction::SelectNext),
+        ("up", false, false) | ("p", true, false) => Some(MenuKeyAction::SelectPrevious),
+        _ => None,
+    }
+}
+
+fn code_action_menu_action(key: &str, control: bool, shift: bool) -> Option<MenuKeyAction> {
+    match (key, control, shift) {
+        ("escape", false, false) | ("c", true, false) => Some(MenuKeyAction::Cancel),
+        ("enter", false, false) => Some(MenuKeyAction::Accept),
         ("down", false, false) | ("n", true, false) | ("tab", false, false) => {
-            Some(CodeActionMenuAction::SelectNext)
+            Some(MenuKeyAction::SelectNext)
         }
         ("up", false, false) | ("p", true, false) | ("tab", false, true) => {
-            Some(CodeActionMenuAction::SelectPrevious)
+            Some(MenuKeyAction::SelectPrevious)
         }
         _ => None,
     }
@@ -4189,7 +4199,46 @@ impl Workspace {
         }
     }
 
-    /// Routes Helix-style navigation keys while the code action menu is open.
+    fn handle_completion_overlay_action(
+        &mut self,
+        action: MenuKeyAction,
+        accept_with_enter: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.overlay.update(cx, |overlay, cx| match action {
+            MenuKeyAction::Accept if accept_with_enter => overlay.handle_completion_enter_key(cx),
+            MenuKeyAction::Accept => overlay.handle_completion_tab_key(cx),
+            MenuKeyAction::Cancel => {
+                overlay.dismiss_completion(cx);
+                true
+            }
+            MenuKeyAction::SelectNext => overlay.handle_completion_arrow_key("down", cx),
+            MenuKeyAction::SelectPrevious => overlay.handle_completion_arrow_key("up", cx),
+        })
+    }
+
+    /// Routes Helix-style completion keys while the completion menu is open.
+    fn handle_regular_completion_menu_key(
+        &mut self,
+        ev: &KeyDownEvent,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.overlay.read(cx).has_completion() || self.overlay.read(cx).has_code_actions() {
+            return false;
+        }
+
+        let Some(action) = completion_menu_action(
+            ev.keystroke.key.as_str(),
+            ev.keystroke.modifiers.control,
+            ev.keystroke.modifiers.shift,
+        ) else {
+            return false;
+        };
+
+        self.handle_completion_overlay_action(action, false, cx)
+    }
+
+    /// Routes Helix-style menu keys while the code action menu is open.
     fn handle_code_action_menu_key(&mut self, ev: &KeyDownEvent, cx: &mut Context<Self>) -> bool {
         if !self.overlay.read(cx).has_completion() || !self.overlay.read(cx).has_code_actions() {
             return false;
@@ -4206,15 +4255,16 @@ impl Workspace {
             return false;
         };
 
-        self.overlay.update(cx, |overlay, cx| match action {
-            CodeActionMenuAction::Accept => overlay.handle_completion_enter_key(cx),
-            CodeActionMenuAction::Cancel => {
-                overlay.dismiss_completion(cx);
-                true
-            }
-            CodeActionMenuAction::SelectNext => overlay.handle_completion_arrow_key("down", cx),
-            CodeActionMenuAction::SelectPrevious => overlay.handle_completion_arrow_key("up", cx),
-        })
+        self.handle_completion_overlay_action(action, true, cx)
+    }
+
+    /// Routes menu keys before the editor input path can consume them.
+    fn handle_completion_menu_key(&mut self, ev: &KeyDownEvent, cx: &mut Context<Self>) -> bool {
+        if self.overlay.read(cx).has_code_actions() {
+            self.handle_code_action_menu_key(ev, cx)
+        } else {
+            self.handle_regular_completion_menu_key(ev, cx)
+        }
     }
 
     /// Simplified key handler that delegates to the InputCoordinator
@@ -4539,95 +4589,12 @@ impl Workspace {
 
         // Check if completion is visible and handle navigation/control keys
         if self.overlay.read(cx).has_completion() {
-            if self.overlay.read(cx).has_code_actions() {
-                if self.handle_code_action_menu_key(ev, cx) {
-                    return;
-                }
-            } else {
+            if self.handle_completion_menu_key(ev, cx) {
+                return;
+            }
+
+            if self.overlay.read(cx).has_completion() && !self.overlay.read(cx).has_code_actions() {
                 match ev.keystroke.key.as_str() {
-                    "up" | "down" => {
-                        nucleotide_logging::info!(
-                            key = %ev.keystroke.key,
-                            "Forwarding arrow key to completion view"
-                        );
-                        // Forward the key event to the completion view via overlay method
-                        let handled = self.overlay.update(cx, |overlay, cx| {
-                            overlay.handle_completion_arrow_key(ev.keystroke.key.as_str(), cx)
-                        });
-                        if handled {
-                            // Don't let this key go to Helix - we handled it
-                            return;
-                        }
-                    }
-                    "tab" => {
-                        nucleotide_logging::info!(
-                            "Forwarding tab key to accept completion (secondary)"
-                        );
-                        // Forward tab to completion view to accept selected item
-                        let handled = self
-                            .overlay
-                            .update(cx, |overlay, cx| overlay.handle_completion_tab_key(cx));
-                        if handled {
-                            // Don't let tab go to Helix - we handled it
-                            return;
-                        }
-                    }
-                    key if ev.keystroke.modifiers.control => {
-                        // Handle Helix-style control key combinations
-                        match key {
-                            "y" => {
-                                nucleotide_logging::info!(
-                                    "Forwarding C-y to accept completion (primary - Helix style)"
-                                );
-                                // Forward C-y to completion view to accept selected item (Helix primary)
-                                let handled = self.overlay.update(cx, |overlay, cx| {
-                                    overlay.handle_completion_tab_key(cx)
-                                });
-                                if handled {
-                                    // Don't let C-y go to Helix - we handled it
-                                    return;
-                                }
-                            }
-                            "n" => {
-                                nucleotide_logging::info!(
-                                    "Forwarding C-n to select next completion (Helix style)"
-                                );
-                                // Forward C-n to completion view for next selection
-                                let handled = self.overlay.update(cx, |overlay, cx| {
-                                    overlay.handle_completion_arrow_key("down", cx)
-                                });
-                                if handled {
-                                    // Don't let C-n go to Helix - we handled it
-                                    return;
-                                }
-                            }
-                            "p" => {
-                                nucleotide_logging::info!(
-                                    "Forwarding C-p to select previous completion (Helix style)"
-                                );
-                                // Forward C-p to completion view for previous selection
-                                let handled = self.overlay.update(cx, |overlay, cx| {
-                                    overlay.handle_completion_arrow_key("up", cx)
-                                });
-                                if handled {
-                                    // Don't let C-p go to Helix - we handled it
-                                    return;
-                                }
-                            }
-                            _ => {
-                                // Other control keys - let them pass through to Helix
-                            }
-                        }
-                    }
-                    "escape" => {
-                        nucleotide_logging::info!("Forwarding escape key to close completion view");
-                        // Close the completion view without accepting any item
-                        self.overlay.update(cx, |overlay, cx| {
-                            overlay.dismiss_completion(cx);
-                        });
-                        // Don't let escape go to Helix - we handled it
-                        return;
-                    }
                     "backspace" => {
                         nucleotide_logging::debug!(
                             "Backspace while completion active - will predict shorter prefix"
@@ -10762,7 +10729,7 @@ impl Render for Workspace {
         workspace_div = workspace_div
             .track_focus(&self.focus_handle)
             .capture_key_down(cx.listener(|view, ev, _window, cx| {
-                if view.handle_code_action_menu_key(ev, cx) {
+                if view.handle_completion_menu_key(ev, cx) {
                     cx.stop_propagation();
                 }
             }))
@@ -12735,44 +12702,84 @@ mod tests {
     }
 
     #[test]
+    fn completion_menu_keys_match_helix_completion_navigation() {
+        assert_eq!(
+            completion_menu_action("tab", false, false),
+            Some(MenuKeyAction::Accept)
+        );
+        assert_eq!(
+            completion_menu_action("y", true, false),
+            Some(MenuKeyAction::Accept)
+        );
+        assert_eq!(
+            completion_menu_action("down", false, false),
+            Some(MenuKeyAction::SelectNext)
+        );
+        assert_eq!(
+            completion_menu_action("n", true, false),
+            Some(MenuKeyAction::SelectNext)
+        );
+        assert_eq!(
+            completion_menu_action("up", false, false),
+            Some(MenuKeyAction::SelectPrevious)
+        );
+        assert_eq!(
+            completion_menu_action("p", true, false),
+            Some(MenuKeyAction::SelectPrevious)
+        );
+        assert_eq!(
+            completion_menu_action("escape", false, false),
+            Some(MenuKeyAction::Cancel)
+        );
+    }
+
+    #[test]
+    fn completion_menu_keys_ignore_non_helix_completion_bindings() {
+        assert_eq!(completion_menu_action("enter", false, false), None);
+        assert_eq!(completion_menu_action("tab", false, true), None);
+        assert_eq!(completion_menu_action("c", true, false), None);
+        assert_eq!(completion_menu_action("down", true, false), None);
+    }
+
+    #[test]
     fn code_action_menu_keys_match_helix_menu_navigation() {
         assert_eq!(
             code_action_menu_action("tab", false, false),
-            Some(CodeActionMenuAction::SelectNext)
+            Some(MenuKeyAction::SelectNext)
         );
         assert_eq!(
             code_action_menu_action("down", false, false),
-            Some(CodeActionMenuAction::SelectNext)
+            Some(MenuKeyAction::SelectNext)
         );
         assert_eq!(
             code_action_menu_action("n", true, false),
-            Some(CodeActionMenuAction::SelectNext)
+            Some(MenuKeyAction::SelectNext)
         );
 
         assert_eq!(
             code_action_menu_action("tab", false, true),
-            Some(CodeActionMenuAction::SelectPrevious)
+            Some(MenuKeyAction::SelectPrevious)
         );
         assert_eq!(
             code_action_menu_action("up", false, false),
-            Some(CodeActionMenuAction::SelectPrevious)
+            Some(MenuKeyAction::SelectPrevious)
         );
         assert_eq!(
             code_action_menu_action("p", true, false),
-            Some(CodeActionMenuAction::SelectPrevious)
+            Some(MenuKeyAction::SelectPrevious)
         );
 
         assert_eq!(
             code_action_menu_action("enter", false, false),
-            Some(CodeActionMenuAction::Accept)
+            Some(MenuKeyAction::Accept)
         );
         assert_eq!(
             code_action_menu_action("escape", false, false),
-            Some(CodeActionMenuAction::Cancel)
+            Some(MenuKeyAction::Cancel)
         );
         assert_eq!(
             code_action_menu_action("c", true, false),
-            Some(CodeActionMenuAction::Cancel)
+            Some(MenuKeyAction::Cancel)
         );
     }
 
