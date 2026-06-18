@@ -1163,6 +1163,28 @@ fn close_error_status(error: helix_view::editor::CloseError) -> EditorStatus {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CodeActionMenuAction {
+    Accept,
+    Cancel,
+    SelectNext,
+    SelectPrevious,
+}
+
+fn code_action_menu_action(key: &str, control: bool, shift: bool) -> Option<CodeActionMenuAction> {
+    match (key, control, shift) {
+        ("escape", false, false) | ("c", true, false) => Some(CodeActionMenuAction::Cancel),
+        ("enter", false, false) => Some(CodeActionMenuAction::Accept),
+        ("down", false, false) | ("n", true, false) | ("tab", false, false) => {
+            Some(CodeActionMenuAction::SelectNext)
+        }
+        ("up", false, false) | ("p", true, false) | ("tab", false, true) => {
+            Some(CodeActionMenuAction::SelectPrevious)
+        }
+        _ => None,
+    }
+}
+
 fn tab_activation_target_after_close<T: Copy + Eq>(
     documents: &[TabActivationDocument<T>],
     closing_doc_id: T,
@@ -4167,6 +4189,34 @@ impl Workspace {
         }
     }
 
+    /// Routes Helix-style navigation keys while the code action menu is open.
+    fn handle_code_action_menu_key(&mut self, ev: &KeyDownEvent, cx: &mut Context<Self>) -> bool {
+        if !self.overlay.read(cx).has_completion() || !self.overlay.read(cx).has_code_actions() {
+            return false;
+        }
+
+        let Some(action) = code_action_menu_action(
+            ev.keystroke.key.as_str(),
+            ev.keystroke.modifiers.control,
+            ev.keystroke.modifiers.shift,
+        ) else {
+            self.overlay.update(cx, |overlay, cx| {
+                overlay.dismiss_completion(cx);
+            });
+            return false;
+        };
+
+        self.overlay.update(cx, |overlay, cx| match action {
+            CodeActionMenuAction::Accept => overlay.handle_completion_enter_key(cx),
+            CodeActionMenuAction::Cancel => {
+                overlay.dismiss_completion(cx);
+                true
+            }
+            CodeActionMenuAction::SelectNext => overlay.handle_completion_arrow_key("down", cx),
+            CodeActionMenuAction::SelectPrevious => overlay.handle_completion_arrow_key("up", cx),
+        })
+    }
+
     /// Simplified key handler that delegates to the InputCoordinator
     fn handle_key(&mut self, ev: &KeyDownEvent, window: &Window, cx: &mut Context<Self>) {
         // If embedded terminal is focused, route all keys to it and stop here
@@ -4489,137 +4539,130 @@ impl Workspace {
 
         // Check if completion is visible and handle navigation/control keys
         if self.overlay.read(cx).has_completion() {
-            match ev.keystroke.key.as_str() {
-                // Accept with Enter when showing code actions dropdown
-                "enter" => {
-                    let accept_with_enter = self.overlay.read(cx).has_code_actions();
-                    if accept_with_enter {
-                        nucleotide_logging::info!("Accepting code action via Enter key");
-                        let handled = self
-                            .overlay
-                            .update(cx, |overlay, cx| overlay.handle_completion_enter_key(cx));
+            if self.overlay.read(cx).has_code_actions() {
+                if self.handle_code_action_menu_key(ev, cx) {
+                    return;
+                }
+            } else {
+                match ev.keystroke.key.as_str() {
+                    "up" | "down" => {
+                        nucleotide_logging::info!(
+                            key = %ev.keystroke.key,
+                            "Forwarding arrow key to completion view"
+                        );
+                        // Forward the key event to the completion view via overlay method
+                        let handled = self.overlay.update(cx, |overlay, cx| {
+                            overlay.handle_completion_arrow_key(ev.keystroke.key.as_str(), cx)
+                        });
                         if handled {
+                            // Don't let this key go to Helix - we handled it
                             return;
                         }
                     }
-                }
-                "up" | "down" => {
-                    nucleotide_logging::info!(
-                        key = %ev.keystroke.key,
-                        "Forwarding arrow key to completion view"
-                    );
-                    // Forward the key event to the completion view via overlay method
-                    let handled = self.overlay.update(cx, |overlay, cx| {
-                        overlay.handle_completion_arrow_key(ev.keystroke.key.as_str(), cx)
-                    });
-                    if handled {
-                        // Don't let this key go to Helix - we handled it
+                    "tab" => {
+                        nucleotide_logging::info!(
+                            "Forwarding tab key to accept completion (secondary)"
+                        );
+                        // Forward tab to completion view to accept selected item
+                        let handled = self
+                            .overlay
+                            .update(cx, |overlay, cx| overlay.handle_completion_tab_key(cx));
+                        if handled {
+                            // Don't let tab go to Helix - we handled it
+                            return;
+                        }
+                    }
+                    key if ev.keystroke.modifiers.control => {
+                        // Handle Helix-style control key combinations
+                        match key {
+                            "y" => {
+                                nucleotide_logging::info!(
+                                    "Forwarding C-y to accept completion (primary - Helix style)"
+                                );
+                                // Forward C-y to completion view to accept selected item (Helix primary)
+                                let handled = self.overlay.update(cx, |overlay, cx| {
+                                    overlay.handle_completion_tab_key(cx)
+                                });
+                                if handled {
+                                    // Don't let C-y go to Helix - we handled it
+                                    return;
+                                }
+                            }
+                            "n" => {
+                                nucleotide_logging::info!(
+                                    "Forwarding C-n to select next completion (Helix style)"
+                                );
+                                // Forward C-n to completion view for next selection
+                                let handled = self.overlay.update(cx, |overlay, cx| {
+                                    overlay.handle_completion_arrow_key("down", cx)
+                                });
+                                if handled {
+                                    // Don't let C-n go to Helix - we handled it
+                                    return;
+                                }
+                            }
+                            "p" => {
+                                nucleotide_logging::info!(
+                                    "Forwarding C-p to select previous completion (Helix style)"
+                                );
+                                // Forward C-p to completion view for previous selection
+                                let handled = self.overlay.update(cx, |overlay, cx| {
+                                    overlay.handle_completion_arrow_key("up", cx)
+                                });
+                                if handled {
+                                    // Don't let C-p go to Helix - we handled it
+                                    return;
+                                }
+                            }
+                            _ => {
+                                // Other control keys - let them pass through to Helix
+                            }
+                        }
+                    }
+                    "escape" => {
+                        nucleotide_logging::info!("Forwarding escape key to close completion view");
+                        // Close the completion view without accepting any item
+                        self.overlay.update(cx, |overlay, cx| {
+                            overlay.dismiss_completion(cx);
+                        });
+                        // Don't let escape go to Helix - we handled it
                         return;
                     }
-                }
-                "tab" => {
-                    nucleotide_logging::info!(
-                        "Forwarding tab key to accept completion (secondary)"
-                    );
-                    // Forward tab to completion view to accept selected item
-                    let handled = self
-                        .overlay
-                        .update(cx, |overlay, cx| overlay.handle_completion_tab_key(cx));
-                    if handled {
-                        // Don't let tab go to Helix - we handled it
-                        return;
+                    "backspace" => {
+                        nucleotide_logging::debug!(
+                            "Backspace while completion active - will predict shorter prefix"
+                        );
+                        // For backspace, predict by removing the last character from current prefix
+                        self.update_completion_filter_with_predicted_backspace(cx);
                     }
-                }
-                key if ev.keystroke.modifiers.control => {
-                    // Handle Helix-style control key combinations
-                    match key {
-                        "y" => {
-                            nucleotide_logging::info!(
-                                "Forwarding C-y to accept completion (primary - Helix style)"
+                    key if key.len() == 1 => {
+                        let typed_char = key.chars().next().unwrap();
+                        if typed_char.is_alphanumeric() || typed_char == '_' {
+                            nucleotide_logging::debug!(
+                                key = %key,
+                                "Character typed while completion active - will update filter with predicted prefix"
                             );
-                            // Forward C-y to completion view to accept selected item (Helix primary)
-                            let handled = self
-                                .overlay
-                                .update(cx, |overlay, cx| overlay.handle_completion_tab_key(cx));
-                            if handled {
-                                // Don't let C-y go to Helix - we handled it
-                                return;
-                            }
-                        }
-                        "n" => {
-                            nucleotide_logging::info!(
-                                "Forwarding C-n to select next completion (Helix style)"
+                            // Regular alphanumeric character - update filter with prediction
+                            self.update_completion_filter_with_predicted_char(typed_char, cx);
+                        } else if typed_char == '.' {
+                            nucleotide_logging::debug!(
+                                key = %key,
+                                "Dot typed while completion active - will trigger new completion request"
                             );
-                            // Forward C-n to completion view for next selection
-                            let handled = self.overlay.update(cx, |overlay, cx| {
-                                overlay.handle_completion_arrow_key("down", cx)
-                            });
-                            if handled {
-                                // Don't let C-n go to Helix - we handled it
-                                return;
-                            }
-                        }
-                        "p" => {
-                            nucleotide_logging::info!(
-                                "Forwarding C-p to select previous completion (Helix style)"
+                            // Dot should trigger a new completion request for methods/properties
+                            // Let the dot go to Helix first, then trigger new completion
+                            self.schedule_completion_filter_update(cx);
+                        } else {
+                            // Other punctuation might close completion
+                            nucleotide_logging::debug!(
+                                key = %key,
+                                "Non-alphanumeric character typed - letting Helix handle normally"
                             );
-                            // Forward C-p to completion view for previous selection
-                            let handled = self.overlay.update(cx, |overlay, cx| {
-                                overlay.handle_completion_arrow_key("up", cx)
-                            });
-                            if handled {
-                                // Don't let C-p go to Helix - we handled it
-                                return;
-                            }
-                        }
-                        _ => {
-                            // Other control keys - let them pass through to Helix
                         }
                     }
-                }
-                "escape" => {
-                    nucleotide_logging::info!("Forwarding escape key to close completion view");
-                    // Close the completion view without accepting any item
-                    self.overlay.update(cx, |overlay, cx| {
-                        overlay.dismiss_completion(cx);
-                    });
-                    // Don't let escape go to Helix - we handled it
-                    return;
-                }
-                "backspace" => {
-                    nucleotide_logging::debug!(
-                        "Backspace while completion active - will predict shorter prefix"
-                    );
-                    // For backspace, predict by removing the last character from current prefix
-                    self.update_completion_filter_with_predicted_backspace(cx);
-                }
-                key if key.len() == 1 => {
-                    let typed_char = key.chars().next().unwrap();
-                    if typed_char.is_alphanumeric() || typed_char == '_' {
-                        nucleotide_logging::debug!(
-                            key = %key,
-                            "Character typed while completion active - will update filter with predicted prefix"
-                        );
-                        // Regular alphanumeric character - update filter with prediction
-                        self.update_completion_filter_with_predicted_char(typed_char, cx);
-                    } else if typed_char == '.' {
-                        nucleotide_logging::debug!(
-                            key = %key,
-                            "Dot typed while completion active - will trigger new completion request"
-                        );
-                        // Dot should trigger a new completion request for methods/properties
-                        // Let the dot go to Helix first, then trigger new completion
-                        self.schedule_completion_filter_update(cx);
-                    } else {
-                        // Other punctuation might close completion
-                        nucleotide_logging::debug!(
-                            key = %key,
-                            "Non-alphanumeric character typed - letting Helix handle normally"
-                        );
+                    _ => {
+                        // For other keys when completion is visible, continue normal processing
                     }
-                }
-                _ => {
-                    // For other keys when completion is visible, continue normal processing
                 }
             }
         }
@@ -10718,6 +10761,11 @@ impl Render for Workspace {
         // regardless of focus state or overlay presence for global shortcuts to work
         workspace_div = workspace_div
             .track_focus(&self.focus_handle)
+            .capture_key_down(cx.listener(|view, ev, _window, cx| {
+                if view.handle_code_action_menu_key(ev, cx) {
+                    cx.stop_propagation();
+                }
+            }))
             .on_key_down(cx.listener(|view, ev, window, cx| {
                 view.handle_key(ev, window, cx);
             }));
@@ -12258,6 +12306,75 @@ fn emit_picker_update(
     cx.emit(update);
 }
 
+fn code_action_category(action: &lsp::CodeActionOrCommand) -> u32 {
+    if let lsp::CodeActionOrCommand::CodeAction(lsp::CodeAction {
+        kind: Some(kind), ..
+    }) = action
+    {
+        let mut components = kind.as_str().split('.');
+        match components.next() {
+            Some("quickfix") => 0,
+            Some("refactor") => match components.next() {
+                Some("extract") => 1,
+                Some("inline") => 2,
+                Some("rewrite") => 3,
+                Some("move") => 4,
+                Some("surround") => 5,
+                _ => 7,
+            },
+            Some("source") => 6,
+            _ => 7,
+        }
+    } else {
+        7
+    }
+}
+
+fn code_action_preferred(action: &lsp::CodeActionOrCommand) -> bool {
+    matches!(
+        action,
+        lsp::CodeActionOrCommand::CodeAction(lsp::CodeAction {
+            is_preferred: Some(true),
+            ..
+        })
+    )
+}
+
+fn code_action_fixes_diagnostics(action: &lsp::CodeActionOrCommand) -> bool {
+    matches!(
+        action,
+        lsp::CodeActionOrCommand::CodeAction(lsp::CodeAction { diagnostics: Some(diags), .. }) if !diags.is_empty()
+    )
+}
+
+fn code_action_enabled(action: &lsp::CodeActionOrCommand) -> bool {
+    matches!(
+        action,
+        lsp::CodeActionOrCommand::Command(_)
+            | lsp::CodeActionOrCommand::CodeAction(lsp::CodeAction { disabled: None, .. })
+    )
+}
+
+fn sort_code_actions_like_helix(actions: &mut [lsp::CodeActionOrCommand]) {
+    actions.sort_by(|a, b| {
+        let category = code_action_category(a).cmp(&code_action_category(b));
+        if category != std::cmp::Ordering::Equal {
+            return category;
+        }
+
+        let fixes_diagnostic = code_action_fixes_diagnostics(a)
+            .cmp(&code_action_fixes_diagnostics(b))
+            .reverse();
+        if fixes_diagnostic != std::cmp::Ordering::Equal {
+            return fixes_diagnostic;
+        }
+
+        code_action_preferred(a)
+            .cmp(&code_action_preferred(b))
+            .reverse()
+    });
+}
+
 fn show_code_actions(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &mut App) {
     use futures_util::stream::{FuturesOrdered, StreamExt};
     use helix_lsp::lsp;
@@ -12266,13 +12383,14 @@ fn show_code_actions(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &m
     info!("Opening code actions dropdown");
 
     // Snapshot needed editor state under read lock
-    let (doc_id, _view_id, _offset_encoding, identifier, range, diags, servers) = {
+    let (identifier, selection_range, doc_text, diags, servers) = {
         let core_r = core.read(cx);
         let editor = &core_r.editor;
         let view = editor.tree.get(editor.tree.focus);
         let doc = editor.documents.get(&view.doc).expect("doc exists");
 
         let selection_range = doc.selection(view.id).primary();
+        let doc_text = doc.text().clone();
         let diags = doc
             .diagnostics()
             .iter()
@@ -12289,45 +12407,31 @@ fn show_code_actions(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &m
             .filter(|ls| seen.insert(ls.id()))
             .collect();
 
-        let offset_encoding = servers
-            .first()
-            .map(|ls| ls.offset_encoding())
-            .unwrap_or_default();
         let identifier = doc.identifier();
-        let range = range_to_lsp_range(doc.text(), selection_range, offset_encoding);
 
-        (
-            view.doc,
-            view.id,
-            offset_encoding,
-            identifier,
-            range,
-            diags,
-            servers,
-        )
+        (identifier, selection_range, doc_text, diags, servers)
     };
 
     if servers.is_empty() {
         info!("No language servers with CodeAction support");
+        core.update(cx, |core, cx| {
+            core.editor
+                .set_error("No configured language server supports code actions");
+            cx.notify();
+        });
         return;
     }
-
-    // Build per-server requests
-    let doc_text_for_diag = {
-        let core_r = core.read(cx);
-        // Safe: doc exists
-        core_r.editor.documents.get(&doc_id).unwrap().text().clone()
-    };
 
     let mut futures: FuturesOrdered<_> = servers
         .into_iter()
         .filter_map(|ls| {
             let offset = ls.offset_encoding();
             let ls_id = ls.id();
+            let range = range_to_lsp_range(&doc_text, selection_range, offset);
             let ctx = lsp::CodeActionContext {
                 diagnostics: diags
                     .iter()
-                    .map(|d| diagnostic_to_lsp_diagnostic(&doc_text_for_diag, d, offset))
+                    .map(|d| diagnostic_to_lsp_diagnostic(&doc_text, d, offset))
                     .collect(),
                 only: None,
                 trigger_kind: Some(lsp::CodeActionTriggerKind::INVOKED),
@@ -12340,46 +12444,13 @@ fn show_code_actions(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &m
         })
         .collect();
 
-    // Helper sorters to mirror Helix ordering
-    fn action_category(action: &lsp::CodeActionOrCommand) -> u32 {
-        if let lsp::CodeActionOrCommand::CodeAction(lsp::CodeAction {
-            kind: Some(kind), ..
-        }) = action
-        {
-            let mut components = kind.as_str().split('.');
-            match components.next() {
-                Some("quickfix") => 0,
-                Some("refactor") => match components.next() {
-                    Some("extract") => 1,
-                    Some("inline") => 2,
-                    Some("rewrite") => 3,
-                    Some("move") => 4,
-                    Some("surround") => 5,
-                    _ => 7,
-                },
-                Some("source") => 6,
-                _ => 7,
-            }
-        } else {
-            7
-        }
-    }
-
-    fn action_preferred(action: &lsp::CodeActionOrCommand) -> bool {
-        matches!(
-            action,
-            lsp::CodeActionOrCommand::CodeAction(lsp::CodeAction {
-                is_preferred: Some(true),
-                ..
-            })
-        )
-    }
-
-    fn action_fixes_diagnostics(action: &lsp::CodeActionOrCommand) -> bool {
-        matches!(
-            action,
-            lsp::CodeActionOrCommand::CodeAction(lsp::CodeAction { diagnostics: Some(diags), .. }) if !diags.is_empty()
-        )
+    if futures.is_empty() {
+        core.update(cx, |core, cx| {
+            core.editor
+                .set_error("No configured language server supports code actions");
+            cx.notify();
+        });
+        return;
     }
 
     // Spawn async collection job
@@ -12398,25 +12469,10 @@ fn show_code_actions(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &m
             match result {
                 Ok((mut actions, ls_id, offset)) => {
                     // Drop disabled actions
-                    actions.retain(|a| match a {
-                        lsp::CodeActionOrCommand::CodeAction(ca) => ca.disabled.is_none(),
-                        _ => true,
-                    });
+                    actions.retain(code_action_enabled);
 
                     // Sort as in Helix: category, then fixes diagnostics, then preferred
-                    actions.sort_by(|a, b| {
-                        let cat = action_category(a).cmp(&action_category(b));
-                        if cat != std::cmp::Ordering::Equal {
-                            return cat;
-                        }
-                        let fix = action_fixes_diagnostics(a)
-                            .cmp(&action_fixes_diagnostics(b))
-                            .reverse();
-                        if fix != std::cmp::Ordering::Equal {
-                            return fix;
-                        }
-                        action_preferred(a).cmp(&action_preferred(b)).reverse()
-                    });
+                    sort_code_actions_like_helix(&mut actions);
 
                     for action in actions.into_iter() {
                         let label = match &action {
@@ -12438,11 +12494,12 @@ fn show_code_actions(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &m
         // If none, exit with a notification
         if completion_items.is_empty() {
             if let Some(core) = core_weak.upgrade() {
-                core.update(cx, |_core, cx| {
+                core.update(cx, |core, cx| {
+                    core.editor.set_error("No code actions available");
                     cx.emit(crate::Update::EditorStatus(
                         nucleotide_types::EditorStatus {
                             status: "No code actions available".to_string(),
-                            severity: nucleotide_types::Severity::Info,
+                            severity: nucleotide_types::Severity::Error,
                         },
                     ));
                 });
@@ -12644,8 +12701,162 @@ mod tests {
         helix_view::editor::Config::default().file_picker
     }
 
+    fn test_code_action(
+        title: &str,
+        kind: Option<lsp::CodeActionKind>,
+        fixes_diagnostic: bool,
+        is_preferred: bool,
+        disabled: bool,
+    ) -> lsp::CodeActionOrCommand {
+        lsp::CodeActionOrCommand::CodeAction(lsp::CodeAction {
+            title: title.to_string(),
+            kind,
+            diagnostics: fixes_diagnostic.then(|| {
+                vec![lsp::Diagnostic::new_simple(
+                    lsp::Range::new(lsp::Position::new(0, 0), lsp::Position::new(0, 1)),
+                    "diagnostic".to_string(),
+                )]
+            }),
+            edit: None,
+            command: None,
+            is_preferred: is_preferred.then_some(true),
+            disabled: disabled.then(|| lsp::CodeActionDisabled {
+                reason: "disabled".to_string(),
+            }),
+            data: None,
+        })
+    }
+
+    fn code_action_title(action: &lsp::CodeActionOrCommand) -> &str {
+        match action {
+            lsp::CodeActionOrCommand::Command(command) => &command.title,
+            lsp::CodeActionOrCommand::CodeAction(code_action) => &code_action.title,
+        }
+    }
+
+    #[test]
+    fn code_action_menu_keys_match_helix_menu_navigation() {
+        assert_eq!(
+            code_action_menu_action("tab", false, false),
+            Some(CodeActionMenuAction::SelectNext)
+        );
+        assert_eq!(
+            code_action_menu_action("down", false, false),
+            Some(CodeActionMenuAction::SelectNext)
+        );
+        assert_eq!(
+            code_action_menu_action("n", true, false),
+            Some(CodeActionMenuAction::SelectNext)
+        );
+
+        assert_eq!(
+            code_action_menu_action("tab", false, true),
+            Some(CodeActionMenuAction::SelectPrevious)
+        );
+        assert_eq!(
+            code_action_menu_action("up", false, false),
+            Some(CodeActionMenuAction::SelectPrevious)
+        );
+        assert_eq!(
+            code_action_menu_action("p", true, false),
+            Some(CodeActionMenuAction::SelectPrevious)
+        );
+
+        assert_eq!(
+            code_action_menu_action("enter", false, false),
+            Some(CodeActionMenuAction::Accept)
+        );
+        assert_eq!(
+            code_action_menu_action("escape", false, false),
+            Some(CodeActionMenuAction::Cancel)
+        );
+        assert_eq!(
+            code_action_menu_action("c", true, false),
+            Some(CodeActionMenuAction::Cancel)
+        );
+    }
+
+    #[test]
+    fn code_action_menu_keys_ignore_non_helix_menu_bindings() {
+        assert_eq!(code_action_menu_action("y", true, false), None);
+        assert_eq!(code_action_menu_action("tab", true, false), None);
+        assert_eq!(code_action_menu_action("enter", false, true), None);
+        assert_eq!(code_action_menu_action("down", true, false), None);
+    }
+
     fn test_view_id(index: u64) -> ViewId {
         ViewId::from(KeyData::from_ffi((1_u64 << 32) | index))
+    }
+
+    #[test]
+    fn code_action_enabled_filters_disabled_actions_like_helix() {
+        let enabled_action = test_code_action("enabled", None, false, false, false);
+        let disabled_action = test_code_action("disabled", None, false, false, true);
+        let command = lsp::CodeActionOrCommand::Command(lsp::Command {
+            title: "command".to_string(),
+            command: "server.command".to_string(),
+            arguments: None,
+        });
+
+        assert!(code_action_enabled(&enabled_action));
+        assert!(code_action_enabled(&command));
+        assert!(!code_action_enabled(&disabled_action));
+    }
+
+    #[test]
+    fn code_actions_sort_like_helix_by_category_and_relevance() {
+        let mut actions = vec![
+            test_code_action(
+                "source preferred diagnostic",
+                Some(lsp::CodeActionKind::SOURCE),
+                true,
+                true,
+                false,
+            ),
+            test_code_action(
+                "quickfix preferred no diagnostic",
+                Some(lsp::CodeActionKind::QUICKFIX),
+                false,
+                true,
+                false,
+            ),
+            test_code_action(
+                "quickfix diagnostic",
+                Some(lsp::CodeActionKind::QUICKFIX),
+                true,
+                false,
+                false,
+            ),
+            test_code_action(
+                "refactor extract preferred diagnostic",
+                Some(lsp::CodeActionKind::REFACTOR_EXTRACT),
+                true,
+                true,
+                false,
+            ),
+            test_code_action(
+                "quickfix preferred diagnostic",
+                Some(lsp::CodeActionKind::QUICKFIX),
+                true,
+                true,
+                false,
+            ),
+        ];
+
+        sort_code_actions_like_helix(&mut actions);
+
+        let titles = actions.iter().map(code_action_title).collect::<Vec<_>>();
+
+        assert_eq!(
+            titles,
+            vec![
+                "quickfix preferred diagnostic",
+                "quickfix diagnostic",
+                "quickfix preferred no diagnostic",
+                "refactor extract preferred diagnostic",
+                "source preferred diagnostic",
+            ]
+        );
     }
 
     #[test]
