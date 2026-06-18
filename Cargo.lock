@@ -5412,7 +5412,6 @@ version = "0.1.0"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
- "nucleotide-events",
  "portable-pty",
  "tokio",
 ]
@@ -5448,8 +5447,6 @@ dependencies = [
  "lsp-types",
  "serde",
  "serde_json",
- "toml 0.8.23",
- "tracing",
 ]
 
 [[package]]

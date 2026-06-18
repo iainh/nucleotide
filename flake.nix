@@ -402,7 +402,6 @@
 
             # Build performance tools
             sccache
-            lld
 
             # For running the application
             ripgrep
@@ -419,7 +418,6 @@
             xcbuild
             lldb  # Debugging on macOS
           ] ++ lib.optionals stdenv.isLinux [
-            mold  # Fast linker for Linux
             cargo-tarpaulin  # Test coverage
             gdb  # Debugging on Linux
           ];
@@ -434,24 +432,7 @@
 
           # Build performance settings following Helix patterns
           CARGO_INCREMENTAL = "1";  # Default to incremental for dev builds
-          RUSTFLAGS = lib.concatStringsSep " " ([
-            # Use LLD linker for faster linking
-            "-C link-arg=-fuse-ld=lld"
-          ] ++ lib.optionals stdenv.isLinux [
-            # Linux-specific optimizations
-            "-C link-arg=-Wl,--no-rosegment"
-          ] ++ lib.optionals stdenv.isDarwin [
-            # macOS-specific optimizations
-            "-C link-arg=-Wl,-dead_strip"
-          ]);
 
-          # Linker selection (conditional assignment)
-        } // lib.optionalAttrs stdenv.isLinux {
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER = "${pkgs.lld}/bin/lld";
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER = "${pkgs.lld}/bin/lld";
-        } // lib.optionalAttrs stdenv.isDarwin {
-          CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER = "${pkgs.lld}/bin/lld";
-          CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER = "${pkgs.lld}/bin/lld";
         } // {
           shellHook = ''
             # Define build mode aliases
@@ -483,12 +464,9 @@
             echo "  make-linux-package           - Create Linux distribution" >&2
             echo "" >&2
             echo "Build optimizations enabled (following Helix patterns):" >&2
-            echo "  • LLD linker for faster linking (automatic)" >&2
             echo "  • Thin LTO for release builds (faster than full LTO)" >&2
             echo "  • Split debuginfo for macOS (faster linking)" >&2
-            echo "  • Platform-specific link optimizations" >&2
             echo "  • Incremental compilation (default) or sccache (use aliases)" >&2
-            ${lib.optionalString stdenv.isLinux ''echo "  • mold linker available for Linux builds" >&2''}
             ${lib.optionalString stdenv.isDarwin ''echo "  • LLDB debugging available on macOS" >&2''}
             echo "" >&2
             echo "Development tools added from Helix:" >&2

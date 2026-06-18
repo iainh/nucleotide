@@ -158,6 +158,7 @@ impl FrameFixture {
             default_text_style: Style::default(),
             default_bg: self.default_bg,
             diagnostic_overlay_spans: None,
+            tab_width: 4,
         }
     }
 

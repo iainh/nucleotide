@@ -9,13 +9,13 @@ fn build_cache(line_count: usize, line_height: Pixels) -> LineLayoutCache {
     let cache = LineLayoutCache::new();
     let line_height_value: f32 = line_height.into();
     for line_idx in 0..line_count {
-        let layout = LineLayout {
+        let layout = LineLayout::wrapped(
             line_idx,
-            shaped_line: Default::default(),
-            origin: point(px(0.0), px(line_idx as f32 * line_height_value)),
-            segment_char_offset: 0,
-            text_start_byte_offset: 0,
-        };
+            Default::default(),
+            px(line_idx as f32 * line_height_value),
+            0,
+            0,
+        );
         cache.push(layout);
     }
     cache

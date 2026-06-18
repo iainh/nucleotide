@@ -42,8 +42,7 @@ jobs:
             libgl1-mesa-dev \
             libvulkan-dev \
             libfreetype6-dev \
-            libfontconfig1-dev \
-            mold
+            libfontconfig1-dev
       
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -78,8 +77,7 @@ jobs:
             libgl1-mesa-dev \
             libvulkan-dev \
             libfreetype6-dev \
-            libfontconfig1-dev \
-            mold
+            libfontconfig1-dev
       
       - name: Check layering
         run: ./scripts/check-layering.sh
@@ -113,8 +111,7 @@ jobs:
             libgl1-mesa-dev \
             libvulkan-dev \
             libfreetype6-dev \
-            libfontconfig1-dev \
-            mold
+            libfontconfig1-dev
       
       - name: Install cargo-deny
         run: cargo install cargo-deny
@@ -146,8 +143,7 @@ jobs:
             libgl1-mesa-dev \
             libvulkan-dev \
             libfreetype6-dev \
-            libfontconfig1-dev \
-            mold
+            libfontconfig1-dev
       
       - name: Install cargo-udeps
         run: cargo install cargo-udeps

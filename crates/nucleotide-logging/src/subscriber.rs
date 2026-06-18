@@ -190,7 +190,9 @@ mod tests {
     fn test_init_subscriber() {
         // Only run this test once to avoid double-initialization
         INIT.call_once(|| {
-            let config = LoggingConfig::default();
+            let temp_dir = tempfile::tempdir().unwrap();
+            let mut config = LoggingConfig::default();
+            config.file.path = temp_dir.path().join("nucleotide.log");
             let result = init_subscriber(config);
             // Note: This might fail if subscriber is already initialized,
             // which is okay for tests

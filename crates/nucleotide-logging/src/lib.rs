@@ -98,7 +98,10 @@ mod tests {
     #[test]
     fn test_init_logging() {
         // Test that initialization doesn't panic
-        let result = init_logging();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mut config = LoggingConfig::default();
+        config.file.path = temp_dir.path().join("nucleotide.log");
+        let result = init_logging_with_config(config);
         // Note: This might fail if already initialized, which is okay for tests
         let _ = result;
     }
