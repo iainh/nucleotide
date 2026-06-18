@@ -19,3 +19,4 @@ nucleo.workspace = true
 anyhow.workspace = true
 rust-embed.workspace = true
 tokio.workspace = true
+pulldown-cmark.workspace = true

@@ -87,6 +87,7 @@ thiserror = "1.0"
 async-trait = "0.1"
 rand = "0.8"
 slotmap = "1.0"
+pulldown-cmark = { version = "0.13", default-features = false }
 
 # LSP protocol dependencies
 lsp-types = "0.97"
