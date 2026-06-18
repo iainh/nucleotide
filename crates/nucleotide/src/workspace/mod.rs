@@ -1171,6 +1171,13 @@ enum MenuKeyAction {
     SelectPrevious,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HoverPopupKeyAction {
+    Dismiss,
+    SelectNext,
+    SelectPrevious,
+}
+
 fn completion_menu_action(key: &str, control: bool, shift: bool) -> Option<MenuKeyAction> {
     match (key, control, shift) {
         ("escape", false, false) => Some(MenuKeyAction::Cancel),
@@ -1191,6 +1198,15 @@ fn code_action_menu_action(key: &str, control: bool, shift: bool) -> Option<Menu
         ("up", false, false) | ("p", true, false) | ("tab", false, true) => {
             Some(MenuKeyAction::SelectPrevious)
         }
+        _ => None,
+    }
+}
+
+fn hover_popup_action(key: &str, alt: bool) -> Option<HoverPopupKeyAction> {
+    match key {
+        "escape" => Some(HoverPopupKeyAction::Dismiss),
+        "n" if alt => Some(HoverPopupKeyAction::SelectNext),
+        "p" if alt => Some(HoverPopupKeyAction::SelectPrevious),
         _ => None,
     }
 }
@@ -4267,6 +4283,26 @@ impl Workspace {
         }
     }
 
+    /// Routes hover-doc keys before the editor input path can consume them.
+    fn handle_hover_popup_key(&mut self, ev: &KeyDownEvent, cx: &mut Context<Self>) -> bool {
+        if !self.overlay.read(cx).has_hover_popup() {
+            return false;
+        }
+
+        let Some(action) =
+            hover_popup_action(ev.keystroke.key.as_str(), ev.keystroke.modifiers.alt)
+        else {
+            return false;
+        };
+
+        self.overlay.update(cx, |overlay, cx| match action {
+            HoverPopupKeyAction::Dismiss => overlay.dismiss_hover_popup(cx),
+            HoverPopupKeyAction::SelectNext => overlay.advance_hover_popup(true, cx),
+            HoverPopupKeyAction::SelectPrevious => overlay.advance_hover_popup(false, cx),
+        });
+        true
+    }
+
     /// Simplified key handler that delegates to the InputCoordinator
     fn handle_key(&mut self, ev: &KeyDownEvent, window: &Window, cx: &mut Context<Self>) {
         // If embedded terminal is focused, route all keys to it and stop here
@@ -4566,25 +4602,8 @@ impl Workspace {
         }
 
         // Handle hover popup keyboard shortcuts before other overlay logic
-        if self.overlay.read(cx).has_hover_popup() {
-            match ev.keystroke.key.as_str() {
-                "escape" => {
-                    self.overlay
-                        .update(cx, |overlay, cx| overlay.dismiss_hover_popup(cx));
-                    return;
-                }
-                "n" if ev.keystroke.modifiers.alt => {
-                    self.overlay
-                        .update(cx, |overlay, cx| overlay.advance_hover_popup(true, cx));
-                    return;
-                }
-                "p" if ev.keystroke.modifiers.alt => {
-                    self.overlay
-                        .update(cx, |overlay, cx| overlay.advance_hover_popup(false, cx));
-                    return;
-                }
-                _ => {}
-            }
+        if self.handle_hover_popup_key(ev, cx) {
+            return;
         }
 
         // Check if completion is visible and handle navigation/control keys
@@ -10729,7 +10748,7 @@ impl Render for Workspace {
         workspace_div = workspace_div
             .track_focus(&self.focus_handle)
             .capture_key_down(cx.listener(|view, ev, _window, cx| {
-                if view.handle_completion_menu_key(ev, cx) {
+                if view.handle_hover_popup_key(ev, cx) || view.handle_completion_menu_key(ev, cx) {
                     cx.stop_propagation();
                 }
             }))
@@ -12789,6 +12808,30 @@ mod tests {
         assert_eq!(code_action_menu_action("tab", true, false), None);
         assert_eq!(code_action_menu_action("enter", false, true), None);
         assert_eq!(code_action_menu_action("down", true, false), None);
+    }
+
+    #[test]
+    fn hover_popup_keys_match_hover_docs_navigation() {
+        assert_eq!(
+            hover_popup_action("escape", false),
+            Some(HoverPopupKeyAction::Dismiss)
+        );
+        assert_eq!(
+            hover_popup_action("n", true),
+            Some(HoverPopupKeyAction::SelectNext)
+        );
+        assert_eq!(
+            hover_popup_action("p", true),
+            Some(HoverPopupKeyAction::SelectPrevious)
+        );
+    }
+
+    #[test]
+    fn hover_popup_keys_ignore_regular_editor_input() {
+        assert_eq!(hover_popup_action("n", false), None);
+        assert_eq!(hover_popup_action("p", false), None);
+        assert_eq!(hover_popup_action("enter", false), None);
+        assert_eq!(hover_popup_action("down", false), None);
     }
 
     fn test_view_id(index: u64) -> ViewId {
