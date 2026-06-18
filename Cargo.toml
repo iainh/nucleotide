@@ -18,6 +18,9 @@ members = [
     "crates/nucleotide-terminal-view",
     "crates/nucleotide-terminal-panel",
 ]
+exclude = [
+    "vendor/block-0.1.6",
+]
 resolver = "2"
 
 [workspace.package]
@@ -113,6 +116,10 @@ nucleotide-test-lsp = { path = "crates/nucleotide-test-lsp" }
 # dependency workspaces are ignored by Cargo, so mirror the required entries here.
 async-process = { git = "https://github.com/zed-industries/async-process.git", rev = "0b6d6713570af61806e1e5cb40e0f757cb93fd9d" }
 async-task = { git = "https://github.com/smol-rs/async-task.git", rev = "b4486cd71e4e94fbda54ce6302444de14f4d190e" }
+# `block` has no newer crates.io release and v0.1.6 trips Rust's
+# `uninhabited_static` future-incompat lint. Keep the package/version stable
+# for GPUI's transitive macOS dependencies while patching the marker type.
+block = { path = "vendor/block-0.1.6" }
 
 [profile.dev]
 opt-level = 1
