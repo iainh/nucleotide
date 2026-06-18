@@ -11,7 +11,10 @@ use helix_core::{
 };
 use helix_view::{Document, Theme, view::ViewPosition};
 
-use crate::{EditorSurfaceGeometry, document_text_format_for_surface};
+use crate::{
+    EditorSurfaceGeometry, document_text_format_for_surface,
+    line_text::{DisplayLineText, DisplayTextMap},
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SoftWrapVisualLine {
@@ -25,6 +28,7 @@ pub struct SoftWrapVisualLine {
     pub segment_char_offset: usize,
     pub text_start_byte_offset: usize,
     pub is_phantom_line: bool,
+    pub display_map: DisplayTextMap,
 }
 
 impl SoftWrapVisualLine {
@@ -212,6 +216,7 @@ pub fn soft_wrap_visual_lines(
 
         let visual = build_visual_line(
             text,
+            text_format.tab_width,
             visual_line.saturating_sub(anchor_visual_row),
             current_doc_line,
             &line_graphemes,
@@ -339,6 +344,7 @@ pub fn soft_wrap_line_paint_plans<'a>(
 
 fn build_visual_line(
     text: RopeSlice<'_>,
+    tab_width: u16,
     visual_line: usize,
     fallback_doc_line: usize,
     line_graphemes: &[FormattedGrapheme<'_>],
@@ -349,21 +355,24 @@ fn build_visual_line(
     let line_start_col = line_graphemes
         .first()
         .map_or(0, |grapheme| grapheme.visual_pos.col);
-    let mut line_text = String::new();
+    let mut prefix_text = String::new();
+    let mut source_text = String::new();
     let mut wrap_indicator_len = 0;
+    let mut prefix_visual_col = line_start_col;
 
-    line_text.extend(std::iter::repeat_n(' ', line_start_col));
+    prefix_text.extend(std::iter::repeat_n(' ', line_start_col));
 
     for grapheme in line_graphemes {
         if grapheme.is_virtual() {
             if let Grapheme::Other { g } = &grapheme.raw {
                 wrap_indicator_len += g.len();
-                line_text.push_str(g);
+                prefix_visual_col += helix_core::graphemes::grapheme_width(g);
+                prefix_text.push_str(g);
             }
         } else {
             match &grapheme.raw {
-                Grapheme::Tab { .. } => line_text.push('\t'),
-                Grapheme::Other { g } => line_text.push_str(g),
+                Grapheme::Tab { .. } => source_text.push('\t'),
+                Grapheme::Other { g } => source_text.push_str(g),
                 Grapheme::Newline => {}
             }
         }
@@ -399,11 +408,17 @@ fn build_visual_line(
     };
     let segment_char_offset =
         first_real.map_or(0, |grapheme| grapheme.char_idx.saturating_sub(line_start));
+    let display_line_text = DisplayLineText::from_source_with_prefix(
+        &prefix_text,
+        source_text,
+        prefix_visual_col,
+        tab_width,
+    );
 
     SoftWrapVisualLine {
         visual_line,
         doc_line,
-        text: line_text.into(),
+        text: display_line_text.display,
         line_start_col,
         wrap_indicator_len,
         line_start_char,
@@ -411,6 +426,7 @@ fn build_visual_line(
         segment_char_offset,
         text_start_byte_offset: line_start_col + wrap_indicator_len,
         is_phantom_line: line_start >= line_end,
+        display_map: display_line_text.map,
     }
 }
 
@@ -425,7 +441,7 @@ mod tests {
         decorate_soft_wrap_line_runs, soft_wrap_line_paint_plans, soft_wrap_render_plan,
         soft_wrap_viewport_height, soft_wrap_visual_lines, soft_wrap_visual_position,
     };
-    use crate::EditorSurfaceGeometry;
+    use crate::{EditorSurfaceGeometry, line_text::DisplayTextMap};
 
     fn text_format() -> TextFormat {
         TextFormat {
@@ -452,6 +468,7 @@ mod tests {
             segment_char_offset: 4,
             text_start_byte_offset: line_start_col + wrap_indicator_len,
             is_phantom_line: false,
+            display_map: DisplayTextMap::identity("    .wrapped".len()),
         }
     }
 
@@ -530,6 +547,27 @@ mod tests {
         assert_eq!(lines[0].relative_row(0), 0);
         assert_eq!(lines[0].text, ".foo foo foo foo ");
         assert_eq!(lines[0].line_start_char, Some(16));
+    }
+
+    #[test]
+    fn expands_tabs_in_visual_line_text() {
+        let lines = soft_wrap_visual_lines(
+            "a\tb".into(),
+            &TextFormat {
+                soft_wrap: true,
+                tab_width: 4,
+                viewport_width: 20,
+                ..TextFormat::default()
+            },
+            0,
+            0,
+            1,
+        );
+
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].text, "a   b ");
+        assert_eq!(lines[0].display_map.display_byte_for_source_byte(2), 4);
+        assert_eq!(lines[0].display_map.source_byte_for_display_byte(3), 1);
     }
 
     #[test]
@@ -679,6 +717,7 @@ mod tests {
                 segment_char_offset: 12,
                 text_start_byte_offset: 0,
                 is_phantom_line: false,
+                display_map: DisplayTextMap::identity("next".len()),
             },
         ];
 

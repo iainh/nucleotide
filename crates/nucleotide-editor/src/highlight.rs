@@ -3,7 +3,7 @@
 
 use std::ops::Range;
 
-use gpui::{Font, Hsla, SharedString, TextRun};
+use gpui::{Font, Hsla, TextRun};
 use helix_core::{
     RopeSlice,
     graphemes::{next_grapheme_boundary, prev_grapheme_boundary},
@@ -20,7 +20,9 @@ use nucleotide_logging::trace;
 
 use crate::{
     line_plan::VisibleLinePlan,
-    line_text::shared_line_text_without_trailing_newline,
+    line_text::{
+        DisplayLineText, expand_text_runs_for_display, line_text_without_trailing_newline,
+    },
     soft_wrap::{SoftWrapVisualLine, decorate_soft_wrap_line_runs},
     style::{create_styled_text_run, helix_color_to_hsla},
 };
@@ -59,6 +61,7 @@ pub struct EditorLineHighlightContext<'a> {
     pub default_text_style: Style,
     pub default_bg: Hsla,
     pub diagnostic_overlay_spans: Option<&'a DiagnosticOverlaySpans>,
+    pub tab_width: u16,
 }
 
 pub struct SoftWrapHighlightedLineRunsParams<'a> {
@@ -87,7 +90,7 @@ pub struct UnwrappedHighlightedLinesParams<'a> {
 
 #[derive(Debug, Clone)]
 pub struct UnwrappedHighlightedLine {
-    pub line_text: SharedString,
+    pub line_text: DisplayLineText,
     pub line_runs: Vec<TextRun>,
 }
 
@@ -222,6 +225,7 @@ pub fn soft_wrap_highlighted_line_runs(
     } else {
         Vec::new()
     };
+    line_runs = expand_text_runs_for_display(&line_runs, &params.visual.display_map);
 
     line_runs = decorate_soft_wrap_line_runs(
         line_runs,
@@ -258,6 +262,7 @@ pub fn soft_wrap_highlighted_line_runs_batch(
             } else {
                 Vec::new()
             };
+            line_runs = expand_text_runs_for_display(&line_runs, &visual.display_map);
 
             line_runs = decorate_soft_wrap_line_runs(
                 line_runs,
@@ -278,8 +283,9 @@ pub fn unwrapped_highlighted_line(
     let line_slice = params
         .text
         .slice(params.line.line_start..params.line.line_end);
-    let line_text = shared_line_text_without_trailing_newline(line_slice);
+    let source_text = line_text_without_trailing_newline(line_slice);
     let context = params.context;
+    let line_text = DisplayLineText::from_source(source_text, context.tab_width);
     let line_runs = highlight_line(HighlightLineParams {
         doc: context.doc,
         view: context.view,
@@ -297,6 +303,7 @@ pub fn unwrapped_highlighted_line(
         default_bg: context.default_bg,
         diagnostic_overlay_spans: context.diagnostic_overlay_spans,
     });
+    let line_runs = expand_text_runs_for_display(&line_runs, &line_text.map);
 
     UnwrappedHighlightedLine {
         line_text,
@@ -321,8 +328,10 @@ pub fn unwrapped_highlighted_lines(
         .iter()
         .map(|line| {
             let line_slice = params.text.slice(line.line_start..line.line_end);
-            let line_text = shared_line_text_without_trailing_newline(line_slice);
+            let source_text = line_text_without_trailing_newline(line_slice);
+            let line_text = DisplayLineText::from_source(source_text, context.tab_width);
             let line_runs = state.highlight_range(line.line_start, line.line_end, &context);
+            let line_runs = expand_text_runs_for_display(&line_runs, &line_text.map);
 
             UnwrappedHighlightedLine {
                 line_text,

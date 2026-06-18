@@ -20,8 +20,8 @@ use crate::{
     UnwrappedHighlightedLine, UnwrappedHighlightedLinesParams, UnwrappedRenderPlan,
     UnwrappedRenderPlanParams, diagnostic_overlay_spans, diagnostic_severity_by_line,
     document_render_snapshot, document_ruler_paint_plans, document_soft_wrap_render_plan,
-    editor_cursor_presentation, soft_wrap_highlighted_line_runs_batch, unwrapped_highlighted_lines,
-    unwrapped_render_plan,
+    document_text_format_for_surface, editor_cursor_presentation,
+    soft_wrap_highlighted_line_runs_batch, unwrapped_highlighted_lines, unwrapped_render_plan,
 };
 use nucleotide_logging::PerfTimer;
 
@@ -89,6 +89,15 @@ pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDoc
         params.first_row,
         params.last_row_from_scroll,
     );
+    let gutter_width = params.view.gutter_offset(params.document);
+    let (_, text_format) = document_text_format_for_surface(
+        params.document,
+        Some(params.theme),
+        params.bounds,
+        gutter_width,
+        params.cell_width,
+        params.soft_wrap_minimum_columns,
+    );
     let cursor_presentation = editor_cursor_presentation(EditorCursorPresentationParams {
         document: params.document,
         view_id: params.view_id,
@@ -98,12 +107,12 @@ pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDoc
         theme: params.theme,
         syntax_loader: params.syntax_loader,
         is_focused: params.is_focused,
+        tab_width: text_format.tab_width,
     });
     let primary_cursor_idx = cursor_presentation.cursor_char_idx;
     let primary_cursor_line = text.char_to_line(primary_cursor_idx);
     let line_start = text.line_to_char(primary_cursor_line);
     let primary_cursor_col = primary_cursor_idx - line_start;
-    let gutter_width = params.view.gutter_offset(params.document);
     let ruler_geometry = EditorSurfaceGeometry::new(params.bounds, gutter_width, params.cell_width);
     let ruler_paint_plans = document_ruler_paint_plans(DocumentRulerPaintParams {
         document: params.document,
@@ -154,6 +163,7 @@ pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDoc
         default_text_style: params.default_text_style,
         default_bg: params.default_bg,
         diagnostic_overlay_spans: diagnostic_overlay_spans.as_ref(),
+        tab_width: text_format.tab_width,
     };
 
     let soft_wrap_line_runs = {

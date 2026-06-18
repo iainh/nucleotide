@@ -102,8 +102,8 @@ pub use line_plan::{
     unwrapped_visible_line_plans,
 };
 pub use line_text::{
-    byte_offset_for_char_offset, line_text_without_trailing_newline,
-    shared_line_text_without_trailing_newline,
+    DisplayLineText, DisplayTextMap, byte_offset_for_char_offset, expand_text_runs_for_display,
+    line_text_without_trailing_newline, shared_line_text_without_trailing_newline,
 };
 pub use metrics::EditorTextMetrics;
 pub use overlay_state::EditorOverlayState;

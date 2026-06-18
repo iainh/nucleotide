@@ -539,7 +539,7 @@ mod tests {
         diff_gutter_bar_bounds, diff_gutter_bar_color_from_style, gutter_origin,
         soft_wrap_gutter_line_positions, unwrapped_gutter_line_positions,
     };
-    use crate::{SoftWrapVisualLine, style::helix_color_to_hsla};
+    use crate::{SoftWrapVisualLine, line_text::DisplayTextMap, style::helix_color_to_hsla};
 
     #[test]
     fn gutter_positions_map_document_rows_to_visual_rows() {
@@ -636,6 +636,7 @@ mod tests {
             segment_char_offset,
             text_start_byte_offset: 0,
             is_phantom_line: false,
+            display_map: DisplayTextMap::identity(0),
         }
     }
 

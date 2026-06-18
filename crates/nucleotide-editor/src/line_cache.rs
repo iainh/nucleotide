@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
 
-use crate::{line_plan::VisibleLinePlan, soft_wrap::SoftWrapVisualLine};
+use crate::{line_plan::VisibleLinePlan, line_text::DisplayTextMap, soft_wrap::SoftWrapVisualLine};
 
 /// Layout information for a single line in the document
 ///
@@ -25,6 +25,8 @@ pub struct LineLayout {
     /// For wrapped lines: byte offset where real text starts within the shaped line (after wrap indicators).
     /// For non-wrapped lines: always 0.
     pub text_start_byte_offset: usize,
+    /// Maps source bytes for this document line segment to bytes in the shaped display text.
+    pub display_map: DisplayTextMap,
 }
 
 impl LineLayout {
@@ -46,6 +48,17 @@ impl LineLayout {
         layout
     }
 
+    pub fn from_visible_line_with_origin_x_and_display_map(
+        line: &VisibleLinePlan,
+        shaped_line: ShapedLine,
+        origin_x: Pixels,
+        display_map: DisplayTextMap,
+    ) -> Self {
+        let mut layout = Self::from_visible_line_with_origin_x(line, shaped_line, origin_x);
+        layout.display_map = display_map;
+        layout
+    }
+
     pub fn wrapped(
         line_idx: usize,
         shaped_line: ShapedLine,
@@ -53,12 +66,14 @@ impl LineLayout {
         segment_char_offset: usize,
         text_start_byte_offset: usize,
     ) -> Self {
+        let display_map = DisplayTextMap::identity(shaped_line.len());
         Self {
             line_idx,
             shaped_line,
             origin: point(px(0.0), y_offset),
             segment_char_offset,
             text_start_byte_offset,
+            display_map,
         }
     }
 
@@ -67,13 +82,23 @@ impl LineLayout {
         shaped_line: ShapedLine,
         y_offset: Pixels,
     ) -> Self {
-        Self::wrapped(
+        let mut layout = Self::wrapped(
             visual.doc_line,
             shaped_line,
             y_offset,
             visual.segment_char_offset,
             visual.text_start_byte_offset,
-        )
+        );
+        layout.display_map = visual.display_map.clone();
+        layout
+    }
+
+    pub fn display_byte_for_source_byte(&self, source_byte: usize) -> usize {
+        self.display_map.display_byte_for_source_byte(source_byte)
+    }
+
+    pub fn source_byte_for_display_byte(&self, display_byte: usize) -> usize {
+        self.display_map.source_byte_for_display_byte(display_byte)
     }
 }
 
@@ -394,6 +419,7 @@ mod tests {
             segment_char_offset: 30,
             text_start_byte_offset: 1,
             is_phantom_line: false,
+            display_map: DisplayTextMap::identity(".wrapped".len()),
         };
 
         let layout =
@@ -417,6 +443,7 @@ mod tests {
                 origin: point(px(0.0), px(line_idx as f32 * 24.0)),
                 segment_char_offset: 0,
                 text_start_byte_offset: 0,
+                display_map: DisplayTextMap::default(),
             };
             cache.push(layout);
         }
@@ -451,6 +478,7 @@ mod tests {
                 origin: point(px(0.0), y_position),
                 segment_char_offset: 0,
                 text_start_byte_offset: 0,
+                display_map: DisplayTextMap::default(),
             };
             cache.push(layout);
         }
@@ -502,6 +530,7 @@ mod tests {
                 origin: point(px(0.0), y_position),
                 segment_char_offset: 0,
                 text_start_byte_offset: 0,
+                display_map: DisplayTextMap::default(),
             };
             cache.push(layout);
         }
@@ -555,6 +584,7 @@ mod tests {
                 origin: point(px(0.0), px(line_idx as f32 * 24.0)),
                 segment_char_offset: 0,
                 text_start_byte_offset: 0,
+                display_map: DisplayTextMap::default(),
             };
             cache.push(layout);
         }
@@ -593,6 +623,7 @@ mod tests {
             origin: point(px(0.0), px(0.0)),
             segment_char_offset: 0,
             text_start_byte_offset: 0,
+            display_map: DisplayTextMap::default(),
         };
         cache.push(layout);
 
@@ -623,6 +654,7 @@ mod tests {
                 origin: point(px(0.0), y_position),
                 segment_char_offset: 0,
                 text_start_byte_offset: 0,
+                display_map: DisplayTextMap::default(),
             };
             cache.push(layout);
         }
@@ -697,6 +729,7 @@ mod tests {
             origin: point(px(0.0), px(0.0)),
             segment_char_offset: 0,
             text_start_byte_offset: 0,
+            display_map: DisplayTextMap::default(),
         };
         cache.push(layout);
 
@@ -720,6 +753,7 @@ mod tests {
             origin: point(px(0.0), px(24.0)),
             segment_char_offset: 0,
             text_start_byte_offset: 0,
+            display_map: DisplayTextMap::default(),
         };
         cache.push(layout2);
 
