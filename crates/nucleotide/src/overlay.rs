@@ -57,6 +57,88 @@ struct ResizeStateInner {
     height: f32,
 }
 
+fn document_revisions(editor: &mut helix_view::Editor) -> Vec<(helix_view::DocumentId, usize)> {
+    editor
+        .documents
+        .iter_mut()
+        .map(|(doc_id, doc)| (*doc_id, doc.get_current_revision()))
+        .collect()
+}
+
+fn changed_documents_since(
+    editor: &mut helix_view::Editor,
+    before: &[(helix_view::DocumentId, usize)],
+) -> Vec<helix_view::DocumentId> {
+    let mut changed = Vec::new();
+
+    for (doc_id, before_revision) in before {
+        if let Some(doc) = editor.document_mut(*doc_id)
+            && doc.get_current_revision() != *before_revision
+        {
+            changed.push(*doc_id);
+        }
+    }
+
+    changed
+}
+
+fn apply_code_action_or_command(
+    editor: &mut helix_view::Editor,
+    action: &helix_lsp::lsp::CodeActionOrCommand,
+    language_server_id: helix_core::diagnostic::LanguageServerId,
+) -> Vec<helix_view::DocumentId> {
+    let mut changed_documents = Vec::new();
+
+    let Some(offset_encoding) = editor
+        .language_server_by_id(language_server_id)
+        .map(|language_server| language_server.offset_encoding())
+    else {
+        editor.set_error("Language Server disappeared");
+        return changed_documents;
+    };
+
+    match action {
+        helix_lsp::lsp::CodeActionOrCommand::Command(command) => {
+            editor.execute_lsp_command(command.clone(), language_server_id);
+        }
+        helix_lsp::lsp::CodeActionOrCommand::CodeAction(code_action) => {
+            let resolved_code_action = if code_action.edit.is_none()
+                || code_action.command.is_none()
+            {
+                editor
+                    .language_server_by_id(language_server_id)
+                    .and_then(|language_server| language_server.resolve_code_action(code_action))
+                    .and_then(|future| helix_lsp::block_on(future).ok())
+            } else {
+                None
+            };
+
+            let resolved_or_original = resolved_code_action.as_ref().unwrap_or(code_action);
+
+            if let Some(edit) = &resolved_or_original.edit {
+                let before_revisions = document_revisions(editor);
+                match editor.apply_workspace_edit(offset_encoding, edit) {
+                    Ok(()) => {
+                        changed_documents
+                            .extend(changed_documents_since(editor, &before_revisions));
+                    }
+                    Err(err) => editor.set_error(format!("{err:?}")),
+                }
+            }
+
+            if let Some(command) = resolved_or_original
+                .command
+                .as_ref()
+                .or(code_action.command.as_ref())
+            {
+                editor.execute_lsp_command(command.clone(), language_server_id);
+            }
+        }
+    }
+
+    changed_documents
+}
+
 #[derive(Clone)]
 struct HoverPopupState {
     entries: Vec<HoverDocEntry>,
@@ -153,6 +235,7 @@ impl OverlayView {
             && self.native_picker_view.is_none()
             && self.native_prompt_view.is_none()
             && self.completion_view.is_none()
+            && self.code_action_pairs.is_none()
             && self.hover_popup.is_none()
             && self.diagnostics_panel.is_none()
             && self.terminal_panel.is_none();
@@ -182,8 +265,11 @@ impl OverlayView {
     }
 
     pub fn dismiss_completion(&mut self, cx: &mut Context<Self>) {
-        if self.completion_view.is_some() {
-            self.completion_view = None;
+        let dismissed_completion = self.completion_view.take().is_some();
+        let dismissed_code_actions = self.code_action_pairs.take().is_some();
+
+        if dismissed_completion || dismissed_code_actions {
+            cx.emit(DismissEvent);
             cx.notify();
         }
     }
@@ -294,6 +380,7 @@ impl OverlayView {
         self.native_picker_view = None;
         self.native_prompt_view = None;
         self.completion_view = None;
+        self.code_action_pairs = None;
         self.hover_popup = None;
 
         cx.notify();
@@ -469,14 +556,13 @@ impl OverlayView {
 
                 // Set up completion view with event subscription
                 self.completion_view = Some(completion_view.clone());
+                self.code_action_pairs = None;
 
                 // Subscribe to dismiss events from completion view
                 cx.subscribe(
                     completion_view,
                     |this, _completion_view, _event: &DismissEvent, cx| {
-                        this.completion_view = None;
-                        cx.emit(DismissEvent);
-                        cx.notify();
+                        this.dismiss_completion(cx);
                     },
                 )
                 .detach();
@@ -510,10 +596,7 @@ impl OverlayView {
                 self.code_action_pairs = Some(pairs.clone());
                 // Dismiss subscription
                 cx.subscribe(completion_view, |this, _cv, _ev: &DismissEvent, cx| {
-                    this.completion_view = None;
-                    this.code_action_pairs = None;
-                    cx.emit(DismissEvent);
-                    cx.notify();
+                    this.dismiss_completion(cx);
                 })
                 .detach();
 
@@ -523,42 +606,22 @@ impl OverlayView {
                     completion_view,
                     move |this, _cv, event: &nucleotide_ui::CompleteViaHelixEvent, cx| {
                         if let Some(pairs) = this.code_action_pairs.clone() {
-                            if let Some((action, ls_id, offset)) = pairs.get(event.item_index)
+                            if let Some((action, ls_id, _offset)) = pairs.get(event.item_index)
                                 && let Some(core) = core_for_apply.upgrade()
                             {
-                                core.update(cx, |core, _| {
-                                    if let Some(ls) = core.editor.language_server_by_id(*ls_id) {
-                                        match action {
-                                            helix_lsp::lsp::CodeActionOrCommand::Command(cmd) => {
-                                                core.editor
-                                                    .execute_lsp_command(cmd.clone(), *ls_id);
-                                            }
-                                            helix_lsp::lsp::CodeActionOrCommand::CodeAction(ca) => {
-                                                let mut resolved = None;
-                                                if (ca.edit.is_none() || ca.command.is_none())
-                                                    && let Some(fut) = ls.resolve_code_action(ca)
-                                                    && let Ok(c) = helix_lsp::block_on(fut)
-                                                {
-                                                    resolved = Some(c);
-                                                }
-                                                let action_ref = resolved.as_ref().unwrap_or(ca);
-                                                if let Some(edit) = &action_ref.edit {
-                                                    let _ = core
-                                                        .editor
-                                                        .apply_workspace_edit(*offset, edit);
-                                                }
-                                                if let Some(cmd) = &action_ref.command {
-                                                    core.editor
-                                                        .execute_lsp_command(cmd.clone(), *ls_id);
-                                                }
-                                            }
-                                        }
+                                core.update(cx, |core, core_cx| {
+                                    let changed_documents = apply_code_action_or_command(
+                                        &mut core.editor,
+                                        action,
+                                        *ls_id,
+                                    );
+                                    for doc_id in changed_documents {
+                                        core_cx.emit(crate::Update::DocumentChanged { doc_id });
                                     }
+                                    core_cx.notify();
                                 });
                             }
-                            this.completion_view = None;
-                            this.code_action_pairs = None;
-                            cx.notify();
+                            this.dismiss_completion(cx);
                         } else {
                             // Fallback to standard completion handling if pairs are missing
                             cx.emit(nucleotide_ui::CompleteViaHelixEvent {
@@ -1096,7 +1159,7 @@ impl OverlayView {
                                 picker_cx.emit(gpui::DismissEvent);
 
                                 // Handle LSP code action items (action, server id, offset)
-                                if let Some((action, ls_id, offset)) = selected_item
+                                if let Some((action, ls_id, _offset)) = selected_item
                                     .data
                                     .downcast_ref::<(
                                         helix_lsp::lsp::CodeActionOrCommand,
@@ -1104,49 +1167,18 @@ impl OverlayView {
                                         helix_lsp::OffsetEncoding,
                                     )>()
                                     && let Some(core) = core_for_on_select.upgrade() {
-                                        core.update(picker_cx, |core, _cx| {
-                                            if let Some(ls) = core.editor.language_server_by_id(*ls_id)
-                                            {
-                                                match action {
-                                                    helix_lsp::lsp::CodeActionOrCommand::Command(
-                                                        cmd,
-                                                    ) => {
-                                                        core.editor.execute_lsp_command(
-                                                            cmd.clone(),
-                                                            *ls_id,
-                                                        );
-                                                    }
-                                                    helix_lsp::lsp::CodeActionOrCommand::CodeAction(
-                                                        ca,
-                                                    ) => {
-                                                        let mut resolved: Option<
-                                                            helix_lsp::lsp::CodeAction,
-                                                        > = None;
-                                                        if (ca.edit.is_none() || ca.command.is_none())
-                                                            && let Some(fut) =
-                                                                ls.resolve_code_action(ca)
-                                                                && let Ok(c) =
-                                                                    helix_lsp::block_on(fut)
-                                                                {
-                                                                    resolved = Some(c);
-                                                                }
-                                                        let action_ref =
-                                                            resolved.as_ref().unwrap_or(ca);
-                                                        if let Some(edit) = &action_ref.edit {
-                                                            let _ = core.editor.apply_workspace_edit(
-                                                                *offset,
-                                                                edit,
-                                                            );
-                                                        }
-                                                        if let Some(cmd) = &action_ref.command {
-                                                            core.editor.execute_lsp_command(
-                                                                cmd.clone(),
-                                                                *ls_id,
-                                                            );
-                                                        }
-                                                    }
-                                                }
+                                        core.update(picker_cx, |core, core_cx| {
+                                            let changed_documents = apply_code_action_or_command(
+                                                &mut core.editor,
+                                                action,
+                                                *ls_id,
+                                            );
+                                            for doc_id in changed_documents {
+                                                core_cx.emit(crate::Update::DocumentChanged {
+                                                    doc_id,
+                                                });
                                             }
+                                            core_cx.notify();
                                         });
                                     }
                                 // Check if it's a buffer picker item (DocumentId, Option<PathBuf>)
