@@ -6,14 +6,14 @@ Overview
 
 Prerequisites
 - Rust toolchain (stable) via rustup
-- Linker and C toolchain: clang + lld recommended
+- C toolchain: distro build tools plus clang
 - System libraries (X11/Wayland, OpenGL/Vulkan, font, SSL/zlib for libgit2)
 
 Debian/Ubuntu (22.04+)
 - Install prerequisites:
   sudo apt update
   sudo apt install -y \
-    build-essential pkg-config clang lld \
+    build-essential pkg-config clang \
     libssl-dev zlib1g-dev \
     libxkbcommon-dev libwayland-dev \
     libx11-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
@@ -23,7 +23,7 @@ Debian/Ubuntu (22.04+)
 Fedora (38+)
 - Install prerequisites:
   sudo dnf groupinstall -y "Development Tools" 
-  sudo dnf install -y clang lld pkg-config \
+  sudo dnf install -y clang pkg-config \
     openssl-devel zlib-devel \
     libxkbcommon-devel wayland-devel \
     libX11-devel libxcb-devel libXrender-devel libXfixes-devel \
@@ -32,7 +32,7 @@ Fedora (38+)
 
 Arch Linux
 - Install prerequisites:
-  sudo pacman -S --needed base-devel clang lld pkgconf \
+  sudo pacman -S --needed base-devel clang pkgconf \
     openssl zlib \
     libxkbcommon wayland libx11 libxcb libxrender libxfixes \
     mesa egl-wayland \
@@ -74,10 +74,9 @@ Known issues on Linux
   export RUST_LOG=warn
 
 Common build errors
-- Linker not found (lld): install lld and clang as above, or remove lld via a local override if necessary.
+- C toolchain errors: install the build tools and clang packages listed above.
 - openssl/libgit2 errors: ensure openssl and zlib dev packages are installed (see prerequisites).
 - Wayland/X11 missing headers: install libxkbcommon-dev and wayland-devel (see distro sections).
 
 Uninstall / Cleanup
 - No system install is performed by default. Remove the repo directory to uninstall the built artifacts.
-

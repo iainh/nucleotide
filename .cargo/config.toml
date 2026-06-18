@@ -8,32 +8,6 @@ rustflags = ["--cfg", "tokio_unstable"]
 # from grammar repository availability.
 HELIX_DISABLE_AUTO_GRAMMAR_BUILD = "1"
 
-# macOS targets - use faster linking options
-[target.x86_64-apple-darwin]
-rustflags = ["--cfg", "tokio_unstable", "-C", "link-arg=-Wl,-dead_strip"]
-
-[target.aarch64-apple-darwin]
-linker = "clang"
-rustflags = [
-    "--cfg", "tokio_unstable",
-    "-C", "link-arg=-fuse-ld=lld",
-    "-C", "link-arg=-Wl,-dead_strip",
-]
-
-[target.aarch64-apple-darwin.env]
-MACOSX_DEPLOYMENT_TARGET = "11.3"
-CC = "clang"
-RING_PREGENERATE_ASM = "1"
-
-# Linux targets - use mold for even faster linking when available
-[target.x86_64-unknown-linux-gnu]
-linker = "clang"
-rustflags = ["--cfg", "tokio_unstable", "-C", "link-arg=-fuse-ld=mold"]
-
-[target.aarch64-unknown-linux-gnu]
-linker = "clang"
-rustflags = ["--cfg", "tokio_unstable", "-C", "link-arg=-fuse-ld=mold"]
-
 # Windows targets
 [target.x86_64-pc-windows-msvc]
 rustflags = ["--cfg", "tokio_unstable", "-C", "link-arg=/stack:10000000"]

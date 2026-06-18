@@ -64,6 +64,12 @@ ignore = [
     # paste is unmaintained but used by metal crate
     # This is used by GPUI's metal backend on macOS
     "RUSTSEC-2024-0436",
+    # async-std is pulled transitively through GPUI's http_client/async-tar stack.
+    "RUSTSEC-2025-0052",
+    # gix-date is pinned through Helix's gix dependency; update with Helix.
+    "RUSTSEC-2025-0140",
+    # proc-macro-error2 is pulled transitively through GPUI's stacksafe macros.
+    "RUSTSEC-2026-0173",
 ]
 
 # This section is considered when running `cargo deny check licenses`
@@ -91,6 +97,8 @@ allow = [
     "OpenSSL",
     "NCSA",
     "GPL-3.0",
+    "GPL-3.0-or-later",
+    "bzip2-1.0.6",
 ]
 # The confidence threshold for detecting a license from license text.
 # [possible values: any between 0.0 and 1.0].
@@ -329,14 +337,19 @@ unknown-git = "warn"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 # List of allowed Git repositories
 allow-git = [
-    # blade dependencies (used by GPUI)
-    "https://github.com/kvark/blade",
+    # Zed/GPUI dependencies and their patched transitive crates
+    "https://github.com/zed-industries/async-process.git",
+    "https://github.com/smol-rs/async-task.git",
     # GPUI and its dependencies from Zed
     "https://github.com/zed-industries/zed",
     # Font-kit (used by GPUI)
     "https://github.com/zed-industries/font-kit",
-    # Helix editor
-    "https://github.com/helix-editor/helix",
-    # XIM input method support (used by GPUI)
-    "https://github.com/XDeme1/xim-rs",
+    # WGPU fork used by GPUI
+    "https://github.com/zed-industries/wgpu.git",
+    # Helix fork pinned by Nucleotide
+    "https://github.com/iainh/helix",
+    # Test dependency pinned from upstream
+    "https://github.com/proptest-rs/proptest",
+    # XIM input method support used by GPUI
+    "https://github.com/zed-industries/xim-rs.git",
 ]
