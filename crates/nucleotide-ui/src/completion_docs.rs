@@ -2,13 +2,14 @@
 // ABOUTME: Provides cached markdown rendering and side panel documentation display
 
 use gpui::{
-    Context, InteractiveElement, IntoElement, ParentElement, Render, Styled, Task, div, px,
-    relative,
+    Context, InteractiveElement, IntoElement, ParentElement, Render, StatefulInteractiveElement,
+    Styled, Task, div, px,
 };
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use crate::completion_v2::CompletionItem;
+use crate::markdown::{MarkdownStyle, markdown};
 
 /// Documentation content with metadata
 #[derive(Debug, Clone)]
@@ -396,99 +397,10 @@ Use this item in your code as appropriate.
     }
 }
 
-/// Simple markdown renderer (basic implementation)
-#[derive(Clone)]
-pub struct MarkdownRenderer {
-    cache: HashMap<String, String>,
-}
-
-impl Default for MarkdownRenderer {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl MarkdownRenderer {
-    pub fn new() -> Self {
-        Self {
-            cache: HashMap::new(),
-        }
-    }
-
-    /// Render markdown to HTML (simplified implementation)
-    pub fn render(&mut self, markdown: &str) -> String {
-        if let Some(cached) = self.cache.get(markdown) {
-            return cached.clone();
-        }
-
-        let html = self.markdown_to_html(markdown);
-        self.cache.insert(markdown.to_string(), html.clone());
-        html
-    }
-
-    /// Convert markdown to HTML (basic implementation)
-    fn markdown_to_html(&self, markdown: &str) -> String {
-        let mut html = String::new();
-        let lines: Vec<&str> = markdown.lines().collect();
-        let mut in_code_block = false;
-        let mut code_lang;
-
-        for line in lines {
-            if let Some(rest) = line.strip_prefix("```") {
-                if in_code_block {
-                    html.push_str("</code></pre>\n");
-                    in_code_block = false;
-                } else {
-                    code_lang = rest.trim().to_string();
-                    html.push_str(&format!("<pre><code class=\"language-{}\">", code_lang));
-                    in_code_block = true;
-                }
-                continue;
-            }
-
-            if in_code_block {
-                html.push_str(&html_escape(line));
-                html.push('\n');
-                continue;
-            }
-
-            if let Some(rest) = line.strip_prefix("# ") {
-                html.push_str(&format!("<h1>{}</h1>\n", html_escape(rest)));
-            } else if let Some(rest) = line.strip_prefix("## ") {
-                html.push_str(&format!("<h2>{}</h2>\n", html_escape(rest)));
-            } else if let Some(rest) = line.strip_prefix("### ") {
-                html.push_str(&format!("<h3>{}</h3>\n", html_escape(rest)));
-            } else if let Some(rest) = line.strip_prefix("- ") {
-                html.push_str(&format!("<li>{}</li>\n", html_escape(rest)));
-            } else if line.trim().is_empty() {
-                html.push_str("<br>\n");
-            } else {
-                html.push_str(&format!("<p>{}</p>\n", html_escape(line)));
-            }
-        }
-
-        if in_code_block {
-            html.push_str("</code></pre>\n");
-        }
-
-        html
-    }
-}
-
-/// Escape HTML special characters
-fn html_escape(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#x27;")
-}
-
 /// Documentation panel component
 #[derive(Clone)]
 pub struct DocumentationPanel {
     content: Option<DocumentationContent>,
-    renderer: MarkdownRenderer,
     visible: bool,
     width: f32,
     scroll_position: f32,
@@ -504,7 +416,6 @@ impl DocumentationPanel {
     pub fn new() -> Self {
         Self {
             content: None,
-            renderer: MarkdownRenderer::new(),
             visible: false,
             width: 300.0,
             scroll_position: 0.0,
@@ -566,11 +477,11 @@ impl Render for DocumentationPanel {
             .child(
                 // Content area
                 div()
+                    .id("documentation-panel-scroll")
                     .flex_1()
-                    .overflow_y_hidden()
+                    .overflow_y_scroll()
                     .px_3()
                     .py_2()
-                    // TODO: Add scroll tracking when API is available
                     .child(self.render_content(tokens)),
             )
     }
@@ -613,17 +524,10 @@ impl DocumentationPanel {
                                 .child("No documentation available"),
                         )
                     } else {
-                        // Render markdown content
-                        let _html = self.renderer.render(&content.markdown);
-                        div()
-                            .text_sm()
-                            .text_color(tokens.chrome.text_on_chrome)
-                            .line_height(relative(1.5))
-                            .child(
-                                // For now, render as plain text
-                                // In a full implementation, you'd render the HTML
-                                div().child(content.markdown.clone()),
-                            )
+                        div().child(markdown(
+                            content.markdown.clone(),
+                            MarkdownStyle::from_tokens(tokens),
+                        ))
                     }
                 }
                 DocumentationState::NotLoaded => {
@@ -727,39 +631,6 @@ mod tests {
         assert!(cache.get("key1").is_some());
         assert!(cache.get("key2").is_none()); // Should be evicted
         assert!(cache.get("key3").is_some());
-    }
-
-    #[test]
-    fn test_markdown_renderer() {
-        let mut renderer = MarkdownRenderer::new();
-
-        let markdown = "# Header\nSome text\n## Subheader";
-        let html = renderer.render(markdown);
-
-        assert!(html.contains("<h1>Header</h1>"));
-        assert!(html.contains("<h2>Subheader</h2>"));
-        assert!(html.contains("<p>Some text</p>"));
-    }
-
-    #[test]
-    fn test_markdown_code_blocks() {
-        let mut renderer = MarkdownRenderer::new();
-
-        let markdown = "```rust\nfn main() {}\n```";
-        let html = renderer.render(markdown);
-
-        assert!(html.contains("<pre><code class=\"language-rust\">"));
-        assert!(html.contains("fn main() {}"));
-        assert!(html.contains("</code></pre>"));
-    }
-
-    #[test]
-    fn test_html_escaping() {
-        let escaped = html_escape("<script>alert('xss')</script>");
-        assert_eq!(
-            escaped,
-            "&lt;script&gt;alert(&#x27;xss&#x27;)&lt;/script&gt;"
-        );
     }
 
     #[test]

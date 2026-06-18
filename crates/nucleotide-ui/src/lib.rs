@@ -23,6 +23,7 @@ pub mod info_box;
 pub mod input;
 pub mod key_hint_view;
 pub mod list_item;
+pub mod markdown;
 pub mod notification;
 pub mod picker;
 pub mod picker_view;
@@ -96,6 +97,7 @@ pub use input::{Input, InputSize, InputVariant};
 pub use list_item::{
     ListItem, ListItemSpacing, ListItemState, ListItemVariant, SelectionMode, SelectionState,
 };
+pub use markdown::{MarkdownElement, MarkdownStyle, markdown};
 pub use picker::Picker;
 pub use prompt::{Prompt, PromptElement};
 pub use providers::{

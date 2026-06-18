@@ -1,8 +1,8 @@
 use crate::types::{HoverDocEntry, RegexSelectionAction};
 use gpui::{
     App, AppContext, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, Render, Styled, Window,
-    div, px, relative,
+    InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, Render,
+    StatefulInteractiveElement, Styled, Window, div, px,
 };
 use helix_stdx::rope::RopeSliceExt;
 use nucleotide_core::EventBus;
@@ -14,6 +14,7 @@ use nucleotide_ui::picker_view::{PickerItem, PickerView};
 use nucleotide_ui::prompt::{Prompt, PromptElement};
 use nucleotide_ui::prompt_view::PromptView;
 use nucleotide_ui::theme_manager::HelixThemedContext; // bring dispatch_* trait methods into scope
+use nucleotide_ui::{MarkdownStyle, markdown};
 use std::sync::{Arc, Mutex};
 
 pub struct OverlayView {
@@ -1598,14 +1599,15 @@ impl OverlayView {
             )
             .child(
                 div()
+                    .id("hover-doc-scroll")
                     .px(px(12.0))
                     .py(px(10.0))
                     .max_h(px(320.0))
-                    .overflow_y_hidden()
-                    .text_sm()
-                    .text_color(tokens.chrome.text_on_chrome)
-                    .line_height(relative(1.4))
-                    .child(entry.markdown.clone()),
+                    .overflow_y_scroll()
+                    .child(markdown(
+                        entry.markdown.clone(),
+                        MarkdownStyle::from_tokens(tokens).compact(),
+                    )),
             )
             .child(
                 div()
