@@ -7,7 +7,11 @@ use gpui::{
     App, BorderStyle, Bounds, Font, Hsla, Pixels, Point, ShapedLine, SharedString, Size, TextAlign,
     TextRun, Window, WindowTextSystem, fill, point, px, quad, size, transparent_black, white,
 };
-use helix_core::{RopeSlice, doc_formatter::TextFormat, graphemes::next_grapheme_boundary};
+use helix_core::{
+    RopeSlice,
+    doc_formatter::TextFormat,
+    graphemes::{next_grapheme_boundary, tab_width_at},
+};
 use helix_view::{
     Document, Theme, ViewId,
     graphics::{CursorKind, Style},
@@ -20,7 +24,9 @@ use crate::{
     geometry::EditorSurfaceGeometry,
     highlight::text_style_at_position,
     line_cache::LineLayout,
-    line_text::{byte_offset_for_char_offset, line_text_without_trailing_newline},
+    line_text::{
+        byte_offset_for_char_offset, line_text_without_trailing_newline, visual_columns_for_text,
+    },
     soft_wrap::{SoftWrapVisualPosition, soft_wrap_visual_position},
     style::{create_styled_text_run, helix_color_to_hsla},
 };
@@ -213,6 +219,7 @@ pub struct EditorCursorPresentationParams<'a> {
     pub theme: &'a Theme,
     pub syntax_loader: &'a helix_core::syntax::Loader,
     pub is_focused: bool,
+    pub tab_width: u16,
 }
 
 pub fn editor_cursor_presentation(
@@ -231,7 +238,13 @@ pub fn editor_cursor_presentation(
         params.syntax_loader,
         cursor_char_idx,
     );
-    let block_text = block_cursor_text(text, cursor_char_idx, params.kind, params.is_focused);
+    let block_text = block_cursor_text(
+        text,
+        cursor_char_idx,
+        params.kind,
+        params.is_focused,
+        params.tab_width,
+    );
 
     EditorCursorPresentation {
         cursor_char_idx,
@@ -453,6 +466,7 @@ pub fn block_cursor_text(
     cursor_char_idx: usize,
     cursor_kind: CursorKind,
     is_focused: bool,
+    tab_width: u16,
 ) -> Option<SharedString> {
     if !matches!(cursor_kind, CursorKind::Block)
         || !is_focused
@@ -466,6 +480,13 @@ pub fn block_cursor_text(
     let char_text: Cow<'_, str> = char_slice.into();
     let char_text = match char_text.as_ref() {
         "\n" | "\r\n" | "\r" => " ".into(),
+        "\t" => {
+            let cursor_line = text.char_to_line(cursor_char_idx);
+            let line_start = text.line_to_char(cursor_line);
+            let line_prefix: Cow<'_, str> = text.slice(line_start..cursor_char_idx).into();
+            let visual_col = visual_columns_for_text(line_prefix.as_ref(), 0, tab_width);
+            SharedString::from(" ".repeat(tab_width_at(visual_col, tab_width)))
+        }
         _ => SharedString::from(char_text.into_owned()),
     };
 
@@ -544,7 +565,10 @@ pub fn unwrapped_cursor_paint_position(
     cursor_byte_offset: usize,
 ) -> CursorPaintPosition {
     let text_bounds = geometry.text_bounds();
-    let cursor_x = line_layout.shaped_line.x_for_index(cursor_byte_offset);
+    let cursor_display_byte_offset = line_layout.display_byte_for_source_byte(cursor_byte_offset);
+    let cursor_x = line_layout
+        .shaped_line
+        .x_for_index(cursor_display_byte_offset);
 
     CursorPaintPosition {
         paint_origin: text_bounds.origin + line_layout.origin,
@@ -934,7 +958,8 @@ mod tests {
     #[test]
     fn block_cursor_text_uses_space_for_newlines() {
         assert_eq!(
-            block_cursor_text("\n".into(), 0, CursorKind::Block, true).map(|text| text.to_string()),
+            block_cursor_text("\n".into(), 0, CursorKind::Block, true, 4)
+                .map(|text| text.to_string()),
             Some(" ".to_string())
         );
     }
@@ -942,16 +967,30 @@ mod tests {
     #[test]
     fn block_cursor_text_uses_grapheme_under_cursor() {
         assert_eq!(
-            block_cursor_text("abc".into(), 1, CursorKind::Block, true)
+            block_cursor_text("abc".into(), 1, CursorKind::Block, true, 4)
                 .map(|text| text.to_string()),
             Some("b".to_string())
         );
     }
 
     #[test]
+    fn block_cursor_text_expands_tabs_to_display_width() {
+        assert_eq!(
+            block_cursor_text("\thints".into(), 0, CursorKind::Block, true, 4)
+                .map(|text| text.to_string()),
+            Some("    ".to_string())
+        );
+        assert_eq!(
+            block_cursor_text("a\tb".into(), 1, CursorKind::Block, true, 4)
+                .map(|text| text.to_string()),
+            Some("   ".to_string())
+        );
+    }
+
+    #[test]
     fn block_cursor_text_requires_block_cursor_and_focus() {
-        assert!(block_cursor_text("abc".into(), 1, CursorKind::Bar, true).is_none());
-        assert!(block_cursor_text("abc".into(), 1, CursorKind::Block, false).is_none());
+        assert!(block_cursor_text("abc".into(), 1, CursorKind::Bar, true, 4).is_none());
+        assert!(block_cursor_text("abc".into(), 1, CursorKind::Block, false, 4).is_none());
     }
 
     #[test]

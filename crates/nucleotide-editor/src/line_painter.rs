@@ -9,6 +9,7 @@ use gpui::{
 use crate::{
     line_cache::{LineLayout, LineLayoutCache},
     line_plan::UnwrappedLinePaintPlan,
+    line_text::DisplayLineText,
     soft_wrap::SoftWrapLinePaintPlan,
 };
 
@@ -72,7 +73,7 @@ pub fn paint_editor_line(
 
 pub struct UnwrappedEditorLinePaintParams<'a, 'b> {
     pub plan: UnwrappedLinePaintPlan<'a>,
-    pub line_text: SharedString,
+    pub line_text: DisplayLineText,
     pub line_runs: &'b [TextRun],
     pub line_cache: &'b LineLayoutCache,
     pub font_size: Pixels,
@@ -105,7 +106,7 @@ pub fn paint_unwrapped_editor_line(
     } else {
         let shaped_line = params.line_cache.shape_line_cached(
             text_system.as_ref(),
-            params.line_text,
+            params.line_text.display.clone(),
             params.font_size,
             params.viewport_width,
             params.line_runs,
@@ -122,10 +123,11 @@ pub fn paint_unwrapped_editor_line(
         shaped_line
     };
 
-    Ok(LineLayout::from_visible_line_with_origin_x(
+    Ok(LineLayout::from_visible_line_with_origin_x_and_display_map(
         params.plan.line,
         shaped_line,
         params.plan.line_origin.x,
+        params.line_text.map,
     ))
 }
 
@@ -210,7 +212,7 @@ mod tests {
     use gpui::{Bounds, ShapedLine, point, px, rgb, size};
 
     use super::*;
-    use crate::{SoftWrapLinePaintPlan, SoftWrapVisualLine};
+    use crate::{SoftWrapLinePaintPlan, SoftWrapVisualLine, line_text::DisplayTextMap};
 
     fn style(only_selection_backgrounds: bool) -> EditorLineBackgroundStyle {
         EditorLineBackgroundStyle {
@@ -258,6 +260,7 @@ mod tests {
             segment_char_offset: 30,
             text_start_byte_offset: 0,
             is_phantom_line,
+            display_map: DisplayTextMap::identity(text.len()),
         }
     }
 

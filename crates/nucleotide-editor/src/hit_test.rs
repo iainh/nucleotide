@@ -61,11 +61,7 @@ fn char_offset_for_byte_index(
     line_text: &str,
     byte_index: usize,
 ) -> usize {
-    let adjusted_byte_index = if line_layout.segment_char_offset == 0 {
-        byte_index
-    } else {
-        byte_index.saturating_sub(line_layout.text_start_byte_offset)
-    };
+    let adjusted_byte_index = line_layout.source_byte_for_display_byte(byte_index);
 
     let mut consumed_bytes = 0;
     let mut consumed_chars = 0;
@@ -87,6 +83,7 @@ mod tests {
     use gpui::{ShapedLine, point, px};
 
     use super::*;
+    use crate::line_text::{DisplayLineText, DisplayTextMap};
 
     fn test_layout(segment_char_offset: usize, text_start_byte_offset: usize) -> LineLayout {
         LineLayout {
@@ -95,6 +92,7 @@ mod tests {
             origin: point(px(0.0), px(0.0)),
             segment_char_offset,
             text_start_byte_offset,
+            display_map: DisplayTextMap::identity(64),
         }
     }
 
@@ -119,10 +117,22 @@ mod tests {
 
     #[test]
     fn wrapped_segments_account_for_virtual_prefix_bytes() {
-        let layout = test_layout(3, 2);
+        let mut layout = test_layout(3, 2);
+        layout.display_map =
+            DisplayLineText::from_source_with_prefix("  ", "def".to_string(), 2, 4).map;
 
         assert_eq!(char_offset_for_byte_index(&layout, "abcdef", 2), 3);
         assert_eq!(char_offset_for_byte_index(&layout, "abcdef", 4), 5);
         assert_eq!(char_offset_for_byte_index(&layout, "abcdef", 8), 6);
+    }
+
+    #[test]
+    fn expanded_tab_display_bytes_map_back_to_source_tab() {
+        let mut layout = test_layout(0, 0);
+        layout.display_map = DisplayLineText::from_source("a\tb".to_string(), 4).map;
+
+        assert_eq!(char_offset_for_byte_index(&layout, "a\tb", 1), 1);
+        assert_eq!(char_offset_for_byte_index(&layout, "a\tb", 3), 1);
+        assert_eq!(char_offset_for_byte_index(&layout, "a\tb", 4), 2);
     }
 }
