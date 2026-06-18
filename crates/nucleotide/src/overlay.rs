@@ -1613,7 +1613,11 @@ impl OverlayView {
                     .pb(px(8.0))
                     .text_xs()
                     .text_color(tokens.chrome.text_chrome_secondary)
-                    .child(format!("{instructions} · click outside or esc to dismiss")),
+                    .child(if state.len() > 1 {
+                        format!("{instructions} · esc to dismiss")
+                    } else {
+                        instructions.to_string()
+                    }),
             )
             .into_any_element()
     }
@@ -1931,14 +1935,6 @@ impl Render for OverlayView {
                 .size_full()
                 .top_0()
                 .left_0()
-                .occlude()
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|this: &mut OverlayView, _e, window, cx| {
-                        window.disable_focus();
-                        this.dismiss_hover_popup(cx);
-                    }),
-                )
                 .child(
                     anchored()
                         .position(point(cursor_x, cursor_y))
@@ -1947,7 +1943,8 @@ impl Render for OverlayView {
                         .snap_to_window_with_margin(px(8.0))
                         .child(
                             div()
-                                .on_mouse_down(MouseButton::Left, |_, _, _| {})
+                                .occlude()
+                                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                                 .child(content),
                         ),
                 )
