@@ -37,6 +37,7 @@ pub struct EditorDocumentFrameParams<'a> {
     pub soft_wrap_enabled: bool,
     pub gutter_line_plans: Vec<GutterLinePlan>,
     pub bounds: Bounds<Pixels>,
+    pub gutter_columns: u16,
     pub cell_width: Pixels,
     pub line_height: Pixels,
     pub scroll_line_offset: Pixels,
@@ -89,7 +90,7 @@ pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDoc
         params.first_row,
         params.last_row_from_scroll,
     );
-    let gutter_width = params.view.gutter_offset(params.document);
+    let gutter_width = params.gutter_columns;
     let (_, text_format) = document_text_format_for_surface(
         params.document,
         Some(params.theme),
@@ -288,6 +289,7 @@ mod tests {
         document.ensure_view_init(view.id);
         document.set_selection(view.id, Selection::single(5, 5));
         let theme = ThemeLoader::new(&[]).default_theme(true);
+        let gutter_columns = view.gutter_offset(&document).saturating_add(3);
 
         let frame = editor_document_frame(EditorDocumentFrameParams {
             document: &document,
@@ -301,6 +303,7 @@ mod tests {
             soft_wrap_enabled: true,
             gutter_line_plans: Vec::new(),
             bounds: Bounds::new(point(px(0.0), px(0.0)), size(px(240.0), px(120.0))),
+            gutter_columns,
             cell_width: px(8.0),
             line_height: px(20.0),
             scroll_line_offset: px(0.0),
@@ -327,6 +330,7 @@ mod tests {
         assert_eq!(frame.render_snapshot.cursor_char_idx, 5);
         assert_eq!(frame.cursor_presentation.cursor_char_idx, 5);
         assert_eq!(frame.editor_rulers, vec![80]);
+        assert_eq!(frame.gutter_width, gutter_columns);
         assert!(frame.cursorline_enabled);
         assert!(frame.soft_wrap_render_plan.is_some());
         assert!(frame.unwrapped_render_plan.is_none());
@@ -376,6 +380,7 @@ mod tests {
             soft_wrap_enabled: true,
             gutter_line_plans: Vec::new(),
             bounds: Bounds::new(point(px(0.0), px(0.0)), size(px(240.0), px(120.0))),
+            gutter_columns: view.gutter_offset(&document),
             cell_width: px(8.0),
             line_height: px(20.0),
             scroll_line_offset: px(0.0),
@@ -437,6 +442,7 @@ mod tests {
             soft_wrap_enabled: false,
             gutter_line_plans: Vec::new(),
             bounds,
+            gutter_columns: view.gutter_offset(&document),
             cell_width: px(8.0),
             line_height: px(20.0),
             scroll_line_offset: px(0.0),
@@ -491,6 +497,7 @@ mod tests {
             soft_wrap_enabled: false,
             gutter_line_plans: Vec::new(),
             bounds: Bounds::new(point(px(0.0), px(0.0)), size(px(1000.0), px(120.0))),
+            gutter_columns: view.gutter_offset(&document),
             cell_width: px(8.0),
             line_height: px(20.0),
             scroll_line_offset: px(5.0),
@@ -576,6 +583,7 @@ mod tests {
             soft_wrap_enabled: false,
             gutter_line_plans,
             bounds: Bounds::new(point(px(0.0), px(0.0)), size(px(240.0), px(120.0))),
+            gutter_columns: view.gutter_offset(document),
             cell_width: layout.cell_width,
             line_height: layout.line_height,
             scroll_line_offset: px(0.0),

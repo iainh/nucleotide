@@ -3,7 +3,10 @@
 
 use std::time::Duration;
 
-use gpui::{App, Bounds, FocusHandle, Hsla, Pixels, TextStyle, Window};
+use gpui::{
+    App, Bounds, CursorStyle, FocusHandle, Hsla, Pixels, SharedString, TextStyle,
+    TransformationMatrix, Window,
+};
 use helix_core::{Rope, RopeSlice};
 use helix_view::{
     Document, Editor, Theme, View, ViewId,
@@ -24,8 +27,8 @@ use crate::{
     editor_document_frame, gutter::gutter_origin, highlight::gpui_hsla_to_helix_color,
     paint_diagnostic_gutter_markers, paint_editor_background, paint_gutter_lines,
     paint_soft_wrap_editor_line, paint_unwrapped_editor_line, paint_visible_rulers,
-    shape_and_paint_editor_cursor, soft_wrap_cursor_paint_plan, style::helix_color_to_hsla,
-    unwrapped_cursor_paint_plan,
+    run_gutter_button_bounds, run_gutter_icon_bounds, shape_and_paint_editor_cursor,
+    soft_wrap_cursor_paint_plan, style::helix_color_to_hsla, unwrapped_cursor_paint_plan,
 };
 
 pub struct DocumentFramePaintParams<'a> {
@@ -64,6 +67,7 @@ pub struct NativeEditorFramePaintStyle {
     pub gutter_bg: Option<Hsla>,
     pub wrap_indicator_color: Option<Hsla>,
     pub ruler_color: Hsla,
+    pub run_button_color: Hsla,
 }
 
 #[derive(Clone, Copy)]
@@ -75,6 +79,7 @@ pub struct NativeEditorFramePalette {
     pub fallback_gutter_color: Hsla,
     pub diagnostic_highlight_base: Hsla,
     pub fallback_ruler_color: Hsla,
+    pub run_button_color: Hsla,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -188,6 +193,7 @@ pub fn native_editor_frame_paint_style(
         gutter_bg,
         wrap_indicator_color,
         ruler_color,
+        run_button_color: params.palette.run_button_color,
     }
 }
 
@@ -407,7 +413,7 @@ pub fn render_native_editor_frame(
         palette,
     } = params;
 
-    let prepared_frame = prepare_native_editor_frame(NativeEditorFramePrepareParams {
+    let Some(prepared_frame) = prepare_native_editor_frame(NativeEditorFramePrepareParams {
         editor,
         view_id,
         editor_state: &mut *editor_state,
@@ -420,7 +426,10 @@ pub fn render_native_editor_frame(
         soft_wrap_minimum_columns,
         theme_styles,
         palette,
-    })?;
+    }) else {
+        editor_state.clear_gutter_run_button_hits();
+        return None;
+    };
 
     paint_native_editor_frame(
         window,
@@ -456,6 +465,7 @@ pub fn native_editor_frame_paint_plan(
         soft_wrap_enabled: params.frame_state.viewport_update.soft_wrap,
         gutter_line_plans: Vec::new(),
         bounds: params.bounds,
+        gutter_columns: params.frame_state.viewport_update.gutter_columns,
         cell_width: params.layout.cell_width,
         line_height: params.layout.line_height,
         scroll_line_offset: params.frame_state.scroll_line_offset,
@@ -619,8 +629,70 @@ pub fn paint_native_editor_frame(
         },
     );
     params.editor_state.apply_cursor_overlay_plan(overlay_plan);
+    params
+        .editor_state
+        .set_gutter_line_anchors_from_plans(&plan.frame.gutter_line_plans, plan.bounds.origin);
+    let run_button_hits = paint_gutter_run_buttons(window, cx, &params);
+    params
+        .editor_state
+        .set_gutter_run_button_hits(run_button_hits);
 
     overlay_plan
+}
+
+fn paint_gutter_run_buttons(
+    window: &mut Window,
+    cx: &mut App,
+    params: &NativeEditorFramePaintParams<'_>,
+) -> Vec<crate::GutterRunButtonHit> {
+    let run_button_lines = params.editor_state.gutter_run_button_lines();
+    let extra_columns = params.editor_state.gutter_extra_columns();
+    if run_button_lines.is_empty() || extra_columns == 0 {
+        return Vec::new();
+    }
+
+    let frame = &params.plan.frame;
+    let gutter_width = params.layout.cell_width * f32::from(frame.gutter_width);
+    let reserved_width = params.layout.cell_width * f32::from(extra_columns);
+    let icon_path = SharedString::from("icons/play.svg");
+    let mut hits = Vec::new();
+
+    for line in frame
+        .gutter_line_plans
+        .iter()
+        .filter(|line| line.first_visual_line)
+        .filter(|line| run_button_lines.binary_search(&line.doc_line).is_ok())
+    {
+        let button_bounds = run_gutter_button_bounds(
+            params.plan.bounds.origin.x,
+            line.origin.y,
+            gutter_width,
+            reserved_width,
+            params.layout.line_height,
+        );
+        let icon_bounds = run_gutter_icon_bounds(button_bounds);
+        if button_bounds.contains(&window.mouse_position()) {
+            window.set_window_cursor_style(CursorStyle::PointingHand);
+        }
+
+        if let Err(e) = window.paint_svg(
+            icon_bounds,
+            icon_path.clone(),
+            None,
+            TransformationMatrix::default(),
+            params.plan.style.run_button_color,
+            cx,
+        ) {
+            error!(error = ?e, "Failed to paint run gutter icon");
+        }
+
+        hits.push(crate::GutterRunButtonHit {
+            doc_line: line.doc_line,
+            bounds: button_bounds,
+        });
+    }
+
+    hits
 }
 
 pub fn paint_document_frame(
@@ -1132,6 +1204,7 @@ mod tests {
                 fallback_gutter_color,
                 diagnostic_highlight_base,
                 fallback_ruler_color,
+                run_button_color: fallback_gutter_color,
             },
         });
 
@@ -1168,6 +1241,7 @@ mod tests {
         assert_eq!(style.selection_primary, selection_primary);
         assert_eq!(style.selection_secondary, selection_secondary);
         assert_eq!(style.diagnostic_highlight_base, diagnostic_highlight_base);
+        assert_eq!(style.run_button_color, fallback_gutter_color);
     }
 
     fn paint_palette() -> NativeEditorFramePalette {
@@ -1179,6 +1253,7 @@ mod tests {
             fallback_gutter_color: black(),
             diagnostic_highlight_base: black(),
             fallback_ruler_color: black(),
+            run_button_color: black(),
         }
     }
 
@@ -1197,6 +1272,7 @@ mod tests {
             gutter_bg: None,
             wrap_indicator_color: None,
             ruler_color: black(),
+            run_button_color: black(),
         }
     }
 

@@ -186,6 +186,10 @@ pub fn file_tests_runnable(tasks: &[ResolvedTask]) -> Option<ResolvedTask> {
         .cloned()
 }
 
+pub fn is_file_tests_runnable(task: &ResolvedTask) -> bool {
+    has_tag(task, TAG_FILE_TESTS)
+}
+
 pub fn merge_runnable_tasks(
     mut preferred: Vec<ResolvedTask>,
     fallback: Vec<ResolvedTask>,
@@ -594,6 +598,12 @@ fn parses_input() {}
                 .any(|task| task.label() == "Run Test parses_input")
         );
         assert!(tasks.iter().any(|task| has_tag(task, TAG_FILE_TESTS)));
+        assert!(
+            tasks
+                .iter()
+                .any(|task| task.label().starts_with("Run File Tests")
+                    && is_file_tests_runnable(task))
+        );
     }
 
     #[test]

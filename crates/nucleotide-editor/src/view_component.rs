@@ -193,7 +193,13 @@ where
         let mut paint_editor_state = editor_state;
         let document_element =
             EditorDocumentElement::new(text_style, move |bounds, after_layout, window, cx| {
+                let layout_before = paint_editor_state.layout_snapshot();
                 let overlay_plan = paint(&mut paint_editor_state, bounds, after_layout, window, cx);
+                let layout_after = paint_editor_state.layout_snapshot();
+                if layout_before.gutter_width != layout_after.gutter_width {
+                    cx.notify(view_entity_id);
+                }
+
                 if let Some(on_cursor_overlay) = &on_cursor_overlay {
                     on_cursor_overlay(overlay_plan, cx);
                 }
