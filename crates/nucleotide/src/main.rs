@@ -706,6 +706,9 @@ fn gui_main(
             let is_dark_theme = theme_manager.is_dark_theme(); // Store before moving
             cx.set_global(theme_manager);
             cx.set_global(ui_theme_derived.clone());
+            cx.set_global(nucleotide_ui::markdown::MarkdownSyntaxLoader::new(
+                app.editor.syn_loader.load_full(),
+            ));
 
             // Set up the enhanced provider system using the derived theme
             let ui_theme = ui_theme_derived;

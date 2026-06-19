@@ -19,7 +19,8 @@ use gpui::{
     Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyDownEvent,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point,
     Render, ScrollHandle, Size, StatefulInteractiveElement, Styled, TextStyle, Window,
-    WindowAppearance, WindowBackgroundAppearance, anchored, black, canvas, div, point, px, white,
+    WindowAppearance, WindowBackgroundAppearance, anchored, black, canvas, div, point, px, svg,
+    white,
 };
 use gpui::{FontFeatures, FontWeight};
 use helix_core::syntax::config::LanguageServerFeature;
@@ -3321,9 +3322,18 @@ impl Workspace {
                     .border_color(tokens.chrome.border_muted)
                     .child(
                         div()
+                            .flex()
+                            .items_center()
+                            .gap(tokens.sizes.space_2)
                             .text_sm()
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(tokens.chrome.text_on_chrome)
+                            .child(
+                                svg()
+                                    .path("icons/book-text.svg")
+                                    .size(px(14.0))
+                                    .flex_shrink_0(),
+                            )
                             .child("Documentation"),
                     )
                     .child(

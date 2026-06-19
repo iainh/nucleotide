@@ -7,10 +7,23 @@ use gpui::{
     SharedString, StrikethroughStyle, Styled, StyledText, UnderlineStyle, Window, div, px,
     relative, rems,
 };
+use helix_core::{
+    RopeSlice, Syntax,
+    syntax::{self, HighlightEvent},
+};
+use helix_view::graphics::{
+    Modifier as HelixModifier, Style as HelixStyle, UnderlineStyle as HelixUnderlineStyle,
+};
 use pulldown_cmark::{
     Alignment, CodeBlockKind, CowStr, Event, HeadingLevel, Options, Parser, Tag, TagEnd,
 };
+use std::{
+    ops::Range,
+    panic::{AssertUnwindSafe, catch_unwind},
+    sync::Arc,
+};
 
+use crate::theme_utils::color_to_hsla;
 use crate::tokens::{DesignTokens, with_alpha};
 
 #[derive(Clone, Debug)]
@@ -49,6 +62,23 @@ impl MarkdownStyle {
     }
 }
 
+#[derive(Clone)]
+pub struct MarkdownSyntaxLoader {
+    loader: Arc<syntax::Loader>,
+}
+
+impl MarkdownSyntaxLoader {
+    pub fn new(loader: Arc<syntax::Loader>) -> Self {
+        Self { loader }
+    }
+
+    fn loader(&self) -> &syntax::Loader {
+        &self.loader
+    }
+}
+
+impl gpui::Global for MarkdownSyntaxLoader {}
+
 #[derive(Clone, Debug, IntoElement)]
 pub struct MarkdownElement {
     source: SharedString,
@@ -63,9 +93,16 @@ pub fn markdown(source: impl Into<SharedString>, style: MarkdownStyle) -> Markdo
 }
 
 impl RenderOnce for MarkdownElement {
-    fn render(self, _window: &mut Window, _cx: &mut gpui::App) -> impl IntoElement {
+    fn render(self, _window: &mut Window, cx: &mut gpui::App) -> impl IntoElement {
         let document = MarkdownDocument::parse(&self.source);
-        render_document(document, self.style)
+        let helix_theme = cx
+            .try_global::<crate::theme_manager::ThemeManager>()
+            .map(|theme_manager| theme_manager.helix_theme());
+        let syntax_loader = cx
+            .try_global::<MarkdownSyntaxLoader>()
+            .map(MarkdownSyntaxLoader::loader);
+
+        render_document(document, self.style, helix_theme, syntax_loader)
     }
 }
 
@@ -529,7 +566,12 @@ fn code_block_language(kind: &CodeBlockKind<'_>) -> Option<String> {
     }
 }
 
-fn render_document(document: MarkdownDocument, style: MarkdownStyle) -> impl IntoElement {
+fn render_document(
+    document: MarkdownDocument,
+    style: MarkdownStyle,
+    helix_theme: Option<&helix_view::Theme>,
+    syntax_loader: Option<&syntax::Loader>,
+) -> gpui::Div {
     let gap = if style.compact { px(6.0) } else { px(10.0) };
     let elements: Vec<gpui::AnyElement> = document
         .blocks
@@ -551,7 +593,8 @@ fn render_document(document: MarkdownDocument, style: MarkdownStyle) -> impl Int
                     .into_any_element()
             }
             MarkdownBlock::CodeBlock { language, text } => {
-                render_code_block(text, language, &style).into_any_element()
+                render_code_block(text, language, &style, helix_theme, syntax_loader)
+                    .into_any_element()
             }
             MarkdownBlock::ListItem {
                 ordered,
@@ -591,12 +634,173 @@ fn render_rich_text(text: RichText, style: &MarkdownStyle, color: Hsla) -> gpui:
         .child(StyledText::new(text).with_highlights(highlights))
 }
 
+fn code_syntax_highlights(
+    content: &str,
+    language: Option<&str>,
+    helix_theme: Option<&helix_view::Theme>,
+    syntax_loader: Option<&syntax::Loader>,
+) -> Vec<(Range<usize>, HighlightStyle)> {
+    let Some(language) = normalized_code_language(language) else {
+        return Vec::new();
+    };
+    let (Some(theme), Some(loader)) = (helix_theme, syntax_loader) else {
+        return Vec::new();
+    };
+
+    tree_sitter_code_highlights(content, &language, theme, loader).unwrap_or_default()
+}
+
+fn normalized_code_language(language: Option<&str>) -> Option<String> {
+    language
+        .map(str::trim)
+        .map(|language| language.trim_start_matches('{').trim_end_matches('}'))
+        .and_then(|language| {
+            language
+                .split(|ch: char| ch == ',' || ch.is_whitespace())
+                .next()
+        })
+        .filter(|language| !language.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn tree_sitter_code_highlights(
+    content: &str,
+    language: &str,
+    theme: &helix_view::Theme,
+    loader: &syntax::Loader,
+) -> Option<Vec<(Range<usize>, HighlightStyle)>> {
+    let ropeslice = RopeSlice::from(content);
+    let language = loader.language_for_match(RopeSlice::from(language))?;
+    let syntax = Syntax::new(ropeslice, language, loader).ok()?;
+    let mut highlighter = syntax.highlighter(ropeslice, loader, ..);
+    let mut highlight_stack = Vec::new();
+    let mut highlights = Vec::new();
+    let mut position = 0;
+    let end = ropeslice.len_bytes() as u32;
+
+    while position < end {
+        if position == highlighter.next_event_offset() {
+            let (event, new_highlights) = highlighter.advance();
+            if event == HighlightEvent::Refresh {
+                highlight_stack.clear();
+            }
+            highlight_stack.extend(new_highlights);
+        }
+
+        let start = position;
+        position = highlighter.next_event_offset();
+        if position == u32::MAX {
+            position = end;
+        }
+        if position == start {
+            continue;
+        }
+        if position < start {
+            return None;
+        }
+
+        let style = highlight_stack
+            .iter()
+            .fold(HelixStyle::default(), |acc, highlight| {
+                acc.patch(safe_highlight(theme, *highlight))
+            });
+
+        if let Some(style) = helix_style_to_highlight_style(style) {
+            let start = next_char_boundary(content, start as usize);
+            let end = next_char_boundary(content, position as usize);
+            if start < end {
+                highlights.push((start..end, style));
+            }
+        }
+    }
+
+    Some(highlights)
+}
+
+fn safe_highlight(theme: &helix_view::Theme, highlight: syntax::Highlight) -> HelixStyle {
+    catch_unwind(AssertUnwindSafe(|| theme.highlight(highlight))).unwrap_or_default()
+}
+
+fn helix_style_to_highlight_style(style: HelixStyle) -> Option<HighlightStyle> {
+    let color = style.fg.and_then(color_to_hsla);
+    let background_color = style.bg.and_then(color_to_hsla);
+    let underline_color = style.underline_color.and_then(color_to_hsla).or(color);
+    let underline = match style.underline_style {
+        Some(HelixUnderlineStyle::Line)
+        | Some(HelixUnderlineStyle::Dotted)
+        | Some(HelixUnderlineStyle::Dashed)
+        | Some(HelixUnderlineStyle::DoubleLine) => Some(UnderlineStyle {
+            thickness: px(1.0),
+            color: underline_color,
+            wavy: false,
+        }),
+        Some(HelixUnderlineStyle::Curl) => Some(UnderlineStyle {
+            thickness: px(1.0),
+            color: underline_color,
+            wavy: true,
+        }),
+        Some(HelixUnderlineStyle::Reset) | None => None,
+    };
+    let strikethrough = style
+        .add_modifier
+        .contains(HelixModifier::CROSSED_OUT)
+        .then_some(StrikethroughStyle {
+            thickness: px(1.0),
+            color,
+        });
+    let font_weight = style
+        .add_modifier
+        .contains(HelixModifier::BOLD)
+        .then_some(FontWeight::BOLD);
+    let font_style = style
+        .add_modifier
+        .contains(HelixModifier::ITALIC)
+        .then_some(FontStyle::Italic);
+    let fade_out = style
+        .add_modifier
+        .contains(HelixModifier::DIM)
+        .then_some(0.6);
+
+    if color.is_none()
+        && background_color.is_none()
+        && underline.is_none()
+        && strikethrough.is_none()
+        && font_weight.is_none()
+        && font_style.is_none()
+        && fade_out.is_none()
+    {
+        return None;
+    }
+
+    Some(HighlightStyle {
+        color,
+        background_color,
+        underline,
+        strikethrough,
+        font_weight,
+        font_style,
+        fade_out,
+    })
+}
+
+fn next_char_boundary(content: &str, mut index: usize) -> usize {
+    index = index.min(content.len());
+    while index < content.len() && !content.is_char_boundary(index) {
+        index += 1;
+    }
+    index
+}
+
 fn render_code_block(
     text: String,
     language: Option<String>,
     style: &MarkdownStyle,
-) -> impl IntoElement {
+    helix_theme: Option<&helix_view::Theme>,
+    syntax_loader: Option<&syntax::Loader>,
+) -> gpui::Div {
     let content = text.trim_end_matches('\n').to_string();
+    let highlights =
+        code_syntax_highlights(&content, language.as_deref(), helix_theme, syntax_loader);
     let code = div()
         .px(px(10.0))
         .py(px(8.0))
@@ -609,7 +813,7 @@ fn render_code_block(
         .font_family(style.code_font_family.clone())
         .text_color(style.body_color)
         .overflow_hidden()
-        .child(content);
+        .child(StyledText::new(content).with_highlights(highlights));
 
     if let Some(language) = language {
         div()
@@ -787,6 +991,51 @@ mod tests {
             MarkdownBlock::ListItem { ordered: true, index: 4, text, .. }
                 if text.plain_text() == "four"
         ));
+    }
+
+    #[test]
+    fn code_language_normalization_accepts_fence_info_strings() {
+        assert_eq!(
+            normalized_code_language(Some("{rust,ignore}")),
+            Some("rust".to_string())
+        );
+        assert_eq!(
+            normalized_code_language(Some("sql title=\"query\"")),
+            Some("sql".to_string())
+        );
+        assert_eq!(normalized_code_language(Some("   ")), None);
+        assert_eq!(normalized_code_language(None), None);
+    }
+
+    #[test]
+    fn code_syntax_highlights_falls_back_without_theme_or_loader() {
+        assert!(
+            code_syntax_highlights("fn main() {}", Some("rust"), None, None).is_empty(),
+            "missing theme/loader should render code as plain text"
+        );
+    }
+
+    #[test]
+    fn helix_style_to_highlight_style_maps_text_attributes() {
+        use helix_view::graphics::Color;
+
+        let style = HelixStyle::default()
+            .fg(Color::Rgb(0x12, 0x34, 0x56))
+            .bg(Color::Rgb(0x22, 0x33, 0x44))
+            .underline_color(Color::Rgb(0xaa, 0xbb, 0xcc))
+            .underline_style(HelixUnderlineStyle::Curl)
+            .add_modifier(HelixModifier::BOLD | HelixModifier::ITALIC | HelixModifier::CROSSED_OUT);
+        let highlight = helix_style_to_highlight_style(style).expect("style should map");
+
+        assert_eq!(highlight.color, color_to_hsla(Color::Rgb(0x12, 0x34, 0x56)));
+        assert_eq!(
+            highlight.background_color,
+            color_to_hsla(Color::Rgb(0x22, 0x33, 0x44))
+        );
+        assert_eq!(highlight.font_weight, Some(FontWeight::BOLD));
+        assert_eq!(highlight.font_style, Some(FontStyle::Italic));
+        assert!(highlight.underline.is_some_and(|underline| underline.wavy));
+        assert!(highlight.strikethrough.is_some());
     }
 
     #[gpui::test]

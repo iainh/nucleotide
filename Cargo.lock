@@ -5465,6 +5465,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "gpui",
+ "helix-core",
  "helix-lsp",
  "helix-view",
  "nucleo",
