@@ -4,8 +4,7 @@
 use gpui::{Bounds, Pixels, Point, Size, point, px, size};
 
 const RUN_GUTTER_BUTTON_MIN_SIZE_PX: f32 = 12.0;
-const RUN_GUTTER_BUTTON_MAX_SIZE_PX: f32 = 14.0;
-const RUN_GUTTER_BUTTON_VERTICAL_INSET_PX: f32 = 6.0;
+const RUN_GUTTER_BUTTON_LINE_HEIGHT_RATIO: f32 = 0.7;
 const RUN_GUTTER_BUTTON_HORIZONTAL_PADDING_PX: f32 = 3.0;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -15,9 +14,7 @@ pub struct GutterRunButtonHit {
 }
 
 pub fn run_gutter_button_size(line_height: Pixels) -> Pixels {
-    (line_height - px(RUN_GUTTER_BUTTON_VERTICAL_INSET_PX))
-        .max(px(RUN_GUTTER_BUTTON_MIN_SIZE_PX))
-        .min(px(RUN_GUTTER_BUTTON_MAX_SIZE_PX))
+    (line_height * RUN_GUTTER_BUTTON_LINE_HEIGHT_RATIO).max(px(RUN_GUTTER_BUTTON_MIN_SIZE_PX))
 }
 
 pub fn run_gutter_required_width(line_height: Pixels) -> Pixels {
@@ -93,6 +90,12 @@ mod tests {
             run_gutter_button_left(px(100.0), px(24.0), px(14.0)),
             px(81.0)
         );
+    }
+
+    #[test]
+    fn run_gutter_button_size_scales_with_line_height() {
+        assert_eq!(run_gutter_button_size(px(20.0)), px(14.0));
+        assert_eq!(run_gutter_button_size(px(30.0)), px(21.0));
     }
 
     #[test]
