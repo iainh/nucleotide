@@ -78,8 +78,13 @@ impl ParsedCommand {
                 | "vsplit"
                 | "vs"
                 | "close"
+                | "close!"
                 | "bc"
+                | "bc!"
                 | "bclose"
+                | "bclose!"
+                | "buffer-close"
+                | "buffer-close!"
                 | "help"
                 | "h"
         )
@@ -114,6 +119,23 @@ impl fmt::Display for ParsedCommand {
             write!(f, " {arg}")?;
         }
         Ok(())
+    }
+}
+
+fn close_command_force(parsed: &ParsedCommand) -> Option<bool> {
+    let (name, force_suffix) = parsed
+        .name
+        .strip_suffix('!')
+        .map_or((parsed.name.as_str(), false), |name| (name, true));
+    let force_arg = parsed.args.iter().any(|arg| arg == "!");
+
+    if parsed.args.iter().any(|arg| arg != "!") {
+        return None;
+    }
+
+    match name {
+        "bc" | "bclose" | "buffer-close" | "close" => Some(force_suffix || force_arg),
+        _ => None,
     }
 }
 
@@ -201,13 +223,14 @@ impl Command {
             "vs" | "vsplit" => Ok(Command::Split {
                 direction: SplitDirection::Vertical,
             }),
-            "bc" | "bclose" | "close" => Ok(Command::Close {
-                force: parsed.args.iter().any(|arg| arg == "!"),
-            }),
             "h" | "help" => Ok(Command::Help {
                 topic: parsed.args.first().cloned(),
             }),
             _ => {
+                if let Some(force) = close_command_force(&parsed) {
+                    return Ok(Command::Close { force });
+                }
+
                 // For commands we haven't categorized yet, return generic
                 // For commands we haven't categorized yet, check if it's known
                 #[cfg(not(test))]
@@ -440,6 +463,36 @@ mod tests {
                 direction: SplitDirection::Vertical
             }
         );
+    }
+
+    #[test]
+    fn test_typed_close_command_aliases() {
+        for input in ["close", "bc", "bclose", "buffer-close"] {
+            let parsed = ParsedCommand::parse(input).unwrap();
+            let cmd = Command::from_parsed(parsed).unwrap();
+            assert_eq!(cmd, Command::Close { force: false });
+        }
+
+        for input in [
+            "close !",
+            "close!",
+            "bc !",
+            "bc!",
+            "bclose !",
+            "bclose!",
+            "buffer-close !",
+            "buffer-close!",
+        ] {
+            let parsed = ParsedCommand::parse(input).unwrap();
+            let cmd = Command::from_parsed(parsed).unwrap();
+            assert_eq!(cmd, Command::Close { force: true });
+        }
+    }
+
+    #[test]
+    fn test_typed_close_preserves_argument_forms_for_helix() {
+        let parsed = ParsedCommand::parse("buffer-close other-buffer").unwrap();
+        assert_eq!(close_command_force(&parsed), None);
     }
 
     #[test]
