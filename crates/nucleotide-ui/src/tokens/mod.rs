@@ -1191,30 +1191,25 @@ impl ButtonTokens {
     pub fn from_tokens(chrome: &ChromeTokens, editor: &EditorTokens) -> Self {
         use crate::styling::color_theory::ColorTheory;
 
-        // Primary buttons use chrome colors for UI consistency
-        let primary_bg = chrome.surface_hover; // Interactive chrome surface
-        let primary_bg_hover = ColorTheory::adjust_oklab_lightness(primary_bg, 0.1);
-        let primary_bg_active = ColorTheory::adjust_oklab_lightness(primary_bg, -0.1);
-        let primary_text = chrome.text_on_chrome;
-        let primary_border = chrome.border_shadow;
+        // Primary buttons use the chrome primary ramp for a clear default action.
+        let primary_bg = chrome.primary;
+        let primary_bg_hover = chrome.primary_hover;
+        let primary_bg_active = chrome.primary_active;
+        let primary_text = ColorTheory::ensure_contrast(primary_bg, editor.text_on_primary, 4.5);
+        let primary_border = ColorTheory::with_alpha(chrome.primary_active, 0.0);
 
-        // Secondary buttons are subtle; lighten on hover, darken on active
-        let secondary_bg = ColorTheory::with_alpha(chrome.surface_hover, 0.3);
-        let secondary_bg_hover = ColorTheory::adjust_oklab_lightness(secondary_bg, 0.1);
-        let secondary_bg_active = ColorTheory::adjust_oklab_lightness(secondary_bg, -0.1);
+        // Secondary buttons mirror gpui-component's default button: surfaced,
+        // bordered, and quiet until hovered.
+        let secondary_bg = chrome.surface;
+        let secondary_bg_hover = chrome.surface_hover;
+        let secondary_bg_active = chrome.surface_active;
         let secondary_text = chrome.text_on_chrome;
-        let secondary_border = chrome.border_default;
+        let secondary_border = chrome.border_shadow;
 
-        // Ghost buttons are transparent until hovered; lighten on hover, darken on active
+        // Ghost buttons remain transparent until hovered.
         let ghost_bg = ColorTheory::transparent();
-        let ghost_bg_hover = ColorTheory::with_alpha(
-            ColorTheory::adjust_oklab_lightness(chrome.surface_hover, 0.1),
-            0.2,
-        );
-        let ghost_bg_active = ColorTheory::with_alpha(
-            ColorTheory::adjust_oklab_lightness(chrome.surface_hover, -0.1),
-            0.3,
-        );
+        let ghost_bg_hover = ColorTheory::with_alpha(chrome.surface_hover, 0.8);
+        let ghost_bg_active = ColorTheory::with_alpha(chrome.surface_active, 0.9);
         let ghost_text = chrome.text_on_chrome;
 
         // Semantic buttons use Helix editor colors for familiarity

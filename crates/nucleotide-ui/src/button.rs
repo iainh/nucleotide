@@ -11,8 +11,8 @@ use gpui::prelude::FluentBuilder;
 use gpui::px;
 use gpui::{
     App, AppContext, ClickEvent, Context, ElementId, FontWeight, InteractiveElement, IntoElement,
-    MouseButton, ParentElement, Render, RenderOnce, SharedString, StatefulInteractiveElement,
-    Styled, Window, div, svg,
+    MouseButton, ParentElement, Pixels, Render, RenderOnce, SharedString,
+    StatefulInteractiveElement, Styled, Window, div, relative, svg,
 };
 use std::time::Duration;
 
@@ -37,6 +37,67 @@ fn button_shadow_stack(
     });
 
     shadows
+}
+
+#[derive(Clone, Copy)]
+struct ButtonMetrics {
+    height: Pixels,
+    padding_x: Pixels,
+    padding_y: Pixels,
+    border_radius: Pixels,
+    font_size: Pixels,
+    icon_size: Pixels,
+    gap: Pixels,
+}
+
+fn button_metrics(size: ButtonSize, tokens: &DesignTokens) -> ButtonMetrics {
+    match size {
+        ButtonSize::ExtraSmall => ButtonMetrics {
+            height: tokens.sizes.space_6,
+            padding_x: tokens.sizes.space_2,
+            padding_y: tokens.sizes.space_0,
+            border_radius: tokens.sizes.radius_sm,
+            font_size: tokens.sizes.text_xs,
+            icon_size: px(12.0),
+            gap: tokens.sizes.space_1,
+        },
+        ButtonSize::Small => ButtonMetrics {
+            height: tokens.sizes.button_height_sm,
+            padding_x: tokens.sizes.space_4,
+            padding_y: tokens.sizes.space_0,
+            border_radius: tokens.sizes.radius_md,
+            font_size: tokens.sizes.text_sm,
+            icon_size: px(14.0),
+            gap: tokens.sizes.space_1,
+        },
+        ButtonSize::Medium => ButtonMetrics {
+            height: tokens.sizes.button_height_md,
+            padding_x: tokens.sizes.space_5,
+            padding_y: tokens.sizes.space_0,
+            border_radius: tokens.sizes.radius_md,
+            font_size: tokens.sizes.text_md,
+            icon_size: px(16.0),
+            gap: tokens.sizes.space_2,
+        },
+        ButtonSize::Large => ButtonMetrics {
+            height: tokens.sizes.button_height_md,
+            padding_x: tokens.sizes.space_5,
+            padding_y: tokens.sizes.space_0,
+            border_radius: tokens.sizes.radius_md,
+            font_size: tokens.sizes.text_md,
+            icon_size: px(18.0),
+            gap: tokens.sizes.space_2,
+        },
+        ButtonSize::ExtraLarge => ButtonMetrics {
+            height: tokens.sizes.button_height_lg,
+            padding_x: tokens.sizes.space_6,
+            padding_y: tokens.sizes.space_0,
+            border_radius: tokens.sizes.radius_lg,
+            font_size: tokens.sizes.text_lg,
+            icon_size: px(20.0),
+            gap: tokens.sizes.space_2,
+        },
+    }
 }
 
 /// Button variant styles (backward compatibility)
@@ -515,11 +576,7 @@ impl Button {
             ),
         };
 
-        // Get size-based properties
-        let style_size = StyleSize::from(self.size);
-        let (padding_x, padding_y) = style_size.padding(design_tokens);
-        let border_radius = style_size.border_radius(design_tokens);
-        let font_size = style_size.font_size(px(14.0));
+        let metrics = button_metrics(self.size, design_tokens);
 
         ComputedStyle {
             background,
@@ -530,10 +587,10 @@ impl Button {
             } else {
                 px(0.0)
             },
-            border_radius,
-            padding_x,
-            padding_y,
-            font_size,
+            border_radius: metrics.border_radius,
+            padding_x: metrics.padding_x,
+            padding_y: metrics.padding_y,
+            font_size: metrics.font_size,
             font_weight: 500, // Medium weight for better readability
             opacity: if matches!(state, StyleState::Disabled | StyleState::Loading) {
                 0.6
@@ -678,6 +735,10 @@ impl RenderOnce for Button {
         // Precompute hover style for interactive states
         let hover_style =
             self.compute_style_from_tokens(&button_tokens, StyleState::Hover, &theme.tokens);
+        let active_style =
+            self.compute_style_from_tokens(&button_tokens, StyleState::Active, &theme.tokens);
+        let metrics = button_metrics(self.size, &theme.tokens);
+        let icon_only = self.label.is_empty() && self.slots.is_empty() && self.icon_path.is_some();
         let inset_highlight = theme.tokens.chrome.inset_highlight;
         let inset_shadow = theme.tokens.chrome.inset_shadow;
         let activate_on_mouse_down = self.activate_on_mouse_down;
@@ -685,14 +746,27 @@ impl RenderOnce for Button {
         let mut button = div()
             .id(self.id)
             .flex()
+            .flex_shrink_0()
             .flex_row()
             .items_center()
             .justify_center()
-            .gap(px(4.0))
-            .py(computed_style.padding_y)
-            .px(computed_style.padding_x)
+            .gap(metrics.gap)
+            .h(metrics.height)
+            .min_w(metrics.height)
+            .when(icon_only, |button| {
+                button
+                    .w(metrics.height)
+                    .px(theme.tokens.sizes.space_0)
+                    .py(theme.tokens.sizes.space_0)
+            })
+            .when(!icon_only, |button| {
+                button
+                    .py(computed_style.padding_y)
+                    .px(computed_style.padding_x)
+            })
             .rounded(computed_style.border_radius)
             .text_size(computed_style.font_size)
+            .line_height(relative(1.0))
             .font_weight(match computed_style.font_weight {
                 400 => FontWeight::NORMAL,
                 700 => FontWeight::BOLD,
@@ -715,9 +789,8 @@ impl RenderOnce for Button {
             })
             .opacity(computed_style.opacity);
 
-        // GPUI 0.2.2 can leave active styles stuck on fast clicks because the
-        // mouse-up clear is only registered after a repaint. Keep chrome
-        // controls hover-only until we update GPUI to the newer Zed behavior.
+        // Match gpui-component's interactive treatment: hover lifts the button,
+        // active swaps to the pressed inset shadow.
         if current_state.is_interactive() {
             button = button.hover(|this| {
                 let mut hovered = this
@@ -741,6 +814,30 @@ impl RenderOnce for Button {
                 }
 
                 hovered
+            });
+
+            button = button.active(|this| {
+                let mut active = this
+                    .bg(active_style.background)
+                    .text_color(active_style.foreground)
+                    .border_color(active_style.border_color)
+                    .text_size(computed_style.font_size)
+                    .font_weight(match computed_style.font_weight {
+                        400 => FontWeight::NORMAL,
+                        700 => FontWeight::BOLD,
+                        _ => FontWeight::MEDIUM,
+                    });
+
+                if let Some(shadow) = &active_style.shadow {
+                    active = active.shadow(button_shadow_stack(
+                        shadow,
+                        inset_highlight,
+                        inset_shadow,
+                        true,
+                    ));
+                }
+
+                active
             });
         }
 
@@ -783,10 +880,9 @@ impl RenderOnce for Button {
             button = match slot {
                 ButtonSlot::Text(text) => button.child(text.clone()),
                 ButtonSlot::Icon(icon_path) => {
-                    let icon_size = StyleSize::from(self.size).icon_size();
                     let icon_element = svg()
                         .path(icon_path.to_string())
-                        .size(icon_size)
+                        .size(metrics.icon_size)
                         .text_color(computed_style.foreground)
                         .flex_shrink_0();
                     button.child(icon_element)
@@ -797,10 +893,9 @@ impl RenderOnce for Button {
         // Fall back to icon and label if no slots are used
         if self.slots.is_empty() {
             if let Some(icon_path) = self.icon_path {
-                let icon_size = StyleSize::from(self.size).icon_size();
                 let icon_element = svg()
                     .path(icon_path.to_string())
-                    .size(icon_size)
+                    .size(metrics.icon_size)
                     .text_color(computed_style.foreground)
                     .flex_shrink_0();
 
@@ -953,6 +1048,23 @@ mod tests {
         // Test reverse conversion
         assert_eq!(ButtonSize::from(StyleSize::Small), ButtonSize::Small);
         assert_eq!(ButtonSize::from(StyleSize::Medium), ButtonSize::Medium);
+    }
+
+    #[test]
+    fn test_button_metrics_follow_compact_gpui_component_scale() {
+        let tokens = crate::tokens::DesignTokens::light();
+
+        let xs = button_metrics(ButtonSize::ExtraSmall, &tokens);
+        let sm = button_metrics(ButtonSize::Small, &tokens);
+        let md = button_metrics(ButtonSize::Medium, &tokens);
+        let lg = button_metrics(ButtonSize::Large, &tokens);
+
+        assert_eq!(xs.height, tokens.sizes.space_6);
+        assert_eq!(sm.height, tokens.sizes.button_height_sm);
+        assert_eq!(md.height, tokens.sizes.button_height_md);
+        assert_eq!(lg.height, tokens.sizes.button_height_md);
+        assert!(sm.padding_x > xs.padding_x);
+        assert!(md.padding_x > sm.padding_x);
     }
 
     #[test]
