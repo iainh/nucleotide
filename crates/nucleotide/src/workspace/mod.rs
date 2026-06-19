@@ -36,7 +36,9 @@ use nucleotide_ui::ThemedContext as UIThemedContext;
 
 // ViewManager already imported above via pub use
 use nucleotide_ui::notification::{StatusBarNotification, StatusBarNotificationSeverity};
-use nucleotide_ui::{AboutWindow, Button, ButtonSize, ButtonVariant, Tooltipped};
+use nucleotide_ui::{
+    AboutWindow, Button, ButtonSize, ButtonVariant, MarkdownStyle, Tooltipped, markdown,
+};
 
 use crate::input_coordinator::{FocusGroup, InputContext, InputCoordinator};
 use nucleotide_lsp::ServerStatus;
@@ -643,6 +645,13 @@ pub struct Workspace {
     is_resizing_file_tree: bool,
     resize_start_x: f32,
     resize_start_width: f32,
+    doc_sidebar_visible: bool,
+    doc_sidebar_loading: bool,
+    doc_sidebar_entries: Vec<HoverDocEntry>,
+    doc_sidebar_width: f32,
+    doc_sidebar_resizing: bool,
+    doc_sidebar_resize_start_x: f32,
+    doc_sidebar_resize_start_width: f32,
     titlebar: Option<gpui::AnyView>,
     appearance_observer_set: bool,
     needs_appearance_update: bool,
@@ -756,6 +765,10 @@ const GLOBAL_SEARCH_RESULT_LIMIT: usize = 5000;
 const FILE_TREE_MIN_WIDTH: f32 = 96.0;
 const FILE_TREE_DEFAULT_WIDTH: f32 = 240.0;
 const FILE_TREE_MIN_EDITOR_WIDTH: f32 = 200.0;
+const DOC_SIDEBAR_MIN_WIDTH: f32 = 240.0;
+const DOC_SIDEBAR_DEFAULT_WIDTH: f32 = 360.0;
+const DOC_SIDEBAR_MAX_WIDTH: f32 = 640.0;
+const DOC_SIDEBAR_MIN_EDITOR_WIDTH: f32 = 240.0;
 
 fn file_tree_config_from_gui(config: &crate::config::GuiConfig) -> FileTreeConfig {
     FileTreeConfig {
@@ -1171,13 +1184,6 @@ enum MenuKeyAction {
     SelectPrevious,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum HoverPopupKeyAction {
-    Dismiss,
-    SelectNext,
-    SelectPrevious,
-}
-
 fn completion_menu_action(key: &str, control: bool, shift: bool) -> Option<MenuKeyAction> {
     match (key, control, shift) {
         ("escape", false, false) => Some(MenuKeyAction::Cancel),
@@ -1198,15 +1204,6 @@ fn code_action_menu_action(key: &str, control: bool, shift: bool) -> Option<Menu
         ("up", false, false) | ("p", true, false) | ("tab", false, true) => {
             Some(MenuKeyAction::SelectPrevious)
         }
-        _ => None,
-    }
-}
-
-fn hover_popup_action(key: &str, alt: bool) -> Option<HoverPopupKeyAction> {
-    match key {
-        "escape" => Some(HoverPopupKeyAction::Dismiss),
-        "n" if alt => Some(HoverPopupKeyAction::SelectNext),
-        "p" if alt => Some(HoverPopupKeyAction::SelectPrevious),
         _ => None,
     }
 }
@@ -2965,6 +2962,13 @@ impl Workspace {
             is_resizing_file_tree: false,
             resize_start_x: 0.0,
             resize_start_width: 0.0,
+            doc_sidebar_visible: false,
+            doc_sidebar_loading: false,
+            doc_sidebar_entries: Vec::new(),
+            doc_sidebar_width: DOC_SIDEBAR_DEFAULT_WIDTH,
+            doc_sidebar_resizing: false,
+            doc_sidebar_resize_start_x: 0.0,
+            doc_sidebar_resize_start_width: DOC_SIDEBAR_DEFAULT_WIDTH,
             titlebar: None,
             appearance_observer_set: false,
             needs_appearance_update: false,
@@ -3204,6 +3208,115 @@ impl Workspace {
             );
 
         div().child(backdrop).child(dialog)
+    }
+
+    fn render_documentation_sidebar(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let tokens = &cx.theme().tokens;
+        let markdown_style = MarkdownStyle::from_tokens(tokens).compact();
+
+        let mut body = div()
+            .id("documentation-sidebar-body")
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h(px(0.0))
+            .overflow_y_scroll()
+            .px(tokens.sizes.space_3)
+            .py(tokens.sizes.space_3)
+            .gap(tokens.sizes.space_4);
+
+        if self.doc_sidebar_loading {
+            body = body.child(
+                div()
+                    .text_sm()
+                    .text_color(tokens.chrome.text_chrome_secondary)
+                    .child("Loading documentation..."),
+            );
+        } else if self.doc_sidebar_entries.is_empty() {
+            body = body.child(
+                div()
+                    .text_sm()
+                    .text_color(tokens.chrome.text_chrome_secondary)
+                    .child("No documentation available."),
+            );
+        } else {
+            for (index, entry) in self.doc_sidebar_entries.iter().enumerate() {
+                body = body.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(tokens.sizes.space_2)
+                        .when(index > 0, |section| {
+                            section
+                                .border_t_1()
+                                .border_color(tokens.chrome.border_muted)
+                                .pt(tokens.sizes.space_4)
+                        })
+                        .child(
+                            div()
+                                .text_xs()
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(tokens.chrome.text_chrome_secondary)
+                                .child(entry.server_name.clone()),
+                        )
+                        .child(markdown(entry.markdown.clone(), markdown_style.clone())),
+                );
+            }
+        }
+
+        div()
+            .id("documentation-sidebar")
+            .w(px(self.doc_sidebar_width))
+            .h_full()
+            .flex_shrink_0()
+            .min_h(px(0.0))
+            .flex()
+            .flex_col()
+            .overflow_hidden()
+            .bg(tokens.chrome.file_tree_background)
+            .border_l_1()
+            .border_color(tokens.chrome.border_default)
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(
+                div()
+                    .h(tokens.sizes.space_8)
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .px(tokens.sizes.space_3)
+                    .border_b_1()
+                    .border_color(tokens.chrome.border_muted)
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(tokens.chrome.text_on_chrome)
+                            .child("Documentation"),
+                    )
+                    .child(
+                        div()
+                            .id("documentation-sidebar-close")
+                            .size(tokens.sizes.space_6)
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(tokens.sizes.radius_sm)
+                            .cursor_pointer()
+                            .text_sm()
+                            .text_color(tokens.chrome.text_chrome_secondary)
+                            .hover(|button| button.bg(tokens.chrome.surface_hover))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|workspace, _event, _window, cx| {
+                                    workspace.close_documentation_sidebar(cx);
+                                    cx.stop_propagation();
+                                }),
+                            )
+                            .child("x"),
+                    ),
+            )
+            .child(body)
+            .into_any_element()
     }
 
     /// Execute the delete after confirmation
@@ -3728,11 +3841,52 @@ impl Workspace {
         }
     }
 
+    fn close_documentation_sidebar(&mut self, cx: &mut Context<Self>) {
+        if self.doc_sidebar_visible || self.doc_sidebar_loading {
+            self.doc_sidebar_visible = false;
+            self.doc_sidebar_loading = false;
+            cx.notify();
+        }
+    }
+
+    fn toggle_documentation_sidebar(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.doc_sidebar_visible {
+            self.close_documentation_sidebar(cx);
+            return false;
+        }
+
+        self.doc_sidebar_visible = true;
+        self.doc_sidebar_loading = true;
+        self.doc_sidebar_entries.clear();
+        cx.notify();
+        true
+    }
+
+    fn set_documentation_sidebar_entries(
+        &mut self,
+        entries: Vec<HoverDocEntry>,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.doc_sidebar_visible && !self.doc_sidebar_loading {
+            return;
+        }
+
+        self.doc_sidebar_visible = true;
+        self.doc_sidebar_loading = false;
+        self.doc_sidebar_entries = entries;
+        cx.notify();
+    }
+
     fn finish_active_resize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let mut finished = false;
 
         if self.is_resizing_file_tree {
             self.is_resizing_file_tree = false;
+            finished = true;
+        }
+
+        if self.doc_sidebar_resizing {
+            self.doc_sidebar_resizing = false;
             finished = true;
         }
 
@@ -3761,6 +3915,30 @@ impl Workspace {
 
     fn max_file_tree_width(viewport_width: f32) -> f32 {
         (viewport_width - FILE_TREE_MIN_EDITOR_WIDTH).max(FILE_TREE_MIN_WIDTH)
+    }
+
+    fn max_documentation_sidebar_width(available_width: f32) -> f32 {
+        (available_width - DOC_SIDEBAR_MIN_EDITOR_WIDTH)
+            .clamp(DOC_SIDEBAR_MIN_WIDTH, DOC_SIDEBAR_MAX_WIDTH)
+    }
+
+    fn clamped_documentation_sidebar_width(width: f32, available_width: f32) -> f32 {
+        width.clamp(
+            DOC_SIDEBAR_MIN_WIDTH,
+            Self::max_documentation_sidebar_width(available_width),
+        )
+    }
+
+    fn sync_documentation_sidebar_width_for_viewport(&mut self, available_width: f32) {
+        if !self.doc_sidebar_visible {
+            return;
+        }
+
+        let width =
+            Self::clamped_documentation_sidebar_width(self.doc_sidebar_width, available_width);
+        if (self.doc_sidebar_width - width).abs() > 0.5 {
+            self.doc_sidebar_width = width;
+        }
     }
 
     fn clamped_file_tree_auto_width(preferred_width: f32, viewport_width: f32) -> f32 {
@@ -3833,6 +4011,45 @@ impl Workspace {
             true
         } else {
             false
+        }
+    }
+
+    fn clamped_documentation_sidebar_resize_width(
+        resize_start_width: f32,
+        resize_start_x: f32,
+        mouse_x: f32,
+        available_width: f32,
+    ) -> f32 {
+        let dx = resize_start_x - mouse_x;
+        Self::clamped_documentation_sidebar_width(resize_start_width + dx, available_width)
+    }
+
+    fn update_documentation_sidebar_resize(
+        &mut self,
+        mouse_x: f32,
+        available_width: f32,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let new_width = Self::clamped_documentation_sidebar_resize_width(
+            self.doc_sidebar_resize_start_width,
+            self.doc_sidebar_resize_start_x,
+            mouse_x,
+            available_width,
+        );
+
+        if (self.doc_sidebar_width - new_width).abs() > 0.5 {
+            self.doc_sidebar_width = new_width;
+            cx.notify();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn finish_documentation_sidebar_resize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.doc_sidebar_resizing {
+            self.doc_sidebar_resizing = false;
+            self.request_standard_cursor_restore(window, cx);
         }
     }
 
@@ -4283,26 +4500,6 @@ impl Workspace {
         }
     }
 
-    /// Routes hover-doc keys before the editor input path can consume them.
-    fn handle_hover_popup_key(&mut self, ev: &KeyDownEvent, cx: &mut Context<Self>) -> bool {
-        if !self.overlay.read(cx).has_hover_popup() {
-            return false;
-        }
-
-        let Some(action) =
-            hover_popup_action(ev.keystroke.key.as_str(), ev.keystroke.modifiers.alt)
-        else {
-            return false;
-        };
-
-        self.overlay.update(cx, |overlay, cx| match action {
-            HoverPopupKeyAction::Dismiss => overlay.dismiss_hover_popup(cx),
-            HoverPopupKeyAction::SelectNext => overlay.advance_hover_popup(true, cx),
-            HoverPopupKeyAction::SelectPrevious => overlay.advance_hover_popup(false, cx),
-        });
-        true
-    }
-
     /// Simplified key handler that delegates to the InputCoordinator
     fn handle_key(&mut self, ev: &KeyDownEvent, window: &Window, cx: &mut Context<Self>) {
         // If embedded terminal is focused, route all keys to it and stop here
@@ -4598,11 +4795,6 @@ impl Workspace {
         if self.context_menu_open && ev.keystroke.key == "escape" {
             self.context_menu_open = false;
             cx.notify();
-            return;
-        }
-
-        // Handle hover popup keyboard shortcuts before other overlay logic
-        if self.handle_hover_popup_key(ev, cx) {
             return;
         }
 
@@ -7189,9 +7381,11 @@ impl Workspace {
             | crate::Update::Picker(_)
             | crate::Update::DirectoryPicker(_)
             | crate::Update::DiagnosticsPanel(_)
-            | crate::Update::TerminalPanel(_)
-            | crate::Update::HoverDocs(_) => {
+            | crate::Update::TerminalPanel(_) => {
                 self.handle_overlay_update(cx);
+            }
+            crate::Update::HoverDocs(entries) => {
+                self.set_documentation_sidebar_entries(entries.clone(), cx);
             }
             crate::Update::Completion(_completion_view) => {
                 nucleotide_logging::info!("Forwarding completion to overlay");
@@ -7240,9 +7434,11 @@ impl Workspace {
             }
             crate::Update::ShowHoverDocs => {
                 nucleotide_logging::info!("Workspace received ShowHoverDocs");
-                let handle = self.handle.clone();
-                let core = self.core.clone();
-                show_hover_docs(core, handle, cx);
+                if self.toggle_documentation_sidebar(cx) {
+                    let handle = self.handle.clone();
+                    let core = self.core.clone();
+                    show_hover_docs(core, handle, cx);
+                }
             }
             crate::Update::ToggleFileTree => {
                 info!("Toggling file tree from native editor input");
@@ -10495,7 +10691,20 @@ impl Render for Workspace {
             0.0
         };
         let file_tree_handle_w_px = if self.show_file_tree { 4.0 } else { 0.0 };
-        let editor_content_w_px = (viewport_w_px - file_tree_w_px - file_tree_handle_w_px).max(1.0);
+        let right_content_w_px = (viewport_w_px - file_tree_w_px - file_tree_handle_w_px).max(1.0);
+        self.sync_documentation_sidebar_width_for_viewport(right_content_w_px);
+        let doc_sidebar_w_px = if self.doc_sidebar_visible {
+            self.doc_sidebar_width
+        } else {
+            0.0
+        };
+        let doc_sidebar_handle_w_px = if self.doc_sidebar_visible {
+            SPLIT_PANE_HANDLE_HITBOX_PX
+        } else {
+            0.0
+        };
+        let editor_content_w_px =
+            (right_content_w_px - doc_sidebar_w_px - doc_sidebar_handle_w_px).max(1.0);
 
         let editor_h = if self.terminal_panel_visible {
             (available_h - self.basic_terminal_height).max(0.0)
@@ -10748,7 +10957,7 @@ impl Render for Workspace {
         workspace_div = workspace_div
             .track_focus(&self.focus_handle)
             .capture_key_down(cx.listener(|view, ev, _window, cx| {
-                if view.handle_hover_popup_key(ev, cx) || view.handle_completion_menu_key(ev, cx) {
+                if view.handle_completion_menu_key(ev, cx) {
                     cx.stop_propagation();
                 }
             }))
@@ -10758,6 +10967,7 @@ impl Render for Workspace {
 
         // Add resize cursor and listeners only while resizing to reduce event overhead
         if self.is_resizing_file_tree
+            || self.doc_sidebar_resizing
             || self.split_pane_resize.is_some()
             || self.basic_term_resizing
         {
@@ -10796,6 +11006,36 @@ impl Render for Workspace {
                     MouseButton::Left,
                     cx.listener(|workspace, _event: &MouseUpEvent, window, cx| {
                         workspace.finish_file_tree_resize(window, cx);
+                    }),
+                );
+        }
+        if self.doc_sidebar_resizing {
+            let resize_available_w = right_content_w_px;
+            workspace_div = workspace_div
+                .cursor(gpui::CursorStyle::ResizeLeftRight)
+                .on_mouse_move(
+                    cx.listener(move |workspace, event: &MouseMoveEvent, window, cx| {
+                        if event.dragging()
+                            && workspace.update_documentation_sidebar_resize(
+                                f32::from(event.position.x),
+                                resize_available_w,
+                                cx,
+                            )
+                        {
+                            window.refresh();
+                        }
+                    }),
+                )
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(|workspace, _event: &MouseUpEvent, window, cx| {
+                        workspace.finish_documentation_sidebar_resize(window, cx);
+                    }),
+                )
+                .on_mouse_up_out(
+                    MouseButton::Left,
+                    cx.listener(|workspace, _event: &MouseUpEvent, window, cx| {
+                        workspace.finish_documentation_sidebar_resize(window, cx);
                     }),
                 );
         }
@@ -11409,7 +11649,116 @@ impl Render for Workspace {
                     );
                 }
 
-                root
+                let editor_stack = root;
+
+                if self.doc_sidebar_visible {
+                    let handle_visual_w = SPLIT_PANE_HANDLE_VISUAL_PX;
+                    let handle_hit_w = SPLIT_PANE_HANDLE_HITBOX_PX;
+                    let handle_visual_offset = ((handle_hit_w - handle_visual_w) * 0.5).max(0.0);
+                    let sep_color = nucleotide_ui::tokens::with_alpha(
+                        cx.theme().tokens.chrome.border_default,
+                        RESIZE_HANDLE_SEPARATOR_ALPHA,
+                    );
+                    let sep_color_hover = nucleotide_ui::tokens::with_alpha(
+                        cx.theme().tokens.chrome.border_default,
+                        RESIZE_HANDLE_SEPARATOR_HOVER_ALPHA,
+                    );
+                    let hover_color = nucleotide_ui::tokens::with_alpha(
+                        cx.theme().tokens.editor.focus_ring,
+                        RESIZE_HANDLE_HOVER_ALPHA,
+                    );
+                    let resize_available_w = right_content_w_px;
+
+                    div()
+                        .flex()
+                        .w_full()
+                        .h(content_max_h)
+                        .min_h(px(0.0))
+                        .child(
+                            div()
+                                .flex_1()
+                                .h_full()
+                                .min_h(px(0.0))
+                                .overflow_hidden()
+                                .child(editor_stack),
+                        )
+                        .child(
+                            div()
+                                .id("documentation-sidebar-resize-handle")
+                                .w(px(handle_hit_w))
+                                .h_full()
+                                .flex_shrink_0()
+                                .relative()
+                                .cursor(gpui::CursorStyle::ResizeLeftRight)
+                                .hover(move |d| d.bg(hover_color))
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .top_0()
+                                        .bottom_0()
+                                        .left(px(handle_visual_offset))
+                                        .w(px(handle_visual_w))
+                                        .h_full()
+                                        .bg(sep_color)
+                                        .hover(move |d| d.bg(sep_color_hover)),
+                                )
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(
+                                        move |this: &mut Workspace,
+                                              ev: &MouseDownEvent,
+                                              window,
+                                              cx| {
+                                            if ev.click_count >= 2 {
+                                                let width =
+                                                    Self::clamped_documentation_sidebar_width(
+                                                        DOC_SIDEBAR_DEFAULT_WIDTH,
+                                                        resize_available_w,
+                                                    );
+                                                if (this.doc_sidebar_width - width).abs() > 0.5 {
+                                                    this.doc_sidebar_width = width;
+                                                    cx.notify();
+                                                }
+                                                window.refresh();
+                                                cx.stop_propagation();
+                                                return;
+                                            }
+
+                                            this.doc_sidebar_resizing = true;
+                                            this.doc_sidebar_resize_start_x =
+                                                f32::from(ev.position.x);
+                                            this.doc_sidebar_resize_start_width =
+                                                this.doc_sidebar_width;
+                                            cx.notify();
+                                            window.refresh();
+                                            cx.stop_propagation();
+                                        },
+                                    ),
+                                )
+                                .on_mouse_up(
+                                    MouseButton::Left,
+                                    cx.listener(
+                                        |this: &mut Workspace, _ev: &MouseUpEvent, window, cx| {
+                                            this.finish_documentation_sidebar_resize(window, cx);
+                                            cx.stop_propagation();
+                                        },
+                                    ),
+                                )
+                                .on_mouse_up_out(
+                                    MouseButton::Left,
+                                    cx.listener(
+                                        |this: &mut Workspace, _ev: &MouseUpEvent, window, cx| {
+                                            this.finish_documentation_sidebar_resize(window, cx);
+                                            cx.stop_propagation();
+                                        },
+                                    ),
+                                ),
+                        )
+                        .child(self.render_documentation_sidebar(cx))
+                        .into_any_element()
+                } else {
+                    editor_stack.into_any_element()
+                }
             };
 
             if self.show_file_tree {
@@ -12576,9 +12925,10 @@ fn show_hover_docs(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &mut
 
     if requested_servers == 0 {
         info!("No LSP servers with hover capability are available");
-        core.update(cx, |core, _| {
+        core.update(cx, |core, cx| {
             core.editor
                 .set_error("No configured language server supports hover");
+            cx.emit(crate::Update::HoverDocs(Vec::new()));
         });
         return;
     }
@@ -12607,8 +12957,9 @@ fn show_hover_docs(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &mut
 
         if entries.is_empty() {
             if let Some(core) = core_weak.upgrade() {
-                core.update(cx, |core, _| {
+                core.update(cx, |core, cx| {
                     core.editor.set_status("No hover results available.");
+                    cx.emit(crate::Update::HoverDocs(Vec::new()));
                 });
             }
             return;
@@ -12808,30 +13159,6 @@ mod tests {
         assert_eq!(code_action_menu_action("tab", true, false), None);
         assert_eq!(code_action_menu_action("enter", false, true), None);
         assert_eq!(code_action_menu_action("down", true, false), None);
-    }
-
-    #[test]
-    fn hover_popup_keys_match_hover_docs_navigation() {
-        assert_eq!(
-            hover_popup_action("escape", false),
-            Some(HoverPopupKeyAction::Dismiss)
-        );
-        assert_eq!(
-            hover_popup_action("n", true),
-            Some(HoverPopupKeyAction::SelectNext)
-        );
-        assert_eq!(
-            hover_popup_action("p", true),
-            Some(HoverPopupKeyAction::SelectPrevious)
-        );
-    }
-
-    #[test]
-    fn hover_popup_keys_ignore_regular_editor_input() {
-        assert_eq!(hover_popup_action("n", false), None);
-        assert_eq!(hover_popup_action("p", false), None);
-        assert_eq!(hover_popup_action("enter", false), None);
-        assert_eq!(hover_popup_action("down", false), None);
     }
 
     fn test_view_id(index: u64) -> ViewId {
@@ -13640,6 +13967,26 @@ mod tests {
         assert_eq!(
             Workspace::clamped_file_tree_resize_width(250.0, 300.0, 1200.0, 1000.0),
             800.0
+        );
+    }
+
+    #[test]
+    fn documentation_sidebar_resize_width_tracks_mouse_and_clamps_to_bounds() {
+        assert_eq!(
+            Workspace::clamped_documentation_sidebar_resize_width(360.0, 800.0, 700.0, 1000.0),
+            460.0
+        );
+        assert_eq!(
+            Workspace::clamped_documentation_sidebar_resize_width(360.0, 800.0, 1100.0, 1000.0),
+            DOC_SIDEBAR_MIN_WIDTH
+        );
+        assert_eq!(
+            Workspace::clamped_documentation_sidebar_resize_width(360.0, 800.0, 0.0, 1000.0),
+            DOC_SIDEBAR_MAX_WIDTH
+        );
+        assert_eq!(
+            Workspace::clamped_documentation_sidebar_width(360.0, 500.0),
+            260.0
         );
     }
 

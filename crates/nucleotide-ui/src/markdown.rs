@@ -572,7 +572,13 @@ fn render_document(document: MarkdownDocument, style: MarkdownStyle) -> impl Int
         })
         .collect();
 
-    div().flex().flex_col().gap(gap).children(elements)
+    div()
+        .flex()
+        .flex_col()
+        .flex_none()
+        .w_full()
+        .gap(gap)
+        .children(elements)
 }
 
 fn render_rich_text(text: RichText, style: &MarkdownStyle, color: Hsla) -> gpui::Div {
@@ -781,5 +787,75 @@ mod tests {
             MarkdownBlock::ListItem { ordered: true, index: 4, text, .. }
                 if text.plain_text() == "four"
         ));
+    }
+
+    #[gpui::test]
+    fn markdown_reports_overflow_in_scroll_container(cx: &mut gpui::TestAppContext) {
+        use gpui::{
+            Context, InteractiveElement, Render, ScrollDelta, ScrollWheelEvent,
+            StatefulInteractiveElement, TouchPhase, point,
+        };
+
+        struct MarkdownScrollFixture {
+            scroll: gpui::ScrollHandle,
+            source: SharedString,
+            style: MarkdownStyle,
+        }
+
+        impl Render for MarkdownScrollFixture {
+            fn render(
+                &mut self,
+                _window: &mut gpui::Window,
+                _cx: &mut Context<Self>,
+            ) -> impl IntoElement {
+                div().w(px(380.0)).h(px(120.0)).child(
+                    div()
+                        .id("markdown-scroll-regression")
+                        .w(px(380.0))
+                        .h(px(120.0))
+                        .overflow_y_scroll()
+                        .track_scroll(&self.scroll)
+                        .child(markdown(self.source.clone(), self.style.clone())),
+                )
+            }
+        }
+
+        let source = (0..32)
+            .map(|index| format!("Paragraph {index}\n\nSome hover documentation text."))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        let scroll = gpui::ScrollHandle::new();
+        let tokens = DesignTokens::dark();
+        let style = MarkdownStyle::from_tokens(&tokens).compact();
+
+        let (_view, cx) = cx.add_window_view({
+            let scroll = scroll.clone();
+            let source = SharedString::from(source);
+            move |_window, _cx| MarkdownScrollFixture {
+                scroll,
+                source,
+                style,
+            }
+        });
+        cx.run_until_parked();
+
+        assert!(
+            scroll.max_offset().y > px(0.0),
+            "expected markdown content to overflow the scroll viewport, got {:?}",
+            scroll.max_offset()
+        );
+
+        cx.simulate_event(ScrollWheelEvent {
+            position: point(px(20.0), px(20.0)),
+            delta: ScrollDelta::Pixels(point(px(0.0), px(-48.0))),
+            touch_phase: TouchPhase::Moved,
+            ..Default::default()
+        });
+
+        assert!(
+            scroll.offset().y < px(0.0),
+            "expected wheel input to move markdown scroll offset, got {:?}",
+            scroll.offset()
+        );
     }
 }
