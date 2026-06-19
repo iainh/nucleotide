@@ -11350,6 +11350,22 @@ impl Render for Workspace {
         ));
 
         workspace_div = workspace_div.on_action(cx.listener(
+            move |workspace, _: &crate::actions::workspace::ToggleDocumentation, _window, cx| {
+                info!("ToggleDocumentation action triggered from menu");
+                if workspace.toggle_documentation_sidebar(cx) {
+                    show_hover_docs(workspace.core.clone(), workspace.handle.clone(), cx);
+                }
+            },
+        ));
+
+        workspace_div = workspace_div.on_action(cx.listener(
+            move |workspace, _: &crate::actions::workspace::ToggleTerminal, _window, cx| {
+                info!("ToggleTerminal action triggered from menu");
+                workspace.toggle_terminal_panel(cx);
+            },
+        ));
+
+        workspace_div = workspace_div.on_action(cx.listener(
             move |workspace, _: &crate::actions::workspace::SplitPaneRight, _window, cx| {
                 workspace.tab_bar_action_split_right(cx);
             },
@@ -12945,31 +12961,62 @@ fn show_hover_docs(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &mut
 
     info!("Requesting hover documentation");
 
-    let (mut futures, requested_servers) = {
+    let hover_requests = {
         let core_r = core.read(cx);
         let editor = &core_r.editor;
-        let view = editor.tree.get(editor.tree.focus);
-        let doc = editor.documents.get(&view.doc).expect("doc exists");
+        let hover_requests = || {
+            let Some(view) = editor.tree.try_get(editor.tree.focus) else {
+                info!("No focused editor view available for hover documentation");
+                return None;
+            };
+            let Some(doc) = editor.documents.get(&view.doc) else {
+                info!(
+                    view_id = ?view.id,
+                    doc_id = ?view.doc,
+                    "No focused document available for hover documentation"
+                );
+                return None;
+            };
 
-        let mut seen = HashSet::new();
-        let identifier = doc.identifier();
-        let mut requested = 0usize;
+            let Some(url) = doc.url() else {
+                info!(
+                    view_id = ?view.id,
+                    doc_id = ?view.doc,
+                    "Focused document has no file URL for hover documentation"
+                );
+                return None;
+            };
 
-        let futures: FuturesOrdered<_> = doc
-            .language_servers_with_feature(LanguageServerFeature::Hover)
-            .filter(|ls| seen.insert(ls.id()))
-            .filter_map(|language_server| {
-                requested += 1;
-                let server_name = language_server.name().to_string();
-                let identifier = identifier.clone();
-                let pos = doc.position(view.id, language_server.offset_encoding());
-                let request = language_server.text_document_hover(identifier, pos, None)?;
+            let mut seen = HashSet::new();
+            let identifier = lsp::TextDocumentIdentifier::new(url);
+            let mut requested = 0usize;
 
-                Some(async move { request.await.map(|hover| (server_name, hover)) })
-            })
-            .collect();
+            let futures: FuturesOrdered<_> = doc
+                .language_servers_with_feature(LanguageServerFeature::Hover)
+                .filter(|ls| seen.insert(ls.id()))
+                .filter_map(|language_server| {
+                    requested += 1;
+                    let server_name = language_server.name().to_string();
+                    let identifier = identifier.clone();
+                    let pos = doc.position(view.id, language_server.offset_encoding());
+                    let request = language_server.text_document_hover(identifier, pos, None)?;
 
-        (futures, requested)
+                    Some(async move { request.await.map(|hover| (server_name, hover)) })
+                })
+                .collect();
+
+            Some((futures, requested))
+        };
+        hover_requests()
+    };
+
+    let Some((mut futures, requested_servers)) = hover_requests else {
+        core.update(cx, |core, cx| {
+            core.editor
+                .set_status("No file-backed document is available for documentation.");
+            cx.emit(crate::Update::HoverDocs(Vec::new()));
+        });
+        return;
     };
 
     if requested_servers == 0 {

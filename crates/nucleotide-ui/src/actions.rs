@@ -126,6 +126,8 @@ pub mod workspace {
             ShowBufferPicker,
             ShowCodeActions,
             ToggleFileTree,
+            ToggleDocumentation,
+            ToggleTerminal,
             ShowFileFinder,
             NewFile,
             NewWindow,
