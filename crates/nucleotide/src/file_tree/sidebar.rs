@@ -5,13 +5,13 @@ use std::{path::PathBuf, sync::Arc};
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    Anchor, App, AppContext, ClickEvent, Context, InteractiveElement, IntoElement, MouseButton,
-    MouseDownEvent, MouseMoveEvent, ParentElement, Pixels, Point, Render,
-    StatefulInteractiveElement, Styled, Window, anchored, div, point, px,
+    App, AppContext, ClickEvent, Context, InteractiveElement, IntoElement, MouseButton,
+    MouseDownEvent, ParentElement, Pixels, Point, Render, StatefulInteractiveElement, Styled,
+    Window, div, px,
 };
 use nucleotide_types::VcsStatus;
+use nucleotide_ui::Theme;
 use nucleotide_ui::VcsIcon;
-use nucleotide_ui::{ListItem, ListItemSpacing, ListItemVariant, Theme};
 
 use crate::file_tree::{
     FileKind, FileTreeDisplayDensity, FileTreeEntry, entry::FileTreeFlattenedSegment,
@@ -116,132 +116,6 @@ impl ProjectTreeContextMenuIntent {
             Self::RevealInOs => "Reveal in OS",
         }
     }
-}
-
-pub struct ProjectTreeContextMenuState<'a> {
-    pub theme: &'a Theme,
-    pub position: (f32, f32),
-    pub selected_index: usize,
-    pub intents: &'a [ProjectTreeContextMenuIntent],
-}
-
-pub struct ProjectTreeContextMenuCallbacks<Hover, Activate, Backdrop> {
-    pub on_item_hover: Hover,
-    pub on_item_activate: Activate,
-    pub on_backdrop_mouse_down: Backdrop,
-}
-
-pub fn render_project_tree_context_menu<T, Hover, Activate, Backdrop>(
-    state: ProjectTreeContextMenuState<'_>,
-    cx: &mut Context<T>,
-    callbacks: ProjectTreeContextMenuCallbacks<Hover, Activate, Backdrop>,
-) -> gpui::AnyElement
-where
-    T: 'static,
-    Hover: Fn(&mut T, usize, &MouseMoveEvent, &mut Window, &mut Context<T>) + Copy + 'static,
-    Activate: Fn(&mut T, ProjectTreeContextMenuIntent, &MouseDownEvent, &mut Window, &mut Context<T>)
-        + Copy
-        + 'static,
-    Backdrop: Fn(&mut T, &MouseDownEvent, &mut Window, &mut Context<T>) + Copy + 'static,
-{
-    let ProjectTreeContextMenuCallbacks {
-        on_item_hover,
-        on_item_activate,
-        on_backdrop_mouse_down,
-    } = callbacks;
-    let tokens = &state.theme.tokens;
-    let dd_tokens = tokens.dropdown_tokens();
-    let (x, y) = state.position;
-    let item_count = state.intents.len();
-
-    let popup = div()
-        .bg(dd_tokens.container_background)
-        .border_1()
-        .border_color(dd_tokens.border)
-        .rounded(tokens.sizes.radius_md)
-        .shadow(vec![
-            tokens.chrome.shadow_md.to_box_shadow(false),
-            tokens.chrome.inset_highlight.to_box_shadow(true),
-        ])
-        .min_w(px(200.0))
-        .py(tokens.sizes.space_1)
-        .px(tokens.sizes.space_1)
-        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .on_mouse_move(|_, _, cx| cx.stop_propagation())
-        .children(
-            state
-                .intents
-                .iter()
-                .copied()
-                .enumerate()
-                .map(|(index, intent)| {
-                    let label = intent.label();
-                    let text_default = dd_tokens.item_text;
-                    let inner_radius = tokens.sizes.radius_md - px(0.5);
-                    let is_selected = state.selected_index == index;
-                    let is_first = index == 0;
-                    let is_last = index + 1 == item_count;
-
-                    div()
-                        .w_full()
-                        .on_mouse_move(cx.listener(move |state, event, window, cx| {
-                            on_item_hover(state, index, event, window, cx);
-                        }))
-                        .when(is_selected, |div| {
-                            div.bg(dd_tokens.item_background_selected)
-                        })
-                        .when(is_selected && is_first, |div| {
-                            div.rounded_tl(inner_radius).rounded_tr(inner_radius)
-                        })
-                        .when(is_selected && is_last, |div| {
-                            div.rounded_bl(inner_radius).rounded_br(inner_radius)
-                        })
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |state, event, window, cx| {
-                                window.prevent_default();
-                                on_item_activate(state, intent, event, window, cx);
-                            }),
-                        )
-                        .child(
-                            ListItem::new(("filetree-cm", index as u32))
-                                .variant(ListItemVariant::Ghost)
-                                .spacing(ListItemSpacing::Compact)
-                                .child(
-                                    div()
-                                        .w_full()
-                                        .text_size(tokens.sizes.text_sm)
-                                        .px(tokens.sizes.space_2)
-                                        .py(tokens.sizes.space_1)
-                                        .text_color(if is_selected {
-                                            dd_tokens.item_text_selected
-                                        } else {
-                                            text_default
-                                        })
-                                        .child(label),
-                                ),
-                        )
-                }),
-        );
-
-    div()
-        .absolute()
-        .size_full()
-        .top_0()
-        .left_0()
-        .occlude()
-        .on_mouse_move(|_, _, cx| cx.stop_propagation())
-        .on_mouse_down(MouseButton::Left, cx.listener(on_backdrop_mouse_down))
-        .on_mouse_down(MouseButton::Right, cx.listener(on_backdrop_mouse_down))
-        .child(
-            anchored()
-                .position(point(px(x), px(y)))
-                .anchor(Anchor::TopLeft)
-                .offset(point(px(8.0), px(8.0)))
-                .snap_to_window_with_margin(tokens.sizes.space_2)
-                .child(popup),
-        )
-        .into_any_element()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
