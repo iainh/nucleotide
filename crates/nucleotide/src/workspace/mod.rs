@@ -32,10 +32,12 @@ use helix_view::{DocumentId, ViewId, graphics::Rect as HelixRect};
 use nucleotide_core::{event_bridge, gpui_to_helix_bridge};
 use nucleotide_logging::{debug, error, info, instrument, warn};
 use nucleotide_lsp::HelixLspBridge;
+use nucleotide_types::scrollbar::SCROLLBAR_THICKNESS;
 use nucleotide_ui::ThemedContext as UIThemedContext;
 
 // ViewManager already imported above via pub use
 use nucleotide_ui::notification::{StatusBarNotification, StatusBarNotificationSeverity};
+use nucleotide_ui::scrollbar::{Scrollbar, ScrollbarState};
 use nucleotide_ui::{
     AboutWindow, Button, ButtonSize, ButtonVariant, MarkdownStyle, Tooltipped, markdown,
 };
@@ -652,6 +654,8 @@ pub struct Workspace {
     doc_sidebar_resizing: bool,
     doc_sidebar_resize_start_x: f32,
     doc_sidebar_resize_start_width: f32,
+    doc_sidebar_scroll_handle: ScrollHandle,
+    doc_sidebar_scrollbar_state: ScrollbarState,
     titlebar: Option<gpui::AnyView>,
     appearance_observer_set: bool,
     needs_appearance_update: bool,
@@ -2943,6 +2947,9 @@ impl Workspace {
             None
         };
 
+        let doc_sidebar_scroll_handle = ScrollHandle::new();
+        let doc_sidebar_scrollbar_state = ScrollbarState::new(doc_sidebar_scroll_handle.clone());
+
         let mut workspace = Self {
             core,
             input,
@@ -2969,6 +2976,8 @@ impl Workspace {
             doc_sidebar_resizing: false,
             doc_sidebar_resize_start_x: 0.0,
             doc_sidebar_resize_start_width: DOC_SIDEBAR_DEFAULT_WIDTH,
+            doc_sidebar_scroll_handle,
+            doc_sidebar_scrollbar_state,
             titlebar: None,
             appearance_observer_set: false,
             needs_appearance_update: false,
@@ -3218,9 +3227,10 @@ impl Workspace {
             .id("documentation-sidebar-body")
             .flex()
             .flex_col()
-            .flex_1()
+            .size_full()
             .min_h(px(0.0))
             .overflow_y_scroll()
+            .track_scroll(&self.doc_sidebar_scroll_handle)
             .px(tokens.sizes.space_3)
             .py(tokens.sizes.space_3)
             .gap(tokens.sizes.space_4);
@@ -3263,6 +3273,29 @@ impl Workspace {
                 );
             }
         }
+
+        let body_container = div()
+            .relative()
+            .flex_1()
+            .w_full()
+            .min_h(px(0.0))
+            .overflow_hidden()
+            .child(div().size_full().min_h(px(0.0)).child(body))
+            .when_some(
+                Scrollbar::vertical(self.doc_sidebar_scrollbar_state.clone()),
+                |container, scrollbar| {
+                    container.child(
+                        div()
+                            .id("documentation-sidebar-scrollbar")
+                            .absolute()
+                            .top_0()
+                            .right_0()
+                            .bottom_0()
+                            .w(SCROLLBAR_THICKNESS)
+                            .child(scrollbar),
+                    )
+                },
+            );
 
         div()
             .id("documentation-sidebar")
@@ -3315,7 +3348,7 @@ impl Workspace {
                             .child("x"),
                     ),
             )
-            .child(body)
+            .child(body_container)
             .into_any_element()
     }
 
