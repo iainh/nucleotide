@@ -14,6 +14,18 @@ pub const DEFAULT_LIGHT_THEME: &str = "nucleotide-outdoors";
 /// Default theme for dark mode
 pub const DEFAULT_DARK_THEME: &str = "nucleotide-teal";
 
+const GPUI_SYSTEM_UI_FONT: &str = ".SystemUIFont";
+
+fn normalize_ui_font(mut font: FontConfig) -> FontConfig {
+    if matches!(
+        font.family.as_str(),
+        "SF Pro Display" | "SF Pro" | "system-ui"
+    ) {
+        font.family = GPUI_SYSTEM_UI_FONT.to_string();
+    }
+    font
+}
+
 /// UI-specific configuration
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UiConfig {
@@ -539,15 +551,15 @@ impl Config {
 
     /// Get the UI font configuration
     pub fn ui_font(&self) -> FontConfig {
-        self.gui.ui.font.clone().unwrap_or_else(|| {
+        normalize_ui_font(self.gui.ui.font.clone().unwrap_or_else(|| {
             // Default UI font
             FontConfig {
-                family: "SF Pro Display".to_string(),
+                family: GPUI_SYSTEM_UI_FONT.to_string(),
                 weight: FontWeight::Normal,
                 size: 13.0,
                 line_height: 1.5,
             }
-        })
+        }))
     }
 
     /// Check if project-based LSP startup is enabled
@@ -712,7 +724,7 @@ fn load_project_markers_config(dir: &Path) -> anyhow::Result<ProjectMarkersConfi
 /// ```toml
 /// [ui]
 /// [ui.font]
-/// family = "SF Pro Display"
+/// family = ".SystemUIFont"
 /// weight = "normal"
 /// size = 13.0
 ///
@@ -1500,6 +1512,26 @@ priority = 70
         assert_eq!(config.project_detection_timeout_ms(), 2000);
         assert!(!config.is_project_builtin_fallback_enabled());
         assert!(config.project_markers().markers.is_empty());
+    }
+
+    #[test]
+    fn ui_font_resolves_system_ui_font_aliases_for_gpui() {
+        let mut gui_config = GuiConfig::default();
+        gui_config.ui.font = Some(FontConfig {
+            family: "SF Pro Display".to_string(),
+            weight: FontWeight::Normal,
+            size: 13.0,
+            line_height: 1.5,
+        });
+
+        let config = Config {
+            helix: HelixConfig::default(),
+            gui: gui_config,
+        };
+
+        let ui_font = config.ui_font();
+        assert_eq!(ui_font.family, GPUI_SYSTEM_UI_FONT);
+        assert_eq!(ui_font.size, 13.0);
     }
 
     #[test]

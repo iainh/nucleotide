@@ -131,7 +131,7 @@ pub mod workspace {
             ShowFileFinder,
             NewFile,
             NewWindow,
-            ShowCommandPalette,
+            ShowCommandPrompt,
             ShowRunnables,
             RunNearest,
             RunFileTests,

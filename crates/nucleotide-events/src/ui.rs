@@ -100,7 +100,7 @@ pub enum SystemAppearance {
 /// Types of overlays
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OverlayType {
-    CommandPalette,
+    BufferPicker,
     FilePicker,
     Search,
     Completion,
@@ -247,7 +247,7 @@ mod tests {
     #[test]
     fn test_overlay_types() {
         let overlay_types = [
-            OverlayType::CommandPalette,
+            OverlayType::BufferPicker,
             OverlayType::FilePicker,
             OverlayType::Search,
             OverlayType::Completion,

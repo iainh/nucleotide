@@ -10,24 +10,15 @@ use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::completion_v2::CompletionView;
 use nucleotide_ui::picker::Picker;
 use nucleotide_ui::picker_view::{PickerItem, PickerView};
-use nucleotide_ui::prompt::{Prompt, PromptElement};
+use nucleotide_ui::prompt::Prompt;
 use nucleotide_ui::prompt_view::PromptView;
 use nucleotide_ui::theme_manager::HelixThemedContext; // bring dispatch_* trait methods into scope
 use std::sync::{Arc, Mutex};
 
 pub struct OverlayView {
-    prompt: Option<Prompt>,
     native_picker_view: Option<Entity<PickerView>>,
     native_prompt_view: Option<Entity<PromptView>>,
     completion_view: Option<Entity<CompletionView>>,
-    code_action_pairs: Option<
-        Vec<(
-            helix_lsp::lsp::CodeActionOrCommand,
-            helix_core::diagnostic::LanguageServerId,
-            helix_lsp::OffsetEncoding,
-        )>,
-    >,
-    diagnostics_panel: Option<Entity<crate::DiagnosticsPanel>>,
     terminal_panel: Option<Entity<nucleotide_terminal_panel::TerminalPanel>>,
     // Resizable terminal panel height (pixels)
     terminal_height_px: f32,
@@ -162,12 +153,9 @@ fn prompt_submit_action(prompt_text: &str) -> PromptSubmitAction {
 impl OverlayView {
     pub fn new(focus: &FocusHandle, core: &Entity<crate::Core>) -> Self {
         Self {
-            prompt: None,
             native_picker_view: None,
             native_prompt_view: None,
             completion_view: None,
-            code_action_pairs: None,
-            diagnostics_panel: None,
             terminal_panel: None,
             terminal_height_px: 220.0,
             _terminal_resizing: false,
@@ -189,12 +177,9 @@ impl OverlayView {
     }
 
     pub fn is_empty(&self) -> bool {
-        let empty = self.prompt.is_none()
-            && self.native_picker_view.is_none()
+        let empty = self.native_picker_view.is_none()
             && self.native_prompt_view.is_none()
             && self.completion_view.is_none()
-            && self.code_action_pairs.is_none()
-            && self.diagnostics_panel.is_none()
             && self.terminal_panel.is_none();
 
         if !empty && self.completion_view.is_some() {
@@ -208,24 +193,18 @@ impl OverlayView {
         self.completion_view.is_some()
     }
 
-    /// Whether the current completion popup represents a Code Actions list
-    pub fn has_code_actions(&self) -> bool {
-        self.code_action_pairs.is_some()
-    }
-
     pub fn has_picker(&self) -> bool {
         self.native_picker_view.is_some()
     }
 
     pub fn has_prompt(&self) -> bool {
-        self.native_prompt_view.is_some() || self.prompt.is_some()
+        self.native_prompt_view.is_some()
     }
 
     pub fn dismiss_completion(&mut self, cx: &mut Context<Self>) {
         let dismissed_completion = self.completion_view.take().is_some();
-        let dismissed_code_actions = self.code_action_pairs.take().is_some();
 
-        if dismissed_completion || dismissed_code_actions {
+        if dismissed_completion {
             cx.emit(DismissEvent);
             cx.notify();
         }
@@ -311,11 +290,9 @@ impl OverlayView {
             });
         }
         // Clear all overlay components
-        self.prompt = None;
         self.native_picker_view = None;
         self.native_prompt_view = None;
         self.completion_view = None;
-        self.code_action_pairs = None;
 
         cx.notify();
     }
@@ -345,140 +322,128 @@ impl OverlayView {
         match ev {
             crate::Update::Prompt(prompt) => {
                 nucleotide_logging::info!("DIAG: Overlay Update::Prompt received");
-                match prompt {
-                    Prompt::Native {
-                        prompt: prompt_text,
-                        initial_input,
-                        on_submit,
-                        on_cancel,
-                    } => {
-                        let prompt_text = prompt_text.clone();
-                        let initial_input = initial_input.clone();
-                        let on_submit = on_submit.clone();
-                        let on_cancel = on_cancel.clone();
+                let Prompt {
+                    prompt: prompt_text,
+                    initial_input,
+                    on_submit,
+                    on_cancel,
+                } = prompt;
+                let prompt_text = prompt_text.clone();
+                let initial_input = initial_input.clone();
+                let on_submit = on_submit.clone();
+                let on_cancel = on_cancel.clone();
 
-                        let prompt_view = cx.new(|cx| {
-                            let submit_action = prompt_submit_action(&prompt_text);
+                let prompt_view = cx.new(|cx| {
+                    let submit_action = prompt_submit_action(&prompt_text);
 
-                            let mut view = PromptView::new(prompt_text.clone(), cx);
+                    let mut view = PromptView::new(prompt_text.clone(), cx);
 
-                            // Apply theme styling using testing-aware theme access
-                            let style = Self::create_prompt_style_from_context(cx);
-                            view = view.with_style(style);
+                    // Apply theme styling using testing-aware theme access
+                    let style = Self::create_prompt_style_from_context(cx);
+                    view = view.with_style(style);
 
-                            if !initial_input.is_empty() {
-                                view.set_text(&initial_input, cx);
-                            }
+                    if !initial_input.is_empty() {
+                        view.set_text(&initial_input, cx);
+                    }
 
-                            // Only set up completion for command prompts, not search/regex prompts.
-                            if matches!(submit_action, PromptSubmitAction::Command) {
-                                let completion_cache = self
-                                    .core
-                                    .upgrade()
-                                    .map(|core| {
-                                        crate::completions::CommandCompletionCache::from_editor(
-                                            &core.read(cx).editor,
-                                        )
-                                    })
-                                    .unwrap_or_default();
+                    // Only set up completion for command prompts, not search/regex prompts.
+                    if matches!(submit_action, PromptSubmitAction::Command) {
+                        let completion_cache = self
+                            .core
+                            .upgrade()
+                            .map(|core| {
+                                crate::completions::CommandCompletionCache::from_editor(
+                                    &core.read(cx).editor,
+                                )
+                            })
+                            .unwrap_or_default();
 
-                                view = view.with_completion_fn(move |input| {
-                                    // Strip leading colon if present
-                                    let input = input.strip_prefix(':').unwrap_or(input);
+                        view = view.with_completion_fn(move |input| {
+                            // Strip leading colon if present
+                            let input = input.strip_prefix(':').unwrap_or(input);
 
-                                    // Use cached editor context so prompt completion does not
-                                    // depend on Helix's terminal UI prompt/completer layer.
-                                    crate::completions::get_command_completions_with_cache(
-                                        input,
-                                        Some(&completion_cache),
-                                    )
-                                });
-                            }
-
-                            // Set up the submit callback with command/search execution
-                            let core_weak_submit = self.core.clone();
-                            view = view.on_submit(move |input: &str, cx| {
-                                use nucleotide_logging::info;
-                                info!(input = %input, input_len = input.len(), "Overlay on_submit received input");
-                                // Emit appropriate event based on prompt type
-                                if let Some(core) = core_weak_submit.upgrade() {
-                                    core.update(cx, |_core, cx| {
-                                        match submit_action {
-                                            PromptSubmitAction::Search => {
-                                                cx.emit(crate::Update::SearchSubmitted(
-                                                    input.to_string(),
-                                                ));
-                                            }
-                                            PromptSubmitAction::GlobalSearch => {
-                                                cx.emit(crate::Update::GlobalSearchSubmitted(
-                                                    input.to_string(),
-                                                ));
-                                            }
-                                            PromptSubmitAction::FileTreeSearch => {
-                                                cx.emit(crate::Update::FileTreeSearchSubmitted(
-                                                    input.to_string(),
-                                                ));
-                                            }
-                                            PromptSubmitAction::RegexSelection(action) => {
-                                                cx.emit(crate::Update::RegexSelectionSubmitted {
-                                                    action,
-                                                    regex: input.to_string(),
-                                                });
-                                            }
-                                            PromptSubmitAction::Command => {
-                                                info!(command = %input, "Emitting CommandSubmitted event");
-                                                cx.emit(crate::Update::CommandSubmitted(
-                                                    input.to_string(),
-                                                ));
-                                            }
-                                        }
-                                    });
-                                }
-
-                                // Also call the original callback
-                                (on_submit)(input);
-
-                                // Dismiss the prompt after submission
-                                cx.emit(DismissEvent);
-                            });
-
-                            // Set up the cancel callback if provided
-                            if let Some(cancel_fn) = on_cancel {
-                                view = view.on_cancel(move |cx| {
-                                    (cancel_fn)();
-                                    cx.emit(DismissEvent);
-                                });
-                            } else {
-                                view = view.on_cancel(move |cx| {
-                                    cx.emit(DismissEvent);
-                                });
-                            }
-
-                            view
+                            // Use cached editor context so prompt completion does not
+                            // depend on Helix's terminal UI prompt/completer layer.
+                            crate::completions::get_command_completions_with_cache(
+                                input,
+                                Some(&completion_cache),
+                            )
                         });
-
-                        // Subscribe to dismiss events from the prompt view
-                        cx.subscribe(
-                            &prompt_view,
-                            |this, _prompt_view, _event: &DismissEvent, cx| {
-                                this.native_prompt_view = None;
-                                // Emit dismiss event to notify workspace
-                                cx.emit(DismissEvent);
-                                cx.notify();
-                            },
-                        )
-                        .detach();
-
-                        // Focus will be handled by the prompt view's render method
-
-                        self.native_prompt_view = Some(prompt_view);
                     }
-                    Prompt::Legacy(_) => {
-                        // For legacy prompts, store them as-is
-                        self.prompt = Some(prompt.clone());
-                        self.native_prompt_view = None;
+
+                    // Set up the submit callback with command/search execution
+                    let core_weak_submit = self.core.clone();
+                    view = view.on_submit(move |input: &str, cx| {
+                        use nucleotide_logging::info;
+                        info!(input = %input, input_len = input.len(), "Overlay on_submit received input");
+                        // Emit appropriate event based on prompt type
+                        if let Some(core) = core_weak_submit.upgrade() {
+                            core.update(cx, |_core, cx| {
+                                match submit_action {
+                                    PromptSubmitAction::Search => {
+                                        cx.emit(crate::Update::SearchSubmitted(input.to_string()));
+                                    }
+                                    PromptSubmitAction::GlobalSearch => {
+                                        cx.emit(crate::Update::GlobalSearchSubmitted(
+                                            input.to_string(),
+                                        ));
+                                    }
+                                    PromptSubmitAction::FileTreeSearch => {
+                                        cx.emit(crate::Update::FileTreeSearchSubmitted(
+                                            input.to_string(),
+                                        ));
+                                    }
+                                    PromptSubmitAction::RegexSelection(action) => {
+                                        cx.emit(crate::Update::RegexSelectionSubmitted {
+                                            action,
+                                            regex: input.to_string(),
+                                        });
+                                    }
+                                    PromptSubmitAction::Command => {
+                                        info!(command = %input, "Emitting CommandSubmitted event");
+                                        cx.emit(crate::Update::CommandSubmitted(input.to_string()));
+                                    }
+                                }
+                            });
+                        }
+
+                        // Also call the original callback
+                        (on_submit)(input);
+
+                        // Dismiss the prompt after submission
+                        cx.emit(DismissEvent);
+                    });
+
+                    // Set up the cancel callback if provided
+                    if let Some(cancel_fn) = on_cancel {
+                        view = view.on_cancel(move |cx| {
+                            (cancel_fn)();
+                            cx.emit(DismissEvent);
+                        });
+                    } else {
+                        view = view.on_cancel(move |cx| {
+                            cx.emit(DismissEvent);
+                        });
                     }
-                }
+
+                    view
+                });
+
+                // Subscribe to dismiss events from the prompt view
+                cx.subscribe(
+                    &prompt_view,
+                    |this, _prompt_view, _event: &DismissEvent, cx| {
+                        this.native_prompt_view = None;
+                        // Emit dismiss event to notify workspace
+                        cx.emit(DismissEvent);
+                        cx.notify();
+                    },
+                )
+                .detach();
+
+                // Focus will be handled by the prompt view's render method
+
+                self.native_prompt_view = Some(prompt_view);
 
                 cx.notify();
             }
@@ -490,7 +455,6 @@ impl OverlayView {
 
                 // Set up completion view with event subscription
                 self.completion_view = Some(completion_view.clone());
-                self.code_action_pairs = None;
 
                 // Subscribe to dismiss events from completion view
                 cx.subscribe(
@@ -524,122 +488,6 @@ impl OverlayView {
 
                 cx.notify();
             }
-            crate::Update::CodeActions(completion_view, pairs) => {
-                nucleotide_logging::info!("🎨 OVERLAY RECEIVED CODE ACTIONS VIEW");
-                self.completion_view = Some(completion_view.clone());
-                self.code_action_pairs = Some(pairs.clone());
-                // Dismiss subscription
-                cx.subscribe(completion_view, |this, _cv, _ev: &DismissEvent, cx| {
-                    this.dismiss_completion(cx);
-                })
-                .detach();
-
-                // Accept subscription maps selection index to code action application
-                let core_for_apply = self.core.clone();
-                cx.subscribe(
-                    completion_view,
-                    move |this, _cv, event: &nucleotide_ui::CompleteViaHelixEvent, cx| {
-                        if let Some(pairs) = this.code_action_pairs.clone() {
-                            if let Some((action, ls_id, _offset)) = pairs.get(event.item_index)
-                                && let Some(core) = core_for_apply.upgrade()
-                            {
-                                core.update(cx, |core, core_cx| {
-                                    let changed_documents = apply_code_action_or_command(
-                                        &mut core.editor,
-                                        action,
-                                        *ls_id,
-                                    );
-                                    for doc_id in changed_documents {
-                                        core_cx.emit(crate::Update::DocumentChanged { doc_id });
-                                    }
-                                    core_cx.notify();
-                                });
-                            }
-                            this.dismiss_completion(cx);
-                        } else {
-                            // Fallback to standard completion handling if pairs are missing
-                            cx.emit(nucleotide_ui::CompleteViaHelixEvent {
-                                item_index: event.item_index,
-                            });
-                        }
-                    },
-                )
-                .detach();
-
-                cx.notify();
-            }
-            crate::Update::DiagnosticsPanel(panel) => {
-                nucleotide_logging::info!("DIAG: Showing Diagnostics panel overlay");
-                // Replace any existing diagnostics panel (do not clear other overlays here; overlay render ordering handles precedence)
-                self.diagnostics_panel = Some(panel.clone());
-                // Focus will be ensured by the diagnostics panel during render
-                // Subscribe to dismiss from panel via global dismiss event
-                cx.subscribe(panel, |this, _panel, _ev: &DismissEvent, cx| {
-                    this.diagnostics_panel = None;
-                    cx.emit(DismissEvent);
-                    cx.notify();
-                })
-                .detach();
-
-                // Subscribe to diagnostics navigation events
-                let core_for_nav = self.core.clone();
-                cx.subscribe(
-                    panel,
-                    move |_this,
-                          _panel,
-                          ev: &crate::diagnostics_panel::DiagnosticsJumpEvent,
-                          cx| {
-                        if let Some(core) = core_for_nav.upgrade() {
-                            let path = ev.path.clone();
-                            let offset = ev.offset;
-                            nucleotide_logging::info!(
-                                path = %path.display(),
-                                offset = offset,
-                                "DIAG: Diagnostics item selected - opening and jumping"
-                            );
-                            // Open the file, then move cursor after a short delay
-                            core.update(cx, |_app, cx| {
-                                cx.emit(crate::Update::OpenFile(path.clone()));
-                            });
-                            let core2 = core_for_nav.clone();
-                            let path_for_lookup = path.clone();
-                            cx.spawn(async move |_this, cx| {
-                                // Small delay to allow file to open
-                                cx.background_executor()
-                                    .timer(std::time::Duration::from_millis(20))
-                                    .await;
-                                if let Some(core) = core2.upgrade() {
-                                    core.update(cx, |app, _cx| {
-                                        // Find document by path
-                                        if let Some(doc_id) =
-                                            app.editor.documents.iter().find_map(|(id, doc)| {
-                                                doc.path()
-                                                    .filter(|p| *p == &path_for_lookup)
-                                                    .map(|_| *id)
-                                            })
-                                        {
-                                            // Set cursor selection to offset
-                                            let view_id = app.editor.tree.focus;
-                                            let selection = helix_core::Selection::point(offset);
-                                            let doc = helix_view::doc_mut!(app.editor, &doc_id);
-                                            doc.set_selection(view_id, selection);
-                                            nucleotide_logging::info!(
-                                                doc_id = ?doc_id,
-                                                view_id = ?view_id,
-                                                offset = offset,
-                                                "DIAG: Cursor moved to diagnostic offset"
-                                            );
-                                        }
-                                    });
-                                }
-                            })
-                            .detach();
-                        }
-                    },
-                )
-                .detach();
-                cx.notify();
-            }
             crate::Update::TerminalPanel(panel) => {
                 nucleotide_logging::info!("TERMINAL: Showing Terminal panel overlay");
                 self.terminal_panel = Some(panel.clone());
@@ -647,8 +495,6 @@ impl OverlayView {
             }
             crate::Update::Picker(picker) => {
                 nucleotide_logging::info!("DIAG: Overlay Update::Picker received");
-                // Clear any diagnostics panel if present to avoid overlay conflicts
-                self.diagnostics_panel = None;
                 // Clean up any existing picker before creating a new one
                 if let Some(existing_picker) = &self.native_picker_view {
                     existing_picker.update(cx, |picker, cx| {
@@ -664,6 +510,7 @@ impl OverlayView {
                         on_select,
                     } => {
                         let is_file_finder = title.as_ref() == "Open File";
+                        let uses_preview = title.as_ref() != "Code Actions";
                         let items = items.clone();
                         let on_select = on_select.clone();
                         let core_weak = self.core.clone();
@@ -674,8 +521,9 @@ impl OverlayView {
                             let mut view = Self::create_picker_view_with_context(cx);
                             let items_for_callback = items.clone();
 
-                            // Enable preview by default, especially for buffer picker
-                            view = view.with_preview(true);
+                            // Enable preview by default, especially for buffer picker.
+                            // Action-only pickers execute commands and do not have useful previews.
+                            view = view.with_preview(uses_preview);
 
                             view = view.with_items(items);
 
@@ -1146,6 +994,33 @@ impl OverlayView {
                                     if let Some(core) = core_for_on_select.upgrade() {
                                         core.update(picker_cx, |core, core_cx| {
                                             match core.jump_to_jumplist_location(location) {
+                                                Ok((doc_id, view_id)) => {
+                                                    core_cx.emit(crate::Update::Event(
+                                                        crate::types::AppEvent::Core(
+                                                            crate::types::CoreEvent::SelectionChanged {
+                                                                doc_id,
+                                                                view_id,
+                                                            },
+                                                        ),
+                                                    ));
+                                                    core_cx.emit(crate::Update::Event(
+                                                        crate::types::AppEvent::Core(
+                                                            crate::types::CoreEvent::RedrawRequested,
+                                                        ),
+                                                    ));
+                                                }
+                                                Err(err) => core.editor.set_error(err.to_string()),
+                                            }
+                                        });
+                                    }
+                                }
+                                else if let Some(location) = selected_item
+                                    .data
+                                    .downcast_ref::<crate::types::DiagnosticLocation>()
+                                {
+                                    if let Some(core) = core_for_on_select.upgrade() {
+                                        core.update(picker_cx, |core, core_cx| {
+                                            match core.jump_to_diagnostic_location(location) {
                                                 Ok((doc_id, view_id)) => {
                                                     core_cx.emit(crate::Update::Event(
                                                         crate::types::AppEvent::Core(
@@ -1737,56 +1612,6 @@ impl Render for OverlayView {
                 .into_any_element();
         }
 
-        if let Some(diag_panel) = &self.diagnostics_panel {
-            nucleotide_logging::info!("DIAG: Render overlay branch: diagnostics");
-            let theme = cx.theme();
-            let tokens = &theme.tokens;
-
-            return div()
-                .key_context("Overlay")
-                .absolute()
-                .size_full()
-                .bottom_0()
-                .left_0()
-                .occlude()
-                // Clicking outside the diagnostics panel dismisses it and restores focus
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|this: &mut OverlayView, _e, window, cx| {
-                        // Release focus from overlay elements before dismissing
-                        window.disable_focus();
-                        this.diagnostics_panel = None;
-                        cx.emit(DismissEvent);
-                        // Try immediate focus restoration via coordinator for responsiveness
-                        if let Some(coord) =
-                            cx.try_global::<nucleotide_ui::FocusCoordinator>().cloned()
-                        {
-                            let _ = coord.focus_first(
-                                window,
-                                cx,
-                                &[
-                                    nucleotide_ui::FocusRole::Editor,
-                                    nucleotide_ui::FocusRole::FileTree,
-                                ],
-                            );
-                        }
-                        cx.notify();
-                    }),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .size_full()
-                        .justify_center()
-                        .items_start()
-                        .pt(tokens.sizes.space_8)
-                        // Consume clicks inside the panel area so they don't bubble to the overlay
-                        .on_mouse_down(MouseButton::Left, |_, _, _| {})
-                        .child(diag_panel.clone()),
-                )
-                .into_any_element();
-        }
-
         if let Some(completion_view) = &self.completion_view {
             nucleotide_logging::info!("DIAG: Render overlay branch: completion");
             use gpui::{Anchor, anchored, point};
@@ -2074,40 +1899,6 @@ impl Render for OverlayView {
                     })
                     .into_any_element();
             }
-        }
-
-        // Legacy prompt fallback
-        if let Some(prompt) = self.prompt.take() {
-            let handle = cx.focus_handle();
-            let theme = self
-                .core
-                .upgrade()
-                .map(|core| core.read(cx).editor.theme.clone());
-            let prompt_elem = PromptElement {
-                prompt,
-                focus: handle.clone(),
-                theme,
-            };
-            let theme = cx.theme();
-            let tokens = &theme.tokens;
-
-            return div()
-                .key_context("Overlay")
-                .absolute()
-                .size_full()
-                .bottom_0()
-                .left_0()
-                .occlude()
-                .child(
-                    div()
-                        .flex()
-                        .size_full()
-                        .justify_center()
-                        .items_start()
-                        .pt(tokens.sizes.space_8)
-                        .child(prompt_elem),
-                )
-                .into_any_element();
         }
 
         // Empty overlay using design tokens

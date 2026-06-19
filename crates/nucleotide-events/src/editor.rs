@@ -85,7 +85,7 @@ pub struct CommandContext {
 pub enum CommandSource {
     Keyboard,
     Menu,
-    CommandPalette,
+    Prompt,
     Api,
     Macro,
 }
@@ -172,11 +172,11 @@ mod tests {
     #[test]
     fn test_command_context() {
         let context = CommandContext::with_args(
-            CommandSource::CommandPalette,
+            CommandSource::Prompt,
             vec!["arg1".to_string(), "arg2".to_string()],
         );
 
-        assert_eq!(context.source, CommandSource::CommandPalette);
+        assert_eq!(context.source, CommandSource::Prompt);
         assert_eq!(context.args.len(), 2);
         assert_eq!(context.args[0], "arg1");
         assert_eq!(context.args[1], "arg2");

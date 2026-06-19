@@ -77,11 +77,14 @@ impl RenderOnce for PickerElement {
                 on_select: _,
             } => {
                 // Native GPUI picker rendering
-                let font = cx
-                    .global::<nucleotide_types::FontSettings>()
-                    .var_font
-                    .clone()
-                    .into();
+                let ui_font = cx.global::<nucleotide_types::UiFontConfig>();
+                let font = gpui::Font {
+                    family: ui_font.family.clone().into(),
+                    features: gpui::FontFeatures::default(),
+                    weight: ui_font.weight.into(),
+                    style: gpui::FontStyle::Normal,
+                    fallbacks: None,
+                };
 
                 {
                     // Get picker tokens using hybrid color system

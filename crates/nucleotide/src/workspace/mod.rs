@@ -1242,20 +1242,6 @@ fn completion_menu_action(key: &str, control: bool, shift: bool) -> Option<MenuK
     }
 }
 
-fn code_action_menu_action(key: &str, control: bool, shift: bool) -> Option<MenuKeyAction> {
-    match (key, control, shift) {
-        ("escape", false, false) | ("c", true, false) => Some(MenuKeyAction::Cancel),
-        ("enter", false, false) => Some(MenuKeyAction::Accept),
-        ("down", false, false) | ("n", true, false) | ("tab", false, false) => {
-            Some(MenuKeyAction::SelectNext)
-        }
-        ("up", false, false) | ("p", true, false) | ("tab", false, true) => {
-            Some(MenuKeyAction::SelectPrevious)
-        }
-        _ => None,
-    }
-}
-
 fn tab_activation_target_after_close<T: Copy + Eq>(
     documents: &[TabActivationDocument<T>],
     closing_doc_id: T,
@@ -4982,9 +4968,9 @@ impl Workspace {
             // Placeholder
         });
 
-        // Register ShowCommandPalette action (Ctrl+Shift+P)
-        coordinator.register_global_action("ShowCommandPalette", || {
-            info!("ShowCommandPalette action triggered");
+        // Register ShowCommandPrompt action (Ctrl+Shift+P)
+        coordinator.register_global_action("ShowCommandPrompt", || {
+            info!("ShowCommandPrompt action triggered");
             // Placeholder
         });
 
@@ -5049,9 +5035,9 @@ impl Workspace {
                 let overlay = self.overlay.clone();
                 open(core, handle, overlay, cx);
             }
-            "ShowCommandPalette" => {
-                info!("Showing command palette");
-                // Implementation will be added later
+            "ShowCommandPrompt" => {
+                info!("Showing command prompt");
+                self.show_command_prompt(cx);
             }
             "ShowBufferPicker" => {
                 info!("Showing buffer picker");
@@ -5090,7 +5076,7 @@ impl Workspace {
         ev: &KeyDownEvent,
         cx: &mut Context<Self>,
     ) -> bool {
-        if !self.overlay.read(cx).has_completion() || self.overlay.read(cx).has_code_actions() {
+        if !self.overlay.read(cx).has_completion() {
             return false;
         }
 
@@ -5103,35 +5089,6 @@ impl Workspace {
         };
 
         self.handle_completion_overlay_action(action, false, cx)
-    }
-
-    /// Routes Helix-style menu keys while the code action menu is open.
-    fn handle_code_action_menu_key(&mut self, ev: &KeyDownEvent, cx: &mut Context<Self>) -> bool {
-        if !self.overlay.read(cx).has_completion() || !self.overlay.read(cx).has_code_actions() {
-            return false;
-        }
-
-        let Some(action) = code_action_menu_action(
-            ev.keystroke.key.as_str(),
-            ev.keystroke.modifiers.control,
-            ev.keystroke.modifiers.shift,
-        ) else {
-            self.overlay.update(cx, |overlay, cx| {
-                overlay.dismiss_completion(cx);
-            });
-            return false;
-        };
-
-        self.handle_completion_overlay_action(action, true, cx)
-    }
-
-    /// Routes menu keys before the editor input path can consume them.
-    fn handle_completion_menu_key(&mut self, ev: &KeyDownEvent, cx: &mut Context<Self>) -> bool {
-        if self.overlay.read(cx).has_code_actions() {
-            self.handle_code_action_menu_key(ev, cx)
-        } else {
-            self.handle_regular_completion_menu_key(ev, cx)
-        }
     }
 
     /// Simplified key handler that delegates to the InputCoordinator
@@ -5434,11 +5391,11 @@ impl Workspace {
 
         // Check if completion is visible and handle navigation/control keys
         if self.overlay.read(cx).has_completion() {
-            if self.handle_completion_menu_key(ev, cx) {
+            if self.handle_regular_completion_menu_key(ev, cx) {
                 return;
             }
 
-            if self.overlay.read(cx).has_completion() && !self.overlay.read(cx).has_code_actions() {
+            if self.overlay.read(cx).has_completion() {
                 match ev.keystroke.key.as_str() {
                     "backspace" => {
                         nucleotide_logging::debug!(
@@ -7669,7 +7626,7 @@ impl Workspace {
 
 [ui]
 # Font configuration for the UI
-# font = { family = "SF Pro", size = 14.0, weight = "Medium" }
+# font = { family = ".SystemUIFont", size = 14.0, weight = "Medium" }
 
 # Enable or disable animations
 # animations = true
@@ -7738,6 +7695,10 @@ impl Workspace {
                 ui_font_config.family = ui_font.family.clone();
                 ui_font_config.size = ui_font.size;
                 ui_font_config.weight = ui_font.weight;
+
+                let font_settings = cx.global_mut::<crate::types::FontSettings>();
+                font_settings.var_font.family = ui_font.family.clone();
+                font_settings.var_font.weight = ui_font.weight;
 
                 cx.update_global(|theme_manager: &mut crate::ThemeManager, _cx| {
                     theme_manager.set_ui_font_size(gpui::px(ui_font.size));
@@ -8045,7 +8006,6 @@ impl Workspace {
             crate::Update::Prompt(_)
             | crate::Update::Picker(_)
             | crate::Update::DirectoryPicker(_)
-            | crate::Update::DiagnosticsPanel(_)
             | crate::Update::TerminalPanel(_) => {
                 self.handle_overlay_update(cx);
             }
@@ -8056,10 +8016,6 @@ impl Workspace {
                 nucleotide_logging::info!("Forwarding completion to overlay");
 
                 // Overlay will handle completion view setup in its own Update handler
-                self.handle_overlay_update(cx);
-            }
-            crate::Update::CodeActions(_completion_view, _pairs) => {
-                nucleotide_logging::info!("Forwarding code actions dropdown to overlay");
                 self.handle_overlay_update(cx);
             }
             crate::Update::OpenFile(path) => self.handle_open_file(path, cx),
@@ -8322,7 +8278,7 @@ impl Workspace {
                         match ui_event {
                             crate::types::UiEvent::OverlayShown {
                                 overlay_type,
-                                overlay_id,
+                                overlay_id: _,
                             } => {
                                 use nucleotide_events::v2::ui::OverlayType;
                                 match overlay_type {
@@ -8335,12 +8291,9 @@ impl Workspace {
                                         let overlay = self.overlay.clone();
                                         open(core, handle, overlay, cx);
                                     }
-                                    // Only treat explicitly-tagged command palette as buffer picker
-                                    OverlayType::CommandPalette
-                                        if overlay_id == "buffer_picker" =>
-                                    {
+                                    OverlayType::BufferPicker => {
                                         nucleotide_logging::info!(
-                                            "DIAG: Workspace observed OverlayShown(CommandPalette as buffer_picker)"
+                                            "DIAG: Workspace observed OverlayShown(BufferPicker)"
                                         );
                                         let handle = self.handle.clone();
                                         let core = self.core.clone();
@@ -9442,8 +9395,8 @@ impl Workspace {
             },
             ShortcutDefinition {
                 key_combination: "ctrl-shift-p".to_string(),
-                action: ShortcutAction::Action("open_command_palette".to_string()),
-                description: "Open command palette".to_string(),
+                action: ShortcutAction::Action("open_command_prompt".to_string()),
+                description: "Open command prompt".to_string(),
                 context: None,
                 priority: EventPriority::High,
                 enabled: true,
@@ -9637,8 +9590,8 @@ impl Workspace {
         //     nucleotide_logging::debug!("Global input action: open_file_picker")
         // });
 
-        // OLD: self.global_input.register_action_handler("open_command_palette".to_string(), || {
-        //     nucleotide_logging::debug!("Global input action: open_command_palette")
+        // OLD: self.global_input.register_action_handler("open_command_prompt".to_string(), || {
+        //     nucleotide_logging::debug!("Global input action: open_command_prompt")
         // });
 
         nucleotide_logging::info!("Successfully registered all action handlers");
@@ -10495,20 +10448,15 @@ impl Workspace {
         open(core, handle, overlay, cx);
     }
 
-    /// Open command palette
-    pub fn open_command_palette(&mut self, cx: &mut Context<Self>) {
-        nucleotide_logging::debug!("Opening command palette");
+    /// Open command prompt
+    pub fn open_command_prompt(&mut self, cx: &mut Context<Self>) {
+        nucleotide_logging::debug!("Opening command prompt");
+        self.show_command_prompt(cx);
+    }
 
-        // Send ':' to enter command mode (command palette)
-        let key_event = KeyEvent {
-            code: KeyCode::Char(':'),
-            modifiers: KeyModifiers::empty(),
-        };
-
-        self.input.update(cx, |_, cx| {
-            cx.emit(crate::InputEvent::Key(key_event));
-        });
-        nucleotide_logging::debug!("Opened command mode (command palette)");
+    fn show_command_prompt(&mut self, cx: &mut Context<Self>) {
+        let prompt = crate::prompt::Prompt::native(":", "", |_| {}).with_cancel(|| {});
+        cx.emit(crate::Update::Prompt(prompt));
     }
 
     /// Start local search in current document
@@ -11679,7 +11627,7 @@ impl Render for Workspace {
         workspace_div = workspace_div
             .track_focus(&self.focus_handle)
             .capture_key_down(cx.listener(|view, ev, _window, cx| {
-                if view.handle_completion_menu_key(ev, cx) {
+                if view.handle_regular_completion_menu_key(ev, cx) {
                     cx.stop_propagation();
                 }
             }))
@@ -12125,10 +12073,10 @@ impl Render for Workspace {
             },
         ));
 
-        // ShowCommandPalette action
+        // ShowCommandPrompt action opens the native command prompt.
         workspace_div = workspace_div.on_action(cx.listener(
-            move |workspace, _: &crate::actions::workspace::ShowCommandPalette, _window, cx| {
-                workspace.send_helix_key(":", cx);
+            move |workspace, _: &crate::actions::workspace::ShowCommandPrompt, _window, cx| {
+                workspace.show_command_prompt(cx);
             },
         ));
 
@@ -13553,14 +13501,7 @@ fn show_code_actions(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &m
     // Spawn async collection job
     let core_weak = core.downgrade();
     cx.spawn(async move |cx| {
-        // Build items for the completion-style dropdown
-        let mut completion_items: Vec<nucleotide_ui::completion_v2::CompletionItem> = Vec::new();
-        // Store paired action + server metadata alongside items for on_select
-        let mut pairs: Vec<(
-            lsp::CodeActionOrCommand,
-            helix_core::diagnostic::LanguageServerId,
-            helix_lsp::OffsetEncoding,
-        )> = Vec::new();
+        let mut items = Vec::new();
 
         while let Some(result) = futures.next().await {
             match result {
@@ -13576,10 +13517,25 @@ fn show_code_actions(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &m
                             lsp::CodeActionOrCommand::Command(cmd) => cmd.title.clone(),
                             lsp::CodeActionOrCommand::CodeAction(ca) => ca.title.clone(),
                         };
-                        // Build a simple completion item for the dropdown
-                        let ci = nucleotide_ui::completion_v2::CompletionItem::new(label);
-                        completion_items.push(ci);
-                        pairs.push((action, ls_id, offset));
+                        let sublabel = match &action {
+                            lsp::CodeActionOrCommand::Command(cmd) => {
+                                format!("command: {}", cmd.command)
+                            }
+                            lsp::CodeActionOrCommand::CodeAction(ca) => ca
+                                .kind
+                                .as_ref()
+                                .map(|kind| kind.as_str().to_string())
+                                .unwrap_or_else(|| "code action".to_string()),
+                        };
+
+                        items.push(crate::picker_view::PickerItem {
+                            label: label.into(),
+                            sublabel: Some(sublabel.into()),
+                            data: Arc::new((action, ls_id, offset)),
+                            file_path: None,
+                            vcs_status: None,
+                            columns: None,
+                        });
                     }
                 }
                 Err(err) => {
@@ -13589,7 +13545,7 @@ fn show_code_actions(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &m
         }
 
         // If none, exit with a notification
-        if completion_items.is_empty() {
+        if items.is_empty() {
             if let Some(core) = core_weak.upgrade() {
                 core.update(cx, |core, cx| {
                     core.editor.set_error("No code actions available");
@@ -13604,17 +13560,12 @@ fn show_code_actions(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &m
             return;
         }
 
-        // Create a CompletionView and load items
         if let Some(core) = core_weak.upgrade() {
-            let completion_view = cx.new(|cx| {
-                let mut view = nucleotide_ui::completion_v2::CompletionView::new(cx);
-                view.set_items(completion_items, cx);
-                view
+            let picker = crate::picker::Picker::native("Code Actions", items, |_index| {
+                // Selection is handled by OverlayView via typed code-action payloads.
             });
-
-            // Emit completion-style code actions into overlay
             core.update(cx, |_core, cx| {
-                cx.emit(crate::Update::CodeActions(completion_view, pairs));
+                cx.emit(crate::Update::Picker(picker));
             });
         }
     })
@@ -13916,56 +13867,6 @@ mod tests {
         assert_eq!(completion_menu_action("tab", false, true), None);
         assert_eq!(completion_menu_action("c", true, false), None);
         assert_eq!(completion_menu_action("down", true, false), None);
-    }
-
-    #[test]
-    fn code_action_menu_keys_match_helix_menu_navigation() {
-        assert_eq!(
-            code_action_menu_action("tab", false, false),
-            Some(MenuKeyAction::SelectNext)
-        );
-        assert_eq!(
-            code_action_menu_action("down", false, false),
-            Some(MenuKeyAction::SelectNext)
-        );
-        assert_eq!(
-            code_action_menu_action("n", true, false),
-            Some(MenuKeyAction::SelectNext)
-        );
-
-        assert_eq!(
-            code_action_menu_action("tab", false, true),
-            Some(MenuKeyAction::SelectPrevious)
-        );
-        assert_eq!(
-            code_action_menu_action("up", false, false),
-            Some(MenuKeyAction::SelectPrevious)
-        );
-        assert_eq!(
-            code_action_menu_action("p", true, false),
-            Some(MenuKeyAction::SelectPrevious)
-        );
-
-        assert_eq!(
-            code_action_menu_action("enter", false, false),
-            Some(MenuKeyAction::Accept)
-        );
-        assert_eq!(
-            code_action_menu_action("escape", false, false),
-            Some(MenuKeyAction::Cancel)
-        );
-        assert_eq!(
-            code_action_menu_action("c", true, false),
-            Some(MenuKeyAction::Cancel)
-        );
-    }
-
-    #[test]
-    fn code_action_menu_keys_ignore_non_helix_menu_bindings() {
-        assert_eq!(code_action_menu_action("y", true, false), None);
-        assert_eq!(code_action_menu_action("tab", true, false), None);
-        assert_eq!(code_action_menu_action("enter", false, true), None);
-        assert_eq!(code_action_menu_action("down", true, false), None);
     }
 
     fn test_view_id(index: u64) -> ViewId {
