@@ -4,9 +4,11 @@
 use nucleotide_logging::{debug, error, info, instrument, warn};
 use std::collections::HashMap;
 use std::env;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
+use std::time::SystemTime;
 use tokio::sync::{RwLock, Semaphore};
 use tokio::time::{Duration, timeout};
 
@@ -25,6 +27,12 @@ pub enum ShellEnvironmentError {
     #[error("Environment parsing failed: {0}")]
     ParseError(String),
 
+    #[error("Unsupported .envrc for native flake loading: {0}")]
+    EnvrcUnsupported(String),
+
+    #[error("nix print-dev-env failed: {0}")]
+    NixPrintDevEnvFailed(String),
+
     #[error("Directory not found: {0}")]
     DirectoryNotFound(String),
 }
@@ -33,6 +41,7 @@ pub enum ShellEnvironmentError {
 #[derive(Debug, Clone, PartialEq)]
 pub enum EnvironmentOrigin {
     Cli,
+    NativeFlake,
     DirectoryShell,
     Process,
 }
@@ -43,6 +52,7 @@ pub struct CachedEnvironment {
     pub environment: HashMap<String, String>,
     pub origin: EnvironmentOrigin,
     pub directory: PathBuf,
+    native_watch_state: Option<Vec<WatchedFileState>>,
 }
 
 /// Central environment management system following Zed's ProjectEnvironment pattern
@@ -85,44 +95,106 @@ impl ProjectEnvironment {
         &self,
         directory: &Path,
     ) -> Result<HashMap<String, String>, ShellEnvironmentError> {
-        // Priority 1: CLI environment has highest priority but merges with process environment
-        if let Some(cli_env) = &self.cli_environment {
-            debug!("Using CLI environment (highest priority)");
+        let baseline_env = self.baseline_environment();
 
-            // Start with process environment, then let CLI override
-            let mut combined_env: HashMap<String, String> = std::env::vars().collect();
-
-            // CLI environment takes precedence over process environment
-            for (key, value) in cli_env {
-                combined_env.insert(key.clone(), value.clone());
-            }
-
-            return Ok(combined_env);
-        }
-
-        // Priority 2: Directory-specific shell environment (cached)
+        // Priority 1: Directory-specific environment (cached)
         let canonical_dir = directory
             .canonicalize()
             .unwrap_or_else(|_| directory.to_path_buf());
 
-        // Check cache first
-        {
+        // Check cache first. Native flake environments are invalidated when any
+        // watched input changes so project switches and lockfile updates reload.
+        if let Some(cached) = {
             let cache = self.directory_environments.read().await;
-            if let Some(cached) = cache.get(&canonical_dir) {
+            cache.get(&canonical_dir).cloned()
+        } {
+            if cached_environment_is_current(&cached) {
                 debug!("Using cached directory environment");
-                return Ok(cached.environment.clone());
+                return Ok(cached.environment);
+            }
+
+            debug!(
+                directory = %canonical_dir.display(),
+                origin = ?cached.origin,
+                "Cached directory environment is stale"
+            );
+            let mut cache = self.directory_environments.write().await;
+            cache.remove(&canonical_dir);
+        }
+
+        // Priority 2: Native `.envrc` subset for `use flake`.
+        match self
+            .load_native_flake_environment(&canonical_dir, &baseline_env)
+            .await
+        {
+            Ok(Some(native_env)) => {
+                let cached_env = CachedEnvironment {
+                    environment: native_env.environment.clone(),
+                    origin: EnvironmentOrigin::NativeFlake,
+                    directory: canonical_dir.clone(),
+                    native_watch_state: Some(native_env.watch_state.clone()),
+                };
+
+                {
+                    let mut cache = self.directory_environments.write().await;
+                    cache.insert(canonical_dir.clone(), cached_env);
+                }
+
+                {
+                    let mut errors = self.environment_errors.write().await;
+                    errors.remove(&canonical_dir);
+                }
+
+                info!(
+                    directory = %canonical_dir.display(),
+                    env_count = native_env.environment.len(),
+                    watched_files = native_env.watch_state.len(),
+                    "Successfully loaded native flake environment"
+                );
+
+                return Ok(native_env.environment);
+            }
+            Ok(None) => {}
+            Err(error) => {
+                warn!(
+                    directory = %canonical_dir.display(),
+                    error = %error,
+                    "Native flake environment loading skipped"
+                );
             }
         }
 
-        // Load directory environment in background
+        // If the app was launched with a full CLI environment and there is no supported
+        // native project environment, use that baseline directly. Shell capture remains
+        // the fallback for dock launches and unsupported direnv/asdf/mise integrations.
+        if self.cli_environment.is_some() {
+            debug!("Using CLI environment baseline");
+            return Ok(baseline_env);
+        }
+
+        // Priority 3: Directory shell environment.
         debug!("Loading directory-specific shell environment");
-        self.load_directory_environment(&canonical_dir).await
+        self.load_directory_environment(&canonical_dir, baseline_env)
+            .await
+    }
+
+    fn baseline_environment(&self) -> HashMap<String, String> {
+        let mut combined_env: HashMap<String, String> = std::env::vars().collect();
+
+        if let Some(cli_env) = &self.cli_environment {
+            for (key, value) in cli_env {
+                combined_env.insert(key.clone(), value.clone());
+            }
+        }
+
+        combined_env
     }
 
     /// Load shell environment for specific directory with proper cd command
     async fn load_directory_environment(
         &self,
         directory: &PathBuf,
+        baseline_env: HashMap<String, String>,
     ) -> Result<HashMap<String, String>, ShellEnvironmentError> {
         // Acquire semaphore to limit concurrent shell executions
         let _permit = self
@@ -167,8 +239,7 @@ impl ProjectEnvironment {
                 if output.status.success() {
                     let directory_env = parse_shell_environment(&output.stdout)?;
 
-                    // Start with process environment as base, then let directory shell override
-                    let mut combined_env: HashMap<String, String> = std::env::vars().collect();
+                    let mut combined_env = baseline_env;
 
                     // Directory shell environment takes precedence over process environment
                     for (key, value) in directory_env {
@@ -184,6 +255,7 @@ impl ProjectEnvironment {
                         environment: combined_env.clone(),
                         origin: EnvironmentOrigin::DirectoryShell,
                         directory: directory.clone(),
+                        native_watch_state: None,
                     };
 
                     {
@@ -240,6 +312,43 @@ impl ProjectEnvironment {
         }
     }
 
+    async fn load_native_flake_environment(
+        &self,
+        directory: &Path,
+        baseline_env: &HashMap<String, String>,
+    ) -> Result<Option<NativeFlakeEnvironment>, ShellEnvironmentError> {
+        let envrc_path = directory.join(".envrc");
+        if !envrc_path.is_file() {
+            return Ok(None);
+        }
+
+        let envrc = fs::read_to_string(&envrc_path)?;
+        let Some(plan) = parse_native_flake_envrc(&envrc).map_err(|error| {
+            ShellEnvironmentError::EnvrcUnsupported(format!(
+                "{} in {}",
+                error,
+                envrc_path.display()
+            ))
+        })?
+        else {
+            return Ok(None);
+        };
+
+        let exported = run_nix_print_dev_env(directory, &plan).await?;
+        let mut environment = baseline_env.clone();
+        for (key, value) in exported {
+            environment.insert(key, value);
+        }
+        environment.insert("ZED_ENVIRONMENT".to_string(), "native-flake".to_string());
+
+        let watch_paths = native_flake_watch_paths(directory, &envrc_path, &plan);
+
+        Ok(Some(NativeFlakeEnvironment {
+            environment,
+            watch_state: snapshot_watched_files(watch_paths),
+        }))
+    }
+
     /// Get environment specifically for LSP servers (may include LSP-specific variables)
     pub async fn get_lsp_environment(
         &self,
@@ -270,6 +379,19 @@ impl ProjectEnvironment {
     pub async fn get_cached_directories(&self) -> Vec<PathBuf> {
         let cache = self.directory_environments.read().await;
         cache.keys().cloned().collect()
+    }
+
+    /// Get the cached origin for a directory if its environment is current.
+    pub async fn get_cached_origin(&self, directory: &Path) -> Option<EnvironmentOrigin> {
+        let canonical_dir = directory
+            .canonicalize()
+            .unwrap_or_else(|_| directory.to_path_buf());
+
+        let cache = self.directory_environments.read().await;
+        cache
+            .get(&canonical_dir)
+            .filter(|cached| cached_environment_is_current(cached))
+            .map(|cached| cached.origin.clone())
     }
 
     /// Invalidate cache for specific directory
@@ -305,6 +427,382 @@ impl ProjectEnvironment {
             errors.clear();
         }
     }
+}
+
+#[derive(Debug)]
+struct NativeFlakeEnvironment {
+    environment: HashMap<String, String>,
+    watch_state: Vec<WatchedFileState>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NativeFlakePlan {
+    flake_args: Vec<String>,
+    watched_files: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WatchedFileState {
+    path: PathBuf,
+    state: WatchedPathState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum WatchedPathState {
+    Present {
+        modified: Option<SystemTime>,
+        len: u64,
+    },
+    Missing,
+}
+
+fn cached_environment_is_current(cached: &CachedEnvironment) -> bool {
+    match cached.origin {
+        EnvironmentOrigin::NativeFlake => cached
+            .native_watch_state
+            .as_deref()
+            .is_some_and(watched_files_are_current),
+        EnvironmentOrigin::Cli | EnvironmentOrigin::DirectoryShell | EnvironmentOrigin::Process => {
+            true
+        }
+    }
+}
+
+fn watched_files_are_current(watched_files: &[WatchedFileState]) -> bool {
+    watched_files
+        .iter()
+        .all(|watched| watched.state == snapshot_watched_file(&watched.path))
+}
+
+fn snapshot_watched_files(paths: Vec<PathBuf>) -> Vec<WatchedFileState> {
+    paths
+        .into_iter()
+        .map(|path| WatchedFileState {
+            state: snapshot_watched_file(&path),
+            path,
+        })
+        .collect()
+}
+
+fn snapshot_watched_file(path: &Path) -> WatchedPathState {
+    match fs::metadata(path) {
+        Ok(metadata) if metadata.is_file() => WatchedPathState::Present {
+            modified: metadata.modified().ok(),
+            len: metadata.len(),
+        },
+        _ => WatchedPathState::Missing,
+    }
+}
+
+fn native_flake_watch_paths(
+    directory: &Path,
+    envrc_path: &Path,
+    plan: &NativeFlakePlan,
+) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    push_unique_path(&mut paths, envrc_path.to_path_buf());
+    push_unique_path(&mut paths, directory.join("flake.nix"));
+    push_unique_path(&mut paths, directory.join("flake.lock"));
+
+    for path in &plan.watched_files {
+        push_unique_path(&mut paths, directory.join(path));
+    }
+
+    paths
+}
+
+fn push_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
+    if !paths.iter().any(|existing| existing == &path) {
+        paths.push(path);
+    }
+}
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+enum EnvrcParseError {
+    #[error("line {line}: {message}")]
+    Unsupported { line: usize, message: String },
+}
+
+fn parse_native_flake_envrc(contents: &str) -> Result<Option<NativeFlakePlan>, EnvrcParseError> {
+    let mut flake_args: Option<Vec<String>> = None;
+    let mut watched_files = Vec::new();
+
+    for (index, line) in contents.lines().enumerate() {
+        let line_number = index + 1;
+        let words = split_envrc_words(line).map_err(|message| EnvrcParseError::Unsupported {
+            line: line_number,
+            message,
+        })?;
+
+        if words.is_empty() {
+            continue;
+        }
+
+        match words.as_slice() {
+            [use_cmd, flake, args @ ..] if use_cmd == "use" && flake == "flake" => {
+                if flake_args.is_some() {
+                    return Err(EnvrcParseError::Unsupported {
+                        line: line_number,
+                        message: "multiple use flake declarations are not supported".to_string(),
+                    });
+                }
+                flake_args = Some(normalize_flake_args(args));
+            }
+            [use_flake, args @ ..] if use_flake == "use_flake" => {
+                if flake_args.is_some() {
+                    return Err(EnvrcParseError::Unsupported {
+                        line: line_number,
+                        message: "multiple use flake declarations are not supported".to_string(),
+                    });
+                }
+                flake_args = Some(normalize_flake_args(args));
+            }
+            [watch_file, paths @ ..] if watch_file == "watch_file" && !paths.is_empty() => {
+                watched_files.extend(paths.iter().map(PathBuf::from));
+            }
+            _ => {
+                return Err(EnvrcParseError::Unsupported {
+                    line: line_number,
+                    message: format!("unsupported command `{}`", words[0]),
+                });
+            }
+        }
+    }
+
+    Ok(flake_args.map(|flake_args| NativeFlakePlan {
+        flake_args,
+        watched_files,
+    }))
+}
+
+fn normalize_flake_args(args: &[String]) -> Vec<String> {
+    if args.is_empty() {
+        vec![".".to_string()]
+    } else {
+        args.to_vec()
+    }
+}
+
+fn split_envrc_words(line: &str) -> Result<Vec<String>, String> {
+    let mut words = Vec::new();
+    let mut current = String::new();
+    let mut chars = line.chars().peekable();
+    let mut quote: Option<char> = None;
+
+    while let Some(ch) = chars.next() {
+        match quote {
+            Some('\'') => {
+                if ch == '\'' {
+                    quote = None;
+                } else {
+                    current.push(ch);
+                }
+            }
+            Some('"') => match ch {
+                '"' => quote = None,
+                '\\' => {
+                    if let Some(next) = chars.next() {
+                        current.push(next);
+                    } else {
+                        return Err("unterminated escape sequence".to_string());
+                    }
+                }
+                _ => current.push(ch),
+            },
+            Some(_) => unreachable!("only single and double quotes are used"),
+            None => match ch {
+                '#' if current.is_empty() => break,
+                '\'' | '"' => quote = Some(ch),
+                '\\' => {
+                    if let Some(next) = chars.next() {
+                        current.push(next);
+                    } else {
+                        return Err("unterminated escape sequence".to_string());
+                    }
+                }
+                ch if ch.is_whitespace() => {
+                    if !current.is_empty() {
+                        words.push(std::mem::take(&mut current));
+                    }
+                }
+                _ => current.push(ch),
+            },
+        }
+    }
+
+    if let Some(quote) = quote {
+        return Err(format!("unterminated {} quote", quote));
+    }
+
+    if !current.is_empty() {
+        words.push(current);
+    }
+
+    Ok(words)
+}
+
+async fn run_nix_print_dev_env(
+    directory: &Path,
+    plan: &NativeFlakePlan,
+) -> Result<HashMap<String, String>, ShellEnvironmentError> {
+    run_nix_print_dev_env_with_binary(directory, plan, Path::new("nix")).await
+}
+
+async fn run_nix_print_dev_env_with_binary(
+    directory: &Path,
+    plan: &NativeFlakePlan,
+    nix_binary: &Path,
+) -> Result<HashMap<String, String>, ShellEnvironmentError> {
+    let profile = native_flake_profile_path(directory);
+    if let Some(parent) = profile.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let mut command = tokio::process::Command::new(nix_binary);
+    command
+        .current_dir(directory)
+        .arg("--extra-experimental-features")
+        .arg("nix-command flakes")
+        .arg("print-dev-env")
+        .arg("--json")
+        .arg("--no-pretty")
+        .arg("--profile")
+        .arg(&profile);
+
+    for arg in &plan.flake_args {
+        command.arg(arg);
+    }
+
+    let result = timeout(Duration::from_secs(30), command.output()).await;
+    let output = match result {
+        Ok(Ok(output)) => output,
+        Ok(Err(error)) => return Err(ShellEnvironmentError::IoError(error)),
+        Err(_) => return Err(ShellEnvironmentError::Timeout(30)),
+    };
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(ShellEnvironmentError::NixPrintDevEnvFailed(
+            stderr.trim().to_string(),
+        ));
+    }
+
+    let env = parse_nix_print_dev_env_json(&output.stdout)?;
+    wipe_native_flake_profile_history(nix_binary, &profile).await;
+    Ok(env)
+}
+
+async fn wipe_native_flake_profile_history(nix_binary: &Path, profile: &Path) {
+    let mut command = tokio::process::Command::new(nix_binary);
+    command
+        .arg("--extra-experimental-features")
+        .arg("nix-command flakes")
+        .arg("profile")
+        .arg("wipe-history")
+        .arg("--profile")
+        .arg(profile);
+
+    match timeout(Duration::from_secs(10), command.output()).await {
+        Ok(Ok(output)) if output.status.success() => {}
+        Ok(Ok(output)) => {
+            warn!(
+                profile = %profile.display(),
+                stderr = %String::from_utf8_lossy(&output.stderr).trim(),
+                "Failed to wipe native flake profile history"
+            );
+        }
+        Ok(Err(error)) => {
+            warn!(
+                profile = %profile.display(),
+                error = %error,
+                "Failed to run nix profile wipe-history"
+            );
+        }
+        Err(_) => {
+            warn!(
+                profile = %profile.display(),
+                "Timed out wiping native flake profile history"
+            );
+        }
+    }
+}
+
+fn parse_nix_print_dev_env_json(
+    output: &[u8],
+) -> Result<HashMap<String, String>, ShellEnvironmentError> {
+    let json: serde_json::Value = serde_json::from_slice(output)
+        .map_err(|error| ShellEnvironmentError::ParseError(error.to_string()))?;
+    let variables = json
+        .get("variables")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| ShellEnvironmentError::ParseError("missing variables object".to_string()))?;
+
+    let mut env = HashMap::new();
+    for (key, entry) in variables {
+        if key.is_empty() || key.contains('=') || key.contains('\0') {
+            continue;
+        }
+
+        let is_exported = entry
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|kind| kind == "exported");
+        if !is_exported {
+            continue;
+        }
+
+        if let Some(value) = entry.get("value").and_then(serde_json::Value::as_str) {
+            env.insert(key.clone(), value.to_string());
+        }
+    }
+
+    if env.is_empty() {
+        return Err(ShellEnvironmentError::ParseError(
+            "nix print-dev-env produced no exported string variables".to_string(),
+        ));
+    }
+
+    Ok(env)
+}
+
+fn native_flake_profile_path(directory: &Path) -> PathBuf {
+    let key = stable_hash_hex(directory.to_string_lossy().as_bytes());
+    nucleotide_cache_dir()
+        .join("native-flake-env")
+        .join(key)
+        .join("flake-profile")
+}
+
+fn nucleotide_cache_dir() -> PathBuf {
+    if let Some(path) = non_empty_env_path("NUCLEOTIDE_CACHE_DIR") {
+        return path;
+    }
+
+    if let Some(path) = non_empty_env_path("XDG_CACHE_HOME") {
+        return path.join("nucleotide");
+    }
+
+    if let Some(home) = non_empty_env_path("HOME") {
+        return home.join(".cache").join("nucleotide");
+    }
+
+    env::temp_dir().join("nucleotide")
+}
+
+fn non_empty_env_path(key: &str) -> Option<PathBuf> {
+    env::var_os(key)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
+fn stable_hash_hex(bytes: &[u8]) -> String {
+    // FNV-1a is sufficient here: this is only a stable cache directory key.
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
 }
 
 /// Shell command building utilities following Zed's approach
@@ -455,6 +953,10 @@ pub async fn capture_shell_environment(
         Err(ShellEnvironmentError::Timeout(_)) => Err(ShellEnvError::Timeout),
         Err(ShellEnvironmentError::IoError(e)) => Err(ShellEnvError::IoError(e)),
         Err(ShellEnvironmentError::ParseError(msg)) => Err(ShellEnvError::ParseError(msg)),
+        Err(ShellEnvironmentError::EnvrcUnsupported(msg)) => Err(ShellEnvError::ParseError(msg)),
+        Err(ShellEnvironmentError::NixPrintDevEnvFailed(msg)) => {
+            Err(ShellEnvError::CommandFailed(msg))
+        }
         Err(ShellEnvironmentError::DirectoryNotFound(msg)) => Err(ShellEnvError::ParseError(msg)),
     }
 }
@@ -510,6 +1012,12 @@ impl ShellEnvironmentCache {
             Err(ShellEnvironmentError::Timeout(_)) => Err(ShellEnvError::Timeout),
             Err(ShellEnvironmentError::IoError(e)) => Err(ShellEnvError::IoError(e)),
             Err(ShellEnvironmentError::ParseError(msg)) => Err(ShellEnvError::ParseError(msg)),
+            Err(ShellEnvironmentError::EnvrcUnsupported(msg)) => {
+                Err(ShellEnvError::ParseError(msg))
+            }
+            Err(ShellEnvironmentError::NixPrintDevEnvFailed(msg)) => {
+                Err(ShellEnvError::CommandFailed(msg))
+            }
             Err(ShellEnvironmentError::DirectoryNotFound(msg)) => {
                 Err(ShellEnvError::ParseError(msg))
             }
@@ -550,6 +1058,251 @@ mod tests {
 
         let project_env_no_cli = ProjectEnvironment::new(None);
         assert!(project_env_no_cli.cli_environment.is_none());
+    }
+
+    #[test]
+    fn test_parse_native_flake_envrc_subset() {
+        let plan = parse_native_flake_envrc(
+            r#"
+                # Load the default dev shell
+                use flake ".#dev shell" --impure # trailing comment
+                watch_file rust-toolchain
+                watch_file "config/local file"
+            "#,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(plan.flake_args, vec![".#dev shell", "--impure"]);
+        assert_eq!(
+            plan.watched_files,
+            vec![
+                PathBuf::from("rust-toolchain"),
+                PathBuf::from("config/local file")
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parse_native_flake_envrc_accepts_use_flake_function() {
+        let plan = parse_native_flake_envrc("use_flake . --no-write-lock-file")
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(plan.flake_args, vec![".", "--no-write-lock-file"]);
+    }
+
+    #[test]
+    fn test_parse_native_flake_envrc_defaults_bare_use_flake_to_current_dir() {
+        let plan = parse_native_flake_envrc("use flake").unwrap().unwrap();
+
+        assert_eq!(plan.flake_args, vec!["."]);
+    }
+
+    #[test]
+    fn test_parse_native_flake_envrc_rejects_arbitrary_shell() {
+        let error = parse_native_flake_envrc("export CARGO_HOME=$PWD/.cargo")
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("unsupported command `export`"));
+    }
+
+    #[test]
+    fn test_parse_nix_print_dev_env_json_exports_only_string_vars() {
+        let output = br#"{
+            "bashFunctions": {},
+            "variables": {
+                "PATH": {"type": "exported", "value": "/nix/bin"},
+                "HELIX_RUNTIME": {"type": "exported", "value": "/nix/helix-runtime"},
+                "notExported": {"type": "var", "value": "ignored"},
+                "arrayVar": {"type": "array", "value": ["ignored"]},
+                "BAD=KEY": {"type": "exported", "value": "ignored"}
+            }
+        }"#;
+
+        let env = parse_nix_print_dev_env_json(output).unwrap();
+
+        assert_eq!(env.get("PATH"), Some(&"/nix/bin".to_string()));
+        assert_eq!(
+            env.get("HELIX_RUNTIME"),
+            Some(&"/nix/helix-runtime".to_string())
+        );
+        assert!(!env.contains_key("notExported"));
+        assert!(!env.contains_key("arrayVar"));
+        assert!(!env.contains_key("BAD=KEY"));
+    }
+
+    #[test]
+    fn test_native_watch_paths_include_defaults_and_deduplicate() {
+        let directory = Path::new("/project");
+        let envrc_path = directory.join(".envrc");
+        let plan = NativeFlakePlan {
+            flake_args: Vec::new(),
+            watched_files: vec![
+                PathBuf::from("flake.lock"),
+                PathBuf::from("rust-toolchain.toml"),
+            ],
+        };
+
+        let paths = native_flake_watch_paths(directory, &envrc_path, &plan);
+
+        assert_eq!(
+            paths,
+            vec![
+                PathBuf::from("/project/.envrc"),
+                PathBuf::from("/project/flake.nix"),
+                PathBuf::from("/project/flake.lock"),
+                PathBuf::from("/project/rust-toolchain.toml"),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_native_watch_state_detects_created_file() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let watched_path = temp_dir.path().join("flake.lock");
+        let watch_state = snapshot_watched_files(vec![watched_path.clone()]);
+
+        assert!(watched_files_are_current(&watch_state));
+
+        std::fs::write(watched_path, "new lock").unwrap();
+
+        assert!(!watched_files_are_current(&watch_state));
+    }
+
+    #[test]
+    fn test_native_watch_state_detects_modified_file() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let watched_path = temp_dir.path().join(".envrc");
+        std::fs::write(&watched_path, "use flake\n").unwrap();
+        let watch_state = snapshot_watched_files(vec![watched_path.clone()]);
+
+        assert!(watched_files_are_current(&watch_state));
+
+        std::fs::write(watched_path, "use flake --impure\n").unwrap();
+
+        assert!(!watched_files_are_current(&watch_state));
+    }
+
+    #[test]
+    fn test_native_flake_cached_environment_stales_when_watched_file_changes() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let envrc_path = temp_dir.path().join(".envrc");
+        std::fs::write(&envrc_path, "use flake\n").unwrap();
+        let watch_state = snapshot_watched_files(vec![envrc_path.clone()]);
+        let cached = CachedEnvironment {
+            environment: HashMap::new(),
+            origin: EnvironmentOrigin::NativeFlake,
+            directory: temp_dir.path().to_path_buf(),
+            native_watch_state: Some(watch_state),
+        };
+
+        assert!(cached_environment_is_current(&cached));
+
+        std::fs::write(envrc_path, "use flake .#dev\n").unwrap();
+
+        assert!(!cached_environment_is_current(&cached));
+    }
+
+    #[tokio::test]
+    async fn test_cli_environment_is_baseline_when_envrc_is_unsupported() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        std::fs::write(temp_dir.path().join(".envrc"), "export FOO=bar\n").unwrap();
+        let cli_env = HashMap::from([
+            ("PATH".to_string(), "/cli/bin".to_string()),
+            ("FROM_CLI".to_string(), "yes".to_string()),
+        ]);
+
+        let project_env = ProjectEnvironment::new(Some(cli_env));
+        let env = project_env
+            .get_environment_for_directory(temp_dir.path())
+            .await
+            .unwrap();
+
+        assert_eq!(env.get("PATH"), Some(&"/cli/bin".to_string()));
+        assert_eq!(env.get("FROM_CLI"), Some(&"yes".to_string()));
+        assert!(!env.contains_key("FOO"));
+    }
+
+    #[tokio::test]
+    async fn test_get_cached_origin_returns_current_origin() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let envrc_path = temp_dir.path().join(".envrc");
+        std::fs::write(&envrc_path, "use flake\n").unwrap();
+
+        let project_env = ProjectEnvironment::new(None);
+        let canonical_dir = temp_dir.path().canonicalize().unwrap();
+        let cached = CachedEnvironment {
+            environment: HashMap::new(),
+            origin: EnvironmentOrigin::NativeFlake,
+            directory: canonical_dir.clone(),
+            native_watch_state: Some(snapshot_watched_files(vec![envrc_path])),
+        };
+
+        project_env
+            .directory_environments
+            .write()
+            .await
+            .insert(canonical_dir, cached);
+
+        assert_eq!(
+            project_env.get_cached_origin(temp_dir.path()).await,
+            Some(EnvironmentOrigin::NativeFlake)
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_run_nix_print_dev_env_builds_expected_command() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let fake_nix = temp_dir.path().join("nix");
+        let calls_file = temp_dir.path().join("calls.txt");
+        std::fs::write(
+            &fake_nix,
+            format!(
+                r#"#!/bin/sh
+printf '%s\n' "$@" >> '{}'
+case "$*" in
+  *"print-dev-env"*)
+    printf '%s\n' '{{"variables":{{"PATH":{{"type":"exported","value":"/fake/bin"}}}}}}'
+    ;;
+  *"profile wipe-history"*)
+    exit 0
+    ;;
+  *)
+    exit 2
+    ;;
+esac
+"#,
+                calls_file.display()
+            ),
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&fake_nix).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&fake_nix, permissions).unwrap();
+
+        let project_dir = tempfile::tempdir().unwrap();
+        let plan = NativeFlakePlan {
+            flake_args: vec![".".to_string(), "--impure".to_string()],
+            watched_files: Vec::new(),
+        };
+
+        let env = run_nix_print_dev_env_with_binary(project_dir.path(), &plan, &fake_nix)
+            .await
+            .unwrap();
+
+        assert_eq!(env.get("PATH"), Some(&"/fake/bin".to_string()));
+        let calls = std::fs::read_to_string(calls_file).unwrap();
+        assert!(calls.contains("print-dev-env"));
+        assert!(calls.contains("--json"));
+        assert!(calls.contains("--profile"));
+        assert!(calls.contains("--impure"));
+        assert!(calls.contains("profile"));
+        assert!(calls.contains("wipe-history"));
     }
 
     #[test]

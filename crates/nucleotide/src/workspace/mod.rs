@@ -46,7 +46,7 @@ use nucleotide_ui::{
 use crate::input_coordinator::{FocusGroup, InputContext, InputCoordinator};
 use nucleotide_lsp::ServerStatus;
 
-use crate::application::find_workspace_root_from;
+use crate::application::{ProjectEnvironmentProvider, find_workspace_root_from};
 use crate::document::DocumentView;
 use crate::file_tree::{
     FileTreeConfig, FileTreeEvent, FileTreeView,
@@ -65,6 +65,7 @@ use crate::types::{
 use crate::utils;
 use crate::{Core, Input, InputEvent};
 use nucleotide_core::EventBus;
+use nucleotide_env::EnvironmentOrigin;
 use nucleotide_events::v2::terminal::{Event as TerminalEvent, TerminalId};
 use nucleotide_terminal::TerminalBounds;
 // (no direct Workspace v2 items used here)
@@ -74,6 +75,35 @@ type FileTreeContextMenuHandler = fn(&mut Workspace, &mut Context<Workspace>);
 type TabContextMenuHandler = fn(&mut Workspace, DocumentId, &mut Context<Workspace>);
 type TabBarSplitMenuHandler = fn(&mut Workspace, &mut Context<Workspace>);
 type TabBarNewMenuHandler = fn(&mut Workspace, &mut Context<Workspace>);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EnvironmentBadge {
+    Loading,
+    NativeFlake,
+}
+
+impl EnvironmentBadge {
+    fn from_environment_marker(marker: Option<&str>) -> Option<Self> {
+        match marker {
+            Some("native-flake") => Some(Self::NativeFlake),
+            _ => None,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Loading => "direnv",
+            Self::NativeFlake => "direnv",
+        }
+    }
+
+    fn detail(self) -> &'static str {
+        match self {
+            Self::Loading => "loading",
+            Self::NativeFlake => "flake",
+        }
+    }
+}
 
 #[cfg(target_os = "macos")]
 fn add_recent_project(path: &Path, cx: &mut App) {
@@ -694,6 +724,7 @@ pub struct Workspace {
     input_coordinator: Arc<InputCoordinator>,    // Central input coordination system
     project_lsp_manager: Option<Arc<nucleotide_lsp::ProjectLspManager>>, // Project-level LSP management
     current_project_root: Option<std::path::PathBuf>, // Track current project root for change detection
+    environment_badge: Option<EnvironmentBadge>,
     _pending_lsp_startup: Option<std::path::PathBuf>, // Track pending server startup requests
     prefix_extractor: PrefixExtractor,                // Language-aware completion prefix extraction
     about_window: Entity<AboutWindow>,                // About dialog window
@@ -1493,17 +1524,46 @@ impl Workspace {
         self.last_terminal_bounds = None;
 
         let shell = None;
-        let env = Vec::<(String, String)>::new();
-        self.core.update(cx, |app, _cx| {
-            if let Some(bus) = &app.event_aggregator {
+        let (event_bus, project_environment) = {
+            let core = self.core.read(cx);
+            (
+                core.event_aggregator.clone(),
+                core.project_environment.clone(),
+            )
+        };
+        let cwd_for_env = cwd.clone();
+        self.handle.spawn(async move {
+            let env = match cwd_for_env.as_deref() {
+                Some(directory) => {
+                    match project_environment
+                        .get_environment_for_directory(directory)
+                        .await
+                    {
+                        Ok(environment) => environment.into_iter().collect::<Vec<_>>(),
+                        Err(error) => {
+                            warn!(
+                                terminal_id = ?id,
+                                directory = %directory.display(),
+                                error = %error,
+                                "Failed to load project environment for terminal; using process environment"
+                            );
+                            Vec::new()
+                        }
+                    }
+                }
+                None => Vec::new(),
+            };
+
+            if let Some(bus) = event_bus {
                 bus.dispatch_terminal(TerminalEvent::SpawnRequested {
                     id,
                     cwd,
                     shell,
                     env,
                 });
+                bus.process_events();
             } else {
-                nucleotide_logging::warn!("No event aggregator; terminal spawn not dispatched");
+                warn!("No event aggregator; terminal spawn not dispatched");
             }
         });
 
@@ -1544,6 +1604,80 @@ impl Workspace {
         self.embedded_terminal_panel = None;
         self.terminal_id = None;
         self.terminal_cwd = None;
+    }
+
+    fn refresh_environment_badge(&mut self, project_root: Option<PathBuf>, cx: &mut Context<Self>) {
+        let Some(project_root) = project_root else {
+            self.environment_badge = None;
+            cx.notify();
+            return;
+        };
+
+        if !project_root.join(".envrc").is_file() {
+            self.environment_badge = None;
+            cx.notify();
+            return;
+        }
+
+        self.environment_badge = Some(EnvironmentBadge::Loading);
+        cx.notify();
+
+        let project_environment = self.core.read(cx).project_environment.clone();
+        let runtime_handle = self.handle.clone();
+
+        cx.spawn(async move |this, cx| {
+            let loaded_root = project_root.clone();
+            let result = runtime_handle
+                .spawn(async move {
+                    if project_environment
+                        .get_cached_origin(&project_root)
+                        .await
+                        .is_some_and(|origin| origin == EnvironmentOrigin::NativeFlake)
+                    {
+                        return Ok(Some(EnvironmentBadge::NativeFlake));
+                    }
+
+                    project_environment
+                        .get_environment_for_directory(&project_root)
+                        .await
+                        .map(|environment| {
+                            EnvironmentBadge::from_environment_marker(
+                                environment.get("ZED_ENVIRONMENT").map(String::as_str),
+                            )
+                        })
+                })
+                .await;
+
+            let badge = match result {
+                Ok(Ok(badge)) => badge,
+                Ok(Err(error)) => {
+                    warn!(
+                        project_root = %loaded_root.display(),
+                        error = %error,
+                        "Failed to load project environment for status bar badge"
+                    );
+                    None
+                }
+                Err(error) => {
+                    warn!(
+                        project_root = %loaded_root.display(),
+                        error = %error,
+                        "Project environment badge task failed"
+                    );
+                    None
+                }
+            };
+
+            if let Some(this) = this.upgrade() {
+                this.update(cx, |workspace, cx| {
+                    if workspace.current_project_root.as_deref() == Some(loaded_root.as_path()) {
+                        workspace.environment_badge = badge;
+                        cx.notify();
+                    }
+                });
+            }
+        })
+        .detach();
     }
 
     fn toggle_terminal_panel(&mut self, cx: &mut Context<Self>) {
@@ -1726,6 +1860,34 @@ impl Workspace {
             .into_any_element()
     }
 
+    fn statusbar_environment_badge(
+        &self,
+        status_bar_tokens: &nucleotide_ui::tokens::StatusBarTokens,
+    ) -> Option<gpui::AnyElement> {
+        let badge = self.environment_badge?;
+        let badge_fg = status_bar_tokens.text_primary;
+        let badge_bg = nucleotide_ui::tokens::utils::with_alpha(badge_fg, 0.12);
+        let badge_border = nucleotide_ui::tokens::utils::with_alpha(badge_fg, 0.32);
+        let badge_text = format!("{} {}", badge.label(), badge.detail());
+
+        Some(
+            gpui::div()
+                .flex_none()
+                .flex()
+                .items_center()
+                .h(gpui::px(20.0))
+                .px_2()
+                .rounded(gpui::px(5.0))
+                .border_1()
+                .border_color(badge_border)
+                .bg(badge_bg)
+                .text_size(gpui::px(11.0))
+                .text_color(badge_fg)
+                .child(badge_text)
+                .into_any_element(),
+        )
+    }
+
     /// Build the main content row for the unified status bar.
     #[allow(clippy::too_many_arguments)]
     fn statusbar_main_content(
@@ -1765,6 +1927,12 @@ impl Workspace {
             )
             .child(self.statusbar_divider(divider_color))
             .child(gpui::div().child(position_text).min_w(gpui::px(80.0)));
+
+        if let Some(environment_badge) = self.statusbar_environment_badge(status_bar_tokens) {
+            row = row
+                .child(self.statusbar_divider(divider_color))
+                .child(environment_badge);
+        }
 
         if let Some(indicator) = lsp_indicator {
             row = row.child(self.statusbar_divider(divider_color)).child(
@@ -2908,7 +3076,10 @@ impl Workspace {
 
             //  Set up HelixLspBridge for the ProjectLspManager in constructor
             let event_sender = manager.get_event_sender();
-            let helix_bridge = HelixLspBridge::new(event_sender);
+            let env_provider = Arc::new(ProjectEnvironmentProvider::new(
+                core.read(cx).project_environment.clone(),
+            ));
+            let helix_bridge = HelixLspBridge::new_with_environment(event_sender, env_provider);
 
             // Connect the bridge to the manager
             let manager_for_bridge = manager.clone();
@@ -3011,6 +3182,7 @@ impl Workspace {
             input_coordinator,
             project_lsp_manager,
             current_project_root: root_path_for_manager.clone(),
+            environment_badge: None,
             _pending_lsp_startup: None,
             prefix_extractor: PrefixExtractor::new(),
             about_window,
@@ -3078,6 +3250,8 @@ impl Workspace {
 
         // Setup LSP state subscription for project status updates
         workspace.setup_lsp_state_subscription(cx);
+
+        workspace.refresh_environment_badge(workspace.current_project_root.clone(), cx);
 
         // Trigger initial project detection and LSP coordination if we have a project root
         if let Some(ref root) = workspace.current_project_root {
@@ -4971,6 +5145,7 @@ impl Workspace {
 
         // Check if this is a project root change
         let is_project_change = self.current_project_root.as_ref() != Some(&dir);
+        let old_project_root = self.current_project_root.clone();
 
         debug!(
             current_root = ?self.current_project_root,
@@ -5003,6 +5178,7 @@ impl Workspace {
 
             // Update current project root tracking
             self.current_project_root = Some(dir.clone());
+            self.refresh_environment_badge(Some(dir.clone()), cx);
 
             // Clear existing LSP state to avoid stale indicators from previous project
             if let Some(lsp_state_entity) = self.core.read(cx).lsp_state.clone() {
@@ -5087,7 +5263,11 @@ impl Workspace {
 
             //  Set up HelixLspBridge for the ProjectLspManager
             let event_sender = manager.get_event_sender();
-            let helix_bridge = nucleotide_lsp::HelixLspBridge::new(event_sender);
+            let env_provider = Arc::new(ProjectEnvironmentProvider::new(
+                self.core.read(cx).project_environment.clone(),
+            ));
+            let helix_bridge =
+                nucleotide_lsp::HelixLspBridge::new_with_environment(event_sender, env_provider);
 
             // Connect the bridge to the manager
             let manager_for_bridge = manager.clone();
@@ -5113,7 +5293,7 @@ impl Workspace {
             self.project_lsp_manager = Some(manager);
 
             // ⚡ CRITICAL: Restart LSP servers with new workspace root
-            self.restart_lsp_servers_for_workspace_change(&dir, cx);
+            self.restart_lsp_servers_for_workspace_change(old_project_root, &dir, cx);
 
             // Trigger project detection and LSP coordination
             self.trigger_project_detection_and_lsp_startup(dir, cx);
@@ -5130,6 +5310,7 @@ impl Workspace {
     #[instrument(skip(self, cx))]
     fn restart_lsp_servers_for_workspace_change(
         &mut self,
+        old_project_root: Option<std::path::PathBuf>,
         new_project_root: &std::path::Path,
         cx: &mut Context<Self>,
     ) {
@@ -5137,9 +5318,6 @@ impl Workspace {
             new_project_root = %new_project_root.display(),
             "🔄 LSP_RESTART: Starting LSP server restart for workspace change"
         );
-
-        // Get the old project root from the workspace state
-        let old_project_root = self.current_project_root.clone();
 
         // Get the LSP command sender from the Application
         let lsp_command_sender = self.core.read(cx).get_project_lsp_command_sender();
@@ -5341,6 +5519,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.current_project_root = root;
+        self.refresh_environment_badge(self.current_project_root.clone(), cx);
         if let Some(ref root) = self.current_project_root {
             add_recent_project(root, cx);
             info!(project_root = %root.display(), "Set current project root explicitly");
@@ -13165,6 +13344,20 @@ mod tests {
             lsp::CodeActionOrCommand::Command(command) => &command.title,
             lsp::CodeActionOrCommand::CodeAction(code_action) => &code_action.title,
         }
+    }
+
+    #[test]
+    fn environment_badge_appears_for_native_flake_marker_only() {
+        assert_eq!(
+            EnvironmentBadge::from_environment_marker(Some("native-flake")),
+            Some(EnvironmentBadge::NativeFlake)
+        );
+        assert_eq!(EnvironmentBadge::from_environment_marker(Some("cli")), None);
+        assert_eq!(
+            EnvironmentBadge::from_environment_marker(Some("worktree-shell")),
+            None
+        );
+        assert_eq!(EnvironmentBadge::from_environment_marker(None), None);
     }
 
     #[test]
