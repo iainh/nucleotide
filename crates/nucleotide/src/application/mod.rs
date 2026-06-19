@@ -23,7 +23,7 @@ pub use view_handler::ViewHandler;
 pub use workspace_handler::WorkspaceHandler;
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -175,6 +175,7 @@ pub struct Application {
     pub project_lsp_system_initialized: Arc<std::sync::atomic::AtomicBool>,
     pub shell_env_cache: Arc<tokio::sync::Mutex<nucleotide_env::ShellEnvironmentCache>>,
     pub project_environment: Arc<ProjectEnvironment>,
+    project_env_overrides: HashMap<String, Option<String>>,
     // V2 Event System Core
     pub core: crate::application::ApplicationCore,
     // Event aggregator for dispatching integration events
@@ -4762,6 +4763,47 @@ impl Application {
         ))
     }
 
+    fn restore_project_environment_overrides(&mut self) {
+        for (key, original_value) in self.project_env_overrides.drain() {
+            match original_value {
+                Some(value) => {
+                    // SAFETY: Restoring process environment keys previously changed by Nucleotide
+                    // before applying another project environment snapshot.
+                    unsafe {
+                        std::env::set_var(&key, value);
+                    }
+                }
+                None => {
+                    // SAFETY: Removing process environment keys that Nucleotide introduced for
+                    // the previous project environment snapshot.
+                    unsafe {
+                        std::env::remove_var(&key);
+                    }
+                }
+            }
+        }
+    }
+
+    fn apply_project_environment_overrides(&mut self, env: &HashMap<String, String>) -> usize {
+        self.restore_project_environment_overrides();
+
+        let mut env_updates = 0;
+        for (key, value) in env {
+            if should_update_env_var(key) {
+                self.project_env_overrides
+                    .insert(key.clone(), std::env::var(key).ok());
+                // SAFETY: Setting a narrow safelist of environment variables for legacy Helix
+                // process inheritance. These overrides are restored before the next project load.
+                unsafe {
+                    std::env::set_var(key, value);
+                }
+                env_updates += 1;
+            }
+        }
+
+        env_updates
+    }
+
     /// Handle EnsureDocumentTracked command
     #[instrument(skip(self))]
     async fn handle_restart_servers_for_workspace_change_command(
@@ -4791,10 +4833,12 @@ impl Application {
             );
         }
 
-        // SHELL ENVIRONMENT CAPTURE: Get shell environment for new workspace to solve macOS app bundle PATH issues
+        self.restore_project_environment_overrides();
+
+        // PROJECT ENVIRONMENT CAPTURE: Get the workspace environment for LSP tools.
         info!(
             new_workspace_root = %new_workspace_root.display(),
-            "Capturing shell environment for LSP servers to access cargo/rustc tools (with fast timeout)"
+            "Capturing project environment for LSP servers to access cargo/rustc tools"
         );
 
         // Clear cache for old workspace if different
@@ -4812,9 +4856,10 @@ impl Application {
             );
         }
 
-        // Capture environment for new workspace (this will cache it for LSP server startup)
-        // Use aggressive timeout to prevent blocking the UI - fast fallback is better than hanging
-        let env_capture_timeout = tokio::time::Duration::from_secs(3); // 3 second timeout for shell capture
+        // Capture environment for new workspace (this will cache it for LSP server startup).
+        // Native `nix print-dev-env` may need longer on a cold cache; legacy shell capture
+        // still has its own short internal timeout.
+        let env_capture_timeout = tokio::time::Duration::from_secs(35);
         let env_result = tokio::time::timeout(env_capture_timeout, async {
             let mut cache = self.shell_env_cache.lock().await;
             cache.get_environment(new_workspace_root).await
@@ -4826,11 +4871,11 @@ impl Application {
             Err(_timeout) => {
                 warn!(
                     new_workspace_root = %new_workspace_root.display(),
-                    timeout_seconds = 3,
-                    "Shell environment capture timed out - using process environment as fallback for LSP servers"
+                    timeout_seconds = env_capture_timeout.as_secs(),
+                    "Project environment capture timed out - using process environment as fallback for LSP servers"
                 );
                 info!(
-                    "Using fast fallback to ensure LSP startup is not blocked - this should still provide basic PATH resolution"
+                    "Using fallback to ensure LSP startup is not blocked - this should still provide basic PATH resolution"
                 );
                 // Fallback: use current process environment which should still have basic Nix PATH
                 Ok(std::env::vars().collect())
@@ -4842,23 +4887,12 @@ impl Application {
                     new_workspace_root = %new_workspace_root.display(),
                     env_var_count = env.len(),
                     path_length = env.get("PATH").map(|p| p.len()).unwrap_or(0),
-                    "Successfully captured shell environment for LSP servers"
+                    "Successfully captured project environment for LSP servers"
                 );
 
-                // CRITICAL: Set environment variables globally so LSP servers inherit them
-                // This solves the macOS app bundle PATH isolation issue
-                let mut env_updates = 0;
-                for (key, value) in &env {
-                    // Only update important environment variables to avoid side effects
-                    if should_update_env_var(key) {
-                        // SAFETY: Setting environment variables for LSP server inheritance
-                        // This is safe because we're controlling which variables get set
-                        unsafe {
-                            std::env::set_var(key, value);
-                        }
-                        env_updates += 1;
-                    }
-                }
+                // Legacy bridge: keep a scoped safelist of process-level overrides for Helix
+                // launch paths that still inherit from the process environment.
+                let env_updates = self.apply_project_environment_overrides(&env);
 
                 info!(
                     env_updates = env_updates,
@@ -6253,6 +6287,7 @@ pub fn init_editor(
             nucleotide_env::ShellEnvironmentCache::new(),
         )),
         project_environment, // Already created above before LSP system initialization
+        project_env_overrides: HashMap::new(),
         // V2 Event System Core
         core,
         // Event aggregator for UI and workspace events

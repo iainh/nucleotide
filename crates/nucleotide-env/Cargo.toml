@@ -8,6 +8,7 @@ repository = "https://github.com/iainh/nucleotide"
 
 [dependencies]
 nucleotide-logging.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync", "time", "process"] }
 tracing.workspace = true
@@ -16,3 +17,4 @@ tracing.workspace = true
 ignored = ["tracing"]
 
 [dev-dependencies]
+tempfile.workspace = true
