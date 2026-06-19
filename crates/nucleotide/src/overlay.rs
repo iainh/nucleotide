@@ -1,12 +1,11 @@
-use crate::types::{HoverDocEntry, RegexSelectionAction};
+use crate::types::RegexSelectionAction;
 use gpui::{
     App, AppContext, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, Render,
-    StatefulInteractiveElement, Styled, Window, div, px,
+    InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, Render, Styled, Window,
+    div, px,
 };
 use helix_stdx::rope::RopeSliceExt;
 use nucleotide_core::EventBus;
-use nucleotide_ui::DesignTokens;
 use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::completion_v2::CompletionView;
 use nucleotide_ui::picker::Picker;
@@ -14,7 +13,6 @@ use nucleotide_ui::picker_view::{PickerItem, PickerView};
 use nucleotide_ui::prompt::{Prompt, PromptElement};
 use nucleotide_ui::prompt_view::PromptView;
 use nucleotide_ui::theme_manager::HelixThemedContext; // bring dispatch_* trait methods into scope
-use nucleotide_ui::{MarkdownStyle, markdown};
 use std::sync::{Arc, Mutex};
 
 pub struct OverlayView {
@@ -29,7 +27,6 @@ pub struct OverlayView {
             helix_lsp::OffsetEncoding,
         )>,
     >,
-    hover_popup: Option<HoverPopupState>,
     diagnostics_panel: Option<Entity<crate::DiagnosticsPanel>>,
     terminal_panel: Option<Entity<nucleotide_terminal_panel::TerminalPanel>>,
     // Resizable terminal panel height (pixels)
@@ -140,45 +137,6 @@ fn apply_code_action_or_command(
     changed_documents
 }
 
-#[derive(Clone)]
-struct HoverPopupState {
-    entries: Vec<HoverDocEntry>,
-    active_index: usize,
-}
-
-impl HoverPopupState {
-    fn new(entries: Vec<HoverDocEntry>) -> Self {
-        Self {
-            entries,
-            active_index: 0,
-        }
-    }
-
-    fn len(&self) -> usize {
-        self.entries.len()
-    }
-
-    fn current_entry(&self) -> Option<&HoverDocEntry> {
-        self.entries.get(self.active_index)
-    }
-
-    fn next(&mut self) {
-        if !self.entries.is_empty() {
-            self.active_index = (self.active_index + 1) % self.entries.len();
-        }
-    }
-
-    fn prev(&mut self) {
-        if !self.entries.is_empty() {
-            if self.active_index == 0 {
-                self.active_index = self.entries.len() - 1;
-            } else {
-                self.active_index -= 1;
-            }
-        }
-    }
-}
-
 #[derive(Clone, Copy)]
 enum PromptSubmitAction {
     Command,
@@ -209,7 +167,6 @@ impl OverlayView {
             native_prompt_view: None,
             completion_view: None,
             code_action_pairs: None,
-            hover_popup: None,
             diagnostics_panel: None,
             terminal_panel: None,
             terminal_height_px: 220.0,
@@ -237,7 +194,6 @@ impl OverlayView {
             && self.native_prompt_view.is_none()
             && self.completion_view.is_none()
             && self.code_action_pairs.is_none()
-            && self.hover_popup.is_none()
             && self.diagnostics_panel.is_none()
             && self.terminal_panel.is_none();
 
@@ -329,28 +285,6 @@ impl OverlayView {
         }
     }
 
-    pub fn has_hover_popup(&self) -> bool {
-        self.hover_popup.is_some()
-    }
-
-    pub fn dismiss_hover_popup(&mut self, cx: &mut Context<Self>) {
-        if self.hover_popup.take().is_some() {
-            cx.emit(DismissEvent);
-            cx.notify();
-        }
-    }
-
-    pub fn advance_hover_popup(&mut self, forward: bool, cx: &mut Context<Self>) {
-        if let Some(state) = &mut self.hover_popup {
-            if forward {
-                state.next();
-            } else {
-                state.prev();
-            }
-            cx.notify();
-        }
-    }
-
     /// Handle Enter key for accepting the highlighted item in completion/code-action popup
     pub fn handle_completion_enter_key(&self, cx: &mut Context<Self>) -> bool {
         // Reuse the same acceptance flow as Tab
@@ -382,7 +316,6 @@ impl OverlayView {
         self.native_prompt_view = None;
         self.completion_view = None;
         self.code_action_pairs = None;
-        self.hover_popup = None;
 
         cx.notify();
     }
@@ -633,18 +566,6 @@ impl OverlayView {
                 )
                 .detach();
 
-                cx.notify();
-            }
-            crate::Update::HoverDocs(entries) => {
-                nucleotide_logging::info!(
-                    "Overlay received hover documentation ({} entries)",
-                    entries.len()
-                );
-                if entries.is_empty() {
-                    self.hover_popup = None;
-                } else {
-                    self.hover_popup = Some(HoverPopupState::new(entries.clone()));
-                }
                 cx.notify();
             }
             crate::Update::DiagnosticsPanel(panel) => {
@@ -1549,81 +1470,6 @@ impl OverlayView {
         (fallback_x, fallback_y)
     }
 
-    fn render_hover_popup(
-        &self,
-        state: &HoverPopupState,
-        tokens: &DesignTokens,
-    ) -> gpui::AnyElement {
-        let Some(entry) = state.current_entry() else {
-            return div().into_any_element();
-        };
-
-        let title = if state.len() > 1 {
-            format!(
-                "[{}/{}] {}",
-                state.active_index + 1,
-                state.len(),
-                entry.server_name
-            )
-        } else {
-            entry.server_name.clone()
-        };
-
-        let instructions = if state.len() > 1 {
-            "alt+n / alt+p to cycle"
-        } else {
-            "esc to dismiss"
-        };
-
-        div()
-            .w(px(380.0))
-            .max_w(px(460.0))
-            .bg(tokens.chrome.surface_elevated)
-            .border_1()
-            .border_color(tokens.chrome.border_default)
-            .rounded(px(8.0))
-            .shadow(vec![
-                tokens.chrome.shadow_md.to_box_shadow(false),
-                tokens.chrome.inset_highlight.to_box_shadow(true),
-            ])
-            .child(
-                div()
-                    .px(px(12.0))
-                    .py(px(8.0))
-                    .border_b_1()
-                    .border_color(tokens.chrome.border_muted)
-                    .text_sm()
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(tokens.chrome.text_on_chrome)
-                    .child(title),
-            )
-            .child(
-                div()
-                    .id("hover-doc-scroll")
-                    .px(px(12.0))
-                    .py(px(10.0))
-                    .max_h(px(320.0))
-                    .overflow_y_scroll()
-                    .child(markdown(
-                        entry.markdown.clone(),
-                        MarkdownStyle::from_tokens(tokens).compact(),
-                    )),
-            )
-            .child(
-                div()
-                    .px(px(12.0))
-                    .pb(px(8.0))
-                    .text_xs()
-                    .text_color(tokens.chrome.text_chrome_secondary)
-                    .child(if state.len() > 1 {
-                        format!("{instructions} · esc to dismiss")
-                    } else {
-                        instructions.to_string()
-                    }),
-            )
-            .into_any_element()
-    }
-
     /// Get workspace layout information for completion positioning
     /// Attempts to access real workspace dimensions, falls back to reasonable defaults
     fn get_workspace_layout_info(&self, cx: &Context<Self>) -> WorkspaceLayoutInfo {
@@ -1917,38 +1763,6 @@ impl Render for OverlayView {
                         // Consume clicks inside the panel area so they don't bubble to the overlay
                         .on_mouse_down(MouseButton::Left, |_, _, _| {})
                         .child(diag_panel.clone()),
-                )
-                .into_any_element();
-        }
-
-        if let Some(state) = self.hover_popup.as_ref() {
-            nucleotide_logging::info!("Render overlay branch: hover popup");
-            use gpui::{Anchor, anchored, point};
-
-            let (cursor_x, cursor_y) = self.calculate_completion_position(cx);
-            let theme = cx.theme();
-            let tokens = &theme.tokens;
-
-            let content = self.render_hover_popup(state, tokens);
-
-            return div()
-                .key_context("OverlayHoverDocs")
-                .absolute()
-                .size_full()
-                .top_0()
-                .left_0()
-                .child(
-                    anchored()
-                        .position(point(cursor_x, cursor_y))
-                        .anchor(Anchor::TopLeft)
-                        .offset(point(px(0.0), px(4.0)))
-                        .snap_to_window_with_margin(px(8.0))
-                        .child(
-                            div()
-                                .occlude()
-                                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                                .child(content),
-                        ),
                 )
                 .into_any_element();
         }
