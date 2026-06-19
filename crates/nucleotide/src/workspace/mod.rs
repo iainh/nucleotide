@@ -3346,9 +3346,9 @@ impl Workspace {
                             .justify_center()
                             .rounded(tokens.sizes.radius_sm)
                             .cursor_pointer()
-                            .text_sm()
-                            .text_color(tokens.chrome.text_chrome_secondary)
-                            .hover(|button| button.bg(tokens.chrome.surface_hover))
+                            .hover(|button| {
+                                button.bg(tokens.button_tokens().ghost_background_hover)
+                            })
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|workspace, _event, _window, cx| {
@@ -3356,7 +3356,12 @@ impl Workspace {
                                     cx.stop_propagation();
                                 }),
                             )
-                            .child("x"),
+                            .child(
+                                svg()
+                                    .path("icons/close.svg")
+                                    .size(px(12.0))
+                                    .text_color(tokens.chrome.text_chrome_secondary),
+                            ),
                     ),
             )
             .child(body_container)
