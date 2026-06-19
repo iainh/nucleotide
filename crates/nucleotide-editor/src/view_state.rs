@@ -1,7 +1,11 @@
 // ABOUTME: Persistent native editor view state shared by GPUI render phases
 // ABOUTME: Bundles viewport, metrics, overlay, scrollbar, and selection state
 
-use std::{cell::Cell, rc::Rc, time::Duration};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+    time::Duration,
+};
 
 use gpui::{Pixels, Point, Size, TextStyle, TextSystem, px};
 use helix_view::{DocumentId, Editor, Theme, ViewId};
@@ -13,8 +17,8 @@ use crate::{
     EditorSelectionDragState, EditorSurfaceMetrics, EditorSurfacePointerEvent, EditorTextMetrics,
     EditorViewport, EditorViewportContentLayout, EditorViewportContentUpdate,
     EditorViewportScrollRequest, EditorViewportSurfaceLayout, EditorViewportSurfaceUpdate,
-    LineLayoutCache, ViewportScrollUpdate, begin_editor_pointer_selection_at_event,
-    update_editor_pointer_selection_at_event,
+    GutterLineAnchor, GutterLinePlan, GutterRunButtonHit, LineLayoutCache, ViewportScrollUpdate,
+    begin_editor_pointer_selection_at_event, update_editor_pointer_selection_at_event,
 };
 
 #[derive(Clone)]
@@ -26,6 +30,8 @@ pub struct EditorViewState {
     selection_drag_state: EditorSelectionDragState,
     overlay_state: EditorOverlayState,
     line_height: Rc<Cell<Pixels>>,
+    gutter_extra_columns: Rc<Cell<u16>>,
+    gutter_run_button_lines: Rc<RefCell<Vec<usize>>>,
 }
 
 pub struct EditorViewFrameState {
@@ -36,13 +42,15 @@ pub struct EditorViewFrameState {
     pub scroll_line_offset: Pixels,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct EditorViewLayoutSnapshot {
     pub line_height: Pixels,
     pub cell_width: Pixels,
     pub gutter_width: Pixels,
+    pub gutter_extra_columns: u16,
     pub cursor_overlay_bounds: Option<(Point<Pixels>, Size<Pixels>)>,
     pub cursor_completion_anchor: Option<(Point<Pixels>, Size<Pixels>)>,
+    pub gutter_line_anchors: Vec<GutterLineAnchor>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,6 +78,8 @@ impl EditorViewState {
             selection_drag_state: EditorSelectionDragState::default(),
             overlay_state: EditorOverlayState::new(),
             line_height: Rc::new(Cell::new(line_height)),
+            gutter_extra_columns: Rc::new(Cell::new(0)),
+            gutter_run_button_lines: Rc::new(RefCell::new(Vec::new())),
         }
     }
 
@@ -128,12 +138,38 @@ impl EditorViewState {
         self.viewport.content_visual_rows()
     }
 
+    pub fn set_gutter_extra_columns(&self, columns: u16) -> bool {
+        let changed = self.gutter_extra_columns.get() != columns;
+        self.gutter_extra_columns.set(columns);
+        changed
+    }
+
+    pub fn gutter_extra_columns(&self) -> u16 {
+        self.gutter_extra_columns.get()
+    }
+
+    pub fn set_gutter_run_button_lines(&self, lines: impl IntoIterator<Item = usize>) -> bool {
+        let mut lines = lines.into_iter().collect::<Vec<_>>();
+        lines.sort_unstable();
+        lines.dedup();
+
+        let mut current = self.gutter_run_button_lines.borrow_mut();
+        let changed = *current != lines;
+        *current = lines;
+        changed
+    }
+
+    pub fn gutter_run_button_lines(&self) -> Vec<usize> {
+        self.gutter_run_button_lines.borrow().clone()
+    }
+
     pub fn sync_content_layout(
         &mut self,
         document: &helix_view::Document,
         view: &helix_view::View,
-        layout: EditorViewportContentLayout<'_>,
+        mut layout: EditorViewportContentLayout<'_>,
     ) -> EditorViewportContentUpdate {
+        layout.extra_gutter_columns = self.gutter_extra_columns.get();
         self.viewport.sync_content_layout(document, view, layout)
     }
 
@@ -196,9 +232,11 @@ impl EditorViewState {
     ) -> Option<EditorViewFrameState> {
         let _timer = PerfTimer::new("EditorViewState::sync_frame_layout")
             .with_warn_threshold(Duration::from_millis(8));
+        let gutter_extra_columns = self.gutter_extra_columns.get();
         self.line_height.set(layout.line_height);
         self.surface_metrics
             .set(layout.line_height, layout.cell_width);
+        layout.extra_gutter_columns = gutter_extra_columns;
         layout.cursor_reveal = layout
             .cursor_reveal
             .or_else(|| self.viewport.take_cursor_reveal_request());
@@ -209,6 +247,8 @@ impl EditorViewState {
 
         self.overlay_state
             .set_gutter_width_from_columns(viewport_update.gutter_columns, layout.cell_width);
+        self.overlay_state
+            .set_applied_gutter_extra_columns(gutter_extra_columns);
 
         let line_cache = self.surface_metrics.line_cache();
         line_cache.clear();
@@ -227,14 +267,37 @@ impl EditorViewState {
         self.overlay_state.apply_cursor_overlay_plan(overlay_plan);
     }
 
+    pub fn set_gutter_line_anchors_from_plans(
+        &self,
+        plans: &[GutterLinePlan],
+        surface_origin: Point<Pixels>,
+    ) {
+        self.overlay_state
+            .set_gutter_line_anchors_from_plans(plans, surface_origin);
+    }
+
+    pub fn set_gutter_run_button_hits(&self, hits: Vec<GutterRunButtonHit>) {
+        self.overlay_state.set_gutter_run_button_hits(hits);
+    }
+
+    pub fn clear_gutter_run_button_hits(&self) {
+        self.overlay_state.clear_gutter_run_button_hits();
+    }
+
+    pub fn gutter_run_button_line_at(&self, position: Point<Pixels>) -> Option<usize> {
+        self.overlay_state.gutter_run_button_line_at(position)
+    }
+
     pub fn layout_snapshot(&self) -> EditorViewLayoutSnapshot {
         let metrics = self.surface_metrics.get();
         EditorViewLayoutSnapshot {
             line_height: self.line_height(),
             cell_width: metrics.cell_width,
             gutter_width: self.overlay_state.gutter_width(),
+            gutter_extra_columns: self.overlay_state.gutter_extra_columns(),
             cursor_overlay_bounds: self.overlay_state.cursor_overlay_bounds(),
             cursor_completion_anchor: self.overlay_state.cursor_completion_anchor(),
+            gutter_line_anchors: self.overlay_state.gutter_line_anchors(),
         }
     }
 
@@ -250,6 +313,7 @@ impl EditorViewState {
             editor,
             doc_id,
             view_id,
+            self.gutter_extra_columns.get(),
             &line_cache,
             &self.selection_drag_state,
             event,
@@ -268,6 +332,7 @@ impl EditorViewState {
             editor,
             doc_id,
             view_id,
+            self.gutter_extra_columns.get(),
             &line_cache,
             &self.selection_drag_state,
             event,
@@ -573,6 +638,15 @@ mod tests {
     }
 
     #[test]
+    fn view_state_tracks_sorted_run_button_lines() {
+        let state = EditorViewState::new(px(20.0), px(8.0));
+
+        assert!(state.set_gutter_run_button_lines([8, 3, 8, 1]));
+        assert_eq!(state.gutter_run_button_lines(), vec![1, 3, 8]);
+        assert!(!state.set_gutter_run_button_lines([1, 3, 8]));
+    }
+
+    #[test]
     fn view_state_forwards_cursor_reveal_requests_to_viewport() {
         let state = EditorViewState::new(px(20.0), px(8.0));
 
@@ -822,6 +896,7 @@ mod tests {
                     cell_width: px(8.0),
                     line_height: px(20.0),
                     minimum_columns: 1,
+                    extra_gutter_columns: 0,
                     scrolloff: Config::default().scrolloff,
                     cursor_reveal: None,
                 },
@@ -864,6 +939,7 @@ mod tests {
                     bounds: Bounds::new(point(px(0.0), px(0.0)), size(px(240.0), px(101.0))),
                     cell_width: px(8.0),
                     minimum_columns: 1,
+                    extra_gutter_columns: 0,
                 },
             )
             .unwrap();

@@ -265,6 +265,7 @@ pub struct EditorViewportContentLayout<'a> {
     pub bounds: Bounds<Pixels>,
     pub cell_width: Pixels,
     pub minimum_columns: u16,
+    pub extra_gutter_columns: u16,
 }
 
 impl<'a> EditorViewportContentLayout<'a> {
@@ -278,6 +279,7 @@ impl<'a> EditorViewportContentLayout<'a> {
             bounds,
             cell_width,
             minimum_columns: EDITOR_MINIMUM_VIEWPORT_COLUMNS,
+            extra_gutter_columns: 0,
         }
     }
 }
@@ -289,6 +291,7 @@ pub struct EditorViewportSurfaceLayout<'a> {
     pub cell_width: Pixels,
     pub line_height: Pixels,
     pub minimum_columns: u16,
+    pub extra_gutter_columns: u16,
     pub scrolloff: usize,
     pub cursor_reveal: Option<EditorCursorReveal>,
 }
@@ -308,6 +311,7 @@ impl<'a> EditorViewportSurfaceLayout<'a> {
             cell_width,
             line_height,
             minimum_columns: EDITOR_MINIMUM_VIEWPORT_COLUMNS,
+            extra_gutter_columns: 0,
             scrolloff,
             cursor_reveal,
         }
@@ -779,6 +783,7 @@ impl EditorViewport {
             bounds: layout.bounds,
             cell_width: layout.cell_width,
             minimum_columns: layout.minimum_columns,
+            extra_gutter_columns: layout.extra_gutter_columns,
         };
         let (gutter_columns, metrics) = {
             let mut metrics_cache = self.document_metrics_cache.borrow_mut();
@@ -1006,7 +1011,9 @@ fn editor_viewport_content_metrics(
     view: &helix_view::View,
     layout: EditorViewportContentLayout<'_>,
 ) -> (u16, EditorDocumentMetrics) {
-    let gutter_columns = view.gutter_offset(document);
+    let gutter_columns = view
+        .gutter_offset(document)
+        .saturating_add(layout.extra_gutter_columns);
     let metrics = metrics_cache.resolve(
         document,
         layout.theme,
@@ -1031,7 +1038,9 @@ fn editor_viewport_surface_metrics(
     let mut surface_view = view.clone();
     surface_view.area =
         helix_view_area_for_surface(0, current_metrics.viewport_columns, visible_rows);
-    let surface_gutter_columns = surface_view.gutter_offset(document);
+    let surface_gutter_columns = surface_view
+        .gutter_offset(document)
+        .saturating_add(layout.extra_gutter_columns);
 
     if surface_gutter_columns == current_gutter_columns {
         return (current_gutter_columns, current_metrics);
@@ -1707,6 +1716,7 @@ mod tests {
                 bounds,
                 cell_width: px(8.0),
                 minimum_columns: 1,
+                extra_gutter_columns: 0,
             },
         );
 
@@ -1790,6 +1800,7 @@ mod tests {
                     cell_width: px(8.0),
                     line_height: px(20.0),
                     minimum_columns: 1,
+                    extra_gutter_columns: 0,
                     scrolloff: Config::default().scrolloff,
                     cursor_reveal: None,
                 },
@@ -1840,6 +1851,7 @@ mod tests {
                     cell_width: px(8.0),
                     line_height: px(20.0),
                     minimum_columns: 1,
+                    extra_gutter_columns: 0,
                     scrolloff: Config::default().scrolloff,
                     cursor_reveal: None,
                 },
@@ -1868,6 +1880,7 @@ mod tests {
                 cell_width: px(8.0),
                 line_height: px(20.0),
                 minimum_columns: 1,
+                extra_gutter_columns: 0,
                 scrolloff: Config::default().scrolloff,
                 cursor_reveal: None,
             },
@@ -1876,6 +1889,41 @@ mod tests {
         assert_eq!(view.area, update.view_area_plan.target_area);
         assert_eq!(update.gutter_columns, view.gutter_offset(&document));
         assert_eq!(viewport.content_visual_rows(), update.visual_rows);
+    }
+
+    #[test]
+    fn surface_layout_sync_reserves_extra_gutter_columns() {
+        let (mut document, mut view) = test_document_and_view("one\ntwo\nthree\n");
+        let view_id = view.id;
+        let mut viewport = EditorViewport::new(px(20.0));
+        let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(240.0), px(101.0)));
+        let extra_gutter_columns = 3;
+
+        let update = viewport.sync_surface_layout_for_view(
+            &mut document,
+            &mut view,
+            view_id,
+            EditorViewportSurfaceLayout {
+                theme: None,
+                bounds,
+                cell_width: px(8.0),
+                line_height: px(20.0),
+                minimum_columns: 1,
+                extra_gutter_columns,
+                scrolloff: Config::default().scrolloff,
+                cursor_reveal: None,
+            },
+        );
+
+        assert_eq!(
+            update.gutter_columns,
+            view.gutter_offset(&document)
+                .saturating_add(extra_gutter_columns)
+        );
+        assert_eq!(
+            viewport.viewport_bounds().size,
+            editor_text_viewport_size_for_bounds(bounds, update.gutter_columns, px(8.0))
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1914,6 +1962,7 @@ mod tests {
                     cell_width: px(8.0),
                     line_height: px(20.0),
                     minimum_columns: 1,
+                    extra_gutter_columns: 0,
                     scrolloff: Config::default().scrolloff,
                     cursor_reveal: Some(EditorCursorReveal::Scrolloff),
                 },
@@ -1940,6 +1989,7 @@ mod tests {
             cell_width: px(8.0),
             line_height: px(20.0),
             minimum_columns: 1,
+            extra_gutter_columns: 0,
             scrolloff: Config::default().scrolloff,
             cursor_reveal: None,
         };
@@ -1974,6 +2024,7 @@ mod tests {
             cell_width: px(8.0),
             line_height: px(20.0),
             minimum_columns: 1,
+            extra_gutter_columns: 0,
             scrolloff: Config::default().scrolloff,
             cursor_reveal: None,
         };
@@ -2033,6 +2084,7 @@ mod tests {
                     cell_width: px(8.0),
                     line_height: px(20.0),
                     minimum_columns: 1,
+                    extra_gutter_columns: 0,
                     scrolloff: Config::default().scrolloff,
                     cursor_reveal: Some(EditorCursorReveal::Scrolloff),
                 },
@@ -2366,6 +2418,7 @@ mod tests {
             cell_width: px(10.0),
             line_height: px(20.0),
             minimum_columns: 1,
+            extra_gutter_columns: 0,
             scrolloff: Config::default().scrolloff,
             cursor_reveal: None,
         };
@@ -2414,6 +2467,7 @@ mod tests {
                     cell_width: px(8.0),
                     line_height: px(20.0),
                     minimum_columns: 1,
+                    extra_gutter_columns: 0,
                     scrolloff: Config::default().scrolloff,
                     cursor_reveal: None,
                 },

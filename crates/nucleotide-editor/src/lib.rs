@@ -26,6 +26,7 @@ pub mod metrics;
 pub mod overlay_state;
 pub mod render_snapshot;
 pub mod ruler;
+pub mod run_gutter;
 pub mod scroll_manager;
 pub mod scrollbar;
 pub mod selection;
@@ -106,13 +107,17 @@ pub use line_text::{
     line_text_without_trailing_newline, shared_line_text_without_trailing_newline,
 };
 pub use metrics::EditorTextMetrics;
-pub use overlay_state::EditorOverlayState;
+pub use overlay_state::{EditorOverlayState, GutterLineAnchor};
 pub use render_snapshot::{
     EditorRenderSnapshot, document_render_snapshot, render_snapshot_for_cursor,
 };
 pub use ruler::{
     DocumentRulerPaintParams, RulerPaintPlan, document_ruler_paint_plans, paint_document_rulers,
     paint_visible_rulers, visible_ruler_bounds, visible_ruler_paint_plans,
+};
+pub use run_gutter::{
+    GutterRunButtonHit, run_gutter_button_bounds, run_gutter_button_left, run_gutter_button_size,
+    run_gutter_extra_columns, run_gutter_icon_bounds, run_gutter_required_width,
 };
 pub use scroll_manager::ScrollManager;
 pub use scrollbar::{

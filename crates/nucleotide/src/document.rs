@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use gpui::{
     App, Bounds, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable,
     InteractiveElement, IntoElement, ParentElement, Pixels, Render, SharedString, Styled,
@@ -5,6 +7,7 @@ use gpui::{
 };
 // Import helix's syntax highlighting system
 use helix_view::ViewId;
+use nucleotide_events::v2::run::ResolvedTask;
 use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::theme_manager::HelixThemedContext;
 
@@ -14,6 +17,7 @@ use nucleotide_editor::{
     EditorSurfacePointerEvent, EditorViewLayoutSnapshot, EditorViewState, NativeEditorFramePalette,
     NativeEditorFrameRenderParams, NativeEditorFrameThemeStyles, NativeEditorView,
     ViewportScrollUpdate, log_pointer_selection_outcome, render_native_editor_frame,
+    run_gutter_extra_columns,
 };
 
 fn handle_editor_pointer_selection(
@@ -55,6 +59,22 @@ fn focus_editor_view(core: &Entity<Core>, view_id: ViewId, cx: &mut App) {
         }
 
         cx.emit(crate::Update::ViewFocused { view_id });
+        cx.notify();
+    });
+}
+
+fn run_gutter_task(core: &Entity<Core>, view_id: ViewId, task: ResolvedTask, cx: &mut App) {
+    core.update(cx, |core, cx| {
+        if core.editor.tree.try_get(view_id).is_none() {
+            return;
+        }
+
+        if core.editor.tree.focus != view_id {
+            core.editor.focus(view_id);
+        }
+
+        cx.emit(crate::Update::ViewFocused { view_id });
+        cx.emit(crate::Update::RunTask(task));
         cx.notify();
     });
 }
@@ -149,6 +169,18 @@ impl EventEmitter<DismissEvent> for DocumentView {}
 
 impl Render for DocumentView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let runnable_tasks_by_line = runnable_tasks_by_line(&self.core, self.view_id, cx);
+        let layout_snapshot = self.editor_state.layout_snapshot();
+        let desired_gutter_extra_columns = if runnable_tasks_by_line.is_empty() {
+            0
+        } else {
+            run_gutter_extra_columns(layout_snapshot.line_height, layout_snapshot.cell_width)
+        };
+        self.editor_state
+            .set_gutter_extra_columns(desired_gutter_extra_columns);
+        self.editor_state
+            .set_gutter_run_button_lines(runnable_tasks_by_line.keys().copied());
+
         let editor_content = {
             let core = self.core.clone();
             let view_id = self.view_id;
@@ -206,8 +238,18 @@ impl Render for DocumentView {
                     let core = self.core.clone();
                     let view_id = self.view_id;
                     let editor_state = self.editor_state.clone();
+                    let runnable_tasks_by_line = runnable_tasks_by_line.clone();
 
                     move |phase, event, cx| {
+                        if phase == EditorPointerSelectionPhase::Begin
+                            && let Some(task) = editor_state
+                                .gutter_run_button_line_at(event.position)
+                                .and_then(|line| runnable_tasks_by_line.get(&line).cloned())
+                        {
+                            run_gutter_task(&core, view_id, task, cx);
+                            return;
+                        }
+
                         handle_editor_pointer_selection(
                             &core,
                             view_id,
@@ -232,10 +274,46 @@ impl Render for DocumentView {
             .id(SharedString::from(format!("doc-view-{:?}", self.view_id)))
             .w_full()
             .h_full()
+            .relative()
             .flex()
             .flex_col()
             .child(editor_content)
     }
+}
+
+fn runnable_tasks_by_line(
+    core: &Entity<Core>,
+    view_id: ViewId,
+    cx: &mut Context<DocumentView>,
+) -> BTreeMap<usize, ResolvedTask> {
+    let document = {
+        let core = core.read(cx);
+        let Some(view) = core.editor.tree.try_get(view_id) else {
+            return BTreeMap::new();
+        };
+        let Some(doc) = core.editor.documents.get(&view.doc) else {
+            return BTreeMap::new();
+        };
+        let Some(path) = doc.path().cloned() else {
+            return BTreeMap::new();
+        };
+
+        crate::runnables::RunnableDocument {
+            path,
+            text: String::from(doc.text().slice(..)),
+            cursor_line: 0,
+            project_root: None,
+        }
+    };
+
+    crate::runnables::discover_local_rust_runnables(&document)
+        .into_iter()
+        .filter(|task| !crate::runnables::is_file_tests_runnable(task))
+        .filter_map(|task| {
+            let source = task.source()?;
+            Some((source.line, task))
+        })
+        .collect()
 }
 
 impl Focusable for DocumentView {
@@ -302,8 +380,30 @@ fn paint_document_content(
                     fallback_gutter_color: ui_tokens.editor.line_number,
                     diagnostic_highlight_base: tokens.chrome.text_on_chrome,
                     fallback_ruler_color: ui_tokens.chrome.border_default,
+                    run_button_color: tokens.editor.success,
                 },
             },
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::px;
+    use nucleotide_editor::run_gutter_button_left;
+
+    #[test]
+    fn run_gutter_extra_columns_tracks_cell_width() {
+        assert_eq!(run_gutter_extra_columns(px(20.0), px(12.0)), 2);
+        assert_eq!(run_gutter_extra_columns(px(20.0), px(8.0)), 3);
+    }
+
+    #[test]
+    fn run_gutter_button_is_centered_in_reserved_width() {
+        assert_eq!(
+            run_gutter_button_left(px(100.0), px(24.0), px(14.0)),
+            px(81.0)
+        );
+    }
 }

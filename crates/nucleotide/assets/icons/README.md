@@ -16,5 +16,6 @@ Current Lucide-sourced additions:
 - `maximize.svg`
 - `minimize.svg`
 - `pin.svg`
+- `play.svg`
 - `plus.svg`
 - `triangle-alert.svg`
