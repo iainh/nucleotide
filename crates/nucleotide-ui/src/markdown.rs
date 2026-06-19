@@ -24,7 +24,7 @@ use std::{
 };
 
 use crate::theme_utils::color_to_hsla;
-use crate::tokens::{DesignTokens, with_alpha};
+use crate::tokens::DesignTokens;
 
 #[derive(Clone, Debug)]
 pub struct MarkdownStyle {
@@ -47,7 +47,7 @@ impl MarkdownStyle {
             secondary_color: tokens.chrome.text_chrome_secondary,
             heading_color: tokens.chrome.text_on_chrome,
             link_color: tokens.editor.info,
-            code_background: with_alpha(tokens.chrome.surface, 0.72),
+            code_background: tokens.editor.background,
             code_border: tokens.chrome.border_muted,
             quote_border: tokens.chrome.border_default,
             rule_color: tokens.chrome.border_muted,
