@@ -16,6 +16,8 @@ pub mod completion_perf;
 pub mod completion_popup;
 pub mod completion_renderer;
 pub mod completion_v2;
+pub mod confirm_dialog;
+pub mod context_menu;
 pub mod debouncer;
 pub mod file_icon;
 pub mod global_input;
@@ -84,6 +86,10 @@ pub use completion_renderer::{
 pub use completion_v2::{
     CompleteViaHelixEvent, CompletionItem, CompletionItemKind, CompletionView, Position,
     StringMatch, StringMatchCandidate,
+};
+pub use confirm_dialog::{ConfirmDialog, ConfirmDialogCallbacks, render_confirm_dialog};
+pub use context_menu::{
+    ContextMenu, ContextMenuCallbacks, ContextMenuEntry, ContextMenuState, render_context_menu,
 };
 pub use file_icon::FileIcon;
 pub use global_input::{

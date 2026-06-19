@@ -19,8 +19,7 @@ use gpui::{
     Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyDownEvent,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point,
     Render, ScrollHandle, Size, StatefulInteractiveElement, Styled, TextStyle, Window,
-    WindowAppearance, WindowBackgroundAppearance, anchored, black, canvas, div, point, px, svg,
-    white,
+    WindowAppearance, WindowBackgroundAppearance, black, canvas, div, px, svg, white,
 };
 use gpui::{FontFeatures, FontWeight};
 use helix_core::syntax::config::LanguageServerFeature;
@@ -40,7 +39,9 @@ use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::notification::{StatusBarNotification, StatusBarNotificationSeverity};
 use nucleotide_ui::scrollbar::{Scrollbar, ScrollbarState};
 use nucleotide_ui::{
-    AboutWindow, Button, ButtonSize, ButtonVariant, MarkdownStyle, Tooltipped, markdown,
+    AboutWindow, Button, ButtonSize, ButtonVariant, ConfirmDialog, ConfirmDialogCallbacks,
+    ContextMenuCallbacks, ContextMenuEntry, ContextMenuState, MarkdownStyle, Tooltipped, markdown,
+    render_confirm_dialog, render_context_menu,
 };
 
 use crate::input_coordinator::{FocusGroup, InputContext, InputCoordinator};
@@ -49,11 +50,7 @@ use nucleotide_lsp::ServerStatus;
 use crate::application::{ProjectEnvironmentProvider, find_workspace_root_from};
 use crate::document::DocumentView;
 use crate::file_tree::{
-    FileTreeConfig, FileTreeEvent, FileTreeView,
-    sidebar::{
-        ProjectTreeContextMenuCallbacks, ProjectTreeContextMenuIntent, ProjectTreeContextMenuState,
-        render_project_tree_context_menu,
-    },
+    FileTreeConfig, FileTreeEvent, FileTreeView, sidebar::ProjectTreeContextMenuIntent,
 };
 use crate::info_box::InfoBoxView;
 use crate::key_hint_view::KeyHintView;
@@ -3678,15 +3675,43 @@ impl Workspace {
         }
     }
 
-    /// Render a simple delete confirmation modal overlay with two actions
+    fn cancel_delete_confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.delete_confirm_open = false;
+        self.delete_confirm_path = None;
+        if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>().cloned() {
+            let _ = coord.focus_first(
+                window,
+                cx,
+                &[
+                    nucleotide_ui::FocusRole::Editor,
+                    nucleotide_ui::FocusRole::FileTree,
+                ],
+            );
+        }
+        cx.notify();
+    }
+
+    fn confirm_delete_from_dialog(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.perform_delete_confirm(cx);
+    }
+
+    fn request_delete_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        self.delete_confirm_path = Some(path);
+        match self.core.read(cx).config.gui.file_ops.delete_behavior {
+            crate::config::DeleteBehavior::Trash => self.perform_delete_confirm(cx),
+            crate::config::DeleteBehavior::Permanent => {
+                self.delete_confirm_open = true;
+                cx.notify();
+            }
+        }
+    }
+
+    /// Render a delete confirmation modal overlay with two actions
     fn render_delete_confirm_modal(
         &self,
         _window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let theme = cx.theme();
-        let tokens = &theme.tokens;
-
+    ) -> gpui::AnyElement {
         let message = if let Some(path) = &self.delete_confirm_path {
             let name = path
                 .file_name()
@@ -3697,98 +3722,20 @@ impl Workspace {
             "Delete permanently?".to_string()
         };
 
-        // Backdrop to block clicks (outside-click dismiss + focus restore)
-        let backdrop = div()
-            .absolute()
-            .size_full()
-            .top_0()
-            .left_0()
-            .occlude()
-            .bg(tokens.chrome.surface_overlay)
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this: &mut Workspace, _ev, window, cx| {
-                    this.delete_confirm_open = false;
-                    this.delete_confirm_path = None;
-                    // Restore focus immediately for responsiveness
-                    if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>().cloned()
-                    {
-                        let _ = coord.focus_first(
-                            window,
-                            cx,
-                            &[
-                                nucleotide_ui::FocusRole::Editor,
-                                nucleotide_ui::FocusRole::FileTree,
-                            ],
-                        );
-                    }
-                    cx.notify();
-                }),
-            );
+        let confirm_label = match self.core.read(cx).config.gui.file_ops.delete_behavior {
+            crate::config::DeleteBehavior::Trash => "Move to Trash",
+            crate::config::DeleteBehavior::Permanent => "Delete Permanently",
+        };
 
-        // Dialog content
-        let picker_tokens = tokens.picker_tokens();
-        let dialog = div()
-            .absolute()
-            .top(px(120.0))
-            .w_full()
-            .flex()
-            .justify_center()
-            .child(
-                div()
-                    .bg(picker_tokens.container_background)
-                    .border_1()
-                    .border_color(picker_tokens.border)
-                    .rounded(tokens.sizes.radius_lg)
-                    .shadow(vec![
-                        tokens.chrome.shadow_lg.to_box_shadow(false),
-                        tokens.chrome.inset_highlight.to_box_shadow(true),
-                    ])
-                    .w(px(380.0))
-                    .p(tokens.sizes.space_4)
-                    .flex()
-                    .flex_col()
-                    .gap(tokens.sizes.space_3)
-                    .child(
-                        div()
-                            .text_size(tokens.sizes.text_md)
-                            .child("Confirm Delete"),
-                    )
-                    .child(div().text_size(tokens.sizes.text_sm).child(message))
-                    .child(
-                        div()
-                            .flex()
-                            .gap(tokens.sizes.space_2)
-                            .justify_end()
-                            .child({
-                                Button::new("cancel-delete", "Cancel")
-                                    .variant(ButtonVariant::Secondary)
-                                    .size(ButtonSize::Small)
-                                    .on_click(cx.listener(|view: &mut Workspace, _ev, _w, cx| {
-                                        view.delete_confirm_open = false;
-                                        view.delete_confirm_path = None;
-                                        cx.notify();
-                                    }))
-                            })
-                            .child({
-                                let btn_label =
-                                    match self.core.read(cx).config.gui.file_ops.delete_behavior {
-                                        crate::config::DeleteBehavior::Trash => "Move to Trash",
-                                        crate::config::DeleteBehavior::Permanent => {
-                                            "Delete Permanently"
-                                        }
-                                    };
-                                Button::new("confirm-delete", btn_label)
-                                    .variant(ButtonVariant::Danger)
-                                    .size(ButtonSize::Small)
-                                    .on_click(cx.listener(|view: &mut Workspace, _ev, _w, cx| {
-                                        view.perform_delete_confirm(cx);
-                                    }))
-                            }),
-                    ),
-            );
-
-        div().child(backdrop).child(dialog)
+        render_confirm_dialog(
+            ConfirmDialog::new("Confirm Delete", message, confirm_label)
+                .confirm_variant(ButtonVariant::Danger),
+            cx,
+            ConfirmDialogCallbacks {
+                on_cancel: Workspace::cancel_delete_confirm,
+                on_confirm: Workspace::confirm_delete_from_dialog,
+            },
+        )
     }
 
     fn render_documentation_sidebar(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
@@ -3971,20 +3918,23 @@ impl Workspace {
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> gpui::AnyElement {
         // Move keyboard focus to the workspace focus group so arrow/enter navigation works
         window.focus(&self.focus_handle, cx);
 
-        let theme = cx.theme().clone();
-        render_project_tree_context_menu(
-            ProjectTreeContextMenuState {
-                theme: &theme,
-                position: self.context_menu_pos,
-                selected_index: self.context_menu_index,
-                intents: Self::context_menu_intents(),
-            },
+        let entries = Self::context_menu_intents()
+            .iter()
+            .copied()
+            .map(|intent| ContextMenuEntry::action(intent, intent.label()))
+            .collect::<Vec<_>>();
+
+        render_context_menu(
+            ContextMenuState::new(self.context_menu_pos, &entries)
+                .selected_index(self.context_menu_index)
+                .offset(8.0, 8.0)
+                .min_width(px(200.0)),
             cx,
-            ProjectTreeContextMenuCallbacks {
+            ContextMenuCallbacks {
                 on_item_hover: |workspace: &mut Workspace,
                                 index: usize,
                                 _event: &MouseMoveEvent,
@@ -4006,14 +3956,13 @@ impl Workspace {
                     handler_fn(workspace, cx);
                     cx.stop_propagation();
                 },
-                on_backdrop_mouse_down:
-                    |workspace: &mut Workspace,
-                     _event: &MouseDownEvent,
-                     window: &mut Window,
-                     cx: &mut Context<Workspace>| {
-                        workspace.dismiss_file_tree_context_menu(window, cx);
-                        cx.stop_propagation();
-                    },
+                on_dismiss: |workspace: &mut Workspace,
+                             _event: &MouseDownEvent,
+                             window: &mut Window,
+                             cx: &mut Context<Workspace>| {
+                    workspace.dismiss_file_tree_context_menu(window, cx);
+                    cx.stop_propagation();
+                },
             },
         )
     }
@@ -4022,7 +3971,7 @@ impl Workspace {
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> gpui::AnyElement {
         window.focus(&self.focus_handle, cx);
 
         let visible_doc_ids = self.visible_tab_document_ids(cx);
@@ -4042,391 +3991,181 @@ impl Workspace {
         let target_is_pinned = self
             .tab_context_menu_doc_id
             .is_some_and(|doc_id| self.pinned_documents.contains(&doc_id));
-        let theme = cx.theme();
-        let tokens = &theme.tokens;
-        let dropdown_tokens = tokens.dropdown_tokens();
-        let (x, y) = self.tab_context_menu_pos;
-        let entries = Self::tab_context_menu_entries(
+        let entries: Vec<ContextMenuEntry<TabContextMenuIntent>> = Self::tab_context_menu_entries(
             menu_capabilities.has_file_path,
             menu_capabilities.has_project_panel_path,
             menu_capabilities.has_terminal_directory,
-        );
-        let item_count = entries
-            .iter()
-            .filter(|entry| matches!(entry, TabContextMenuEntry::Action(_)))
-            .count();
-
-        let popup = div()
-            .bg(dropdown_tokens.container_background)
-            .border_1()
-            .border_color(dropdown_tokens.border)
-            .rounded(tokens.sizes.radius_md)
-            .shadow(vec![
-                tokens.chrome.shadow_md.to_box_shadow(false),
-                tokens.chrome.inset_highlight.to_box_shadow(true),
-            ])
-            .min_w(px(220.0))
-            .py(tokens.sizes.space_1)
-            .px(tokens.sizes.space_1)
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
-            .on_mouse_move(|_, _, cx| cx.stop_propagation())
-            .children(entries.into_iter().scan(0usize, |action_index, entry| {
-                let TabContextMenuEntry::Action(intent) = entry else {
-                    return Some(
-                        div()
-                            .h(px(1.0))
-                            .mx(tokens.sizes.space_2)
-                            .my(tokens.sizes.space_1)
-                            .bg(dropdown_tokens.separator)
-                            .into_any_element(),
-                    );
-                };
-
-                let index = *action_index;
-                *action_index += 1;
+        )
+        .into_iter()
+        .map(|entry| match entry {
+            TabContextMenuEntry::Action(intent) => {
                 let is_disabled = Self::tab_context_menu_intent_disabled(
                     intent,
                     target_index,
                     visible_doc_ids.len(),
                     has_clean_items,
                 );
-                let is_selected = self.tab_context_menu_index == index;
-                let is_first = index == 0;
-                let is_last = index + 1 == item_count;
-                let inner_radius = tokens.sizes.radius_md - px(0.5);
+                let label = intent.label(target_is_pinned, menu_capabilities.is_readonly);
+                if is_disabled {
+                    ContextMenuEntry::disabled_action(intent, label)
+                } else {
+                    ContextMenuEntry::action(intent, label)
+                }
+            }
+            TabContextMenuEntry::Separator => ContextMenuEntry::separator(),
+        })
+        .collect();
 
-                Some(
-                    div()
-                        .w_full()
-                        .when(is_selected && !is_disabled, |item| {
-                            item.bg(dropdown_tokens.item_background_selected)
-                        })
-                        .when(is_selected && !is_disabled && is_first, |item| {
-                            item.rounded_tl(inner_radius).rounded_tr(inner_radius)
-                        })
-                        .when(is_selected && !is_disabled && is_last, |item| {
-                            item.rounded_bl(inner_radius).rounded_br(inner_radius)
-                        })
-                        .when(!is_disabled, |item| {
-                            item.on_mouse_move(cx.listener(
-                                move |workspace: &mut Workspace, _event, _window, cx| {
-                                    if workspace.tab_context_menu_index != index {
-                                        workspace.tab_context_menu_index = index;
-                                        cx.notify();
-                                    }
-                                },
-                            ))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(
-                                    move |workspace: &mut Workspace, _event, window, cx| {
-                                        window.prevent_default();
-                                        if let Some(doc_id) = workspace.tab_context_menu_doc_id {
-                                            workspace.tab_context_menu_open = false;
-                                            workspace.tab_context_menu_doc_id = None;
-                                            let handler =
-                                                Workspace::tab_context_menu_handler(intent);
-                                            handler(workspace, doc_id, cx);
-                                        } else {
-                                            workspace.tab_context_menu_open = false;
-                                            cx.notify();
-                                        }
-                                        cx.stop_propagation();
-                                    },
-                                ),
-                            )
-                        })
-                        .child(
-                            div()
-                                .w_full()
-                                .text_size(tokens.sizes.text_sm)
-                                .px(tokens.sizes.space_2)
-                                .py(tokens.sizes.space_1)
-                                .text_color(if is_disabled {
-                                    dropdown_tokens.item_text_disabled
-                                } else if is_selected {
-                                    dropdown_tokens.item_text_selected
-                                } else {
-                                    dropdown_tokens.item_text
-                                })
-                                .child(
-                                    intent.label(target_is_pinned, menu_capabilities.is_readonly),
-                                ),
-                        )
-                        .into_any_element(),
-                )
-            }));
-
-        div()
-            .absolute()
-            .size_full()
-            .top_0()
-            .left_0()
-            .occlude()
-            .on_mouse_move(|_, _, cx| cx.stop_propagation())
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|workspace: &mut Workspace, _event, _window, cx| {
+        render_context_menu(
+            ContextMenuState::new(self.tab_context_menu_pos, &entries)
+                .selected_index(self.tab_context_menu_index)
+                .min_width(px(220.0)),
+            cx,
+            ContextMenuCallbacks {
+                on_item_hover: |workspace: &mut Workspace,
+                                index: usize,
+                                _event: &MouseMoveEvent,
+                                _window: &mut Window,
+                                cx: &mut Context<Workspace>| {
+                    if workspace.tab_context_menu_index != index {
+                        workspace.tab_context_menu_index = index;
+                        cx.notify();
+                    }
+                },
+                on_item_activate: |workspace: &mut Workspace,
+                                   intent: TabContextMenuIntent,
+                                   _event: &MouseDownEvent,
+                                   _window: &mut Window,
+                                   cx: &mut Context<Workspace>| {
+                    if let Some(doc_id) = workspace.tab_context_menu_doc_id {
+                        workspace.tab_context_menu_open = false;
+                        workspace.tab_context_menu_doc_id = None;
+                        let handler = Workspace::tab_context_menu_handler(intent);
+                        handler(workspace, doc_id, cx);
+                    } else {
+                        workspace.tab_context_menu_open = false;
+                        cx.notify();
+                    }
+                    cx.stop_propagation();
+                },
+                on_dismiss: |workspace: &mut Workspace,
+                             _event: &MouseDownEvent,
+                             _window: &mut Window,
+                             cx: &mut Context<Workspace>| {
                     workspace.tab_context_menu_open = false;
                     workspace.tab_context_menu_doc_id = None;
                     cx.notify();
                     cx.stop_propagation();
-                }),
-            )
-            .on_mouse_down(
-                MouseButton::Right,
-                cx.listener(|workspace: &mut Workspace, _event, _window, cx| {
-                    workspace.tab_context_menu_open = false;
-                    workspace.tab_context_menu_doc_id = None;
-                    cx.notify();
-                    cx.stop_propagation();
-                }),
-            )
-            .child(
-                anchored()
-                    .position(point(px(x), px(y)))
-                    .anchor(Anchor::TopLeft)
-                    .snap_to_window_with_margin(tokens.sizes.space_2)
-                    .child(popup),
-            )
+                },
+            },
+        )
     }
 
     fn render_tab_bar_split_menu(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> gpui::AnyElement {
         window.focus(&self.focus_handle, cx);
 
-        let theme = cx.theme();
-        let tokens = &theme.tokens;
-        let dropdown_tokens = tokens.dropdown_tokens();
-        let (x, y) = self.tab_bar_split_menu_pos;
-        let intents = Self::tab_bar_split_menu_intents();
-        let item_count = intents.len();
+        let entries = Self::tab_bar_split_menu_intents()
+            .iter()
+            .copied()
+            .map(|intent| ContextMenuEntry::action(intent, intent.label()))
+            .collect::<Vec<_>>();
 
-        let popup = div()
-            .bg(dropdown_tokens.container_background)
-            .border_1()
-            .border_color(dropdown_tokens.border)
-            .rounded(tokens.sizes.radius_md)
-            .shadow(vec![
-                tokens.chrome.shadow_md.to_box_shadow(false),
-                tokens.chrome.inset_highlight.to_box_shadow(true),
-            ])
-            .min_w(px(180.0))
-            .py(tokens.sizes.space_1)
-            .px(tokens.sizes.space_1)
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
-            .on_mouse_move(|_, _, cx| cx.stop_propagation())
-            .children(intents.iter().copied().enumerate().map(|(index, intent)| {
-                let is_selected = self.tab_bar_split_menu_index == index;
-                let is_first = index == 0;
-                let is_last = index + 1 == item_count;
-                let inner_radius = tokens.sizes.radius_md - px(0.5);
-
-                div()
-                    .w_full()
-                    .when(is_selected, |item| {
-                        item.bg(dropdown_tokens.item_background_selected)
-                    })
-                    .when(is_selected && is_first, |item| {
-                        item.rounded_tl(inner_radius).rounded_tr(inner_radius)
-                    })
-                    .when(is_selected && is_last, |item| {
-                        item.rounded_bl(inner_radius).rounded_br(inner_radius)
-                    })
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |workspace: &mut Workspace, _event, window, cx| {
-                            window.prevent_default();
-                            workspace.activate_tab_bar_split_menu_intent(intent, cx);
-                            cx.stop_propagation();
-                        }),
-                    )
-                    .on_mouse_move(cx.listener(
-                        move |workspace: &mut Workspace, _event, _window, cx| {
-                            if workspace.tab_bar_split_menu_index != index {
-                                workspace.tab_bar_split_menu_index = index;
-                                cx.notify();
-                            }
-                        },
-                    ))
-                    .child(
-                        div()
-                            .w_full()
-                            .text_size(tokens.sizes.text_sm)
-                            .px(tokens.sizes.space_2)
-                            .py(tokens.sizes.space_1)
-                            .text_color(if is_selected {
-                                dropdown_tokens.item_text_selected
-                            } else {
-                                dropdown_tokens.item_text
-                            })
-                            .child(intent.label()),
-                    )
-            }));
-
-        div()
-            .absolute()
-            .size_full()
-            .top_0()
-            .left_0()
-            .occlude()
-            .on_mouse_move(|_, _, cx| cx.stop_propagation())
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|workspace: &mut Workspace, _event, _window, cx| {
+        render_context_menu(
+            ContextMenuState::new(self.tab_bar_split_menu_pos, &entries)
+                .anchor(Anchor::TopRight)
+                .selected_index(self.tab_bar_split_menu_index)
+                .min_width(px(180.0)),
+            cx,
+            ContextMenuCallbacks {
+                on_item_hover: |workspace: &mut Workspace,
+                                index: usize,
+                                _event: &MouseMoveEvent,
+                                _window: &mut Window,
+                                cx: &mut Context<Workspace>| {
+                    if workspace.tab_bar_split_menu_index != index {
+                        workspace.tab_bar_split_menu_index = index;
+                        cx.notify();
+                    }
+                },
+                on_item_activate: |workspace: &mut Workspace,
+                                   intent: TabBarSplitMenuIntent,
+                                   _event: &MouseDownEvent,
+                                   _window: &mut Window,
+                                   cx: &mut Context<Workspace>| {
+                    workspace.activate_tab_bar_split_menu_intent(intent, cx);
+                    cx.stop_propagation();
+                },
+                on_dismiss: |workspace: &mut Workspace,
+                             _event: &MouseDownEvent,
+                             _window: &mut Window,
+                             cx: &mut Context<Workspace>| {
                     workspace.tab_bar_split_menu_open = false;
                     cx.notify();
                     cx.stop_propagation();
-                }),
-            )
-            .on_mouse_down(
-                MouseButton::Right,
-                cx.listener(|workspace: &mut Workspace, _event, _window, cx| {
-                    workspace.tab_bar_split_menu_open = false;
-                    cx.notify();
-                    cx.stop_propagation();
-                }),
-            )
-            .child(
-                anchored()
-                    .position(point(px(x), px(y)))
-                    .anchor(Anchor::TopRight)
-                    .snap_to_window_with_margin(tokens.sizes.space_2)
-                    .child(popup),
-            )
+                },
+            },
+        )
     }
 
     fn render_tab_bar_new_menu(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> gpui::AnyElement {
         window.focus(&self.focus_handle, cx);
 
-        let theme = cx.theme();
-        let tokens = &theme.tokens;
-        let dropdown_tokens = tokens.dropdown_tokens();
-        let (x, y) = self.tab_bar_new_menu_pos;
-        let intents = Self::tab_bar_new_menu_intents();
-        let entries = Self::tab_bar_new_menu_entries();
-        let item_count = intents.len();
+        let entries: Vec<ContextMenuEntry<TabBarNewMenuIntent>> = Self::tab_bar_new_menu_entries()
+            .iter()
+            .copied()
+            .map(|entry| match entry {
+                TabBarNewMenuEntry::Action(intent) => {
+                    ContextMenuEntry::action(intent, intent.label())
+                }
+                TabBarNewMenuEntry::Separator => ContextMenuEntry::separator(),
+            })
+            .collect();
 
-        let popup = div()
-            .bg(dropdown_tokens.container_background)
-            .border_1()
-            .border_color(dropdown_tokens.border)
-            .rounded(tokens.sizes.radius_md)
-            .shadow(vec![
-                tokens.chrome.shadow_md.to_box_shadow(false),
-                tokens.chrome.inset_highlight.to_box_shadow(true),
-            ])
-            .min_w(px(200.0))
-            .py(tokens.sizes.space_1)
-            .px(tokens.sizes.space_1)
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
-            .on_mouse_move(|_, _, cx| cx.stop_propagation())
-            .children(entries.iter().copied().scan(0usize, |action_index, entry| {
-                let TabBarNewMenuEntry::Action(intent) = entry else {
-                    return Some(
-                        div()
-                            .h(px(1.0))
-                            .mx(tokens.sizes.space_2)
-                            .my(tokens.sizes.space_1)
-                            .bg(dropdown_tokens.separator)
-                            .into_any_element(),
-                    );
-                };
-
-                let index = *action_index;
-                *action_index += 1;
-                let is_selected = self.tab_bar_new_menu_index == index;
-                let is_first = index == 0;
-                let is_last = index + 1 == item_count;
-                let inner_radius = tokens.sizes.radius_md - px(0.5);
-
-                Some(
-                    div()
-                        .w_full()
-                        .when(is_selected, |item| {
-                            item.bg(dropdown_tokens.item_background_selected)
-                        })
-                        .when(is_selected && is_first, |item| {
-                            item.rounded_tl(inner_radius).rounded_tr(inner_radius)
-                        })
-                        .when(is_selected && is_last, |item| {
-                            item.rounded_bl(inner_radius).rounded_br(inner_radius)
-                        })
-                        .on_mouse_move(cx.listener(
-                            move |workspace: &mut Workspace, _event, _window, cx| {
-                                if workspace.tab_bar_new_menu_index != index {
-                                    workspace.tab_bar_new_menu_index = index;
-                                    cx.notify();
-                                }
-                            },
-                        ))
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |workspace: &mut Workspace, _event, window, cx| {
-                                window.prevent_default();
-                                workspace.tab_bar_new_menu_open = false;
-                                let handler = Workspace::tab_bar_new_menu_handler(intent);
-                                handler(workspace, cx);
-                                cx.stop_propagation();
-                            }),
-                        )
-                        .child(
-                            div()
-                                .w_full()
-                                .text_size(tokens.sizes.text_sm)
-                                .px(tokens.sizes.space_2)
-                                .py(tokens.sizes.space_1)
-                                .text_color(if is_selected {
-                                    dropdown_tokens.item_text_selected
-                                } else {
-                                    dropdown_tokens.item_text
-                                })
-                                .child(intent.label()),
-                        )
-                        .into_any_element(),
-                )
-            }));
-
-        div()
-            .absolute()
-            .size_full()
-            .top_0()
-            .left_0()
-            .occlude()
-            .on_mouse_move(|_, _, cx| cx.stop_propagation())
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|workspace: &mut Workspace, _event, _window, cx| {
+        render_context_menu(
+            ContextMenuState::new(self.tab_bar_new_menu_pos, &entries)
+                .selected_index(self.tab_bar_new_menu_index)
+                .offset(8.0, 8.0)
+                .min_width(px(200.0)),
+            cx,
+            ContextMenuCallbacks {
+                on_item_hover: |workspace: &mut Workspace,
+                                index: usize,
+                                _event: &MouseMoveEvent,
+                                _window: &mut Window,
+                                cx: &mut Context<Workspace>| {
+                    if workspace.tab_bar_new_menu_index != index {
+                        workspace.tab_bar_new_menu_index = index;
+                        cx.notify();
+                    }
+                },
+                on_item_activate: |workspace: &mut Workspace,
+                                   intent: TabBarNewMenuIntent,
+                                   _event: &MouseDownEvent,
+                                   _window: &mut Window,
+                                   cx: &mut Context<Workspace>| {
+                    workspace.tab_bar_new_menu_open = false;
+                    let handler = Workspace::tab_bar_new_menu_handler(intent);
+                    handler(workspace, cx);
+                    cx.stop_propagation();
+                },
+                on_dismiss: |workspace: &mut Workspace,
+                             _event: &MouseDownEvent,
+                             _window: &mut Window,
+                             cx: &mut Context<Workspace>| {
                     workspace.tab_bar_new_menu_open = false;
                     cx.notify();
                     cx.stop_propagation();
-                }),
-            )
-            .on_mouse_down(
-                MouseButton::Right,
-                cx.listener(|workspace: &mut Workspace, _event, _window, cx| {
-                    workspace.tab_bar_new_menu_open = false;
-                    cx.notify();
-                    cx.stop_propagation();
-                }),
-            )
-            .child(
-                div()
-                    .absolute()
-                    .left(px(x + 8.0))
-                    .top(px(y + 8.0))
-                    .child(popup),
-            )
+                },
+            },
+        )
     }
 
     // --- Context menu action handlers (stubs that close the menu and log) ---
@@ -4799,8 +4538,7 @@ impl Workspace {
 
     fn cm_action_delete(this: &mut Workspace, cx: &mut Context<Workspace>) {
         if let Some(path) = this.context_menu_path.clone() {
-            this.delete_confirm_path = Some(path);
-            this.perform_delete_confirm(cx);
+            this.request_delete_path(path, cx);
         }
         this.close_context_menu(cx);
     }
@@ -5487,8 +5225,7 @@ impl Workspace {
             if is_tree_focused {
                 let selected = file_tree.read(cx).selected_path().cloned();
                 if let Some(path) = selected {
-                    self.delete_confirm_path = Some(path);
-                    self.perform_delete_confirm(cx);
+                    self.request_delete_path(path, cx);
                 }
             }
         }
