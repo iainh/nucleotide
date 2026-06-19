@@ -3,9 +3,10 @@
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    FontStyle, FontWeight, HighlightStyle, Hsla, IntoElement, ParentElement, RenderOnce,
-    SharedString, StrikethroughStyle, Styled, StyledText, UnderlineStyle, Window, div, px,
-    relative, rems,
+    App, Bounds, CursorStyle, Element, ElementId, FontStyle, FontWeight, GlobalElementId,
+    HighlightStyle, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId,
+    MouseDownEvent, ParentElement, Pixels, Point, RenderOnce, SharedString, StrikethroughStyle,
+    Styled, StyledText, TextLayout, UnderlineStyle, Window, div, px, relative, rems,
 };
 use helix_core::{
     RopeSlice, Syntax,
@@ -205,12 +206,10 @@ impl RichText {
         &self.spans
     }
 
-    fn into_highlights(
-        self,
-        style: &MarkdownStyle,
-    ) -> (SharedString, Vec<(std::ops::Range<usize>, HighlightStyle)>) {
+    fn into_render_parts(self, style: &MarkdownStyle) -> RichTextRenderParts {
         let mut text = String::new();
         let mut highlights = Vec::new();
+        let mut links = Vec::new();
 
         for span in self.spans {
             let start = text.len();
@@ -220,9 +219,22 @@ impl RichText {
             if let Some(highlight) = span.style.highlight(style) {
                 highlights.push((start..end, highlight));
             }
+
+            if let Some(url) = span.style.link_url
+                && start < end
+            {
+                links.push(LinkRange {
+                    range: start..end,
+                    url,
+                });
+            }
         }
 
-        (SharedString::from(text), highlights)
+        RichTextRenderParts {
+            text: SharedString::from(text),
+            highlights,
+            links,
+        }
     }
 }
 
@@ -232,18 +244,151 @@ pub struct TextSpan {
     pub style: InlineStyle,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct LinkRange {
+    range: Range<usize>,
+    url: SharedString,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RichTextRenderParts {
+    text: SharedString,
+    highlights: Vec<(Range<usize>, HighlightStyle)>,
+    links: Vec<LinkRange>,
+}
+
+struct LinkText {
+    element_id: ElementId,
+    text: StyledText,
+    links: Vec<LinkRange>,
+}
+
+impl LinkText {
+    fn new(element_id: impl Into<ElementId>, text: StyledText, links: Vec<LinkRange>) -> Self {
+        Self {
+            element_id: element_id.into(),
+            text,
+            links,
+        }
+    }
+
+    fn url_for_position(
+        text_layout: &TextLayout,
+        links: &[LinkRange],
+        position: Point<Pixels>,
+    ) -> Option<SharedString> {
+        let index = text_layout.index_for_position(position).ok()?;
+        links
+            .iter()
+            .find(|link| link.range.contains(&index))
+            .map(|link| link.url.clone())
+    }
+}
+
+impl Element for LinkText {
+    type RequestLayoutState = ();
+    type PrepaintState = Hitbox;
+
+    fn id(&self) -> Option<ElementId> {
+        Some(self.element_id.clone())
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        self.text.request_layout(None, inspector_id, window, cx)
+    }
+
+    fn prepaint(
+        &mut self,
+        _global_id: Option<&GlobalElementId>,
+        inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        state: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Hitbox {
+        self.text
+            .prepaint(None, inspector_id, bounds, state, window, cx);
+        window.insert_hitbox(bounds, HitboxBehavior::Normal)
+    }
+
+    fn paint(
+        &mut self,
+        _global_id: Option<&GlobalElementId>,
+        inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _state: &mut Self::RequestLayoutState,
+        hitbox: &mut Hitbox,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let text_layout = self.text.layout().clone();
+
+        if Self::url_for_position(&text_layout, &self.links, window.mouse_position()).is_some() {
+            window.set_cursor_style(CursorStyle::PointingHand, hitbox);
+        }
+
+        window.on_mouse_event({
+            let text_layout = text_layout.clone();
+            let links = self.links.clone();
+            move |event: &MouseDownEvent, phase, _window, cx| {
+                if !phase.capture() || !bounds.contains(&event.position) {
+                    return;
+                }
+
+                if let Some(url) = Self::url_for_position(&text_layout, &links, event.position) {
+                    let url = url.to_string();
+                    nucleotide_logging::info!(
+                        url = %url,
+                        position = ?event.position,
+                        "Markdown documentation link click received"
+                    );
+                    cx.stop_propagation();
+                    cx.open_url(&url);
+                } else {
+                    nucleotide_logging::info!(
+                        position = ?event.position,
+                        "Markdown documentation mouse down missed link range"
+                    );
+                }
+            }
+        });
+
+        self.text
+            .paint(None, inspector_id, bounds, &mut (), &mut (), window, cx);
+    }
+}
+
+impl IntoElement for LinkText {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct InlineStyle {
     pub bold: bool,
     pub italic: bool,
     pub strikethrough: bool,
     pub code: bool,
     pub link: bool,
+    pub link_url: Option<SharedString>,
 }
 
 impl InlineStyle {
-    fn highlight(self, style: &MarkdownStyle) -> Option<HighlightStyle> {
-        if self == Self::default() {
+    fn highlight(&self, style: &MarkdownStyle) -> Option<HighlightStyle> {
+        if self == &Self::default() {
             return None;
         }
 
@@ -337,12 +482,12 @@ impl MarkdownParser {
             Event::End(tag) => self.handle_end(tag),
             Event::Text(text) => self.handle_text(&text),
             Event::Code(code) => {
-                let mut style = self.active_style;
+                let mut style = self.active_style.clone();
                 style.code = true;
                 self.current_text.push(code.as_ref(), style);
             }
-            Event::SoftBreak => self.current_text.push_space(self.active_style),
-            Event::HardBreak => self.current_text.push("\n", self.active_style),
+            Event::SoftBreak => self.current_text.push_space(self.active_style.clone()),
+            Event::HardBreak => self.current_text.push("\n", self.active_style.clone()),
             Event::Rule => self.blocks.push(MarkdownBlock::Rule),
             Event::TaskListMarker(checked) => {
                 self.current_task_marker = Some(checked);
@@ -379,9 +524,10 @@ impl MarkdownParser {
             Tag::Emphasis => self.active_style.italic = true,
             Tag::Strong => self.active_style.bold = true,
             Tag::Strikethrough => self.active_style.strikethrough = true,
-            Tag::Link { .. } => {
+            Tag::Link { dest_url, .. } => {
                 self.link_depth += 1;
                 self.active_style.link = true;
+                self.active_style.link_url = Some(SharedString::from(dest_url.to_string()));
             }
             Tag::Image { .. } => {
                 self.image_depth += 1;
@@ -438,6 +584,7 @@ impl MarkdownParser {
                 self.link_depth = self.link_depth.saturating_sub(1);
                 if self.link_depth == 0 {
                     self.active_style.link = false;
+                    self.active_style.link_url = None;
                 }
             }
             TagEnd::Image => {
@@ -472,7 +619,8 @@ impl MarkdownParser {
         if self.in_code_block {
             self.code_text.push_str(text.as_ref());
         } else {
-            self.current_text.push(text.as_ref(), self.active_style);
+            self.current_text
+                .push(text.as_ref(), self.active_style.clone());
         }
     }
 
@@ -576,21 +724,32 @@ fn render_document(
     let elements: Vec<gpui::AnyElement> = document
         .blocks
         .into_iter()
-        .map(|block| match block {
-            MarkdownBlock::Paragraph(text) => render_rich_text(text, &style, style.body_color)
-                .line_height(relative(1.45))
-                .into_any_element(),
+        .enumerate()
+        .map(|(block_index, block)| match block {
+            MarkdownBlock::Paragraph(text) => render_rich_text(
+                text,
+                &style,
+                style.body_color,
+                format!("markdown-paragraph-{block_index}"),
+            )
+            .line_height(relative(1.45))
+            .into_any_element(),
             MarkdownBlock::Heading { level, text } => {
                 let size = match level {
                     1 => 1.16,
                     2 => 1.08,
                     _ => 1.0,
                 };
-                render_rich_text(text, &style, style.heading_color)
-                    .text_size(rems(size))
-                    .font_weight(FontWeight::BOLD)
-                    .line_height(relative(1.25))
-                    .into_any_element()
+                render_rich_text(
+                    text,
+                    &style,
+                    style.heading_color,
+                    format!("markdown-heading-{block_index}"),
+                )
+                .text_size(rems(size))
+                .font_weight(FontWeight::BOLD)
+                .line_height(relative(1.25))
+                .into_any_element()
             }
             MarkdownBlock::CodeBlock { language, text } => {
                 render_code_block(text, language, &style, helix_theme, syntax_loader)
@@ -602,15 +761,18 @@ fn render_document(
                 depth,
                 checked,
                 text,
-            } => render_list_item(ordered, index, depth, checked, text, &style).into_any_element(),
-            MarkdownBlock::BlockQuote(text) => render_block_quote(text, &style).into_any_element(),
+            } => render_list_item(ordered, index, depth, checked, text, &style, block_index)
+                .into_any_element(),
+            MarkdownBlock::BlockQuote(text) => {
+                render_block_quote(text, &style, block_index).into_any_element()
+            }
             MarkdownBlock::Rule => div()
                 .h(px(1.0))
                 .w_full()
                 .bg(style.rule_color)
                 .into_any_element(),
             MarkdownBlock::Table { alignments, rows } => {
-                render_table(alignments, rows, &style).into_any_element()
+                render_table(alignments, rows, &style, block_index).into_any_element()
             }
         })
         .collect();
@@ -624,14 +786,21 @@ fn render_document(
         .children(elements)
 }
 
-fn render_rich_text(text: RichText, style: &MarkdownStyle, color: Hsla) -> gpui::Div {
-    let (text, highlights) = text.into_highlights(style);
+fn render_rich_text(
+    text: RichText,
+    style: &MarkdownStyle,
+    color: Hsla,
+    element_id: impl Into<gpui::ElementId>,
+) -> gpui::Div {
+    let parts = text.into_render_parts(style);
+    let text = StyledText::new(parts.text).with_highlights(parts.highlights);
+    let text = if parts.links.is_empty() {
+        text.into_any_element()
+    } else {
+        LinkText::new(element_id, text, parts.links).into_any_element()
+    };
 
-    div()
-        .w_full()
-        .text_sm()
-        .text_color(color)
-        .child(StyledText::new(text).with_highlights(highlights))
+    div().w_full().text_sm().text_color(color).child(text)
 }
 
 fn code_syntax_highlights(
@@ -839,6 +1008,7 @@ fn render_list_item(
     checked: Option<bool>,
     text: RichText,
     style: &MarkdownStyle,
+    block_index: usize,
 ) -> impl IntoElement {
     let marker = if let Some(checked) = checked {
         if checked { "[x]" } else { "[ ]" }.to_string()
@@ -861,21 +1031,42 @@ fn render_list_item(
                 .text_color(style.secondary_color)
                 .child(marker),
         )
-        .child(render_rich_text(text, style, style.body_color).flex_1())
+        .child(
+            render_rich_text(
+                text,
+                style,
+                style.body_color,
+                format!("markdown-list-item-{block_index}"),
+            )
+            .flex_1(),
+        )
 }
 
-fn render_block_quote(text: RichText, style: &MarkdownStyle) -> impl IntoElement {
+fn render_block_quote(
+    text: RichText,
+    style: &MarkdownStyle,
+    block_index: usize,
+) -> impl IntoElement {
     div()
         .pl(px(10.0))
         .border_l_2()
         .border_color(style.quote_border)
-        .child(render_rich_text(text, style, style.secondary_color).italic())
+        .child(
+            render_rich_text(
+                text,
+                style,
+                style.secondary_color,
+                format!("markdown-block-quote-{block_index}"),
+            )
+            .italic(),
+        )
 }
 
 fn render_table(
     alignments: Vec<TableAlignment>,
     rows: Vec<Vec<RichText>>,
     style: &MarkdownStyle,
+    block_index: usize,
 ) -> impl IntoElement {
     div()
         .flex()
@@ -898,13 +1089,18 @@ fn render_table(
                         .get(column_index)
                         .copied()
                         .unwrap_or(TableAlignment::None);
-                    let cell = render_rich_text(cell, style, style.body_color)
-                        .px(px(8.0))
-                        .py(px(5.0))
-                        .when(header, |this| this.font_weight(FontWeight::BOLD))
-                        .when(column_index > 0, |this| {
-                            this.border_l_1().border_color(style.code_border)
-                        });
+                    let cell = render_rich_text(
+                        cell,
+                        style,
+                        style.body_color,
+                        format!("markdown-table-{block_index}-{row_index}-{column_index}"),
+                    )
+                    .px(px(8.0))
+                    .py(px(5.0))
+                    .when(header, |this| this.font_weight(FontWeight::BOLD))
+                    .when(column_index > 0, |this| {
+                        this.border_l_1().border_color(style.code_border)
+                    });
 
                     match alignment {
                         TableAlignment::None | TableAlignment::Left => cell,
@@ -957,7 +1153,8 @@ mod tests {
         assert!(matches!(
             &document.blocks[0],
             MarkdownBlock::BlockQuote(text)
-                if text.spans().iter().any(|span| span.style.link)
+                if text.spans().iter().any(|span| span.style.link
+                    && span.style.link_url.as_ref().is_some_and(|url| url == "https://example.com"))
         ));
         assert!(matches!(
             &document.blocks[1],
@@ -975,6 +1172,54 @@ mod tests {
                 if alignments == &[TableAlignment::Left, TableAlignment::Right]
                     && rows.len() == 2
         ));
+    }
+
+    #[test]
+    fn rich_text_exposes_clickable_link_ranges() {
+        let document = MarkdownDocument::parse("See [docs](https://example.com) now.");
+        let MarkdownBlock::Paragraph(text) = document.blocks[0].clone() else {
+            panic!("expected paragraph");
+        };
+        let tokens = DesignTokens::dark();
+        let style = MarkdownStyle::from_tokens(&tokens);
+        let parts = text.into_render_parts(&style);
+        let plain = parts.text.to_string();
+
+        assert_eq!(plain, "See docs now.");
+        assert_eq!(parts.links.len(), 1);
+        assert_eq!(&plain[parts.links[0].range.clone()], "docs");
+        assert_eq!(parts.links[0].url.as_ref(), "https://example.com");
+    }
+
+    #[gpui::test]
+    fn markdown_link_click_opens_url(cx: &mut gpui::TestAppContext) {
+        use gpui::{Context, Modifiers, Render, point};
+
+        struct MarkdownLinkFixture {
+            style: MarkdownStyle,
+        }
+
+        impl Render for MarkdownLinkFixture {
+            fn render(
+                &mut self,
+                _window: &mut gpui::Window,
+                _cx: &mut Context<Self>,
+            ) -> impl IntoElement {
+                div()
+                    .w(px(240.0))
+                    .h(px(48.0))
+                    .child(markdown("[docs](https://example.com)", self.style.clone()))
+            }
+        }
+
+        let tokens = DesignTokens::dark();
+        let style = MarkdownStyle::from_tokens(&tokens).compact();
+
+        let (_view, cx) = cx.add_window_view(move |_window, _cx| MarkdownLinkFixture { style });
+        cx.run_until_parked();
+        cx.simulate_click(point(px(12.0), px(12.0)), Modifiers::default());
+
+        assert_eq!(cx.opened_url().as_deref(), Some("https://example.com"));
     }
 
     #[test]
