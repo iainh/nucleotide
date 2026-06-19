@@ -523,8 +523,8 @@ use nucleotide::actions::{
     test::{TestCompletion, TestPrompt},
     window::{Hide, HideOthers, Minimize, ShowAll, Zoom},
     workspace::{
-        SplitPaneDown, SplitPaneLeft, SplitPaneRight, SplitPaneUp, ToggleFileTree,
-        TogglePreviewTab, UnpinAllTabs,
+        SplitPaneDown, SplitPaneLeft, SplitPaneRight, SplitPaneUp, ToggleDocumentation,
+        ToggleFileTree, TogglePreviewTab, ToggleTerminal, UnpinAllTabs,
     },
 };
 
@@ -568,6 +568,8 @@ fn app_menus() -> Vec<Menu> {
             disabled: false,
             items: vec![
                 MenuItem::action("Toggle File Tree", ToggleFileTree),
+                MenuItem::action("Toggle Documentation", ToggleDocumentation),
+                MenuItem::action("Toggle Terminal", ToggleTerminal),
                 MenuItem::separator(),
                 MenuItem::action("Split Right", SplitPaneRight),
                 MenuItem::action("Split Left", SplitPaneLeft),
@@ -1461,5 +1463,38 @@ mod tests {
             }
             _ => panic!("expected open directory action"),
         }
+    }
+
+    #[test]
+    fn view_menu_exposes_documentation_and_terminal_toggles() {
+        let menus = app_menus();
+        let view_menu = menus
+            .iter()
+            .find(|menu| menu.name.as_ref() == "View")
+            .expect("view menu should exist");
+
+        let actions = view_menu
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                MenuItem::Action { name, action, .. } => Some((name.as_ref(), action)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert!(
+            actions.iter().any(|(name, action)| {
+                *name == "Toggle Documentation"
+                    && action.partial_eq(&nucleotide::actions::workspace::ToggleDocumentation)
+            }),
+            "View menu should expose Toggle Documentation"
+        );
+        assert!(
+            actions.iter().any(|(name, action)| {
+                *name == "Toggle Terminal"
+                    && action.partial_eq(&nucleotide::actions::workspace::ToggleTerminal)
+            }),
+            "View menu should expose Toggle Terminal"
+        );
     }
 }
