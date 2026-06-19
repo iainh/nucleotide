@@ -523,8 +523,9 @@ use nucleotide::actions::{
     test::{TestCompletion, TestPrompt},
     window::{Hide, HideOthers, Minimize, ShowAll, Zoom},
     workspace::{
-        SplitPaneDown, SplitPaneLeft, SplitPaneRight, SplitPaneUp, ToggleDocumentation,
-        ToggleFileTree, TogglePreviewTab, ToggleTerminal, UnpinAllTabs,
+        RunFileTests, RunLast, RunNearest, ShowRunnables, SplitPaneDown, SplitPaneLeft,
+        SplitPaneRight, SplitPaneUp, ToggleDocumentation, ToggleFileTree, TogglePreviewTab,
+        ToggleTerminal, UnpinAllTabs,
     },
 };
 
@@ -578,6 +579,17 @@ fn app_menus() -> Vec<Menu> {
                 MenuItem::separator(),
                 MenuItem::action("Toggle Preview Tab", TogglePreviewTab),
                 MenuItem::action("Unpin All Tabs", UnpinAllTabs),
+            ],
+        },
+        Menu {
+            name: "Run".into(),
+            disabled: false,
+            items: vec![
+                MenuItem::action("Run...", ShowRunnables),
+                MenuItem::action("Run Nearest", RunNearest),
+                MenuItem::action("Run File Tests", RunFileTests),
+                MenuItem::separator(),
+                MenuItem::action("Run Last", RunLast),
             ],
         },
         Menu {
@@ -934,8 +946,9 @@ fn gui_main(
 
                 // Import workspace actions for global bindings
                 use nucleotide::actions::workspace::{
-                    NewFile, NewWindow, ShowBufferPicker, ShowCodeActions, ShowCommandPalette,
-                    ShowFileFinder, ToggleFileTree,
+                    NewFile, NewWindow, RunFileTests, RunLast, RunNearest, ShowBufferPicker,
+                    ShowCodeActions, ShowCommandPalette, ShowFileFinder, ShowRunnables,
+                    ToggleFileTree,
                 };
 
                 // Global actions - work regardless of focus (no context specified)
@@ -962,6 +975,10 @@ fn gui_main(
                     gpui::KeyBinding::new("ctrl-space", TriggerCompletion, None),
                     // Temporary keybinding for Code Actions (Ctrl-.)
                     gpui::KeyBinding::new("ctrl-.", ShowCodeActions, None),
+                    gpui::KeyBinding::new("ctrl-r", ShowRunnables, None),
+                    gpui::KeyBinding::new("ctrl-shift-r", RunNearest, None),
+                    gpui::KeyBinding::new("ctrl-alt-r", RunLast, None),
+                    gpui::KeyBinding::new("ctrl-alt-t", RunFileTests, None),
                     // File tree toggle
                     gpui::KeyBinding::new("ctrl-b", ToggleFileTree, None),
                 ]);

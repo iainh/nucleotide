@@ -8,6 +8,15 @@ use nucleotide_ui::prompt_view::CompletionItem;
 use once_cell::sync::Lazy;
 use std::path::{MAIN_SEPARATOR, Path};
 
+const RUNNABLE_COMMANDS: &[(&str, &str)] = &[
+    ("run", "Show runnables for the focused Rust file"),
+    ("runnables", "Show runnables for the focused Rust file"),
+    ("run-nearest", "Run the nearest Rust runnable at the cursor"),
+    ("run-file-tests", "Run tests for the focused Rust file"),
+    ("run-last", "Run the last runnable again"),
+    ("rerun", "Run the last runnable again"),
+];
+
 /// Static list of available settings keys derived from Helix's editor config.
 pub static SETTINGS_KEYS: Lazy<Vec<String>> = Lazy::new(|| {
     let mut keys = Vec::new();
@@ -145,24 +154,44 @@ fn complete_command_names(pattern: &str) -> Vec<CompletionItem> {
         }
     }
 
-    matched_commands.sort_by_key(|entry| std::cmp::Reverse(entry.1));
-
-    matched_commands
+    let mut items = matched_commands
         .into_iter()
-        .map(|(cmd, _score)| {
+        .map(|(cmd, score)| {
             let display_text = if cmd.aliases.is_empty() {
                 None
             } else {
                 Some(format!("{} ({})", cmd.name, cmd.aliases.join(", ")).into())
             };
 
-            CompletionItem {
-                text: cmd.name.to_string().into(),
-                description: Some(cmd.doc.to_string().into()),
-                display_text,
-            }
+            (
+                CompletionItem {
+                    text: cmd.name.to_string().into(),
+                    description: Some(cmd.doc.to_string().into()),
+                    display_text,
+                },
+                score,
+            )
         })
-        .collect()
+        .collect::<Vec<_>>();
+
+    for (name, description) in RUNNABLE_COMMANDS {
+        if let Some((_, score)) = fuzzy_match(pattern, std::iter::once(*name), false)
+            .into_iter()
+            .next()
+        {
+            items.push((
+                CompletionItem {
+                    text: (*name).to_string().into(),
+                    description: Some((*description).to_string().into()),
+                    display_text: None,
+                },
+                score,
+            ));
+        }
+    }
+
+    items.sort_by_key(|(_, score)| std::cmp::Reverse(*score));
+    items.into_iter().map(|(item, _)| item).collect()
 }
 
 /// Argument completion with cached editor data.

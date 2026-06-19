@@ -109,6 +109,8 @@ pub mod session {
     pub struct TerminalSessionCfg {
         pub cwd: Option<PathBuf>,
         pub shell: Option<String>,
+        pub program: Option<String>,
+        pub args: Vec<String>,
         pub env: Vec<(String, String)>,
         pub cols: Option<u16>,
         pub rows: Option<u16>,
@@ -145,8 +147,12 @@ pub mod session {
             };
             let pair = pty_system.openpty(size).context("open PTY")?;
 
-            let shell = default_shell(cfg.shell.as_deref());
-            let mut cmd = CommandBuilder::new(&shell);
+            let program = cfg
+                .program
+                .clone()
+                .unwrap_or_else(|| default_shell(cfg.shell.as_deref()));
+            let mut cmd = CommandBuilder::new(&program);
+            cmd.args(&cfg.args);
 
             if let Some(cwd) = &cfg.cwd {
                 cmd.cwd(cwd);
@@ -158,7 +164,7 @@ pub mod session {
             let child = pair
                 .slave
                 .spawn_command(cmd)
-                .with_context(|| format!("spawn shell: {}", shell))?;
+                .with_context(|| format!("spawn terminal command: {}", program))?;
 
             // IO endpoints
             let mut reader = pair.master.try_clone_reader().context("clone PTY reader")?;
@@ -321,6 +327,13 @@ pub mod session {
 
         pub fn id(&self) -> u64 {
             self.id
+        }
+
+        pub fn wait_exit_code(&mut self) -> Option<i32> {
+            self.child
+                .wait()
+                .ok()
+                .and_then(|status| i32::try_from(status.exit_code()).ok())
         }
     }
 
@@ -755,6 +768,29 @@ pub mod engine {
 
     impl EventListener for NoopListener {
         fn send_event(&self, _event: TermEvent) {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::session::{TerminalSession, TerminalSessionCfg};
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn command_session_runs_program_args_and_reports_exit_code() {
+        let cfg = TerminalSessionCfg {
+            program: Some("/bin/sh".to_string()),
+            args: vec![
+                "-lc".to_string(),
+                "printf runnable-test; exit 7".to_string(),
+            ],
+            ..TerminalSessionCfg::default()
+        };
+
+        let (mut session, mut rx) = TerminalSession::spawn(42, cfg).await.unwrap();
+        while rx.recv().await.is_some() {}
+
+        assert_eq!(session.wait_exit_code(), Some(7));
     }
 }
 

@@ -35,7 +35,7 @@ pub use nucleotide_events::{
 // Re-export V2 domain events
 pub use nucleotide_events::v2::{
     document::Event as DocumentEvent, editor::Event as EditorEvent, lsp::Event as LspV2Event,
-    ui::Event as UiEvent, workspace::Event as WorkspaceEvent,
+    run::Event as RunEvent, ui::Event as UiEvent, workspace::Event as WorkspaceEvent,
 };
 
 // Event aggregator exports (includes V2 AppEvent)

@@ -112,6 +112,9 @@ nucleotide-env = { path = "crates/nucleotide-env" }
 nucleotide-vcs = { path = "crates/nucleotide-vcs" }
 nucleotide-test-lsp = { path = "crates/nucleotide-test-lsp" }
 
+[patch."https://github.com/iainh/helix"]
+helix-lsp = { path = "vendor/helix-lsp" }
+
 [patch.crates-io]
 # Zed workspace crates rely on these patched async primitives. Patches in
 # dependency workspaces are ignored by Cargo, so mirror the required entries here.
