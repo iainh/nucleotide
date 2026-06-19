@@ -11721,12 +11721,6 @@ impl Render for Workspace {
                     cx.notify();
                 }
 
-                if workspace.close_confirm_open {
-                    workspace.close_confirm_open = false;
-                    workspace.close_confirm = None;
-                    cx.notify();
-                }
-
                 if workspace.tab_context_menu_open {
                     workspace.tab_context_menu_open = false;
                     workspace.tab_context_menu_doc_id = None;

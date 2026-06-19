@@ -87,7 +87,10 @@ pub use completion_v2::{
     CompleteViaHelixEvent, CompletionItem, CompletionItemKind, CompletionView, Position,
     StringMatch, StringMatchCandidate,
 };
-pub use confirm_dialog::{ConfirmDialog, ConfirmDialogCallbacks, render_confirm_dialog};
+pub use confirm_dialog::{
+    ConfirmDialog, ConfirmDialogCallbacks, Dialog, DialogContent, DialogDescription, DialogFooter,
+    DialogHeader, DialogTitle, render_confirm_dialog,
+};
 pub use context_menu::{
     ContextMenu, ContextMenuCallbacks, ContextMenuEntry, ContextMenuState, render_context_menu,
 };
