@@ -282,6 +282,24 @@ impl PickerStyle {
 }
 
 impl PickerView {
+    fn ui_font(cx: &mut Context<Self>) -> gpui::Font {
+        let ui_font = cx.global::<nucleotide_types::UiFontConfig>();
+        gpui::Font {
+            family: ui_font.family.clone().into(),
+            features: gpui::FontFeatures::default(),
+            weight: ui_font.weight.into(),
+            style: gpui::FontStyle::Normal,
+            fallbacks: None,
+        }
+    }
+
+    fn ui_font_family(cx: &mut Context<Self>) -> SharedString {
+        cx.global::<nucleotide_types::UiFontConfig>()
+            .family
+            .clone()
+            .into()
+    }
+
     pub fn new(cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
         if let Some(coord) = cx.try_global::<crate::FocusCoordinator>() {
@@ -480,44 +498,94 @@ impl PickerView {
             let item_count = u32::try_from(self.items.len()).unwrap_or(u32::MAX);
             self.filtered_indices = (0..item_count).collect();
         } else {
-            // Simple fuzzy matching for now
-            // TODO: Properly integrate nucleo when API is stable
-            self.filtered_indices = self
+            let query = self.query.to_string();
+            let mut scored_items = self
                 .items
                 .iter()
                 .enumerate()
-                .filter(|(_, item)| {
-                    // Basic fuzzy matching: check if all query characters appear in order
-                    let item_lower = item.label.to_lowercase();
-                    let query_lower = self.query.to_lowercase();
-
-                    if query_lower.is_empty() {
-                        return true;
-                    }
-
-                    let mut query_chars = query_lower.chars();
-                    let mut current_char = query_chars.next();
-
-                    if current_char.is_none() {
-                        return true;
-                    }
-
-                    for item_char in item_lower.chars() {
-                        if let Some(q_char) = current_char
-                            && item_char == q_char
-                        {
-                            current_char = query_chars.next();
-                            if current_char.is_none() {
-                                return true; // All query chars found
-                            }
-                        }
-                    }
-
-                    current_char.is_none() // True if all chars were matched
+                .filter_map(|(idx, item)| {
+                    let search_text = Self::item_search_text(item);
+                    Self::fuzzy_score(&query, &search_text).map(|score| (idx, score))
                 })
+                .collect::<Vec<_>>();
+
+            scored_items.sort_by(|(a_idx, a_score), (b_idx, b_score)| {
+                b_score.cmp(a_score).then_with(|| {
+                    self.items[*a_idx]
+                        .label
+                        .as_ref()
+                        .cmp(self.items[*b_idx].label.as_ref())
+                })
+            });
+
+            self.filtered_indices = scored_items
+                .into_iter()
                 .filter_map(|(idx, _)| u32::try_from(idx).ok())
                 .collect();
         }
+    }
+
+    fn item_search_text(item: &PickerItem) -> String {
+        let mut text = item.label.to_string();
+
+        if let Some(sublabel) = &item.sublabel {
+            text.push(' ');
+            text.push_str(sublabel.as_ref());
+        }
+
+        if let Some(columns) = &item.columns {
+            match columns {
+                ColumnData::BufferColumns { id, flags, path } => {
+                    text.push(' ');
+                    text.push_str(id);
+                    text.push(' ');
+                    text.push_str(flags);
+                    text.push(' ');
+                    text.push_str(path);
+                }
+            }
+        }
+
+        text
+    }
+
+    fn fuzzy_score(query: &str, candidate: &str) -> Option<usize> {
+        let query = query.trim().to_lowercase();
+        if query.is_empty() {
+            return Some(usize::MAX);
+        }
+
+        let candidate = candidate.to_lowercase();
+        if let Some(position) = candidate.find(&query) {
+            return Some(10_000usize.saturating_sub(position));
+        }
+
+        let mut score = 0usize;
+        let mut search_start = 0usize;
+        let mut last_match = None;
+
+        for query_char in query.chars().filter(|ch| !ch.is_whitespace()) {
+            let relative_match = candidate[search_start..]
+                .char_indices()
+                .find_map(|(idx, candidate_char)| (candidate_char == query_char).then_some(idx))?;
+            let match_idx = search_start + relative_match;
+
+            score += 100;
+            if let Some(previous_idx) = last_match {
+                if match_idx == previous_idx + 1 {
+                    score += 50;
+                } else {
+                    score = score.saturating_sub(match_idx.saturating_sub(previous_idx).min(50));
+                }
+            } else {
+                score = score.saturating_sub(match_idx.min(50));
+            }
+
+            search_start = match_idx + query_char.len_utf8();
+            last_match = Some(match_idx);
+        }
+
+        Some(score)
     }
 
     fn move_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
@@ -919,11 +987,7 @@ impl PickerView {
             self.load_preview_for_selected_item(cx);
         }
 
-        let font = cx
-            .global::<nucleotide_types::FontSettings>()
-            .var_font
-            .clone()
-            .into();
+        let font = Self::ui_font(cx);
         let window_size = window.viewport_size();
 
         // Check if we need to recalculate dimensions
@@ -1124,12 +1188,7 @@ impl PickerView {
                             .border_b_1()
                             .border_color(self.style.modal_style.border)
                             .text_color(self.style.modal_style.prompt_text)
-                                .font_family({
-                                    cx.global::<nucleotide_types::FontSettings>()
-                                        .var_font
-                                        .family
-                                        .clone()
-                                })
+                            .font_family(Self::ui_font_family(cx))
                             .text_size(cx.global::<crate::Theme>().tokens.sizes.text_sm)
                             .child(
                                 div()
@@ -1242,12 +1301,7 @@ impl PickerView {
                                                                         .flex()
                                                                         .items_center()
                                                                         .gap_2()
-                                                                        .font_family({
-                                                                            cx.global::<nucleotide_types::FontSettings>()
-                                                                                .var_font
-                                                                                .family
-                                                                                .clone()
-                                                                        })
+                                                                        .font_family(Self::ui_font_family(cx))
                                                                         .child(
                                                                             // ID column
                                                                             div()
@@ -1308,12 +1362,7 @@ impl PickerView {
                                                                                     .items_center()
                                                                                     .overflow_hidden()
                                                                                     .text_ellipsis()
-                                                                                    .font_family({
-                                                                                        cx.global::<nucleotide_types::FontSettings>()
-                                                                                            .var_font
-                                                                                            .family
-                                                                                            .clone()
-                                                                                    })
+                                                                                    .font_family(Self::ui_font_family(cx))
                                                                                     .child(item.label.clone())
                                                                             )
                                                                     }
@@ -1445,5 +1494,43 @@ impl Render for PickerView {
         // The picker view itself is the content that will be wrapped by Overlay
         // We only render the inner content here, not the overlay wrapper
         self.render_picker_content(window, cx)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    fn item_search_text_includes_sublabel_and_columns() {
+        let item = PickerItem {
+            label: "write".into(),
+            sublabel: Some("Save file | aliases: w".into()),
+            data: Arc::new(()),
+            file_path: None,
+            vcs_status: None,
+            columns: Some(ColumnData::BufferColumns {
+                id: "2".into(),
+                flags: "+*".into(),
+                path: "src/main.rs".into(),
+            }),
+        };
+
+        let search_text = PickerView::item_search_text(&item);
+
+        assert!(search_text.contains("write"));
+        assert!(search_text.contains("aliases: w"));
+        assert!(search_text.contains("src/main.rs"));
+    }
+
+    #[test]
+    fn fuzzy_score_searches_ordered_characters_and_exact_substrings() {
+        let exact = PickerView::fuzzy_score("write", "write Save file").expect("exact score");
+        let fuzzy = PickerView::fuzzy_score("wrt", "write Save file").expect("ordered fuzzy score");
+
+        assert!(exact > fuzzy);
+        assert!(PickerView::fuzzy_score("swf", "Save workspace file").is_some());
+        assert!(PickerView::fuzzy_score("fwz", "Save workspace file").is_none());
     }
 }

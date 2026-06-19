@@ -101,6 +101,21 @@ fn create_icon(icon_path: String, size: f32, color: Option<Hsla>) -> impl IntoEl
 }
 
 impl PromptView {
+    fn font_from_ui_config(ui_font: &nucleotide_types::UiFontConfig) -> gpui::Font {
+        gpui::Font {
+            family: ui_font.family.clone().into(),
+            features: gpui::FontFeatures::default(),
+            weight: ui_font.weight.into(),
+            style: gpui::FontStyle::Normal,
+            fallbacks: None,
+        }
+    }
+
+    fn ui_font(cx: &mut Context<Self>) -> gpui::Font {
+        let ui_font = cx.global::<nucleotide_types::UiFontConfig>();
+        Self::font_from_ui_config(ui_font)
+    }
+
     pub fn new(prompt: impl Into<SharedString>, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
         // Register prompt focus with the global coordinator if available
@@ -398,6 +413,26 @@ impl PromptView {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prompt_font_comes_from_ui_font_config() {
+        let ui_font = nucleotide_types::UiFontConfig {
+            family: "Test UI Font".to_string(),
+            size: 13.0,
+            weight: nucleotide_types::FontWeight::Medium,
+        };
+
+        let font = PromptView::font_from_ui_config(&ui_font);
+
+        assert_eq!(font.family, "Test UI Font");
+        assert_eq!(font.weight, gpui::FontWeight::MEDIUM);
+        assert_eq!(font.style, gpui::FontStyle::Normal);
+    }
+}
+
 impl Focusable for PromptView {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus_handle.clone()
@@ -408,11 +443,8 @@ impl EventEmitter<DismissEvent> for PromptView {}
 
 impl Render for PromptView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let font = cx
-            .global::<nucleotide_types::FontSettings>()
-            .var_font
-            .clone()
-            .into();
+        let font = Self::ui_font(cx);
+        let ui_font_size = cx.global::<nucleotide_types::UiFontConfig>().size;
         let input_display = self.input.to_string();
 
         // Get the ghost text (completion suggestion after cursor)
@@ -451,8 +483,8 @@ impl Render for PromptView {
                 ui_theme.tokens.chrome.shadow_lg.to_box_shadow(false),
                 ui_theme.tokens.chrome.inset_highlight.to_box_shadow(true),
             ])
-            .font(font)
-            .text_size(px(cx.global::<nucleotide_types::UiFontConfig>().size))
+            .font(font.clone())
+            .text_size(px(ui_font_size))
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
                 match event.keystroke.key.as_str() {
@@ -531,6 +563,7 @@ impl Render for PromptView {
                     .gap_2()
                     .child(
                         div()
+                            .font(font.clone())
                             .text_color(self.style.modal_style.prompt_text)
                             .font_weight(gpui::FontWeight::BOLD)
                             .child(
@@ -542,13 +575,14 @@ impl Render for PromptView {
                                         Some(self.style.modal_style.prompt_text),
                                     ))
                                 } else {
-                                    div().child(self.prompt.clone())
+                                    div().font(font.clone()).child(self.prompt.clone())
                                 },
                             ),
                     )
                     .child(
                         div()
                             .flex_1()
+                            .font(font.clone())
                             .text_color(self.style.modal_style.text)
                             .child(
                                 // Split the input at cursor position for proper cursor rendering
@@ -556,7 +590,7 @@ impl Render for PromptView {
                                     .flex()
                                     .items_center()
                                     .child(if self.cursor_position > 0 {
-                                        div().child(
+                                        div().font(font.clone()).child(
                                             input_display
                                                 .chars()
                                                 .take(self.cursor_position)
@@ -575,7 +609,7 @@ impl Render for PromptView {
                                             }),
                                     )
                                     .child(if self.cursor_position < input_display.len() {
-                                        div().child(
+                                        div().font(font.clone()).child(
                                             input_display
                                                 .chars()
                                                 .skip(self.cursor_position)
@@ -588,6 +622,7 @@ impl Render for PromptView {
                                     .when_some(ghost_text.clone(), |this, ghost| {
                                         this.child(
                                             div()
+                                                .font(font.clone())
                                                 .text_color(self.style.modal_style.text)
                                                 .opacity(0.5) // Make it faded
                                                 .child(ghost),
@@ -619,8 +654,10 @@ impl Render for PromptView {
                                     .map(|(visible_idx, completion)| {
                                         let actual_idx = start_idx + visible_idx;
                                         let is_selected = actual_idx == self.completion_selection;
+                                        let row_font = font.clone();
                                         div()
                                             .id(("completion_item", actual_idx))
+                                            .font(row_font.clone())
                                             .flex()
                                             .flex_col()
                                             .px_3()
@@ -630,6 +667,7 @@ impl Render for PromptView {
                                             })
                                             .child(
                                                 div()
+                                                    .font(row_font.clone())
                                                     .text_color(if is_selected {
                                                         self.style.modal_style.selected_text
                                                     } else {
@@ -648,6 +686,7 @@ impl Render for PromptView {
                                                 |this, desc| {
                                                     this.child(
                                                         div()
+                                                            .font(row_font.clone())
                                                             .text_size(
                                                                 cx.global::<crate::Theme>()
                                                                     .tokens

@@ -67,6 +67,13 @@ pub struct GlobalSearchLocation {
     pub line: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiagnosticLocation {
+    pub doc_id: helix_view::DocumentId,
+    pub path: Option<std::path::PathBuf>,
+    pub offset: usize,
+}
+
 // Hybrid Update enum for event system
 // Uses Event(AppEvent) for data-only events and direct variants for complex UI components with behavior
 pub enum Update {
@@ -79,14 +86,6 @@ pub enum Update {
     Picker(crate::picker::Picker),
     DirectoryPicker(crate::picker::Picker),
     Completion(gpui::Entity<nucleotide_ui::completion_v2::CompletionView>),
-    CodeActions(
-        gpui::Entity<nucleotide_ui::completion_v2::CompletionView>,
-        Vec<(
-            helix_lsp::lsp::CodeActionOrCommand,
-            helix_core::diagnostic::LanguageServerId,
-            helix_lsp::OffsetEncoding,
-        )>,
-    ),
     HoverDocs(Vec<HoverDocEntry>),
     CompletionEvent(helix_view::handlers::completion::CompletionEvent),
     Info(helix_view::info::Info),
@@ -159,7 +158,6 @@ pub enum Update {
     ShowHoverDocs,
     RunTask(nucleotide_events::v2::run::ResolvedTask),
     ToggleFileTree,
-    DiagnosticsPanel(gpui::Entity<crate::DiagnosticsPanel>),
     TerminalPanel(gpui::Entity<nucleotide_terminal_panel::TerminalPanel>),
 }
 
@@ -225,7 +223,6 @@ impl std::fmt::Debug for Update {
             }
             Update::FileTreeEvent(_) => write!(f, "FileTreeEvent(...)"),
             Update::CompletionEvent(_) => write!(f, "CompletionEvent(...)"),
-            Update::CodeActions(_, _) => write!(f, "CodeActions(...)"),
             Update::ShowFilePicker => write!(f, "ShowFilePicker"),
             Update::ShowFilePickerAt(path) => write!(f, "ShowFilePickerAt({path:?})"),
             Update::ShowBufferPicker => write!(f, "ShowBufferPicker"),
@@ -234,7 +231,6 @@ impl std::fmt::Debug for Update {
             Update::ShowHoverDocs => write!(f, "ShowHoverDocs"),
             Update::RunTask(task) => write!(f, "RunTask({:?})", task.label()),
             Update::ToggleFileTree => write!(f, "ToggleFileTree"),
-            Update::DiagnosticsPanel(_) => write!(f, "DiagnosticsPanel(...)"),
             Update::TerminalPanel(_) => write!(f, "TerminalPanel(...)"),
         }
     }

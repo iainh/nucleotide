@@ -4,7 +4,7 @@
 
 # UI font configuration - used for menus, prompts, pickers, etc.
 [ui.font]
-family = "SF Pro Display"    # Font family name
+family = ".SystemUIFont"     # Font family name
 weight = "normal"            # Options: thin, extralight, light, normal, medium, semibold, bold, extrabold, black
 size = 13.0                  # Font size in pixels
 

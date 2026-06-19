@@ -1552,26 +1552,6 @@ impl Application {
             }
         }
     }
-    fn try_create_picker_component(&mut self) -> Option<crate::picker::Picker> {
-        // This method is no longer used for file/buffer pickers
-        // They are handled via events now
-        None
-    }
-
-    /// Check if helix created a picker and emit the appropriate event
-    #[instrument(skip(self, _cx))]
-    pub fn check_for_picker_and_emit_event(
-        &mut self,
-        _cx: &mut gpui::Context<crate::Core>,
-    ) -> bool {
-        // Legacy Helix picker interception removed to avoid misclassification.
-        // - Do not remove generic pickers or assume type (e.g., buffer vs diagnostics).
-        // - File/buffer pickers should be opened via explicit app actions.
-        // - Diagnostics picker is handled via event bridge PostCommand hooks.
-
-        false
-    }
-
     /// Legacy method - no longer used for event-based prompts
     pub fn check_for_prompt_and_emit_event(
         &mut self,
@@ -1970,18 +1950,7 @@ impl Application {
 
     #[allow(dead_code)]
     fn emit_overlays_except_prompt(&mut self, cx: &mut gpui::Context<crate::Core>) {
-        // Check for picker events first
-        if self.check_for_picker_and_emit_event(cx) {
-            return;
-        }
-
         // Don't check for prompts here - this method specifically excludes prompts
-
-        // Legacy picker handling (for non-file/buffer pickers)
-        let picker = self.try_create_picker_component();
-        if let Some(picker) = picker {
-            cx.emit(crate::Update::Picker(picker));
-        }
 
         // Don't take() the autoinfo - just clone it so it persists
         if let Some(info) = &self.editor.autoinfo {
@@ -1995,17 +1964,6 @@ impl Application {
     }
 
     fn emit_overlays(&mut self, cx: &mut gpui::Context<crate::Core>) {
-        // Check for picker events first
-        if self.check_for_picker_and_emit_event(cx) {
-            return;
-        }
-
-        // Legacy handling for other overlay types
-        let picker = self.try_create_picker_component();
-        if let Some(picker) = picker {
-            cx.emit(crate::Update::Picker(picker));
-        }
-
         // Don't take() the autoinfo - just clone it so it persists
         if let Some(info) = &self.editor.autoinfo {
             cx.emit(crate::Update::Info(helix_view::info::Info {
@@ -2134,7 +2092,7 @@ impl Application {
                             self.trigger_lsp_symbol_picker(workspace, cx);
                         }
                         editor_input::NativePickerRequest::Diagnostics { workspace } => {
-                            self.emit_diagnostics_panel(workspace, cx);
+                            self.emit_diagnostics_picker(workspace, cx);
                         }
                         editor_input::NativePickerRequest::CodeActions => {
                             cx.emit(crate::Update::ShowCodeActions);
@@ -2154,22 +2112,65 @@ impl Application {
         }
     }
 
-    fn emit_diagnostics_panel(&self, workspace: bool, cx: &mut gpui::Context<crate::Core>) {
-        info!(
-            workspace = workspace,
-            "DIAG: Diagnostics picker requested - showing panel"
-        );
+    fn emit_diagnostics_picker(&mut self, workspace: bool, cx: &mut gpui::Context<crate::Core>) {
+        info!(workspace = workspace, "DIAG: Diagnostics picker requested");
 
-        if let Some(lsp_state) = &self.lsp_state {
-            let lsp_state = lsp_state.clone();
-            let panel = cx.new(|cx| {
-                crate::DiagnosticsPanel::new(lsp_state, crate::DiagnosticsFilter::default(), cx)
+        let focused_doc_id = self
+            .editor
+            .tree
+            .try_get(self.editor.tree.focus)
+            .map(|view| view.doc);
+        let mut items = Vec::new();
+
+        for (doc_id, doc) in self.editor.documents.iter() {
+            if !workspace && Some(*doc_id) != focused_doc_id {
+                continue;
+            }
+
+            let path = doc.path().cloned();
+            let path_label = path
+                .as_deref()
+                .map(get_relative_path)
+                .and_then(|path| path.to_str().map(str::to_owned))
+                .unwrap_or_else(|| "[scratch]".to_string());
+
+            for diagnostic in doc.diagnostics() {
+                let severity = diagnostic_severity_label(diagnostic.severity);
+                let line = diagnostic.line + 1;
+                let label = format!("{severity} {path_label}:{line}");
+                let data = crate::types::DiagnosticLocation {
+                    doc_id: *doc_id,
+                    path: path.clone(),
+                    offset: diagnostic.range.start,
+                };
+
+                items.push(crate::picker_view::PickerItem {
+                    label: label.into(),
+                    sublabel: Some(diagnostic.message.clone().into()),
+                    data: Arc::new(data),
+                    file_path: path.clone(),
+                    vcs_status: None,
+                    columns: None,
+                });
+            }
+        }
+
+        if items.is_empty() {
+            self.editor.set_status(if workspace {
+                "No workspace diagnostics"
+            } else {
+                "No diagnostics"
             });
-            cx.emit(crate::Update::DiagnosticsPanel(panel));
         } else {
-            nucleotide_logging::warn!(
-                "DIAG: Diagnostics picker requested but no LspState entity available"
-            );
+            let title = if workspace {
+                "Workspace Diagnostics"
+            } else {
+                "Diagnostics"
+            };
+            let picker = crate::picker::Picker::native(title, items, |_index| {
+                // Selection is handled by OverlayView via DiagnosticLocation payloads.
+            });
+            cx.emit(crate::Update::Picker(picker));
         }
     }
 
@@ -2562,7 +2563,7 @@ impl Application {
                                 }
                             }
                             event_bridge::BridgedEvent::DiagnosticsPickerRequested { workspace } => {
-                                self.emit_diagnostics_panel(*workspace, cx);
+                                self.emit_diagnostics_picker(*workspace, cx);
                             }
                             event_bridge::BridgedEvent::FilePickerRequested => {
                                 info!("DIAG: FilePickerRequested received - emitting ShowFilePicker");
@@ -3440,6 +3441,15 @@ fn lsp_locations_picker(
     crate::picker::Picker::native(title.to_string(), items, |_index| {
         // LSP location selection is handled by the overlay via typed item data.
     })
+}
+
+fn diagnostic_severity_label(severity: Option<helix_core::diagnostic::Severity>) -> &'static str {
+    match severity.unwrap_or_default() {
+        helix_core::diagnostic::Severity::Error => "error",
+        helix_core::diagnostic::Severity::Warning => "warning",
+        helix_core::diagnostic::Severity::Info => "info",
+        helix_core::diagnostic::Severity::Hint => "hint",
+    }
 }
 
 fn lsp_symbol_picker(
@@ -5497,6 +5507,39 @@ impl Application {
             .ok_or_else(|| anyhow::anyhow!("Jumplist target document is not open"))?;
 
         doc.set_selection(view_id, location.selection.clone());
+        self.editor.ensure_cursor_in_view(view_id);
+
+        Ok((doc_id, view_id))
+    }
+
+    pub fn jump_to_diagnostic_location(
+        &mut self,
+        location: &crate::types::DiagnosticLocation,
+    ) -> anyhow::Result<(DocumentId, ViewId)> {
+        let doc_id = if let Some(path) = &location.path {
+            self.editor
+                .open(path, helix_view::editor::Action::Replace)?
+        } else {
+            if self.editor.document(location.doc_id).is_none() {
+                anyhow::bail!("Diagnostic target document is no longer open");
+            }
+            self.editor
+                .switch(location.doc_id, helix_view::editor::Action::Replace);
+            location.doc_id
+        };
+        let view_id = self.editor.tree.focus;
+        let doc = self
+            .editor
+            .document_mut(doc_id)
+            .ok_or_else(|| anyhow::anyhow!("Diagnostic target document is not open"))?;
+        let len_chars = doc.text().len_chars();
+        if location.offset > len_chars {
+            anyhow::bail!(
+                "The diagnostic location does not exist anymore because the file has changed"
+            );
+        }
+
+        doc.set_selection(view_id, Selection::point(location.offset));
         self.editor.ensure_cursor_in_view(view_id);
 
         Ok((doc_id, view_id))

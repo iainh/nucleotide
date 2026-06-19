@@ -9,7 +9,6 @@ pub mod completion_coordinator;
 pub mod completion_interception;
 pub mod completions;
 pub mod config;
-pub mod diagnostics_panel;
 pub mod document;
 pub mod editor_capabilities_impl;
 pub mod editor_provider;
@@ -49,13 +48,12 @@ pub use nucleotide_vcs::{VcsConfig, VcsEvent, VcsService, VcsServiceHandle};
 
 // Re-export modules that were moved to other crates
 pub use nucleotide_ui::{
-    Picker, Prompt, PromptElement, completion_v2 as completion, info_box, key_hint_view,
-    notification, picker, picker_view, prompt, prompt_view, titlebar,
+    Picker, Prompt, completion_v2 as completion, info_box, key_hint_view, notification, picker,
+    picker_view, prompt, prompt_view, titlebar,
 };
 
 // Re-export commonly used items
 pub use application::{Application, Input, InputEvent};
-pub use diagnostics_panel::{DiagnosticsFilter, DiagnosticsPanel};
 pub use nucleotide_ui::theme_manager::ThemeManager;
 pub use types::{
     EditorFontConfig, EditorStatus as EditorStatusType, FontSettings, UiFontConfig, Update,

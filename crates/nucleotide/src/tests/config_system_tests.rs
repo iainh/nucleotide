@@ -311,6 +311,28 @@ dark_theme = "custom_dark"
 
     #[test]
     #[ignore = "Requires Helix runtime files to be available"]
+    fn test_ui_font_aliases_use_gpui_system_ui_font() {
+        let config_result = Config::load_from_dir(&std::env::temp_dir());
+        if config_result.is_err() {
+            println!("Skipping test due to missing Helix runtime files");
+            return;
+        }
+        let mut config = config_result.unwrap();
+
+        config.gui.ui.font = Some(FontConfig {
+            family: "SF Pro Display".to_string(),
+            weight: FontWeight::Normal,
+            size: 13.0,
+            line_height: 1.5,
+        });
+
+        let ui_font = config.ui_font();
+        assert_eq!(ui_font.family, ".SystemUIFont");
+        assert_eq!(ui_font.size, 13.0);
+    }
+
+    #[test]
+    #[ignore = "Requires Helix runtime files to be available"]
     fn test_font_fallback_behavior() {
         // Skip test if Helix runtime files are not available (test environment)
         let config_result = Config::load_from_dir(&std::env::temp_dir());
@@ -341,7 +363,7 @@ dark_theme = "custom_dark"
         assert_eq!(editor_font.family, "SF Mono"); // Default editor font
 
         let ui_font = config.ui_font();
-        assert_eq!(ui_font.family, "SF Pro Display"); // Default UI font
+        assert_eq!(ui_font.family, ".SystemUIFont"); // Default UI font
     }
 
     #[test]
@@ -777,7 +799,7 @@ family = "Editor Font"
             assert_eq!(editor_font.family, "SF Mono"); // Default editor font
 
             let ui_font = config.ui_font();
-            assert_eq!(ui_font.family, "SF Pro Display"); // Default UI font
+            assert_eq!(ui_font.family, ".SystemUIFont"); // Default UI font
         }
     }
 

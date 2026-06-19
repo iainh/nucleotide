@@ -947,7 +947,7 @@ fn gui_main(
                 // Import workspace actions for global bindings
                 use nucleotide::actions::workspace::{
                     NewFile, NewWindow, RunFileTests, RunLast, RunNearest, ShowBufferPicker,
-                    ShowCodeActions, ShowCommandPalette, ShowFileFinder, ShowRunnables,
+                    ShowCodeActions, ShowCommandPrompt, ShowFileFinder, ShowRunnables,
                     ToggleFileTree,
                 };
 
@@ -962,7 +962,7 @@ fn gui_main(
                     gpui::KeyBinding::new("cmd-n", NewFile, None),
                     gpui::KeyBinding::new("cmd-shift-n", NewWindow, None),
                     gpui::KeyBinding::new("cmd-p", ShowFileFinder, None),
-                    gpui::KeyBinding::new("cmd-shift-p", ShowCommandPalette, None),
+                    gpui::KeyBinding::new("cmd-shift-p", ShowCommandPrompt, None),
                     gpui::KeyBinding::new("cmd-b", ShowBufferPicker, None),
                     gpui::KeyBinding::new("cmd-z", Undo, None),
                     gpui::KeyBinding::new("cmd-shift-z", Redo, None),

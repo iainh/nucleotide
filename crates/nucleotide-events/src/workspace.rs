@@ -138,7 +138,7 @@ pub enum SelectionSource {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileOpenSource {
     FileTree,
-    CommandPalette,
+    FilePicker,
     RecentFiles,
     External, // Opened from outside the app
     Api,
@@ -330,7 +330,7 @@ mod tests {
     fn test_file_open_sources() {
         let sources = [
             FileOpenSource::FileTree,
-            FileOpenSource::CommandPalette,
+            FileOpenSource::FilePicker,
             FileOpenSource::RecentFiles,
             FileOpenSource::External,
             FileOpenSource::Api,

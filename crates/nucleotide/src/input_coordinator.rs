@@ -116,7 +116,7 @@ actions!(
         // Global navigation
         ToggleFileTree,
         ShowFileFinder,
-        ShowCommandPalette,
+        ShowCommandPrompt,
         ShowBufferPicker,
         // Focus group navigation
         NextFocusGroup,

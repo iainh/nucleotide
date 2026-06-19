@@ -99,7 +99,7 @@ pub use list_item::{
 };
 pub use markdown::{MarkdownElement, MarkdownStyle, markdown};
 pub use picker::Picker;
-pub use prompt::{Prompt, PromptElement};
+pub use prompt::Prompt;
 pub use providers::{
     AccessibilityConfiguration, ConfigurationProvider, CustomEventData, CustomEventDetails,
     EventHandlingProvider, EventResult, PerformanceConfiguration, Provider, ProviderComposition,
