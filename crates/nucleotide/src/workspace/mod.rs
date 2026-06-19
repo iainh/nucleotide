@@ -3332,6 +3332,7 @@ impl Workspace {
                                 svg()
                                     .path("icons/book-text.svg")
                                     .size(px(14.0))
+                                    .text_color(tokens.chrome.text_on_chrome)
                                     .flex_shrink_0(),
                             )
                             .child("Documentation"),
