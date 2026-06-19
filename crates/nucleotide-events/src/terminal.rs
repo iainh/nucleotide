@@ -18,6 +18,15 @@ pub enum Event {
         env: Vec<(String, String)>,
     },
 
+    /// Request to spawn a specific command in a terminal session
+    CommandSpawnRequested {
+        id: TerminalId,
+        cwd: Option<PathBuf>,
+        program: String,
+        args: Vec<String>,
+        env: Vec<(String, String)>,
+    },
+
     /// Terminal viewport resized (in character cells)
     Resized {
         id: TerminalId,
@@ -79,6 +88,35 @@ mod tests {
                 assert_eq!(env.len(), 1);
             }
             _ => panic!("expected SpawnRequested"),
+        }
+    }
+
+    #[test]
+    fn test_command_spawn_requested_event() {
+        let id = TerminalId(2);
+        let e = Event::CommandSpawnRequested {
+            id,
+            cwd: Some(PathBuf::from("/tmp")),
+            program: "cargo".into(),
+            args: vec!["test".into()],
+            env: vec![("RUST_LOG".into(), "info".into())],
+        };
+
+        match e {
+            Event::CommandSpawnRequested {
+                id: tid,
+                cwd,
+                program,
+                args,
+                env,
+            } => {
+                assert_eq!(tid, id);
+                assert_eq!(cwd, Some(PathBuf::from("/tmp")));
+                assert_eq!(program, "cargo");
+                assert_eq!(args, vec!["test"]);
+                assert_eq!(env.len(), 1);
+            }
+            _ => panic!("expected CommandSpawnRequested"),
         }
     }
 }

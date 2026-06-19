@@ -110,8 +110,12 @@ impl TerminalRuntimeHandler {
         // Register globally so UI panels can fetch by TerminalId
         register_view_model(id, view.clone());
 
+        // Wrap session for cross-thread access and create a non-blocking input queue
+        let session_arc = Arc::new(Mutex::new(session));
+
         // Spawn a blocking thread to consume frames, coalescing bursts to the latest
         let exit_bus = self.event_bus.clone();
+        let session_for_exit = Arc::clone(&session_arc);
         let handle = std::thread::spawn(move || {
             while let Some(mut frame) = futures_executor::block_on(rx.recv()) {
                 // Drain any queued frames to coalesce updates
@@ -123,17 +127,19 @@ impl TerminalRuntimeHandler {
             }
             // Channel closed – shell process exited; mark view model and notify the event bus
             view_clone.lock().unwrap().set_exited();
+            let code = session_for_exit
+                .lock()
+                .ok()
+                .and_then(|mut session| session.wait_exit_code());
             if let Some(bus) = exit_bus {
                 bus.dispatch_terminal(TerminalEvent::Exited {
                     id,
-                    code: None,
+                    code,
                     signal: None,
                 });
             }
         });
 
-        // Wrap session for cross-thread access and create a non-blocking input queue
-        let session_arc = Arc::new(Mutex::new(session));
         let (tx, rx_input) = std::sync::mpsc::channel::<Vec<u8>>();
         let session_for_input = session_arc.clone();
         let input_task = std::thread::spawn(move || {
@@ -184,11 +190,31 @@ impl core::EventHandler for TerminalRuntimeHandler {
                 let cfg = TerminalSessionCfg {
                     cwd: cwd.clone(),
                     shell: shell.clone(),
+                    program: None,
+                    args: Vec::new(),
                     env: env.clone(),
                     cols: Some(80),
                     rows: Some(24),
                 };
                 // No bus needed here yet; placeholder for future reporting
+                self.handle_spawn(*id, &cfg);
+            }
+            TerminalEvent::CommandSpawnRequested {
+                id,
+                cwd,
+                program,
+                args,
+                env,
+            } => {
+                let cfg = TerminalSessionCfg {
+                    cwd: cwd.clone(),
+                    shell: None,
+                    program: Some(program.clone()),
+                    args: args.clone(),
+                    env: env.clone(),
+                    cols: Some(80),
+                    rows: Some(24),
+                };
                 self.handle_spawn(*id, &cfg);
             }
             TerminalEvent::Resized { id, cols, rows } => {

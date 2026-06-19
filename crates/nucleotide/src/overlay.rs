@@ -1060,6 +1060,15 @@ impl OverlayView {
                                             return Some((content, path_opt));
                                         }
                                     }
+                                else if let Some(task) = item
+                                    .data
+                                    .downcast_ref::<nucleotide_events::v2::run::ResolvedTask>()
+                                {
+                                    return Some((
+                                        crate::runnables::task_preview_text(task),
+                                        task.source().map(|source| source.path.clone()),
+                                    ));
+                                }
                                 None
                             });
 
@@ -1224,6 +1233,17 @@ impl OverlayView {
                                                 *doc_id,
                                                 helix_view::editor::Action::Replace,
                                             );
+                                        });
+                                    }
+                                }
+                                else if let Some(task) = selected_item
+                                    .data
+                                    .downcast_ref::<nucleotide_events::v2::run::ResolvedTask>()
+                                {
+                                    if let Some(core) = core_for_on_select.upgrade() {
+                                        let task = task.clone();
+                                        core.update(picker_cx, |_core, core_cx| {
+                                            core_cx.emit(crate::Update::RunTask(task));
                                         });
                                     }
                                 }

@@ -66,6 +66,7 @@ use crate::utils;
 use crate::{Core, Input, InputEvent};
 use nucleotide_core::EventBus;
 use nucleotide_env::EnvironmentOrigin;
+use nucleotide_events::v2::run::{Event as RunEvent, ResolvedTask, RunId, RunStatus};
 use nucleotide_events::v2::terminal::{Event as TerminalEvent, TerminalId};
 use nucleotide_terminal::TerminalBounds;
 // (no direct Workspace v2 items used here)
@@ -80,6 +81,13 @@ type TabBarNewMenuHandler = fn(&mut Workspace, &mut Context<Workspace>);
 enum EnvironmentBadge {
     Loading,
     NativeFlake,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RunnableAction {
+    ShowPicker,
+    RunNearest,
+    RunFileTests,
 }
 
 impl EnvironmentBadge {
@@ -740,6 +748,10 @@ pub struct Workspace {
     terminal_panel_visible: bool,
     terminal_id: Option<TerminalId>,
     next_terminal_id: u64,
+    next_run_id: u64,
+    last_run_task: Option<ResolvedTask>,
+    active_run_terminal: Option<(TerminalId, RunId)>,
+    run_output_terminal: Option<TerminalId>,
     // Debug: color major panes when enabled via env
     debug_colors_enabled: bool,
     // Height of the bottom (terminal) pane in basic layout mode
@@ -1517,10 +1529,21 @@ impl Workspace {
         cwd: Option<PathBuf>,
         cx: &mut Context<Self>,
     ) -> TerminalId {
+        self.spawn_terminal_session_with_input(cwd, Vec::new(), None, cx)
+    }
+
+    fn spawn_terminal_session_with_input(
+        &mut self,
+        cwd: Option<PathBuf>,
+        extra_env: Vec<(String, String)>,
+        initial_input: Option<Vec<u8>>,
+        cx: &mut Context<Self>,
+    ) -> TerminalId {
         let id = TerminalId(self.next_terminal_id);
         self.next_terminal_id += 1;
         self.terminal_id = Some(id);
         self.terminal_cwd = cwd.clone();
+        self.run_output_terminal = None;
         self.last_terminal_bounds = None;
 
         let shell = None;
@@ -1533,7 +1556,7 @@ impl Workspace {
         };
         let cwd_for_env = cwd.clone();
         self.handle.spawn(async move {
-            let env = match cwd_for_env.as_deref() {
+            let mut env = match cwd_for_env.as_deref() {
                 Some(directory) => {
                     match project_environment
                         .get_environment_for_directory(directory)
@@ -1553,6 +1576,7 @@ impl Workspace {
                 }
                 None => Vec::new(),
             };
+            env.extend(extra_env);
 
             if let Some(bus) = event_bus {
                 bus.dispatch_terminal(TerminalEvent::SpawnRequested {
@@ -1562,8 +1586,76 @@ impl Workspace {
                     env,
                 });
                 bus.process_events();
+
+                if let Some(bytes) = initial_input {
+                    bus.dispatch_terminal(TerminalEvent::Input { id, bytes });
+                    bus.process_events();
+                }
             } else {
                 warn!("No event aggregator; terminal spawn not dispatched");
+            }
+        });
+
+        id
+    }
+
+    fn spawn_terminal_command_session(
+        &mut self,
+        cwd: Option<PathBuf>,
+        program: String,
+        args: Vec<String>,
+        extra_env: Vec<(String, String)>,
+        cx: &mut Context<Self>,
+    ) -> TerminalId {
+        let id = TerminalId(self.next_terminal_id);
+        self.next_terminal_id += 1;
+        self.terminal_id = Some(id);
+        self.terminal_cwd = cwd.clone();
+        self.run_output_terminal = Some(id);
+        self.last_terminal_bounds = None;
+
+        let (event_bus, project_environment) = {
+            let core = self.core.read(cx);
+            (
+                core.event_aggregator.clone(),
+                core.project_environment.clone(),
+            )
+        };
+        let cwd_for_env = cwd.clone();
+        self.handle.spawn(async move {
+            let mut env = match cwd_for_env.as_deref() {
+                Some(directory) => {
+                    match project_environment
+                        .get_environment_for_directory(directory)
+                        .await
+                    {
+                        Ok(environment) => environment.into_iter().collect::<Vec<_>>(),
+                        Err(error) => {
+                            warn!(
+                                terminal_id = ?id,
+                                directory = %directory.display(),
+                                error = %error,
+                                "Failed to load project environment for runnable; using process environment"
+                            );
+                            Vec::new()
+                        }
+                    }
+                }
+                None => Vec::new(),
+            };
+            env.extend(extra_env);
+
+            if let Some(bus) = event_bus {
+                bus.dispatch_terminal(TerminalEvent::CommandSpawnRequested {
+                    id,
+                    cwd,
+                    program,
+                    args,
+                    env,
+                });
+                bus.process_events();
+            } else {
+                warn!("No event aggregator; runnable terminal spawn not dispatched");
             }
         });
 
@@ -1581,15 +1673,46 @@ impl Workspace {
     }
 
     fn open_terminal_panel_at(&mut self, cwd: Option<PathBuf>, cx: &mut Context<Self>) {
+        self.open_terminal_panel_at_with_input(cwd, Vec::new(), None, cx);
+    }
+
+    fn open_terminal_panel_at_with_input(
+        &mut self,
+        cwd: Option<PathBuf>,
+        extra_env: Vec<(String, String)>,
+        initial_input: Option<Vec<u8>>,
+        cx: &mut Context<Self>,
+    ) -> TerminalId {
         if let Some(existing_id) = self.terminal_id {
             self.shutdown_terminal_session(existing_id, cx);
         }
-        let id = self.spawn_terminal_session(cwd, cx);
+        let id = self.spawn_terminal_session_with_input(cwd, extra_env, initial_input, cx);
         self.set_embedded_terminal_panel(id, cx);
         self.terminal_panel_visible = true;
         self.terminal_focus_pending = true;
         self.terminal_active = true;
         cx.notify();
+        id
+    }
+
+    fn open_terminal_panel_for_command(
+        &mut self,
+        cwd: Option<PathBuf>,
+        program: String,
+        args: Vec<String>,
+        extra_env: Vec<(String, String)>,
+        cx: &mut Context<Self>,
+    ) -> TerminalId {
+        if let Some(existing_id) = self.terminal_id {
+            self.shutdown_terminal_session(existing_id, cx);
+        }
+        let id = self.spawn_terminal_command_session(cwd, program, args, extra_env, cx);
+        self.set_embedded_terminal_panel(id, cx);
+        self.terminal_panel_visible = true;
+        self.terminal_focus_pending = true;
+        self.terminal_active = true;
+        cx.notify();
+        id
     }
 
     fn hide_terminal_panel(&mut self) {
@@ -1601,9 +1724,13 @@ impl Workspace {
     }
 
     fn clear_terminal_panel_session(&mut self) {
+        let cleared_id = self.terminal_id;
         self.embedded_terminal_panel = None;
         self.terminal_id = None;
         self.terminal_cwd = None;
+        if self.run_output_terminal == cleared_id {
+            self.run_output_terminal = None;
+        }
     }
 
     fn refresh_environment_badge(&mut self, project_root: Option<PathBuf>, cx: &mut Context<Self>) {
@@ -1715,6 +1842,286 @@ impl Workspace {
         self.terminal_active = true;
         cx.notify();
     }
+
+    fn focused_runnable_document(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Result<crate::runnables::RunnableDocument, String> {
+        let core = self.core.read(cx);
+        let editor = &core.editor;
+        let view = editor
+            .tree
+            .try_get(editor.tree.focus)
+            .ok_or_else(|| "No focused editor view".to_string())?;
+        let doc = editor
+            .documents
+            .get(&view.doc)
+            .ok_or_else(|| "No focused document".to_string())?;
+        let path = doc
+            .path()
+            .cloned()
+            .ok_or_else(|| "Focused document is not backed by a file".to_string())?;
+        let text = doc.text().clone();
+        let cursor_line = doc.selection(view.id).primary().cursor_line(text.slice(..));
+
+        Ok(crate::runnables::RunnableDocument {
+            path,
+            text: String::from(text.slice(..)),
+            cursor_line,
+            project_root: self.current_project_root.clone(),
+        })
+    }
+
+    fn discover_local_focused_runnables(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Result<(crate::runnables::RunnableDocument, Vec<ResolvedTask>), String> {
+        let document = self.focused_runnable_document(cx)?;
+        let tasks = crate::runnables::discover_local_rust_runnables(&document);
+        Ok((document, tasks))
+    }
+
+    fn show_runnables(&mut self, cx: &mut Context<Self>) {
+        self.request_focused_runnables(RunnableAction::ShowPicker, cx);
+    }
+
+    fn run_nearest(&mut self, cx: &mut Context<Self>) {
+        self.request_focused_runnables(RunnableAction::RunNearest, cx);
+    }
+
+    fn run_file_tests(&mut self, cx: &mut Context<Self>) {
+        self.request_focused_runnables(RunnableAction::RunFileTests, cx);
+    }
+
+    fn request_focused_runnables(&mut self, action: RunnableAction, cx: &mut Context<Self>) {
+        use futures_util::stream::{FuturesOrdered, StreamExt};
+
+        let (document, local_tasks) = match self.discover_local_focused_runnables(cx) {
+            Ok(discovery) => discovery,
+            Err(message) => {
+                self.set_run_status(message, Severity::Error, cx);
+                return;
+            }
+        };
+
+        let cursor_line = document.cursor_line;
+        let mut futures: FuturesOrdered<_> = {
+            let core = self.core.read(cx);
+            let editor = &core.editor;
+            let Some(view) = editor.tree.try_get(editor.tree.focus) else {
+                self.finish_runnable_request(action, local_tasks, cursor_line, cx);
+                return;
+            };
+            let Some(doc) = editor.documents.get(&view.doc) else {
+                self.finish_runnable_request(action, local_tasks, cursor_line, cx);
+                return;
+            };
+            if doc.path() != Some(&document.path) {
+                self.finish_runnable_request(action, local_tasks, cursor_line, cx);
+                return;
+            }
+
+            let identifier = doc.identifier();
+            let mut seen = std::collections::HashSet::new();
+            doc.language_servers()
+                .filter(|language_server| {
+                    language_server.name() == "rust-analyzer"
+                        && language_server.is_initialized()
+                        && seen.insert(language_server.id())
+                })
+                .map(|language_server| {
+                    let server_name = language_server.name().to_string();
+                    let params = crate::runnables::RunnablesParams {
+                        text_document: identifier.clone(),
+                        position: None,
+                    };
+                    let request =
+                        language_server.request::<crate::runnables::RaRunnablesRequest>(params);
+
+                    async move {
+                        request.await.map(|runnables| {
+                            let tasks = runnables
+                                .into_iter()
+                                .map(crate::runnables::runnable_to_task_template)
+                                .collect::<Vec<_>>();
+                            (server_name, tasks)
+                        })
+                    }
+                })
+                .collect()
+        };
+
+        if futures.is_empty() {
+            self.finish_runnable_request(action, local_tasks, cursor_line, cx);
+            return;
+        }
+
+        self.set_run_status("Discovering Rust runnables...", Severity::Info, cx);
+        let workspace_handle = cx.entity().downgrade();
+        cx.spawn(async move |_this, cx| {
+            let mut rust_analyzer_tasks = Vec::new();
+
+            while let Some(result) = futures.next().await {
+                match result {
+                    Ok((server_name, mut tasks)) => {
+                        debug!(
+                            server_name = %server_name,
+                            runnable_count = tasks.len(),
+                            "Collected rust-analyzer runnables"
+                        );
+                        rust_analyzer_tasks.append(&mut tasks);
+                    }
+                    Err(error) => {
+                        warn!(error = %error, "rust-analyzer runnable request failed");
+                    }
+                }
+            }
+
+            let tasks = crate::runnables::merge_runnable_tasks(rust_analyzer_tasks, local_tasks);
+            if let Some(workspace) = workspace_handle.upgrade() {
+                workspace.update(cx, |workspace, cx| {
+                    workspace.finish_runnable_request(action, tasks, cursor_line, cx);
+                });
+            }
+        })
+        .detach();
+    }
+
+    fn finish_runnable_request(
+        &mut self,
+        action: RunnableAction,
+        tasks: Vec<ResolvedTask>,
+        cursor_line: usize,
+        cx: &mut Context<Self>,
+    ) {
+        if tasks.is_empty() {
+            self.set_run_status(
+                "No runnable Rust targets found in the focused file",
+                Severity::Error,
+                cx,
+            );
+            return;
+        }
+
+        match action {
+            RunnableAction::ShowPicker => self.show_runnables_picker(tasks, cx),
+            RunnableAction::RunNearest => {
+                match crate::runnables::nearest_runnable(&tasks, cursor_line, false) {
+                    Some(task) => self.run_task(task, cx),
+                    None => self.set_run_status(
+                        "No runnable target near the cursor in the focused file",
+                        Severity::Error,
+                        cx,
+                    ),
+                }
+            }
+            RunnableAction::RunFileTests => match crate::runnables::file_tests_runnable(&tasks) {
+                Some(task) => self.run_task(task, cx),
+                None => self.set_run_status(
+                    "No file-level Rust test runnable found in the focused file",
+                    Severity::Error,
+                    cx,
+                ),
+            },
+        }
+    }
+
+    fn run_last(&mut self, cx: &mut Context<Self>) {
+        match self.last_run_task.clone() {
+            Some(task) => self.run_task(task, cx),
+            None => self.set_run_status("No previous runnable to run", Severity::Error, cx),
+        }
+    }
+
+    fn show_runnables_picker(&mut self, tasks: Vec<ResolvedTask>, cx: &mut Context<Self>) {
+        use crate::picker_view::PickerItem;
+
+        let items = tasks
+            .into_iter()
+            .map(|task| {
+                let file_path = task.source().map(|source| source.path.clone());
+                PickerItem {
+                    label: task.label().to_string().into(),
+                    sublabel: Some(crate::runnables::shell_command_line(&task.command).into()),
+                    data: Arc::new(task),
+                    file_path,
+                    vcs_status: None,
+                    columns: None,
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let picker = crate::picker::Picker::native("Run", items, |_| {});
+        emit_picker_update(picker, &self.overlay, cx);
+    }
+
+    fn run_task(&mut self, task: ResolvedTask, cx: &mut Context<Self>) {
+        let run_id = RunId(self.next_run_id);
+        self.next_run_id += 1;
+
+        let command_line = crate::runnables::shell_command_line(&task.command);
+        let cwd = task
+            .command
+            .cwd
+            .clone()
+            .or_else(|| Self::terminal_spawn_cwd(self.current_project_root.as_deref()));
+        let env = task.command.env.clone();
+        let terminal_id = self.open_terminal_panel_for_command(
+            cwd,
+            task.command.program.clone(),
+            task.command.args.clone(),
+            env,
+            cx,
+        );
+        self.last_run_task = Some(task.clone());
+        self.active_run_terminal = Some((terminal_id, run_id));
+
+        self.core.update(cx, |app, _cx| {
+            if let Some(bus) = &app.event_aggregator {
+                bus.dispatch_run(RunEvent::Requested { task: task.clone() });
+                bus.dispatch_run(RunEvent::Started {
+                    id: run_id,
+                    task: task.clone(),
+                    terminal_id: Some(terminal_id),
+                });
+                bus.dispatch_run(RunEvent::StatusChanged {
+                    id: run_id,
+                    status: RunStatus::Running,
+                });
+                bus.process_events();
+            }
+            app.editor
+                .set_status(format!("Running {}: {command_line}", task.label()));
+        });
+        self.push_editor_status_notification(
+            EditorStatus {
+                status: format!("Running {}", task.label()),
+                severity: Severity::Info,
+            },
+            cx,
+        );
+    }
+
+    fn set_run_status(
+        &mut self,
+        message: impl Into<String>,
+        severity: Severity,
+        cx: &mut Context<Self>,
+    ) {
+        let message = message.into();
+        self.core.update(cx, |app, _cx| match severity {
+            Severity::Error => app.editor.set_error(message.clone()),
+            _ => app.editor.set_status(message.clone()),
+        });
+        self.push_editor_status_notification(
+            EditorStatus {
+                status: message,
+                severity,
+            },
+            cx,
+        );
+    }
+
     /// Compute document and LSP context for the status bar without triggering borrow conflicts.
     fn statusbar_doc_info(
         &self,
@@ -3194,6 +3601,10 @@ impl Workspace {
             terminal_panel_visible: false,
             terminal_id: None,
             next_terminal_id: 1,
+            next_run_id: 1,
+            last_run_task: None,
+            active_run_terminal: None,
+            run_output_terminal: None,
             debug_colors_enabled: matches!(
                 std::env::var("NUCL_DEBUG_COLORS")
                     .map(|v| v.to_ascii_lowercase())
@@ -6926,6 +7337,10 @@ impl Workspace {
         // Clear the overlay first to hide the prompt
         self.overlay.update(cx, |overlay, cx| overlay.clear(cx));
 
+        if self.handle_runnable_command(command, cx) {
+            return;
+        }
+
         // Parse the command using our typed system
         match nucleotide_core::ParsedCommand::parse(command) {
             Ok(parsed) => {
@@ -6957,6 +7372,28 @@ impl Workspace {
                 });
                 self.push_editor_status_notification(status, cx);
             }
+        }
+    }
+
+    fn handle_runnable_command(&mut self, command: &str, cx: &mut Context<Self>) -> bool {
+        match command.trim().trim_start_matches(':') {
+            "run" | "runnables" | "show-runnables" => {
+                self.show_runnables(cx);
+                true
+            }
+            "run-nearest" => {
+                self.run_nearest(cx);
+                true
+            }
+            "run-file-tests" => {
+                self.run_file_tests(cx);
+                true
+            }
+            "run-last" | "rerun" => {
+                self.run_last(cx);
+                true
+            }
+            _ => false,
         }
     }
 
@@ -7660,6 +8097,14 @@ impl Workspace {
                 let core = self.core.clone();
                 show_code_actions(core, handle, cx);
             }
+            crate::Update::ShowRunnables => {
+                nucleotide_logging::info!("Workspace received ShowRunnables");
+                self.show_runnables(cx);
+            }
+            crate::Update::RunTask(task) => {
+                nucleotide_logging::info!(label = %task.label(), "Workspace received RunTask");
+                self.run_task(task.clone(), cx);
+            }
             crate::Update::ShowHoverDocs => {
                 nucleotide_logging::info!("Workspace received ShowHoverDocs");
                 if self.toggle_documentation_sidebar(cx) {
@@ -7798,14 +8243,62 @@ impl Workspace {
                     }
                     crate::types::AppEvent::Terminal(term_event) => {
                         // Close the terminal pane when the shell process exits
-                        if let TerminalEvent::Exited { id, .. } = term_event
+                        if let TerminalEvent::Exited { id, code, .. } = term_event
                             && self.terminal_id == Some(*id)
                         {
+                            if let Some((terminal_id, run_id)) = self.active_run_terminal
+                                && terminal_id == *id
+                            {
+                                let status = match code {
+                                    Some(0) | None => RunStatus::Finished,
+                                    Some(_) => RunStatus::Failed,
+                                };
+                                self.core.update(cx, |app, _cx| {
+                                    if let Some(bus) = &app.event_aggregator {
+                                        bus.dispatch_run(RunEvent::StatusChanged {
+                                            id: run_id,
+                                            status,
+                                        });
+                                        bus.dispatch_run(RunEvent::Finished {
+                                            id: run_id,
+                                            code: *code,
+                                        });
+                                        bus.process_events();
+                                    }
+                                });
+                                self.active_run_terminal = None;
+                                self.terminal_focus_pending = false;
+                                self.terminal_active = false;
+                                let exit_code = *code;
+                                let status_message = match (status, exit_code) {
+                                    (RunStatus::Finished, Some(0) | None) => {
+                                        "Runnable finished".to_string()
+                                    }
+                                    (RunStatus::Failed, Some(exit_code)) => {
+                                        format!("Runnable failed with exit code {exit_code}")
+                                    }
+                                    _ => "Runnable finished".to_string(),
+                                };
+                                self.push_editor_status_notification(
+                                    EditorStatus {
+                                        status: status_message,
+                                        severity: if status == RunStatus::Failed {
+                                            Severity::Error
+                                        } else {
+                                            Severity::Info
+                                        },
+                                    },
+                                    cx,
+                                );
+                                cx.notify();
+                                return;
+                            }
                             self.hide_terminal_panel();
                             self.clear_terminal_panel_session();
                             cx.notify();
                         }
                     }
+                    crate::types::AppEvent::Run(_run_event) => {}
                     crate::types::AppEvent::Workspace(workspace_event) => {
                         if let crate::types::WorkspaceEvent::FileSelected { path, source } =
                             workspace_event
@@ -10709,6 +11202,7 @@ impl Render for Workspace {
             && let Some(id) = self.terminal_id
             && let Some(vm) = nucleotide_terminal_view::get_view_model(id)
             && vm.lock().unwrap().has_exited()
+            && self.run_output_terminal != Some(id)
         {
             self.hide_terminal_panel();
             self.clear_terminal_panel_session();
@@ -11516,6 +12010,30 @@ impl Render for Workspace {
         workspace_div = workspace_div.on_action(cx.listener(
             move |_, _: &crate::actions::workspace::ShowCodeActions, _window, cx| {
                 show_code_actions(core.clone(), handle.clone(), cx)
+            },
+        ));
+
+        workspace_div = workspace_div.on_action(cx.listener(
+            move |workspace, _: &crate::actions::workspace::ShowRunnables, _window, cx| {
+                workspace.show_runnables(cx);
+            },
+        ));
+
+        workspace_div = workspace_div.on_action(cx.listener(
+            move |workspace, _: &crate::actions::workspace::RunNearest, _window, cx| {
+                workspace.run_nearest(cx);
+            },
+        ));
+
+        workspace_div = workspace_div.on_action(cx.listener(
+            move |workspace, _: &crate::actions::workspace::RunFileTests, _window, cx| {
+                workspace.run_file_tests(cx);
+            },
+        ));
+
+        workspace_div = workspace_div.on_action(cx.listener(
+            move |workspace, _: &crate::actions::workspace::RunLast, _window, cx| {
+                workspace.run_last(cx);
             },
         ));
 

@@ -3888,7 +3888,6 @@ dependencies = [
 [[package]]
 name = "helix-lsp"
 version = "25.7.1"
-source = "git+https://github.com/iainh/helix?rev=cd2ee5a29e7309e69af5cd5529e3bef1759bdbd4#cd2ee5a29e7309e69af5cd5529e3bef1759bdbd4"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -5263,6 +5262,7 @@ dependencies = [
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
  "once_cell",
+ "regex",
  "serde",
  "serde_json",
  "slotmap",
