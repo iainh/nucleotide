@@ -39,9 +39,10 @@
         # Dependency management following Helix patterns
         inherit (pkgs) lib stdenv;
 
-        # Use LLD's Darwin linker for native Rust links on macOS.
-        darwinRustLinker = "${pkgs.lld}/bin/ld64.lld";
-        darwinRustLinkerFlags = "-C linker-flavor=ld64.lld";
+        # Keep Nix's cc wrapper so library paths and SDK flags are preserved,
+        # while asking clang to use LLD's Darwin linker underneath.
+        darwinRustLinker = "${stdenv.cc}/bin/cc";
+        darwinRustLinkerFlags = "-C link-arg=-fuse-ld=${pkgs.lld}/bin/ld64.lld";
         darwinRustLinkerEnv = lib.optionalAttrs stdenv.isDarwin {
           CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER = darwinRustLinker;
           CARGO_TARGET_AARCH64_APPLE_DARWIN_RUSTFLAGS = darwinRustLinkerFlags;
