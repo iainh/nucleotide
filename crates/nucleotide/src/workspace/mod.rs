@@ -741,6 +741,9 @@ pub struct Workspace {
     // Delete confirmation modal state
     delete_confirm_open: bool,
     delete_confirm_path: Option<std::path::PathBuf>,
+    // Unsaved close confirmation modal state
+    close_confirm_open: bool,
+    close_confirm: Option<UnsavedCloseConfirmation<DocumentId>>,
     // Terminal panel state
     terminal_panel_visible: bool,
     terminal_id: Option<TerminalId>,
@@ -1106,6 +1109,23 @@ struct BatchCloseDocument<T, P> {
     path: Option<P>,
 }
 
+#[derive(Clone)]
+enum PendingUnsavedClose<T> {
+    Single {
+        doc_id: T,
+        activation_target: Option<T>,
+    },
+    Batch {
+        doc_ids: Vec<T>,
+    },
+}
+
+#[derive(Clone)]
+struct UnsavedCloseConfirmation<T> {
+    action: PendingUnsavedClose<T>,
+    names: Vec<String>,
+}
+
 #[derive(Clone, Copy)]
 struct TabActivationDocument<T> {
     id: T,
@@ -1218,6 +1238,26 @@ fn close_error_status(error: helix_view::editor::CloseError) -> EditorStatus {
             status: format!("failed to save buffer before closing: {err}"),
             severity: Severity::Error,
         },
+    }
+}
+
+fn unsaved_close_confirmation_title(count: usize) -> &'static str {
+    if count == 1 {
+        "Close Unsaved Buffer"
+    } else {
+        "Close Unsaved Buffers"
+    }
+}
+
+fn unsaved_close_confirmation_message(names: &[String]) -> String {
+    match names {
+        [name] => format!("'{name}' has unsaved changes. Close without saving?"),
+        [] => "Close without saving unsaved changes?".to_string(),
+        names => format!(
+            "{} buffers have unsaved changes: {}. Close without saving?",
+            names.len(),
+            names.join(", ")
+        ),
     }
 }
 
@@ -2650,74 +2690,101 @@ impl Workspace {
         doc_ids: impl IntoIterator<Item = DocumentId>,
         cx: &mut Context<Self>,
     ) {
+        self.close_tab_documents_with_force(doc_ids, false, cx);
+    }
+
+    fn close_tab_documents_with_force(
+        &mut self,
+        doc_ids: impl IntoIterator<Item = DocumentId>,
+        force: bool,
+        cx: &mut Context<Self>,
+    ) {
         let doc_ids = doc_ids.into_iter().collect::<Vec<_>>();
         if doc_ids.is_empty() {
             return;
         }
 
         let handle = self.handle.clone();
-        let (closed_doc_ids, close_statuses) = self.core.update(cx, |core, cx| {
-            let _guard = handle.enter();
-            let mut closed_doc_ids = Vec::new();
-            let mut close_statuses = Vec::new();
-            let mut modified_names = Vec::new();
-            let active_doc_id = core
-                .editor
-                .tree
-                .try_get(core.editor.tree.focus)
-                .map(|view| view.doc);
-            let close_targets = doc_ids
-                .into_iter()
-                .map(|doc_id| {
-                    let path = core
-                        .editor
-                        .documents
-                        .get(&doc_id)
-                        .and_then(|doc| doc.path().cloned());
+        let (closed_doc_ids, close_statuses, modified_doc_ids, modified_names) =
+            self.core.update(cx, |core, cx| {
+                let _guard = handle.enter();
+                let mut closed_doc_ids = Vec::new();
+                let mut close_statuses = Vec::new();
+                let mut modified_doc_ids = Vec::new();
+                let mut modified_names = Vec::new();
+                let active_doc_id = core
+                    .editor
+                    .tree
+                    .try_get(core.editor.tree.focus)
+                    .map(|view| view.doc);
+                let close_targets = doc_ids
+                    .into_iter()
+                    .map(|doc_id| {
+                        let path = core
+                            .editor
+                            .documents
+                            .get(&doc_id)
+                            .and_then(|doc| doc.path().cloned());
 
-                    BatchCloseDocument {
-                        id: doc_id,
-                        is_active: active_doc_id == Some(doc_id),
-                        path,
-                    }
-                })
-                .collect::<Vec<_>>();
-            let doc_ids = batch_close_document_order(&close_targets);
+                        BatchCloseDocument {
+                            id: doc_id,
+                            is_active: active_doc_id == Some(doc_id),
+                            path,
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                let doc_ids = batch_close_document_order(&close_targets);
 
-            for doc_id in doc_ids {
-                match core.editor.close_document(doc_id, false) {
-                    Ok(()) => {
-                        closed_doc_ids.push(doc_id);
-                    }
-                    Err(helix_view::editor::CloseError::BufferModified(name)) => {
-                        info!("Cannot close document {:?}: has unsaved changes", doc_id);
-                        modified_names.push(name);
-                    }
-                    Err(error @ helix_view::editor::CloseError::DoesNotExist) => {
-                        info!("Document {:?} does not exist", doc_id);
-                        close_statuses.push(close_error_status(error));
-                    }
-                    Err(error @ helix_view::editor::CloseError::SaveError(_)) => {
-                        info!("Failed to close document {:?}", doc_id);
-                        close_statuses.push(close_error_status(error));
+                for doc_id in doc_ids {
+                    match core.editor.close_document(doc_id, force) {
+                        Ok(()) => {
+                            closed_doc_ids.push(doc_id);
+                        }
+                        Err(helix_view::editor::CloseError::BufferModified(name)) => {
+                            info!("Cannot close document {:?}: has unsaved changes", doc_id);
+                            if force {
+                                close_statuses.push(unsaved_buffers_remaining_status(vec![name]));
+                            } else {
+                                modified_doc_ids.push(doc_id);
+                                modified_names.push(name);
+                            }
+                        }
+                        Err(error @ helix_view::editor::CloseError::DoesNotExist) => {
+                            info!("Document {:?} does not exist", doc_id);
+                            close_statuses.push(close_error_status(error));
+                        }
+                        Err(error @ helix_view::editor::CloseError::SaveError(_)) => {
+                            info!("Failed to close document {:?}", doc_id);
+                            close_statuses.push(close_error_status(error));
+                        }
                     }
                 }
-            }
 
-            if !modified_names.is_empty() {
-                close_statuses.insert(0, unsaved_buffers_remaining_status(modified_names));
-            }
+                if !closed_doc_ids.is_empty() {
+                    cx.emit(crate::Update::Redraw);
+                    cx.notify();
+                }
 
-            if !closed_doc_ids.is_empty() {
-                cx.emit(crate::Update::Redraw);
-                cx.notify();
-            }
-
-            (closed_doc_ids, close_statuses)
-        });
+                (
+                    closed_doc_ids,
+                    close_statuses,
+                    modified_doc_ids,
+                    modified_names,
+                )
+            });
 
         for status in close_statuses {
             self.push_editor_status_notification(status, cx);
+        }
+
+        if !modified_doc_ids.is_empty() {
+            self.request_unsaved_close(
+                PendingUnsavedClose::Batch {
+                    doc_ids: modified_doc_ids,
+                },
+                modified_names,
+                cx,
+            );
         }
 
         if !closed_doc_ids.is_empty() {
@@ -2741,11 +2808,21 @@ impl Workspace {
             active_doc_id,
             activate_on_close,
         );
+        self.close_single_tab_document_with_activation_target(doc_id, activation_target, false, cx);
+    }
+
+    fn close_single_tab_document_with_activation_target(
+        &mut self,
+        doc_id: DocumentId,
+        activation_target: Option<DocumentId>,
+        force: bool,
+        cx: &mut Context<Self>,
+    ) {
         let handle = self.handle.clone();
-        let (closed, close_status) = self.core.update(cx, |core, cx| {
+        let (closed, close_status, modified_name) = self.core.update(cx, |core, cx| {
             let _guard = handle.enter();
 
-            match core.editor.close_document(doc_id, false) {
+            match core.editor.close_document(doc_id, force) {
                 Ok(()) => {
                     if let Some(target_doc_id) = activation_target
                         && core.editor.documents.contains_key(&target_doc_id)
@@ -2755,25 +2832,45 @@ impl Workspace {
                     }
                     cx.emit(crate::Update::Redraw);
                     cx.notify();
-                    (true, None)
+                    (true, None, None)
                 }
-                Err(error @ helix_view::editor::CloseError::BufferModified(_)) => {
+                Err(helix_view::editor::CloseError::BufferModified(name)) => {
                     info!("Cannot close document {:?}: has unsaved changes", doc_id);
-                    (false, Some(close_error_status(error)))
+                    if force {
+                        (
+                            false,
+                            Some(unsaved_buffers_remaining_status(vec![name])),
+                            None,
+                        )
+                    } else {
+                        (false, None, Some(name))
+                    }
                 }
                 Err(error @ helix_view::editor::CloseError::DoesNotExist) => {
                     info!("Document {:?} does not exist", doc_id);
-                    (false, Some(close_error_status(error)))
+                    (false, Some(close_error_status(error)), None)
                 }
                 Err(error @ helix_view::editor::CloseError::SaveError(_)) => {
                     info!("Failed to close document {:?}", doc_id);
-                    (false, Some(close_error_status(error)))
+                    (false, Some(close_error_status(error)), None)
                 }
             }
         });
 
         if let Some(status) = close_status {
             self.push_editor_status_notification(status, cx);
+        }
+
+        if let Some(name) = modified_name {
+            self.request_unsaved_close(
+                PendingUnsavedClose::Single {
+                    doc_id,
+                    activation_target,
+                },
+                vec![name],
+                cx,
+            );
+            return;
         }
 
         if closed {
@@ -2784,6 +2881,23 @@ impl Workspace {
             self.update_document_views(cx);
             cx.notify();
         }
+    }
+
+    fn force_close_single_tab_document(
+        &mut self,
+        doc_id: DocumentId,
+        activation_target: Option<DocumentId>,
+        cx: &mut Context<Self>,
+    ) {
+        self.close_single_tab_document_with_activation_target(doc_id, activation_target, true, cx);
+    }
+
+    fn force_close_tab_documents(
+        &mut self,
+        doc_ids: impl IntoIterator<Item = DocumentId>,
+        cx: &mut Context<Self>,
+    ) {
+        self.close_tab_documents_with_force(doc_ids, true, cx);
     }
 
     fn unregister_preview_document(&self, doc_id: DocumentId, cx: &mut Context<Self>) {
@@ -2942,6 +3056,31 @@ impl Workspace {
     }
 
     fn close_active_tab_document(&mut self, cx: &mut Context<Self>) {
+        self.close_active_tab_document_with_force(false, cx);
+    }
+
+    fn close_active_buffer_document_with_force(&mut self, force: bool, cx: &mut Context<Self>) {
+        let Some((active_doc_id, _active_view_id)) = self.active_document_and_view(cx) else {
+            return;
+        };
+
+        let activation_documents = self.tab_activation_documents(cx);
+        let activate_on_close = self.core.read(cx).config.gui.tabs.activate_on_close;
+        let activation_target = tab_activation_target_after_close(
+            &activation_documents,
+            active_doc_id,
+            Some(active_doc_id),
+            activate_on_close,
+        );
+        self.close_single_tab_document_with_activation_target(
+            active_doc_id,
+            activation_target,
+            force,
+            cx,
+        );
+    }
+
+    fn close_active_tab_document_with_force(&mut self, force: bool, cx: &mut Context<Self>) {
         let Some((active_doc_id, _active_view_id)) = self.active_document_and_view(cx) else {
             return;
         };
@@ -2958,11 +3097,16 @@ impl Workspace {
             ActiveTabClosePlan::Close(doc_id) => {
                 let activation_documents = self.tab_activation_documents(cx);
                 let activate_on_close = self.core.read(cx).config.gui.tabs.activate_on_close;
-                self.close_single_tab_document(
+                let activation_target = tab_activation_target_after_close(
+                    &activation_documents,
                     doc_id,
                     Some(doc_id),
-                    &activation_documents,
                     activate_on_close,
+                );
+                self.close_single_tab_document_with_activation_target(
+                    doc_id,
+                    activation_target,
+                    force,
                     cx,
                 );
             }
@@ -3581,6 +3725,8 @@ impl Workspace {
             needs_file_tree_refresh: false,
             delete_confirm_open: false,
             delete_confirm_path: None,
+            close_confirm_open: false,
+            close_confirm: None,
             terminal_panel_visible: false,
             terminal_id: None,
             next_terminal_id: 1,
@@ -3695,6 +3841,48 @@ impl Workspace {
         self.perform_delete_confirm(cx);
     }
 
+    fn clear_unsaved_close_confirm(&mut self, cx: &mut Context<Self>) {
+        self.close_confirm_open = false;
+        self.close_confirm = None;
+        cx.notify();
+    }
+
+    fn cancel_unsaved_close_confirm(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.clear_unsaved_close_confirm(cx);
+    }
+
+    fn confirm_unsaved_close_from_dialog(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.perform_pending_unsaved_close(cx);
+    }
+
+    fn request_unsaved_close(
+        &mut self,
+        action: PendingUnsavedClose<DocumentId>,
+        names: Vec<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.close_confirm = Some(UnsavedCloseConfirmation { action, names });
+        self.close_confirm_open = true;
+        cx.notify();
+    }
+
+    fn perform_pending_unsaved_close(&mut self, cx: &mut Context<Self>) {
+        let Some(pending) = self.close_confirm.take() else {
+            self.close_confirm_open = false;
+            cx.notify();
+            return;
+        };
+
+        self.close_confirm_open = false;
+        match pending.action {
+            PendingUnsavedClose::Single {
+                doc_id,
+                activation_target,
+            } => self.force_close_single_tab_document(doc_id, activation_target, cx),
+            PendingUnsavedClose::Batch { doc_ids } => self.force_close_tab_documents(doc_ids, cx),
+        }
+    }
+
     fn request_delete_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         self.delete_confirm_path = Some(path);
         match self.core.read(cx).config.gui.file_ops.delete_behavior {
@@ -3734,6 +3922,32 @@ impl Workspace {
             ConfirmDialogCallbacks {
                 on_cancel: Workspace::cancel_delete_confirm,
                 on_confirm: Workspace::confirm_delete_from_dialog,
+            },
+        )
+    }
+
+    fn render_unsaved_close_confirm_modal(
+        &self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let names = self
+            .close_confirm
+            .as_ref()
+            .map(|pending| pending.names.as_slice())
+            .unwrap_or(&[]);
+
+        render_confirm_dialog(
+            ConfirmDialog::new(
+                unsaved_close_confirmation_title(names.len()),
+                unsaved_close_confirmation_message(names),
+                "Close Without Saving",
+            )
+            .confirm_variant(ButtonVariant::Danger),
+            cx,
+            ConfirmDialogCallbacks {
+                on_cancel: Workspace::cancel_unsaved_close_confirm,
+                on_confirm: Workspace::confirm_unsaved_close_from_dialog,
             },
         )
     }
@@ -4906,6 +5120,21 @@ impl Workspace {
                     self.delete_confirm_open = false;
                     self.delete_confirm_path = None;
                     cx.notify();
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        // Unsaved-close modal keyboard handling
+        if self.close_confirm_open {
+            match ev.keystroke.key.as_str() {
+                "enter" => {
+                    self.perform_pending_unsaved_close(cx);
+                    return;
+                }
+                "escape" => {
+                    self.clear_unsaved_close_confirm(cx);
                     return;
                 }
                 _ => {}
@@ -7124,7 +7353,7 @@ impl Workspace {
                 SplitDirection::Vertical => self.execute_raw_command("vsplit", cx),
             },
             Command::Close { force } => {
-                self.execute_raw_command(if force { "close !" } else { "close" }, cx);
+                self.close_active_buffer_document_with_force(force, cx);
             }
             Command::Help { topic } => {
                 let cmd = match topic {
@@ -11319,6 +11548,9 @@ impl Render for Workspace {
                         // Render delete confirmation modal overlay
                         this.child(self.render_delete_confirm_modal(window, cx))
                     })
+                    .when(self.close_confirm_open, |this| {
+                        this.child(self.render_unsaved_close_confirm_modal(window, cx))
+                    })
                     // Debug overlay tint on top of editor content; render via deferred to ensure top draw order
                     .when(self.debug_colors_enabled, |this| {
                         this.child(
@@ -11486,6 +11718,12 @@ impl Render for Workspace {
                 if workspace.delete_confirm_open {
                     workspace.delete_confirm_open = false;
                     workspace.delete_confirm_path = None;
+                    cx.notify();
+                }
+
+                if workspace.close_confirm_open {
+                    workspace.close_confirm_open = false;
+                    workspace.close_confirm = None;
                     cx.notify();
                 }
 
@@ -14746,6 +14984,21 @@ mod tests {
             "2 unsaved buffers remaining: [\"main.rs\", \"lib.rs\"]"
         );
         assert_eq!(status.severity, Severity::Error);
+    }
+
+    #[test]
+    fn unsaved_close_confirmation_copy_names_single_and_batch() {
+        assert_eq!(unsaved_close_confirmation_title(1), "Close Unsaved Buffer");
+        assert_eq!(
+            unsaved_close_confirmation_message(&["main.rs".to_string()]),
+            "'main.rs' has unsaved changes. Close without saving?"
+        );
+
+        assert_eq!(unsaved_close_confirmation_title(2), "Close Unsaved Buffers");
+        assert_eq!(
+            unsaved_close_confirmation_message(&["main.rs".to_string(), "lib.rs".to_string()]),
+            "2 buffers have unsaved changes: main.rs, lib.rs. Close without saving?"
+        );
     }
 
     #[test]
