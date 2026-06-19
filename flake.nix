@@ -39,6 +39,16 @@
         # Dependency management following Helix patterns
         inherit (pkgs) lib stdenv;
 
+        # Use LLD's Darwin linker for native Rust links on macOS.
+        darwinRustLinker = "${pkgs.lld}/bin/ld64.lld";
+        darwinRustLinkerFlags = "-C linker-flavor=ld64.lld";
+        darwinRustLinkerEnv = lib.optionalAttrs stdenv.isDarwin {
+          CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER = darwinRustLinker;
+          CARGO_TARGET_AARCH64_APPLE_DARWIN_RUSTFLAGS = darwinRustLinkerFlags;
+          CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER = darwinRustLinker;
+          CARGO_TARGET_X86_64_APPLE_DARWIN_RUSTFLAGS = darwinRustLinkerFlags;
+        };
+
         # Common build inputs
         commonBuildInputs = with pkgs; [
           openssl
@@ -122,6 +132,12 @@
           export PKG_CONFIG_PATH="${pkgs.openssl.dev}/lib/pkgconfig"
           export OPENSSL_NO_VENDOR=1
           export HELIX_RUNTIME="${helixRuntime}"
+          ${lib.optionalString stdenv.isDarwin ''
+            export CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER="${darwinRustLinker}"
+            export CARGO_TARGET_AARCH64_APPLE_DARWIN_RUSTFLAGS="${darwinRustLinkerFlags}"
+            export CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER="${darwinRustLinker}"
+            export CARGO_TARGET_X86_64_APPLE_DARWIN_RUSTFLAGS="${darwinRustLinkerFlags}"
+          ''}
 
           # Platform-specific setup
           ${lib.optionalString stdenv.isDarwin ''
@@ -387,7 +403,7 @@
           makeLinuxPackage = makeLinuxPackage;
         };
 
-        devShells.default = pkgs.mkShell {
+        devShells.default = pkgs.mkShell ({
           packages = with pkgs; [
             # Rust toolchain (includes rust-analyzer and rust-src)
             rustToolchain
@@ -416,6 +432,7 @@
           ] ++ lib.optionals stdenv.isDarwin [
             darwin.DarwinTools
             xcbuild
+            lld
             lldb  # Debugging on macOS
           ] ++ lib.optionals stdenv.isLinux [
             cargo-tarpaulin  # Test coverage
@@ -433,7 +450,7 @@
           # Build performance settings following Helix patterns
           CARGO_INCREMENTAL = "1";  # Default to incremental for dev builds
 
-        } // {
+        } // darwinRustLinkerEnv) // {
           shellHook = ''
             # Define build mode aliases
             alias build-cached='CARGO_INCREMENTAL=0 RUSTC_WRAPPER=sccache cargo build'
