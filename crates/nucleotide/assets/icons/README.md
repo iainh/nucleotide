@@ -9,6 +9,7 @@ Current Lucide-sourced additions:
 
 - `arrow-left.svg`
 - `arrow-right.svg`
+- `book-text.svg`
 - `circle-x.svg`
 - `columns-2.svg`
 - `file-lock.svg`
