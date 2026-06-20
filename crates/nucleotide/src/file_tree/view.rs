@@ -2477,8 +2477,6 @@ impl Render for FileTreeView {
             .h_full()
             .min_h(px(0.0))
             .bg(bg_color) // Use semantic background color from design tokens
-            .border_r_1()
-            .border_color(file_tree_tokens.border)
             .flex()
             .flex_col()
             .track_focus(&self.focus_handle)
