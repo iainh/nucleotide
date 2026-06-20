@@ -4,7 +4,7 @@ use std::path::Path;
 use gpui::prelude::FluentBuilder;
 use gpui::{
     App, Bounds, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement, IntoElement, ParentElement, Pixels, Render, SharedString,
+    InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, Render, SharedString,
     StatefulInteractiveElement, Styled, TextStyle, Window, div, px,
 };
 // Import helix's syntax highlighting system
@@ -411,14 +411,24 @@ impl DocumentView {
         let editor_font = cx.global::<crate::types::EditorFontConfig>();
         let mut markdown_style = MarkdownStyle::preview_from_tokens(tokens);
         markdown_style.code_font_family = SharedString::from(editor_font.family.clone());
+        let focus = self.focus.clone();
+        let click_focus = focus.clone();
+        let core = self.core.clone();
+        let view_id = self.view_id;
         div()
             .id(SharedString::from(format!(
                 "markdown-rendered-{:?}",
                 snapshot.doc_id
             )))
             .size_full()
+            .focusable()
+            .track_focus(&focus)
             .overflow_y_scroll()
             .track_scroll(&self.markdown_scroll_handle)
+            .on_mouse_down(MouseButton::Left, move |_event, window, cx| {
+                focus_editor_view(&core, view_id, cx);
+                window.focus(&click_focus, cx);
+            })
             .px(tokens.sizes.space_8)
             .py(tokens.sizes.space_8)
             .child(markdown(snapshot.source.clone(), markdown_style))
