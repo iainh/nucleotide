@@ -3,7 +3,7 @@
 
 use gpui::{Bounds, Pixels, Point, point, px, size};
 
-const RIGHT_PADDING_COLUMNS: f32 = 2.0;
+const RIGHT_PADDING_COLUMNS: f32 = 0.0;
 const TOP_PADDING: f32 = 1.0;
 
 #[derive(Debug)]
@@ -152,7 +152,7 @@ mod tests {
 
         assert_eq!(
             geometry.text_bounds(),
-            Bounds::new(point(px(20.0), px(1.0)), size(px(60.0), px(79.0)))
+            Bounds::new(point(px(20.0), px(1.0)), size(px(80.0), px(79.0)))
         );
     }
 
@@ -160,7 +160,7 @@ mod tests {
     fn viewport_columns_use_text_area_width_once() {
         let geometry = test_geometry();
 
-        assert_eq!(geometry.viewport_columns(1), 6);
+        assert_eq!(geometry.viewport_columns(1), 8);
     }
 
     #[test]
@@ -189,11 +189,11 @@ mod tests {
 
         assert_eq!(
             geometry.clamp_text_area_position(point(px(90.0), px(120.0)), false),
-            point(px(60.0), px(120.0))
+            point(px(80.0), px(120.0))
         );
         assert_eq!(
             geometry.clamp_text_area_position(point(px(90.0), px(120.0)), true),
-            point(px(60.0), px(79.0))
+            point(px(80.0), px(79.0))
         );
     }
 
