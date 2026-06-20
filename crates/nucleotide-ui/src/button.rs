@@ -742,6 +742,9 @@ impl RenderOnce for Button {
         let inset_highlight = theme.tokens.chrome.inset_highlight;
         let inset_shadow = theme.tokens.chrome.inset_shadow;
         let activate_on_mouse_down = self.activate_on_mouse_down;
+        // Mouse-down actions commonly repaint before mouse-up; GPUI's active
+        // pseudo-state can otherwise read as latched after the action runs.
+        let apply_active_style = !activate_on_mouse_down;
 
         let mut button = div()
             .id(self.id)
@@ -816,29 +819,31 @@ impl RenderOnce for Button {
                 hovered
             });
 
-            button = button.active(|this| {
-                let mut active = this
-                    .bg(active_style.background)
-                    .text_color(active_style.foreground)
-                    .border_color(active_style.border_color)
-                    .text_size(computed_style.font_size)
-                    .font_weight(match computed_style.font_weight {
-                        400 => FontWeight::NORMAL,
-                        700 => FontWeight::BOLD,
-                        _ => FontWeight::MEDIUM,
-                    });
+            if apply_active_style {
+                button = button.active(|this| {
+                    let mut active = this
+                        .bg(active_style.background)
+                        .text_color(active_style.foreground)
+                        .border_color(active_style.border_color)
+                        .text_size(computed_style.font_size)
+                        .font_weight(match computed_style.font_weight {
+                            400 => FontWeight::NORMAL,
+                            700 => FontWeight::BOLD,
+                            _ => FontWeight::MEDIUM,
+                        });
 
-                if let Some(shadow) = &active_style.shadow {
-                    active = active.shadow(button_shadow_stack(
-                        shadow,
-                        inset_highlight,
-                        inset_shadow,
-                        true,
-                    ));
-                }
+                    if let Some(shadow) = &active_style.shadow {
+                        active = active.shadow(button_shadow_stack(
+                            shadow,
+                            inset_highlight,
+                            inset_shadow,
+                            true,
+                        ));
+                    }
 
-                active
-            });
+                    active
+                });
+            }
         }
 
         // Handle cursor and interaction states
