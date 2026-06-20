@@ -107,27 +107,46 @@ fi
 # libraries on all Unix platforms, including macOS.
 GRAMMAR_COUNT=$(find "${RUNTIME_DEST}/grammars" -maxdepth 1 -name "*.so" | wc -l)
 if [ "${GRAMMAR_COUNT}" -eq 0 ]; then
-    if [ -d "${RUNTIME_DEST}/grammars/sources" ]; then
-        echo -e "${GREEN}Building compiled grammars for bundled runtime...${NC}"
+    mkdir -p "${RUNTIME_DEST}/grammars/sources"
+
+    SOURCE_COUNT=$(find "${RUNTIME_DEST}/grammars/sources" -mindepth 1 -maxdepth 1 -type d | wc -l)
+    if [ "${SOURCE_COUNT}" -eq 0 ]; then
+        echo -e "${GREEN}Fetching grammar sources for bundled runtime...${NC}"
         # helix_loader writes grammars to the first runtime directory. Setting
         # CARGO_MANIFEST_DIR makes that first directory resolve to Resources/runtime.
         set +e
         CARGO_MANIFEST_DIR="$(pwd)/${BUNDLE_NAME}/Contents/Resources/nucleotide" \
             HELIX_RUNTIME="$(pwd)/${RUNTIME_DEST}" \
-            "${BUNDLE_NAME}/Contents/MacOS/${APP_NAME}" --grammar build
-        GRAMMAR_BUILD_STATUS=$?
+            "${BUNDLE_NAME}/Contents/MacOS/${APP_NAME}" --grammar fetch
+        GRAMMAR_FETCH_STATUS=$?
         set -e
-        if [ "${GRAMMAR_BUILD_STATUS}" -ne 0 ]; then
-            GRAMMAR_COUNT=$(find "${RUNTIME_DEST}/grammars" -maxdepth 1 -name "*.so" | wc -l)
-            if [ "${GRAMMAR_COUNT}" -gt 0 ]; then
-                echo -e "${YELLOW}Warning: some grammars failed to build; bundling ${GRAMMAR_COUNT} compiled grammar(s)${NC}"
+
+        SOURCE_COUNT=$(find "${RUNTIME_DEST}/grammars/sources" -mindepth 1 -maxdepth 1 -type d | wc -l)
+        if [ "${GRAMMAR_FETCH_STATUS}" -ne 0 ]; then
+            if [ "${SOURCE_COUNT}" -gt 0 ]; then
+                echo -e "${YELLOW}Warning: some grammars failed to fetch; attempting to build fetched sources${NC}"
             else
-                echo -e "${RED}Error: grammar build failed and produced no compiled grammars${NC}"
-                exit "${GRAMMAR_BUILD_STATUS}"
+                echo -e "${RED}Error: grammar fetch failed and produced no grammar sources${NC}"
+                exit "${GRAMMAR_FETCH_STATUS}"
             fi
         fi
-    else
-        echo -e "${YELLOW}Warning: no compiled grammars or grammar sources found${NC}"
+    fi
+
+    echo -e "${GREEN}Building compiled grammars for bundled runtime...${NC}"
+    set +e
+    CARGO_MANIFEST_DIR="$(pwd)/${BUNDLE_NAME}/Contents/Resources/nucleotide" \
+        HELIX_RUNTIME="$(pwd)/${RUNTIME_DEST}" \
+        "${BUNDLE_NAME}/Contents/MacOS/${APP_NAME}" --grammar build
+    GRAMMAR_BUILD_STATUS=$?
+    set -e
+    if [ "${GRAMMAR_BUILD_STATUS}" -ne 0 ]; then
+        GRAMMAR_COUNT=$(find "${RUNTIME_DEST}/grammars" -maxdepth 1 -name "*.so" | wc -l)
+        if [ "${GRAMMAR_COUNT}" -gt 0 ]; then
+            echo -e "${YELLOW}Warning: some grammars failed to build; bundling ${GRAMMAR_COUNT} compiled grammar(s)${NC}"
+        else
+            echo -e "${RED}Error: grammar build failed and produced no compiled grammars${NC}"
+            exit "${GRAMMAR_BUILD_STATUS}"
+        fi
     fi
 fi
 
