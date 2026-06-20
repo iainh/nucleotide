@@ -78,6 +78,46 @@ impl PlatformTitleBar {
     }
 }
 
+#[cfg(target_os = "windows")]
+fn begin_windows_titlebar_drag(window: &Window) -> bool {
+    use raw_window_handle::RawWindowHandle;
+    use windows_sys::Win32::Foundation::{HWND, POINT, WPARAM};
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetCursorPos, HTCAPTION, PostMessageW, WM_NCLBUTTONDOWN,
+    };
+
+    let Ok(handle) = raw_window_handle::HasWindowHandle::window_handle(window) else {
+        return false;
+    };
+
+    let RawWindowHandle::Win32(handle) = handle.as_raw() else {
+        return false;
+    };
+
+    let mut cursor = POINT { x: 0, y: 0 };
+
+    unsafe {
+        if GetCursorPos(&mut cursor) == 0 {
+            return false;
+        }
+
+        ReleaseCapture();
+        PostMessageW(
+            handle.hwnd.get() as HWND,
+            WM_NCLBUTTONDOWN,
+            HTCAPTION as WPARAM,
+            windows_point_lparam(cursor.x, cursor.y),
+        ) != 0
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_point_lparam(x: i32, y: i32) -> windows_sys::Win32::Foundation::LPARAM {
+    ((((y as u32) & 0xffff) << 16) | ((x as u32) & 0xffff))
+        as windows_sys::Win32::Foundation::LPARAM
+}
+
 impl Render for PlatformTitleBar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let decorations = window.window_decorations();
@@ -205,6 +245,12 @@ impl Render for PlatformTitleBar {
                         let control_area_start = f32::from(bounds.size.width) - 150.0;
 
                         if f32::from(event.position.x) < control_area_start {
+                            #[cfg(target_os = "windows")]
+                            if begin_windows_titlebar_drag(window) {
+                                cx.stop_propagation();
+                                return;
+                            }
+
                             window.start_window_move();
                         }
                         cx.stop_propagation();
