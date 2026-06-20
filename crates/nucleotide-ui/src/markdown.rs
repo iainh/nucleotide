@@ -4,9 +4,10 @@
 use gpui::prelude::FluentBuilder;
 use gpui::{
     App, Bounds, CursorStyle, Element, ElementId, FontStyle, FontWeight, GlobalElementId,
-    HighlightStyle, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId,
-    MouseDownEvent, ParentElement, Pixels, Point, RenderOnce, SharedString, StrikethroughStyle,
-    Styled, StyledText, TextLayout, UnderlineStyle, Window, div, px, relative, rems,
+    HighlightStyle, Hitbox, HitboxBehavior, Hsla, InspectorElementId, InteractiveElement,
+    IntoElement, LayoutId, MouseDownEvent, ParentElement, Pixels, Point, RenderOnce, SharedString,
+    StatefulInteractiveElement, StrikethroughStyle, Styled, StyledText, TextLayout, UnderlineStyle,
+    Window, div, px, relative, rems,
 };
 use helix_core::{
     RopeSlice, Syntax,
@@ -16,7 +17,8 @@ use helix_view::graphics::{
     Modifier as HelixModifier, Style as HelixStyle, UnderlineStyle as HelixUnderlineStyle,
 };
 use pulldown_cmark::{
-    Alignment, CodeBlockKind, CowStr, Event, HeadingLevel, Options, Parser, Tag, TagEnd,
+    Alignment, BlockQuoteKind, CodeBlockKind, CowStr, Event, HeadingLevel, Options, Parser, Tag,
+    TagEnd,
 };
 use std::{
     ops::Range,
@@ -25,7 +27,7 @@ use std::{
 };
 
 use crate::theme_utils::color_to_hsla;
-use crate::tokens::DesignTokens;
+use crate::tokens::{DesignTokens, with_alpha};
 
 #[derive(Clone, Debug)]
 pub struct MarkdownStyle {
@@ -39,10 +41,23 @@ pub struct MarkdownStyle {
     pub rule_color: Hsla,
     pub code_font_family: SharedString,
     pub compact: bool,
+    pub preview: bool,
+    pub body_font_size: Pixels,
+    pub heading_font_sizes: [Pixels; 6],
+    pub heading_border_color: Option<Hsla>,
+    pub code_overflow_x_scroll: bool,
+    pub table_header_background: Hsla,
+    pub table_alternate_background: Hsla,
+    pub alert_note_color: Hsla,
+    pub alert_tip_color: Hsla,
+    pub alert_important_color: Hsla,
+    pub alert_warning_color: Hsla,
+    pub alert_caution_color: Hsla,
 }
 
 impl MarkdownStyle {
     pub fn from_tokens(tokens: &DesignTokens) -> Self {
+        let body_font_size = tokens.sizes.text_sm;
         Self {
             body_color: tokens.chrome.text_on_chrome,
             secondary_color: tokens.chrome.text_chrome_secondary,
@@ -54,13 +69,50 @@ impl MarkdownStyle {
             rule_color: tokens.chrome.border_muted,
             code_font_family: SharedString::from("monospace"),
             compact: false,
+            preview: false,
+            body_font_size,
+            heading_font_sizes: scaled_heading_sizes(body_font_size),
+            heading_border_color: None,
+            code_overflow_x_scroll: false,
+            table_header_background: tokens.editor.background,
+            table_alternate_background: with_alpha(tokens.chrome.surface_hover, 0.28),
+            alert_note_color: tokens.editor.info,
+            alert_tip_color: tokens.editor.success,
+            alert_important_color: tokens.editor.info,
+            alert_warning_color: tokens.editor.warning,
+            alert_caution_color: tokens.editor.error,
         }
+    }
+
+    pub fn preview_from_tokens(tokens: &DesignTokens) -> Self {
+        let body_font_size = tokens.sizes.text_base;
+        let mut style = Self::from_tokens(tokens);
+        style.preview = true;
+        style.body_font_size = body_font_size;
+        style.heading_font_sizes = scaled_heading_sizes(body_font_size);
+        style.heading_border_color = Some(tokens.chrome.border_muted);
+        style.code_overflow_x_scroll = true;
+        style.table_header_background = tokens.chrome.surface_hover;
+        style.table_alternate_background = with_alpha(tokens.chrome.surface_hover, 0.32);
+        style
     }
 
     pub fn compact(mut self) -> Self {
         self.compact = true;
         self
     }
+}
+
+fn scaled_heading_sizes(body_font_size: Pixels) -> [Pixels; 6] {
+    let base = f32::from(body_font_size);
+    [
+        px(base * 1.85),
+        px(base * 1.55),
+        px(base * 1.30),
+        px(base * 1.15),
+        body_font_size,
+        px(base * 0.90),
+    ]
 }
 
 #[derive(Clone)]
@@ -136,12 +188,56 @@ pub enum MarkdownBlock {
         checked: Option<bool>,
         text: RichText,
     },
-    BlockQuote(RichText),
+    BlockQuote {
+        kind: Option<MarkdownAlertKind>,
+        text: RichText,
+    },
     Rule,
     Table {
         alignments: Vec<TableAlignment>,
         rows: Vec<Vec<RichText>>,
     },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MarkdownAlertKind {
+    Note,
+    Tip,
+    Important,
+    Warning,
+    Caution,
+}
+
+impl MarkdownAlertKind {
+    fn from_block_quote_kind(kind: BlockQuoteKind) -> Self {
+        match kind {
+            BlockQuoteKind::Note => Self::Note,
+            BlockQuoteKind::Tip => Self::Tip,
+            BlockQuoteKind::Important => Self::Important,
+            BlockQuoteKind::Warning => Self::Warning,
+            BlockQuoteKind::Caution => Self::Caution,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Note => "Note",
+            Self::Tip => "Tip",
+            Self::Important => "Important",
+            Self::Warning => "Warning",
+            Self::Caution => "Caution",
+        }
+    }
+
+    fn color(self, style: &MarkdownStyle) -> Hsla {
+        match self {
+            Self::Note => style.alert_note_color,
+            Self::Tip => style.alert_tip_color,
+            Self::Important => style.alert_important_color,
+            Self::Warning => style.alert_warning_color,
+            Self::Caution => style.alert_caution_color,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -427,6 +523,7 @@ struct MarkdownParser {
     code_block_language: Option<String>,
     code_text: String,
     block_quote_depth: usize,
+    block_quote_kinds: Vec<Option<MarkdownAlertKind>>,
     list_stack: Vec<ListContext>,
     current_task_marker: Option<bool>,
     link_depth: usize,
@@ -456,6 +553,7 @@ impl MarkdownParser {
             code_block_language: None,
             code_text: String::new(),
             block_quote_depth: 0,
+            block_quote_kinds: Vec::new(),
             list_stack: Vec::new(),
             current_task_marker: None,
             link_depth: 0,
@@ -503,8 +601,10 @@ impl MarkdownParser {
             Tag::Heading { level, .. } => {
                 self.heading = Some(heading_level(level));
             }
-            Tag::BlockQuote(_) => {
+            Tag::BlockQuote(kind) => {
                 self.block_quote_depth += 1;
+                self.block_quote_kinds
+                    .push(kind.map(MarkdownAlertKind::from_block_quote_kind));
             }
             Tag::CodeBlock(kind) => {
                 self.in_code_block = true;
@@ -571,6 +671,7 @@ impl MarkdownParser {
             }
             TagEnd::BlockQuote(_) => {
                 self.block_quote_depth = self.block_quote_depth.saturating_sub(1);
+                self.block_quote_kinds.pop();
             }
             TagEnd::CodeBlock => self.flush_code_block(),
             TagEnd::List(_) => {
@@ -651,9 +752,10 @@ impl MarkdownParser {
 
     fn flush_block_quote(&mut self) {
         if !self.current_text.is_empty() {
-            self.blocks.push(MarkdownBlock::BlockQuote(std::mem::take(
-                &mut self.current_text,
-            )));
+            self.blocks.push(MarkdownBlock::BlockQuote {
+                kind: self.block_quote_kinds.last().copied().flatten(),
+                text: std::mem::take(&mut self.current_text),
+            });
         }
     }
 
@@ -720,7 +822,13 @@ fn render_document(
     helix_theme: Option<&helix_view::Theme>,
     syntax_loader: Option<&syntax::Loader>,
 ) -> gpui::Div {
-    let gap = if style.compact { px(6.0) } else { px(10.0) };
+    let gap = if style.preview {
+        px(0.0)
+    } else if style.compact {
+        px(6.0)
+    } else {
+        px(10.0)
+    };
     let elements: Vec<gpui::AnyElement> = document
         .blocks
         .into_iter()
@@ -732,29 +840,48 @@ fn render_document(
                 style.body_color,
                 format!("markdown-paragraph-{block_index}"),
             )
-            .line_height(relative(1.45))
+            .line_height(relative(if style.preview { 1.55 } else { 1.45 }))
+            .when(style.preview, |this| this.mb(px(10.0)))
             .into_any_element(),
             MarkdownBlock::Heading { level, text } => {
-                let size = match level {
-                    1 => 1.16,
-                    2 => 1.08,
-                    _ => 1.0,
-                };
-                render_rich_text(
+                let heading = render_rich_text(
                     text,
                     &style,
                     style.heading_color,
                     format!("markdown-heading-{block_index}"),
                 )
-                .text_size(rems(size))
                 .font_weight(FontWeight::BOLD)
-                .line_height(relative(1.25))
-                .into_any_element()
+                .line_height(relative(1.2));
+
+                if style.preview {
+                    heading
+                        .text_size(preview_heading_size(&style, level))
+                        .when(block_index > 0, |this| this.mt(px(22.0)))
+                        .mb(px(10.0))
+                        .when(level <= 3, |this| {
+                            this.pb(px(5.0)).border_b_1().border_color(
+                                style.heading_border_color.unwrap_or(style.rule_color),
+                            )
+                        })
+                        .into_any_element()
+                } else {
+                    let size = match level {
+                        1 => 1.16,
+                        2 => 1.08,
+                        _ => 1.0,
+                    };
+                    heading.text_size(rems(size)).into_any_element()
+                }
             }
-            MarkdownBlock::CodeBlock { language, text } => {
-                render_code_block(text, language, &style, helix_theme, syntax_loader)
-                    .into_any_element()
-            }
+            MarkdownBlock::CodeBlock { language, text } => render_code_block(
+                text,
+                language,
+                &style,
+                helix_theme,
+                syntax_loader,
+                block_index,
+            )
+            .into_any_element(),
             MarkdownBlock::ListItem {
                 ordered,
                 index,
@@ -763,13 +890,14 @@ fn render_document(
                 text,
             } => render_list_item(ordered, index, depth, checked, text, &style, block_index)
                 .into_any_element(),
-            MarkdownBlock::BlockQuote(text) => {
-                render_block_quote(text, &style, block_index).into_any_element()
+            MarkdownBlock::BlockQuote { kind, text } => {
+                render_block_quote(kind, text, &style, block_index).into_any_element()
             }
             MarkdownBlock::Rule => div()
                 .h(px(1.0))
                 .w_full()
                 .bg(style.rule_color)
+                .when(style.preview, |this| this.my(px(14.0)))
                 .into_any_element(),
             MarkdownBlock::Table { alignments, rows } => {
                 render_table(alignments, rows, &style, block_index).into_any_element()
@@ -786,6 +914,11 @@ fn render_document(
         .children(elements)
 }
 
+fn preview_heading_size(style: &MarkdownStyle, level: u8) -> Pixels {
+    let index = usize::from(level.saturating_sub(1)).min(style.heading_font_sizes.len() - 1);
+    style.heading_font_sizes[index]
+}
+
 fn render_rich_text(
     text: RichText,
     style: &MarkdownStyle,
@@ -800,7 +933,11 @@ fn render_rich_text(
         LinkText::new(element_id, text, parts.links).into_any_element()
     };
 
-    div().w_full().text_sm().text_color(color).child(text)
+    div()
+        .w_full()
+        .text_size(style.body_font_size)
+        .text_color(color)
+        .child(text)
 }
 
 fn code_syntax_highlights(
@@ -966,11 +1103,14 @@ fn render_code_block(
     style: &MarkdownStyle,
     helix_theme: Option<&helix_view::Theme>,
     syntax_loader: Option<&syntax::Loader>,
+    block_index: usize,
 ) -> gpui::Div {
     let content = text.trim_end_matches('\n').to_string();
     let highlights =
         code_syntax_highlights(&content, language.as_deref(), helix_theme, syntax_loader);
     let code = div()
+        .id(format!("markdown-code-block-{block_index}"))
+        .w_full()
         .px(px(10.0))
         .py(px(8.0))
         .rounded(px(4.0))
@@ -981,10 +1121,14 @@ fn render_code_block(
         .line_height(relative(1.45))
         .font_family(style.code_font_family.clone())
         .text_color(style.body_color)
-        .overflow_hidden()
+        .when_else(
+            style.code_overflow_x_scroll,
+            |this| this.overflow_x_scroll(),
+            |this| this.overflow_hidden(),
+        )
         .child(StyledText::new(content).with_highlights(highlights));
 
-    if let Some(language) = language {
+    let block = if let Some(language) = language {
         div()
             .flex()
             .flex_col()
@@ -998,7 +1142,9 @@ fn render_code_block(
             .child(code)
     } else {
         div().child(code)
-    }
+    };
+
+    block.when(style.preview, |this| this.mt(px(8.0)).mb(px(14.0)))
 }
 
 fn render_list_item(
@@ -1010,27 +1156,39 @@ fn render_list_item(
     style: &MarkdownStyle,
     block_index: usize,
 ) -> impl IntoElement {
-    let marker = if let Some(checked) = checked {
-        if checked { "[x]" } else { "[ ]" }.to_string()
-    } else if ordered {
-        format!("{index}.")
+    let marker_width = if checked.is_some() || !ordered {
+        px(24.0)
     } else {
-        "*".to_string()
+        px(34.0)
+    };
+    let marker = if let Some(checked) = checked {
+        render_task_checkbox(checked, style).into_any_element()
+    } else if ordered {
+        div()
+            .w(marker_width)
+            .text_sm()
+            .text_right()
+            .text_color(style.secondary_color)
+            .child(format!("{index}."))
+            .into_any_element()
+    } else {
+        div()
+            .w(marker_width)
+            .text_sm()
+            .text_center()
+            .text_color(style.secondary_color)
+            .child(bullet_for_depth(depth))
+            .into_any_element()
     };
 
     div()
         .flex()
         .flex_row()
+        .items_start()
         .gap(px(8.0))
         .pl(px((depth as f32) * 16.0))
-        .child(
-            div()
-                .flex_none()
-                .w(px(24.0))
-                .text_sm()
-                .text_color(style.secondary_color)
-                .child(marker),
-        )
+        .when(style.preview, |this| this.mb(px(6.0)))
+        .child(div().flex_none().w(marker_width).child(marker))
         .child(
             render_rich_text(
                 text,
@@ -1042,24 +1200,81 @@ fn render_list_item(
         )
 }
 
+fn bullet_for_depth(depth: usize) -> &'static str {
+    const BULLETS: [&str; 4] = ["•", "◦", "▪", "‣"];
+    BULLETS[depth.min(BULLETS.len() - 1)]
+}
+
+fn render_task_checkbox(checked: bool, style: &MarkdownStyle) -> gpui::Div {
+    div()
+        .flex()
+        .items_center()
+        .justify_center()
+        .w(px(14.0))
+        .h(px(14.0))
+        .mt(px(2.0))
+        .rounded(px(3.0))
+        .border_1()
+        .border_color(if checked {
+            style.link_color
+        } else {
+            style.code_border
+        })
+        .when(checked, |this| this.bg(with_alpha(style.link_color, 0.22)))
+        .child(
+            div()
+                .text_size(px(10.0))
+                .line_height(relative(1.0))
+                .text_color(style.link_color)
+                .child(if checked { "✓" } else { "" }),
+        )
+}
+
 fn render_block_quote(
+    kind: Option<MarkdownAlertKind>,
     text: RichText,
     style: &MarkdownStyle,
     block_index: usize,
 ) -> impl IntoElement {
+    let border_color = kind
+        .map(|kind| kind.color(style))
+        .unwrap_or(style.quote_border);
+    let text_color = if kind.is_some() {
+        style.body_color
+    } else {
+        style.secondary_color
+    };
+
+    let content = render_rich_text(
+        text,
+        style,
+        text_color,
+        format!("markdown-block-quote-{block_index}"),
+    )
+    .when(kind.is_none(), |this| this.italic());
+
     div()
-        .pl(px(10.0))
-        .border_l_2()
-        .border_color(style.quote_border)
-        .child(
-            render_rich_text(
-                text,
-                style,
-                style.secondary_color,
-                format!("markdown-block-quote-{block_index}"),
+        .pl(px(if kind.is_some() { 14.0 } else { 10.0 }))
+        .py(px(if style.preview { 6.0 } else { 0.0 }))
+        .when(style.preview, |this| this.mb(px(10.0)))
+        .when(kind.is_some(), |this| {
+            this.bg(with_alpha(border_color, 0.08))
+                .rounded(px(4.0))
+                .pr(px(10.0))
+        })
+        .border_l(px(if kind.is_some() { 4.0 } else { 2.0 }))
+        .border_color(border_color)
+        .when_some(kind, |this, kind| {
+            this.child(
+                div()
+                    .mb(px(4.0))
+                    .text_size(style.body_font_size)
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(border_color)
+                    .child(kind.label()),
             )
-            .italic(),
-        )
+        })
+        .child(content)
 }
 
 fn render_table(
@@ -1068,48 +1283,71 @@ fn render_table(
     style: &MarkdownStyle,
     block_index: usize,
 ) -> impl IntoElement {
+    let column_count = rows
+        .iter()
+        .map(Vec::len)
+        .max()
+        .unwrap_or(0)
+        .max(alignments.len());
+    if column_count == 0 {
+        return div();
+    }
+
+    let grid_cols = column_count.min(u16::MAX as usize) as u16;
+    let mut cells = Vec::new();
+    for (row_index, row) in rows.into_iter().enumerate() {
+        let header = row_index == 0;
+        for column_index in 0..column_count {
+            let cell = row.get(column_index).cloned().unwrap_or_default();
+            let alignment = alignments
+                .get(column_index)
+                .copied()
+                .unwrap_or(TableAlignment::None);
+            let text = render_rich_text(
+                cell,
+                style,
+                style.body_color,
+                format!("markdown-table-{block_index}-{row_index}-{column_index}"),
+            )
+            .px(px(8.0))
+            .py(px(6.0))
+            .when(header, |this| {
+                this.font_weight(FontWeight::BOLD).text_center()
+            })
+            .when(!header, |this| match alignment {
+                TableAlignment::None | TableAlignment::Left => this,
+                TableAlignment::Center => this.text_center(),
+                TableAlignment::Right => this.text_right(),
+            });
+
+            cells.push(
+                div()
+                    .flex()
+                    .flex_col()
+                    .h_full()
+                    .border_color(style.code_border)
+                    .when(column_index > 0, |this| this.border_l_1())
+                    .when(row_index > 0, |this| this.border_t_1())
+                    .when(header, |this| this.bg(style.table_header_background))
+                    .when(!header && row_index % 2 == 1, |this| {
+                        this.bg(style.table_alternate_background)
+                    })
+                    .child(text)
+                    .into_any_element(),
+            );
+        }
+    }
+
     div()
-        .flex()
-        .flex_col()
+        .grid()
+        .grid_cols(grid_cols)
+        .w_full()
         .border_1()
         .border_color(style.code_border)
         .rounded(px(4.0))
         .overflow_hidden()
-        .children(rows.into_iter().enumerate().map(|(row_index, row)| {
-            let header = row_index == 0;
-            div()
-                .flex()
-                .flex_row()
-                .when(header, |this| this.bg(style.code_background))
-                .when(row_index > 0, |this| {
-                    this.border_t_1().border_color(style.code_border)
-                })
-                .children(row.into_iter().enumerate().map(|(column_index, cell)| {
-                    let alignment = alignments
-                        .get(column_index)
-                        .copied()
-                        .unwrap_or(TableAlignment::None);
-                    let cell = render_rich_text(
-                        cell,
-                        style,
-                        style.body_color,
-                        format!("markdown-table-{block_index}-{row_index}-{column_index}"),
-                    )
-                    .px(px(8.0))
-                    .py(px(5.0))
-                    .when(header, |this| this.font_weight(FontWeight::BOLD))
-                    .when(column_index > 0, |this| {
-                        this.border_l_1().border_color(style.code_border)
-                    });
-
-                    match alignment {
-                        TableAlignment::None | TableAlignment::Left => cell,
-                        TableAlignment::Center => cell.text_center(),
-                        TableAlignment::Right => cell.text_right(),
-                    }
-                    .flex_1()
-                }))
-        }))
+        .when(style.preview, |this| this.my(px(12.0)))
+        .children(cells)
 }
 
 #[cfg(test)]
@@ -1152,7 +1390,7 @@ mod tests {
 
         assert!(matches!(
             &document.blocks[0],
-            MarkdownBlock::BlockQuote(text)
+            MarkdownBlock::BlockQuote { kind: None, text }
                 if text.spans().iter().any(|span| span.style.link
                     && span.style.link_url.as_ref().is_some_and(|url| url == "https://example.com"))
         ));
@@ -1172,6 +1410,33 @@ mod tests {
                 if alignments == &[TableAlignment::Left, TableAlignment::Right]
                     && rows.len() == 2
         ));
+    }
+
+    #[test]
+    fn parses_gfm_alert_block_quotes() {
+        let document = MarkdownDocument::parse("> [!WARNING]\n> Check this carefully.");
+
+        assert!(matches!(
+            &document.blocks[0],
+            MarkdownBlock::BlockQuote {
+                kind: Some(MarkdownAlertKind::Warning),
+                text,
+            } if text.plain_text() == "Check this carefully."
+        ));
+    }
+
+    #[test]
+    fn preview_style_uses_document_typography_and_scrolling() {
+        let tokens = DesignTokens::dark();
+        let default = MarkdownStyle::from_tokens(&tokens);
+        let preview = MarkdownStyle::preview_from_tokens(&tokens);
+
+        assert!(!default.preview);
+        assert!(preview.preview);
+        assert!(preview.body_font_size > default.body_font_size);
+        assert!(preview.heading_font_sizes[0] > preview.heading_font_sizes[1]);
+        assert!(preview.heading_border_color.is_some());
+        assert!(preview.code_overflow_x_scroll);
     }
 
     #[test]
