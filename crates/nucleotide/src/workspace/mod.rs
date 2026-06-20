@@ -184,6 +184,7 @@ struct DocumentViewLayout {
 const SPLIT_PANE_HANDLE_HITBOX_PX: f32 = nucleotide_ui::SPLITTER_HITBOX_PX;
 const SPLIT_PANE_MIN_WIDTH_CELLS: u16 = 8;
 const SPLIT_PANE_MIN_HEIGHT_CELLS: u16 = 3;
+const SPLIT_PANE_MAX_SEPARATOR_GAP_CELLS: u16 = 1;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SplitPaneResizeAxis {
@@ -199,6 +200,7 @@ struct SplitPaneDivider {
     edge: u16,
     start: u16,
     span: u16,
+    gap: u16,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -262,6 +264,26 @@ fn split_pane_dividers(layouts: &[DocumentViewLayout]) -> Vec<SplitPaneDivider> 
     dividers
 }
 
+fn split_pane_resize_hitbox(
+    id: impl Into<gpui::ElementId>,
+    axis: SplitPaneResizeAxis,
+    handle_px: f32,
+) -> gpui::Stateful<gpui::Div> {
+    let handle_px = handle_px.max(1.0);
+    let base = div().id(id).relative().occlude();
+
+    match axis {
+        SplitPaneResizeAxis::Vertical => base
+            .w(px(handle_px))
+            .h_full()
+            .cursor(gpui::CursorStyle::ResizeLeftRight),
+        SplitPaneResizeAxis::Horizontal => base
+            .w_full()
+            .h(px(handle_px))
+            .cursor(gpui::CursorStyle::ResizeRow),
+    }
+}
+
 fn push_or_merge_split_pane_divider(
     dividers: &mut Vec<SplitPaneDivider>,
     mut divider: SplitPaneDivider,
@@ -283,10 +305,11 @@ fn push_or_merge_split_pane_divider(
 fn split_pane_dividers_can_merge(first: &SplitPaneDivider, second: &SplitPaneDivider) -> bool {
     first.axis == second.axis
         && first.edge == second.edge
-        && split_pane_ranges_touch(first.start, first.span, second.start, second.span)
+        && first.gap == second.gap
+        && split_pane_ranges_can_merge(first.start, first.span, second.start, second.span)
 }
 
-fn split_pane_ranges_touch(
+fn split_pane_ranges_can_merge(
     first_start: u16,
     first_span: u16,
     second_start: u16,
@@ -294,7 +317,8 @@ fn split_pane_ranges_touch(
 ) -> bool {
     let first_end = first_start.saturating_add(first_span);
     let second_end = second_start.saturating_add(second_span);
-    first_start <= second_end && second_start <= first_end
+    first_start <= second_end.saturating_add(SPLIT_PANE_MAX_SEPARATOR_GAP_CELLS)
+        && second_start <= first_end.saturating_add(SPLIT_PANE_MAX_SEPARATOR_GAP_CELLS)
 }
 
 fn merge_split_pane_dividers(
@@ -315,6 +339,7 @@ fn merge_split_pane_dividers(
         .max(second.start.saturating_add(second.span));
     first.start = start;
     first.span = end.saturating_sub(start);
+    first.gap = first.gap.max(second.gap);
     first
 }
 
@@ -348,7 +373,7 @@ fn split_pane_vertical_divider(
 ) -> Option<SplitPaneDivider> {
     let before_right = before.area.x.saturating_add(before.area.width);
     let gap = after.area.x.checked_sub(before_right)?;
-    if gap > 1 {
+    if gap > SPLIT_PANE_MAX_SEPARATOR_GAP_CELLS {
         return None;
     }
 
@@ -369,6 +394,7 @@ fn split_pane_vertical_divider(
         edge: before_right.saturating_add(gap / 2),
         start,
         span: end - start,
+        gap,
     })
 }
 
@@ -378,7 +404,7 @@ fn split_pane_horizontal_divider(
 ) -> Option<SplitPaneDivider> {
     let before_bottom = before.area.y.saturating_add(before.area.height);
     let gap = after.area.y.checked_sub(before_bottom)?;
-    if gap > 1 {
+    if gap > SPLIT_PANE_MAX_SEPARATOR_GAP_CELLS {
         return None;
     }
 
@@ -399,7 +425,59 @@ fn split_pane_horizontal_divider(
         edge: before_bottom.saturating_add(gap / 2),
         start,
         span: end - start,
+        gap,
     })
+}
+
+fn document_view_visual_area(
+    layout: DocumentViewLayout,
+    dividers: &[SplitPaneDivider],
+) -> HelixRect {
+    let mut area = layout.area;
+
+    for divider in dividers {
+        if divider.gap == 0 || !divider.after_view_ids.contains(&layout.view_id) {
+            continue;
+        }
+
+        match divider.axis {
+            SplitPaneResizeAxis::Vertical => {
+                area.x = area.x.saturating_sub(divider.gap);
+                area.width = area.width.saturating_add(divider.gap);
+            }
+            SplitPaneResizeAxis::Horizontal => {
+                area.y = area.y.saturating_sub(divider.gap);
+                area.height = area.height.saturating_add(divider.gap);
+            }
+        }
+    }
+
+    area
+}
+
+fn split_pane_divider_visual_line(
+    mut divider: SplitPaneDivider,
+    dividers: &[SplitPaneDivider],
+) -> SplitPaneDivider {
+    for other in dividers {
+        if divider.axis == other.axis || other.gap == 0 {
+            continue;
+        }
+
+        let all_views_shift_with_other = divider
+            .before_view_ids
+            .iter()
+            .chain(&divider.after_view_ids)
+            .all(|view_id| other.after_view_ids.contains(view_id));
+        if !all_views_shift_with_other {
+            continue;
+        }
+
+        divider.start = divider.start.saturating_sub(other.gap);
+        divider.span = divider.span.saturating_add(other.gap);
+    }
+
+    divider
 }
 
 fn split_pane_resized_areas(
@@ -10620,15 +10698,11 @@ impl Workspace {
                     * editor_height;
                 let span_px = (f32::from(divider.span) / total_height * editor_height).max(1.0);
 
-                nucleotide_ui::splitter(
-                    handle_id,
-                    nucleotide_ui::SplitterAxis::Vertical,
-                    handle_hit,
-                )
-                .absolute()
-                .left(px(edge_px - handle_hit * 0.5))
-                .top(px(start_px))
-                .h(px(span_px))
+                split_pane_resize_hitbox(handle_id, SplitPaneResizeAxis::Vertical, handle_hit)
+                    .absolute()
+                    .left(px(edge_px - handle_hit * 0.5))
+                    .top(px(start_px))
+                    .h(px(span_px))
             }
             SplitPaneResizeAxis::Horizontal => {
                 let edge_px = f32::from(divider.edge.saturating_sub(total_area.y)) / total_height
@@ -10637,15 +10711,11 @@ impl Workspace {
                     * editor_width;
                 let span_px = (f32::from(divider.span) / total_width * editor_width).max(1.0);
 
-                nucleotide_ui::splitter(
-                    handle_id,
-                    nucleotide_ui::SplitterAxis::Horizontal,
-                    handle_hit,
-                )
-                .absolute()
-                .left(px(start_px))
-                .top(px(edge_px - handle_hit * 0.5))
-                .w(px(span_px))
+                split_pane_resize_hitbox(handle_id, SplitPaneResizeAxis::Horizontal, handle_hit)
+                    .absolute()
+                    .left(px(start_px))
+                    .top(px(edge_px - handle_hit * 0.5))
+                    .w(px(span_px))
             }
         };
 
@@ -10695,6 +10765,58 @@ impl Workspace {
                 }),
             )
             .into_any_element()
+    }
+
+    fn render_split_pane_divider_line(
+        &self,
+        divider: &SplitPaneDivider,
+        total_area: HelixRect,
+        editor_width: f32,
+        editor_height: f32,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let total_width = f32::from(total_area.width).max(1.0);
+        let total_height = f32::from(total_area.height).max(1.0);
+        let editor_width = editor_width.max(1.0);
+        let editor_height = editor_height.max(1.0);
+        let line_px = nucleotide_ui::SPLITTER_LINE_PX;
+        let color =
+            nucleotide_ui::tokens::with_alpha(cx.theme().tokens.chrome.separator_color, 0.7);
+
+        match divider.axis {
+            SplitPaneResizeAxis::Vertical => {
+                let edge_px = f32::from(divider.edge.saturating_sub(total_area.x)) / total_width
+                    * editor_width;
+                let start_px = f32::from(divider.start.saturating_sub(total_area.y)) / total_height
+                    * editor_height;
+                let span_px = (f32::from(divider.span) / total_height * editor_height).max(1.0);
+
+                div()
+                    .absolute()
+                    .left(px(edge_px - line_px * 0.5))
+                    .top(px(start_px))
+                    .w(px(line_px))
+                    .h(px(span_px))
+                    .bg(color)
+                    .into_any_element()
+            }
+            SplitPaneResizeAxis::Horizontal => {
+                let edge_px = f32::from(divider.edge.saturating_sub(total_area.y)) / total_height
+                    * editor_height;
+                let start_px = f32::from(divider.start.saturating_sub(total_area.x)) / total_width
+                    * editor_width;
+                let span_px = (f32::from(divider.span) / total_width * editor_width).max(1.0);
+
+                div()
+                    .absolute()
+                    .left(px(start_px))
+                    .top(px(edge_px - line_px * 0.5))
+                    .w(px(span_px))
+                    .h(px(line_px))
+                    .bg(color)
+                    .into_any_element()
+            }
+        }
     }
 
     // /// Trigger completion UI based on current editor state
@@ -11402,6 +11524,10 @@ impl Render for Workspace {
         } else {
             if let Some(total_area) = layout_bounds {
                 for layout in layouts.iter().copied() {
+                    let layout = DocumentViewLayout {
+                        area: document_view_visual_area(layout, &dividers),
+                        ..layout
+                    };
                     if let Some(doc_element) = self.render_document_view_layout(
                         layout,
                         total_area,
@@ -11414,9 +11540,20 @@ impl Render for Workspace {
                     }
                 }
 
-                for divider in dividers {
+                for divider in dividers.iter().cloned() {
                     docs_root = docs_root.child(self.render_split_pane_resize_handle(
                         divider,
+                        total_area,
+                        editor_content_w_px,
+                        editor_content_h_px,
+                        cx,
+                    ));
+                }
+
+                for divider in &dividers {
+                    let divider = split_pane_divider_visual_line(divider.clone(), &dividers);
+                    docs_root = docs_root.child(self.render_split_pane_divider_line(
+                        &divider,
                         total_area,
                         editor_content_w_px,
                         editor_content_h_px,
@@ -14293,6 +14430,7 @@ mod tests {
         assert_eq!(dividers[0].edge, 40);
         assert_eq!(dividers[0].start, 0);
         assert_eq!(dividers[0].span, 20);
+        assert_eq!(dividers[0].gap, 0);
         assert_eq!(dividers[0].before_view_ids, vec![before_id]);
         assert_eq!(dividers[0].after_view_ids, vec![after_id]);
     }
@@ -14321,8 +14459,234 @@ mod tests {
         assert_eq!(dividers[0].edge, 10);
         assert_eq!(dividers[0].start, 0);
         assert_eq!(dividers[0].span, 80);
+        assert_eq!(dividers[0].gap, 0);
         assert_eq!(dividers[0].before_view_ids, vec![before_id]);
         assert_eq!(dividers[0].after_view_ids, vec![after_id]);
+    }
+
+    #[test]
+    fn document_view_visual_area_expands_after_vertical_separator_cell() {
+        let before_id = test_view_id(1);
+        let after_id = test_view_id(2);
+        let layouts = vec![
+            DocumentViewLayout {
+                view_id: before_id,
+                area: HelixRect::new(0, 0, 40, 20),
+                is_focused: true,
+            },
+            DocumentViewLayout {
+                view_id: after_id,
+                area: HelixRect::new(41, 0, 40, 20),
+                is_focused: false,
+            },
+        ];
+
+        let dividers = split_pane_dividers(&layouts);
+
+        assert_eq!(dividers.len(), 1);
+        assert_eq!(dividers[0].axis, SplitPaneResizeAxis::Vertical);
+        assert_eq!(dividers[0].edge, 40);
+        assert_eq!(dividers[0].gap, 1);
+        assert_eq!(
+            document_view_visual_area(layouts[0], &dividers),
+            HelixRect::new(0, 0, 40, 20)
+        );
+        assert_eq!(
+            document_view_visual_area(layouts[1], &dividers),
+            HelixRect::new(40, 0, 41, 20)
+        );
+    }
+
+    #[test]
+    fn document_view_visual_area_expands_after_horizontal_separator_cell() {
+        let before_id = test_view_id(1);
+        let after_id = test_view_id(2);
+        let layouts = vec![
+            DocumentViewLayout {
+                view_id: before_id,
+                area: HelixRect::new(0, 0, 80, 10),
+                is_focused: true,
+            },
+            DocumentViewLayout {
+                view_id: after_id,
+                area: HelixRect::new(0, 11, 80, 10),
+                is_focused: false,
+            },
+        ];
+
+        let dividers = split_pane_dividers(&layouts);
+
+        assert_eq!(dividers.len(), 1);
+        assert_eq!(dividers[0].axis, SplitPaneResizeAxis::Horizontal);
+        assert_eq!(dividers[0].edge, 10);
+        assert_eq!(dividers[0].gap, 1);
+        assert_eq!(
+            document_view_visual_area(layouts[0], &dividers),
+            HelixRect::new(0, 0, 80, 10)
+        );
+        assert_eq!(
+            document_view_visual_area(layouts[1], &dividers),
+            HelixRect::new(0, 10, 80, 11)
+        );
+    }
+
+    #[test]
+    fn split_pane_dividers_merge_horizontal_segments_across_vertical_separator_cell() {
+        let top_id = test_view_id(1);
+        let bottom_left_id = test_view_id(2);
+        let bottom_right_id = test_view_id(3);
+        let layouts = vec![
+            DocumentViewLayout {
+                view_id: top_id,
+                area: HelixRect::new(0, 0, 81, 10),
+                is_focused: true,
+            },
+            DocumentViewLayout {
+                view_id: bottom_left_id,
+                area: HelixRect::new(0, 11, 40, 10),
+                is_focused: false,
+            },
+            DocumentViewLayout {
+                view_id: bottom_right_id,
+                area: HelixRect::new(41, 11, 40, 10),
+                is_focused: false,
+            },
+        ];
+
+        let dividers = split_pane_dividers(&layouts);
+        let horizontal = dividers
+            .iter()
+            .find(|divider| divider.axis == SplitPaneResizeAxis::Horizontal)
+            .unwrap();
+
+        assert_eq!(dividers.len(), 2);
+        assert_eq!(horizontal.edge, 10);
+        assert_eq!(horizontal.start, 0);
+        assert_eq!(horizontal.span, 81);
+        assert_eq!(horizontal.gap, 1);
+        assert_eq!(horizontal.before_view_ids, vec![top_id]);
+        assert_eq!(
+            horizontal.after_view_ids,
+            vec![bottom_left_id, bottom_right_id]
+        );
+    }
+
+    #[test]
+    fn split_pane_dividers_merge_vertical_segments_across_horizontal_separator_cell() {
+        let left_id = test_view_id(1);
+        let right_top_id = test_view_id(2);
+        let right_bottom_id = test_view_id(3);
+        let layouts = vec![
+            DocumentViewLayout {
+                view_id: left_id,
+                area: HelixRect::new(0, 0, 40, 21),
+                is_focused: true,
+            },
+            DocumentViewLayout {
+                view_id: right_top_id,
+                area: HelixRect::new(41, 0, 40, 10),
+                is_focused: false,
+            },
+            DocumentViewLayout {
+                view_id: right_bottom_id,
+                area: HelixRect::new(41, 11, 40, 10),
+                is_focused: false,
+            },
+        ];
+
+        let dividers = split_pane_dividers(&layouts);
+        let vertical = dividers
+            .iter()
+            .find(|divider| divider.axis == SplitPaneResizeAxis::Vertical)
+            .unwrap();
+
+        assert_eq!(dividers.len(), 2);
+        assert_eq!(vertical.edge, 40);
+        assert_eq!(vertical.start, 0);
+        assert_eq!(vertical.span, 21);
+        assert_eq!(vertical.gap, 1);
+        assert_eq!(vertical.before_view_ids, vec![left_id]);
+        assert_eq!(vertical.after_view_ids, vec![right_top_id, right_bottom_id]);
+    }
+
+    #[test]
+    fn split_pane_divider_visual_line_expands_horizontal_inside_after_vertical_group() {
+        let middle_id = test_view_id(1);
+        let right_top_id = test_view_id(2);
+        let right_bottom_id = test_view_id(3);
+        let layouts = vec![
+            DocumentViewLayout {
+                view_id: middle_id,
+                area: HelixRect::new(0, 0, 40, 21),
+                is_focused: true,
+            },
+            DocumentViewLayout {
+                view_id: right_top_id,
+                area: HelixRect::new(41, 0, 40, 10),
+                is_focused: false,
+            },
+            DocumentViewLayout {
+                view_id: right_bottom_id,
+                area: HelixRect::new(41, 11, 40, 10),
+                is_focused: false,
+            },
+        ];
+
+        let dividers = split_pane_dividers(&layouts);
+        let horizontal = dividers
+            .iter()
+            .find(|divider| divider.axis == SplitPaneResizeAxis::Horizontal)
+            .unwrap();
+
+        assert_eq!(horizontal.edge, 10);
+        assert_eq!(horizontal.start, 41);
+        assert_eq!(horizontal.span, 40);
+
+        let visual = split_pane_divider_visual_line(horizontal.clone(), &dividers);
+
+        assert_eq!(visual.edge, 10);
+        assert_eq!(visual.start, 40);
+        assert_eq!(visual.span, 41);
+    }
+
+    #[test]
+    fn split_pane_divider_visual_line_expands_vertical_inside_after_horizontal_group() {
+        let top_id = test_view_id(1);
+        let bottom_left_id = test_view_id(2);
+        let bottom_right_id = test_view_id(3);
+        let layouts = vec![
+            DocumentViewLayout {
+                view_id: top_id,
+                area: HelixRect::new(0, 0, 81, 10),
+                is_focused: true,
+            },
+            DocumentViewLayout {
+                view_id: bottom_left_id,
+                area: HelixRect::new(0, 11, 40, 10),
+                is_focused: false,
+            },
+            DocumentViewLayout {
+                view_id: bottom_right_id,
+                area: HelixRect::new(41, 11, 40, 10),
+                is_focused: false,
+            },
+        ];
+
+        let dividers = split_pane_dividers(&layouts);
+        let vertical = dividers
+            .iter()
+            .find(|divider| divider.axis == SplitPaneResizeAxis::Vertical)
+            .unwrap();
+
+        assert_eq!(vertical.edge, 40);
+        assert_eq!(vertical.start, 11);
+        assert_eq!(vertical.span, 10);
+
+        let visual = split_pane_divider_visual_line(vertical.clone(), &dividers);
+
+        assert_eq!(visual.edge, 40);
+        assert_eq!(visual.start, 10);
+        assert_eq!(visual.span, 11);
     }
 
     #[test]
@@ -14358,6 +14722,7 @@ mod tests {
         assert_eq!(vertical.edge, 40);
         assert_eq!(vertical.start, 0);
         assert_eq!(vertical.span, 20);
+        assert_eq!(vertical.gap, 0);
         assert_eq!(vertical.before_view_ids, vec![left_id]);
         assert_eq!(vertical.after_view_ids, vec![top_right_id, bottom_right_id]);
     }
