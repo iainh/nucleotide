@@ -181,11 +181,7 @@ struct DocumentViewLayout {
     is_focused: bool,
 }
 
-const SPLIT_PANE_HANDLE_HITBOX_PX: f32 = 10.0;
-const SPLIT_PANE_HANDLE_VISUAL_PX: f32 = 1.0;
-const RESIZE_HANDLE_HOVER_ALPHA: f32 = 0.06;
-const RESIZE_HANDLE_SEPARATOR_ALPHA: f32 = 0.7;
-const RESIZE_HANDLE_SEPARATOR_HOVER_ALPHA: f32 = 0.9;
+const SPLIT_PANE_HANDLE_HITBOX_PX: f32 = nucleotide_ui::SPLITTER_HITBOX_PX;
 const SPLIT_PANE_MIN_WIDTH_CELLS: u16 = 8;
 const SPLIT_PANE_MIN_HEIGHT_CELLS: u16 = 3;
 
@@ -795,6 +791,15 @@ enum PendingFileOp {
 struct DraggedFileTreeResize;
 
 impl Render for DraggedFileTreeResize {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        Empty
+    }
+}
+
+#[derive(Clone)]
+struct DraggedDocumentationSidebarResize;
+
+impl Render for DraggedDocumentationSidebarResize {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         Empty
     }
@@ -4040,8 +4045,6 @@ impl Workspace {
             .flex_col()
             .overflow_hidden()
             .bg(tokens.chrome.file_tree_background)
-            .border_l_1()
-            .border_color(tokens.chrome.border_default)
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(
                 div()
@@ -10544,6 +10547,7 @@ impl Workspace {
         total_area: HelixRect,
         editor_width: f32,
         editor_height: f32,
+        dim_inactive_panes: bool,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
         let view_entity = self
@@ -10551,6 +10555,8 @@ impl Workspace {
             .get_document_view(&layout.view_id)?
             .clone();
         let theme = cx.theme();
+        let inactive_overlay =
+            nucleotide_ui::tokens::with_alpha(theme.tokens.chrome.surface_overlay, 0.10);
         let (left, top, width, height) =
             helix_rect_to_scaled_pixel_bounds(layout.area, total_area, editor_width, editor_height);
 
@@ -10562,14 +10568,22 @@ impl Workspace {
                 .w(width)
                 .h(height)
                 .overflow_hidden()
-                .when(layout.is_focused, |d| {
-                    d.border_1().border_color(theme.tokens.editor.focus_ring)
-                })
                 .when(self.debug_colors_enabled, |d| {
                     d.border_1()
                         .border_color(theme.tokens.chrome.border_default)
                 })
                 .child(view_entity)
+                .when(dim_inactive_panes && !layout.is_focused, |d| {
+                    d.child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .right_0()
+                            .bottom_0()
+                            .bg(inactive_overlay),
+                    )
+                })
                 .into_any_element(),
         )
     }
@@ -10587,68 +10601,8 @@ impl Workspace {
         let editor_width = editor_width.max(1.0);
         let editor_height = editor_height.max(1.0);
         let handle_hit = SPLIT_PANE_HANDLE_HITBOX_PX;
-        let handle_visual = SPLIT_PANE_HANDLE_VISUAL_PX;
-        let visual_offset = ((handle_hit - handle_visual) * 0.5).max(0.0);
-        let separator_color = nucleotide_ui::tokens::with_alpha(
-            cx.theme().tokens.chrome.border_default,
-            RESIZE_HANDLE_SEPARATOR_ALPHA,
-        );
-        let hover_color = nucleotide_ui::tokens::with_alpha(
-            cx.theme().tokens.editor.focus_ring,
-            RESIZE_HANDLE_HOVER_ALPHA,
-        );
 
         let drag_divider = divider.clone();
-        let handle = match divider.axis {
-            SplitPaneResizeAxis::Vertical => {
-                let edge_px = f32::from(divider.edge.saturating_sub(total_area.x)) / total_width
-                    * editor_width;
-                let start_px = f32::from(divider.start.saturating_sub(total_area.y)) / total_height
-                    * editor_height;
-                let span_px = (f32::from(divider.span) / total_height * editor_height).max(1.0);
-
-                div()
-                    .absolute()
-                    .left(px(edge_px - handle_hit * 0.5))
-                    .top(px(start_px))
-                    .w(px(handle_hit))
-                    .h(px(span_px))
-                    .cursor(gpui::CursorStyle::ResizeLeftRight)
-                    .child(
-                        div()
-                            .absolute()
-                            .top_0()
-                            .bottom_0()
-                            .left(px(visual_offset))
-                            .w(px(handle_visual))
-                            .bg(separator_color),
-                    )
-            }
-            SplitPaneResizeAxis::Horizontal => {
-                let edge_px = f32::from(divider.edge.saturating_sub(total_area.y)) / total_height
-                    * editor_height;
-                let start_px = f32::from(divider.start.saturating_sub(total_area.x)) / total_width
-                    * editor_width;
-                let span_px = (f32::from(divider.span) / total_width * editor_width).max(1.0);
-
-                div()
-                    .absolute()
-                    .left(px(start_px))
-                    .top(px(edge_px - handle_hit * 0.5))
-                    .w(px(span_px))
-                    .h(px(handle_hit))
-                    .cursor(gpui::CursorStyle::ResizeRow)
-                    .child(
-                        div()
-                            .absolute()
-                            .left_0()
-                            .right_0()
-                            .top(px(visual_offset))
-                            .h(px(handle_visual))
-                            .bg(separator_color),
-                    )
-            }
-        };
         let handle_id = format!(
             "split-pane-resize-handle-{:?}-{:?}-{:?}-{}-{}-{}",
             divider.axis,
@@ -10658,11 +10612,44 @@ impl Workspace {
             divider.start,
             divider.span
         );
+        let handle = match divider.axis {
+            SplitPaneResizeAxis::Vertical => {
+                let edge_px = f32::from(divider.edge.saturating_sub(total_area.x)) / total_width
+                    * editor_width;
+                let start_px = f32::from(divider.start.saturating_sub(total_area.y)) / total_height
+                    * editor_height;
+                let span_px = (f32::from(divider.span) / total_height * editor_height).max(1.0);
+
+                nucleotide_ui::splitter(
+                    handle_id,
+                    nucleotide_ui::SplitterAxis::Vertical,
+                    handle_hit,
+                )
+                .absolute()
+                .left(px(edge_px - handle_hit * 0.5))
+                .top(px(start_px))
+                .h(px(span_px))
+            }
+            SplitPaneResizeAxis::Horizontal => {
+                let edge_px = f32::from(divider.edge.saturating_sub(total_area.y)) / total_height
+                    * editor_height;
+                let start_px = f32::from(divider.start.saturating_sub(total_area.x)) / total_width
+                    * editor_width;
+                let span_px = (f32::from(divider.span) / total_width * editor_width).max(1.0);
+
+                nucleotide_ui::splitter(
+                    handle_id,
+                    nucleotide_ui::SplitterAxis::Horizontal,
+                    handle_hit,
+                )
+                .absolute()
+                .left(px(start_px))
+                .top(px(edge_px - handle_hit * 0.5))
+                .w(px(span_px))
+            }
+        };
 
         handle
-            .id(handle_id)
-            .occlude()
-            .hover(move |d| d.bg(hover_color))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |workspace, event: &MouseDownEvent, window, cx| {
@@ -11326,21 +11313,14 @@ impl Render for Workspace {
         } else {
             0.0
         };
-        let file_tree_handle_w_px = if self.show_file_tree { 4.0 } else { 0.0 };
-        let right_content_w_px = (viewport_w_px - file_tree_w_px - file_tree_handle_w_px).max(1.0);
+        let right_content_w_px = (viewport_w_px - file_tree_w_px).max(1.0);
         self.sync_documentation_sidebar_width_for_viewport(right_content_w_px);
         let doc_sidebar_w_px = if self.doc_sidebar_visible {
             self.doc_sidebar_width
         } else {
             0.0
         };
-        let doc_sidebar_handle_w_px = if self.doc_sidebar_visible {
-            SPLIT_PANE_HANDLE_HITBOX_PX
-        } else {
-            0.0
-        };
-        let editor_content_w_px =
-            (right_content_w_px - doc_sidebar_w_px - doc_sidebar_handle_w_px).max(1.0);
+        let editor_content_w_px = (right_content_w_px - doc_sidebar_w_px).max(1.0);
 
         let editor_h = if self.terminal_panel_visible {
             (available_h - self.basic_terminal_height).max(0.0)
@@ -11396,6 +11376,8 @@ impl Render for Workspace {
 
         let layouts = self.document_view_layouts(cx);
         let layout_bounds = document_view_layout_bounds(&layouts);
+        let dim_inactive_panes =
+            layouts.len() > 1 && layouts.iter().any(|layout| layout.is_focused);
         let dividers = if layouts.len() > 1 {
             split_pane_dividers(&layouts)
         } else {
@@ -11425,6 +11407,7 @@ impl Render for Workspace {
                         total_area,
                         editor_content_w_px,
                         editor_content_h_px,
+                        dim_inactive_panes,
                         cx,
                     ) {
                         docs_root = docs_root.child(doc_element);
@@ -12279,33 +12262,15 @@ impl Render for Workspace {
                             // Overlay our own centered handle at the top of the panel.
                             .child({
                                 let handle_h = SPLIT_PANE_HANDLE_HITBOX_PX;
-                                let handle_visual_h = SPLIT_PANE_HANDLE_VISUAL_PX;
-                                let visual_offset = ((handle_h - handle_visual_h) * 0.5).max(0.0);
-                                let sep_color = nucleotide_ui::tokens::with_alpha(
-                                    cx.theme().tokens.chrome.border_default,
-                                    RESIZE_HANDLE_SEPARATOR_ALPHA,
-                                );
-                                let hover_color = nucleotide_ui::tokens::with_alpha(
-                                    cx.theme().tokens.editor.focus_ring,
-                                    RESIZE_HANDLE_HOVER_ALPHA,
-                                );
-                                div()
+                                nucleotide_ui::splitter(
+                                    "terminal-panel-resize-handle",
+                                    nucleotide_ui::SplitterAxis::Horizontal,
+                                    handle_h,
+                                )
                                     .absolute()
                                     .left_0()
                                     .right_0()
                                     .bottom(px(self.basic_terminal_height - handle_h * 0.5))
-                                    .h(px(handle_h))
-                                    .cursor(gpui::CursorStyle::ResizeRow)
-                                    .hover(move |d| d.bg(hover_color))
-                                    .child(
-                                        div()
-                                            .absolute()
-                                            .left_0()
-                                            .right_0()
-                                            .top(px(visual_offset))
-                                            .h(px(handle_visual_h))
-                                            .bg(sep_color),
-                                    )
                                     .on_mouse_down(MouseButton::Left, cx.listener(move |this: &mut Workspace, ev: &MouseDownEvent, window, cx| {
                                         if ev.click_count >= 2 {
                                             let min_h = 80.0f32;
@@ -12331,25 +12296,12 @@ impl Render for Workspace {
                 let editor_stack = root;
 
                 if self.doc_sidebar_visible {
-                    let handle_visual_w = SPLIT_PANE_HANDLE_VISUAL_PX;
                     let handle_hit_w = SPLIT_PANE_HANDLE_HITBOX_PX;
-                    let handle_visual_offset = ((handle_hit_w - handle_visual_w) * 0.5).max(0.0);
-                    let sep_color = nucleotide_ui::tokens::with_alpha(
-                        cx.theme().tokens.chrome.border_default,
-                        RESIZE_HANDLE_SEPARATOR_ALPHA,
-                    );
-                    let sep_color_hover = nucleotide_ui::tokens::with_alpha(
-                        cx.theme().tokens.chrome.border_default,
-                        RESIZE_HANDLE_SEPARATOR_HOVER_ALPHA,
-                    );
-                    let hover_color = nucleotide_ui::tokens::with_alpha(
-                        cx.theme().tokens.editor.focus_ring,
-                        RESIZE_HANDLE_HOVER_ALPHA,
-                    );
                     let resize_available_w = right_content_w_px;
 
                     div()
                         .flex()
+                        .relative()
                         .w_full()
                         .h(content_max_h)
                         .min_h(px(0.0))
@@ -12361,79 +12313,86 @@ impl Render for Workspace {
                                 .overflow_hidden()
                                 .child(editor_stack),
                         )
+                        .child(self.render_documentation_sidebar(cx))
                         .child(
-                            div()
-                                .id("documentation-sidebar-resize-handle")
-                                .w(px(handle_hit_w))
-                                .h_full()
-                                .flex_shrink_0()
-                                .relative()
-                                .cursor(gpui::CursorStyle::ResizeLeftRight)
-                                .hover(move |d| d.bg(hover_color))
-                                .child(
-                                    div()
-                                        .absolute()
-                                        .top_0()
-                                        .bottom_0()
-                                        .left(px(handle_visual_offset))
-                                        .w(px(handle_visual_w))
-                                        .h_full()
-                                        .bg(sep_color)
-                                        .hover(move |d| d.bg(sep_color_hover)),
-                                )
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(
-                                        move |this: &mut Workspace,
-                                              ev: &MouseDownEvent,
-                                              window,
-                                              cx| {
-                                            if ev.click_count >= 2 {
-                                                let width =
-                                                    Self::clamped_documentation_sidebar_width(
-                                                        DOC_SIDEBAR_DEFAULT_WIDTH,
-                                                        resize_available_w,
-                                                    );
-                                                if (this.doc_sidebar_width - width).abs() > 0.5 {
-                                                    this.doc_sidebar_width = width;
-                                                    cx.notify();
-                                                }
-                                                window.refresh();
-                                                cx.stop_propagation();
-                                                return;
+                            nucleotide_ui::splitter(
+                                "documentation-sidebar-resize-handle",
+                                nucleotide_ui::SplitterAxis::Vertical,
+                                handle_hit_w,
+                            )
+                            .absolute()
+                            .top_0()
+                            .bottom_0()
+                            .right(px(self.doc_sidebar_width - handle_hit_w * 0.5))
+                            .h_full()
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(
+                                    move |this: &mut Workspace, ev: &MouseDownEvent, window, cx| {
+                                        if ev.click_count >= 2 {
+                                            let width = Self::clamped_documentation_sidebar_width(
+                                                DOC_SIDEBAR_DEFAULT_WIDTH,
+                                                resize_available_w,
+                                            );
+                                            if (this.doc_sidebar_width - width).abs() > 0.5 {
+                                                this.doc_sidebar_width = width;
+                                                cx.notify();
                                             }
-
-                                            this.doc_sidebar_resizing = true;
-                                            this.doc_sidebar_resize_start_x =
-                                                f32::from(ev.position.x);
-                                            this.doc_sidebar_resize_start_width =
-                                                this.doc_sidebar_width;
-                                            cx.notify();
                                             window.refresh();
                                             cx.stop_propagation();
-                                        },
-                                    ),
-                                )
-                                .on_mouse_up(
-                                    MouseButton::Left,
-                                    cx.listener(
-                                        |this: &mut Workspace, _ev: &MouseUpEvent, window, cx| {
-                                            this.finish_documentation_sidebar_resize(window, cx);
-                                            cx.stop_propagation();
-                                        },
-                                    ),
-                                )
-                                .on_mouse_up_out(
-                                    MouseButton::Left,
-                                    cx.listener(
-                                        |this: &mut Workspace, _ev: &MouseUpEvent, window, cx| {
-                                            this.finish_documentation_sidebar_resize(window, cx);
-                                            cx.stop_propagation();
-                                        },
-                                    ),
+                                            return;
+                                        }
+
+                                        this.doc_sidebar_resizing = true;
+                                        this.doc_sidebar_resize_start_x = f32::from(ev.position.x);
+                                        this.doc_sidebar_resize_start_width =
+                                            this.doc_sidebar_width;
+                                        cx.notify();
+                                        window.refresh();
+                                        cx.stop_propagation();
+                                    },
                                 ),
+                            )
+                            .on_drag(DraggedDocumentationSidebarResize, |_, _, _, cx| {
+                                cx.new(|_| DraggedDocumentationSidebarResize)
+                            })
+                            .on_drag_move::<DraggedDocumentationSidebarResize>(cx.listener(
+                                move |this: &mut Workspace,
+                                      event: &DragMoveEvent<DraggedDocumentationSidebarResize>,
+                                      window,
+                                      cx| {
+                                    if this.doc_sidebar_resizing
+                                        && event.event.dragging()
+                                        && this.update_documentation_sidebar_resize(
+                                            f32::from(event.event.position.x),
+                                            resize_available_w,
+                                            cx,
+                                        )
+                                    {
+                                        window.refresh();
+                                    }
+                                    cx.stop_propagation();
+                                },
+                            ))
+                            .on_mouse_up(
+                                MouseButton::Left,
+                                cx.listener(
+                                    |this: &mut Workspace, _ev: &MouseUpEvent, window, cx| {
+                                        this.finish_documentation_sidebar_resize(window, cx);
+                                        cx.stop_propagation();
+                                    },
+                                ),
+                            )
+                            .on_mouse_up_out(
+                                MouseButton::Left,
+                                cx.listener(
+                                    |this: &mut Workspace, _ev: &MouseUpEvent, window, cx| {
+                                        this.finish_documentation_sidebar_resize(window, cx);
+                                        cx.stop_propagation();
+                                    },
+                                ),
+                            ),
                         )
-                        .child(self.render_documentation_sidebar(cx))
                         .into_any_element()
                 } else {
                     editor_stack.into_any_element()
@@ -12441,9 +12400,7 @@ impl Render for Workspace {
             };
 
             if self.show_file_tree {
-                let handle_visual_w = SPLIT_PANE_HANDLE_VISUAL_PX;
                 let handle_hit_w = SPLIT_PANE_HANDLE_HITBOX_PX;
-                let handle_visual_offset = ((handle_hit_w - handle_visual_w) * 0.5).max(0.0);
                 let viewport_w = f32::from(window.viewport_size().width);
                 let max_left = Self::max_file_tree_width(viewport_w);
 
@@ -12517,111 +12474,90 @@ impl Render for Workspace {
                 }
                 container = container.child(file_tree_container);
 
-                // Vertical handle at the boundary
-                let sep_color = nucleotide_ui::tokens::with_alpha(
-                    cx.theme().tokens.chrome.border_default,
-                    RESIZE_HANDLE_SEPARATOR_ALPHA,
-                );
-                let sep_color_hover = nucleotide_ui::tokens::with_alpha(
-                    cx.theme().tokens.chrome.border_default,
-                    RESIZE_HANDLE_SEPARATOR_HOVER_ALPHA,
-                );
-                let hover_color = nucleotide_ui::tokens::with_alpha(
-                    cx.theme().tokens.editor.focus_ring,
-                    RESIZE_HANDLE_HOVER_ALPHA,
-                );
-                container = container.child(
-                    div()
-                        .id("file-tree-resize-handle")
-                        .absolute()
-                        .top_0()
-                        .left(px(self.file_tree_width - handle_hit_w * 0.5))
-                        .w(px(handle_hit_w))
-                        .h(content_max_h)
-                        .cursor(gpui::CursorStyle::ResizeLeftRight)
-                        .hover(move |d| d.bg(hover_color))
-                        .child(
-                            div()
-                                .absolute()
-                                .top_0()
-                                .bottom_0()
-                                .left(px(handle_visual_offset))
-                                .w(px(handle_visual_w))
-                                .h_full()
-                                .bg(sep_color)
-                                .hover(|d| d.bg(sep_color_hover)),
-                        )
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(
-                                move |this: &mut Workspace, ev: &MouseDownEvent, window, cx| {
-                                    if ev.click_count >= 2 {
-                                        let viewport_w = f32::from(window.viewport_size().width);
-                                        let snap = this.auto_file_tree_width(viewport_w, cx);
-                                        this.file_tree_width_override = None;
-                                        if (this.file_tree_width - snap).abs() > 0.5 {
-                                            this.file_tree_width = snap;
-                                            cx.notify();
-                                        }
-                                        window.refresh();
-                                        cx.stop_propagation();
-                                        return;
-                                    }
-                                    this.is_resizing_file_tree = true;
-                                    this.resize_start_x = f32::from(ev.position.x);
-                                    this.resize_start_width = this.file_tree_width;
-                                    cx.notify();
-                                    window.refresh();
-                                    cx.stop_propagation();
-                                },
-                            ),
-                        )
-                        .on_drag(DraggedFileTreeResize, |_, _, _, cx| {
-                            cx.new(|_| DraggedFileTreeResize)
-                        })
-                        .on_drag_move::<DraggedFileTreeResize>(cx.listener(
-                            |this: &mut Workspace,
-                             event: &DragMoveEvent<DraggedFileTreeResize>,
-                             window,
-                             cx| {
-                                if this.is_resizing_file_tree
-                                    && event.event.dragging()
-                                    && this.update_file_tree_resize(
-                                        f32::from(event.event.position.x),
-                                        f32::from(window.viewport_size().width),
-                                        cx,
-                                    )
-                                {
-                                    window.refresh();
-                                }
-                            },
-                        ))
-                        .on_mouse_up(
-                            MouseButton::Left,
-                            cx.listener(|this: &mut Workspace, _ev: &MouseUpEvent, window, cx| {
-                                this.finish_file_tree_resize(window, cx);
-                                cx.stop_propagation();
-                            }),
-                        )
-                        .on_mouse_up_out(
-                            MouseButton::Left,
-                            cx.listener(|this: &mut Workspace, _ev: &MouseUpEvent, window, cx| {
-                                this.finish_file_tree_resize(window, cx);
-                                cx.stop_propagation();
-                            }),
-                        ),
-                );
-
-                // Right content area positioned after the handle
+                // Right content area positioned after the file tree.
                 container = container.child(
                     div()
                         .absolute()
                         .top_0()
-                        .left(px(self.file_tree_width + handle_visual_w))
+                        .left(px(self.file_tree_width))
                         .right_0()
                         .h(content_max_h)
                         .min_h(px(0.0))
                         .child(right),
+                );
+
+                // Vertical handle at the boundary. Render it after both panes
+                // so the symmetric hitbox is not covered by either side.
+                container = container.child(
+                    nucleotide_ui::splitter(
+                        "file-tree-resize-handle",
+                        nucleotide_ui::SplitterAxis::Vertical,
+                        handle_hit_w,
+                    )
+                    .absolute()
+                    .top_0()
+                    .left(px(self.file_tree_width - handle_hit_w * 0.5))
+                    .h(content_max_h)
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(
+                            move |this: &mut Workspace, ev: &MouseDownEvent, window, cx| {
+                                if ev.click_count >= 2 {
+                                    let viewport_w = f32::from(window.viewport_size().width);
+                                    let snap = this.auto_file_tree_width(viewport_w, cx);
+                                    this.file_tree_width_override = None;
+                                    if (this.file_tree_width - snap).abs() > 0.5 {
+                                        this.file_tree_width = snap;
+                                        cx.notify();
+                                    }
+                                    window.refresh();
+                                    cx.stop_propagation();
+                                    return;
+                                }
+                                this.is_resizing_file_tree = true;
+                                this.resize_start_x = f32::from(ev.position.x);
+                                this.resize_start_width = this.file_tree_width;
+                                cx.notify();
+                                window.refresh();
+                                cx.stop_propagation();
+                            },
+                        ),
+                    )
+                    .on_drag(DraggedFileTreeResize, |_, _, _, cx| {
+                        cx.new(|_| DraggedFileTreeResize)
+                    })
+                    .on_drag_move::<DraggedFileTreeResize>(cx.listener(
+                        |this: &mut Workspace,
+                         event: &DragMoveEvent<DraggedFileTreeResize>,
+                         window,
+                         cx| {
+                            if this.is_resizing_file_tree
+                                && event.event.dragging()
+                                && this.update_file_tree_resize(
+                                    f32::from(event.event.position.x),
+                                    f32::from(window.viewport_size().width),
+                                    cx,
+                                )
+                            {
+                                window.refresh();
+                            }
+                            cx.stop_propagation();
+                        },
+                    ))
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|this: &mut Workspace, _ev: &MouseUpEvent, window, cx| {
+                            this.finish_file_tree_resize(window, cx);
+                            cx.stop_propagation();
+                        }),
+                    )
+                    .on_mouse_up_out(
+                        MouseButton::Left,
+                        cx.listener(|this: &mut Workspace, _ev: &MouseUpEvent, window, cx| {
+                            this.finish_file_tree_resize(window, cx);
+                            cx.stop_propagation();
+                        }),
+                    ),
                 );
 
                 if self.context_menu_open {

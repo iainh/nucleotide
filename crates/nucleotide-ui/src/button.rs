@@ -58,7 +58,7 @@ fn button_metrics(size: ButtonSize, tokens: &DesignTokens) -> ButtonMetrics {
             padding_y: tokens.sizes.space_0,
             border_radius: tokens.sizes.radius_sm,
             font_size: tokens.sizes.text_xs,
-            icon_size: px(12.0),
+            icon_size: tokens.sizes.text_sm,
             gap: tokens.sizes.space_1,
         },
         ButtonSize::Small => ButtonMetrics {
@@ -67,7 +67,7 @@ fn button_metrics(size: ButtonSize, tokens: &DesignTokens) -> ButtonMetrics {
             padding_y: tokens.sizes.space_0,
             border_radius: tokens.sizes.radius_md,
             font_size: tokens.sizes.text_sm,
-            icon_size: px(14.0),
+            icon_size: tokens.sizes.text_md,
             gap: tokens.sizes.space_1,
         },
         ButtonSize::Medium => ButtonMetrics {
@@ -76,7 +76,7 @@ fn button_metrics(size: ButtonSize, tokens: &DesignTokens) -> ButtonMetrics {
             padding_y: tokens.sizes.space_0,
             border_radius: tokens.sizes.radius_md,
             font_size: tokens.sizes.text_md,
-            icon_size: px(16.0),
+            icon_size: tokens.sizes.text_lg,
             gap: tokens.sizes.space_2,
         },
         ButtonSize::Large => ButtonMetrics {
@@ -85,7 +85,7 @@ fn button_metrics(size: ButtonSize, tokens: &DesignTokens) -> ButtonMetrics {
             padding_y: tokens.sizes.space_0,
             border_radius: tokens.sizes.radius_md,
             font_size: tokens.sizes.text_md,
-            icon_size: px(18.0),
+            icon_size: tokens.sizes.text_xl,
             gap: tokens.sizes.space_2,
         },
         ButtonSize::ExtraLarge => ButtonMetrics {
@@ -94,7 +94,7 @@ fn button_metrics(size: ButtonSize, tokens: &DesignTokens) -> ButtonMetrics {
             padding_y: tokens.sizes.space_0,
             border_radius: tokens.sizes.radius_lg,
             font_size: tokens.sizes.text_lg,
-            icon_size: px(20.0),
+            icon_size: tokens.sizes.space_6,
             gap: tokens.sizes.space_2,
         },
     }
@@ -103,8 +103,8 @@ fn button_metrics(size: ButtonSize, tokens: &DesignTokens) -> ButtonMetrics {
 /// Button variant styles (backward compatibility)
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub enum ButtonVariant {
-    #[default]
     Primary,
+    #[default]
     Secondary,
     Ghost,
     Danger,
@@ -270,7 +270,7 @@ impl Button {
         Self {
             id: id.into(),
             label: label.into(),
-            variant: ButtonVariant::Primary,
+            variant: ButtonVariant::Secondary,
             size: ButtonSize::Medium,
             disabled: false,
             loading: false,
@@ -940,7 +940,7 @@ mod tests {
     fn test_button_creation() {
         let button = Button::new("test-button", "Click me");
         assert_eq!(button.label, "Click me");
-        assert_eq!(button.variant, ButtonVariant::Primary);
+        assert_eq!(button.variant, ButtonVariant::Secondary);
         assert_eq!(button.size, ButtonSize::Medium);
         assert!(!button.disabled);
         assert!(!button.loading);
@@ -1063,6 +1063,10 @@ mod tests {
         assert_eq!(sm.height, tokens.sizes.button_height_sm);
         assert_eq!(md.height, tokens.sizes.button_height_md);
         assert_eq!(lg.height, tokens.sizes.button_height_md);
+        assert_eq!(xs.icon_size, tokens.sizes.text_sm);
+        assert_eq!(sm.icon_size, tokens.sizes.text_md);
+        assert_eq!(md.icon_size, tokens.sizes.text_lg);
+        assert_eq!(lg.icon_size, tokens.sizes.text_xl);
         assert!(sm.padding_x > xs.padding_x);
         assert!(md.padding_x > sm.padding_x);
     }

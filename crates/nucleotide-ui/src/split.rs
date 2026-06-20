@@ -6,13 +6,16 @@ use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    App, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, ParentElement, Styled, Window, div, px,
+    App, Div, ElementId, InteractiveElement, IntoElement, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, ParentElement, Stateful, Styled, Window, div, px, relative,
 };
+
+pub const SPLITTER_HITBOX_PX: f32 = 10.0;
+pub const SPLITTER_LINE_PX: f32 = 1.0;
 
 const RESIZE_HANDLE_MIN_HITBOX_PX: f32 = 8.0;
 const RESIZE_HANDLE_MAX_HITBOX_PX: f32 = 12.0;
-const RESIZE_HANDLE_VISUAL_PX: f32 = 1.0;
+const RESIZE_HANDLE_VISUAL_PX: f32 = SPLITTER_LINE_PX;
 
 #[inline]
 fn clamp_primary(start: f32, delta: f32, min_px: f32, max_px: f32) -> f32 {
@@ -37,6 +40,60 @@ fn resize_handle_hitbox_px(handle_px: f32) -> Option<f32> {
 #[inline]
 fn resize_handle_visual_offset(hitbox_px: f32) -> f32 {
     ((hitbox_px - RESIZE_HANDLE_VISUAL_PX) * 0.5).max(0.0)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SplitterAxis {
+    Vertical,
+    Horizontal,
+}
+
+/// A single splitter component: a transparent, symmetric drag hitbox with one
+/// centered visible separator line.
+pub fn splitter(id: impl Into<ElementId>, axis: SplitterAxis, handle_px: f32) -> Stateful<Div> {
+    let hitbox_px = resize_handle_hitbox_px(handle_px).unwrap_or(RESIZE_HANDLE_MIN_HITBOX_PX);
+    let visual_offset = resize_handle_visual_offset(hitbox_px);
+    let theme = crate::providers::ProviderHooks::theme();
+    let sep_color = crate::tokens::with_alpha(theme.tokens.chrome.separator_color, 0.7);
+    let sep_hover_color = crate::tokens::with_alpha(theme.tokens.editor.focus_ring, 0.55);
+
+    let base = div()
+        .id(id)
+        .relative()
+        .occlude()
+        .when(axis == SplitterAxis::Vertical, |d| {
+            d.w(px(hitbox_px))
+                .h_full()
+                .cursor(gpui::CursorStyle::ResizeLeftRight)
+        })
+        .when(axis == SplitterAxis::Horizontal, |d| {
+            d.w_full()
+                .h(px(hitbox_px))
+                .cursor(gpui::CursorStyle::ResizeRow)
+        });
+
+    match axis {
+        SplitterAxis::Vertical => base.child(
+            div()
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .left(px(visual_offset))
+                .w(px(RESIZE_HANDLE_VISUAL_PX))
+                .bg(sep_color)
+                .hover(move |d| d.bg(sep_hover_color)),
+        ),
+        SplitterAxis::Horizontal => base.child(
+            div()
+                .absolute()
+                .left_0()
+                .right_0()
+                .top(px(visual_offset))
+                .h(px(RESIZE_HANDLE_VISUAL_PX))
+                .bg(sep_color)
+                .hover(move |d| d.bg(sep_hover_color)),
+        ),
+    }
 }
 
 #[derive(Clone)]
@@ -84,6 +141,7 @@ pub fn sidebar_split<L: IntoElement, R: IntoElement>(
     // The container captures move/up to provide robust dragging beyond the handle bounds
     let mut root = div()
         .flex()
+        .relative()
         .w_full()
         .flex_1()
         .min_h(px(0.0)) // allow vertical shrink inside column parents
@@ -141,37 +199,16 @@ pub fn sidebar_split<L: IntoElement, R: IntoElement>(
             ),
     );
 
-    // Handle: transparent hitbox for easy grabbing, with a thin visible separator centered inside
+    // Handle: transparent hitbox centered over the pane boundary, with a
+    // single visible separator line centered inside.
     let handle_hit_w = resize_handle_hitbox_px(handle_px).unwrap_or(RESIZE_HANDLE_MIN_HITBOX_PX);
-    let handle_visual_w = RESIZE_HANDLE_VISUAL_PX;
 
     root = root.child({
-        // Separator color uses theme tokens (via Provider hooks)
-        let theme = crate::providers::ProviderHooks::theme();
-        let sep_color = crate::tokens::with_alpha(theme.tokens.chrome.separator_color, 0.7);
-        let sep_hover_color = crate::tokens::with_alpha(theme.tokens.editor.focus_ring, 0.55);
-        let hover_bg = crate::tokens::with_alpha(theme.tokens.editor.focus_ring, 0.06);
-        let visual_offset = resize_handle_visual_offset(handle_hit_w);
-
-        let mut handle = div()
-            .id("sidebar-resize-handle")
-            .w(px(handle_hit_w))
-            .h_full()
-            .flex_shrink_0()
-            .cursor(gpui::CursorStyle::ResizeLeftRight)
-            .relative()
-            .hover(move |d| d.bg(hover_bg))
-            .child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .bottom_0()
-                    .left(px(visual_offset))
-                    .w(px(handle_visual_w))
-                    .h_full()
-                    .bg(sep_color)
-                    .hover(move |d| d.bg(sep_hover_color)),
-            );
+        let mut handle = splitter("sidebar-resize-handle", SplitterAxis::Vertical, handle_px)
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .left(px(width_px - handle_hit_w * 0.5));
 
         handle = handle.on_mouse_down(MouseButton::Left, {
             let drag = drag.clone();
@@ -276,49 +313,34 @@ pub fn bottom_panel_split<C: IntoElement>(
         .child(content);
 
     if let Some(handle_hit_h) = resize_handle_hitbox_px(handle_px) {
-        let theme = crate::providers::ProviderHooks::theme();
-        let sep_color = crate::tokens::with_alpha(theme.tokens.chrome.separator_color, 0.7);
-        let sep_hover_color = crate::tokens::with_alpha(theme.tokens.editor.focus_ring, 0.55);
-        let hover_bg = crate::tokens::with_alpha(theme.tokens.editor.focus_ring, 0.06);
-        let visual_offset = resize_handle_visual_offset(handle_hit_h);
-
         panel = panel.child({
-            div()
-                .absolute()
-                .left_0()
-                .right_0()
-                .top(px(-handle_hit_h * 0.5))
-                .h(px(handle_hit_h))
-                .cursor(gpui::CursorStyle::ResizeRow)
-                .hover(move |d| d.bg(hover_bg))
-                .child(
-                    div()
-                        .absolute()
-                        .left_0()
-                        .right_0()
-                        .top(px(visual_offset))
-                        .h(px(RESIZE_HANDLE_VISUAL_PX))
-                        .bg(sep_color)
-                        .hover(move |d| d.bg(sep_hover_color)),
-                )
-                .on_mouse_down(MouseButton::Left, {
-                    let drag = drag.clone();
-                    let on_change = on_change.clone();
-                    move |ev: &MouseDownEvent, window: &mut Window, cx: &mut App| {
-                        if ev.click_count >= 2 {
-                            on_change(default_px.clamp(min_px, max_px), cx);
-                            window.refresh();
-                            cx.stop_propagation();
-                            return;
-                        }
-                        drag.dragging.set(true);
-                        drag.start_mouse
-                            .set((f32::from(ev.position.x), f32::from(ev.position.y)));
-                        drag.start_primary.set(height_px);
+            splitter(
+                "bottom-panel-resize-handle",
+                SplitterAxis::Horizontal,
+                handle_px,
+            )
+            .absolute()
+            .left_0()
+            .right_0()
+            .top(px(-handle_hit_h * 0.5))
+            .on_mouse_down(MouseButton::Left, {
+                let drag = drag.clone();
+                let on_change = on_change.clone();
+                move |ev: &MouseDownEvent, window: &mut Window, cx: &mut App| {
+                    if ev.click_count >= 2 {
+                        on_change(default_px.clamp(min_px, max_px), cx);
                         window.refresh();
                         cx.stop_propagation();
+                        return;
                     }
-                })
+                    drag.dragging.set(true);
+                    drag.start_mouse
+                        .set((f32::from(ev.position.x), f32::from(ev.position.y)));
+                    drag.start_primary.set(height_px);
+                    window.refresh();
+                    cx.stop_propagation();
+                }
+            })
         });
     }
 
@@ -342,6 +364,7 @@ pub fn two_pane_split<A: IntoElement, B: IntoElement>(
 ) -> impl IntoElement {
     let drag = DragRuntimeState::new();
     let handle_px = handle_px.max(2.0);
+    let fraction = fraction.clamp(0.0, 1.0);
 
     let mut root = div().relative().size_full();
 
@@ -367,29 +390,45 @@ pub fn two_pane_split<A: IntoElement, B: IntoElement>(
 
     // Divider element for pointer semantics; layout specifics are up to caller
     root = root.child(
-        div()
-            .absolute()
-            .when(horizontal, |d| d.cursor(gpui::CursorStyle::ResizeLeftRight))
-            .when(!horizontal, |d| d.cursor(gpui::CursorStyle::ResizeRow))
-            .w(px(if horizontal { handle_px } else { 0.0 }))
-            .h(px(if horizontal { 0.0 } else { handle_px }))
-            .on_mouse_down(MouseButton::Left, {
-                let drag = drag.clone();
-                move |ev: &MouseDownEvent, window: &mut Window, _cx: &mut App| {
-                    drag.dragging.set(true);
-                    drag.start_mouse
-                        .set((f32::from(ev.position.x), f32::from(ev.position.y)));
-                    window.refresh();
-                }
-            })
-            .on_mouse_move({
-                let _drag = drag.clone();
-                let on_change_fraction = Rc::new(on_change_fraction);
-                move |_ev: &MouseMoveEvent, window: &mut Window, cx: &mut App| {
-                    on_change_fraction(fraction, cx);
-                    window.refresh();
-                }
-            }),
+        splitter(
+            "two-pane-resize-handle",
+            if horizontal {
+                SplitterAxis::Vertical
+            } else {
+                SplitterAxis::Horizontal
+            },
+            handle_px,
+        )
+        .absolute()
+        .when(horizontal, |d| {
+            d.left(relative(fraction))
+                .top_0()
+                .bottom_0()
+                .ml(px(-handle_px * 0.5))
+        })
+        .when(!horizontal, |d| {
+            d.top(relative(fraction))
+                .left_0()
+                .right_0()
+                .mt(px(-handle_px * 0.5))
+        })
+        .on_mouse_down(MouseButton::Left, {
+            let drag = drag.clone();
+            move |ev: &MouseDownEvent, window: &mut Window, _cx: &mut App| {
+                drag.dragging.set(true);
+                drag.start_mouse
+                    .set((f32::from(ev.position.x), f32::from(ev.position.y)));
+                window.refresh();
+            }
+        })
+        .on_mouse_move({
+            let _drag = drag.clone();
+            let on_change_fraction = Rc::new(on_change_fraction);
+            move |_ev: &MouseMoveEvent, window: &mut Window, cx: &mut App| {
+                on_change_fraction(fraction, cx);
+                window.refresh();
+            }
+        }),
     );
 
     root.child(a).child(b)

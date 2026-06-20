@@ -115,7 +115,10 @@ pub use providers::{
     ProviderContainer, ProviderHooks, ThemeProvider, UIConfiguration, provider_tree, use_provider,
     use_provider_or_default,
 };
-pub use split::{bottom_panel_split, sidebar_split, two_pane_split};
+pub use split::{
+    SPLITTER_HITBOX_PX, SPLITTER_LINE_PX, SplitterAxis, bottom_panel_split, sidebar_split,
+    splitter, two_pane_split,
+};
 pub use styling::{
     AnimationConfig, AnimationDuration, AnimationPreset, AnimationProperty, AnimationType,
     BoxShadow, Breakpoint, ColorTheory, ComputedStyle, ConditionalStyle, ContextualColors,

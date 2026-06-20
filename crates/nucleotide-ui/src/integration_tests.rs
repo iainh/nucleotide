@@ -26,7 +26,10 @@ mod tests {
 
         // Test that we can create using ComponentFactory
         let factory_button = <Button as ComponentFactory>::new("factory-btn");
-        assert_eq!(*UIStyled::variant(&factory_button), ButtonVariant::Primary); // Default
+        assert_eq!(
+            *UIStyled::variant(&factory_button),
+            ButtonVariant::Secondary
+        ); // Default
         assert_eq!(*UIStyled::size(&factory_button), ButtonSize::Medium); // Default
     }
 
