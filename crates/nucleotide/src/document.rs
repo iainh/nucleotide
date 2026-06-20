@@ -408,7 +408,7 @@ impl DocumentView {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let tokens = &cx.theme().tokens;
-        let markdown_style = MarkdownStyle::from_tokens(tokens);
+        let markdown_style = MarkdownStyle::preview_from_tokens(tokens);
         div()
             .id(SharedString::from(format!(
                 "markdown-rendered-{:?}",
