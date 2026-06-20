@@ -1,15 +1,18 @@
 use std::collections::BTreeMap;
+use std::path::Path;
 
+use gpui::prelude::FluentBuilder;
 use gpui::{
     App, Bounds, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement, IntoElement, ParentElement, Pixels, Render, SharedString, Styled,
-    TextStyle, Window, div, px,
+    InteractiveElement, IntoElement, ParentElement, Pixels, Render, SharedString,
+    StatefulInteractiveElement, Styled, TextStyle, Window, div, px,
 };
 // Import helix's syntax highlighting system
-use helix_view::ViewId;
+use helix_view::{DocumentId, ViewId};
 use nucleotide_events::v2::run::ResolvedTask;
 use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::theme_manager::HelixThemedContext;
+use nucleotide_ui::{Button, ButtonSize, ButtonVariant, MarkdownStyle, Tooltipped, markdown};
 
 use crate::{Core, Input, InputEvent};
 use nucleotide_editor::{
@@ -87,6 +90,8 @@ pub struct DocumentView {
     focus: FocusHandle,
     is_focused: bool,
     editor_state: EditorViewState,
+    markdown_modes: BTreeMap<DocumentId, MarkdownDisplayMode>,
+    markdown_scroll_handle: gpui::ScrollHandle,
 }
 
 impl DocumentView {
@@ -110,6 +115,8 @@ impl DocumentView {
             focus: focus.clone(),
             is_focused,
             editor_state,
+            markdown_modes: BTreeMap::new(),
+            markdown_scroll_handle: gpui::ScrollHandle::new(),
         }
     }
 
@@ -163,6 +170,28 @@ impl DocumentView {
     pub fn layout_snapshot(&self) -> EditorViewLayoutSnapshot {
         self.editor_state.layout_snapshot()
     }
+
+    fn markdown_mode_for(&self, doc_id: DocumentId) -> MarkdownDisplayMode {
+        self.markdown_modes
+            .get(&doc_id)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    fn set_markdown_mode(&mut self, doc_id: DocumentId, mode: MarkdownDisplayMode) -> bool {
+        let current = self.markdown_mode_for(doc_id);
+        if current == mode {
+            return false;
+        }
+
+        if mode == MarkdownDisplayMode::default() {
+            self.markdown_modes.remove(&doc_id);
+        } else {
+            self.markdown_modes.insert(doc_id, mode);
+        }
+
+        true
+    }
 }
 
 impl EventEmitter<DismissEvent> for DocumentView {}
@@ -180,6 +209,14 @@ impl Render for DocumentView {
             .set_gutter_extra_columns(desired_gutter_extra_columns);
         self.editor_state
             .set_gutter_run_button_lines(runnable_tasks_by_line.keys().copied());
+
+        let markdown_document = markdown_document_info(&self.core, self.view_id, cx);
+        let markdown_mode = markdown_document
+            .as_ref()
+            .map(|snapshot| self.markdown_mode_for(snapshot.doc_id))
+            .unwrap_or_default();
+        let show_rendered_markdown =
+            matches!(markdown_mode, MarkdownDisplayMode::Rendered) && markdown_document.is_some();
 
         let editor_content = {
             let core = self.core.clone();
@@ -270,6 +307,22 @@ impl Render for DocumentView {
                 })
         };
 
+        let rendered_markdown = if show_rendered_markdown {
+            markdown_document_snapshot(&self.core, self.view_id, cx)
+        } else {
+            None
+        };
+
+        let content = if let Some(snapshot) = rendered_markdown.as_ref() {
+            self.render_markdown_document(snapshot, cx)
+        } else {
+            editor_content.into_any_element()
+        };
+
+        let controls = markdown_document
+            .as_ref()
+            .map(|snapshot| self.render_markdown_controls(snapshot.doc_id, markdown_mode, cx));
+
         div()
             .id(SharedString::from(format!("doc-view-{:?}", self.view_id)))
             .w_full()
@@ -277,7 +330,190 @@ impl Render for DocumentView {
             .relative()
             .flex()
             .flex_col()
-            .child(editor_content)
+            .child(content)
+            .when_some(controls, gpui::ParentElement::child)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum MarkdownDisplayMode {
+    #[default]
+    Source,
+    Rendered,
+}
+
+struct MarkdownDocumentSnapshot {
+    doc_id: DocumentId,
+    source: SharedString,
+}
+
+struct MarkdownDocumentInfo {
+    doc_id: DocumentId,
+}
+
+fn markdown_document_info(
+    core: &Entity<Core>,
+    view_id: ViewId,
+    cx: &mut Context<DocumentView>,
+) -> Option<MarkdownDocumentInfo> {
+    let core = core.read(cx);
+    let view = core.editor.tree.try_get(view_id)?;
+    let doc = core.editor.documents.get(&view.doc)?;
+    if !doc
+        .path()
+        .is_some_and(|path| is_markdown_document_path(path))
+    {
+        return None;
+    }
+
+    Some(MarkdownDocumentInfo { doc_id: view.doc })
+}
+
+fn markdown_document_snapshot(
+    core: &Entity<Core>,
+    view_id: ViewId,
+    cx: &mut Context<DocumentView>,
+) -> Option<MarkdownDocumentSnapshot> {
+    let core = core.read(cx);
+    let view = core.editor.tree.try_get(view_id)?;
+    let doc = core.editor.documents.get(&view.doc)?;
+    if !doc
+        .path()
+        .is_some_and(|path| is_markdown_document_path(path))
+    {
+        return None;
+    }
+
+    Some(MarkdownDocumentSnapshot {
+        doc_id: view.doc,
+        source: SharedString::from(String::from(doc.text().slice(..))),
+    })
+}
+
+fn is_markdown_document_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "md" | "markdown" | "mdown" | "mkd" | "mkdn"
+            )
+        })
+}
+
+impl DocumentView {
+    fn render_markdown_document(
+        &self,
+        snapshot: &MarkdownDocumentSnapshot,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let tokens = &cx.theme().tokens;
+        let markdown_style = MarkdownStyle::from_tokens(tokens);
+        div()
+            .id(SharedString::from(format!(
+                "markdown-rendered-{:?}",
+                snapshot.doc_id
+            )))
+            .size_full()
+            .overflow_y_scroll()
+            .track_scroll(&self.markdown_scroll_handle)
+            .px(tokens.sizes.space_8)
+            .py(tokens.sizes.space_8)
+            .child(markdown(snapshot.source.clone(), markdown_style))
+            .into_any_element()
+    }
+
+    fn render_markdown_controls(
+        &self,
+        doc_id: DocumentId,
+        mode: MarkdownDisplayMode,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let tokens = &cx.theme().tokens;
+        let source_variant = markdown_mode_button_variant(mode, MarkdownDisplayMode::Source);
+        let rendered_variant = markdown_mode_button_variant(mode, MarkdownDisplayMode::Rendered);
+        let view = cx.entity().clone();
+        let focus = self.focus.clone();
+        let source_view = view.clone();
+        let source_focus = focus.clone();
+        let rendered_view = view;
+        let rendered_focus = focus;
+
+        div()
+            .id(SharedString::from(format!(
+                "markdown-mode-controls-{doc_id}"
+            )))
+            .absolute()
+            .top(px(10.0))
+            .right(px(14.0))
+            .flex()
+            .items_center()
+            .gap(tokens.sizes.space_1)
+            .p(tokens.sizes.space_1)
+            .rounded(tokens.sizes.radius_md)
+            .bg(nucleotide_ui::tokens::with_alpha(
+                tokens.chrome.surface,
+                0.58,
+            ))
+            .border_1()
+            .border_color(nucleotide_ui::tokens::with_alpha(
+                tokens.chrome.border_muted,
+                0.64,
+            ))
+            .child(
+                Button::icon_only(
+                    SharedString::from(format!("markdown-source-{doc_id}")),
+                    "icons/code.svg",
+                )
+                .variant(source_variant)
+                .size(ButtonSize::Small)
+                .tooltip("Show Source")
+                .activate_on_mouse_down()
+                .on_click({
+                    move |_event, window, cx| {
+                        source_view.update(cx, |view, cx| {
+                            if view.set_markdown_mode(doc_id, MarkdownDisplayMode::Source) {
+                                cx.notify();
+                            }
+                        });
+                        window.focus(&source_focus, cx);
+                        cx.stop_propagation();
+                    }
+                }),
+            )
+            .child(
+                Button::icon_only(
+                    SharedString::from(format!("markdown-rendered-{doc_id}")),
+                    "icons/book-text.svg",
+                )
+                .variant(rendered_variant)
+                .size(ButtonSize::Small)
+                .tooltip("Render Markdown")
+                .activate_on_mouse_down()
+                .on_click({
+                    move |_event, window, cx| {
+                        rendered_view.update(cx, |view, cx| {
+                            if view.set_markdown_mode(doc_id, MarkdownDisplayMode::Rendered) {
+                                cx.notify();
+                            }
+                        });
+                        window.focus(&rendered_focus, cx);
+                        cx.stop_propagation();
+                    }
+                }),
+            )
+            .into_any_element()
+    }
+}
+
+fn markdown_mode_button_variant(
+    current: MarkdownDisplayMode,
+    button_mode: MarkdownDisplayMode,
+) -> ButtonVariant {
+    if current == button_mode {
+        ButtonVariant::Secondary
+    } else {
+        ButtonVariant::Ghost
     }
 }
 
@@ -404,6 +640,61 @@ mod tests {
         assert_eq!(
             run_gutter_button_left(px(100.0), px(24.0), px(14.0)),
             px(81.0)
+        );
+    }
+
+    #[test]
+    fn markdown_document_path_detection_accepts_common_extensions() {
+        for path in [
+            Path::new("README.md"),
+            Path::new("guide.MARKDOWN"),
+            Path::new("notes.mdown"),
+            Path::new("draft.mkd"),
+            Path::new("chapter.mkdn"),
+        ] {
+            assert!(
+                is_markdown_document_path(path),
+                "expected {} to be detected as markdown",
+                path.display()
+            );
+        }
+    }
+
+    #[test]
+    fn markdown_document_path_detection_rejects_non_markdown_files() {
+        for path in [
+            Path::new("main.rs"),
+            Path::new("markdown.txt"),
+            Path::new("README"),
+            Path::new("archive.md.bak"),
+        ] {
+            assert!(
+                !is_markdown_document_path(path),
+                "expected {} to remain a source editor document",
+                path.display()
+            );
+        }
+    }
+
+    #[test]
+    fn markdown_mode_button_variant_marks_current_mode() {
+        assert_eq!(
+            markdown_mode_button_variant(MarkdownDisplayMode::Source, MarkdownDisplayMode::Source),
+            ButtonVariant::Secondary
+        );
+        assert_eq!(
+            markdown_mode_button_variant(
+                MarkdownDisplayMode::Source,
+                MarkdownDisplayMode::Rendered
+            ),
+            ButtonVariant::Ghost
+        );
+        assert_eq!(
+            markdown_mode_button_variant(
+                MarkdownDisplayMode::Rendered,
+                MarkdownDisplayMode::Rendered
+            ),
+            ButtonVariant::Secondary
         );
     }
 }
