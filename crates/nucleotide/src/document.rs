@@ -408,7 +408,9 @@ impl DocumentView {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let tokens = &cx.theme().tokens;
-        let markdown_style = MarkdownStyle::preview_from_tokens(tokens);
+        let editor_font = cx.global::<crate::types::EditorFontConfig>();
+        let mut markdown_style = MarkdownStyle::preview_from_tokens(tokens);
+        markdown_style.code_font_family = SharedString::from(editor_font.family.clone());
         div()
             .id(SharedString::from(format!(
                 "markdown-rendered-{:?}",
