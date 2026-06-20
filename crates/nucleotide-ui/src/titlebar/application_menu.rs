@@ -199,9 +199,9 @@ impl Render for ApplicationMenu {
                     .variant(ButtonVariant::Ghost)
                     .size(ButtonSize::Small)
                     .on_click(
-                        cx.listener(move |this, ev: &gpui::MouseUpEvent, _window, cx| {
+                        cx.listener(move |this, ev: &gpui::ClickEvent, _window, cx| {
                             this.open_index = Some(i);
-                            this.anchor_x = Some(f32::from(ev.position.x));
+                            this.anchor_x = Some(f32::from(ev.position().x));
                             cx.notify();
                         }),
                     ),
