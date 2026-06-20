@@ -373,7 +373,9 @@ pub fn render_project_tree_row(
                 .child(render_chevron_slot(&row, theme))
                 .child(render_icon(&row, theme))
                 .child(render_filename(&row, theme))
-                .child(render_git_status_lane(&row, theme)),
+                .when_some(render_git_status_lane(&row, theme), |row, lane| {
+                    row.child(lane)
+                }),
         )
         .into_any_element()
 }
@@ -465,37 +467,35 @@ fn render_filename(row: &ProjectTreeRow, theme: &Theme) -> impl IntoElement {
     node
 }
 
-fn render_git_status_lane(row: &ProjectTreeRow, theme: &Theme) -> impl IntoElement {
+fn render_git_status_lane(row: &ProjectTreeRow, theme: &Theme) -> Option<gpui::AnyElement> {
     let Some(status) = git_status_for_display(row) else {
-        return div()
+        return None;
+    };
+
+    Some(
+        div()
             .ml_auto()
             .w(px(PROJECT_TREE_GIT_STATUS_LANE_PX))
             .flex_shrink_0()
-            .into_any_element();
-    };
-
-    div()
-        .ml_auto()
-        .w(px(PROJECT_TREE_GIT_STATUS_LANE_PX))
-        .flex_shrink_0()
-        .flex()
-        .items_center()
-        .justify_end()
-        .child(
-            div()
-                .size(px(PROJECT_TREE_GIT_STATUS_BADGE_PX))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(theme.tokens.sizes.radius_md)
-                .border_1()
-                .border_color(git_status_badge_border_color(theme))
-                .text_size(theme.tokens.sizes.text_xs)
-                .font_weight(gpui::FontWeight::MEDIUM)
-                .text_color(git_status_color(status, theme))
-                .child(git_status_label(status)),
-        )
-        .into_any_element()
+            .flex()
+            .items_center()
+            .justify_end()
+            .child(
+                div()
+                    .size(px(PROJECT_TREE_GIT_STATUS_BADGE_PX))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(theme.tokens.sizes.radius_md)
+                    .border_1()
+                    .border_color(git_status_badge_border_color(theme))
+                    .text_size(theme.tokens.sizes.text_xs)
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(git_status_color(status, theme))
+                    .child(git_status_label(status)),
+            )
+            .into_any_element(),
+    )
 }
 
 fn git_status_for_display(row: &ProjectTreeRow) -> Option<VcsStatus> {
@@ -549,19 +549,40 @@ fn git_status_badge_border_color(theme: &Theme) -> gpui::Hsla {
 }
 
 fn project_tree_row_min_width(row: &ProjectTreeRow, density: FileTreeDisplayDensity) -> f32 {
-    project_tree_row_min_width_for(row.depth, row.file_name.chars().count(), density)
+    project_tree_row_min_width_for(
+        row.depth,
+        row.file_name.chars().count(),
+        git_status_for_display(row).is_some(),
+        density,
+    )
 }
 
 pub(crate) fn project_tree_entry_min_width(
     entry: &FileTreeEntry,
     density: FileTreeDisplayDensity,
 ) -> f32 {
-    project_tree_row_min_width_for(entry.depth, display_name(entry).chars().count(), density)
+    project_tree_entry_min_width_with_vcs(entry, density, entry.git_status)
+}
+
+pub(crate) fn project_tree_entry_min_width_with_vcs(
+    entry: &FileTreeEntry,
+    density: FileTreeDisplayDensity,
+    vcs_status: Option<VcsStatus>,
+) -> f32 {
+    project_tree_row_min_width_for(
+        entry.depth,
+        display_name(entry).chars().count(),
+        vcs_status
+            .filter(|status| should_render_git_status(*status))
+            .is_some(),
+        density,
+    )
 }
 
 fn project_tree_row_min_width_for(
     depth: usize,
     filename_char_count: usize,
+    has_git_status_lane: bool,
     density: FileTreeDisplayDensity,
 ) -> f32 {
     let metrics = ProjectTreeDensityMetrics::new(density);
@@ -570,7 +591,11 @@ fn project_tree_row_min_width_for(
         + PROJECT_TREE_ICON_SIZE_PX
         + metrics.padding_right_px
         + metrics.row_gap_px * 2.0;
-    let git_status_lane_width = PROJECT_TREE_GIT_STATUS_LANE_PX + metrics.row_gap_px;
+    let git_status_lane_width = if has_git_status_lane {
+        PROJECT_TREE_GIT_STATUS_LANE_PX + metrics.row_gap_px
+    } else {
+        0.0
+    };
     let filename_width = filename_char_count as f32 * PROJECT_TREE_FILENAME_CHAR_WIDTH_PX;
 
     indentation + fixed_width + git_status_lane_width + filename_width
@@ -698,12 +723,23 @@ mod tests {
 
     #[test]
     fn row_min_width_reserves_right_aligned_git_status_lane() {
-        let width = project_tree_row_min_width_for(0, 0, FileTreeDisplayDensity::Default);
+        let width = project_tree_row_min_width_for(0, 0, true, FileTreeDisplayDensity::Default);
         let expected = PROJECT_TREE_CHEVRON_SLOT_PX
             + PROJECT_TREE_ICON_SIZE_PX
             + PROJECT_TREE_ROW_PADDING_RIGHT_PX
             + PROJECT_TREE_GIT_STATUS_LANE_PX
             + PROJECT_TREE_ROW_GAP_PX * 3.0;
+
+        assert_eq!(width, expected);
+    }
+
+    #[test]
+    fn row_min_width_omits_git_status_lane_without_badge() {
+        let width = project_tree_row_min_width_for(0, 0, false, FileTreeDisplayDensity::Default);
+        let expected = PROJECT_TREE_CHEVRON_SLOT_PX
+            + PROJECT_TREE_ICON_SIZE_PX
+            + PROJECT_TREE_ROW_PADDING_RIGHT_PX
+            + PROJECT_TREE_ROW_GAP_PX * 2.0;
 
         assert_eq!(width, expected);
     }
