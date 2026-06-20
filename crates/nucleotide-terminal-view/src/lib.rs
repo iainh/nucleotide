@@ -79,6 +79,8 @@ pub struct TerminalViewModel {
     control_tx: Option<std::sync::mpsc::Sender<nucleotide_terminal::session::ControlMsg>>,
     #[cfg(feature = "emulator")]
     scroll_dragging: bool,
+    #[cfg(feature = "emulator")]
+    wheel_scroll_remainder: f32,
     /// Set to true when the shell process has exited
     exited: bool,
 }
@@ -111,6 +113,8 @@ impl TerminalViewModel {
             control_tx: None,
             #[cfg(feature = "emulator")]
             scroll_dragging: false,
+            #[cfg(feature = "emulator")]
+            wheel_scroll_remainder: 0.0,
             exited: false,
         }
     }
@@ -211,15 +215,74 @@ impl TerminalViewModel {
     /// Returns `true` if the offset actually changed.
     #[cfg(feature = "emulator")]
     pub fn scroll_to_bottom(&mut self) -> bool {
-        if self.display_offset == 0 {
+        self.set_display_offset(0)
+    }
+
+    #[cfg(feature = "emulator")]
+    fn set_display_offset(&mut self, display_offset: usize) -> bool {
+        self.set_display_offset_internal(display_offset, true)
+    }
+
+    #[cfg(feature = "emulator")]
+    fn set_display_offset_internal(
+        &mut self,
+        display_offset: usize,
+        reset_wheel_remainder: bool,
+    ) -> bool {
+        let new_display_offset = display_offset.min(self.history_size);
+        if self.display_offset == new_display_offset {
+            if reset_wheel_remainder {
+                self.wheel_scroll_remainder = 0.0;
+            }
             return false;
         }
-        let delta = -(self.display_offset as i32);
-        self.display_offset = 0;
+
+        let delta = new_display_offset as i32 - self.display_offset as i32;
+        self.display_offset = new_display_offset;
+        if reset_wheel_remainder {
+            self.wheel_scroll_remainder = 0.0;
+        }
+        self.send_scroll_delta(delta);
+        true
+    }
+
+    #[cfg(feature = "emulator")]
+    fn scroll_wheel_by_pixel_delta(&mut self, pixel_delta_y: f32) -> bool {
+        let cell_h = self.cell_height.max(1.0);
+        let raw_lines = self.wheel_scroll_remainder + pixel_delta_y / cell_h;
+
+        if (raw_lines < 0.0 && self.display_offset == 0)
+            || (raw_lines > 0.0 && self.display_offset == self.history_size)
+        {
+            self.wheel_scroll_remainder = 0.0;
+            return false;
+        }
+
+        let whole_lines = raw_lines.trunc() as i32;
+        self.wheel_scroll_remainder = raw_lines - whole_lines as f32;
+
+        if whole_lines == 0 {
+            return false;
+        }
+
+        let requested_offset = self.display_offset as i32 + whole_lines;
+        if requested_offset < 0 || requested_offset > self.history_size as i32 {
+            self.wheel_scroll_remainder = 0.0;
+        }
+
+        let new_offset = requested_offset.clamp(0, self.history_size as i32) as usize;
+        self.set_display_offset_internal(new_offset, false)
+    }
+
+    #[cfg(feature = "emulator")]
+    fn send_scroll_delta(&self, delta: i32) {
+        if delta == 0 {
+            return;
+        }
+
         if let Some(tx) = &self.control_tx {
             let _ = tx.send(nucleotide_terminal::session::ControlMsg::Scroll { delta });
         }
-        true
     }
 
     #[cfg(feature = "emulator")]
@@ -297,7 +360,7 @@ impl nucleotide_ui::scrollbar::ScrollableHandle for TerminalScrollHandle {
         let guard = self.model.lock().unwrap();
         // display_offset=0 → at bottom (live) → most scrolled → offset = -max
         // display_offset=history_size → at top → not scrolled → offset = 0
-        let scrolled_lines = (guard.history_size - guard.display_offset) as f32;
+        let scrolled_lines = guard.history_size.saturating_sub(guard.display_offset) as f32;
         let y = -(scrolled_lines * guard.cell_height.max(1.0));
         gpui::Point {
             x: gpui::px(0.0),
@@ -309,17 +372,13 @@ impl nucleotide_ui::scrollbar::ScrollableHandle for TerminalScrollHandle {
         let mut guard = self.model.lock().unwrap();
         let cell_h = guard.cell_height.max(1.0);
         let history = guard.history_size;
+        let max_y = history as f32 * cell_h;
+        let clamped_y = f32::from(point.y).clamp(-max_y, 0.0);
         // Convert pixel offset back to display_offset
-        // offset.y is negative; abs gives pixels scrolled from top
-        let scrolled_lines = (f32::from(point.y).abs() / cell_h).round() as usize;
+        // offset.y is negative; abs gives pixels scrolled from top.
+        let scrolled_lines = (clamped_y.abs() / cell_h).round() as usize;
         let new_display_offset = history.saturating_sub(scrolled_lines);
-        let delta = new_display_offset as i32 - guard.display_offset as i32;
-        guard.display_offset = new_display_offset;
-        if delta != 0
-            && let Some(tx) = &guard.control_tx
-        {
-            let _ = tx.send(nucleotide_terminal::session::ControlMsg::Scroll { delta });
-        }
+        guard.set_display_offset(new_display_offset);
     }
 
     fn viewport(&self) -> gpui::Bounds<gpui::Pixels> {
@@ -475,25 +534,13 @@ impl Render for TerminalView {
             let interactive_content =
                 content
                     .id("terminal-content")
-                    .on_scroll_wheel(move |event, _window, _cx| {
+                    .on_scroll_wheel(move |event, window, cx| {
                         let mut guard = scroll_model.lock().unwrap();
-                        let cell_h = guard.cell_height.max(1.0);
-                        let delta_y = f32::from(event.delta.pixel_delta(_window.line_height()).y);
-                        let lines = (delta_y / cell_h).round() as i32;
-                        if lines != 0 {
-                            let new_offset = (guard.display_offset as i32 + lines)
-                                .clamp(0, guard.history_size as i32)
-                                as usize;
-                            let delta = new_offset as i32 - guard.display_offset as i32;
-                            guard.display_offset = new_offset;
-                            if delta != 0
-                                && let Some(tx) = &guard.control_tx
-                            {
-                                let _ = tx.send(nucleotide_terminal::session::ControlMsg::Scroll {
-                                    delta,
-                                });
-                            }
+                        let delta_y = f32::from(event.delta.pixel_delta(window.line_height()).y);
+                        if guard.scroll_wheel_by_pixel_delta(delta_y) {
+                            window.refresh();
                         }
+                        cx.stop_propagation();
                     });
             let mut w = div()
                 .flex()
@@ -638,7 +685,85 @@ impl TerminalAnsiPalette {
 #[cfg(all(test, feature = "emulator"))]
 mod tests {
     use super::*;
+    use gpui::{point, px};
     use nucleotide_terminal::frame::ansi_color;
+    use nucleotide_ui::scrollbar::ScrollableHandle;
+
+    fn scroll_model(history_size: usize, display_offset: usize) -> Arc<Mutex<TerminalViewModel>> {
+        let mut model = TerminalViewModel::new(TerminalId(1));
+        model.history_size = history_size;
+        model.display_offset = display_offset;
+        model.cell_height = 10.0;
+        model.cell_width = 8.0;
+        model.rows = 24;
+        model.cols = 80;
+        Arc::new(Mutex::new(model))
+    }
+
+    #[test]
+    fn terminal_scrollbar_maps_live_bottom_to_track_end() {
+        let model = scroll_model(100, 0);
+        let handle = TerminalScrollHandle {
+            model: model.clone(),
+        };
+
+        assert_eq!(handle.max_offset().height, px(1000.0));
+        assert_eq!(handle.offset().y, px(-1000.0));
+
+        handle.set_offset(point(px(0.0), px(0.0)));
+        assert_eq!(model.lock().unwrap().display_offset, 100);
+
+        handle.set_offset(point(px(0.0), px(-1000.0)));
+        assert_eq!(model.lock().unwrap().display_offset, 0);
+    }
+
+    #[test]
+    fn terminal_scrollbar_clamps_offsets_to_scrollback_bounds() {
+        let model = scroll_model(20, 10);
+        let handle = TerminalScrollHandle {
+            model: model.clone(),
+        };
+
+        handle.set_offset(point(px(0.0), px(50.0)));
+        assert_eq!(model.lock().unwrap().display_offset, 20);
+
+        handle.set_offset(point(px(0.0), px(-250.0)));
+        assert_eq!(model.lock().unwrap().display_offset, 0);
+    }
+
+    #[test]
+    fn terminal_wheel_scroll_accumulates_fractional_lines() {
+        let mut model = TerminalViewModel::new(TerminalId(1));
+        model.history_size = 10;
+        model.cell_height = 20.0;
+
+        assert!(!model.scroll_wheel_by_pixel_delta(8.0));
+        assert_eq!(model.display_offset, 0);
+
+        assert!(!model.scroll_wheel_by_pixel_delta(8.0));
+        assert_eq!(model.display_offset, 0);
+
+        assert!(model.scroll_wheel_by_pixel_delta(8.0));
+        assert_eq!(model.display_offset, 1);
+        assert!((model.wheel_scroll_remainder - 0.2).abs() < 0.0001);
+    }
+
+    #[test]
+    fn terminal_wheel_scroll_discards_remainder_at_edges() {
+        let mut model = TerminalViewModel::new(TerminalId(1));
+        model.history_size = 10;
+        model.cell_height = 20.0;
+
+        assert!(!model.scroll_wheel_by_pixel_delta(-12.0));
+        assert_eq!(model.display_offset, 0);
+        assert_eq!(model.wheel_scroll_remainder, 0.0);
+
+        assert!(!model.scroll_wheel_by_pixel_delta(12.0));
+        assert_eq!(model.display_offset, 0);
+
+        assert!(model.scroll_wheel_by_pixel_delta(12.0));
+        assert_eq!(model.display_offset, 1);
+    }
 
     #[test]
     fn derived_ansi_palette_meets_contrast_for_light_and_dark_themes() {

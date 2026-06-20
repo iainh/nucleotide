@@ -12279,68 +12279,57 @@ impl Render for Workspace {
                 if self.terminal_panel_visible {
                     // Bottom terminal panel using shared split helper inside an absolute wrapper
                     // Absolute wrapper to own interactions and sizing
-                    root = root
-                        // Transparent key-capture overlay sized to terminal area only
-                        .child({
-                            let h = self.basic_terminal_height;
-                            div()
-                                .absolute()
-                                .left_0()
-                                .right_0()
-                                .bottom_0()
-                                .h(px(h))
-                                .track_focus(&self.terminal_focus)
-                                .on_mouse_down(MouseButton::Left, cx.listener(|this: &mut Workspace, _ev: &MouseDownEvent, window, cx| {
-                                    window.focus(&this.terminal_focus, cx);
-                                    this.terminal_active = true;
-                                    cx.notify();
-                                    cx.stop_propagation();
-                                }))
-                                .on_key_down(cx.listener(|this: &mut Workspace, event: &gpui::KeyDownEvent, window, cx| {
-                                    if !this.terminal_focus.is_focused(window) {
-                                        return;
-                                    }
-                                    if let Some(panel) = &this.embedded_terminal_panel {
-                                        let id = panel.read(cx).active;
-                                        let bytes = crate::overlay::translate_key_to_bytes(event);
-                                        if !bytes.is_empty() {
-                                            // Snap scroll back to cursor when the user types
-                                            #[cfg(feature = "terminal-emulator")]
-                                            if let Some(vm) = nucleotide_terminal_view::get_view_model(id)
-                                                && let Ok(mut guard) = vm.lock()
-                                            {
-                                                guard.scroll_to_bottom();
-                                            }
-                                            // Fast path: bypass event queue
-                                            #[cfg(feature = "terminal-emulator")]
-                                            let sent = this.core.read(cx).terminal_input_senders
-                                                .lock()
-                                                .ok()
-                                                .and_then(|senders| {
-                                                    senders.get(&id).map(|tx| { let _ = tx.send(bytes.clone()); })
-                                                })
-                                                .is_some();
-                                            #[cfg(not(feature = "terminal-emulator"))]
-                                            let sent = false;
-                                            if !sent {
-                                                this.core.update(cx, |app, _| {
-                                                    if let Some(bus) = &app.event_aggregator {
-                                                        bus.dispatch_terminal(nucleotide_events::v2::terminal::Event::Input { id, bytes });
-                                                    }
-                                                });
-                                            }
-                                            cx.stop_propagation();
-                                        }
-                                    }
-                                }))
-                        })
-                        .child(
+                    root = root.child(
                         div()
                             .absolute()
                             .top_0()
                             .left_0()
                             .right_0()
                             .bottom_0()
+                            .track_focus(&self.terminal_focus)
+                            .on_mouse_down(MouseButton::Left, cx.listener(|this: &mut Workspace, _ev: &MouseDownEvent, window, cx| {
+                                window.focus(&this.terminal_focus, cx);
+                                this.terminal_active = true;
+                                cx.notify();
+                                cx.stop_propagation();
+                            }))
+                            .on_key_down(cx.listener(|this: &mut Workspace, event: &gpui::KeyDownEvent, window, cx| {
+                                if !this.terminal_focus.is_focused(window) {
+                                    return;
+                                }
+                                if let Some(panel) = &this.embedded_terminal_panel {
+                                    let id = panel.read(cx).active;
+                                    let bytes = crate::overlay::translate_key_to_bytes(event);
+                                    if !bytes.is_empty() {
+                                        // Snap scroll back to cursor when the user types
+                                        #[cfg(feature = "terminal-emulator")]
+                                        if let Some(vm) = nucleotide_terminal_view::get_view_model(id)
+                                            && let Ok(mut guard) = vm.lock()
+                                        {
+                                            guard.scroll_to_bottom();
+                                        }
+                                        // Fast path: bypass event queue
+                                        #[cfg(feature = "terminal-emulator")]
+                                        let sent = this.core.read(cx).terminal_input_senders
+                                            .lock()
+                                            .ok()
+                                            .and_then(|senders| {
+                                                senders.get(&id).map(|tx| { let _ = tx.send(bytes.clone()); })
+                                            })
+                                            .is_some();
+                                        #[cfg(not(feature = "terminal-emulator"))]
+                                        let sent = false;
+                                        if !sent {
+                                            this.core.update(cx, |app, _| {
+                                                if let Some(bus) = &app.event_aggregator {
+                                                    bus.dispatch_terminal(nucleotide_events::v2::terminal::Event::Input { id, bytes });
+                                                }
+                                            });
+                                        }
+                                        cx.stop_propagation();
+                                    }
+                                }
+                            }))
                             // Track resize drags at the wrapper level for reliability
                             .on_mouse_move(cx.listener(
                                 move |this: &mut Workspace, ev: &MouseMoveEvent, window, cx| {
