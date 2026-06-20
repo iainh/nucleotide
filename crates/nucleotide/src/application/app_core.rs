@@ -140,13 +140,17 @@ impl ApplicationCore {
             }
 
             event_bridge::BridgedEvent::SelectionChanged { doc_id, view_id } => {
-                let v2_event = Self::build_v2_selection_changed(editor, *doc_id, *view_id);
-                debug!(
-                    doc_id = ?doc_id,
-                    view_id = ?view_id,
-                    "Processing SelectionChanged through V2 ViewHandler"
-                );
-                self.view_handler.handle(v2_event).await?;
+                if let Some(v2_event) = Self::build_v2_selection_changed(editor, *doc_id, *view_id)
+                {
+                    debug!(
+                        doc_id = ?doc_id,
+                        view_id = ?view_id,
+                        "Processing SelectionChanged through V2 ViewHandler"
+                    );
+                    self.view_handler.handle(v2_event).await?;
+                } else {
+                    warn!(view_id = ?view_id, "Ignoring selection event for unknown view");
+                }
             }
 
             event_bridge::BridgedEvent::ModeChanged { old_mode, new_mode } => {
@@ -249,23 +253,26 @@ impl ApplicationCore {
 
             event_bridge::BridgedEvent::ViewFocused { view_id } => {
                 // Extract associated document ID from the view
-                let view = editor.tree.get(*view_id);
-                let doc_id = view.doc;
-                let previous_view = self.view_handler.get_focused_view();
+                if let Some(view) = editor.tree.try_get(*view_id) {
+                    let doc_id = view.doc;
+                    let previous_view = self.view_handler.get_focused_view();
 
-                let v2_event = nucleotide_events::v2::view::Event::Focused {
-                    view_id: *view_id,
-                    doc_id,
-                    previous_view,
-                };
+                    let v2_event = nucleotide_events::v2::view::Event::Focused {
+                        view_id: *view_id,
+                        doc_id,
+                        previous_view,
+                    };
 
-                debug!(
-                    view_id = ?view_id,
-                    doc_id = ?doc_id,
-                    "Processing ViewFocused through V2 ViewHandler"
-                );
+                    debug!(
+                        view_id = ?view_id,
+                        doc_id = ?doc_id,
+                        "Processing ViewFocused through V2 ViewHandler"
+                    );
 
-                self.view_handler.handle(v2_event).await?;
+                    self.view_handler.handle(v2_event).await?;
+                } else {
+                    warn!(view_id = ?view_id, "Ignoring focus event for unknown view");
+                }
             }
 
             // Phase 2 Events - LSP Integration
@@ -467,8 +474,8 @@ impl ApplicationCore {
         editor: &helix_view::Editor,
         doc_id: helix_view::DocumentId,
         view_id: helix_view::ViewId,
-    ) -> nucleotide_events::v2::view::Event {
-        let view = editor.tree.get(view_id);
+    ) -> Option<nucleotide_events::v2::view::Event> {
+        let view = editor.tree.try_get(view_id)?;
         let selection = if let Some(doc) = editor.document(view.doc) {
             doc.selection(view.id).clone()
         } else {
@@ -487,12 +494,12 @@ impl ApplicationCore {
             primary_index: selection.primary_index(),
         };
 
-        nucleotide_events::v2::view::Event::SelectionChanged {
+        Some(nucleotide_events::v2::view::Event::SelectionChanged {
             view_id,
             doc_id,
             selection: v2_selection,
             was_movement: true,
-        }
+        })
     }
 }
 
