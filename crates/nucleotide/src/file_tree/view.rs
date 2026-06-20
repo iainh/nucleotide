@@ -7,15 +7,15 @@ use crate::file_tree::{
     FileTreeDisplayDensity, FileTreeEntry, FileTreeEvent,
     sidebar::{
         ProjectTreeDraggedEntry, ProjectTreeRow, ProjectTreeRowAction, ProjectTreeRowEvent,
-        project_tree_entry_min_width, render_project_tree_row,
+        project_tree_entry_min_width, project_tree_entry_min_width_with_vcs,
+        render_project_tree_row,
     },
 };
 use gpui::prelude::FluentBuilder;
 use gpui::{
     App, Context, EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement,
-    ListHorizontalSizingBehavior, MouseButton, MouseDownEvent, ParentElement, Render,
-    ScrollStrategy, StatefulInteractiveElement, Styled, UniformListScrollHandle, Window, div, px,
-    uniform_list,
+    MouseButton, MouseDownEvent, ParentElement, Render, ScrollHandle, ScrollStrategy,
+    StatefulInteractiveElement, Styled, UniformListScrollHandle, Window, div, px, uniform_list,
 };
 use nucleotide_logging::{debug, error, warn};
 use nucleotide_types::{VcsStatus, scrollbar::SCROLLBAR_THICKNESS};
@@ -26,8 +26,6 @@ use std::{
     collections::BTreeSet,
     path::{Path, PathBuf},
 };
-
-const PROJECT_TREE_SIDEBAR_WIDTH_PADDING_PX: f32 = 12.0;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum FileTreeScrollOffset {
@@ -104,12 +102,15 @@ fn widest_project_tree_entry_index_in_range(
         .map(|(range_index, _)| start + range_index)
 }
 
-fn preferred_project_tree_width(entries: &[FileTreeEntry], density: FileTreeDisplayDensity) -> f32 {
+fn project_tree_content_width(
+    entries: &[FileTreeEntry],
+    density: FileTreeDisplayDensity,
+    vcs_status: impl Fn(&FileTreeEntry) -> Option<VcsStatus>,
+) -> f32 {
     entries
         .iter()
-        .map(|entry| project_tree_entry_min_width(entry, density))
+        .map(|entry| project_tree_entry_min_width_with_vcs(entry, density, vcs_status(entry)))
         .fold(0.0_f32, f32::max)
-        + PROJECT_TREE_SIDEBAR_WIDTH_PADDING_PX
 }
 
 fn rebase_file_tree_path(path: &Path, from: &Path, to: &Path) -> Option<PathBuf> {
@@ -138,6 +139,8 @@ pub struct FileTreeView {
     focus_handle: FocusHandle,
     /// Scroll handle for the list
     scroll_handle: UniformListScrollHandle,
+    /// Horizontal scroll state for content wider than the sidebar.
+    horizontal_scroll_handle: ScrollHandle,
     /// Vertical scrollbar state for managing token-aware scrollbar UI
     vertical_scrollbar_state: ScrollbarState,
     /// Horizontal scrollbar state for managing token-aware scrollbar UI
@@ -163,8 +166,9 @@ impl FileTreeView {
         }
 
         let scroll_handle = UniformListScrollHandle::new();
+        let horizontal_scroll_handle = ScrollHandle::new();
         let vertical_scrollbar_state = ScrollbarState::new(scroll_handle.clone());
-        let horizontal_scrollbar_state = ScrollbarState::new(scroll_handle.clone());
+        let horizontal_scrollbar_state = ScrollbarState::new(horizontal_scroll_handle.clone());
         let focus_handle = cx.focus_handle();
         if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>().cloned() {
             coord.set_file_tree_focus(focus_handle.clone());
@@ -176,6 +180,7 @@ impl FileTreeView {
             selected_paths: BTreeSet::new(),
             focus_handle,
             scroll_handle,
+            horizontal_scroll_handle,
             vertical_scrollbar_state,
             horizontal_scrollbar_state,
             _tokio_handle: None,
@@ -231,8 +236,9 @@ impl FileTreeView {
         };
 
         let scroll_handle = UniformListScrollHandle::new();
+        let horizontal_scroll_handle = ScrollHandle::new();
         let vertical_scrollbar_state = ScrollbarState::new(scroll_handle.clone());
-        let horizontal_scrollbar_state = ScrollbarState::new(scroll_handle.clone());
+        let horizontal_scrollbar_state = ScrollbarState::new(horizontal_scroll_handle.clone());
         let focus_handle = cx.focus_handle();
         if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>().cloned() {
             coord.set_file_tree_focus(focus_handle.clone());
@@ -244,6 +250,7 @@ impl FileTreeView {
             selected_paths: BTreeSet::new(),
             focus_handle,
             scroll_handle,
+            horizontal_scroll_handle,
             vertical_scrollbar_state,
             horizontal_scrollbar_state,
             _tokio_handle: tokio_handle,
@@ -900,12 +907,6 @@ impl FileTreeView {
     /// Get tree statistics
     pub fn stats(&self) -> crate::file_tree::tree::FileTreeStats {
         self.tree.stats()
-    }
-
-    /// Preferred sidebar width for the current visible tree contents.
-    pub fn preferred_width(&self) -> f32 {
-        let entries = self.tree.visible_entries_snapshot();
-        preferred_project_tree_width(&entries, self.tree.config().density)
     }
 
     /// Start async VCS refresh
@@ -2108,7 +2109,7 @@ mod tests {
     }
 
     #[test]
-    fn preferred_project_tree_width_uses_longest_visible_entry_plus_padding() {
+    fn project_tree_content_width_uses_longest_visible_entry() {
         let mut shallow = FileTreeEntry::new_file(
             FileTreeEntryId(1),
             PathBuf::from("/workspace/main.rs"),
@@ -2124,17 +2125,16 @@ mod tests {
         );
         deep.depth = 4;
 
-        let expected = project_tree_entry_min_width(&deep, FileTreeDisplayDensity::Default)
-            + PROJECT_TREE_SIDEBAR_WIDTH_PADDING_PX;
+        let expected = project_tree_entry_min_width(&deep, FileTreeDisplayDensity::Default);
 
         assert_eq!(
-            preferred_project_tree_width(&[shallow, deep], FileTreeDisplayDensity::Default),
+            project_tree_content_width(&[shallow, deep], FileTreeDisplayDensity::Default, |_| None),
             expected
         );
     }
 
     #[test]
-    fn preferred_project_tree_width_scales_spacing_with_density() {
+    fn project_tree_content_width_scales_spacing_with_density() {
         let mut entry = FileTreeEntry::new_file(
             FileTreeEntryId(1),
             PathBuf::from("/workspace/src/nested/main.rs"),
@@ -2144,10 +2144,11 @@ mod tests {
         entry.depth = 4;
 
         let compact =
-            preferred_project_tree_width(&[entry.clone()], FileTreeDisplayDensity::Compact);
+            project_tree_content_width(&[entry.clone()], FileTreeDisplayDensity::Compact, |_| None);
         let default =
-            preferred_project_tree_width(&[entry.clone()], FileTreeDisplayDensity::Default);
-        let relaxed = preferred_project_tree_width(&[entry], FileTreeDisplayDensity::Relaxed);
+            project_tree_content_width(&[entry.clone()], FileTreeDisplayDensity::Default, |_| None);
+        let relaxed =
+            project_tree_content_width(&[entry], FileTreeDisplayDensity::Relaxed, |_| None);
 
         assert!(compact < default);
         assert!(default < relaxed);
@@ -2170,7 +2171,7 @@ mod tests {
     }
 
     #[test]
-    fn preferred_project_tree_width_uses_longest_entry_across_full_tree() {
+    fn project_tree_content_width_uses_longest_entry_across_visible_tree() {
         let mut long = FileTreeEntry::new_file(
             FileTreeEntryId(1),
             PathBuf::from("/workspace/extremely_long_name_that_can_scroll.rs"),
@@ -2187,11 +2188,10 @@ mod tests {
         short.depth = 1;
 
         let entries = [long.clone(), short];
-        let expected = project_tree_entry_min_width(&long, FileTreeDisplayDensity::Default)
-            + PROJECT_TREE_SIDEBAR_WIDTH_PADDING_PX;
+        let expected = project_tree_entry_min_width(&long, FileTreeDisplayDensity::Default);
 
         assert_eq!(
-            preferred_project_tree_width(&entries, FileTreeDisplayDensity::Default),
+            project_tree_content_width(&entries, FileTreeDisplayDensity::Default, |_| None),
             expected
         );
         assert_eq!(
@@ -2462,6 +2462,9 @@ impl Render for FileTreeView {
         let entries = self.tree.visible_entries();
         let density = self.tree.config().density;
         let width_measure_item_index = widest_project_tree_entry_index(&entries, density);
+        let content_width = project_tree_content_width(&entries, density, |entry| {
+            self.get_vcs_status_for_entry(&entry.path, cx)
+        });
 
         // (debug logging removed)
 
@@ -2570,11 +2573,9 @@ impl Render for FileTreeView {
                             })
                         })
                         .with_sizing_behavior(gpui::ListSizingBehavior::Infer)
-                        .with_horizontal_sizing_behavior(
-                            ListHorizontalSizingBehavior::Unconstrained,
-                        )
                         .with_width_from_item(width_measure_item_index)
                         .track_scroll(&self.scroll_handle)
+                        .w_full()
                         .h_full();
 
                         div()
@@ -2584,7 +2585,23 @@ impl Render for FileTreeView {
                             .min_w(px(0.0))
                             .min_h(px(0.0))
                             .overflow_hidden()
-                            .child(div().size_full().min_w(px(0.0)).min_h(px(0.0)).child(list))
+                            .child(
+                                div()
+                                    .id("file-tree-horizontal-scroll")
+                                    .size_full()
+                                    .min_w(px(0.0))
+                                    .min_h(px(0.0))
+                                    .overflow_x_scroll()
+                                    .track_scroll(&self.horizontal_scroll_handle)
+                                    .child(
+                                        div()
+                                            .w_full()
+                                            .min_w(px(content_width))
+                                            .h_full()
+                                            .min_h(px(0.0))
+                                            .child(list),
+                                    ),
+                            )
                             .when_some(
                                 Scrollbar::vertical(self.vertical_scrollbar_state.clone()),
                                 |container, scrollbar| {
