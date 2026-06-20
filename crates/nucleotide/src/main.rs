@@ -456,6 +456,19 @@ fn window_options(
     }
 }
 
+fn should_create_custom_titlebar(decorations: gpui::Decorations) -> bool {
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    {
+        let _ = decorations;
+        true
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        matches!(decorations, gpui::Decorations::Client { .. })
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn configure_wsl_graphics() {
     // WSLg currently ships a pared-down Wayland compositor that lacks the newer
@@ -1358,17 +1371,9 @@ fn gui_main(
                 })
                 .detach();
 
-                // Create and set titlebar after workspace is created - on macOS we always want custom titlebar
-                // regardless of what decorations are reported
-
-                // Always create titlebar on macOS (and when client decorations on other platforms)
-                #[cfg(target_os = "macos")]
-                let should_create_titlebar = true;
-                #[cfg(not(target_os = "macos"))]
-                let should_create_titlebar = {
-                    let decorations = window.window_decorations();
-                    matches!(decorations, gpui::Decorations::Client { .. })
-                };
+                // Create and set titlebar after workspace is created.
+                let should_create_titlebar =
+                    should_create_custom_titlebar(window.window_decorations());
 
                 if should_create_titlebar {
                     let titlebar =
@@ -1480,6 +1485,21 @@ mod tests {
             }
             _ => panic!("expected open directory action"),
         }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn custom_titlebar_is_created_on_windows_even_with_server_decorations() {
+        assert!(should_create_custom_titlebar(gpui::Decorations::Server));
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[test]
+    fn custom_titlebar_requires_client_decorations_on_other_platforms() {
+        assert!(!should_create_custom_titlebar(gpui::Decorations::Server));
+        assert!(should_create_custom_titlebar(gpui::Decorations::Client {
+            tiling: gpui::Tiling::default(),
+        }));
     }
 
     #[test]
