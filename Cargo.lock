@@ -5476,9 +5476,11 @@ dependencies = [
  "nucleotide-logging",
  "nucleotide-types",
  "pulldown-cmark",
+ "raw-window-handle",
  "rust-embed",
  "smallvec",
  "tokio",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

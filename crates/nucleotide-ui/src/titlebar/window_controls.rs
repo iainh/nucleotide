@@ -30,6 +30,37 @@ impl WindowControlType {
     }
 }
 
+#[cfg(target_os = "windows")]
+fn show_window_with_command(window: &Window, command: i32) -> bool {
+    use raw_window_handle::RawWindowHandle;
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::UI::WindowsAndMessaging::ShowWindowAsync;
+
+    let Ok(handle) = raw_window_handle::HasWindowHandle::window_handle(window) else {
+        return false;
+    };
+
+    let RawWindowHandle::Win32(handle) = handle.as_raw() else {
+        return false;
+    };
+
+    unsafe { ShowWindowAsync(handle.hwnd.get() as HWND, command) != 0 }
+}
+
+#[cfg(target_os = "windows")]
+fn restore_window(window: &Window) -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_NORMAL;
+
+    show_window_with_command(window, SW_NORMAL)
+}
+
+#[cfg(target_os = "windows")]
+fn maximize_window(window: &Window) -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_MAXIMIZE;
+
+    show_window_with_command(window, SW_MAXIMIZE)
+}
+
 pub struct WindowControlStyle {
     #[allow(dead_code)]
     pub background: Hsla,
@@ -224,7 +255,20 @@ impl RenderOnce for WindowControl {
                     WindowControlType::Minimize => {
                         window.minimize_window();
                     }
-                    WindowControlType::Restore | WindowControlType::Maximize => {
+                    WindowControlType::Restore => {
+                        #[cfg(target_os = "windows")]
+                        if restore_window(window) {
+                            return;
+                        }
+
+                        window.zoom_window();
+                    }
+                    WindowControlType::Maximize => {
+                        #[cfg(target_os = "windows")]
+                        if maximize_window(window) {
+                            return;
+                        }
+
                         window.zoom_window();
                     }
                     WindowControlType::Close => {
