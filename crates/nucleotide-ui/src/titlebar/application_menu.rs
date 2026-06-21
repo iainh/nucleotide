@@ -1,10 +1,11 @@
 // ABOUTME: Cross-platform in-window application menu for platforms without a global menubar
 // ABOUTME: Inspired by Zed's ApplicationMenu, simplified for Nucleotide's UI stack
 
+use gpui::prelude::FluentBuilder;
 use gpui::{
     Anchor, AnchoredPositionMode, Context, ElementId, FocusHandle, InteractiveElement, IntoElement,
     KeyDownEvent, MouseButton, ParentElement, Pixels, Render, SharedString, Styled, Window,
-    anchored, deferred, div, point, px,
+    WindowControlArea, anchored, deferred, div, point, px,
 };
 
 use gpui::{OwnedMenu, OwnedMenuItem};
@@ -25,6 +26,7 @@ pub struct ApplicationMenu {
     row_height: Pixels,
     // Focus handle to capture Esc while menu is open
     focus_handle: FocusHandle,
+    embedded_in_titlebar: bool,
 }
 
 impl ApplicationMenu {
@@ -48,7 +50,14 @@ impl ApplicationMenu {
             anchor_x: None,
             row_height: titlebar_height,
             focus_handle: cx.focus_handle(),
+            embedded_in_titlebar: false,
         }
+    }
+
+    pub fn new_embedded_in_titlebar(cx: &mut Context<Self>) -> Self {
+        let mut menu = Self::new(cx);
+        menu.embedded_in_titlebar = true;
+        menu
     }
 
     fn sanitize(items: Vec<OwnedMenuItem>) -> Vec<OwnedMenuItem> {
@@ -178,8 +187,13 @@ impl Render for ApplicationMenu {
             .gap_2()
             .pl_2()
             .bg(titlebar_tokens.background)
-            .border_b_1()
             .border_color(titlebar_tokens.border)
+            .when(!self.embedded_in_titlebar, |container| {
+                container.border_b_1()
+            })
+            .when(self.embedded_in_titlebar, |container| {
+                container.window_control_area(WindowControlArea::Drag)
+            })
             .track_focus(&self.focus_handle)
             // Handle Esc to close the menu while focused
             .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _window, cx| {
