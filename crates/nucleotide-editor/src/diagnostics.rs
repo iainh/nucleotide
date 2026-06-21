@@ -4,53 +4,48 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use gpui::{
-    BorderStyle, Bounds, Hsla, Pixels, Point, Window, fill, point, px, quad, size,
-    transparent_black,
+    App, Bounds, Hsla, Pixels, Point, SharedString, TransformationMatrix, Window, fill, point, px,
+    size,
 };
 use helix_core::diagnostic::Severity;
 use helix_view::{Document, Theme};
+use nucleotide_logging::error;
 
 use crate::{GutterLine, style::helix_color_to_hsla};
 
 pub type DiagnosticSeverityByLine = BTreeMap<usize, Severity>;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum DiagnosticMarkerShape {
-    Square {
-        corner_radius: Pixels,
-    },
-    Triangle {
-        top: Point<Pixels>,
-        bottom_left: Point<Pixels>,
-        bottom_right: Point<Pixels>,
-    },
-    Circle {
-        radius: Pixels,
-    },
+pub struct DiagnosticSeverityIconColors {
+    pub error: Hsla,
+    pub warning: Hsla,
+    pub info: Hsla,
+    pub hint: Hsla,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct DiagnosticMarkerHighlight {
-    pub bounds: Bounds<Pixels>,
-    pub radius: Pixels,
-    pub alpha: f32,
+impl DiagnosticSeverityIconColors {
+    pub fn color_for(self, severity: Severity) -> Hsla {
+        match severity {
+            Severity::Error => self.error,
+            Severity::Warning => self.warning,
+            Severity::Info => self.info,
+            Severity::Hint => self.hint,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct DiagnosticMarkerPlan {
     pub severity: Severity,
     pub strip_bounds: Bounds<Pixels>,
-    pub marker_bounds: Bounds<Pixels>,
-    pub shape: DiagnosticMarkerShape,
-    pub highlights: Vec<DiagnosticMarkerHighlight>,
+    pub icon_bounds: Bounds<Pixels>,
+    pub icon_path: &'static str,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DiagnosticMarkerPaintStyle {
     pub strip_fill: Option<Hsla>,
-    pub marker_fill: Hsla,
-    pub marker_border: Hsla,
-    pub highlight_base: Hsla,
+    pub icon_color: Hsla,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -66,18 +61,16 @@ pub struct DiagnosticGutterMarkerPaintPlanParams<'a> {
     pub row_y: Pixels,
     pub gutter_origin: Point<Pixels>,
     pub line_height: Pixels,
-    pub marker_color: Hsla,
-    pub highlight_base: Hsla,
+    pub icon_colors: DiagnosticSeverityIconColors,
     pub gutter_bg: Option<Hsla>,
 }
 
 pub struct DiagnosticGutterMarkersPaintParams<'a> {
     pub severity_by_line: &'a DiagnosticSeverityByLine,
     pub gutter_lines: &'a [GutterLine],
-    pub theme: &'a Theme,
     pub gutter_origin: Point<Pixels>,
     pub line_height: Pixels,
-    pub highlight_base: Hsla,
+    pub icon_colors: DiagnosticSeverityIconColors,
     pub gutter_bg: Option<Hsla>,
 }
 
@@ -136,8 +129,7 @@ pub fn diagnostic_gutter_marker_paint_plan(
             severity,
         ),
         style: diagnostic_marker_paint_style(
-            params.marker_color,
-            params.highlight_base,
+            params.icon_colors.color_for(severity),
             params.gutter_bg,
         ),
     })
@@ -145,6 +137,7 @@ pub fn diagnostic_gutter_marker_paint_plan(
 
 pub fn paint_diagnostic_gutter_markers(
     window: &mut Window,
+    cx: &mut App,
     params: DiagnosticGutterMarkersPaintParams<'_>,
 ) {
     let mut painted_rows = BTreeSet::new();
@@ -155,12 +148,6 @@ pub fn paint_diagnostic_gutter_markers(
             continue;
         }
 
-        let Some(severity) = params.severity_by_line.get(&gutter_line.doc_line).copied() else {
-            continue;
-        };
-        let Some(marker_color) = diagnostic_severity_color(params.theme, severity) else {
-            continue;
-        };
         let Some(marker_plan) =
             diagnostic_gutter_marker_paint_plan(DiagnosticGutterMarkerPaintPlanParams {
                 severity_by_line: params.severity_by_line,
@@ -168,15 +155,14 @@ pub fn paint_diagnostic_gutter_markers(
                 row_y: gutter_line.origin.y,
                 gutter_origin: params.gutter_origin,
                 line_height: params.line_height,
-                marker_color,
-                highlight_base: params.highlight_base,
+                icon_colors: params.icon_colors,
                 gutter_bg: params.gutter_bg,
             })
         else {
             continue;
         };
 
-        paint_diagnostic_marker(window, &marker_plan.marker, marker_plan.style);
+        paint_diagnostic_marker(window, cx, &marker_plan.marker, marker_plan.style);
     }
 }
 
@@ -186,107 +172,36 @@ pub fn diagnostic_marker_plan(
     line_height: Pixels,
     severity: Severity,
 ) -> DiagnosticMarkerPlan {
-    let marker_size = (line_height * 0.6).max(px(2.0));
-    let marker_x = gutter_origin.x + px(2.0);
-    let marker_y = row_y + (line_height - marker_size) * 0.5;
-    let marker_bounds = Bounds::new(point(marker_x, marker_y), size(marker_size, marker_size));
+    let icon_size = (line_height * 0.7).max(px(2.0)).min(px(16.0));
+    let icon_x = gutter_origin.x + px(2.0);
+    let icon_y = row_y + (line_height - icon_size) * 0.5;
+    let icon_bounds = Bounds::new(point(icon_x, icon_y), size(icon_size, icon_size));
     let strip_bounds = Bounds::new(
         point(gutter_origin.x, row_y),
-        size(marker_size + px(4.0), line_height),
+        size(icon_size + px(4.0), line_height),
     );
-
-    let (shape, highlights) = match severity {
-        Severity::Error => {
-            let h_size = marker_size * 0.22;
-            (
-                DiagnosticMarkerShape::Square {
-                    corner_radius: px(1.0),
-                },
-                vec![DiagnosticMarkerHighlight {
-                    bounds: Bounds::new(
-                        point(marker_x + marker_size * 0.18, marker_y + marker_size * 0.18),
-                        size(h_size, h_size),
-                    ),
-                    radius: h_size * 0.5,
-                    alpha: 0.18,
-                }],
-            )
-        }
-        Severity::Warning => {
-            let h_size = marker_size * 0.2;
-            (
-                DiagnosticMarkerShape::Triangle {
-                    top: point(marker_x + marker_size * 0.5, marker_y),
-                    bottom_left: point(marker_x, marker_y + marker_size),
-                    bottom_right: point(marker_x + marker_size, marker_y + marker_size),
-                },
-                vec![DiagnosticMarkerHighlight {
-                    bounds: Bounds::new(
-                        point(marker_x + marker_size * 0.22, marker_y + marker_size * 0.18),
-                        size(h_size, h_size),
-                    ),
-                    radius: h_size * 0.5,
-                    alpha: 0.14,
-                }],
-            )
-        }
-        Severity::Info | Severity::Hint => {
-            let offset = marker_size * 0.14;
-            let halo_size = marker_size * 0.52;
-            let core_size = marker_size * 0.26;
-            (
-                DiagnosticMarkerShape::Circle {
-                    radius: marker_size * 0.5,
-                },
-                vec![
-                    DiagnosticMarkerHighlight {
-                        bounds: Bounds::new(
-                            point(marker_x + offset, marker_y + offset),
-                            size(halo_size, halo_size),
-                        ),
-                        radius: halo_size * 0.5,
-                        alpha: 0.14,
-                    },
-                    DiagnosticMarkerHighlight {
-                        bounds: Bounds::new(
-                            point(
-                                marker_x + offset + (halo_size - core_size) * 0.25,
-                                marker_y + offset + (halo_size - core_size) * 0.25,
-                            ),
-                            size(core_size, core_size),
-                        ),
-                        radius: core_size * 0.5,
-                        alpha: 0.45,
-                    },
-                ],
-            )
-        }
-    };
 
     DiagnosticMarkerPlan {
         severity,
         strip_bounds,
-        marker_bounds,
-        shape,
-        highlights,
+        icon_bounds,
+        icon_path: diagnostic_severity_icon_path(severity),
     }
 }
 
 pub fn diagnostic_marker_paint_style(
-    marker_color: Hsla,
-    highlight_base: Hsla,
+    icon_color: Hsla,
     strip_fill: Option<Hsla>,
 ) -> DiagnosticMarkerPaintStyle {
     DiagnosticMarkerPaintStyle {
         strip_fill,
-        marker_fill: with_alpha(marker_color, 0.85),
-        marker_border: with_alpha(darken(marker_color, 0.15), 0.9),
-        highlight_base,
+        icon_color,
     }
 }
 
 pub fn paint_diagnostic_marker(
     window: &mut Window,
+    cx: &mut App,
     plan: &DiagnosticMarkerPlan,
     style: DiagnosticMarkerPaintStyle,
 ) {
@@ -294,52 +209,24 @@ pub fn paint_diagnostic_marker(
         window.paint_quad(fill(plan.strip_bounds, strip_fill));
     }
 
-    match plan.shape {
-        DiagnosticMarkerShape::Square { corner_radius } => {
-            window.paint_quad(quad(
-                plan.marker_bounds,
-                corner_radius,
-                style.marker_fill,
-                px(1.0),
-                style.marker_border,
-                BorderStyle::default(),
-            ));
-        }
-        DiagnosticMarkerShape::Triangle {
-            top,
-            bottom_left,
-            bottom_right,
-        } => {
-            let mut path = gpui::PathBuilder::fill();
-            path.move_to(top);
-            path.line_to(bottom_left);
-            path.line_to(bottom_right);
-            path.close();
-            if let Ok(path) = path.build() {
-                window.paint_path(path, style.marker_fill);
-            }
-        }
-        DiagnosticMarkerShape::Circle { radius } => {
-            window.paint_quad(quad(
-                plan.marker_bounds,
-                radius,
-                style.marker_fill,
-                px(1.0),
-                style.marker_border,
-                BorderStyle::default(),
-            ));
-        }
+    if let Err(err) = window.paint_svg(
+        plan.icon_bounds,
+        SharedString::from(plan.icon_path),
+        None,
+        TransformationMatrix::default(),
+        style.icon_color,
+        cx,
+    ) {
+        error!(error = ?err, icon = plan.icon_path, "Failed to paint diagnostic gutter icon");
     }
+}
 
-    for highlight in &plan.highlights {
-        window.paint_quad(quad(
-            highlight.bounds,
-            highlight.radius,
-            with_alpha(style.highlight_base, highlight.alpha),
-            0.0,
-            transparent_black(),
-            BorderStyle::default(),
-        ));
+pub fn diagnostic_severity_icon_path(severity: Severity) -> &'static str {
+    match severity {
+        Severity::Error => "icons/circle-x.svg",
+        Severity::Warning => "icons/triangle-alert.svg",
+        Severity::Info => "icons/info.svg",
+        Severity::Hint => "icons/lightbulb.svg",
     }
 }
 
@@ -357,17 +244,6 @@ fn severity_rank(severity: Severity) -> u8 {
         Severity::Warning => 1,
         Severity::Info => 2,
         Severity::Hint => 3,
-    }
-}
-
-fn with_alpha(color: Hsla, alpha: f32) -> Hsla {
-    Hsla { a: alpha, ..color }
-}
-
-fn darken(color: Hsla, amount: f32) -> Hsla {
-    Hsla {
-        l: (color.l - amount).max(0.0),
-        ..color
     }
 }
 
@@ -421,8 +297,7 @@ mod tests {
     fn gutter_marker_paint_plan_uses_line_severity() {
         let mut severities = DiagnosticSeverityByLine::new();
         severities.insert(4, Severity::Warning);
-        let marker_color = hsla(0.1, 0.8, 0.6, 1.0);
-        let highlight_base = hsla(0.0, 0.0, 1.0, 1.0);
+        let icon_colors = test_icon_colors();
         let gutter_bg = Some(hsla(0.2, 0.3, 0.4, 1.0));
 
         let plan = diagnostic_gutter_marker_paint_plan(DiagnosticGutterMarkerPaintPlanParams {
@@ -431,16 +306,15 @@ mod tests {
             row_y: px(40.0),
             gutter_origin: point(px(10.0), px(0.0)),
             line_height: px(20.0),
-            marker_color,
-            highlight_base,
+            icon_colors,
             gutter_bg,
         })
         .expect("diagnostic marker plan");
 
         assert_eq!(plan.marker.severity, Severity::Warning);
+        assert_eq!(plan.marker.icon_path, "icons/triangle-alert.svg");
         assert_eq!(plan.style.strip_fill, gutter_bg);
-        assert_eq!(plan.style.marker_fill, hsla(0.1, 0.8, 0.6, 0.85));
-        assert_eq!(plan.style.highlight_base, highlight_base);
+        assert_eq!(plan.style.icon_color, icon_colors.warning);
     }
 
     #[test]
@@ -454,8 +328,7 @@ mod tests {
                 row_y: px(40.0),
                 gutter_origin: point(px(10.0), px(0.0)),
                 line_height: px(20.0),
-                marker_color: hsla(0.1, 0.8, 0.6, 1.0),
-                highlight_base: hsla(0.0, 0.0, 1.0, 1.0),
+                icon_colors: test_icon_colors(),
                 gutter_bg: None,
             })
             .is_none()
@@ -463,7 +336,7 @@ mod tests {
     }
 
     #[test]
-    fn marker_plan_centers_error_square_in_gutter_row() {
+    fn marker_plan_centers_error_icon_in_gutter_row() {
         let plan = diagnostic_marker_plan(
             point(px(10.0), px(0.0)),
             px(40.0),
@@ -473,90 +346,71 @@ mod tests {
 
         assert_eq!(
             plan.strip_bounds,
-            Bounds::new(point(px(10.0), px(40.0)), size(px(16.0), px(20.0)))
+            Bounds::new(point(px(10.0), px(40.0)), size(px(18.0), px(20.0)))
         );
         assert_eq!(
-            plan.marker_bounds,
-            Bounds::new(point(px(12.0), px(44.0)), size(px(12.0), px(12.0)))
+            plan.icon_bounds,
+            Bounds::new(point(px(12.0), px(43.0)), size(px(14.0), px(14.0)))
         );
-        assert_eq!(
-            plan.shape,
-            DiagnosticMarkerShape::Square {
-                corner_radius: px(1.0),
-            }
-        );
-        assert_eq!(plan.highlights.len(), 1);
-        assert_eq!(plan.highlights[0].alpha, 0.18);
+        assert_eq!(plan.icon_path, "icons/circle-x.svg");
     }
 
     #[test]
-    fn marker_plan_uses_triangle_points_for_warning() {
-        let plan = diagnostic_marker_plan(
-            point(px(10.0), px(0.0)),
-            px(40.0),
-            px(20.0),
-            Severity::Warning,
-        );
-
+    fn severity_icon_paths_use_lucide_assets() {
         assert_eq!(
-            plan.shape,
-            DiagnosticMarkerShape::Triangle {
-                top: point(px(18.0), px(44.0)),
-                bottom_left: point(px(12.0), px(56.0)),
-                bottom_right: point(px(24.0), px(56.0)),
-            }
+            diagnostic_severity_icon_path(Severity::Error),
+            "icons/circle-x.svg"
         );
-        assert_eq!(plan.highlights.len(), 1);
-        assert_eq!(plan.highlights[0].alpha, 0.14);
+        assert_eq!(
+            diagnostic_severity_icon_path(Severity::Warning),
+            "icons/triangle-alert.svg"
+        );
+        assert_eq!(
+            diagnostic_severity_icon_path(Severity::Info),
+            "icons/info.svg"
+        );
+        assert_eq!(
+            diagnostic_severity_icon_path(Severity::Hint),
+            "icons/lightbulb.svg"
+        );
     }
 
     #[test]
-    fn marker_plan_uses_two_highlights_for_info_circle() {
-        let plan =
-            diagnostic_marker_plan(point(px(10.0), px(0.0)), px(40.0), px(20.0), Severity::Info);
+    fn severity_icon_colors_use_matching_token_slots() {
+        let colors = test_icon_colors();
 
-        assert_eq!(
-            plan.shape,
-            DiagnosticMarkerShape::Circle { radius: px(6.0) }
-        );
-        assert_eq!(plan.highlights.len(), 2);
-        assert_eq!(plan.highlights[0].alpha, 0.14);
-        assert_eq!(plan.highlights[1].alpha, 0.45);
+        assert_eq!(colors.color_for(Severity::Error), colors.error);
+        assert_eq!(colors.color_for(Severity::Warning), colors.warning);
+        assert_eq!(colors.color_for(Severity::Info), colors.info);
+        assert_eq!(colors.color_for(Severity::Hint), colors.hint);
     }
 
     #[test]
-    fn marker_plan_enforces_minimum_marker_size() {
+    fn marker_plan_enforces_minimum_icon_size() {
         let plan =
             diagnostic_marker_plan(point(px(10.0), px(0.0)), px(40.0), px(1.0), Severity::Hint);
 
-        assert_eq!(plan.marker_bounds.size, size(px(2.0), px(2.0)));
+        assert_eq!(plan.icon_bounds.size, size(px(2.0), px(2.0)));
+        assert_eq!(plan.icon_path, "icons/lightbulb.svg");
     }
 
     #[test]
-    fn marker_paint_style_derives_fill_border_and_highlight() {
-        let marker = hsla(0.5, 0.6, 0.7, 1.0);
-        let highlight = hsla(0.0, 0.0, 1.0, 1.0);
+    fn marker_paint_style_preserves_icon_color_and_strip() {
+        let icon = hsla(0.5, 0.6, 0.7, 1.0);
         let strip = hsla(0.2, 0.3, 0.4, 1.0);
 
-        let style = diagnostic_marker_paint_style(marker, highlight, Some(strip));
+        let style = diagnostic_marker_paint_style(icon, Some(strip));
 
         assert_eq!(style.strip_fill, Some(strip));
-        assert_eq!(style.marker_fill, hsla(0.5, 0.6, 0.7, 0.85));
-        assert_eq!(style.marker_border.h, 0.5);
-        assert_eq!(style.marker_border.s, 0.6);
-        assert!((style.marker_border.l - 0.55).abs() < f32::EPSILON);
-        assert_eq!(style.marker_border.a, 0.9);
-        assert_eq!(style.highlight_base, highlight);
+        assert_eq!(style.icon_color, icon);
     }
 
-    #[test]
-    fn marker_paint_style_clamps_darkened_border_lightness() {
-        let style = diagnostic_marker_paint_style(
-            hsla(0.5, 0.6, 0.05, 1.0),
-            hsla(0.0, 0.0, 1.0, 1.0),
-            None,
-        );
-
-        assert_eq!(style.marker_border.l, 0.0);
+    fn test_icon_colors() -> DiagnosticSeverityIconColors {
+        DiagnosticSeverityIconColors {
+            error: hsla(0.0, 0.8, 0.6, 1.0),
+            warning: hsla(0.1, 0.8, 0.6, 1.0),
+            info: hsla(0.2, 0.8, 0.6, 1.0),
+            hint: hsla(0.3, 0.8, 0.6, 1.0),
+        }
     }
 }

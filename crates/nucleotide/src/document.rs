@@ -16,11 +16,11 @@ use nucleotide_ui::{Button, ButtonSize, ButtonVariant, MarkdownStyle, Tooltipped
 
 use crate::{Core, Input, InputEvent};
 use nucleotide_editor::{
-    EDITOR_MINIMUM_VIEWPORT_COLUMNS, EditorCursorReveal, EditorLayout, EditorPointerSelectionPhase,
-    EditorSurfacePointerEvent, EditorViewLayoutSnapshot, EditorViewState, NativeEditorFramePalette,
-    NativeEditorFrameRenderParams, NativeEditorFrameThemeStyles, NativeEditorView,
-    ViewportScrollUpdate, log_pointer_selection_outcome, render_native_editor_frame,
-    run_gutter_extra_columns,
+    DiagnosticSeverityIconColors, EDITOR_MINIMUM_VIEWPORT_COLUMNS, EditorCursorReveal,
+    EditorLayout, EditorPointerSelectionPhase, EditorSurfacePointerEvent, EditorViewLayoutSnapshot,
+    EditorViewState, NativeEditorFramePalette, NativeEditorFrameRenderParams,
+    NativeEditorFrameThemeStyles, NativeEditorView, ViewportScrollUpdate,
+    log_pointer_selection_outcome, render_native_editor_frame, run_gutter_extra_columns,
 };
 
 fn handle_editor_pointer_selection(
@@ -627,6 +627,12 @@ fn paint_document_content(
                     selection_secondary: tokens.editor.selection_secondary,
                     fallback_gutter_color: ui_tokens.editor.line_number,
                     diagnostic_highlight_base: tokens.chrome.text_on_chrome,
+                    diagnostic_icon_colors: DiagnosticSeverityIconColors {
+                        error: tokens.editor.diagnostic_error,
+                        warning: tokens.editor.diagnostic_warning,
+                        info: tokens.editor.diagnostic_info,
+                        hint: tokens.editor.diagnostic_hint,
+                    },
                     fallback_ruler_color: ui_tokens.chrome.border_default,
                     run_button_color: tokens.editor.success,
                 },

@@ -53,10 +53,10 @@ pub use cursor::{
 pub use cursor_style::{cursor_has_reversed_modifier, cursor_style_for_mode};
 pub use diagnostics::{
     DiagnosticGutterMarkerPaintPlan, DiagnosticGutterMarkerPaintPlanParams,
-    DiagnosticGutterMarkersPaintParams, DiagnosticMarkerHighlight, DiagnosticMarkerPaintStyle,
-    DiagnosticMarkerPlan, DiagnosticMarkerShape, DiagnosticSeverityByLine,
-    diagnostic_gutter_marker_paint_plan, diagnostic_marker_paint_style, diagnostic_marker_plan,
-    diagnostic_severity_by_line, diagnostic_severity_color, diagnostic_severity_theme_key,
+    DiagnosticGutterMarkersPaintParams, DiagnosticMarkerPaintStyle, DiagnosticMarkerPlan,
+    DiagnosticSeverityByLine, DiagnosticSeverityIconColors, diagnostic_gutter_marker_paint_plan,
+    diagnostic_marker_paint_style, diagnostic_marker_plan, diagnostic_severity_by_line,
+    diagnostic_severity_color, diagnostic_severity_icon_path, diagnostic_severity_theme_key,
     paint_diagnostic_gutter_markers, paint_diagnostic_marker,
 };
 pub use document_element::EditorDocumentElement;
