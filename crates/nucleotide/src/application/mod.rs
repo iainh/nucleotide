@@ -85,6 +85,76 @@ impl nucleotide_lsp::EnvironmentProvider for ProjectEnvironmentProvider {
     }
 }
 
+type CompletionServerResult = anyhow::Result<(
+    LanguageServerId,
+    OffsetEncoding,
+    Option<lsp::CompletionResponse>,
+)>;
+type CompletionServerFuture = BoxFuture<'static, CompletionServerResult>;
+
+pub struct PendingCompletionRequest {
+    prefix: String,
+    local_items: Vec<nucleotide_events::completion::CompletionItem>,
+    lsp_error: Option<anyhow::Error>,
+    lsp_futures: FuturesOrdered<CompletionServerFuture>,
+}
+
+impl PendingCompletionRequest {
+    pub async fn collect(
+        mut self,
+    ) -> anyhow::Result<(Vec<nucleotide_events::completion::CompletionItem>, String)> {
+        let mut items = Vec::new();
+        let mut lsp_error = self.lsp_error.take();
+
+        while let Some(response) = futures_util::StreamExt::next(&mut self.lsp_futures).await {
+            match response {
+                Ok((server_id, offset_encoding, Some(lsp_response))) => {
+                    let mut server_items =
+                        lsp_completion_items_from_response(lsp_response, offset_encoding);
+                    nucleotide_logging::info!(
+                        server_id = ?server_id,
+                        item_count = server_items.len(),
+                        "Received LSP completion items from language server"
+                    );
+                    items.append(&mut server_items);
+                }
+                Ok((server_id, _, None)) => {
+                    nucleotide_logging::info!(
+                        server_id = ?server_id,
+                        "LSP server returned no completions"
+                    );
+                }
+                Err(err) => {
+                    nucleotide_logging::warn!(
+                        error = %err,
+                        "LSP completion request failed"
+                    );
+                    if lsp_error.is_none() {
+                        lsp_error = Some(err);
+                    }
+                }
+            }
+        }
+
+        nucleotide_logging::debug!(
+            lsp_item_count = items.len(),
+            local_item_count = self.local_items.len(),
+            prefix = %self.prefix,
+            "Merging LSP and local completion items"
+        );
+        items.extend(self.local_items);
+        dedupe_completion_items(&mut items);
+
+        if items.is_empty()
+            && let Some(err) = lsp_error
+        {
+            return Err(err);
+        }
+
+        Ok((items, self.prefix))
+    }
+}
+
 use gpui::{App, AppContext};
 use helix_term::{args::Args, compositor::Compositor, config::Config, job::Jobs, keymap::Keymaps};
 use helix_view::document::DocumentSavedEventResult;
@@ -4098,19 +4168,23 @@ impl Application {
         Ok(())
     }
 
-    /// Request LSP completions synchronously with prefix extraction for filtering
+    /// Prepare LSP completions with prefix extraction for filtering.
+    ///
+    /// This snapshots the editor state needed to create LSP request futures but does not await
+    /// those futures. Callers should spawn `PendingCompletionRequest::collect` and re-enter the UI
+    /// when the results are ready.
     #[instrument(skip(self))]
-    pub fn request_lsp_completions_sync_with_prefix(
+    pub fn prepare_lsp_completions_with_prefix(
         &mut self,
         cursor: usize,
         doc_id: helix_view::DocumentId,
         view_id: helix_view::ViewId,
-    ) -> anyhow::Result<(Vec<nucleotide_events::completion::CompletionItem>, String)> {
+    ) -> anyhow::Result<PendingCompletionRequest> {
         nucleotide_logging::info!(
             cursor = cursor,
             doc_id = ?doc_id,
             view_id = ?view_id,
-            "Synchronous LSP completion request with prefix extraction"
+            "Preparing LSP completion request with prefix extraction"
         );
 
         // Extract completion prefix for filtering
@@ -4122,51 +4196,41 @@ impl Application {
             "Extracted completion prefix for filtering"
         );
 
-        let mut lsp_error = None;
-        let mut items = match self.request_lsp_completions_sync(cursor, doc_id, view_id) {
-            Ok(items) => items,
+        let local_items = self.collect_local_completion_items(cursor, doc_id, &prefix);
+        let (lsp_futures, lsp_error) = match self
+            .prepare_lsp_completion_futures(cursor, doc_id, view_id)
+        {
+            Ok(futures) => (futures, None),
             Err(err) => {
                 nucleotide_logging::warn!(
                     error = %err,
-                    "LSP completion request failed; falling back to local completion providers"
+                    "LSP completion request preparation failed; falling back to local completion providers"
                 );
-                lsp_error = Some(err);
-                Vec::new()
+                (FuturesOrdered::new(), Some(err))
             }
         };
 
-        let local_items = self.collect_local_completion_items(cursor, doc_id, &prefix);
-        nucleotide_logging::debug!(
-            lsp_item_count = items.len(),
-            local_item_count = local_items.len(),
-            prefix = %prefix,
-            "Merging LSP and local completion items"
-        );
-        items.extend(local_items);
-        dedupe_completion_items(&mut items);
-
-        if items.is_empty()
-            && let Some(err) = lsp_error
-        {
-            return Err(err);
-        }
-
-        Ok((items, prefix))
+        Ok(PendingCompletionRequest {
+            prefix,
+            local_items,
+            lsp_error,
+            lsp_futures,
+        })
     }
 
-    /// Request LSP completions synchronously for event-driven completion system
+    /// Prepare LSP completion futures for event-driven completion.
     #[instrument(skip(self))]
-    pub fn request_lsp_completions_sync(
+    fn prepare_lsp_completion_futures(
         &mut self,
         cursor: usize,
         doc_id: helix_view::DocumentId,
         view_id: helix_view::ViewId,
-    ) -> anyhow::Result<Vec<nucleotide_events::completion::CompletionItem>> {
+    ) -> anyhow::Result<FuturesOrdered<CompletionServerFuture>> {
         nucleotide_logging::info!(
             cursor = cursor,
             doc_id = ?doc_id,
             view_id = ?view_id,
-            "Synchronous LSP completion request for event-driven system"
+            "Preparing LSP completion futures for event-driven system"
         );
 
         // Try to get the document
@@ -4196,15 +4260,18 @@ impl Application {
             return Err(anyhow::anyhow!("View document mismatch"));
         }
 
-        // Check if document has any language servers attached
-        let language_servers: Vec<_> = doc.language_servers().collect();
+        let language_servers: Vec<_> = doc
+            .language_servers_with_feature(syntax::config::LanguageServerFeature::Completion)
+            .collect();
         if language_servers.is_empty() {
             nucleotide_logging::warn!(
                 doc_id = ?doc_id,
                 path = ?doc.path(),
-                "No language servers available for completion"
+                "No completion-capable language servers available"
             );
-            return Err(anyhow::anyhow!("No language servers available"));
+            return Err(anyhow::anyhow!(
+                "No completion-capable language servers available"
+            ));
         }
 
         // Helix selections/cursors are character positions; LSP conversion handles
@@ -4232,9 +4299,10 @@ impl Application {
 
         // Get document identifier for LSP request
         let doc_id_lsp = doc.identifier();
-        let mut our_items = Vec::new();
+        let server_count = language_servers.len();
+        let mut lsp_futures = FuturesOrdered::new();
 
-        for language_server in &language_servers {
+        for language_server in language_servers {
             let offset_encoding = language_server.offset_encoding();
             let position = helix_lsp::util::pos_to_lsp_pos(text, cursor_pos, offset_encoding);
 
@@ -4244,7 +4312,7 @@ impl Application {
                 character = position.character,
                 offset_encoding = ?offset_encoding,
                 server_id = ?language_server.id(),
-                server_count = language_servers.len(),
+                server_count = server_count,
                 "Requesting completions from language server"
             );
 
@@ -4253,7 +4321,7 @@ impl Application {
                 character = position.character,
                 offset_encoding = ?offset_encoding,
                 server_id = ?language_server.id(),
-                "Making actual LSP completion request"
+                "Preparing LSP completion request"
             );
 
             crate::lsp_traffic_logger::log_outgoing(
@@ -4283,38 +4351,36 @@ impl Application {
                 continue;
             };
 
-            let lsp_response = match tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(completion_future)
-            }) {
-                Ok(Some(response)) => response,
-                Ok(None) => {
-                    nucleotide_logging::info!(
-                        server_id = ?language_server.id(),
-                        "LSP server returned no completions"
-                    );
-                    continue;
+            let server_id = language_server.id();
+            lsp_futures.push_back(
+                async move {
+                    completion_future
+                        .await
+                        .map(|response| (server_id, offset_encoding, response))
+                        .map_err(Into::into)
                 }
-                Err(e) => {
-                    nucleotide_logging::warn!(
-                        server_id = ?language_server.id(),
-                        error = %e,
-                        "LSP completion request failed"
-                    );
-                    continue;
-                }
-            };
-
-            let mut server_items =
-                lsp_completion_items_from_response(lsp_response, offset_encoding);
-            nucleotide_logging::info!(
-                server_id = ?language_server.id(),
-                item_count = server_items.len(),
-                "Received LSP completion items from language server"
+                .boxed(),
             );
-            our_items.append(&mut server_items);
         }
 
-        Ok(our_items)
+        Ok(lsp_futures)
+    }
+
+    /// Request LSP completions synchronously with prefix extraction for filtering.
+    ///
+    /// Tests and legacy call sites should prefer `prepare_lsp_completions_with_prefix`, which
+    /// avoids blocking the UI thread while LSP servers respond.
+    #[cfg(test)]
+    #[instrument(skip(self))]
+    pub async fn request_lsp_completions_with_prefix_for_test(
+        &mut self,
+        cursor: usize,
+        doc_id: helix_view::DocumentId,
+        view_id: helix_view::ViewId,
+    ) -> anyhow::Result<(Vec<nucleotide_events::completion::CompletionItem>, String)> {
+        self.prepare_lsp_completions_with_prefix(cursor, doc_id, view_id)?
+            .collect()
+            .await
     }
 
     fn collect_local_completion_items(
@@ -6532,16 +6598,19 @@ fn should_update_env_var(key: &str) -> bool {
 mod tests {
 
     use super::{
-        NativeSymbolItem, NativeSymbolTarget, buffer_word_completion_items,
-        dedupe_completion_items, local_path_completion_context, lsp_completion_insert_text,
-        lsp_completion_insert_text_format, lsp_completion_items_from_response, lsp_symbol_picker,
-        native_symbol_item_from_lsp, path_completion_items, syntax_symbol_kind_from_capture_name,
+        NativeSymbolItem, NativeSymbolTarget, PendingCompletionRequest,
+        buffer_word_completion_items, dedupe_completion_items, local_path_completion_context,
+        lsp_completion_insert_text, lsp_completion_insert_text_format,
+        lsp_completion_items_from_response, lsp_symbol_picker, native_symbol_item_from_lsp,
+        path_completion_items, syntax_symbol_kind_from_capture_name,
     };
     use crate::test_utils::test_support::{
         TestUpdate, create_counting_channel, create_test_diagnostic_events,
         create_test_document_events, create_test_selection_events,
     };
+    use futures_util::{FutureExt, stream::FuturesOrdered};
     use helix_lsp::{OffsetEncoding, lsp};
+    use nucleotide_events::completion::{CompletionItem, CompletionItemKind};
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::time::Duration;
@@ -6865,6 +6934,61 @@ mod tests {
             nucleotide_events::completion::CompletionItemKind::Function
         );
         assert_eq!(items[1].label, "print");
+    }
+
+    #[tokio::test]
+    async fn pending_completion_request_collects_lsp_and_local_items() {
+        let mut lsp_futures: FuturesOrdered<super::CompletionServerFuture> = FuturesOrdered::new();
+        lsp_futures.push_back(
+            async {
+                Ok::<_, anyhow::Error>((
+                    helix_lsp::LanguageServerId::default(),
+                    OffsetEncoding::Utf16,
+                    Some(lsp::CompletionResponse::Array(vec![lsp::CompletionItem {
+                        label: "println".to_string(),
+                        kind: Some(lsp::CompletionItemKind::FUNCTION),
+                        insert_text: Some("println!()".to_string()),
+                        ..Default::default()
+                    }])),
+                ))
+            }
+            .boxed(),
+        );
+
+        let request = PendingCompletionRequest {
+            prefix: "pri".to_string(),
+            local_items: vec![CompletionItem::new(
+                "private".to_string(),
+                CompletionItemKind::Text,
+            )],
+            lsp_error: None,
+            lsp_futures,
+        };
+
+        let (items, prefix) = request.collect().await.expect("completion results");
+
+        assert_eq!(prefix, "pri");
+        let labels: Vec<_> = items.iter().map(|item| item.label.as_str()).collect();
+        assert_eq!(labels, vec!["println", "private"]);
+    }
+
+    #[tokio::test]
+    async fn pending_completion_request_keeps_local_items_when_lsp_fails() {
+        let request = PendingCompletionRequest {
+            prefix: "src".to_string(),
+            local_items: vec![CompletionItem::new(
+                "src/lib.rs".to_string(),
+                CompletionItemKind::File,
+            )],
+            lsp_error: Some(anyhow::anyhow!("no completion server")),
+            lsp_futures: FuturesOrdered::new(),
+        };
+
+        let (items, prefix) = request.collect().await.expect("local fallback");
+
+        assert_eq!(prefix, "src");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].label, "src/lib.rs");
     }
 
     #[ignore] // Temporarily disabled due to SIGBUS compiler crash

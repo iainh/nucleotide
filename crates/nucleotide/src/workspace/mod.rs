@@ -9890,13 +9890,90 @@ impl Workspace {
         info!(cursor = cursor, doc_id = ?doc_id, view_id = ?view_id, is_manual = is_manual, "Requesting completions through Nucleotide");
 
         if is_manual && self.manual_completion_needs_lsp_settle_delay(cursor, doc_id, cx) {
-            std::thread::sleep(std::time::Duration::from_millis(30));
+            self.start_completion_request_after_delay(
+                cursor,
+                doc_id,
+                view_id,
+                std::time::Duration::from_millis(30),
+                cx,
+            );
+            return;
         }
 
-        let completion_result = self.core.update(cx, |core, _cx| {
-            core.request_lsp_completions_sync_with_prefix(cursor, doc_id, view_id)
+        self.start_completion_request(cursor, doc_id, view_id, cx);
+    }
+
+    fn start_completion_request_after_delay(
+        &mut self,
+        cursor: usize,
+        doc_id: helix_view::DocumentId,
+        view_id: helix_view::ViewId,
+        delay: std::time::Duration,
+        cx: &mut Context<Self>,
+    ) {
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(delay).await;
+
+            if let Some(this) = this.upgrade() {
+                this.update(cx, move |workspace, cx| {
+                    workspace.start_completion_request(cursor, doc_id, view_id, cx);
+                });
+            }
+        })
+        .detach();
+    }
+
+    fn start_completion_request(
+        &mut self,
+        cursor: usize,
+        doc_id: helix_view::DocumentId,
+        view_id: helix_view::ViewId,
+        cx: &mut Context<Self>,
+    ) {
+        let completion_request = self.core.update(cx, |core, _cx| {
+            core.prepare_lsp_completions_with_prefix(cursor, doc_id, view_id)
         });
 
+        let completion_request = match completion_request {
+            Ok(request) => request,
+            Err(err) => {
+                nucleotide_logging::error!(
+                    error = %err,
+                    "Failed to prepare LSP completions through Nucleotide path"
+                );
+                return;
+            }
+        };
+
+        cx.spawn(async move |this, cx| {
+            let completion_result = completion_request.collect().await;
+
+            if let Some(this) = this.upgrade() {
+                this.update(cx, move |workspace, cx| {
+                    workspace.finish_completion_request(
+                        completion_result,
+                        cursor,
+                        doc_id,
+                        view_id,
+                        cx,
+                    );
+                });
+            }
+        })
+        .detach();
+    }
+
+    fn finish_completion_request(
+        &mut self,
+        completion_result: anyhow::Result<(
+            Vec<nucleotide_events::completion::CompletionItem>,
+            String,
+        )>,
+        cursor: usize,
+        doc_id: helix_view::DocumentId,
+        view_id: helix_view::ViewId,
+        cx: &mut Context<Self>,
+    ) {
         match completion_result {
             Ok((completion_items, prefix)) => {
                 nucleotide_logging::info!(
@@ -10170,87 +10247,7 @@ impl Workspace {
             "Calling real LSP completion directly from workspace"
         );
 
-        // Instead of going through the coordinator, call the LSP completion directly
-        let core_handle = self.core.clone();
-        core_handle.update(cx, |core, cx| {
-            match core.request_lsp_completions_sync_with_prefix(cursor, doc_id, view_id) {
-                Ok((completion_items, prefix)) => {
-                    nucleotide_logging::info!(
-                        item_count = completion_items.len(),
-                        prefix = %prefix,
-                        "Successfully retrieved real LSP completions directly"
-                    );
-
-                    if !completion_items.is_empty() {
-                        nucleotide_logging::info!(
-                            "Creating and emitting CompletionView with {} items",
-                            completion_items.len()
-                        );
-
-                        // Convert completion items to UI items
-                        let ui_items: Vec<_> = completion_items
-                            .into_iter()
-                            .map(|item| {
-                                // Convert to UI completion item kind
-                                let ui_kind = match item.kind {
-                                    nucleotide_events::completion::CompletionItemKind::Text => Some(nucleotide_ui::completion_v2::CompletionItemKind::Text),
-                                    nucleotide_events::completion::CompletionItemKind::Method => Some(nucleotide_ui::completion_v2::CompletionItemKind::Method),
-                                    nucleotide_events::completion::CompletionItemKind::Function => Some(nucleotide_ui::completion_v2::CompletionItemKind::Function),
-                                    nucleotide_events::completion::CompletionItemKind::Constructor => Some(nucleotide_ui::completion_v2::CompletionItemKind::Constructor),
-                                    nucleotide_events::completion::CompletionItemKind::Field => Some(nucleotide_ui::completion_v2::CompletionItemKind::Field),
-                                    nucleotide_events::completion::CompletionItemKind::Variable => Some(nucleotide_ui::completion_v2::CompletionItemKind::Variable),
-                                    nucleotide_events::completion::CompletionItemKind::Class => Some(nucleotide_ui::completion_v2::CompletionItemKind::Class),
-                                    nucleotide_events::completion::CompletionItemKind::Interface => Some(nucleotide_ui::completion_v2::CompletionItemKind::Interface),
-                                    nucleotide_events::completion::CompletionItemKind::Module => Some(nucleotide_ui::completion_v2::CompletionItemKind::Module),
-                                    nucleotide_events::completion::CompletionItemKind::Property => Some(nucleotide_ui::completion_v2::CompletionItemKind::Property),
-                                    nucleotide_events::completion::CompletionItemKind::Unit => Some(nucleotide_ui::completion_v2::CompletionItemKind::Unit),
-                                    nucleotide_events::completion::CompletionItemKind::Value => Some(nucleotide_ui::completion_v2::CompletionItemKind::Value),
-                                    nucleotide_events::completion::CompletionItemKind::Enum => Some(nucleotide_ui::completion_v2::CompletionItemKind::Enum),
-                                    nucleotide_events::completion::CompletionItemKind::Keyword => Some(nucleotide_ui::completion_v2::CompletionItemKind::Keyword),
-                                    nucleotide_events::completion::CompletionItemKind::Snippet => Some(nucleotide_ui::completion_v2::CompletionItemKind::Snippet),
-                                    _ => Some(nucleotide_ui::completion_v2::CompletionItemKind::Text),
-                                };
-
-                                nucleotide_ui::completion_v2::CompletionItem {
-                                    text: item.insert_text.into(),
-                                    description: item.detail.as_ref().map(|d| d.clone().into()),
-                                    display_text: Some(item.label.into()),
-                                    kind: ui_kind,
-                                    documentation: item.documentation.map(|d| d.into()),
-                                    detail: item.detail.map(|d| d.into()),
-                                    signature_info: item.signature_info.map(|s| s.into()),
-                                    type_info: item.type_info.map(|t| t.into()),
-                                    insert_text_format: match item.insert_text_format {
-                                        nucleotide_events::completion::InsertTextFormat::PlainText => nucleotide_ui::completion_v2::InsertTextFormat::PlainText,
-                                        nucleotide_events::completion::InsertTextFormat::Snippet => nucleotide_ui::completion_v2::InsertTextFormat::Snippet,
-                                    },
-                                    edit: item.edit.map(ui_completion_edit_from_event),
-                                }
-                            })
-                            .collect();
-
-                        // Create completion view and emit update
-                        let completion_view = cx.new(|cx| {
-                            let mut view = nucleotide_ui::completion_v2::CompletionView::new(cx);
-                            view.set_items_with_filter(ui_items, Some(prefix.clone()), cx);
-                            view
-                        });
-
-                        nucleotide_logging::info!("Created completion view, emitting Update::Completion event");
-                        cx.emit(crate::Update::Completion(completion_view));
-                        cx.notify();
-                    } else {
-                        nucleotide_logging::warn!("No completion items returned from LSP");
-                    }
-                }
-                Err(e) => {
-                    nucleotide_logging::error!(
-                        error = %e,
-                        "Failed to get LSP completions directly"
-                    );
-                }
-            }
-        });
+        self.start_completion_request(cursor, doc_id, view_id, cx);
     }
 
     // REMOVED: Old completion coordinator initialization method replaced by event-based approach
