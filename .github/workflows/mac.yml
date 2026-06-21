@@ -96,8 +96,8 @@ jobs:
       - name: Create macOS app bundle
         run: |
           # Use the bundle script
-          chmod +x bundle-mac.sh
-          ./bundle-mac.sh
+          chmod +x scripts/bundle-mac.sh
+          ./scripts/bundle-mac.sh
           
           # Verify the app bundle
           if [ -d "Nucleotide.app" ]; then

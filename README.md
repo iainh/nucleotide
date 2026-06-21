@@ -39,7 +39,7 @@ when you need to update packaged runtime grammars.
 ### macOS Bundle
 
 ```bash
-./bundle-mac.sh
+./scripts/bundle-mac.sh
 open Nucleotide.app
 ```
 
@@ -58,6 +58,8 @@ This will set up automatic `cargo fmt` checks before each commit.
 ## Configuration
 
 Nucleotide looks for configuration in `~/.config/helix/nucleotide.toml` and falls back to Helix configuration at `~/.config/helix/config.toml`.
+
+See `docs/examples/nucleotide.example.toml` for a sample GUI configuration.
 
 ## License
 

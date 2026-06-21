@@ -18,7 +18,7 @@ The Nix build system consists of:
 
 ```bash
 # Quick build everything
-./build-with-nix.sh
+./scripts/build-with-nix.sh
 # This creates Nucleotide.app
 
 # Or step by step:
