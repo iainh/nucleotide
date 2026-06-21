@@ -223,10 +223,12 @@ where
                 let rerender_snapshot_after =
                     EditorSurfaceRerenderSnapshot::from_state(&paint_editor_state);
                 if rerender_snapshot_before.requires_rerender_after(rerender_snapshot_after) {
-                    // The surface rendered from the old viewport. Force a new
-                    // frame once paint discovers real bounds.
-                    cx.notify(view_entity_id);
-                    window.refresh();
+                    // Paint runs after the surface has already rendered from
+                    // the old viewport. Schedule the owning view to render
+                    // again after this frame unwinds.
+                    cx.defer(move |cx| {
+                        cx.notify(view_entity_id);
+                    });
                 }
 
                 if let Some(on_cursor_overlay) = &on_cursor_overlay {
@@ -464,6 +466,86 @@ mod tests {
                 EditorPointerSelectionPhase::Extend,
                 EditorPointerSelectionPhase::End,
             ]
+        );
+    }
+
+    #[gpui::test]
+    fn native_editor_view_scrolls_after_initial_paint_layout(cx: &mut TestAppContext) {
+        let view_entity_id = cx.update(|cx| {
+            let entity: Entity<Empty> = cx.new(|_| Empty);
+            entity.entity_id()
+        });
+        let editor_state = EditorViewState::new(px(20.0), px(8.0));
+
+        let window = cx.add_empty_window();
+        window.draw(
+            point(px(0.0), px(0.0)),
+            size(px(112.0), px(200.0)),
+            |_, _| {
+                NativeEditorView::new(
+                    view_entity_id,
+                    editor_state.clone(),
+                    TextStyle::default(),
+                    move |state, bounds, _layout, _window, _cx| {
+                        state.viewport_mut().set_layout(px(20.0), bounds.size, 50);
+                        None
+                    },
+                )
+                .into_element()
+            },
+        );
+
+        assert!(editor_state.viewport().max_scroll_offset().height > px(0.0));
+
+        window.simulate_event(ScrollWheelEvent {
+            position: point(px(10.0), px(10.0)),
+            delta: ScrollDelta::Pixels(point(px(0.0), px(-40.0))),
+            modifiers: gpui::Modifiers::none(),
+            touch_phase: TouchPhase::Moved,
+        });
+
+        assert!(editor_state.viewport().scroll_position().y > px(0.0));
+    }
+
+    struct InitialLayoutRenderHost {
+        editor_state: EditorViewState,
+        render_count: Rc<Cell<usize>>,
+    }
+
+    impl Render for InitialLayoutRenderHost {
+        fn render(
+            &mut self,
+            _window: &mut Window,
+            cx: &mut gpui::Context<Self>,
+        ) -> impl IntoElement {
+            self.render_count.set(self.render_count.get() + 1);
+            NativeEditorView::new(
+                cx.entity_id(),
+                self.editor_state.clone(),
+                TextStyle::default(),
+                move |state, bounds, _layout, _window, _cx| {
+                    state.viewport_mut().set_layout(px(20.0), bounds.size, 50);
+                    None
+                },
+            )
+        }
+    }
+
+    #[gpui::test]
+    fn native_editor_view_rerenders_after_initial_paint_layout(cx: &mut TestAppContext) {
+        let render_count = Rc::new(Cell::new(0));
+        let render_count_clone = Rc::clone(&render_count);
+
+        let (_host, cx) = cx.add_window_view(|_, _cx| InitialLayoutRenderHost {
+            editor_state: EditorViewState::new(px(20.0), px(8.0)),
+            render_count: render_count_clone,
+        });
+
+        cx.run_until_parked();
+
+        assert!(
+            render_count.get() > 1,
+            "expected paint-time layout sync to request a second render"
         );
     }
 
