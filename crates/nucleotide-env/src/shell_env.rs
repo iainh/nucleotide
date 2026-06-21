@@ -1027,11 +1027,10 @@ pub mod shell_command_builder {
 
 /// Detect shell type from shell path
 pub fn detect_shell_type(shell_path: &str) -> &'static str {
-    let shell_name = std::path::Path::new(shell_path)
-        .file_stem()
-        .or_else(|| std::path::Path::new(shell_path).file_name())
-        .and_then(|name| name.to_str())
-        .unwrap_or("unknown")
+    let file_name = shell_path.rsplit(['/', '\\']).next().unwrap_or("unknown");
+    let shell_name = file_name
+        .rsplit_once('.')
+        .map_or(file_name, |(stem, _)| stem)
         .to_ascii_lowercase();
 
     match shell_name.as_str() {
