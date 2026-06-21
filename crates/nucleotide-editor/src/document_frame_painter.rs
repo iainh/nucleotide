@@ -24,11 +24,12 @@ use crate::{
     SoftWrapEditorLinePaintParams, SoftWrapGutterLinePlanParams, UnwrappedCursorPaintPlanParams,
     UnwrappedEditorLinePaintParams, UnwrappedGutterLinePlanParams, build_gutter_lines_from_plans,
     build_soft_wrap_gutter_line_plans, build_unwrapped_gutter_line_plans, cursor_style_for_mode,
-    editor_document_frame, gutter::gutter_origin, highlight::gpui_hsla_to_helix_color,
-    paint_diagnostic_gutter_markers, paint_editor_background, paint_gutter_lines,
-    paint_soft_wrap_editor_line, paint_unwrapped_editor_line, paint_visible_rulers,
-    run_gutter_button_bounds, run_gutter_icon_bounds, shape_and_paint_editor_cursor,
-    soft_wrap_cursor_paint_plan, style::helix_color_to_hsla, unwrapped_cursor_paint_plan,
+    diagnostics::DiagnosticSeverityIconColors, editor_document_frame, gutter::gutter_origin,
+    highlight::gpui_hsla_to_helix_color, paint_diagnostic_gutter_markers, paint_editor_background,
+    paint_gutter_lines, paint_soft_wrap_editor_line, paint_unwrapped_editor_line,
+    paint_visible_rulers, run_gutter_button_bounds, run_gutter_icon_bounds,
+    shape_and_paint_editor_cursor, soft_wrap_cursor_paint_plan, style::helix_color_to_hsla,
+    unwrapped_cursor_paint_plan,
 };
 
 pub struct DocumentFramePaintParams<'a> {
@@ -47,7 +48,7 @@ pub struct DocumentFramePaintParams<'a> {
     pub selection_primary: Hsla,
     pub selection_secondary: Hsla,
     pub diagnostic_theme: &'a Theme,
-    pub diagnostic_highlight_base: Hsla,
+    pub diagnostic_icon_colors: DiagnosticSeverityIconColors,
     pub gutter_bg: Option<Hsla>,
     pub scroll_line_offset: Pixels,
 }
@@ -64,6 +65,7 @@ pub struct NativeEditorFramePaintStyle {
     pub gutter_color: Hsla,
     pub gutter_selected_color: Hsla,
     pub diagnostic_highlight_base: Hsla,
+    pub diagnostic_icon_colors: DiagnosticSeverityIconColors,
     pub gutter_bg: Option<Hsla>,
     pub wrap_indicator_color: Option<Hsla>,
     pub ruler_color: Hsla,
@@ -78,6 +80,7 @@ pub struct NativeEditorFramePalette {
     pub selection_secondary: Hsla,
     pub fallback_gutter_color: Hsla,
     pub diagnostic_highlight_base: Hsla,
+    pub diagnostic_icon_colors: DiagnosticSeverityIconColors,
     pub fallback_ruler_color: Hsla,
     pub run_button_color: Hsla,
 }
@@ -190,6 +193,7 @@ pub fn native_editor_frame_paint_style(
         gutter_color,
         gutter_selected_color,
         diagnostic_highlight_base: params.palette.diagnostic_highlight_base,
+        diagnostic_icon_colors: params.palette.diagnostic_icon_colors,
         gutter_bg,
         wrap_indicator_color,
         ruler_color,
@@ -290,7 +294,7 @@ struct UnwrappedDocumentFramePaintParams<'a> {
     pub selection_primary: Hsla,
     pub selection_secondary: Hsla,
     pub diagnostic_theme: &'a Theme,
-    pub diagnostic_highlight_base: Hsla,
+    pub diagnostic_icon_colors: DiagnosticSeverityIconColors,
     pub gutter_bg: Option<Hsla>,
     pub scroll_line_offset: Pixels,
 }
@@ -310,7 +314,7 @@ struct SoftWrapDocumentFramePaintParams<'a> {
     pub selection_primary: Hsla,
     pub selection_secondary: Hsla,
     pub diagnostic_theme: &'a Theme,
-    pub diagnostic_highlight_base: Hsla,
+    pub diagnostic_icon_colors: DiagnosticSeverityIconColors,
     pub gutter_bg: Option<Hsla>,
     pub scroll_line_offset: Pixels,
 }
@@ -322,7 +326,7 @@ struct DocumentFrameGutterPaintParams<'a> {
     pub text_style: &'a TextStyle,
     pub font_size: Pixels,
     pub diagnostic_theme: &'a Theme,
-    pub diagnostic_highlight_base: Hsla,
+    pub diagnostic_icon_colors: DiagnosticSeverityIconColors,
     pub gutter_bg: Option<Hsla>,
     pub scroll_line_offset: Pixels,
 }
@@ -623,7 +627,7 @@ pub fn paint_native_editor_frame(
             selection_primary: plan.style.selection_primary,
             selection_secondary: plan.style.selection_secondary,
             diagnostic_theme: params.diagnostic_theme,
-            diagnostic_highlight_base: plan.style.diagnostic_highlight_base,
+            diagnostic_icon_colors: plan.style.diagnostic_icon_colors,
             gutter_bg: plan.style.gutter_bg,
             scroll_line_offset: params.frame_state.scroll_line_offset,
         },
@@ -721,7 +725,7 @@ pub fn paint_document_frame(
                 selection_primary: params.selection_primary,
                 selection_secondary: params.selection_secondary,
                 diagnostic_theme: params.diagnostic_theme,
-                diagnostic_highlight_base: params.diagnostic_highlight_base,
+                diagnostic_icon_colors: params.diagnostic_icon_colors,
                 gutter_bg: params.gutter_bg,
                 scroll_line_offset: params.scroll_line_offset,
             },
@@ -747,7 +751,7 @@ pub fn paint_document_frame(
             selection_primary: params.selection_primary,
             selection_secondary: params.selection_secondary,
             diagnostic_theme: params.diagnostic_theme,
-            diagnostic_highlight_base: params.diagnostic_highlight_base,
+            diagnostic_icon_colors: params.diagnostic_icon_colors,
             gutter_bg: params.gutter_bg,
             scroll_line_offset: params.scroll_line_offset,
         },
@@ -810,7 +814,7 @@ fn paint_soft_wrap_document_frame(
             text_style: params.text_style,
             font_size: params.font_size,
             diagnostic_theme: params.diagnostic_theme,
-            diagnostic_highlight_base: params.diagnostic_highlight_base,
+            diagnostic_icon_colors: params.diagnostic_icon_colors,
             gutter_bg: params.gutter_bg,
             scroll_line_offset: params.scroll_line_offset,
         },
@@ -892,7 +896,7 @@ fn paint_unwrapped_document_frame(
             text_style: params.text_style,
             font_size: params.font_size,
             diagnostic_theme: params.diagnostic_theme,
-            diagnostic_highlight_base: params.diagnostic_highlight_base,
+            diagnostic_icon_colors: params.diagnostic_icon_colors,
             gutter_bg: params.gutter_bg,
             scroll_line_offset: params.scroll_line_offset,
         },
@@ -935,13 +939,13 @@ fn paint_frame_gutter(
     );
     paint_diagnostic_gutter_markers(
         window,
+        cx,
         DiagnosticGutterMarkersPaintParams {
             severity_by_line: &params.frame.diagnostic_severity_by_line,
             gutter_lines: &gutter_lines,
-            theme: params.diagnostic_theme,
             gutter_origin: marker_origin,
             line_height: params.layout.line_height,
-            highlight_base: params.diagnostic_highlight_base,
+            icon_colors: params.diagnostic_icon_colors,
             gutter_bg: params.gutter_bg,
         },
     );
@@ -1183,6 +1187,7 @@ mod tests {
         let selection_primary = helix_color_to_hsla(Color::Rgb(140, 150, 160)).unwrap();
         let selection_secondary = helix_color_to_hsla(Color::Rgb(170, 180, 190)).unwrap();
         let diagnostic_highlight_base = helix_color_to_hsla(Color::Rgb(200, 210, 220)).unwrap();
+        let diagnostic_icon_colors = test_diagnostic_icon_colors();
 
         let style = native_editor_frame_paint_style(NativeEditorFramePaintStyleParams {
             editor_mode: Mode::Normal,
@@ -1203,6 +1208,7 @@ mod tests {
                 selection_secondary,
                 fallback_gutter_color,
                 diagnostic_highlight_base,
+                diagnostic_icon_colors,
                 fallback_ruler_color,
                 run_button_color: fallback_gutter_color,
             },
@@ -1241,6 +1247,7 @@ mod tests {
         assert_eq!(style.selection_primary, selection_primary);
         assert_eq!(style.selection_secondary, selection_secondary);
         assert_eq!(style.diagnostic_highlight_base, diagnostic_highlight_base);
+        assert_eq!(style.diagnostic_icon_colors, diagnostic_icon_colors);
         assert_eq!(style.run_button_color, fallback_gutter_color);
     }
 
@@ -1252,6 +1259,7 @@ mod tests {
             selection_secondary: white(),
             fallback_gutter_color: black(),
             diagnostic_highlight_base: black(),
+            diagnostic_icon_colors: test_diagnostic_icon_colors(),
             fallback_ruler_color: black(),
             run_button_color: black(),
         }
@@ -1269,10 +1277,20 @@ mod tests {
             gutter_color: black(),
             gutter_selected_color: white(),
             diagnostic_highlight_base: black(),
+            diagnostic_icon_colors: test_diagnostic_icon_colors(),
             gutter_bg: None,
             wrap_indicator_color: None,
             ruler_color: black(),
             run_button_color: black(),
+        }
+    }
+
+    fn test_diagnostic_icon_colors() -> DiagnosticSeverityIconColors {
+        DiagnosticSeverityIconColors {
+            error: black(),
+            warning: white(),
+            info: black(),
+            hint: white(),
         }
     }
 

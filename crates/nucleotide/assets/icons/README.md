@@ -13,6 +13,8 @@ Current Lucide-sourced additions:
 - `circle-x.svg`
 - `columns-2.svg`
 - `file-lock.svg`
+- `info.svg`
+- `lightbulb.svg`
 - `maximize.svg`
 - `minimize.svg`
 - `pin.svg`
