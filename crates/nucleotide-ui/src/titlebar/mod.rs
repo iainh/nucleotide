@@ -84,6 +84,9 @@ impl TitleBar {
 
 impl Render for TitleBar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(not(target_os = "windows"))]
+        let _ = window;
+
         // Update platform titlebar with content
         self.platform_titlebar.update(cx, |titlebar, _cx| {
             titlebar.set_title(self.filename.clone());
