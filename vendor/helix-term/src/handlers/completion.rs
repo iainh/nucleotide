@@ -31,7 +31,6 @@ pub struct GpuiCompletionResults {
     pub trigger_pos: usize,
     pub trigger_kind: request::TriggerKind,
     pub items: Vec<CompletionItem>,
-    pub context: HashMap<CompletionProvider, ResponseContext>,
     pub text_prefix: String,
 }
 
@@ -46,7 +45,12 @@ pub fn get_gpui_completion_hook() -> Option<Arc<dyn Fn(GpuiCompletionResults) + 
 }
 
 /// Extract the text prefix being completed from the document at the cursor position
-pub fn extract_completion_prefix(editor: &Editor, doc_id: helix_view::DocumentId, view_id: helix_view::ViewId, pos: usize) -> String {
+pub fn extract_completion_prefix(
+    editor: &Editor,
+    doc_id: helix_view::DocumentId,
+    _view_id: helix_view::ViewId,
+    pos: usize,
+) -> String {
     use helix_core::chars::char_is_word;
     
     // Get the document and view
@@ -240,7 +244,7 @@ fn show_completion(
         return;
     }
     word::retain_valid_completions(trigger, doc, view.id, &mut items);
-    editor.handlers.completions.active_completions = context.clone();
+    editor.handlers.completions.active_completions = context;
 
     // Forward to GPUI completion system if hook is registered
     if let Some(hook) = get_gpui_completion_hook() {
@@ -253,7 +257,6 @@ fn show_completion(
             trigger_pos: trigger.pos,
             trigger_kind: trigger.kind,
             items: items.clone(),
-            context: context.clone(),
             text_prefix,
         };
         hook(gpui_results);
