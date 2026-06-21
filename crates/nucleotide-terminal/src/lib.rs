@@ -95,7 +95,7 @@ pub mod session {
     use portable_pty::{CommandBuilder, PtySize, native_pty_system};
     use std::collections::BTreeMap;
     use std::io::{Read, Write};
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
     use tokio::sync::mpsc::{self, Receiver};
 
@@ -167,7 +167,7 @@ pub mod session {
             if let Some(cwd) = &cfg.cwd {
                 cmd.cwd(cwd);
             }
-            for (k, v) in terminal_env_with_defaults(&cfg.env) {
+            for (k, v) in terminal_env_with_defaults(&cfg.env, cfg.cwd.as_deref()) {
                 cmd.env(k, v);
             }
 
@@ -361,7 +361,19 @@ pub mod session {
         }
     }
 
-    fn terminal_env_with_defaults(env: &[(String, String)]) -> Vec<(String, String)> {
+    fn terminal_env_with_defaults(
+        env: &[(String, String)],
+        cwd: Option<&Path>,
+    ) -> Vec<(String, String)> {
+        let parent_env = std::env::vars().collect::<BTreeMap<_, _>>();
+        terminal_env_with_defaults_from(env, cwd, &parent_env)
+    }
+
+    fn terminal_env_with_defaults_from(
+        env: &[(String, String)],
+        cwd: Option<&Path>,
+        parent_env: &BTreeMap<String, String>,
+    ) -> Vec<(String, String)> {
         let mut merged = env.iter().cloned().collect::<BTreeMap<_, _>>();
 
         merged.insert("NUCLEOTIDE_TERM".to_string(), "true".to_string());
@@ -373,7 +385,30 @@ pub mod session {
             env!("CARGO_PKG_VERSION").to_string(),
         );
 
+        restore_parent_env(&mut merged, parent_env, "HOME");
+        restore_parent_env(&mut merged, parent_env, "USER");
+        restore_parent_env(&mut merged, parent_env, "LOGNAME");
+        restore_parent_env(&mut merged, parent_env, "SHELL");
+        if let Some(cwd) = cwd {
+            merged.insert("PWD".to_string(), cwd.to_string_lossy().into_owned());
+        } else {
+            restore_parent_env(&mut merged, parent_env, "PWD");
+        }
+        restore_parent_env(&mut merged, parent_env, "OLDPWD");
+
         merged.into_iter().collect()
+    }
+
+    fn restore_parent_env(
+        merged: &mut BTreeMap<String, String>,
+        parent_env: &BTreeMap<String, String>,
+        key: &str,
+    ) {
+        if let Some(value) = parent_env.get(key).filter(|value| !value.is_empty()) {
+            merged.insert(key.to_string(), value.clone());
+        } else {
+            merged.remove(key);
+        }
     }
 
     #[cfg(test)]
@@ -390,7 +425,7 @@ pub mod session {
 
         #[test]
         fn terminal_env_sets_zed_style_terminal_defaults() {
-            let env = env_map(terminal_env_with_defaults(&[]));
+            let env = env_map(terminal_env_with_defaults_from(&[], None, &BTreeMap::new()));
 
             assert_eq!(env.get("TERM").map(String::as_str), Some("xterm-256color"));
             assert_eq!(env.get("COLORTERM").map(String::as_str), Some("truecolor"));
@@ -407,11 +442,15 @@ pub mod session {
 
         #[test]
         fn terminal_env_overrides_stale_terminal_values_like_zed() {
-            let env = env_map(terminal_env_with_defaults(&[
-                pair("TERM", "dumb"),
-                pair("COLORTERM", "false"),
-                pair("TERM_PROGRAM", "other"),
-            ]));
+            let env = env_map(terminal_env_with_defaults_from(
+                &[
+                    pair("TERM", "dumb"),
+                    pair("COLORTERM", "false"),
+                    pair("TERM_PROGRAM", "other"),
+                ],
+                None,
+                &BTreeMap::new(),
+            ));
 
             assert_eq!(env.get("TERM").map(String::as_str), Some("xterm-256color"));
             assert_eq!(env.get("COLORTERM").map(String::as_str), Some("truecolor"));
@@ -423,9 +462,58 @@ pub mod session {
 
         #[test]
         fn terminal_env_preserves_unrelated_overrides() {
-            let env = env_map(terminal_env_with_defaults(&[pair("PATH", "/custom/bin")]));
+            let env = env_map(terminal_env_with_defaults_from(
+                &[pair("PATH", "/custom/bin")],
+                None,
+                &BTreeMap::new(),
+            ));
 
             assert_eq!(env.get("PATH").map(String::as_str), Some("/custom/bin"));
+        }
+
+        #[test]
+        fn terminal_env_restores_session_vars_from_parent_session() {
+            let parent = BTreeMap::from([
+                ("HOME".to_string(), "/Users/test".to_string()),
+                ("USER".to_string(), "test".to_string()),
+                ("SHELL".to_string(), "/bin/zsh".to_string()),
+            ]);
+            let env = env_map(terminal_env_with_defaults_from(
+                &[
+                    pair("HOME", "/nix/dev-home"),
+                    pair("USER", "nix-user"),
+                    pair("SHELL", "/nix/store/bash/bin/bash"),
+                ],
+                None,
+                &parent,
+            ));
+
+            assert_eq!(env.get("HOME").map(String::as_str), Some("/Users/test"));
+            assert_eq!(env.get("USER").map(String::as_str), Some("test"));
+            assert_eq!(env.get("SHELL").map(String::as_str), Some("/bin/zsh"));
+        }
+
+        #[test]
+        fn terminal_env_sets_pwd_to_spawn_cwd() {
+            let parent = BTreeMap::from([("PWD".to_string(), "/Users/test".to_string())]);
+            let env = env_map(terminal_env_with_defaults_from(
+                &[pair("PWD", "/nix/dev-pwd")],
+                Some(Path::new("/project")),
+                &parent,
+            ));
+
+            assert_eq!(env.get("PWD").map(String::as_str), Some("/project"));
+        }
+
+        #[test]
+        fn terminal_env_removes_session_vars_absent_from_parent_session() {
+            let env = env_map(terminal_env_with_defaults_from(
+                &[pair("HOME", "/nix/dev-home")],
+                None,
+                &BTreeMap::new(),
+            ));
+
+            assert!(!env.contains_key("HOME"));
         }
     }
 }

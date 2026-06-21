@@ -335,10 +335,7 @@ impl ProjectEnvironment {
         };
 
         let exported = run_nix_print_dev_env(directory, &plan).await?;
-        let mut environment = baseline_env.clone();
-        for (key, value) in exported {
-            environment.insert(key, value);
-        }
+        let mut environment = merge_native_flake_environment(baseline_env, exported);
         environment.insert("ZED_ENVIRONMENT".to_string(), "native-flake".to_string());
 
         let watch_paths = native_flake_watch_paths(directory, &envrc_path, &plan);
@@ -515,6 +512,70 @@ fn push_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
     if !paths.iter().any(|existing| existing == &path) {
         paths.push(path);
     }
+}
+
+const NIX_DIRENV_RESTORED_VARS: &[&str] = &[
+    "NIX_BUILD_TOP",
+    "TMP",
+    "TMPDIR",
+    "TEMP",
+    "TEMPDIR",
+    "terminfo",
+];
+
+fn merge_native_flake_environment(
+    baseline: &HashMap<String, String>,
+    exported: HashMap<String, String>,
+) -> HashMap<String, String> {
+    let mut environment = baseline.clone();
+    for (key, value) in exported {
+        environment.insert(key, value);
+    }
+
+    for key in NIX_DIRENV_RESTORED_VARS {
+        restore_baseline_var(&mut environment, baseline, key);
+    }
+
+    match merge_xdg_data_dirs(
+        environment.get("XDG_DATA_DIRS").map(String::as_str),
+        baseline.get("XDG_DATA_DIRS").map(String::as_str),
+    ) {
+        Some(value) => {
+            environment.insert("XDG_DATA_DIRS".to_string(), value);
+        }
+        None => {
+            environment.remove("XDG_DATA_DIRS");
+        }
+    }
+
+    environment
+}
+
+fn restore_baseline_var(
+    environment: &mut HashMap<String, String>,
+    baseline: &HashMap<String, String>,
+    key: &str,
+) {
+    if let Some(value) = baseline.get(key) {
+        environment.insert(key.to_string(), value.clone());
+    } else {
+        environment.remove(key);
+    }
+}
+
+fn merge_xdg_data_dirs(new_value: Option<&str>, old_value: Option<&str>) -> Option<String> {
+    let mut dirs: Vec<&str> = Vec::new();
+
+    for value in [new_value, old_value].into_iter().flatten() {
+        for dir in value.split(':') {
+            let dir = dir.trim_end_matches('/');
+            if !dir.is_empty() && !dirs.contains(&dir) {
+                dirs.push(dir);
+            }
+        }
+    }
+
+    (!dirs.is_empty()).then(|| dirs.join(":"))
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -1131,6 +1192,61 @@ mod tests {
         assert!(!env.contains_key("notExported"));
         assert!(!env.contains_key("arrayVar"));
         assert!(!env.contains_key("BAD=KEY"));
+    }
+
+    #[test]
+    fn test_native_flake_environment_restores_nix_direnv_session_vars() {
+        let baseline = HashMap::from([
+            ("PATH".to_string(), "/usr/bin".to_string()),
+            ("TMPDIR".to_string(), "/var/folders/user/tmp".to_string()),
+            ("terminfo".to_string(), "/usr/share/terminfo".to_string()),
+        ]);
+        let exported = HashMap::from([
+            ("PATH".to_string(), "/nix/store/bin:/usr/bin".to_string()),
+            ("TMPDIR".to_string(), "/tmp/nix-shell.abc123".to_string()),
+            ("TEMP".to_string(), "/tmp/nix-shell.abc123".to_string()),
+            ("terminfo".to_string(), "/nix/store/terminfo".to_string()),
+            (
+                "NIX_BUILD_TOP".to_string(),
+                "/tmp/nix-shell.abc123".to_string(),
+            ),
+        ]);
+
+        let env = merge_native_flake_environment(&baseline, exported);
+
+        assert_eq!(
+            env.get("PATH").map(String::as_str),
+            Some("/nix/store/bin:/usr/bin")
+        );
+        assert_eq!(
+            env.get("TMPDIR").map(String::as_str),
+            Some("/var/folders/user/tmp")
+        );
+        assert_eq!(
+            env.get("terminfo").map(String::as_str),
+            Some("/usr/share/terminfo")
+        );
+        assert!(!env.contains_key("TEMP"));
+        assert!(!env.contains_key("NIX_BUILD_TOP"));
+    }
+
+    #[test]
+    fn test_native_flake_environment_merges_xdg_data_dirs() {
+        let baseline = HashMap::from([(
+            "XDG_DATA_DIRS".to_string(),
+            "/usr/local/share:/usr/share".to_string(),
+        )]);
+        let exported = HashMap::from([(
+            "XDG_DATA_DIRS".to_string(),
+            "/nix/share:/usr/share/:/project/share".to_string(),
+        )]);
+
+        let env = merge_native_flake_environment(&baseline, exported);
+
+        assert_eq!(
+            env.get("XDG_DATA_DIRS").map(String::as_str),
+            Some("/nix/share:/usr/share:/project/share:/usr/local/share")
+        );
     }
 
     #[test]
