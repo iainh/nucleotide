@@ -1,7 +1,6 @@
 // ABOUTME: Input component following Zed's design patterns
 // ABOUTME: Provides consistent input styling and behavior
 
-use crate::ComponentFactory;
 use gpui::prelude::FluentBuilder;
 use gpui::{
     App, ElementId, FocusHandle, InteractiveElement, IntoElement, ParentElement, RenderOnce,
@@ -95,19 +94,6 @@ impl Input {
 }
 
 crate::impl_component!(Input);
-
-impl ComponentFactory for Input {
-    fn new(_id: impl Into<ElementId>) -> Self {
-        // Input requires a focus handle, so we can't implement ComponentFactory safely without context
-        // But ComponentFactory trait doesn't take context or allow creating handle.
-        // So we might have to panic or use a dummy handle if used via factory?
-        // Or we just don't implement ComponentFactory for Input if it requires FocusHandle.
-        // But for now, let's skip ComponentFactory or use a default handle?
-        // GPUI FocusHandle requires WindowContext.
-        // So Input cannot implement ComponentFactory cleanly if `new` doesn't take cx.
-        unimplemented!("Input requires FocusHandle")
-    }
-}
 
 impl RenderOnce for Input {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {

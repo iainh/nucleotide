@@ -373,7 +373,6 @@ impl PickerView {
         }
     }
 
-    // Future: with_capability(...) to integrate with core/editor
     /// Attach a capability implementation to drive preview open/close/render without direct core access
     pub fn with_capability(
         mut self,
@@ -762,29 +761,6 @@ impl PickerView {
         {
             // For buffer picker items, always use the existing document content
             // Don't create a new document for preview
-            // TODO: Replace with capability trait
-            // if let Some(core_weak) = &self.core {
-            //     if let Some(core) = core_weak.upgrade() {
-            //         let content = core
-            //             .read(cx)
-            //             .editor
-            //             .document(*doc_id)
-            //             .map(|doc| {
-            //                 let text = doc.text();
-            //                 let content = text.to_string();
-            //                 // Limit preview to first 500 lines for performance
-            //                 let lines: Vec<&str> = content.lines().take(500).collect();
-            //                 lines.join("\n")
-            //             })
-            //             .unwrap_or_else(|| "Unable to load buffer content".to_string());
-
-            //         self.preview_content = Some(content);
-            //         self.preview_loading = false;
-            //         // Store the doc_id so we can use syntax highlighting
-            //         self.preview_doc_id = Some(*doc_id);
-            //         cx.notify();
-            //     }
-            // }
             // Try provider to fetch buffer content
             if let Some(provider) = &self.preview_text_provider_cb
                 && let Some((text, _path)) = provider(item, cx)

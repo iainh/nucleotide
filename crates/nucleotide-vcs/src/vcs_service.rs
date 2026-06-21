@@ -72,13 +72,11 @@ fn vcs_event_to_domain_event(event: &VcsEvent) -> Option<DomainVcsEvent> {
                 diff_base_revision: None, // TODO: Add base revision tracking
             })
         }
-        VcsEvent::RepositoryStarted { root_path } => {
-            Some(DomainVcsEvent::RepositoryHeadChanged {
-                repository_path: root_path.clone(),
-                previous_head: None,
-                current_head: "HEAD".to_string(), // TODO: Get actual head
-            })
-        }
+        VcsEvent::RepositoryStarted { root_path } => Some(DomainVcsEvent::RepositoryHeadChanged {
+            repository_path: root_path.clone(),
+            previous_head: None,
+            current_head: current_git_head(root_path).unwrap_or_else(|| "HEAD".to_string()),
+        }),
         VcsEvent::StatusUpdated { .. } => {
             // Status updates don't have a direct mapping to domain events yet
             // TODO: Add file status events to domain events
@@ -89,6 +87,25 @@ fn vcs_event_to_domain_event(event: &VcsEvent) -> Option<DomainVcsEvent> {
             None
         }
     }
+}
+
+fn current_git_head(root_path: &Path) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--verify", "HEAD"])
+        .current_dir(root_path)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    parse_git_head_output(&output.stdout)
+}
+
+fn parse_git_head_output(stdout: &[u8]) -> Option<String> {
+    let head = std::str::from_utf8(stdout).ok()?.trim();
+    (!head.is_empty()).then(|| head.to_string())
 }
 
 /// Convert Helix Hunk to DiffHunkInfo
@@ -1018,3 +1035,21 @@ impl VcsServiceHandle {
 }
 
 impl gpui::Global for VcsServiceHandle {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_git_head_output_trims_sha() {
+        assert_eq!(
+            parse_git_head_output(b"abc123\n"),
+            Some("abc123".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_git_head_output_rejects_empty_output() {
+        assert_eq!(parse_git_head_output(b"\n"), None);
+    }
+}

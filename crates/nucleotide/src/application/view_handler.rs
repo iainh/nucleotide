@@ -7,7 +7,7 @@ use nucleotide_events::v2::view::Event as ViewEvent;
 use nucleotide_logging::{debug, error, info, instrument, warn};
 
 use helix_view::{DocumentId, ViewId};
-use nucleotide_events::view::Selection;
+use nucleotide_events::view::{Position, Selection, SelectionRange, SplitDirection};
 use std::collections::HashMap;
 
 /// Handler for view domain events
@@ -190,6 +190,103 @@ impl ViewHandler {
         Ok(())
     }
 
+    /// Handle cursor moved event
+    #[instrument(skip(self), fields(view_id = ?view_id, doc_id = ?doc_id))]
+    async fn handle_cursor_moved(
+        &mut self,
+        view_id: ViewId,
+        doc_id: DocumentId,
+        position: Position,
+        selection_index: usize,
+    ) -> Result<(), HandlerError> {
+        debug!(
+            view_id = ?view_id,
+            doc_id = ?doc_id,
+            position = ?position,
+            selection_index = selection_index,
+            "Processing view cursor movement"
+        );
+
+        let cursor_range = SelectionRange::new(position, position);
+        let next_selection = if let Some(metadata) = self.view_metadata.get(&view_id) {
+            let mut selection = metadata.last_selection.clone();
+            if selection_index < selection.ranges.len() {
+                selection.ranges[selection_index] = cursor_range;
+                selection.primary_index = selection_index;
+                selection
+            } else {
+                Selection::new(vec![cursor_range], 0)
+            }
+        } else {
+            Selection::new(vec![cursor_range], 0)
+        };
+
+        if let Some(metadata) = self.view_metadata.get_mut(&view_id) {
+            metadata.associated_doc_id = doc_id;
+            metadata.last_selection = next_selection;
+        } else {
+            let metadata = ViewMetadata {
+                associated_doc_id: doc_id,
+                last_selection: next_selection,
+                is_focused: false,
+                scroll_offset: (0, 0),
+                last_focus_time: None,
+            };
+            self.view_metadata.insert(view_id, metadata);
+        }
+
+        debug!(
+            view_id = ?view_id,
+            doc_id = ?doc_id,
+            line = position.line,
+            column = position.column,
+            "View cursor movement processed successfully"
+        );
+
+        Ok(())
+    }
+
+    /// Handle view split created event
+    #[instrument(skip(self), fields(new_view_id = ?new_view_id, parent_view_id = ?parent_view_id))]
+    async fn handle_split_created(
+        &mut self,
+        new_view_id: ViewId,
+        parent_view_id: ViewId,
+        direction: SplitDirection,
+    ) -> Result<(), HandlerError> {
+        debug!(
+            new_view_id = ?new_view_id,
+            parent_view_id = ?parent_view_id,
+            direction = ?direction,
+            "Processing view split creation"
+        );
+
+        let metadata = if let Some(parent_metadata) = self.view_metadata.get(&parent_view_id) {
+            let mut metadata = parent_metadata.clone();
+            metadata.is_focused = false;
+            metadata.last_focus_time = None;
+            metadata
+        } else {
+            ViewMetadata {
+                associated_doc_id: DocumentId::default(),
+                last_selection: Selection::point(0),
+                is_focused: false,
+                scroll_offset: (0, 0),
+                last_focus_time: None,
+            }
+        };
+
+        self.view_metadata.insert(new_view_id, metadata);
+
+        debug!(
+            new_view_id = ?new_view_id,
+            parent_view_id = ?parent_view_id,
+            "View split creation processed successfully"
+        );
+
+        Ok(())
+    }
+
     /// Handle view closed event
     #[instrument(skip(self), fields(view_id = ?view_id, doc_id = ?doc_id))]
     async fn handle_closed(
@@ -260,15 +357,22 @@ impl EventHandler<ViewEvent> for ViewHandler {
                 self.handle_scrolled(view_id, scroll_position, direction)
                     .await
             }
-            ViewEvent::CursorMoved { .. } => {
-                // TODO: Implement cursor moved handling
-                debug!("CursorMoved event received but not yet implemented");
-                Ok(())
+            ViewEvent::CursorMoved {
+                view_id,
+                doc_id,
+                position,
+                selection_index,
+            } => {
+                self.handle_cursor_moved(view_id, doc_id, position, selection_index)
+                    .await
             }
-            ViewEvent::SplitCreated { .. } => {
-                // TODO: Implement split created handling
-                debug!("SplitCreated event received but not yet implemented");
-                Ok(())
+            ViewEvent::SplitCreated {
+                new_view_id,
+                parent_view_id,
+                direction,
+            } => {
+                self.handle_split_created(new_view_id, parent_view_id, direction)
+                    .await
             }
             ViewEvent::Closed { view_id, doc_id } => self.handle_closed(view_id, doc_id).await,
         }
@@ -285,7 +389,16 @@ impl Default for ViewHandler {
 mod tests {
     use super::*;
     use helix_view::{DocumentId, ViewId};
-    use nucleotide_events::v2::view::{Event as ViewEvent, ScrollDirection, ScrollPosition};
+    use nucleotide_events::v2::view::{
+        Event as ViewEvent, Position, ScrollDirection, ScrollPosition, SelectionRange,
+        SplitDirection,
+    };
+
+    fn view_id(raw: usize) -> ViewId {
+        // ViewId has no public test constructor; this mirrors existing tests
+        // that need distinct IDs without a full Helix view tree.
+        unsafe { std::mem::transmute::<usize, ViewId>(raw) }
+    }
 
     #[tokio::test]
     async fn test_view_handler_initialization() {
@@ -364,13 +477,123 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_view_cursor_moved_event_updates_selection() {
+        let mut handler = ViewHandler::new();
+        handler.initialize().unwrap();
+
+        let view_id = ViewId::default();
+        let doc_id = DocumentId::default();
+        let existing_selection = Selection::new(
+            vec![
+                SelectionRange::new(Position::new(1, 0), Position::new(1, 1)),
+                SelectionRange::new(Position::new(2, 0), Position::new(2, 1)),
+            ],
+            0,
+        );
+
+        handler
+            .handle(ViewEvent::SelectionChanged {
+                view_id,
+                doc_id,
+                selection: existing_selection,
+                was_movement: false,
+            })
+            .await
+            .unwrap();
+
+        let cursor_position = Position::new(4, 8);
+        handler
+            .handle(ViewEvent::CursorMoved {
+                view_id,
+                doc_id,
+                position: cursor_position,
+                selection_index: 1,
+            })
+            .await
+            .unwrap();
+
+        let metadata = handler.get_metadata(&view_id).unwrap();
+        assert_eq!(metadata.associated_doc_id, doc_id);
+        assert_eq!(metadata.last_selection.ranges.len(), 2);
+        assert_eq!(metadata.last_selection.primary_index, 1);
+        assert_eq!(
+            metadata.last_selection.ranges[1],
+            SelectionRange::new(cursor_position, cursor_position)
+        );
+        assert_eq!(
+            metadata.last_selection.ranges[0],
+            SelectionRange::new(Position::new(1, 0), Position::new(1, 1))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_view_split_created_event_clones_parent_metadata() {
+        let mut handler = ViewHandler::new();
+        handler.initialize().unwrap();
+
+        let parent_view_id = ViewId::default();
+        let new_view_id = view_id(1);
+        let doc_id = DocumentId::default();
+        let selection = Selection::new(
+            vec![SelectionRange::new(
+                Position::new(3, 1),
+                Position::new(3, 5),
+            )],
+            0,
+        );
+
+        handler
+            .handle(ViewEvent::Focused {
+                view_id: parent_view_id,
+                doc_id,
+                previous_view: None,
+            })
+            .await
+            .unwrap();
+        handler
+            .handle(ViewEvent::SelectionChanged {
+                view_id: parent_view_id,
+                doc_id,
+                selection: selection.clone(),
+                was_movement: false,
+            })
+            .await
+            .unwrap();
+        handler
+            .handle(ViewEvent::Scrolled {
+                view_id: parent_view_id,
+                scroll_position: ScrollPosition::new(12, 4),
+                direction: ScrollDirection::Down,
+            })
+            .await
+            .unwrap();
+
+        handler
+            .handle(ViewEvent::SplitCreated {
+                new_view_id,
+                parent_view_id,
+                direction: SplitDirection::Vertical,
+            })
+            .await
+            .unwrap();
+
+        let metadata = handler.get_metadata(&new_view_id).unwrap();
+        assert_eq!(metadata.associated_doc_id, doc_id);
+        assert_eq!(metadata.last_selection, selection);
+        assert_eq!(metadata.scroll_offset, (12, 4));
+        assert!(!metadata.is_focused);
+        assert!(metadata.last_focus_time.is_none());
+        assert_eq!(handler.get_focused_view(), Some(parent_view_id));
+    }
+
+    #[tokio::test]
     async fn test_focus_tracking_with_previous_view() {
         let mut handler = ViewHandler::new();
         handler.initialize().unwrap();
 
         let view1 = ViewId::default();
-        // Create a unique ViewId by using unsafe transmute (for testing only)
-        let view2 = unsafe { std::mem::transmute::<usize, ViewId>(1usize) };
+        // Create a distinct ViewId without constructing a full Helix view tree.
+        let view2 = view_id(1);
         let doc_id = DocumentId::default();
 
         // Focus first view

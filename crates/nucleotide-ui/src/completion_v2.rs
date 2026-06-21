@@ -1249,11 +1249,10 @@ impl CompletionView {
                 delay,
                 max_attempts: _,
             } => {
-                // Retry the last operation after delay
                 let delay_duration = delay;
-                cx.spawn(async move |_this, _cx| {
+                cx.spawn(async move |this, cx| {
                     tokio::time::sleep(delay_duration).await;
-                    // TODO: Retry the last failed operation
+                    let _ = this.update(cx, |view, cx| view.retry_last_filter(cx));
                 })
                 .detach();
             }
@@ -1285,6 +1284,22 @@ impl CompletionView {
                 nucleotide_logging::info!(message = %message, "Completion system notification");
             }
         }
+    }
+
+    fn retry_last_filter(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(query) = self.current_query.clone() else {
+            nucleotide_logging::debug!("Skipping completion retry without a current query");
+            return false;
+        };
+
+        let position = self.initial_position.clone();
+        nucleotide_logging::info!(
+            query = %query,
+            position = ?position,
+            "Retrying completion filter"
+        );
+        self.filter_immediate(query, position, cx);
+        true
     }
 
     /// Enter degraded mode with reduced functionality
@@ -1596,8 +1611,8 @@ impl Render for CompletionView {
         // Do NOT steal focus from the editor - completion should be a non-modal overlay
         // The editor needs to maintain focus for proper keyboard event handling
 
-        // TODO: Get actual cursor position from document/workspace
-        // For now, use relative positioning that will be updated by parent container
+        // Positioning is controlled by the parent overlay, which anchors this
+        // non-modal view to the editor cursor.
         nucleotide_logging::debug!(
             item_count = self.filtered_entries.len(),
             "Completion view render completed"
@@ -2220,6 +2235,37 @@ mod tests {
                 labels.sort();
 
                 assert_eq!(labels, vec!["println"]);
+            });
+        }
+
+        #[gpui::test]
+        async fn test_retry_last_filter_reapplies_current_query(cx: &mut TestAppContext) {
+            let completion_items = vec![
+                CompletionItem::new("print").with_kind(CompletionItemKind::Function),
+                CompletionItem::new("println").with_kind(CompletionItemKind::Function),
+                CompletionItem::new("format").with_kind(CompletionItemKind::Function),
+            ];
+
+            let (completion_view, _cx) = cx.add_window_view(|_window, cx| {
+                let mut view = CompletionView::new(cx);
+                view.set_items_with_filter(completion_items.clone(), None, cx);
+                view
+            });
+
+            cx.run_until_parked();
+
+            completion_view.update(cx, |view, cx| {
+                view.update_filter("print".to_string(), cx);
+                view.filtered_entries.clear();
+
+                assert!(view.retry_last_filter(cx));
+                let mut labels: Vec<_> = (0..view.item_count())
+                    .filter_map(|index| view.get_item_at_index(index))
+                    .map(|item| item.text.to_string())
+                    .collect();
+                labels.sort();
+
+                assert_eq!(labels, vec!["print", "println"]);
             });
         }
 

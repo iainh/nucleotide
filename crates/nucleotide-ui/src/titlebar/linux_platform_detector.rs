@@ -2,7 +2,7 @@
 // ABOUTME: Detects GNOME, KDE, window manager support for decorations and optimal button layouts
 
 // No local usage; keep imports minimal
-use std::env;
+use std::{env, process::Command};
 
 use nucleotide_logging::{debug, warn};
 
@@ -256,26 +256,60 @@ fn detect_window_capabilities(wm: WindowManager) -> (bool, bool) {
 fn detect_system_theme() -> Option<String> {
     // Check GTK theme preference
     if let Ok(theme) = env::var("GTK_THEME") {
-        let theme_lower = theme.to_lowercase();
-        if theme_lower.contains("dark") {
-            return Some("dark".to_string());
-        } else if theme_lower.contains("light") {
-            return Some("light".to_string());
+        if let Some(variant) = theme_variant_from_name(&theme) {
+            return Some(variant);
         }
     }
 
-    // Check gsettings would require process spawning
-    // TODO: Could implement: gsettings get org.gnome.desktop.interface gtk-theme
+    if let Some(variant) = detect_gsettings_theme() {
+        return Some(variant);
+    }
 
     // Check QT theme for KDE
     if let Ok(theme) = env::var("QT_STYLE_OVERRIDE") {
-        let theme_lower = theme.to_lowercase();
-        if theme_lower.contains("dark") {
-            return Some("dark".to_string());
+        if let Some(variant) = theme_variant_from_name(&theme) {
+            return Some(variant);
         }
     }
 
     None
+}
+
+fn detect_gsettings_theme() -> Option<String> {
+    let color_scheme = read_gsettings("org.gnome.desktop.interface", "color-scheme");
+    if let Some(variant) = color_scheme.and_then(|value| theme_variant_from_name(&value)) {
+        return Some(variant);
+    }
+
+    let gtk_theme = read_gsettings("org.gnome.desktop.interface", "gtk-theme");
+    gtk_theme.and_then(|value| theme_variant_from_name(&value))
+}
+
+fn read_gsettings(schema: &str, key: &str) -> Option<String> {
+    let output = Command::new("gsettings")
+        .args(["get", schema, key])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    String::from_utf8(output.stdout)
+        .ok()
+        .map(|value| value.trim().trim_matches('\'').to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn theme_variant_from_name(name: &str) -> Option<String> {
+    let name = name.to_lowercase();
+    if name.contains("dark") {
+        Some("dark".to_string())
+    } else if name.contains("light") {
+        Some("light".to_string())
+    } else {
+        None
+    }
 }
 
 /// Get current Linux platform information (cached)
@@ -323,5 +357,18 @@ mod tests {
 
         let (min, max) = detect_window_capabilities(WindowManager::Mutter);
         assert!(min && max); // Traditional WM should support both
+    }
+
+    #[test]
+    fn test_theme_variant_from_name() {
+        assert_eq!(
+            theme_variant_from_name("Adwaita-dark"),
+            Some("dark".to_string())
+        );
+        assert_eq!(
+            theme_variant_from_name("prefer-light"),
+            Some("light".to_string())
+        );
+        assert_eq!(theme_variant_from_name("Adwaita"), None);
     }
 }

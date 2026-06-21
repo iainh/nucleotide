@@ -6,6 +6,8 @@ use gpui::{
     Styled, Task, div, px,
 };
 use std::collections::HashMap;
+use std::future::Future;
+use std::task::Poll;
 use std::time::{Duration, Instant};
 
 use crate::completion_v2::CompletionItem;
@@ -275,22 +277,35 @@ impl DocumentationLoader {
 
     /// Update with completed documentation loading
     pub fn update_completed_requests(&mut self) {
-        let completed = Vec::new();
-
-        // TODO: Check if tasks are completed when API is available
-        // For now, just assume all requests complete immediately
+        let completed = self
+            .pending_requests
+            .iter()
+            .filter(|(_, task)| task.is_ready())
+            .map(|(key, _)| key.clone())
+            .collect::<Vec<_>>();
 
         for key in completed {
-            if let Some(_task) = self.pending_requests.remove(&key) {
-                // In a real implementation, we'd get the result and cache it
-                // For now, we'll just simulate successful completion
-                let content = DocumentationContent::new(
-                    "Documentation loaded successfully".to_string(),
-                    DocumentationSource::LanguageServer,
-                );
+            if let Some(task) = self.pending_requests.remove(&key)
+                && let Some(content) = resolve_ready_task(task)
+            {
                 self.cache.insert(key, content);
             }
         }
+    }
+}
+
+fn resolve_ready_task<T: 'static>(task: Task<T>) -> Option<T> {
+    if !task.is_ready() {
+        return None;
+    }
+
+    let waker = std::task::Waker::noop();
+    let mut cx = std::task::Context::from_waker(waker);
+    let mut task = std::pin::pin!(task);
+
+    match task.as_mut().poll(&mut cx) {
+        Poll::Ready(value) => Some(value),
+        Poll::Pending => None,
     }
 }
 
@@ -631,6 +646,26 @@ mod tests {
         assert!(cache.get("key1").is_some());
         assert!(cache.get("key2").is_none()); // Should be evicted
         assert!(cache.get("key3").is_some());
+    }
+
+    #[test]
+    fn test_documentation_loader_caches_completed_requests() {
+        let mut loader = DocumentationLoader::new(DocumentationCacheConfig::default());
+        let content = DocumentationContent::new(
+            "Loaded documentation".to_string(),
+            DocumentationSource::LanguageServer,
+        );
+
+        loader
+            .pending_requests
+            .insert("item:function".to_string(), Task::ready(content));
+
+        loader.update_completed_requests();
+
+        assert!(loader.pending_requests.is_empty());
+        let cached = loader.cache.get("item:function").unwrap();
+        assert_eq!(cached.markdown, "Loaded documentation");
+        assert_eq!(cached.source, DocumentationSource::LanguageServer);
     }
 
     #[test]

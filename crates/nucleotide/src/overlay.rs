@@ -1276,8 +1276,6 @@ impl OverlayView {
         }
     }
 
-    /// Calculate cursor position for completion popup placement
-    /// TODO: This should get actual cursor position from document view
     /// Calculate cursor-based completion position using exact cursor coordinates when available
     fn calculate_completion_position(&self, cx: &Context<Self>) -> (gpui::Pixels, gpui::Pixels) {
         let layout_info = self.get_workspace_layout_info(cx);
@@ -1373,13 +1371,8 @@ impl OverlayView {
             return *layout;
         }
 
-        // TODO: Alternative approaches to access workspace:
-        // 1. Pass layout info when creating completion view
-        // 2. Store layout in app-global state
-        // 3. Make workspace accessible through entity hierarchy
-
-        // For now, use reasonable defaults that match typical Nucleotide layout
-        // These values should be close to the actual defaults but won't reflect user resizing
+        // Fall back to defaults that match the normal Nucleotide layout.
+        // These values stay approximate when the user has resized panes.
         WorkspaceLayoutInfo {
             file_tree_width: px(250.0), // Default file tree width (user can resize)
             gutter_width: px(60.0),     // Line number gutter width
