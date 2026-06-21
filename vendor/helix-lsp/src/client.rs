@@ -46,6 +46,130 @@ fn workspace_for_uri(uri: lsp::Url) -> WorkspaceFolder {
     }
 }
 
+fn text_document_client_capabilities(
+    enable_snippets: bool,
+) -> lsp::TextDocumentClientCapabilities {
+    lsp::TextDocumentClientCapabilities {
+        completion: Some(lsp::CompletionClientCapabilities {
+            completion_item: Some(lsp::CompletionItemCapability {
+                snippet_support: Some(enable_snippets),
+                resolve_support: Some(lsp::CompletionItemCapabilityResolveSupport {
+                    properties: vec![
+                        String::from("documentation"),
+                        String::from("detail"),
+                        String::from("additionalTextEdits"),
+                    ],
+                }),
+                insert_replace_support: Some(true),
+                deprecated_support: Some(true),
+                tag_support: Some(lsp::TagSupport {
+                    value_set: vec![lsp::CompletionItemTag::DEPRECATED],
+                }),
+                // Help servers like rust-analyzer provide enriched labels
+                label_details_support: Some(true),
+                // Advertise supported insert text modes similar to Zed
+                insert_text_mode_support: Some(lsp::InsertTextModeSupport {
+                    value_set: vec![
+                        lsp::InsertTextMode::AS_IS,
+                        lsp::InsertTextMode::ADJUST_INDENTATION,
+                    ],
+                }),
+                ..Default::default()
+            }),
+            completion_item_kind: Some(lsp::CompletionItemKindCapability {
+                ..Default::default()
+            }),
+            // Enable additional completion context information like trigger character
+            context_support: Some(true),
+            // Match Zed's default to adjust indentation on insert
+            insert_text_mode: Some(lsp::InsertTextMode::ADJUST_INDENTATION),
+            // Provide CompletionList item defaults the client understands
+            completion_list: Some(lsp::CompletionListCapability {
+                item_defaults: Some(vec![
+                    "commitCharacters".to_owned(),
+                    "editRange".to_owned(),
+                    "insertTextMode".to_owned(),
+                    "insertTextFormat".to_owned(),
+                    "data".to_owned(),
+                ]),
+            }),
+            ..Default::default()
+        }),
+        hover: Some(lsp::HoverClientCapabilities {
+            // if not specified, rust-analyzer returns plaintext marked as markdown but
+            // badly formatted.
+            content_format: Some(vec![lsp::MarkupKind::Markdown]),
+            ..Default::default()
+        }),
+        signature_help: Some(lsp::SignatureHelpClientCapabilities {
+            signature_information: Some(lsp::SignatureInformationSettings {
+                documentation_format: Some(vec![lsp::MarkupKind::Markdown]),
+                parameter_information: Some(lsp::ParameterInformationSettings {
+                    label_offset_support: Some(true),
+                }),
+                active_parameter_support: Some(true),
+            }),
+            ..Default::default()
+        }),
+        document_symbol: Some(lsp::DocumentSymbolClientCapabilities {
+            dynamic_registration: Some(false),
+            hierarchical_document_symbol_support: Some(true),
+            ..Default::default()
+        }),
+        rename: Some(lsp::RenameClientCapabilities {
+            dynamic_registration: Some(false),
+            prepare_support: Some(true),
+            prepare_support_default_behavior: None,
+            honors_change_annotations: Some(false),
+        }),
+        formatting: Some(lsp::DocumentFormattingClientCapabilities {
+            dynamic_registration: Some(false),
+        }),
+        code_action: Some(lsp::CodeActionClientCapabilities {
+            code_action_literal_support: Some(lsp::CodeActionLiteralSupport {
+                code_action_kind: lsp::CodeActionKindLiteralSupport {
+                    value_set: [
+                        lsp::CodeActionKind::EMPTY,
+                        lsp::CodeActionKind::QUICKFIX,
+                        lsp::CodeActionKind::REFACTOR,
+                        lsp::CodeActionKind::REFACTOR_EXTRACT,
+                        lsp::CodeActionKind::REFACTOR_INLINE,
+                        lsp::CodeActionKind::REFACTOR_REWRITE,
+                        lsp::CodeActionKind::SOURCE,
+                        lsp::CodeActionKind::SOURCE_ORGANIZE_IMPORTS,
+                    ]
+                    .iter()
+                    .map(|kind| kind.as_str().to_string())
+                    .collect(),
+                },
+            }),
+            is_preferred_support: Some(true),
+            disabled_support: Some(true),
+            data_support: Some(true),
+            resolve_support: Some(CodeActionCapabilityResolveSupport {
+                properties: vec!["edit".to_owned(), "command".to_owned()],
+            }),
+            ..Default::default()
+        }),
+        publish_diagnostics: Some(lsp::PublishDiagnosticsClientCapabilities {
+            version_support: Some(true),
+            tag_support: Some(lsp::TagSupport {
+                value_set: vec![
+                    lsp::DiagnosticTag::UNNECESSARY,
+                    lsp::DiagnosticTag::DEPRECATED,
+                ],
+            }),
+            data_support: Some(true),
+            ..Default::default()
+        }),
+        inlay_hint: Some(lsp::InlayHintClientCapabilities {
+            dynamic_registration: Some(false),
+            resolve_support: None,
+        }),
+        ..Default::default()
+    }
+}
+
 #[derive(Debug)]
 pub struct Client {
     id: LanguageServerId,
@@ -615,119 +739,7 @@ impl Client {
                     }),
                     ..Default::default()
                 }),
-                text_document: Some(lsp::TextDocumentClientCapabilities {
-                    completion: Some(lsp::CompletionClientCapabilities {
-                        completion_item: Some(lsp::CompletionItemCapability {
-                            snippet_support: Some(enable_snippets),
-                            resolve_support: Some(lsp::CompletionItemCapabilityResolveSupport {
-                                properties: vec![
-                                    String::from("documentation"),
-                                    String::from("detail"),
-                                    String::from("additionalTextEdits"),
-                                ],
-                            }),
-                            insert_replace_support: Some(true),
-                            deprecated_support: Some(true),
-                            tag_support: Some(lsp::TagSupport {
-                                value_set: vec![lsp::CompletionItemTag::DEPRECATED],
-                            }),
-                            // Help servers like rust-analyzer provide enriched labels
-                            label_details_support: Some(true),
-                            // Advertise supported insert text modes similar to Zed
-                            insert_text_mode_support: Some(lsp::InsertTextModeSupport {
-                                value_set: vec![
-                                    lsp::InsertTextMode::AS_IS,
-                                    lsp::InsertTextMode::ADJUST_INDENTATION,
-                                ],
-                            }),
-                            ..Default::default()
-                        }),
-                        completion_item_kind: Some(lsp::CompletionItemKindCapability {
-                            ..Default::default()
-                        }),
-                        // Enable additional completion context information like trigger character
-                        context_support: Some(true),
-                        // Match Zed's default to adjust indentation on insert
-                        insert_text_mode: Some(lsp::InsertTextMode::ADJUST_INDENTATION),
-                        // Provide CompletionList item defaults the client understands
-                        completion_list: Some(lsp::CompletionListCapability {
-                            item_defaults: Some(vec![
-                                "commitCharacters".to_owned(),
-                                "editRange".to_owned(),
-                                "insertTextMode".to_owned(),
-                                "insertTextFormat".to_owned(),
-                                "data".to_owned(),
-                            ]),
-                        }),
-                        ..Default::default()
-                    }),
-                    hover: Some(lsp::HoverClientCapabilities {
-                        // if not specified, rust-analyzer returns plaintext marked as markdown but
-                        // badly formatted.
-                        content_format: Some(vec![lsp::MarkupKind::Markdown]),
-                        ..Default::default()
-                    }),
-                    signature_help: Some(lsp::SignatureHelpClientCapabilities {
-                        signature_information: Some(lsp::SignatureInformationSettings {
-                            documentation_format: Some(vec![lsp::MarkupKind::Markdown]),
-                            parameter_information: Some(lsp::ParameterInformationSettings {
-                                label_offset_support: Some(true),
-                            }),
-                            active_parameter_support: Some(true),
-                        }),
-                        ..Default::default()
-                    }),
-                    rename: Some(lsp::RenameClientCapabilities {
-                        dynamic_registration: Some(false),
-                        prepare_support: Some(true),
-                        prepare_support_default_behavior: None,
-                        honors_change_annotations: Some(false),
-                    }),
-                    formatting: Some(lsp::DocumentFormattingClientCapabilities {
-                        dynamic_registration: Some(false),
-                    }),
-                    code_action: Some(lsp::CodeActionClientCapabilities {
-                        code_action_literal_support: Some(lsp::CodeActionLiteralSupport {
-                            code_action_kind: lsp::CodeActionKindLiteralSupport {
-                                value_set: [
-                                    lsp::CodeActionKind::EMPTY,
-                                    lsp::CodeActionKind::QUICKFIX,
-                                    lsp::CodeActionKind::REFACTOR,
-                                    lsp::CodeActionKind::REFACTOR_EXTRACT,
-                                    lsp::CodeActionKind::REFACTOR_INLINE,
-                                    lsp::CodeActionKind::REFACTOR_REWRITE,
-                                    lsp::CodeActionKind::SOURCE,
-                                    lsp::CodeActionKind::SOURCE_ORGANIZE_IMPORTS,
-                                ]
-                                .iter()
-                                .map(|kind| kind.as_str().to_string())
-                                .collect(),
-                            },
-                        }),
-                        is_preferred_support: Some(true),
-                        disabled_support: Some(true),
-                        data_support: Some(true),
-                        resolve_support: Some(CodeActionCapabilityResolveSupport {
-                            properties: vec!["edit".to_owned(), "command".to_owned()],
-                        }),
-                        ..Default::default()
-                    }),
-                    publish_diagnostics: Some(lsp::PublishDiagnosticsClientCapabilities {
-                        version_support: Some(true),
-                        tag_support: Some(lsp::TagSupport {
-                            value_set: vec![
-                                lsp::DiagnosticTag::UNNECESSARY,
-                                lsp::DiagnosticTag::DEPRECATED,
-                            ],
-                        }),
-                        ..Default::default()
-                    }),
-                    inlay_hint: Some(lsp::InlayHintClientCapabilities {
-                        dynamic_registration: Some(false),
-                        resolve_support: None,
-                    }),
-                    ..Default::default()
-                }),
+                text_document: Some(text_document_client_capabilities(enable_snippets)),
                 window: Some(lsp::WindowClientCapabilities {
                     work_done_progress: Some(true),
                     ..Default::default()
@@ -1583,5 +1595,55 @@ impl Client {
         self.notify::<lsp::notification::DidChangeWatchedFiles>(lsp::DidChangeWatchedFilesParams {
             changes,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn text_document_capabilities_advertise_hierarchical_document_symbols() {
+        let capabilities = text_document_client_capabilities(true);
+        let document_symbol = capabilities.document_symbol.unwrap();
+
+        assert_eq!(document_symbol.dynamic_registration, Some(false));
+        assert_eq!(
+            document_symbol.hierarchical_document_symbol_support,
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn text_document_capabilities_advertise_diagnostic_data_preservation() {
+        let capabilities = text_document_client_capabilities(true);
+        let publish_diagnostics = capabilities.publish_diagnostics.unwrap();
+
+        assert_eq!(publish_diagnostics.data_support, Some(true));
+    }
+
+    #[test]
+    fn text_document_capabilities_preserve_snippet_setting() {
+        let enabled = text_document_client_capabilities(true);
+        let disabled = text_document_client_capabilities(false);
+
+        assert_eq!(
+            enabled
+                .completion
+                .unwrap()
+                .completion_item
+                .unwrap()
+                .snippet_support,
+            Some(true)
+        );
+        assert_eq!(
+            disabled
+                .completion
+                .unwrap()
+                .completion_item
+                .unwrap()
+                .snippet_support,
+            Some(false)
+        );
     }
 }
