@@ -92,6 +92,14 @@ type CompletionServerResult = anyhow::Result<(
 )>;
 type CompletionServerFuture = BoxFuture<'static, CompletionServerResult>;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LspCompletionTrigger {
+    Manual,
+    Automatic,
+    Character(char),
+    Incomplete,
+}
+
 pub struct PendingCompletionRequest {
     prefix: String,
     local_items: Vec<nucleotide_events::completion::CompletionItem>,
@@ -102,18 +110,26 @@ pub struct PendingCompletionRequest {
 impl PendingCompletionRequest {
     pub async fn collect(
         mut self,
-    ) -> anyhow::Result<(Vec<nucleotide_events::completion::CompletionItem>, String)> {
+    ) -> anyhow::Result<(
+        Vec<nucleotide_events::completion::CompletionItem>,
+        String,
+        bool,
+    )> {
         let mut items = Vec::new();
         let mut lsp_error = self.lsp_error.take();
+        let mut is_incomplete = false;
 
         while let Some(response) = futures_util::StreamExt::next(&mut self.lsp_futures).await {
             match response {
                 Ok((server_id, offset_encoding, Some(lsp_response))) => {
+                    let server_is_incomplete = lsp_completion_response_is_incomplete(&lsp_response);
+                    is_incomplete |= server_is_incomplete;
                     let mut server_items =
                         lsp_completion_items_from_response(lsp_response, offset_encoding);
                     nucleotide_logging::info!(
                         server_id = ?server_id,
                         item_count = server_items.len(),
+                        is_incomplete = server_is_incomplete,
                         "Received LSP completion items from language server"
                     );
                     items.append(&mut server_items);
@@ -140,6 +156,7 @@ impl PendingCompletionRequest {
             lsp_item_count = items.len(),
             local_item_count = self.local_items.len(),
             prefix = %self.prefix,
+            is_incomplete = is_incomplete,
             "Merging LSP and local completion items"
         );
         items.extend(self.local_items);
@@ -151,7 +168,7 @@ impl PendingCompletionRequest {
             return Err(err);
         }
 
-        Ok((items, self.prefix))
+        Ok((items, self.prefix, is_incomplete))
     }
 }
 
@@ -4179,11 +4196,13 @@ impl Application {
         cursor: usize,
         doc_id: helix_view::DocumentId,
         view_id: helix_view::ViewId,
+        trigger: LspCompletionTrigger,
     ) -> anyhow::Result<PendingCompletionRequest> {
         nucleotide_logging::info!(
             cursor = cursor,
             doc_id = ?doc_id,
             view_id = ?view_id,
+            trigger = ?trigger,
             "Preparing LSP completion request with prefix extraction"
         );
 
@@ -4198,7 +4217,7 @@ impl Application {
 
         let local_items = self.collect_local_completion_items(cursor, doc_id, &prefix);
         let (lsp_futures, lsp_error) = match self
-            .prepare_lsp_completion_futures(cursor, doc_id, view_id)
+            .prepare_lsp_completion_futures(cursor, doc_id, view_id, trigger)
         {
             Ok(futures) => (futures, None),
             Err(err) => {
@@ -4225,11 +4244,13 @@ impl Application {
         cursor: usize,
         doc_id: helix_view::DocumentId,
         view_id: helix_view::ViewId,
+        trigger: LspCompletionTrigger,
     ) -> anyhow::Result<FuturesOrdered<CompletionServerFuture>> {
         nucleotide_logging::info!(
             cursor = cursor,
             doc_id = ?doc_id,
             view_id = ?view_id,
+            trigger = ?trigger,
             "Preparing LSP completion futures for event-driven system"
         );
 
@@ -4279,23 +4300,7 @@ impl Application {
         let text = doc.text();
         let cursor_pos = cursor.min(text.len_chars());
 
-        // Create LSP completion context, upgrading to TriggerCharacter when applicable
-        // rust-analyzer advertises trigger characters like ':', '.', '\'', '('
-        let mut completion_context = helix_lsp::lsp::CompletionContext {
-            trigger_kind: helix_lsp::lsp::CompletionTriggerKind::INVOKED,
-            trigger_character: None,
-        };
-
-        // If immediately preceding character is a known trigger, inform the server
-        let maybe_prev = text.chars_at(cursor_pos).reversed().next();
-        if let Some(prev_ch) = maybe_prev {
-            const TRIGGERS: &[char] = &[':', '.', '\'', '('];
-            if TRIGGERS.contains(&prev_ch) {
-                completion_context.trigger_kind =
-                    helix_lsp::lsp::CompletionTriggerKind::TRIGGER_CHARACTER;
-                completion_context.trigger_character = Some(prev_ch.to_string());
-            }
-        }
+        let trigger_text = text.slice(..cursor_pos).to_string();
 
         // Get document identifier for LSP request
         let doc_id_lsp = doc.identifier();
@@ -4305,6 +4310,15 @@ impl Application {
         for language_server in language_servers {
             let offset_encoding = language_server.offset_encoding();
             let position = helix_lsp::util::pos_to_lsp_pos(text, cursor_pos, offset_encoding);
+            let completion_context = completion_context_for_trigger(
+                trigger,
+                &trigger_text,
+                language_server
+                    .capabilities()
+                    .completion_provider
+                    .as_ref()
+                    .and_then(|provider| provider.trigger_characters.as_deref()),
+            );
 
             nucleotide_logging::debug!(
                 cursor_chars = cursor_pos,
@@ -4313,6 +4327,8 @@ impl Application {
                 offset_encoding = ?offset_encoding,
                 server_id = ?language_server.id(),
                 server_count = server_count,
+                trigger_kind = ?completion_context.trigger_kind,
+                trigger_character = ?completion_context.trigger_character,
                 "Requesting completions from language server"
             );
 
@@ -4378,9 +4394,16 @@ impl Application {
         doc_id: helix_view::DocumentId,
         view_id: helix_view::ViewId,
     ) -> anyhow::Result<(Vec<nucleotide_events::completion::CompletionItem>, String)> {
-        self.prepare_lsp_completions_with_prefix(cursor, doc_id, view_id)?
+        let (items, prefix, _) = self
+            .prepare_lsp_completions_with_prefix(
+                cursor,
+                doc_id,
+                view_id,
+                LspCompletionTrigger::Manual,
+            )?
             .collect()
-            .await
+            .await?;
+        Ok((items, prefix))
     }
 
     fn collect_local_completion_items(
@@ -6237,6 +6260,66 @@ fn lsp_completion_insert_text_format(
     }
 }
 
+fn completion_context_for_trigger(
+    trigger: LspCompletionTrigger,
+    trigger_text: &str,
+    advertised_trigger_characters: Option<&[String]>,
+) -> lsp::CompletionContext {
+    match trigger {
+        LspCompletionTrigger::Manual => lsp::CompletionContext {
+            trigger_kind: lsp::CompletionTriggerKind::INVOKED,
+            trigger_character: None,
+        },
+        LspCompletionTrigger::Incomplete => lsp::CompletionContext {
+            trigger_kind: lsp::CompletionTriggerKind::TRIGGER_FOR_INCOMPLETE_COMPLETIONS,
+            trigger_character: None,
+        },
+        LspCompletionTrigger::Automatic | LspCompletionTrigger::Character(_) => {
+            let trigger_character =
+                advertised_completion_trigger(trigger, trigger_text, advertised_trigger_characters);
+
+            if let Some(trigger_character) = trigger_character {
+                lsp::CompletionContext {
+                    trigger_kind: lsp::CompletionTriggerKind::TRIGGER_CHARACTER,
+                    trigger_character: Some(trigger_character),
+                }
+            } else {
+                lsp::CompletionContext {
+                    trigger_kind: lsp::CompletionTriggerKind::INVOKED,
+                    trigger_character: None,
+                }
+            }
+        }
+    }
+}
+
+fn advertised_completion_trigger(
+    trigger: LspCompletionTrigger,
+    trigger_text: &str,
+    advertised_trigger_characters: Option<&[String]>,
+) -> Option<String> {
+    advertised_trigger_characters?
+        .iter()
+        .filter(|candidate| {
+            !candidate.is_empty()
+                && trigger_text.ends_with(candidate.as_str())
+                && match trigger {
+                    LspCompletionTrigger::Character(ch) => candidate.ends_with(ch),
+                    LspCompletionTrigger::Automatic => true,
+                    LspCompletionTrigger::Manual | LspCompletionTrigger::Incomplete => false,
+                }
+        })
+        .max_by_key(|candidate| candidate.len())
+        .cloned()
+}
+
+fn lsp_completion_response_is_incomplete(response: &lsp::CompletionResponse) -> bool {
+    match response {
+        lsp::CompletionResponse::Array(_) => false,
+        lsp::CompletionResponse::List(list) => list.is_incomplete,
+    }
+}
+
 fn lsp_completion_items_from_response(
     response: lsp::CompletionResponse,
     offset_encoding: OffsetEncoding,
@@ -6598,10 +6681,11 @@ fn should_update_env_var(key: &str) -> bool {
 mod tests {
 
     use super::{
-        NativeSymbolItem, NativeSymbolTarget, PendingCompletionRequest,
-        buffer_word_completion_items, dedupe_completion_items, local_path_completion_context,
-        lsp_completion_insert_text, lsp_completion_insert_text_format,
-        lsp_completion_items_from_response, lsp_symbol_picker, native_symbol_item_from_lsp,
+        LspCompletionTrigger, NativeSymbolItem, NativeSymbolTarget, PendingCompletionRequest,
+        buffer_word_completion_items, completion_context_for_trigger, dedupe_completion_items,
+        local_path_completion_context, lsp_completion_insert_text,
+        lsp_completion_insert_text_format, lsp_completion_items_from_response,
+        lsp_completion_response_is_incomplete, lsp_symbol_picker, native_symbol_item_from_lsp,
         path_completion_items, syntax_symbol_kind_from_capture_name,
     };
     use crate::test_utils::test_support::{
@@ -6774,6 +6858,78 @@ mod tests {
             lsp_completion_insert_text_format(&plain),
             nucleotide_events::completion::InsertTextFormat::PlainText
         );
+    }
+
+    #[test]
+    fn completion_context_keeps_manual_invocation_after_trigger_text() {
+        let trigger_characters = vec![":".to_string()];
+
+        let context = completion_context_for_trigger(
+            LspCompletionTrigger::Manual,
+            "HttpBinClient::",
+            Some(&trigger_characters),
+        );
+
+        assert_eq!(context.trigger_kind, lsp::CompletionTriggerKind::INVOKED);
+        assert_eq!(context.trigger_character, None);
+    }
+
+    #[test]
+    fn completion_context_uses_advertised_trigger_strings() {
+        let trigger_characters = vec![":".to_string(), "::".to_string(), ".".to_string()];
+
+        let context = completion_context_for_trigger(
+            LspCompletionTrigger::Character(':'),
+            "HttpBinClient::",
+            Some(&trigger_characters),
+        );
+
+        assert_eq!(
+            context.trigger_kind,
+            lsp::CompletionTriggerKind::TRIGGER_CHARACTER
+        );
+        assert_eq!(context.trigger_character.as_deref(), Some("::"));
+    }
+
+    #[test]
+    fn completion_context_ignores_unadvertised_trigger_characters() {
+        let trigger_characters = vec![".".to_string()];
+
+        let context = completion_context_for_trigger(
+            LspCompletionTrigger::Character(':'),
+            "HttpBinClient::",
+            Some(&trigger_characters),
+        );
+
+        assert_eq!(context.trigger_kind, lsp::CompletionTriggerKind::INVOKED);
+        assert_eq!(context.trigger_character, None);
+    }
+
+    #[test]
+    fn completion_context_marks_incomplete_retrigger() {
+        let context = completion_context_for_trigger(
+            LspCompletionTrigger::Incomplete,
+            "println",
+            Some(&[":".to_string()]),
+        );
+
+        assert_eq!(
+            context.trigger_kind,
+            lsp::CompletionTriggerKind::TRIGGER_FOR_INCOMPLETE_COMPLETIONS
+        );
+        assert_eq!(context.trigger_character, None);
+    }
+
+    #[test]
+    fn lsp_completion_response_is_incomplete_tracks_completion_lists() {
+        let array_response = lsp::CompletionResponse::Array(vec![]);
+        let list_response = lsp::CompletionResponse::List(lsp::CompletionList {
+            is_incomplete: true,
+            items: vec![],
+        });
+
+        assert!(!lsp_completion_response_is_incomplete(&array_response));
+        assert!(lsp_completion_response_is_incomplete(&list_response));
     }
 
     #[test]
@@ -6965,9 +7121,10 @@ mod tests {
             lsp_futures,
         };
 
-        let (items, prefix) = request.collect().await.expect("completion results");
+        let (items, prefix, is_incomplete) = request.collect().await.expect("completion results");
 
         assert_eq!(prefix, "pri");
+        assert!(!is_incomplete);
         let labels: Vec<_> = items.iter().map(|item| item.label.as_str()).collect();
         assert_eq!(labels, vec!["println", "private"]);
     }
@@ -6984,11 +7141,48 @@ mod tests {
             lsp_futures: FuturesOrdered::new(),
         };
 
-        let (items, prefix) = request.collect().await.expect("local fallback");
+        let (items, prefix, is_incomplete) = request.collect().await.expect("local fallback");
 
         assert_eq!(prefix, "src");
+        assert!(!is_incomplete);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].label, "src/lib.rs");
+    }
+
+    #[tokio::test]
+    async fn pending_completion_request_preserves_incomplete_lsp_lists() {
+        let mut lsp_futures: FuturesOrdered<super::CompletionServerFuture> = FuturesOrdered::new();
+        lsp_futures.push_back(
+            async {
+                Ok::<_, anyhow::Error>((
+                    helix_lsp::LanguageServerId::default(),
+                    OffsetEncoding::Utf16,
+                    Some(lsp::CompletionResponse::List(lsp::CompletionList {
+                        is_incomplete: true,
+                        items: vec![lsp::CompletionItem {
+                            label: "println".to_string(),
+                            kind: Some(lsp::CompletionItemKind::FUNCTION),
+                            ..Default::default()
+                        }],
+                    })),
+                ))
+            }
+            .boxed(),
+        );
+
+        let request = PendingCompletionRequest {
+            prefix: "pri".to_string(),
+            local_items: vec![],
+            lsp_error: None,
+            lsp_futures,
+        };
+
+        let (items, prefix, is_incomplete) = request.collect().await.expect("completion results");
+
+        assert_eq!(prefix, "pri");
+        assert!(is_incomplete);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].label, "println");
     }
 
     #[ignore] // Temporarily disabled due to SIGBUS compiler crash
