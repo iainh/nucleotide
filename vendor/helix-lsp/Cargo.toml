@@ -13,10 +13,10 @@ homepage = "https://helix-editor.com"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-helix-stdx = { git = "https://github.com/iainh/helix", rev = "cd2ee5a29e7309e69af5cd5529e3bef1759bdbd4" }
-helix-core = { git = "https://github.com/iainh/helix", rev = "cd2ee5a29e7309e69af5cd5529e3bef1759bdbd4" }
-helix-loader = { git = "https://github.com/iainh/helix", rev = "cd2ee5a29e7309e69af5cd5529e3bef1759bdbd4" }
-helix-lsp-types = { git = "https://github.com/iainh/helix", rev = "cd2ee5a29e7309e69af5cd5529e3bef1759bdbd4" }
+helix-stdx = { git = "https://github.com/helix-editor/helix", rev = "5a8fb732f26d6aabe757ffd2108ee66e8ef25236" }
+helix-core = { git = "https://github.com/helix-editor/helix", rev = "5a8fb732f26d6aabe757ffd2108ee66e8ef25236" }
+helix-loader = { git = "https://github.com/helix-editor/helix", rev = "5a8fb732f26d6aabe757ffd2108ee66e8ef25236" }
+helix-lsp-types = { git = "https://github.com/helix-editor/helix", rev = "5a8fb732f26d6aabe757ffd2108ee66e8ef25236" }
 
 anyhow = "1.0"
 futures-executor = "0.3"
