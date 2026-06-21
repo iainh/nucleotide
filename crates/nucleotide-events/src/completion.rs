@@ -127,6 +127,42 @@ pub struct CompletionItem {
     pub signature_info: Option<String>,
     pub type_info: Option<String>,
     pub insert_text_format: InsertTextFormat,
+    pub edit: Option<CompletionEdit>,
+}
+
+/// LSP-style edit metadata for accepting a completion item.
+///
+/// Ranges use the language server's negotiated offset encoding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompletionEdit {
+    pub offset_encoding: CompletionOffsetEncoding,
+    pub text_edit: Option<CompletionTextEdit>,
+    pub additional_text_edits: Vec<CompletionTextEdit>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompletionTextEdit {
+    pub range: CompletionRange,
+    pub new_text: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CompletionRange {
+    pub start: CompletionPosition,
+    pub end: CompletionPosition,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CompletionPosition {
+    pub line: u32,
+    pub character: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompletionOffsetEncoding {
+    Utf8,
+    Utf16,
+    Utf32,
 }
 
 /// LSP Insert Text Format
@@ -260,6 +296,7 @@ impl CompletionItem {
             signature_info: None,
             type_info: None,
             insert_text_format: InsertTextFormat::PlainText,
+            edit: None,
         }
     }
 
@@ -295,6 +332,16 @@ impl CompletionItem {
 
     pub fn with_insert_text_format(mut self, format: InsertTextFormat) -> Self {
         self.insert_text_format = format;
+        self
+    }
+
+    pub fn with_edit(mut self, edit: CompletionEdit) -> Self {
+        self.edit = Some(edit);
+        self
+    }
+
+    pub fn with_optional_edit(mut self, edit: Option<CompletionEdit>) -> Self {
+        self.edit = edit;
         self
     }
 }

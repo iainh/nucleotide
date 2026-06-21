@@ -84,8 +84,9 @@ pub use completion_renderer::{
     render_completion_list,
 };
 pub use completion_v2::{
-    CompleteViaHelixEvent, CompletionItem, CompletionItemKind, CompletionView, Position,
-    StringMatch, StringMatchCandidate,
+    CompleteViaHelixEvent, CompletionEdit, CompletionItem, CompletionItemKind,
+    CompletionOffsetEncoding, CompletionPosition, CompletionRange, CompletionTextEdit,
+    CompletionView, Position, StringMatch, StringMatchCandidate,
 };
 pub use confirm_dialog::{
     ConfirmDialog, ConfirmDialogCallbacks, Dialog, DialogContent, DialogDescription, DialogFooter,
