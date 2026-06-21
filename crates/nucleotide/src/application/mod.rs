@@ -23,7 +23,7 @@ pub use view_handler::ViewHandler;
 pub use workspace_handler::WorkspaceHandler;
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -36,7 +36,7 @@ use futures_util::{
 };
 use helix_core::{Position, RopeSlice, Selection, Uri, pos_at_coords, syntax};
 use helix_lsp::{LanguageServerId, LspProgressMap, OffsetEncoding, lsp};
-use helix_stdx::path::get_relative_path;
+use helix_stdx::path::{self as helix_path, get_path_suffix, get_relative_path};
 use helix_view::document::from_reader;
 use nucleotide_events::{ProjectLspCommand, ProjectLspCommandError};
 use nucleotide_lsp::{HelixLspBridge, ProjectLspManager, ServerStatus};
@@ -4122,8 +4122,34 @@ impl Application {
             "Extracted completion prefix for filtering"
         );
 
-        // Call the existing sync method to get completions
-        let items = self.request_lsp_completions_sync(cursor, doc_id, view_id)?;
+        let mut lsp_error = None;
+        let mut items = match self.request_lsp_completions_sync(cursor, doc_id, view_id) {
+            Ok(items) => items,
+            Err(err) => {
+                nucleotide_logging::warn!(
+                    error = %err,
+                    "LSP completion request failed; falling back to local completion providers"
+                );
+                lsp_error = Some(err);
+                Vec::new()
+            }
+        };
+
+        let local_items = self.collect_local_completion_items(cursor, doc_id, &prefix);
+        nucleotide_logging::debug!(
+            lsp_item_count = items.len(),
+            local_item_count = local_items.len(),
+            prefix = %prefix,
+            "Merging LSP and local completion items"
+        );
+        items.extend(local_items);
+        dedupe_completion_items(&mut items);
+
+        if items.is_empty()
+            && let Some(err) = lsp_error
+        {
+            return Err(err);
+        }
 
         Ok((items, prefix))
     }
@@ -4406,6 +4432,59 @@ impl Application {
             .collect();
 
         Ok(our_items)
+    }
+
+    fn collect_local_completion_items(
+        &self,
+        cursor: usize,
+        doc_id: helix_view::DocumentId,
+        prefix: &str,
+    ) -> Vec<nucleotide_events::completion::CompletionItem> {
+        let mut items = self.collect_buffer_word_completion_items(doc_id, prefix);
+        items.extend(self.collect_path_completion_items(cursor, doc_id));
+        items
+    }
+
+    fn collect_buffer_word_completion_items(
+        &self,
+        doc_id: helix_view::DocumentId,
+        prefix: &str,
+    ) -> Vec<nucleotide_events::completion::CompletionItem> {
+        let Some(doc) = self.editor.documents.get(&doc_id) else {
+            return Vec::new();
+        };
+
+        buffer_word_completion_items(doc.text().slice(..).chars(), prefix)
+    }
+
+    fn collect_path_completion_items(
+        &self,
+        cursor: usize,
+        doc_id: helix_view::DocumentId,
+    ) -> Vec<nucleotide_events::completion::CompletionItem> {
+        let Some(doc) = self.editor.documents.get(&doc_id) else {
+            return Vec::new();
+        };
+
+        let text = doc.text();
+        let cursor_pos = cursor.min(text.len_chars());
+        let current_line = text.char_to_line(cursor_pos);
+        let start = text
+            .line_to_char(current_line)
+            .max(cursor_pos.saturating_sub(1000));
+        let line_until_cursor = text.slice(start..cursor_pos);
+        let Some(matched_path) = get_path_suffix(line_until_cursor, false) else {
+            return Vec::new();
+        };
+
+        let matched_path = String::from(matched_path);
+        let Some(context) =
+            local_path_completion_context(&matched_path, doc.path().map(PathBuf::as_path))
+        else {
+            return Vec::new();
+        };
+
+        path_completion_items(&context.dir_path, context.typed_file_name.as_deref())
     }
 
     /// Extract the current word prefix at the cursor position for completion filtering
@@ -6209,6 +6288,159 @@ fn lsp_completion_insert_text_format(
     }
 }
 
+const MIN_BUFFER_WORD_COMPLETION_PREFIX_CHARS: usize = 2;
+const MAX_LOCAL_COMPLETION_ITEMS: usize = 128;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LocalPathCompletionContext {
+    dir_path: PathBuf,
+    typed_file_name: Option<String>,
+}
+
+fn buffer_word_completion_items(
+    chars: impl IntoIterator<Item = char>,
+    prefix: &str,
+) -> Vec<nucleotide_events::completion::CompletionItem> {
+    let prefix_len = prefix.chars().count();
+    if prefix_len < MIN_BUFFER_WORD_COMPLETION_PREFIX_CHARS {
+        return Vec::new();
+    }
+
+    let mut words = BTreeSet::new();
+    let mut current_word = String::new();
+    for ch in chars {
+        if helix_core::chars::char_is_word(ch) {
+            current_word.push(ch);
+        } else {
+            maybe_insert_buffer_word(&mut words, &current_word, prefix, prefix_len);
+            current_word.clear();
+        }
+    }
+    maybe_insert_buffer_word(&mut words, &current_word, prefix, prefix_len);
+
+    words
+        .into_iter()
+        .take(MAX_LOCAL_COMPLETION_ITEMS)
+        .map(|word| {
+            nucleotide_events::completion::CompletionItem::new(
+                word.clone(),
+                nucleotide_events::completion::CompletionItemKind::Text,
+            )
+            .with_insert_text(word)
+            .with_detail("buffer".to_string())
+        })
+        .collect()
+}
+
+fn maybe_insert_buffer_word(
+    words: &mut BTreeSet<String>,
+    word: &str,
+    prefix: &str,
+    prefix_len: usize,
+) {
+    if word.chars().count() > prefix_len && word.starts_with(prefix) {
+        words.insert(word.to_string());
+    }
+}
+
+fn local_path_completion_context(
+    matched_path: &str,
+    doc_path: Option<&Path>,
+) -> Option<LocalPathCompletionContext> {
+    let path = if matched_path.starts_with("file://") {
+        url::Url::parse(matched_path)
+            .ok()
+            .and_then(|url| url.to_file_path().ok())?
+    } else {
+        PathBuf::from(matched_path)
+    };
+
+    let path = helix_path::expand(&path);
+    let parent_dir = doc_path.and_then(Path::parent);
+    let path = match parent_dir {
+        Some(parent_dir) if path.is_relative() => parent_dir.join(path.as_ref()),
+        _ => path.into_owned(),
+    };
+
+    if path_suffix_ends_with_separator(matched_path) {
+        Some(LocalPathCompletionContext {
+            dir_path: path,
+            typed_file_name: None,
+        })
+    } else {
+        path.parent().map(|parent_path| LocalPathCompletionContext {
+            dir_path: parent_path.to_path_buf(),
+            typed_file_name: path
+                .file_name()
+                .and_then(|file_name| file_name.to_str().map(String::from)),
+        })
+    }
+}
+
+fn path_suffix_ends_with_separator(path: &str) -> bool {
+    matches!(path.as_bytes().last(), Some(b'/'))
+        || (cfg!(windows) && matches!(path.as_bytes().last(), Some(b'\\')))
+}
+
+fn path_completion_items(
+    dir_path: &Path,
+    typed_file_name: Option<&str>,
+) -> Vec<nucleotide_events::completion::CompletionItem> {
+    let Ok(read_dir) = std::fs::read_dir(dir_path) else {
+        return Vec::new();
+    };
+
+    let mut entries: Vec<_> = read_dir
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let file_name = entry.file_name().into_string().ok()?;
+            let metadata = entry.metadata().ok()?;
+            Some((file_name, metadata))
+        })
+        .filter(|(file_name, _)| {
+            typed_file_name
+                .map(|typed| typed.is_empty() || file_name.starts_with(typed))
+                .unwrap_or(true)
+        })
+        .collect();
+
+    entries.sort_by(|(left_name, left_metadata), (right_name, right_metadata)| {
+        right_metadata
+            .is_dir()
+            .cmp(&left_metadata.is_dir())
+            .then_with(|| left_name.cmp(right_name))
+    });
+
+    entries
+        .into_iter()
+        .take(MAX_LOCAL_COMPLETION_ITEMS)
+        .map(|(file_name, metadata)| {
+            let kind = if metadata.is_dir() {
+                nucleotide_events::completion::CompletionItemKind::Folder
+            } else {
+                nucleotide_events::completion::CompletionItemKind::File
+            };
+            let kind_name = if metadata.is_dir() { "folder" } else { "file" };
+            let documentation = local_path_documentation(&dir_path.join(&file_name), kind_name);
+
+            nucleotide_events::completion::CompletionItem::new(file_name.clone(), kind)
+                .with_insert_text(file_name)
+                .with_detail(kind_name.to_string())
+                .with_documentation(documentation)
+        })
+        .collect()
+}
+
+fn local_path_documentation(full_path: &Path, kind: &str) -> String {
+    let full_path = helix_path::fold_home_dir(helix_path::canonicalize(full_path));
+    format!("type: `{kind}`\nfull path: `{}`", full_path.display())
+}
+
+fn dedupe_completion_items(items: &mut Vec<nucleotide_events::completion::CompletionItem>) {
+    let mut seen = HashSet::new();
+    items.retain(|item| seen.insert((item.label.clone(), item.insert_text.clone())));
+}
+
 /// Determines which environment variables should be updated globally for LSP servers
 /// This is a safelist approach to avoid unintended side effects from shell environment
 fn should_update_env_var(key: &str) -> bool {
@@ -6251,17 +6483,20 @@ fn should_update_env_var(key: &str) -> bool {
 mod tests {
 
     use super::{
-        NativeSymbolItem, NativeSymbolTarget, lsp_completion_insert_text,
+        NativeSymbolItem, NativeSymbolTarget, buffer_word_completion_items,
+        dedupe_completion_items, local_path_completion_context, lsp_completion_insert_text,
         lsp_completion_insert_text_format, lsp_symbol_picker, native_symbol_item_from_lsp,
-        syntax_symbol_kind_from_capture_name,
+        path_completion_items, syntax_symbol_kind_from_capture_name,
     };
     use crate::test_utils::test_support::{
         TestUpdate, create_counting_channel, create_test_diagnostic_events,
         create_test_document_events, create_test_selection_events,
     };
     use helix_lsp::{OffsetEncoding, lsp};
+    use std::fs;
     use std::path::{Path, PathBuf};
     use std::time::Duration;
+    use tempfile::tempdir;
 
     #[test]
     fn syntax_symbol_kind_matches_helix_definition_captures() {
@@ -6421,6 +6656,99 @@ mod tests {
             lsp_completion_insert_text_format(&plain),
             nucleotide_events::completion::InsertTextFormat::PlainText
         );
+    }
+
+    #[test]
+    fn buffer_word_completion_items_match_prefix_and_dedupe() {
+        let items =
+            buffer_word_completion_items("apple application app apple banana".chars(), "app");
+
+        let labels: Vec<_> = items.iter().map(|item| item.label.as_str()).collect();
+        assert_eq!(labels, vec!["apple", "application"]);
+        assert!(items.iter().all(|item| {
+            item.kind == nucleotide_events::completion::CompletionItemKind::Text
+                && item.detail.as_deref() == Some("buffer")
+        }));
+    }
+
+    #[test]
+    fn buffer_word_completion_items_ignore_short_prefixes() {
+        let items = buffer_word_completion_items("apple application".chars(), "a");
+
+        assert!(items.is_empty());
+    }
+
+    #[test]
+    fn local_path_completion_context_resolves_relative_paths_from_document() {
+        let context =
+            local_path_completion_context("src/ma", Some(Path::new("/workspace/project/lib.rs")))
+                .expect("relative path context");
+
+        assert_eq!(context.dir_path, PathBuf::from("/workspace/project/src"));
+        assert_eq!(context.typed_file_name.as_deref(), Some("ma"));
+    }
+
+    #[test]
+    fn local_path_completion_context_handles_trailing_slash() {
+        let context =
+            local_path_completion_context("src/", Some(Path::new("/workspace/project/lib.rs")))
+                .expect("path context with trailing slash");
+
+        assert_eq!(context.dir_path, PathBuf::from("/workspace/project/src"));
+        assert_eq!(context.typed_file_name, None);
+    }
+
+    #[test]
+    fn path_completion_items_filter_and_classify_entries() {
+        let temp_dir = tempdir().expect("tempdir");
+        fs::write(temp_dir.path().join("main.rs"), "").expect("main.rs");
+        fs::write(temp_dir.path().join("mod.rs"), "").expect("mod.rs");
+        fs::create_dir(temp_dir.path().join("module")).expect("module dir");
+        fs::write(temp_dir.path().join("readme.md"), "").expect("readme.md");
+
+        let items = path_completion_items(temp_dir.path(), Some("m"));
+
+        let labels: Vec<_> = items.iter().map(|item| item.label.as_str()).collect();
+        assert_eq!(labels, vec!["module", "main.rs", "mod.rs"]);
+        assert_eq!(
+            items[0].kind,
+            nucleotide_events::completion::CompletionItemKind::Folder
+        );
+        assert_eq!(
+            items[1].kind,
+            nucleotide_events::completion::CompletionItemKind::File
+        );
+        assert!(items.iter().all(|item| item.documentation.is_some()));
+    }
+
+    #[test]
+    fn dedupe_completion_items_preserves_first_match() {
+        let mut items = vec![
+            nucleotide_events::completion::CompletionItem::new(
+                "println".to_string(),
+                nucleotide_events::completion::CompletionItemKind::Function,
+            )
+            .with_insert_text("println!".to_string()),
+            nucleotide_events::completion::CompletionItem::new(
+                "println".to_string(),
+                nucleotide_events::completion::CompletionItemKind::Text,
+            )
+            .with_insert_text("println!".to_string()),
+            nucleotide_events::completion::CompletionItem::new(
+                "print".to_string(),
+                nucleotide_events::completion::CompletionItemKind::Text,
+            )
+            .with_insert_text("print".to_string()),
+        ];
+
+        dedupe_completion_items(&mut items);
+
+        assert_eq!(items.len(), 2);
+        assert_eq!(
+            items[0].kind,
+            nucleotide_events::completion::CompletionItemKind::Function
+        );
+        assert_eq!(items[1].label, "print");
     }
 
     #[ignore] // Temporarily disabled due to SIGBUS compiler crash
