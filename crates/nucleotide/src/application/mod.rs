@@ -4181,11 +4181,10 @@ impl Application {
             return Err(anyhow::anyhow!("No language servers available"));
         }
 
-        // Get text and convert cursor (byte offset) to char index
-        // Helix selections/cursors are in bytes; Rope operations here expect char indices
+        // Helix selections/cursors are character positions; LSP conversion handles
+        // the server's negotiated wire encoding below.
         let text = doc.text();
-        let cursor_bytes = cursor.min(text.len_bytes());
-        let cursor_pos = text.byte_to_char(cursor_bytes);
+        let cursor_pos = cursor.min(text.len_chars());
 
         // Use the first available language server for now
         // TODO: Handle multiple language servers or select the best one
@@ -4194,7 +4193,6 @@ impl Application {
         let position = helix_lsp::util::pos_to_lsp_pos(text, cursor_pos, offset_encoding);
 
         nucleotide_logging::debug!(
-            cursor_bytes = cursor,
             cursor_chars = cursor_pos,
             line = position.line,
             character = position.character,
@@ -4347,12 +4345,8 @@ impl Application {
                     None => CompletionItemKind::Text,    // Default fallback
                 };
 
-                // Get insert text (prefer insertText, fallback to label)
-                let insert_text = item
-                    .insert_text
-                    .as_deref()
-                    .unwrap_or(&item.label)
-                    .to_string();
+                let insert_text = lsp_completion_insert_text(&item);
+                let insert_text_format = lsp_completion_insert_text_format(&item);
 
                 // Extract signature information from label_details.detail or item.detail as fallback
                 let signature_info = item
@@ -4393,6 +4387,7 @@ impl Application {
 
                 CompletionItem::new(item.label.clone(), kind)
                     .with_insert_text(insert_text)
+                    .with_insert_text_format(insert_text_format)
                     .with_detail(item.detail.unwrap_or_default())
                     .with_signature_info(signature_info.unwrap_or_default())
                     .with_type_info(type_info.unwrap_or_default())
@@ -4418,9 +4413,7 @@ impl Application {
     fn extract_completion_prefix(&self, doc_id: helix_view::DocumentId, cursor: usize) -> String {
         if let Some(doc) = self.editor.documents.get(&doc_id) {
             let text = doc.text();
-            // Convert cursor (byte offset) to char index for rope operations
-            let cursor_bytes = std::cmp::min(cursor, text.len_bytes());
-            let cursor_pos = text.byte_to_char(cursor_bytes);
+            let cursor_pos = cursor.min(text.len_chars());
             let text_len = text.len_chars();
 
             nucleotide_logging::debug!(
@@ -4449,7 +4442,6 @@ impl Application {
 
             nucleotide_logging::info!(
                 doc_id = ?doc_id,
-                cursor_bytes = cursor,
                 cursor_chars = cursor_pos,
                 start_offset = start_offset,
                 offset = offset,
@@ -6192,6 +6184,31 @@ mod job_callback_tests {
     }
 }
 
+fn lsp_completion_insert_text(item: &lsp::CompletionItem) -> String {
+    item.text_edit
+        .as_ref()
+        .map(|edit| match edit {
+            lsp::CompletionTextEdit::Edit(edit) => edit.new_text.clone(),
+            lsp::CompletionTextEdit::InsertAndReplace(edit) => edit.new_text.clone(),
+        })
+        .or_else(|| item.insert_text.clone())
+        .unwrap_or_else(|| item.label.clone())
+}
+
+fn lsp_completion_insert_text_format(
+    item: &lsp::CompletionItem,
+) -> nucleotide_events::completion::InsertTextFormat {
+    if matches!(
+        item.insert_text_format,
+        Some(lsp::InsertTextFormat::SNIPPET)
+    ) || matches!(item.kind, Some(lsp::CompletionItemKind::SNIPPET))
+    {
+        nucleotide_events::completion::InsertTextFormat::Snippet
+    } else {
+        nucleotide_events::completion::InsertTextFormat::PlainText
+    }
+}
+
 /// Determines which environment variables should be updated globally for LSP servers
 /// This is a safelist approach to avoid unintended side effects from shell environment
 fn should_update_env_var(key: &str) -> bool {
@@ -6234,7 +6251,8 @@ fn should_update_env_var(key: &str) -> bool {
 mod tests {
 
     use super::{
-        NativeSymbolItem, NativeSymbolTarget, lsp_symbol_picker, native_symbol_item_from_lsp,
+        NativeSymbolItem, NativeSymbolTarget, lsp_completion_insert_text,
+        lsp_completion_insert_text_format, lsp_symbol_picker, native_symbol_item_from_lsp,
         syntax_symbol_kind_from_capture_name,
     };
     use crate::test_utils::test_support::{
@@ -6340,6 +6358,69 @@ mod tests {
                 assert_eq!(location.end, 126);
             }
         }
+    }
+
+    #[test]
+    fn lsp_completion_insert_text_prefers_text_edit() {
+        let item = lsp::CompletionItem {
+            label: "label".to_string(),
+            insert_text: Some("insert".to_string()),
+            text_edit: Some(lsp::CompletionTextEdit::Edit(lsp::TextEdit {
+                range: lsp::Range::new(lsp::Position::new(0, 0), lsp::Position::new(0, 5)),
+                new_text: "edited".to_string(),
+            })),
+            ..Default::default()
+        };
+
+        assert_eq!(lsp_completion_insert_text(&item), "edited");
+    }
+
+    #[test]
+    fn lsp_completion_insert_text_handles_insert_replace_edits() {
+        let item = lsp::CompletionItem {
+            label: "label".to_string(),
+            text_edit: Some(lsp::CompletionTextEdit::InsertAndReplace(
+                lsp::InsertReplaceEdit {
+                    new_text: "replacement".to_string(),
+                    insert: lsp::Range::new(lsp::Position::new(0, 1), lsp::Position::new(0, 3)),
+                    replace: lsp::Range::new(lsp::Position::new(0, 1), lsp::Position::new(0, 5)),
+                },
+            )),
+            ..Default::default()
+        };
+
+        assert_eq!(lsp_completion_insert_text(&item), "replacement");
+    }
+
+    #[test]
+    fn lsp_completion_insert_text_format_preserves_snippets() {
+        let explicit_snippet = lsp::CompletionItem {
+            label: "snippet".to_string(),
+            insert_text_format: Some(lsp::InsertTextFormat::SNIPPET),
+            ..Default::default()
+        };
+        let snippet_kind = lsp::CompletionItem {
+            label: "snippet-kind".to_string(),
+            kind: Some(lsp::CompletionItemKind::SNIPPET),
+            ..Default::default()
+        };
+        let plain = lsp::CompletionItem {
+            label: "plain".to_string(),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            lsp_completion_insert_text_format(&explicit_snippet),
+            nucleotide_events::completion::InsertTextFormat::Snippet
+        );
+        assert_eq!(
+            lsp_completion_insert_text_format(&snippet_kind),
+            nucleotide_events::completion::InsertTextFormat::Snippet
+        );
+        assert_eq!(
+            lsp_completion_insert_text_format(&plain),
+            nucleotide_events::completion::InsertTextFormat::PlainText
+        );
     }
 
     #[ignore] // Temporarily disabled due to SIGBUS compiler crash
