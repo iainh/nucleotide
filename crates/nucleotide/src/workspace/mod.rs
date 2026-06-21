@@ -24,7 +24,7 @@ use gpui::{
 use gpui::{FontFeatures, FontWeight};
 use helix_core::syntax::config::LanguageServerFeature;
 use helix_core::{Rope, RopeSlice, Selection};
-use helix_lsp::lsp;
+use helix_lsp::{OffsetEncoding, lsp};
 use helix_stdx::rope::RopeSliceExt;
 use helix_view::input::KeyEvent;
 use helix_view::keyboard::{KeyCode, KeyModifiers};
@@ -9963,7 +9963,7 @@ impl Workspace {
         };
 
         let text = doc.text();
-        let cursor_chars = text.byte_to_char(cursor.min(text.len_bytes()));
+        let cursor_chars = cursor.min(text.len_chars());
         let Some(prev_ch) = text.chars_at(cursor_chars).reversed().next() else {
             return false;
         };
@@ -10038,6 +10038,7 @@ impl Workspace {
                             nucleotide_ui::completion_v2::InsertTextFormat::Snippet
                         }
                     },
+                    edit: item.edit.map(ui_completion_edit_from_event),
                 }
             })
             .collect();
@@ -10223,6 +10224,7 @@ impl Workspace {
                                         nucleotide_events::completion::InsertTextFormat::PlainText => nucleotide_ui::completion_v2::InsertTextFormat::PlainText,
                                         nucleotide_events::completion::InsertTextFormat::Snippet => nucleotide_ui::completion_v2::InsertTextFormat::Snippet,
                                     },
+                                    edit: item.edit.map(ui_completion_edit_from_event),
                                 }
                             })
                             .collect();
@@ -10282,8 +10284,14 @@ impl Workspace {
             item_index = item_index,
             completion_text = %completion_item.text,
             insert_text_format = ?completion_item.insert_text_format,
+            has_edit = completion_item.edit.is_some(),
             "Retrieved completion item for transaction"
         );
+
+        if let Some(edit) = completion_item.edit.clone() {
+            self.handle_lsp_edit_completion(completion_item, edit, cx);
+            return;
+        }
 
         // Check if this is a snippet completion
         match completion_item.insert_text_format {
@@ -10364,25 +10372,13 @@ impl Workspace {
             let transaction = Transaction::change_by_selection(text, selection, |range| {
                 // Find the start of the word being completed (go backward from cursor)
                 let cursor_pos = range.cursor(text.slice(..));
-                let mut start_pos = cursor_pos;
                 let text_slice = text.slice(..);
-                let mut chars_iter = text_slice.chars_at(cursor_pos);
-                chars_iter.reverse();
+                let start_pos = completion_word_start(text_slice, cursor_pos);
 
                 nucleotide_logging::info!(
                     range_cursor = cursor_pos,
                     "Processing range in snippet transaction"
                 );
-
-                for ch in chars_iter {
-                    if helix_core::chars::char_is_word(ch) {
-                        if start_pos > 0 {
-                            start_pos -= ch.len_utf8();
-                        }
-                    } else {
-                        break;
-                    }
-                }
 
                 // Store the start position for cursor calculation
                 replacement_start_pos = start_pos;
@@ -10439,6 +10435,108 @@ impl Workspace {
         nucleotide_logging::info!("Snippet completion processing complete - view dismissed");
     }
 
+    fn handle_lsp_edit_completion(
+        &mut self,
+        completion_item: nucleotide_ui::CompletionItem,
+        edit: nucleotide_ui::CompletionEdit,
+        cx: &mut Context<Self>,
+    ) {
+        nucleotide_logging::info!(
+            completion_text = %completion_item.text,
+            has_primary_edit = edit.text_edit.is_some(),
+            additional_edit_count = edit.additional_text_edits.len(),
+            "Processing completion with LSP edit metadata"
+        );
+
+        let rt_handle = self.handle.clone();
+        self.core.update(cx, move |core, cx| {
+            let _guard = rt_handle.enter();
+            let editor = &mut core.editor;
+            let (view, doc) = helix_view::current!(editor);
+
+            let text = doc.text();
+            let selection = doc.selection(view.id);
+            let primary_cursor = selection.primary().cursor(text.slice(..));
+            let offset_encoding = helix_offset_encoding_from_completion(edit.offset_encoding);
+
+            let (replacement_text, snippet_template) = match completion_item.insert_text_format {
+                nucleotide_ui::completion_v2::InsertTextFormat::Snippet => {
+                    match nucleotide_core::SnippetTemplate::parse(&completion_item.text) {
+                        Ok(template) => (template.render_plain_text(), Some(template)),
+                        Err(err) => {
+                            nucleotide_logging::warn!(
+                                completion_text = %completion_item.text,
+                                error = %err,
+                                "Failed to parse snippet completion edit, inserting raw text"
+                            );
+                            (completion_item.text.to_string(), None)
+                        }
+                    }
+                }
+                nucleotide_ui::completion_v2::InsertTextFormat::PlainText => {
+                    (completion_item.text.to_string(), None)
+                }
+            };
+
+            let (edit_offset, replacement_start) = edit
+                .text_edit
+                .as_ref()
+                .and_then(|text_edit| {
+                    completion_edit_offset(text, text_edit, offset_encoding, primary_cursor)
+                })
+                .map(|(offset, start)| (Some(offset), start))
+                .unwrap_or_else(|| (None, completion_word_start(text.slice(..), primary_cursor)));
+
+            let transaction = helix_lsp::util::generate_transaction_from_completion_edit(
+                text,
+                selection,
+                edit_offset,
+                false,
+                replacement_text,
+            );
+
+            nucleotide_logging::info!(
+                replacement_start = replacement_start,
+                has_edit_offset = edit_offset.is_some(),
+                "Applying completion transaction from LSP edit metadata"
+            );
+            doc.apply(&transaction, view.id);
+
+            if let Some(snippet_template) = snippet_template
+                && let Some(cursor_pos) =
+                    snippet_template.calculate_final_cursor_position(replacement_start)
+            {
+                doc.set_selection(view.id, Selection::point(cursor_pos));
+            }
+
+            if !edit.additional_text_edits.is_empty() {
+                let additional_edits = edit
+                    .additional_text_edits
+                    .iter()
+                    .map(lsp_text_edit_from_completion)
+                    .collect();
+                let transaction = helix_lsp::util::generate_transaction_from_edits(
+                    doc.text(),
+                    additional_edits,
+                    offset_encoding,
+                );
+                nucleotide_logging::info!(
+                    additional_edit_count = edit.additional_text_edits.len(),
+                    "Applying additional LSP completion edits"
+                );
+                doc.apply(&transaction, view.id);
+            }
+
+            cx.notify();
+        });
+
+        self.overlay.update(cx, |overlay, cx| {
+            overlay.dismiss_completion(cx);
+        });
+
+        nucleotide_logging::info!("LSP edit completion processing complete - view dismissed");
+    }
+
     fn handle_plain_text_completion(
         &mut self,
         completion_item: nucleotide_ui::CompletionItem,
@@ -10480,25 +10578,13 @@ impl Workspace {
             let transaction = Transaction::change_by_selection(text, selection, |range| {
                 // Find the start of the word being completed (go backward from cursor)
                 let cursor_pos = range.cursor(text.slice(..));
-                let mut start_pos = cursor_pos;
                 let text_slice = text.slice(..);
-                let mut chars_iter = text_slice.chars_at(cursor_pos);
-                chars_iter.reverse();
+                let start_pos = completion_word_start(text_slice, cursor_pos);
 
                 nucleotide_logging::info!(
                     range_cursor = cursor_pos,
                     "Processing range in plain text transaction"
                 );
-
-                for ch in chars_iter {
-                    if helix_core::chars::char_is_word(ch) {
-                        if start_pos > 0 {
-                            start_pos -= ch.len_utf8();
-                        }
-                    } else {
-                        break;
-                    }
-                }
 
                 nucleotide_logging::info!(
                     start_pos = start_pos,
@@ -13491,6 +13577,119 @@ fn sort_code_actions_like_helix(actions: &mut [lsp::CodeActionOrCommand]) {
     });
 }
 
+fn ui_completion_edit_from_event(
+    edit: nucleotide_events::completion::CompletionEdit,
+) -> nucleotide_ui::CompletionEdit {
+    nucleotide_ui::CompletionEdit {
+        offset_encoding: ui_completion_offset_encoding_from_event(edit.offset_encoding),
+        text_edit: edit.text_edit.map(ui_completion_text_edit_from_event),
+        additional_text_edits: edit
+            .additional_text_edits
+            .into_iter()
+            .map(ui_completion_text_edit_from_event)
+            .collect(),
+    }
+}
+
+fn ui_completion_text_edit_from_event(
+    edit: nucleotide_events::completion::CompletionTextEdit,
+) -> nucleotide_ui::CompletionTextEdit {
+    nucleotide_ui::CompletionTextEdit {
+        range: ui_completion_range_from_event(edit.range),
+        new_text: edit.new_text,
+    }
+}
+
+fn ui_completion_range_from_event(
+    range: nucleotide_events::completion::CompletionRange,
+) -> nucleotide_ui::CompletionRange {
+    nucleotide_ui::CompletionRange {
+        start: ui_completion_position_from_event(range.start),
+        end: ui_completion_position_from_event(range.end),
+    }
+}
+
+fn ui_completion_position_from_event(
+    position: nucleotide_events::completion::CompletionPosition,
+) -> nucleotide_ui::CompletionPosition {
+    nucleotide_ui::CompletionPosition {
+        line: position.line,
+        character: position.character,
+    }
+}
+
+fn ui_completion_offset_encoding_from_event(
+    offset_encoding: nucleotide_events::completion::CompletionOffsetEncoding,
+) -> nucleotide_ui::CompletionOffsetEncoding {
+    match offset_encoding {
+        nucleotide_events::completion::CompletionOffsetEncoding::Utf8 => {
+            nucleotide_ui::CompletionOffsetEncoding::Utf8
+        }
+        nucleotide_events::completion::CompletionOffsetEncoding::Utf16 => {
+            nucleotide_ui::CompletionOffsetEncoding::Utf16
+        }
+        nucleotide_events::completion::CompletionOffsetEncoding::Utf32 => {
+            nucleotide_ui::CompletionOffsetEncoding::Utf32
+        }
+    }
+}
+
+fn helix_offset_encoding_from_completion(
+    offset_encoding: nucleotide_ui::CompletionOffsetEncoding,
+) -> OffsetEncoding {
+    match offset_encoding {
+        nucleotide_ui::CompletionOffsetEncoding::Utf8 => OffsetEncoding::Utf8,
+        nucleotide_ui::CompletionOffsetEncoding::Utf16 => OffsetEncoding::Utf16,
+        nucleotide_ui::CompletionOffsetEncoding::Utf32 => OffsetEncoding::Utf32,
+    }
+}
+
+fn completion_word_start(text: RopeSlice<'_>, cursor: usize) -> usize {
+    cursor.saturating_sub(
+        text.chars_at(cursor)
+            .reversed()
+            .take_while(|ch| helix_core::chars::char_is_word(*ch))
+            .count(),
+    )
+}
+
+fn completion_edit_offset(
+    doc: &Rope,
+    edit: &nucleotide_ui::CompletionTextEdit,
+    offset_encoding: OffsetEncoding,
+    primary_cursor: usize,
+) -> Option<((i128, i128), usize)> {
+    let range = helix_lsp::util::lsp_range_to_range(
+        doc,
+        lsp_range_from_completion(edit.range),
+        offset_encoding,
+    )?;
+    let start = range.from();
+    let end = range.to();
+    Some((
+        (
+            start as i128 - primary_cursor as i128,
+            end as i128 - primary_cursor as i128,
+        ),
+        start,
+    ))
+}
+
+fn lsp_text_edit_from_completion(edit: &nucleotide_ui::CompletionTextEdit) -> lsp::TextEdit {
+    lsp::TextEdit::new(lsp_range_from_completion(edit.range), edit.new_text.clone())
+}
+
+fn lsp_range_from_completion(range: nucleotide_ui::CompletionRange) -> lsp::Range {
+    lsp::Range::new(
+        lsp_position_from_completion(range.start),
+        lsp_position_from_completion(range.end),
+    )
+}
+
+fn lsp_position_from_completion(position: nucleotide_ui::CompletionPosition) -> lsp::Position {
+    lsp::Position::new(position.line, position.character)
+}
+
 fn show_code_actions(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &mut App) {
     use futures_util::stream::{FuturesOrdered, StreamExt};
     use helix_lsp::lsp;
@@ -13938,6 +14137,80 @@ mod tests {
         assert_eq!(completion_menu_action("tab", false, true), None);
         assert_eq!(completion_menu_action("c", true, false), None);
         assert_eq!(completion_menu_action("down", true, false), None);
+    }
+
+    #[test]
+    fn completion_word_start_uses_character_offsets() {
+        let rope = Rope::from("héllo world");
+        let cursor = 5;
+
+        assert_eq!(completion_word_start(rope.slice(..), cursor), 0);
+    }
+
+    #[test]
+    fn completion_edit_offset_converts_lsp_range() {
+        let rope = Rope::from("let value = old;");
+        let edit = nucleotide_ui::CompletionTextEdit {
+            range: nucleotide_ui::CompletionRange {
+                start: nucleotide_ui::CompletionPosition {
+                    line: 0,
+                    character: 12,
+                },
+                end: nucleotide_ui::CompletionPosition {
+                    line: 0,
+                    character: 15,
+                },
+            },
+            new_text: "new".to_string(),
+        };
+
+        let (offset, start) =
+            completion_edit_offset(&rope, &edit, OffsetEncoding::Utf8, 15).unwrap();
+
+        assert_eq!(offset, (-3, 0));
+        assert_eq!(start, 12);
+    }
+
+    #[test]
+    fn ui_completion_edit_from_event_preserves_payload() {
+        let edit = nucleotide_events::completion::CompletionEdit {
+            offset_encoding: nucleotide_events::completion::CompletionOffsetEncoding::Utf16,
+            text_edit: Some(nucleotide_events::completion::CompletionTextEdit {
+                range: nucleotide_events::completion::CompletionRange {
+                    start: nucleotide_events::completion::CompletionPosition {
+                        line: 1,
+                        character: 2,
+                    },
+                    end: nucleotide_events::completion::CompletionPosition {
+                        line: 1,
+                        character: 5,
+                    },
+                },
+                new_text: "value".to_string(),
+            }),
+            additional_text_edits: vec![nucleotide_events::completion::CompletionTextEdit {
+                range: nucleotide_events::completion::CompletionRange {
+                    start: nucleotide_events::completion::CompletionPosition {
+                        line: 0,
+                        character: 0,
+                    },
+                    end: nucleotide_events::completion::CompletionPosition {
+                        line: 0,
+                        character: 0,
+                    },
+                },
+                new_text: "use value;\n".to_string(),
+            }],
+        };
+
+        let ui_edit = ui_completion_edit_from_event(edit);
+
+        assert_eq!(
+            ui_edit.offset_encoding,
+            nucleotide_ui::CompletionOffsetEncoding::Utf16
+        );
+        assert_eq!(ui_edit.text_edit.as_ref().unwrap().new_text, "value");
+        assert_eq!(ui_edit.additional_text_edits.len(), 1);
     }
 
     fn test_view_id(index: u64) -> ViewId {

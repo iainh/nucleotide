@@ -441,6 +441,7 @@ mod tests {
             signature_info: None,
             type_info: None,
             insert_text_format: nucleotide_events::completion::InsertTextFormat::PlainText,
+            edit: None,
         }];
 
         let response = LspCompletionResponse {
@@ -486,6 +487,7 @@ mod tests {
             signature_info: None,
             type_info: None,
             insert_text_format: nucleotide_events::completion::InsertTextFormat::PlainText,
+            edit: None,
         }];
 
         let result = CompletionResult::ShowCompletions {
@@ -533,6 +535,7 @@ mod tests {
                     signature_info: None,
                     type_info: None,
                     insert_text_format: nucleotide_events::completion::InsertTextFormat::PlainText,
+                    edit: None,
                 }],
                 is_incomplete: false,
                 error: None,
@@ -599,6 +602,7 @@ mod tests {
                     signature_info: None,
                     type_info: None,
                     insert_text_format: nucleotide_events::completion::InsertTextFormat::PlainText,
+                    edit: None,
                 });
             }
 
@@ -627,6 +631,7 @@ mod tests {
                 signature_info: None,
                 type_info: None,
                 insert_text_format: nucleotide_events::completion::InsertTextFormat::PlainText,
+                edit: None,
             }];
 
             let result = CompletionResult::ShowCompletions {

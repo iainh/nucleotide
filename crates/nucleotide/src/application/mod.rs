@@ -4304,7 +4304,8 @@ impl Application {
                 }
             };
 
-            let mut server_items = lsp_completion_items_from_response(lsp_response);
+            let mut server_items =
+                lsp_completion_items_from_response(lsp_response, offset_encoding);
             nucleotide_logging::info!(
                 server_id = ?language_server.id(),
                 item_count = server_items.len(),
@@ -6172,16 +6173,23 @@ fn lsp_completion_insert_text_format(
 
 fn lsp_completion_items_from_response(
     response: lsp::CompletionResponse,
+    offset_encoding: OffsetEncoding,
 ) -> Vec<nucleotide_events::completion::CompletionItem> {
     let lsp_items = match response {
         lsp::CompletionResponse::Array(items) => items,
         lsp::CompletionResponse::List(list) => list.items,
     };
 
-    lsp_items.into_iter().map(lsp_completion_item).collect()
+    lsp_items
+        .into_iter()
+        .map(|item| lsp_completion_item(item, offset_encoding))
+        .collect()
 }
 
-fn lsp_completion_item(item: lsp::CompletionItem) -> nucleotide_events::completion::CompletionItem {
+fn lsp_completion_item(
+    item: lsp::CompletionItem,
+    offset_encoding: OffsetEncoding,
+) -> nucleotide_events::completion::CompletionItem {
     use nucleotide_events::completion::{CompletionItem, CompletionItemKind};
 
     let kind = match item.kind {
@@ -6215,6 +6223,7 @@ fn lsp_completion_item(item: lsp::CompletionItem) -> nucleotide_events::completi
 
     let insert_text = lsp_completion_insert_text(&item);
     let insert_text_format = lsp_completion_insert_text_format(&item);
+    let edit = lsp_completion_edit(&item, offset_encoding);
 
     let signature_info = item
         .label_details
@@ -6249,6 +6258,7 @@ fn lsp_completion_item(item: lsp::CompletionItem) -> nucleotide_events::completi
     CompletionItem::new(item.label.clone(), kind)
         .with_insert_text(insert_text)
         .with_insert_text_format(insert_text_format)
+        .with_optional_edit(edit)
         .with_detail(item.detail.unwrap_or_default())
         .with_signature_info(signature_info.unwrap_or_default())
         .with_type_info(type_info.unwrap_or_default())
@@ -6261,6 +6271,70 @@ fn lsp_completion_item(item: lsp::CompletionItem) -> nucleotide_events::completi
                 })
                 .unwrap_or_default(),
         )
+}
+
+fn lsp_completion_edit(
+    item: &lsp::CompletionItem,
+    offset_encoding: OffsetEncoding,
+) -> Option<nucleotide_events::completion::CompletionEdit> {
+    let text_edit = item.text_edit.as_ref().map(|edit| match edit {
+        lsp::CompletionTextEdit::Edit(edit) => event_completion_text_edit(edit),
+        lsp::CompletionTextEdit::InsertAndReplace(edit) => {
+            event_completion_text_edit(&lsp::TextEdit::new(edit.insert, edit.new_text.clone()))
+        }
+    });
+    let additional_text_edits: Vec<_> = item
+        .additional_text_edits
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .map(event_completion_text_edit)
+        .collect();
+
+    if text_edit.is_none() && additional_text_edits.is_empty() {
+        None
+    } else {
+        Some(nucleotide_events::completion::CompletionEdit {
+            offset_encoding: event_completion_offset_encoding(offset_encoding),
+            text_edit,
+            additional_text_edits,
+        })
+    }
+}
+
+fn event_completion_text_edit(
+    edit: &lsp::TextEdit,
+) -> nucleotide_events::completion::CompletionTextEdit {
+    nucleotide_events::completion::CompletionTextEdit {
+        range: event_completion_range(edit.range),
+        new_text: edit.new_text.clone(),
+    }
+}
+
+fn event_completion_range(range: lsp::Range) -> nucleotide_events::completion::CompletionRange {
+    nucleotide_events::completion::CompletionRange {
+        start: event_completion_position(range.start),
+        end: event_completion_position(range.end),
+    }
+}
+
+fn event_completion_position(
+    position: lsp::Position,
+) -> nucleotide_events::completion::CompletionPosition {
+    nucleotide_events::completion::CompletionPosition {
+        line: position.line,
+        character: position.character,
+    }
+}
+
+fn event_completion_offset_encoding(
+    offset_encoding: OffsetEncoding,
+) -> nucleotide_events::completion::CompletionOffsetEncoding {
+    match offset_encoding {
+        OffsetEncoding::Utf8 => nucleotide_events::completion::CompletionOffsetEncoding::Utf8,
+        OffsetEncoding::Utf16 => nucleotide_events::completion::CompletionOffsetEncoding::Utf16,
+        OffsetEncoding::Utf32 => nucleotide_events::completion::CompletionOffsetEncoding::Utf32,
+    }
 }
 
 const MIN_BUFFER_WORD_COMPLETION_PREFIX_CHARS: usize = 2;
@@ -6650,7 +6724,7 @@ mod tests {
             },
         ]);
 
-        let items = lsp_completion_items_from_response(response);
+        let items = lsp_completion_items_from_response(response, OffsetEncoding::Utf16);
 
         assert_eq!(items.len(), 2);
         assert_eq!(
@@ -6661,6 +6735,42 @@ mod tests {
         assert_eq!(
             items[1].insert_text_format,
             nucleotide_events::completion::InsertTextFormat::Snippet
+        );
+    }
+
+    #[test]
+    fn lsp_completion_items_from_response_preserves_edit_metadata() {
+        let response = lsp::CompletionResponse::Array(vec![lsp::CompletionItem {
+            label: "HashMap".to_string(),
+            text_edit: Some(lsp::CompletionTextEdit::Edit(lsp::TextEdit {
+                range: lsp::Range::new(lsp::Position::new(2, 4), lsp::Position::new(2, 7)),
+                new_text: "HashMap".to_string(),
+            })),
+            additional_text_edits: Some(vec![lsp::TextEdit {
+                range: lsp::Range::new(lsp::Position::new(0, 0), lsp::Position::new(0, 0)),
+                new_text: "use std::collections::HashMap;\n".to_string(),
+            }]),
+            ..Default::default()
+        }]);
+
+        let items = lsp_completion_items_from_response(response, OffsetEncoding::Utf8);
+        let edit = items[0].edit.as_ref().expect("completion edit metadata");
+
+        assert_eq!(
+            edit.offset_encoding,
+            nucleotide_events::completion::CompletionOffsetEncoding::Utf8
+        );
+        assert_eq!(
+            edit.text_edit.as_ref().unwrap().range.start,
+            nucleotide_events::completion::CompletionPosition {
+                line: 2,
+                character: 4
+            }
+        );
+        assert_eq!(edit.additional_text_edits.len(), 1);
+        assert_eq!(
+            edit.additional_text_edits[0].new_text,
+            "use std::collections::HashMap;\n"
         );
     }
 

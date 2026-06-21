@@ -538,6 +538,7 @@ mod tests {
             signature_info: None,
             type_info: None,
             insert_text_format: nucleotide_events::completion::InsertTextFormat::PlainText,
+            edit: None,
         }];
 
         let results_event = Event::ResultsAvailable {
