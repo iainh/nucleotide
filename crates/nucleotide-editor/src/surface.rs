@@ -12,7 +12,6 @@ use gpui::{
 
 use crate::{
     EditorScrollbar, EditorScrollbarState, EditorViewport, LineLayoutCache, ViewportScrollUpdate,
-    scrollbar::{editor_horizontal_scrollbar_height, editor_vertical_scrollbar_width},
 };
 use nucleotide_types::scrollbar::SCROLLBAR_THICKNESS;
 
@@ -227,16 +226,8 @@ impl EditorSurface {
 
 impl RenderOnce for EditorSurface {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        let vertical_scrollbar = if editor_vertical_scrollbar_width(&self.viewport) > px(0.0) {
-            Some(self.vertical_scrollbar())
-        } else {
-            None
-        };
-        let horizontal_scrollbar = if editor_horizontal_scrollbar_height(&self.viewport) > px(0.0) {
-            Some(self.horizontal_scrollbar())
-        } else {
-            None
-        };
+        let vertical_scrollbar = self.vertical_scrollbar();
+        let horizontal_scrollbar = self.horizontal_scrollbar();
         let content_bounds = Rc::new(Cell::new(None::<Bounds<Pixels>>));
         let mut content = div()
             .key_context("Editor")
@@ -398,29 +389,25 @@ impl RenderOnce for EditorSurface {
             })
             .child(content);
 
-        if let Some(scrollbar) = vertical_scrollbar {
-            surface = surface.child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .right_0()
-                    .bottom_0()
-                    .w(SCROLLBAR_THICKNESS)
-                    .child(scrollbar),
-            );
-        }
+        surface = surface.child(
+            div()
+                .absolute()
+                .top_0()
+                .right_0()
+                .bottom_0()
+                .w(SCROLLBAR_THICKNESS)
+                .child(vertical_scrollbar),
+        );
 
-        if let Some(scrollbar) = horizontal_scrollbar {
-            surface = surface.child(
-                div()
-                    .absolute()
-                    .left_0()
-                    .right_0()
-                    .bottom_0()
-                    .h(SCROLLBAR_THICKNESS)
-                    .child(scrollbar),
-            );
-        }
+        surface = surface.child(
+            div()
+                .absolute()
+                .left_0()
+                .right_0()
+                .bottom_0()
+                .h(SCROLLBAR_THICKNESS)
+                .child(horizontal_scrollbar),
+        );
 
         surface
     }

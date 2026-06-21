@@ -5,7 +5,8 @@ use std::rc::Rc;
 
 use gpui::{
     App, Bounds, Component, EntityId, FocusHandle, Hsla, InteractiveElement as _, IntoElement,
-    KeyDownEvent, ParentElement as _, Pixels, RenderOnce, Styled as _, TextStyle, Window, div,
+    KeyDownEvent, ParentElement as _, Pixels, RenderOnce, Size, Styled as _, TextStyle, Window,
+    div,
 };
 
 use crate::{
@@ -24,6 +25,7 @@ type KeyDownCallback = Rc<dyn Fn(&KeyDownEvent, &mut Window, &mut App) -> bool>;
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct EditorSurfaceRerenderSnapshot {
     gutter_width: Pixels,
+    viewport_size: Size<Pixels>,
     max_scroll_offset: gpui::Size<Pixels>,
 }
 
@@ -31,12 +33,15 @@ impl EditorSurfaceRerenderSnapshot {
     fn from_state(state: &EditorViewState) -> Self {
         Self {
             gutter_width: state.layout_snapshot().gutter_width,
+            viewport_size: state.viewport().viewport_bounds().size,
             max_scroll_offset: state.viewport().max_scroll_offset(),
         }
     }
 
     fn requires_rerender_after(self, next: Self) -> bool {
-        self.gutter_width != next.gutter_width || self.max_scroll_offset != next.max_scroll_offset
+        self.gutter_width != next.gutter_width
+            || self.viewport_size != next.viewport_size
+            || self.max_scroll_offset != next.max_scroll_offset
     }
 }
 
@@ -218,7 +223,10 @@ where
                 let rerender_snapshot_after =
                     EditorSurfaceRerenderSnapshot::from_state(&paint_editor_state);
                 if rerender_snapshot_before.requires_rerender_after(rerender_snapshot_after) {
+                    // The surface rendered from the old viewport. Force a new
+                    // frame once paint discovers real bounds.
                     cx.notify(view_entity_id);
+                    window.refresh();
                 }
 
                 if let Some(on_cursor_overlay) = &on_cursor_overlay {
@@ -313,11 +321,29 @@ mod tests {
     fn surface_rerender_snapshot_tracks_scroll_extent_changes() {
         let before = EditorSurfaceRerenderSnapshot {
             gutter_width: px(32.0),
+            viewport_size: size(px(100.0), px(200.0)),
             max_scroll_offset: size(px(0.0), px(0.0)),
         };
         let after = EditorSurfaceRerenderSnapshot {
             gutter_width: px(32.0),
+            viewport_size: size(px(100.0), px(200.0)),
             max_scroll_offset: size(px(0.0), px(400.0)),
+        };
+
+        assert!(before.requires_rerender_after(after));
+    }
+
+    #[test]
+    fn surface_rerender_snapshot_tracks_viewport_size_changes() {
+        let before = EditorSurfaceRerenderSnapshot {
+            gutter_width: px(32.0),
+            viewport_size: size(px(800.0), px(600.0)),
+            max_scroll_offset: size(px(0.0), px(0.0)),
+        };
+        let after = EditorSurfaceRerenderSnapshot {
+            gutter_width: px(32.0),
+            viewport_size: size(px(100.0), px(200.0)),
+            max_scroll_offset: size(px(0.0), px(0.0)),
         };
 
         assert!(before.requires_rerender_after(after));
@@ -327,6 +353,7 @@ mod tests {
     fn surface_rerender_snapshot_ignores_stable_layout() {
         let snapshot = EditorSurfaceRerenderSnapshot {
             gutter_width: px(32.0),
+            viewport_size: size(px(100.0), px(200.0)),
             max_scroll_offset: size(px(0.0), px(400.0)),
         };
 
