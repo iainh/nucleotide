@@ -927,6 +927,7 @@ impl Application {
         call: helix_lsp::Call,
         server_id: helix_lsp::LanguageServerId,
     ) {
+        use helix_lsp::lsp::notification::Notification as _;
         use helix_lsp::{Call, MethodCall, Notification};
 
         // Best-effort to resolve a server name for per-server traffic logs
@@ -1348,6 +1349,75 @@ impl Application {
                                 data: None,
                             })
                         }
+                    }
+                    Ok(MethodCall::RegisterCapability(params)) => {
+                        if let Some(client) = self.editor.language_servers.get_by_id(server_id) {
+                            for registration in params.registrations {
+                                match registration.method.as_str() {
+                                    lsp::notification::DidChangeWatchedFiles::METHOD => {
+                                        let Some(options) = registration.register_options else {
+                                            warn!(
+                                                server_id = ?server_id,
+                                                registration_id = %registration.id,
+                                                "Ignoring watched-file registration without options"
+                                            );
+                                            continue;
+                                        };
+
+                                        let options: lsp::DidChangeWatchedFilesRegistrationOptions =
+                                            match serde_json::from_value(options) {
+                                                Ok(options) => options,
+                                                Err(err) => {
+                                                    warn!(
+                                                        server_id = ?server_id,
+                                                        registration_id = %registration.id,
+                                                        error = %err,
+                                                        "Failed to deserialize watched-file registration options"
+                                                    );
+                                                    continue;
+                                                }
+                                            };
+
+                                        self.editor.language_servers.file_event_handler.register(
+                                            client.id(),
+                                            Arc::downgrade(client),
+                                            registration.id,
+                                            options,
+                                        );
+                                    }
+                                    unsupported_method => {
+                                        warn!(
+                                            server_id = ?server_id,
+                                            method = %unsupported_method,
+                                            "Ignoring unsupported dynamic capability registration"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+
+                        Ok(serde_json::Value::Null)
+                    }
+                    Ok(MethodCall::UnregisterCapability(params)) => {
+                        for unregistration in params.unregisterations {
+                            match unregistration.method.as_str() {
+                                lsp::notification::DidChangeWatchedFiles::METHOD => {
+                                    self.editor
+                                        .language_servers
+                                        .file_event_handler
+                                        .unregister(server_id, unregistration.id);
+                                }
+                                unsupported_method => {
+                                    warn!(
+                                        server_id = ?server_id,
+                                        method = %unsupported_method,
+                                        "Ignoring unsupported dynamic capability unregistration"
+                                    );
+                                }
+                            }
+                        }
+
+                        Ok(serde_json::Value::Null)
                     }
                     Ok(method_call) => {
                         warn!(

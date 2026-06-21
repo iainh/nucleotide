@@ -79,13 +79,12 @@ impl FileOperationFilter {
 
 #[derive(Default, Debug)]
 pub(crate) struct FileOperationsInterest {
-    // TODO: support other notifications
-    // did_create: FileOperationFilter,
-    // will_create: FileOperationFilter,
+    pub did_create: FileOperationFilter,
+    pub will_create: FileOperationFilter,
     pub did_rename: FileOperationFilter,
     pub will_rename: FileOperationFilter,
-    // did_delete: FileOperationFilter,
-    // will_delete: FileOperationFilter,
+    pub did_delete: FileOperationFilter,
+    pub will_delete: FileOperationFilter,
 }
 
 impl FileOperationsInterest {
@@ -98,8 +97,50 @@ impl FileOperationsInterest {
             return FileOperationsInterest::default();
         };
         FileOperationsInterest {
+            did_create: FileOperationFilter::new(capabilities.did_create.as_ref()),
+            will_create: FileOperationFilter::new(capabilities.will_create.as_ref()),
             did_rename: FileOperationFilter::new(capabilities.did_rename.as_ref()),
             will_rename: FileOperationFilter::new(capabilities.will_rename.as_ref()),
+            did_delete: FileOperationFilter::new(capabilities.did_delete.as_ref()),
+            will_delete: FileOperationFilter::new(capabilities.will_delete.as_ref()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn registration(
+        glob: impl Into<String>,
+        matches: Option<lsp::FileOperationPatternKind>,
+    ) -> lsp::FileOperationRegistrationOptions {
+        lsp::FileOperationRegistrationOptions {
+            filters: vec![lsp::FileOperationFilter {
+                scheme: Some("file".to_string()),
+                pattern: lsp::FileOperationPattern {
+                    glob: glob.into(),
+                    matches,
+                    options: None,
+                },
+            }],
+        }
+    }
+
+    #[test]
+    fn file_operation_filter_respects_file_and_folder_kinds() {
+        let file_filter = FileOperationFilter::new(Some(&registration(
+            "**/*.rs",
+            Some(lsp::FileOperationPatternKind::File),
+        )));
+        let folder_filter = FileOperationFilter::new(Some(&registration(
+            "**/src",
+            Some(lsp::FileOperationPatternKind::Folder),
+        )));
+
+        assert!(file_filter.has_interest(std::path::Path::new("src/lib.rs"), false));
+        assert!(!file_filter.has_interest(std::path::Path::new("src/lib.rs"), true));
+        assert!(folder_filter.has_interest(std::path::Path::new("crates/app/src"), true));
+        assert!(!folder_filter.has_interest(std::path::Path::new("crates/app/src"), false));
     }
 }

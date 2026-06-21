@@ -52,7 +52,8 @@ use crate::application::{
 };
 use crate::document::DocumentView;
 use crate::file_tree::{
-    FileTreeConfig, FileTreeEvent, FileTreeView, sidebar::ProjectTreeContextMenuIntent,
+    FileSystemEventKind, FileTreeConfig, FileTreeEvent, FileTreeView,
+    sidebar::ProjectTreeContextMenuIntent,
 };
 use crate::info_box::InfoBoxView;
 use crate::key_hint_view::KeyHintView;
@@ -886,6 +887,42 @@ enum PendingFileOp {
     NewFolder { parent: std::path::PathBuf },
     Rename { path: std::path::PathBuf },
     Duplicate { path: std::path::PathBuf },
+}
+
+#[derive(Debug, Clone)]
+enum LspFileOperationNotification {
+    Created {
+        path: PathBuf,
+        is_dir: bool,
+    },
+    Deleted {
+        path: PathBuf,
+        was_dir: bool,
+    },
+    Renamed {
+        old_path: PathBuf,
+        new_path: PathBuf,
+        was_dir: bool,
+    },
+}
+
+fn file_operation_notification_succeeded(notification: &LspFileOperationNotification) -> bool {
+    match notification {
+        LspFileOperationNotification::Created { path, is_dir } => {
+            path.exists() && path.is_dir() == *is_dir
+        }
+        LspFileOperationNotification::Deleted { path, .. } => !path.exists(),
+        LspFileOperationNotification::Renamed {
+            old_path,
+            new_path,
+            was_dir,
+        } => {
+            old_path != new_path
+                && !old_path.exists()
+                && new_path.exists()
+                && new_path.is_dir() == *was_dir
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -4218,6 +4255,8 @@ impl Workspace {
     /// Execute the delete after confirmation
     fn perform_delete_confirm(&mut self, cx: &mut Context<Self>) {
         if let Some(path) = self.delete_confirm_path.clone() {
+            let existed_before = path.exists();
+            let was_dir = path.is_dir();
             let mode = match self.core.read(cx).config.gui.file_ops.delete_behavior {
                 crate::config::DeleteBehavior::Trash => {
                     nucleotide_events::v2::workspace::DeleteMode::Trash
@@ -4232,7 +4271,14 @@ impl Workspace {
                     mode,
                 },
             };
-            self.core.read(cx).dispatch_workspace_event(event);
+            self.dispatch_workspace_file_op_and_process(event, cx);
+            let notification = LspFileOperationNotification::Deleted {
+                path: path.clone(),
+                was_dir,
+            };
+            if existed_before && file_operation_notification_succeeded(&notification) {
+                self.notify_lsp_file_operation(notification, cx);
+            }
             if let Some(parent) = path.parent() {
                 self.rescan_directory(parent, cx);
             }
@@ -7318,7 +7364,11 @@ impl Workspace {
             use nucleotide_events::v2::workspace::{Event as WsEvent, FileOpIntent};
 
             // Build event and decide which directory to rescan using references to avoid moves
-            let (event, refresh_dir): (WsEvent, Option<std::path::PathBuf>) = match &pending {
+            let (event, refresh_dir, lsp_file_operation): (
+                WsEvent,
+                Option<std::path::PathBuf>,
+                Option<LspFileOperationNotification>,
+            ) = match &pending {
                 PendingFileOp::NewFile { parent } => (
                     WsEvent::FileOpRequested {
                         intent: FileOpIntent::NewFile {
@@ -7327,6 +7377,10 @@ impl Workspace {
                         },
                     },
                     Some(parent.clone()),
+                    Some(LspFileOperationNotification::Created {
+                        path: parent.join(command),
+                        is_dir: false,
+                    }),
                 ),
                 PendingFileOp::NewFolder { parent } => (
                     WsEvent::FileOpRequested {
@@ -7336,30 +7390,63 @@ impl Workspace {
                         },
                     },
                     Some(parent.clone()),
+                    Some(LspFileOperationNotification::Created {
+                        path: parent.join(command),
+                        is_dir: true,
+                    }),
                 ),
-                PendingFileOp::Rename { path } => (
-                    WsEvent::FileOpRequested {
-                        intent: FileOpIntent::Rename {
-                            path: path.clone(),
-                            new_name: command.to_string(),
+                PendingFileOp::Rename { path } => {
+                    let was_dir = path.is_dir();
+                    let new_path = path
+                        .parent()
+                        .unwrap_or_else(|| std::path::Path::new("."))
+                        .join(command);
+                    (
+                        WsEvent::FileOpRequested {
+                            intent: FileOpIntent::Rename {
+                                path: path.clone(),
+                                new_name: command.to_string(),
+                            },
                         },
-                    },
-                    path.parent().map(|p| p.to_path_buf()),
-                ),
-                PendingFileOp::Duplicate { path } => (
-                    WsEvent::FileOpRequested {
-                        intent: FileOpIntent::Duplicate {
-                            path: path.clone(),
-                            target_name: command.to_string(),
+                        path.parent().map(|p| p.to_path_buf()),
+                        Some(LspFileOperationNotification::Renamed {
+                            old_path: path.clone(),
+                            new_path,
+                            was_dir,
+                        }),
+                    )
+                }
+                PendingFileOp::Duplicate { path } => {
+                    let is_dir = path.is_dir();
+                    let target_path = path
+                        .parent()
+                        .unwrap_or_else(|| std::path::Path::new("."))
+                        .join(command);
+                    (
+                        WsEvent::FileOpRequested {
+                            intent: FileOpIntent::Duplicate {
+                                path: path.clone(),
+                                target_name: command.to_string(),
+                            },
                         },
-                    },
-                    path.parent().map(|p| p.to_path_buf()),
-                ),
+                        path.parent().map(|p| p.to_path_buf()),
+                        Some(LspFileOperationNotification::Created {
+                            path: target_path,
+                            is_dir,
+                        }),
+                    )
+                }
             };
 
             // Clear the overlay and dispatch the event
             self.overlay.update(cx, |overlay, cx| overlay.clear(cx));
-            self.core.read(cx).dispatch_workspace_event(event);
+            self.dispatch_workspace_file_op_and_process(event, cx);
+
+            if let Some(notification) = lsp_file_operation
+                && file_operation_notification_succeeded(&notification)
+            {
+                self.notify_lsp_file_operation(notification, cx);
+            }
 
             if let Some(dir) = refresh_dir {
                 self.rescan_directory(&dir, cx);
@@ -9106,6 +9193,7 @@ impl Workspace {
                 info!("File system change detected: {:?} - {:?}", path, kind);
                 // Tree updates and VCS refreshes are handled by the file tree at
                 // the debounced watcher batch boundary before this event is emitted.
+                self.notify_lsp_file_system_change(path, kind, cx);
                 cx.notify();
             }
             FileTreeEvent::VcsRefreshStarted { repository_root } => {
@@ -9155,6 +9243,82 @@ impl Workspace {
                 self.start_file_tree_search(initial_query.clone(), cx);
             }
         }
+    }
+
+    fn notify_lsp_file_system_change(
+        &mut self,
+        path: &Path,
+        kind: &FileSystemEventKind,
+        cx: &mut Context<Self>,
+    ) {
+        let changes: Vec<(PathBuf, lsp::FileChangeType)> = match kind {
+            FileSystemEventKind::Created => {
+                vec![(path.to_path_buf(), lsp::FileChangeType::CREATED)]
+            }
+            FileSystemEventKind::Modified => {
+                vec![(path.to_path_buf(), lsp::FileChangeType::CHANGED)]
+            }
+            FileSystemEventKind::Deleted => {
+                vec![(path.to_path_buf(), lsp::FileChangeType::DELETED)]
+            }
+            FileSystemEventKind::Renamed { from, to } => vec![
+                (from.clone(), lsp::FileChangeType::DELETED),
+                (to.clone(), lsp::FileChangeType::CREATED),
+            ],
+        };
+
+        self.core.update(cx, move |core, _cx| {
+            for (path, typ) in changes {
+                core.editor
+                    .language_servers
+                    .file_event_handler
+                    .file_event(path, typ);
+            }
+        });
+    }
+
+    fn notify_lsp_file_operation(
+        &mut self,
+        notification: LspFileOperationNotification,
+        cx: &mut Context<Self>,
+    ) {
+        self.core.update(cx, move |core, _cx| {
+            for language_server in core.editor.language_servers.iter_clients() {
+                if !language_server.is_initialized() {
+                    continue;
+                }
+
+                match &notification {
+                    LspFileOperationNotification::Created { path, is_dir } => {
+                        language_server.did_create(path, *is_dir);
+                    }
+                    LspFileOperationNotification::Deleted { path, was_dir } => {
+                        language_server.did_delete(path, *was_dir);
+                    }
+                    LspFileOperationNotification::Renamed {
+                        old_path,
+                        new_path,
+                        was_dir,
+                    } => {
+                        language_server.did_rename(old_path, new_path, *was_dir);
+                    }
+                }
+            }
+        });
+    }
+
+    fn dispatch_workspace_file_op_and_process(
+        &mut self,
+        event: nucleotide_events::v2::workspace::Event,
+        cx: &mut Context<Self>,
+    ) {
+        self.core.update(cx, |core, _cx| {
+            if let Some(bus) = &core.event_aggregator {
+                bus.dispatch_workspace(event);
+                bus.process_events();
+                bus.process_events();
+            }
+        });
     }
 
     fn handle_vcs_service_event(&mut self, event: &VcsEvent, cx: &mut Context<Self>) {
@@ -13612,6 +13776,47 @@ fn code_action_enabled(action: &lsp::CodeActionOrCommand) -> bool {
     )
 }
 
+fn code_action_label(action: &lsp::CodeActionOrCommand) -> &str {
+    match action {
+        lsp::CodeActionOrCommand::Command(command) => command.title.as_str(),
+        lsp::CodeActionOrCommand::CodeAction(code_action) => code_action.title.as_str(),
+    }
+}
+
+fn code_action_metadata_label(action: &lsp::CodeActionOrCommand, server_name: &str) -> String {
+    let mut parts = Vec::new();
+
+    match action {
+        lsp::CodeActionOrCommand::Command(command) => {
+            parts.push(format!("command: {}", command.command));
+        }
+        lsp::CodeActionOrCommand::CodeAction(code_action) => {
+            parts.push(
+                code_action
+                    .kind
+                    .as_ref()
+                    .map(|kind| kind.as_str().to_string())
+                    .unwrap_or_else(|| "code action".to_string()),
+            );
+
+            if code_action.is_preferred == Some(true) {
+                parts.push("preferred".to_string());
+            }
+            if code_action_fixes_diagnostics(action) {
+                parts.push("fixes diagnostics".to_string());
+            }
+            if code_action.data.is_some()
+                && (code_action.edit.is_none() || code_action.command.is_none())
+            {
+                parts.push("resolves on apply".to_string());
+            }
+        }
+    }
+
+    parts.push(server_name.to_string());
+    parts.join(" · ")
+}
+
 fn sort_code_actions_like_helix(actions: &mut [lsp::CodeActionOrCommand]) {
     actions.sort_by(|a, b| {
         let category = code_action_category(a).cmp(&code_action_category(b));
@@ -13814,6 +14019,7 @@ fn show_code_actions(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &m
         .filter_map(|ls| {
             let offset = ls.offset_encoding();
             let ls_id = ls.id();
+            let server_name = ls.name().to_string();
             let range = range_to_lsp_range(&doc_text, selection_range, offset);
             let ctx = lsp::CodeActionContext {
                 diagnostics: diags
@@ -13826,7 +14032,7 @@ fn show_code_actions(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &m
             let req = ls.code_actions(identifier.clone(), range, ctx)?;
             Some(async move {
                 req.await
-                    .map(|opt| (opt.unwrap_or_default(), ls_id, offset))
+                    .map(|opt| (opt.unwrap_or_default(), ls_id, offset, server_name))
             })
         })
         .collect();
@@ -13847,7 +14053,7 @@ fn show_code_actions(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &m
 
         while let Some(result) = futures.next().await {
             match result {
-                Ok((mut actions, ls_id, offset)) => {
+                Ok((mut actions, ls_id, offset, server_name)) => {
                     // Drop disabled actions
                     actions.retain(code_action_enabled);
 
@@ -13855,20 +14061,8 @@ fn show_code_actions(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &m
                     sort_code_actions_like_helix(&mut actions);
 
                     for action in actions.into_iter() {
-                        let label = match &action {
-                            lsp::CodeActionOrCommand::Command(cmd) => cmd.title.clone(),
-                            lsp::CodeActionOrCommand::CodeAction(ca) => ca.title.clone(),
-                        };
-                        let sublabel = match &action {
-                            lsp::CodeActionOrCommand::Command(cmd) => {
-                                format!("command: {}", cmd.command)
-                            }
-                            lsp::CodeActionOrCommand::CodeAction(ca) => ca
-                                .kind
-                                .as_ref()
-                                .map(|kind| kind.as_str().to_string())
-                                .unwrap_or_else(|| "code action".to_string()),
-                        };
+                        let label = code_action_label(&action).to_string();
+                        let sublabel = code_action_metadata_label(&action, &server_name);
 
                         items.push(crate::picker_view::PickerItem {
                             label: label.into(),
@@ -14172,6 +14366,39 @@ mod tests {
     }
 
     #[test]
+    fn file_operation_notification_success_tracks_disk_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let created_file = dir.path().join("created.rs");
+        std::fs::write(&created_file, "").unwrap();
+        assert!(file_operation_notification_succeeded(
+            &LspFileOperationNotification::Created {
+                path: created_file,
+                is_dir: false,
+            }
+        ));
+
+        let deleted_file = dir.path().join("deleted.rs");
+        assert!(!deleted_file.exists());
+        assert!(file_operation_notification_succeeded(
+            &LspFileOperationNotification::Deleted {
+                path: deleted_file,
+                was_dir: false,
+            }
+        ));
+
+        let old_path = dir.path().join("old.rs");
+        let new_path = dir.path().join("new.rs");
+        std::fs::write(&new_path, "").unwrap();
+        assert!(file_operation_notification_succeeded(
+            &LspFileOperationNotification::Renamed {
+                old_path,
+                new_path,
+                was_dir: false,
+            }
+        ));
+    }
+
+    #[test]
     fn completion_menu_keys_match_helix_completion_navigation() {
         assert_eq!(
             completion_menu_action("tab", false, false),
@@ -14430,6 +14657,42 @@ mod tests {
         assert!(code_action_enabled(&enabled_action));
         assert!(code_action_enabled(&command));
         assert!(!code_action_enabled(&disabled_action));
+    }
+
+    #[test]
+    fn code_action_metadata_label_includes_available_lsp_metadata() {
+        let mut action = match test_code_action(
+            "quick fix",
+            Some(lsp::CodeActionKind::QUICKFIX),
+            true,
+            true,
+            false,
+        ) {
+            lsp::CodeActionOrCommand::CodeAction(action) => action,
+            lsp::CodeActionOrCommand::Command(_) => unreachable!(),
+        };
+        action.data = Some(serde_json::json!({ "token": "lazy" }));
+
+        let label = code_action_metadata_label(
+            &lsp::CodeActionOrCommand::CodeAction(action),
+            "rust-analyzer",
+        );
+
+        assert_eq!(
+            label,
+            "quickfix · preferred · fixes diagnostics · resolves on apply · rust-analyzer"
+        );
+
+        let command = lsp::CodeActionOrCommand::Command(lsp::Command {
+            title: "Run command".to_string(),
+            command: "server.command".to_string(),
+            arguments: None,
+        });
+
+        assert_eq!(
+            code_action_metadata_label(&command, "test-ls"),
+            "command: server.command · test-ls"
+        );
     }
 
     #[test]
