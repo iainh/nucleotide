@@ -44,7 +44,7 @@ path = "src/main.rs"
 helix-stdx = { git = "https://github.com/helix-editor/helix", rev = "5a8fb732f26d6aabe757ffd2108ee66e8ef25236" }
 helix-core = { git = "https://github.com/helix-editor/helix", rev = "5a8fb732f26d6aabe757ffd2108ee66e8ef25236" }
 helix-event = { git = "https://github.com/helix-editor/helix", rev = "5a8fb732f26d6aabe757ffd2108ee66e8ef25236" }
-helix-view = { path = "../helix-view" }
+helix-view = { git = "https://github.com/helix-editor/helix", rev = "5a8fb732f26d6aabe757ffd2108ee66e8ef25236" }
 helix-lsp = { path = "../helix-lsp" }
 helix-dap = { git = "https://github.com/helix-editor/helix", rev = "5a8fb732f26d6aabe757ffd2108ee66e8ef25236" }
 helix-vcs = { git = "https://github.com/helix-editor/helix", rev = "5a8fb732f26d6aabe757ffd2108ee66e8ef25236" }

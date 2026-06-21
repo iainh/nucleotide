@@ -48,7 +48,7 @@ pub fn request_completions_direct(
     let (view, doc) = current_ref!(editor);
     
     // Validate that we have the correct document and view
-    if view_id != view_id || doc.id() != doc_id {
+    if view.id != view_id || doc.id() != doc_id {
         log::info!("🔫15 ERROR: At point=direct_validation, message=Document/view mismatch in direct invocation");
         return Err(anyhow::anyhow!("Document/view mismatch"));
     }
@@ -79,7 +79,7 @@ fn request_completions_gpui_compatible(
     mut trigger: Trigger,
     handle: TaskHandle,
     editor: &mut Editor,
-    compositor: &mut Compositor,
+    _compositor: &mut Compositor,
 ) {
     // Hook 06: Result processing start  
     log::info!("🔫06 RESULT_PROCESSING_START: request_completions_gpui_compatible called for trigger {:?}", trigger.kind);
@@ -203,7 +203,6 @@ fn request_completions_gpui_compatible(
         trigger.pos
     );
     
-    let handle_ = handle.clone();
     let request_completions = async move {
         log::info!("🔫🎯 ASYNC_START: Starting async completion processing with {} tasks in JoinSet", requests.len());
         let mut context = HashMap::new();
@@ -250,7 +249,6 @@ fn request_completions_gpui_compatible(
             trigger_pos: trigger.pos,
             trigger_kind: trigger.kind,
             items: items.clone(),
-            context,
             text_prefix,
         };
         
