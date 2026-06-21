@@ -21,6 +21,25 @@ type PointerSelectionCallback =
 type CursorOverlayCallback = Rc<dyn Fn(Option<CursorOverlayPlan>, &mut App)>;
 type KeyDownCallback = Rc<dyn Fn(&KeyDownEvent, &mut Window, &mut App) -> bool>;
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct EditorSurfaceRerenderSnapshot {
+    gutter_width: Pixels,
+    max_scroll_offset: gpui::Size<Pixels>,
+}
+
+impl EditorSurfaceRerenderSnapshot {
+    fn from_state(state: &EditorViewState) -> Self {
+        Self {
+            gutter_width: state.layout_snapshot().gutter_width,
+            max_scroll_offset: state.viewport().max_scroll_offset(),
+        }
+    }
+
+    fn requires_rerender_after(self, next: Self) -> bool {
+        self.gutter_width != next.gutter_width || self.max_scroll_offset != next.max_scroll_offset
+    }
+}
+
 pub struct NativeEditorView<P> {
     view_entity_id: EntityId,
     editor_state: EditorViewState,
@@ -193,10 +212,12 @@ where
         let mut paint_editor_state = editor_state;
         let document_element =
             EditorDocumentElement::new(text_style, move |bounds, after_layout, window, cx| {
-                let layout_before = paint_editor_state.layout_snapshot();
+                let rerender_snapshot_before =
+                    EditorSurfaceRerenderSnapshot::from_state(&paint_editor_state);
                 let overlay_plan = paint(&mut paint_editor_state, bounds, after_layout, window, cx);
-                let layout_after = paint_editor_state.layout_snapshot();
-                if layout_before.gutter_width != layout_after.gutter_width {
+                let rerender_snapshot_after =
+                    EditorSurfaceRerenderSnapshot::from_state(&paint_editor_state);
+                if rerender_snapshot_before.requires_rerender_after(rerender_snapshot_after) {
                     cx.notify(view_entity_id);
                 }
 
@@ -287,6 +308,30 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn surface_rerender_snapshot_tracks_scroll_extent_changes() {
+        let before = EditorSurfaceRerenderSnapshot {
+            gutter_width: px(32.0),
+            max_scroll_offset: size(px(0.0), px(0.0)),
+        };
+        let after = EditorSurfaceRerenderSnapshot {
+            gutter_width: px(32.0),
+            max_scroll_offset: size(px(0.0), px(400.0)),
+        };
+
+        assert!(before.requires_rerender_after(after));
+    }
+
+    #[test]
+    fn surface_rerender_snapshot_ignores_stable_layout() {
+        let snapshot = EditorSurfaceRerenderSnapshot {
+            gutter_width: px(32.0),
+            max_scroll_offset: size(px(0.0), px(400.0)),
+        };
+
+        assert!(!snapshot.requires_rerender_after(snapshot));
+    }
 
     #[gpui::test]
     fn native_editor_view_draws_and_dispatches_input(cx: &mut TestAppContext) {
