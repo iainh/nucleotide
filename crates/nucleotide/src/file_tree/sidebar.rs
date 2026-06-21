@@ -471,9 +471,7 @@ fn render_filename(row: &ProjectTreeRow, theme: &Theme) -> impl IntoElement {
 }
 
 fn render_git_status_lane(row: &ProjectTreeRow, theme: &Theme) -> Option<gpui::AnyElement> {
-    let Some(status) = git_status_for_display(row) else {
-        return None;
-    };
+    let status = git_status_for_display(row)?;
 
     Some(
         div()
