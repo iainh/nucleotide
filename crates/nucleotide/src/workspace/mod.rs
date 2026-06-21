@@ -1362,6 +1362,26 @@ fn completion_menu_action(key: &str, control: bool, shift: bool) -> Option<MenuK
     }
 }
 
+fn completion_refinement_key(key: &str, control: bool, alt: bool, platform: bool) -> bool {
+    if control || alt || platform {
+        return false;
+    }
+
+    if matches!(key, "backspace" | "delete") {
+        return true;
+    }
+
+    let mut chars = key.chars();
+    let Some(ch) = chars.next() else {
+        return false;
+    };
+    if chars.next().is_some() {
+        return false;
+    }
+
+    ch.is_alphanumeric() || matches!(ch, '_' | '$' | '@' | '-' | '.' | ':' | '>')
+}
+
 fn tab_activation_target_after_close<T: Copy + Eq>(
     documents: &[TabActivationDocument<T>],
     closing_doc_id: T,
@@ -5438,50 +5458,18 @@ impl Workspace {
             return;
         }
 
+        let refine_completion_after_helix = self.overlay.read(cx).has_completion()
+            && completion_refinement_key(
+                ev.keystroke.key.as_str(),
+                ev.keystroke.modifiers.control,
+                ev.keystroke.modifiers.alt,
+                ev.keystroke.modifiers.platform,
+            );
+
         // Check if completion is visible and handle navigation/control keys
         if self.overlay.read(cx).has_completion() {
             if self.handle_regular_completion_menu_key(ev, cx) {
                 return;
-            }
-
-            if self.overlay.read(cx).has_completion() {
-                match ev.keystroke.key.as_str() {
-                    "backspace" => {
-                        nucleotide_logging::debug!(
-                            "Backspace while completion active - will predict shorter prefix"
-                        );
-                        // For backspace, predict by removing the last character from current prefix
-                        self.update_completion_filter_with_predicted_backspace(cx);
-                    }
-                    key if key.len() == 1 => {
-                        let typed_char = key.chars().next().unwrap();
-                        if typed_char.is_alphanumeric() || typed_char == '_' {
-                            nucleotide_logging::debug!(
-                                key = %key,
-                                "Character typed while completion active - will update filter with predicted prefix"
-                            );
-                            // Regular alphanumeric character - update filter with prediction
-                            self.update_completion_filter_with_predicted_char(typed_char, cx);
-                        } else if typed_char == '.' {
-                            nucleotide_logging::debug!(
-                                key = %key,
-                                "Dot typed while completion active - will trigger new completion request"
-                            );
-                            // Dot should trigger a new completion request for methods/properties
-                            // Let the dot go to Helix first, then trigger new completion
-                            self.schedule_completion_filter_update(cx);
-                        } else {
-                            // Other punctuation might close completion
-                            nucleotide_logging::debug!(
-                                key = %key,
-                                "Non-alphanumeric character typed - letting Helix handle normally"
-                            );
-                        }
-                    }
-                    _ => {
-                        // For other keys when completion is visible, continue normal processing
-                    }
-                }
             }
         }
 
@@ -5510,6 +5498,14 @@ impl Workspace {
                 self.input.update(cx, |_, cx| {
                     cx.emit(crate::InputEvent::Key(helix_key));
                 });
+
+                if refine_completion_after_helix {
+                    nucleotide_logging::debug!(
+                        key = %ev.keystroke.key,
+                        "Scheduling completion refinement after Helix applies text input"
+                    );
+                    self.schedule_completion_filter_update(cx);
+                }
 
                 // Extra debug for ctrl-x specifically
                 if helix_key
@@ -9808,76 +9804,6 @@ impl Workspace {
         }
     }
 
-    /// Update completion filter by predicting what the prefix will be after the character is typed
-    fn update_completion_filter_with_predicted_char(
-        &mut self,
-        typed_char: char,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        // Get the current prefix and append the character that was just typed
-        if let Some(current_prefix) = self.get_current_completion_prefix(cx) {
-            let predicted_prefix = format!("{}{}", current_prefix, typed_char);
-
-            nucleotide_logging::debug!(
-                current_prefix = %current_prefix,
-                typed_char = %typed_char,
-                predicted_prefix = %predicted_prefix,
-                "Predicting completion prefix after character input"
-            );
-
-            self.update_completion_filter(predicted_prefix, cx)
-        } else {
-            // If we can't get current prefix, use just the typed character
-            let predicted_prefix = typed_char.to_string();
-            nucleotide_logging::debug!(
-                typed_char = %typed_char,
-                predicted_prefix = %predicted_prefix,
-                "Using typed character as completion prefix (no current prefix available)"
-            );
-
-            self.update_completion_filter(predicted_prefix, cx)
-        }
-    }
-
-    /// Update completion filter by predicting what the prefix will be after backspace
-    fn update_completion_filter_with_predicted_backspace(
-        &mut self,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        // Get the current prefix and remove the last character to predict the result of backspace
-        if let Some(current_prefix) = self.get_current_completion_prefix(cx) {
-            if current_prefix.is_empty() {
-                // If prefix is already empty, backspace won't change anything
-                nucleotide_logging::debug!("Backspace on empty prefix - no filter update needed");
-                false
-            } else {
-                // Remove the last character to predict what prefix will be after backspace
-                let mut chars: Vec<char> = current_prefix.chars().collect();
-                chars.pop(); // Remove last character
-                let predicted_prefix: String = chars.iter().collect();
-
-                nucleotide_logging::debug!(
-                    current_prefix = %current_prefix,
-                    predicted_prefix = %predicted_prefix,
-                    "Predicting completion prefix after backspace"
-                );
-
-                if predicted_prefix.is_empty() {
-                    // If predicted prefix becomes empty, show all items by clearing filter
-                    self.update_completion_filter("".to_string(), cx)
-                } else {
-                    self.update_completion_filter(predicted_prefix, cx)
-                }
-            }
-        } else {
-            // If we can't get current prefix, just clear the filter to show all items
-            nucleotide_logging::debug!(
-                "No current prefix available - clearing filter for backspace"
-            );
-            self.update_completion_filter("".to_string(), cx)
-        }
-    }
-
     /// Process completion trigger and request LSP completions
     fn process_completion_trigger(
         &mut self,
@@ -14134,6 +14060,34 @@ mod tests {
         assert_eq!(completion_menu_action("tab", false, true), None);
         assert_eq!(completion_menu_action("c", true, false), None);
         assert_eq!(completion_menu_action("down", true, false), None);
+    }
+
+    #[test]
+    fn completion_refinement_keys_track_text_editing_input() {
+        assert!(completion_refinement_key("a", false, false, false));
+        assert!(completion_refinement_key("A", false, false, false));
+        assert!(completion_refinement_key("_", false, false, false));
+        assert!(completion_refinement_key("$", false, false, false));
+        assert!(completion_refinement_key("@", false, false, false));
+        assert!(completion_refinement_key("-", false, false, false));
+        assert!(completion_refinement_key(".", false, false, false));
+        assert!(completion_refinement_key(":", false, false, false));
+        assert!(completion_refinement_key(">", false, false, false));
+        assert!(completion_refinement_key("backspace", false, false, false));
+        assert!(completion_refinement_key("delete", false, false, false));
+    }
+
+    #[test]
+    fn completion_refinement_keys_ignore_control_chords() {
+        assert!(!completion_refinement_key("n", true, false, false));
+        assert!(!completion_refinement_key("p", true, false, false));
+        assert!(!completion_refinement_key("a", false, true, false));
+        assert!(!completion_refinement_key("a", false, false, true));
+        assert!(!completion_refinement_key("tab", false, false, false));
+        assert!(!completion_refinement_key("enter", false, false, false));
+        assert!(!completion_refinement_key("escape", false, false, false));
+        assert!(!completion_refinement_key("space", false, false, false));
+        assert!(!completion_refinement_key("/", false, false, false));
     }
 
     #[test]
