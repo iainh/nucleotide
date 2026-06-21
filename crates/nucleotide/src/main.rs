@@ -289,6 +289,7 @@ fn determine_workspace_root(args: &Args) -> Result<Option<PathBuf>> {
     Ok(None)
 }
 
+#[cfg(any(target_os = "windows", test))]
 fn parse_startup_dock_action<I, S>(args: I) -> Result<Option<usize>>
 where
     I: IntoIterator<Item = S>,

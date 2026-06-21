@@ -5609,10 +5609,9 @@ impl Workspace {
         }
 
         // Check if completion is visible and handle navigation/control keys
-        if self.overlay.read(cx).has_completion() {
-            if self.handle_regular_completion_menu_key(ev, cx) {
-                return;
-            }
+        if self.overlay.read(cx).has_completion() && self.handle_regular_completion_menu_key(ev, cx)
+        {
+            return;
         }
 
         // Update input context based on current focus state
@@ -10238,13 +10237,7 @@ impl Workspace {
 
             if let Some(this) = this.upgrade() {
                 this.update(cx, move |workspace, cx| {
-                    workspace.finish_completion_request(
-                        completion_result,
-                        cursor,
-                        doc_id,
-                        view_id,
-                        cx,
-                    );
+                    workspace.finish_completion_request(completion_result, doc_id, view_id, cx);
                 });
             }
         })
@@ -10258,7 +10251,6 @@ impl Workspace {
             String,
             bool,
         )>,
-        cursor: usize,
         doc_id: helix_view::DocumentId,
         view_id: helix_view::ViewId,
         cx: &mut Context<Self>,
@@ -10279,7 +10271,6 @@ impl Workspace {
                     self.show_completion_items_with_prefix(
                         completion_items,
                         prefix,
-                        cursor,
                         doc_id,
                         view_id,
                         is_incomplete,
@@ -10360,7 +10351,6 @@ impl Workspace {
         &mut self,
         items: Vec<nucleotide_events::completion::CompletionItem>,
         prefix: String,
-        _cursor: usize,
         doc_id: helix_view::DocumentId,
         view_id: helix_view::ViewId,
         is_incomplete: bool,
