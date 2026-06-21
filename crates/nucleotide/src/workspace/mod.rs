@@ -6933,31 +6933,22 @@ impl Workspace {
             trigger
         );
 
-        // Trigger completion through the completion coordinator
+        let Some(cursor) = self.completion_cursor(doc_id, view_id, cx) else {
+            return;
+        };
+
         match trigger {
             crate::types::CompletionTrigger::Manual => {
                 nucleotide_logging::info!("Manual completion triggered (CTRL+Space)");
-
-                // Send manual trigger event to completion coordinator
-                self.core.update(cx, |app, _cx| {
-                    app.trigger_completion_manual(doc_id, view_id);
-                });
+                self.process_completion_trigger(cursor, doc_id, view_id, true, cx);
             }
             crate::types::CompletionTrigger::Character(c) => {
                 nucleotide_logging::info!(character = %c, "Character-triggered completion");
-
-                // Send character trigger event to completion coordinator
-                self.core.update(cx, |app, _cx| {
-                    app.trigger_completion_character(doc_id, view_id, *c);
-                });
+                self.process_completion_trigger(cursor, doc_id, view_id, false, cx);
             }
             crate::types::CompletionTrigger::Automatic => {
                 nucleotide_logging::info!("Automatic completion triggered");
-
-                // Send automatic trigger event to completion coordinator
-                self.core.update(cx, |app, _cx| {
-                    app.trigger_completion_automatic(doc_id, view_id);
-                });
+                self.process_completion_trigger(cursor, doc_id, view_id, false, cx);
             }
         }
 
@@ -9661,15 +9652,15 @@ impl Workspace {
         match event {
             CompletionEvent::ManualTrigger { cursor, doc, view } => {
                 info!(cursor = *cursor, doc_id = ?doc, view_id = ?view, "Processing manual completion trigger");
-                self.process_completion_trigger(*cursor, *doc, *view, cx);
+                self.process_completion_trigger(*cursor, *doc, *view, true, cx);
             }
             CompletionEvent::AutoTrigger { cursor, doc, view } => {
                 info!(cursor = *cursor, doc_id = ?doc, view_id = ?view, "Processing auto completion trigger");
-                self.process_completion_trigger(*cursor, *doc, *view, cx);
+                self.process_completion_trigger(*cursor, *doc, *view, false, cx);
             }
             CompletionEvent::TriggerChar { cursor, doc, view } => {
                 info!(cursor = *cursor, doc_id = ?doc, view_id = ?view, "Processing trigger character completion");
-                self.process_completion_trigger(*cursor, *doc, *view, cx);
+                self.process_completion_trigger(*cursor, *doc, *view, false, cx);
             }
             CompletionEvent::DeleteText { cursor: _ } => {
                 info!("Processing delete text - hiding completions");
@@ -9893,17 +9884,91 @@ impl Workspace {
         cursor: usize,
         doc_id: helix_view::DocumentId,
         view_id: helix_view::ViewId,
+        is_manual: bool,
         cx: &mut Context<Self>,
     ) {
-        info!(cursor = cursor, doc_id = ?doc_id, view_id = ?view_id, "Sending completion event directly to Application");
+        info!(cursor = cursor, doc_id = ?doc_id, view_id = ?view_id, is_manual = is_manual, "Requesting completions through Nucleotide");
 
-        // Send completion event directly to the Application which will forward to Helix
-        self.core.update(cx, |app, _cx| {
-            app.trigger_completion_manual(doc_id, view_id);
+        if is_manual && self.manual_completion_needs_lsp_settle_delay(cursor, doc_id, cx) {
+            std::thread::sleep(std::time::Duration::from_millis(30));
+        }
+
+        let completion_result = self.core.update(cx, |core, _cx| {
+            core.request_lsp_completions_sync_with_prefix(cursor, doc_id, view_id)
         });
 
-        // Completion results will now be processed directly through Helix's completion system
-        // via hooks that we'll register to capture when Helix has completion results ready
+        match completion_result {
+            Ok((completion_items, prefix)) => {
+                nucleotide_logging::info!(
+                    item_count = completion_items.len(),
+                    prefix = %prefix,
+                    "Received completion items from Nucleotide LSP path"
+                );
+
+                if completion_items.is_empty() {
+                    nucleotide_logging::warn!("No completion items returned from LSP");
+                    self.hide_completions(cx);
+                } else {
+                    self.show_completion_items_with_prefix(
+                        completion_items,
+                        prefix,
+                        cursor,
+                        doc_id,
+                        view_id,
+                        cx,
+                    );
+                }
+            }
+            Err(err) => {
+                nucleotide_logging::error!(
+                    error = %err,
+                    "Failed to get LSP completions through Nucleotide path"
+                );
+            }
+        }
+    }
+
+    fn completion_cursor(
+        &self,
+        doc_id: helix_view::DocumentId,
+        view_id: helix_view::ViewId,
+        cx: &mut Context<Self>,
+    ) -> Option<usize> {
+        let core = self.core.read(cx);
+        let Some(doc) = core.editor.document(doc_id) else {
+            nucleotide_logging::warn!(
+                doc_id = ?doc_id,
+                view_id = ?view_id,
+                "Document not found for completion cursor"
+            );
+            return None;
+        };
+
+        Some(
+            doc.selection(view_id)
+                .primary()
+                .cursor(doc.text().slice(..)),
+        )
+    }
+
+    fn manual_completion_needs_lsp_settle_delay(
+        &self,
+        cursor: usize,
+        doc_id: helix_view::DocumentId,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let core = self.core.read(cx);
+        let Some(doc) = core.editor.document(doc_id) else {
+            return false;
+        };
+
+        let text = doc.text();
+        let cursor_chars = text.byte_to_char(cursor.min(text.len_bytes()));
+        let Some(prev_ch) = text.chars_at(cursor_chars).reversed().next() else {
+            return false;
+        };
+
+        helix_core::chars::char_is_word(prev_ch) || prev_ch == ':'
     }
 
     // /// Convert completion items and show completion popup
