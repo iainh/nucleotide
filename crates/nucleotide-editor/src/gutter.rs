@@ -410,6 +410,10 @@ fn gutter_decoration_provider<'doc>(
     theme: &Theme,
     is_focused: bool,
 ) -> GutterDecorationProvider<'doc> {
+    if matches!(gutter_type, GutterType::Diagnostics) {
+        return empty_gutter_decoration();
+    }
+
     if matches!(gutter_type, GutterType::Diff) {
         return diff_gutter_decoration(doc, theme);
     }
@@ -421,6 +425,10 @@ fn gutter_decoration_provider<'doc>(
             kind: GutterLineKind::Text,
         })
     })
+}
+
+fn empty_gutter_decoration<'doc>() -> GutterDecorationProvider<'doc> {
+    Box::new(|_, _, _, _| None)
 }
 
 fn diff_gutter_decoration<'doc>(
@@ -536,8 +544,8 @@ mod tests {
 
     use super::{
         DIFF_DELTA_GUTTER_SCOPE, DIFF_PLUS_GUTTER_SCOPE, DiffGutterStyle, GutterLinePosition,
-        diff_gutter_bar_bounds, diff_gutter_bar_color_from_style, gutter_origin,
-        soft_wrap_gutter_line_positions, unwrapped_gutter_line_positions,
+        diff_gutter_bar_bounds, diff_gutter_bar_color_from_style, empty_gutter_decoration,
+        gutter_origin, soft_wrap_gutter_line_positions, unwrapped_gutter_line_positions,
     };
     use crate::{SoftWrapVisualLine, line_text::DisplayTextMap, style::helix_color_to_hsla};
 
@@ -618,6 +626,15 @@ mod tests {
         assert_eq!(first.origin.y + first.size.height, second.origin.y);
         assert_eq!(first.size.height, line_height);
         assert_eq!(second.size.height, line_height);
+    }
+
+    #[test]
+    fn empty_gutter_decoration_renders_no_text() {
+        let mut decoration = empty_gutter_decoration();
+        let mut out = String::from("existing");
+
+        assert!(decoration(0, false, true, &mut out).is_none());
+        assert_eq!(out, "existing");
     }
 
     fn visual_line(
