@@ -733,8 +733,11 @@ impl Client {
                     ..Default::default()
                 }),
                 general: Some(lsp::GeneralClientCapabilities {
-                    // Advertise only UTF-16 to ensure consistent position encoding with servers like rust-analyzer
-                    position_encodings: Some(vec![PositionEncodingKind::UTF16]),
+                    position_encodings: Some(vec![
+                        PositionEncodingKind::UTF8,
+                        PositionEncodingKind::UTF32,
+                        PositionEncodingKind::UTF16,
+                    ]),
                     ..Default::default()
                 }),
                 ..Default::default()

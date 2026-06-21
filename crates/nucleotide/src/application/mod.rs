@@ -4169,25 +4169,21 @@ impl Application {
         let cursor_bytes = cursor.min(text.len_bytes());
         let cursor_pos = text.byte_to_char(cursor_bytes);
 
-        let line = text.char_to_line(cursor_pos);
-        let line_start = text.line_to_char(line);
-        // Compute UTF-16 code units for the column as required by LSP when using UTF-16
-        let line_prefix = text.slice(line_start..cursor_pos);
-        let col_utf16: u32 = String::from(line_prefix).encode_utf16().count() as u32;
-        let position = helix_lsp::lsp::Position::new(line as u32, col_utf16);
+        // Use the first available language server for now
+        // TODO: Handle multiple language servers or select the best one
+        let language_server = language_servers[0];
+        let offset_encoding = language_server.offset_encoding();
+        let position = helix_lsp::util::pos_to_lsp_pos(text, cursor_pos, offset_encoding);
 
         nucleotide_logging::debug!(
             cursor_bytes = cursor,
             cursor_chars = cursor_pos,
-            line = line,
-            col_utf16 = col_utf16,
+            line = position.line,
+            character = position.character,
+            offset_encoding = ?offset_encoding,
             server_count = language_servers.len(),
             "Requesting completions from language servers"
         );
-
-        // Use the first available language server for now
-        // TODO: Handle multiple language servers or select the best one
-        let language_server = language_servers[0];
 
         // Create LSP completion context, upgrading to TriggerCharacter when applicable
         // rust-analyzer advertises trigger characters like ':', '.', '\'', '('
@@ -4211,8 +4207,9 @@ impl Application {
         let doc_id_lsp = doc.identifier();
 
         nucleotide_logging::info!(
-            line = line,
-            col_utf16 = col_utf16,
+            line = position.line,
+            character = position.character,
+            offset_encoding = ?offset_encoding,
             server_id = ?language_server.id(),
             "Making actual LSP completion request"
         );
@@ -4224,7 +4221,7 @@ impl Application {
             "textDocument/completion",
             &serde_json::json!({
                 "textDocument": doc_id_lsp,
-                "position": {"line": line as u32, "character": col_utf16},
+                "position": {"line": position.line, "character": position.character},
                 "context": {
                     "triggerKind": completion_context.trigger_kind,
                     "triggerCharacter": completion_context.trigger_character
