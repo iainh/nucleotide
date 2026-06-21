@@ -94,9 +94,7 @@ impl DisplayLineText {
             }
 
             let display_end = display.len();
-            for source_byte in source_start..source_end {
-                source_to_display[source_byte] = display_start;
-            }
+            source_to_display[source_start..source_end].fill(display_start);
             source_to_display[source_end] = display_end;
             spans.push((display_start, display_end, source_start, source_end));
         }
@@ -104,9 +102,7 @@ impl DisplayLineText {
 
         let mut display_to_source = vec![source.len(); display.len() + 1];
         for (display_start, display_end, source_start, source_end) in spans {
-            for display_byte in display_start..display_end {
-                display_to_source[display_byte] = source_start;
-            }
+            display_to_source[display_start..display_end].fill(source_start);
             display_to_source[display_end] = source_end;
         }
         if display.is_empty() {
