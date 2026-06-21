@@ -1,4 +1,5 @@
 #![recursion_limit = "512"]
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 use std::panic;
 use std::time::Duration;
@@ -25,6 +26,8 @@ use url::Url;
 
 // Only declare modules that are not in lib.rs (binary-specific modules)
 mod test_utils;
+#[cfg(target_os = "windows")]
+mod windows_single_instance;
 
 pub type Core = Application;
 
@@ -112,7 +115,7 @@ fn install_panic_handler() {
     }));
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn configure_bundle_runtime_environment() {
     let Some(rt) = nucleotide::utils::detect_bundle_runtime() else {
         return;
@@ -131,6 +134,9 @@ fn configure_bundle_runtime_environment() {
         unsafe { std::env::set_var("HELIX_RUNTIME", &rt) };
     }
 }
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn configure_bundle_runtime_environment() {}
 
 // Use constructor to set environment variable before any static initialization
 #[cfg(target_os = "macos")]
@@ -283,16 +289,93 @@ fn determine_workspace_root(args: &Args) -> Result<Option<PathBuf>> {
     Ok(None)
 }
 
+fn parse_startup_dock_action<I, S>(args: I) -> Result<Option<usize>>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut argv = args.into_iter();
+    let _program = argv.next();
+
+    let Some(flag) = argv.next() else {
+        return Ok(None);
+    };
+
+    if flag.as_ref() != "--dock-action" {
+        return Ok(None);
+    }
+
+    let Some(index) = argv.next() else {
+        anyhow::bail!("--dock-action must specify an action index");
+    };
+
+    if argv.next().is_some() {
+        anyhow::bail!("--dock-action cannot be combined with files or other flags");
+    }
+
+    index
+        .as_ref()
+        .parse::<usize>()
+        .map(Some)
+        .context("--dock-action must specify a numeric action index")
+}
+
+#[cfg(target_os = "windows")]
+fn startup_dock_action() -> Result<Option<usize>> {
+    parse_startup_dock_action(std::env::args())
+}
+
+#[cfg(target_os = "windows")]
+const WINDOWS_APP_USER_MODEL_ID: &str = "org.spiralpoint.nucleotide";
+
+#[cfg(target_os = "windows")]
+fn windows_wide_nul(value: &str) -> Vec<u16> {
+    value.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+#[cfg(target_os = "windows")]
+fn configure_windows_app_user_model_id() {
+    let app_id = windows_wide_nul(WINDOWS_APP_USER_MODEL_ID);
+    let result = unsafe {
+        windows_sys::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID(app_id.as_ptr())
+    };
+
+    if result < 0 {
+        warn!(
+            hresult = format!("{result:#010x}"),
+            app_user_model_id = WINDOWS_APP_USER_MODEL_ID,
+            "Failed to set Windows AppUserModelID"
+        );
+    } else {
+        info!(
+            app_user_model_id = WINDOWS_APP_USER_MODEL_ID,
+            "Configured Windows AppUserModelID"
+        );
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn configure_windows_app_user_model_id() {}
+
+#[cfg(not(target_os = "windows"))]
+fn startup_dock_action() -> Result<Option<usize>> {
+    Ok(None)
+}
+
 #[instrument]
 fn main() -> Result<()> {
-    // Set HELIX_RUNTIME for macOS bundles before any Helix code runs (backup)
-    #[cfg(target_os = "macos")]
+    // Set HELIX_RUNTIME for packaged apps before any Helix runtime lookup occurs.
     configure_bundle_runtime_environment();
 
     // Install panic handler to prevent data loss
     install_panic_handler();
 
-    let mut args = nucleotide::cli::parse_args()?;
+    let initial_dock_action = startup_dock_action()?;
+    let mut args = if initial_dock_action.is_some() {
+        Args::default()
+    } else {
+        nucleotide::cli::parse_args()?
+    };
 
     helix_loader::initialize_config_file(args.config_file.clone());
     helix_loader::initialize_log_file(args.log_file.clone());
@@ -321,6 +404,7 @@ fn main() -> Result<()> {
 
     setup_logging(args.verbosity).context("failed to initialize logging")?;
     configure_wsl_graphics();
+    configure_windows_app_user_model_id();
 
     // Before setting the working directory, resolve all the paths in args.files
     args.files = args
@@ -328,6 +412,19 @@ fn main() -> Result<()> {
         .into_iter()
         .map(|(path, pos)| (helix_stdx::path::canonicalize(&path), pos))
         .collect();
+
+    #[cfg(target_os = "windows")]
+    let _windows_single_instance_guard =
+        match windows_single_instance::claim_or_forward(&args, initial_dock_action)? {
+            windows_single_instance::ClaimResult::Primary(guard) => guard,
+            windows_single_instance::ClaimResult::Forwarded => return Ok(()),
+        };
+
+    let (platform_open_tx, platform_open_rx) =
+        tokio::sync::mpsc::unbounded_channel::<ExternalOpenRequest>();
+
+    #[cfg(target_os = "windows")]
+    windows_single_instance::start_listener(platform_open_tx.clone());
 
     // Load our combined configuration (helix + gui)
     let config = match crate::config::Config::load() {
@@ -391,9 +488,34 @@ fn main() -> Result<()> {
     .context("unable to create new application")?;
 
     info!("Starting GUI main loop");
-    gui_main(app, config, handle.clone(), workspace_root);
+    gui_main(
+        app,
+        config,
+        handle.clone(),
+        workspace_root,
+        initial_dock_action,
+        platform_open_tx,
+        platform_open_rx,
+    );
     info!("Application shutting down");
     Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+struct ExternalOpenRequest {
+    paths: Vec<PathBuf>,
+    working_directory: Option<PathBuf>,
+    dock_action: Option<usize>,
+}
+
+impl ExternalOpenRequest {
+    fn paths(paths: Vec<PathBuf>) -> Self {
+        Self {
+            paths,
+            working_directory: None,
+            dock_action: None,
+        }
+    }
 }
 
 fn parse_file_url(url_str: &str) -> Option<PathBuf> {
@@ -643,15 +765,15 @@ fn gui_main(
     config: nucleotide::config::Config,
     handle: tokio::runtime::Handle,
     workspace_root: Option<std::path::PathBuf>,
+    initial_dock_action: Option<usize>,
+    platform_open_tx: tokio::sync::mpsc::UnboundedSender<ExternalOpenRequest>,
+    mut platform_open_rx: tokio::sync::mpsc::UnboundedReceiver<ExternalOpenRequest>,
 ) {
-    // Store a channel for sending file open requests from macOS
-    let (file_open_tx, mut file_open_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<PathBuf>>();
-
     let gpui_app = gpui_platform::application().with_assets(nucleotide_ui::Assets);
 
     // Register handler for macOS file open events (dock drops and Finder "Open With")
     gpui_app.on_open_urls({
-        let file_open_tx = file_open_tx.clone();
+        let platform_open_tx = platform_open_tx.clone();
         move |urls| {
             info!(urls = ?urls, "Received open URLs request");
 
@@ -669,7 +791,7 @@ fn gui_main(
             }
 
             if !paths.is_empty()
-                && let Err(e) = file_open_tx.send(paths)
+                && let Err(e) = platform_open_tx.send(ExternalOpenRequest::paths(paths))
             {
                 error!(error = %e, "Failed to send file open request");
             }
@@ -1108,10 +1230,10 @@ fn gui_main(
                     ),
                 ]);
 
-                #[cfg(target_os = "macos")]
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
                 {
                     cx.set_dock_menu(dock_menu_items());
-                    info!("Configured macOS Dock menu");
+                    info!("Configured platform dock/taskbar menu");
                 }
 
                 let input_1 = input.clone();
@@ -1170,31 +1292,45 @@ fn gui_main(
                     "Workspace created - ProjectLspManager will be initialized automatically"
                 );
 
-                // Spawn a task to handle file open requests from macOS
+                // Spawn a task to handle file open requests from platform shell integrations.
                 let workspace_clone = workspace.clone();
+                let window_handle = window.window_handle();
                 cx.spawn(async move |cx| {
-                    while let Some(paths) = file_open_rx.recv().await {
-                        info!(paths = ?paths, "Processing file open request");
+                    while let Some(request) = platform_open_rx.recv().await {
+                        info!(request = ?request, "Processing platform open request");
 
-                        // If we have files to open, change working directory from the first file or directory
-                        let mut should_change_dir = false;
-                        let mut new_working_dir = None;
+                        if let Err(error) = window_handle.update(cx, |_, window, _cx| {
+                            window.activate_window();
+                        }) {
+                            warn!(error = %error, "Failed to activate window for platform open request");
+                        }
 
-                        for (index, path) in paths.iter().enumerate() {
-                            if path.exists() {
-                                // For the first valid path, use directories directly and file parents otherwise.
-                                if index == 0 && !should_change_dir
-                                    && let Some(dir) = open_request_workspace_dir(path) {
-                                        new_working_dir = Some(dir.clone());
-                                        should_change_dir = true;
-                                        info!(directory = ?dir, "Will change working directory");
-                                    }
+                        if let Some(action_index) = request.dock_action {
+                            cx.update(|cx| {
+                                info!(action_index, "Performing forwarded dock/taskbar action");
+                                cx.perform_dock_menu_action(action_index);
+                            });
+                        }
+
+                        // If we have files to open, change working directory from the request
+                        // or from the first file/directory.
+                        let mut new_working_dir = request.working_directory.clone();
+
+                        if new_working_dir.is_none() {
+                            for path in &request.paths {
+                                if path.exists()
+                                    && let Some(dir) = open_request_workspace_dir(path)
+                                {
+                                    new_working_dir = Some(dir.clone());
+                                    info!(directory = ?dir, "Will change working directory");
+                                    break;
+                                }
                             }
                         }
 
                         // Change working directory if needed
-                        if should_change_dir
-                            && let Some(dir) = new_working_dir.clone() {
+                        if let Some(dir) = new_working_dir.clone() {
+                            if dir.exists() {
                                 if let Err(e) = helix_stdx::env::set_current_working_dir(&dir) {
                                     error!(
                                         directory = ?dir,
@@ -1222,10 +1358,13 @@ fn gui_main(
                                         });
                                     });
                                 }
+                            } else {
+                                warn!(directory = %dir.display(), "Forwarded working directory does not exist");
                             }
+                        }
 
                         // Now open all the files
-                        for path in paths {
+                        for path in request.paths {
                             if path.exists() {
                                 // Send OpenFile update to the workspace
                                 cx.update(|cx| {
@@ -1260,6 +1399,13 @@ fn gui_main(
                     workspace.update(cx, |workspace, cx| {
                         workspace.set_titlebar(titlebar.into());
                         cx.notify();
+                    });
+                }
+
+                if let Some(action_index) = initial_dock_action {
+                    cx.defer(move |cx| {
+                        info!(action_index, "Performing startup dock/taskbar action");
+                        cx.perform_dock_menu_action(action_index);
                     });
                 }
 
@@ -1363,6 +1509,45 @@ mod tests {
             }
             _ => panic!("expected open directory action"),
         }
+    }
+
+    #[test]
+    fn startup_dock_action_parser_ignores_normal_cli_args() {
+        assert_eq!(
+            parse_startup_dock_action(["nucl", "src/main.rs"]).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn startup_dock_action_parser_accepts_jump_list_action() {
+        assert_eq!(
+            parse_startup_dock_action(["nucl", "--dock-action", "1"]).unwrap(),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn startup_dock_action_parser_rejects_malformed_action() {
+        assert!(parse_startup_dock_action(["nucl", "--dock-action"]).is_err());
+        assert!(parse_startup_dock_action(["nucl", "--dock-action", "abc"]).is_err());
+        assert!(parse_startup_dock_action(["nucl", "--dock-action", "0", "extra"]).is_err());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_app_user_model_id_uses_bundle_identifier() {
+        assert_eq!(WINDOWS_APP_USER_MODEL_ID, "org.spiralpoint.nucleotide");
+        assert!(WINDOWS_APP_USER_MODEL_ID.contains('.'));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_wide_nul_is_nul_terminated() {
+        let value = windows_wide_nul(WINDOWS_APP_USER_MODEL_ID);
+
+        assert_eq!(value.last().copied(), Some(0));
+        assert_eq!(value.iter().filter(|&&ch| ch == 0).count(), 1);
     }
 
     #[cfg(target_os = "windows")]

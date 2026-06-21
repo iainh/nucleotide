@@ -353,7 +353,7 @@ pub mod session {
         }
         #[cfg(windows)]
         {
-            std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string())
+            windows_shell::system_shell()
         }
         #[cfg(not(windows))]
         {
@@ -408,6 +408,126 @@ pub mod session {
             merged.insert(key.to_string(), value.clone());
         } else {
             merged.remove(key);
+        }
+    }
+
+    #[cfg(windows)]
+    mod windows_shell {
+        use std::path::PathBuf;
+        use std::sync::LazyLock;
+
+        pub(super) fn system_shell() -> String {
+            static SYSTEM_SHELL: LazyLock<String> = LazyLock::new(detect_system_shell);
+            (*SYSTEM_SHELL).clone()
+        }
+
+        fn detect_system_shell() -> String {
+            for path in [
+                find_pwsh_in_programfiles(false, false),
+                find_pwsh_in_programfiles(true, false),
+                find_pwsh_in_msix(false),
+                find_pwsh_in_programfiles(false, true),
+                find_pwsh_in_msix(true),
+                find_pwsh_in_programfiles(true, true),
+                find_pwsh_in_scoop(),
+                which::which_global("pwsh.exe").ok(),
+                which::which_global("powershell.exe").ok(),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                return path.to_string_lossy().trim().to_string();
+            }
+
+            std::env::var("COMSPEC")
+                .ok()
+                .filter(|shell| !shell.trim().is_empty())
+                .unwrap_or_else(|| "cmd.exe".to_string())
+        }
+
+        fn find_pwsh_in_programfiles(find_alternate: bool, find_preview: bool) -> Option<PathBuf> {
+            #[cfg(target_pointer_width = "64")]
+            let env_var = if find_alternate {
+                "ProgramFiles(x86)"
+            } else {
+                "ProgramFiles"
+            };
+
+            #[cfg(target_pointer_width = "32")]
+            let env_var = if find_alternate {
+                "ProgramW6432"
+            } else {
+                "ProgramFiles"
+            };
+
+            let install_base_dir = PathBuf::from(std::env::var_os(env_var)?).join("PowerShell");
+            install_base_dir
+                .read_dir()
+                .ok()?
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_type().is_ok_and(|file_type| file_type.is_dir()))
+                .filter_map(|entry| {
+                    let dir_name = entry.file_name();
+                    let dir_name = dir_name.to_string_lossy();
+                    let version = if find_preview {
+                        let dash_index = dir_name.find('-')?;
+                        if &dir_name[dash_index + 1..] != "preview" {
+                            return None;
+                        }
+                        dir_name[..dash_index].parse::<u32>().ok()?
+                    } else {
+                        dir_name.parse::<u32>().ok()?
+                    };
+
+                    let exe_path = entry.path().join("pwsh.exe");
+                    exe_path.exists().then_some((version, exe_path))
+                })
+                .max_by_key(|(version, _)| *version)
+                .map(|(_, path)| path)
+        }
+
+        fn find_pwsh_in_msix(find_preview: bool) -> Option<PathBuf> {
+            let msix_app_dir =
+                PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("Microsoft\\WindowsApps");
+            if !msix_app_dir.exists() {
+                return None;
+            }
+
+            let prefix = if find_preview {
+                "Microsoft.PowerShellPreview_"
+            } else {
+                "Microsoft.PowerShell_"
+            };
+
+            msix_app_dir
+                .read_dir()
+                .ok()?
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_type().is_ok_and(|file_type| file_type.is_dir()))
+                .find_map(|entry| {
+                    if !entry.file_name().to_string_lossy().starts_with(prefix) {
+                        return None;
+                    }
+
+                    let exe_path = entry.path().join("pwsh.exe");
+                    exe_path.exists().then_some(exe_path)
+                })
+        }
+
+        fn find_pwsh_in_scoop() -> Option<PathBuf> {
+            let pwsh_exe =
+                PathBuf::from(std::env::var_os("USERPROFILE")?).join("scoop\\shims\\pwsh.exe");
+            pwsh_exe.exists().then_some(pwsh_exe)
+        }
+
+        #[cfg(test)]
+        mod tests {
+            use super::*;
+
+            #[test]
+            fn system_shell_falls_back_to_a_shell() {
+                assert!(!system_shell().trim().is_empty());
+            }
         }
     }
 

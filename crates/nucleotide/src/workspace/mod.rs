@@ -9,10 +9,16 @@ pub use view_manager::ViewManager;
 
 // Main workspace implementation
 use std::collections::HashSet;
+#[cfg(target_os = "windows")]
+use std::collections::VecDeque;
 use std::hash::Hash;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+#[cfg(target_os = "windows")]
+use std::sync::{LazyLock, Mutex};
 
+#[cfg(target_os = "windows")]
+use gpui::MenuItem;
 use gpui::prelude::FluentBuilder;
 use gpui::{
     Anchor, App, AppContext, BorrowAppContext, Bounds, Context, DismissEvent, DragMoveEvent, Empty,
@@ -71,6 +77,8 @@ use nucleotide_events::v2::terminal::{Event as TerminalEvent, TerminalId};
 use nucleotide_terminal::TerminalBounds;
 // (no direct Workspace v2 items used here)
 use nucleotide_vcs::{VcsEvent, VcsServiceHandle};
+#[cfg(target_os = "windows")]
+use smallvec::{SmallVec, smallvec};
 
 type FileTreeContextMenuHandler = fn(&mut Workspace, &mut Context<Workspace>);
 type TabContextMenuHandler = fn(&mut Workspace, DocumentId, &mut Context<Workspace>);
@@ -121,7 +129,91 @@ fn add_recent_project(path: &Path, cx: &mut App) {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+const WINDOWS_JUMP_LIST_PROJECT_LIMIT: usize = 10;
+
+#[cfg(target_os = "windows")]
+static WINDOWS_RECENT_PROJECTS: LazyLock<Mutex<VecDeque<PathBuf>>> =
+    LazyLock::new(|| Mutex::new(VecDeque::new()));
+
+#[cfg(target_os = "windows")]
+fn add_recent_project(path: &Path, cx: &mut App) {
+    let Some(path) = windows_recent_project_path(path) else {
+        return;
+    };
+
+    let wide_path = windows_wide_nul_path(&path);
+    unsafe {
+        windows_sys::Win32::UI::Shell::SHAddToRecentDocs(
+            windows_sys::Win32::UI::Shell::SHARD_PATHW as u32,
+            wide_path.as_ptr().cast(),
+        );
+    }
+
+    let entries = windows_record_recent_project(path.clone());
+    cx.update_jump_list(windows_jump_list_menu_items(), entries)
+        .detach();
+
+    debug!(project_root = %path.display(), "Added project to Windows recent documents and Jump List");
+}
+
+#[cfg(target_os = "windows")]
+fn windows_recent_project_path(path: &Path) -> Option<PathBuf> {
+    if !path.is_dir() {
+        return None;
+    }
+
+    Some(path.canonicalize().unwrap_or_else(|_| path.to_path_buf()))
+}
+
+#[cfg(target_os = "windows")]
+fn windows_wide_nul_path(path: &Path) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+
+    path.as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
+}
+
+#[cfg(target_os = "windows")]
+fn windows_record_recent_project(path: PathBuf) -> Vec<SmallVec<[PathBuf; 2]>> {
+    let Ok(mut recent) = WINDOWS_RECENT_PROJECTS.lock() else {
+        warn!(project_root = %path.display(), "Failed to update Windows Jump List recent projects");
+        return vec![smallvec![path]];
+    };
+
+    windows_update_recent_project_list(&mut recent, path);
+    windows_jump_list_entries(&recent)
+}
+
+#[cfg(target_os = "windows")]
+fn windows_update_recent_project_list(recent: &mut VecDeque<PathBuf>, path: PathBuf) {
+    if let Some(index) = recent.iter().position(|entry| entry == &path) {
+        recent.remove(index);
+    }
+
+    recent.push_front(path);
+
+    while recent.len() > WINDOWS_JUMP_LIST_PROJECT_LIMIT {
+        recent.pop_back();
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_jump_list_entries(recent: &VecDeque<PathBuf>) -> Vec<SmallVec<[PathBuf; 2]>> {
+    recent.iter().cloned().map(|path| smallvec![path]).collect()
+}
+
+#[cfg(target_os = "windows")]
+fn windows_jump_list_menu_items() -> Vec<MenuItem> {
+    vec![
+        MenuItem::action("Open...", crate::actions::editor::OpenFile),
+        MenuItem::action("Open Directory...", crate::actions::editor::OpenDirectory),
+    ]
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn add_recent_project(_path: &Path, _cx: &mut App) {}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -14363,6 +14455,72 @@ mod tests {
             None
         );
         assert_eq!(EnvironmentBadge::from_environment_marker(None), None);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_recent_project_path_accepts_directories_only() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("file.txt");
+        std::fs::write(&file_path, "not a project root").unwrap();
+
+        let recent_path = windows_recent_project_path(temp_dir.path()).unwrap();
+        assert!(recent_path.is_absolute());
+        assert!(recent_path.is_dir());
+        assert_eq!(windows_recent_project_path(&file_path), None);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_wide_nul_path_is_nul_terminated() {
+        let wide_path = windows_wide_nul_path(Path::new(r"C:\Users\Example Project"));
+
+        assert_eq!(wide_path.last().copied(), Some(0));
+        assert_eq!(wide_path.iter().filter(|&&ch| ch == 0).count(), 1);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_jump_list_recent_projects_are_most_recent_first() {
+        let mut recent = VecDeque::new();
+        let project_a = PathBuf::from(r"C:\Users\Example\project-a");
+        let project_b = PathBuf::from(r"C:\Users\Example\project-b");
+
+        windows_update_recent_project_list(&mut recent, project_a.clone());
+        windows_update_recent_project_list(&mut recent, project_b.clone());
+        windows_update_recent_project_list(&mut recent, project_a.clone());
+
+        let entries = windows_jump_list_entries(&recent);
+        let expected: Vec<SmallVec<[PathBuf; 2]>> =
+            vec![smallvec![project_a], smallvec![project_b]];
+
+        assert_eq!(entries, expected);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_jump_list_recent_projects_are_capped() {
+        let mut recent = VecDeque::new();
+
+        for index in 0..(WINDOWS_JUMP_LIST_PROJECT_LIMIT + 2) {
+            windows_update_recent_project_list(
+                &mut recent,
+                PathBuf::from(format!(r"C:\Users\Example\project-{index}")),
+            );
+        }
+
+        assert_eq!(recent.len(), WINDOWS_JUMP_LIST_PROJECT_LIMIT);
+        assert_eq!(
+            recent.front(),
+            Some(&PathBuf::from(format!(
+                r"C:\Users\Example\project-{}",
+                WINDOWS_JUMP_LIST_PROJECT_LIMIT + 1
+            )))
+        );
+        assert_eq!(
+            recent.back(),
+            Some(&PathBuf::from(r"C:\Users\Example\project-2"))
+        );
     }
 
     #[test]

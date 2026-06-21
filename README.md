@@ -43,6 +43,19 @@ when you need to update packaged runtime grammars.
 open Nucleotide.app
 ```
 
+### Windows Package
+
+Nucleotide publishes a Windows zip package from CI. Extract it to a stable
+directory such as `%LOCALAPPDATA%\Programs\Nucleotide`, then run `nucl.exe`.
+The package includes an optional per-user shell integration script:
+
+```powershell
+.\install-windows-context-menu.cmd
+```
+
+See `docs/windows_install.md` for Explorer, Open With, Start Menu, App Paths,
+and terminal `PATH` options.
+
 ## Development Setup
 
 ### Install Git Hooks
@@ -57,7 +70,12 @@ This will set up automatic `cargo fmt` checks before each commit.
 
 ## Configuration
 
-Nucleotide looks for configuration in `~/.config/helix/nucleotide.toml` and falls back to Helix configuration at `~/.config/helix/config.toml`.
+Nucleotide uses Helix's platform config directory. It looks for
+`nucleotide.toml` there and falls back to Helix's `config.toml` for editor
+settings.
+
+- Linux/macOS: commonly `~/.config/helix/nucleotide.toml`
+- Windows: `%APPDATA%\helix\nucleotide.toml`
 
 See `docs/examples/nucleotide.example.toml` for a sample GUI configuration.
 

@@ -24,7 +24,9 @@ Usage: .\scripts\package-windows-test.cmd [options]
 
 Creates a local Windows test package containing:
   nucl.exe
-  nucl.cmd
+  nucl.cmd (terminal helper)
+  nucleotide.ico
+  install-windows-context-menu.cmd
   runtime\
   nucleotide\
 
@@ -307,6 +309,83 @@ exit /b %ERRORLEVEL%
     }
 }
 
+function Copy-WindowsIntegrationScripts {
+    param([string]$PackageDirectory)
+
+    foreach ($name in @("install-windows-context-menu.ps1", "install-windows-context-menu.cmd")) {
+        $source = Join-Path $PSScriptRoot $name
+        if (-not (Test-Path -LiteralPath $source)) {
+            throw "Missing Windows integration script: $source"
+        }
+
+        Copy-Item -LiteralPath $source -Destination (Join-Path $PackageDirectory $name) -Force
+    }
+
+    $iconSource = Join-Path $RepoRoot "crates\nucleotide\assets\nucleotide.ico"
+    if (-not (Test-Path -LiteralPath $iconSource)) {
+        throw "Missing Windows package icon: $iconSource"
+    }
+
+    Copy-Item -LiteralPath $iconSource -Destination (Join-Path $PackageDirectory "nucleotide.ico") -Force
+}
+
+function Set-PackagedExecutableIcon {
+    param(
+        [string]$PackageExe,
+        [string]$PackageDirectory
+    )
+
+    $iconPatchScript = Join-Path $PSScriptRoot "set-windows-exe-icon.ps1"
+    if (-not (Test-Path -LiteralPath $iconPatchScript)) {
+        throw "Missing Windows executable icon patch script: $iconPatchScript"
+    }
+
+    $iconPath = Join-Path $PackageDirectory "nucleotide.ico"
+    if (-not (Test-Path -LiteralPath $iconPath)) {
+        throw "Missing package icon: $iconPath"
+    }
+
+    & $iconPatchScript -ExePath $PackageExe -IconPath $iconPath
+}
+
+function Get-WindowsExecutableSubsystem {
+    param([string]$ExePath)
+
+    $bytes = [System.IO.File]::ReadAllBytes($ExePath)
+    if ($bytes.Length -lt 0x100) {
+        throw "Executable is too small to contain a PE header: $ExePath"
+    }
+
+    $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
+    if ($peOffset -lt 0 -or ($peOffset + 96) -ge $bytes.Length) {
+        throw "Invalid PE header offset in executable: $ExePath"
+    }
+
+    $signature = [System.Text.Encoding]::ASCII.GetString($bytes, $peOffset, 4)
+    if ($signature -ne "PE`0`0") {
+        throw "Executable does not contain a PE signature: $ExePath"
+    }
+
+    $optionalHeaderOffset = $peOffset + 24
+    $subsystemOffset = $optionalHeaderOffset + 68
+    [BitConverter]::ToUInt16($bytes, $subsystemOffset)
+}
+
+function Assert-ReleaseExecutableUsesGuiSubsystem {
+    param([string]$ExePath)
+
+    if ($Profile -ne "release") {
+        return
+    }
+
+    $subsystem = Get-WindowsExecutableSubsystem -ExePath $ExePath
+    if ($subsystem -ne 2) {
+        throw "Release nucl.exe must use the Windows GUI subsystem (2), but found subsystem $subsystem. A console subsystem build opens an extra terminal window."
+    }
+
+    Write-Host "Verified release executable subsystem: Windows GUI"
+}
+
 function Invoke-GrammarCommand {
     param(
         [string]$PackageExe,
@@ -383,6 +462,9 @@ Copy-NucleotideThemes -RuntimeDirectory $RuntimeDest
 Update-GrammarExclusions -RuntimeDirectory $RuntimeDest -GrammarIds $ExcludeGrammars
 Write-WorkspaceGrammarExclusions -PackageDirectory $PackageDir -GrammarIds $ExcludeGrammars
 Write-Launcher -PackageDirectory $PackageDir -ManifestDirectory $ManifestDir
+Copy-WindowsIntegrationScripts -PackageDirectory $PackageDir
+Set-PackagedExecutableIcon -PackageExe $PackageExe -PackageDirectory $PackageDir
+Assert-ReleaseExecutableUsesGuiSubsystem -ExePath $PackageExe
 
 if (-not $SkipFetchGrammars -or -not $SkipBuildGrammars) {
     Add-GitToPathIfNeeded
@@ -406,7 +488,10 @@ Write-Host "  $PackageDir"
 Write-Host ""
 Write-Host "Contents:"
 Write-Host "  Binary:       $PackageExe"
-Write-Host "  Launcher:     $(Join-Path $PackageDir "nucl.cmd")"
+Write-Host "  Executable:   $(Join-Path $PackageDir "nucl.exe")"
+Write-Host "  Cmd helper:   $(Join-Path $PackageDir "nucl.cmd")"
+Write-Host "  Icon:         $(Join-Path $PackageDir "nucleotide.ico")"
+Write-Host "  Explorer:     $(Join-Path $PackageDir "install-windows-context-menu.cmd")"
 Write-Host "  Runtime:      $RuntimeDest"
 Write-Host "  Grammar DLLs: $dllCount"
 Write-Host "  Query dirs:   $queryCount"
