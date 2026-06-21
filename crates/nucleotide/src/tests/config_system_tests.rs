@@ -42,6 +42,16 @@ mod tests {
         }
     }
 
+    fn expected_default_editor_font_family() -> &'static str {
+        if cfg!(target_os = "macos") {
+            "SF Mono"
+        } else if cfg!(target_os = "windows") {
+            "Cascadia Mono"
+        } else {
+            "monospace"
+        }
+    }
+
     #[test]
     fn test_default_gui_config() {
         let config = GuiConfig::default();
@@ -138,7 +148,7 @@ mode = "light"
         assert_eq!(config.theme.mode, ThemeMode::Light);
         assert_eq!(config.file_tree.density, FileTreeDisplayDensity::Default);
         assert!(config.file_tree.flatten_empty_directories);
-        assert_eq!(config.theme.get_light_theme(), "nucleotide-outdoors"); // Default
+        assert_eq!(config.theme.get_light_theme(), "nucleotide-cyan-light"); // Default
         assert_eq!(config.theme.get_dark_theme(), "nucleotide-teal"); // Default
     }
 
@@ -360,7 +370,7 @@ dark_theme = "custom_dark"
         config.gui.editor.font = None;
 
         let editor_font = config.editor_font();
-        assert_eq!(editor_font.family, "SF Mono"); // Default editor font
+        assert_eq!(editor_font.family, expected_default_editor_font_family()); // Default editor font
 
         let ui_font = config.ui_font();
         assert_eq!(ui_font.family, ".SystemUIFont"); // Default UI font
@@ -483,7 +493,7 @@ dark_theme = "custom_dark"
         let theme_config = ThemeConfig::default();
 
         assert_eq!(theme_config.mode, ThemeMode::System);
-        assert_eq!(theme_config.get_light_theme(), "nucleotide-outdoors");
+        assert_eq!(theme_config.get_light_theme(), "nucleotide-cyan-light");
         assert_eq!(theme_config.get_dark_theme(), "nucleotide-teal");
     }
 
@@ -796,7 +806,7 @@ family = "Editor Font"
             config.gui.editor.font = None;
 
             let editor_font = config.editor_font();
-            assert_eq!(editor_font.family, "SF Mono"); // Default editor font
+            assert_eq!(editor_font.family, expected_default_editor_font_family()); // Default editor font
 
             let ui_font = config.ui_font();
             assert_eq!(ui_font.family, ".SystemUIFont"); // Default UI font
