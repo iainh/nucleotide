@@ -19,7 +19,7 @@ use gpui::{
     Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyDownEvent,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point,
     Render, ScrollHandle, Size, StatefulInteractiveElement, Styled, TextStyle, Window,
-    WindowAppearance, WindowBackgroundAppearance, black, canvas, div, px, svg, white,
+    WindowAppearance, WindowBackgroundAppearance, canvas, div, px, svg,
 };
 use gpui::{FontFeatures, FontWeight};
 use helix_core::syntax::config::LanguageServerFeature;
@@ -3739,6 +3739,8 @@ impl Workspace {
         let doc_sidebar_scroll_handle = ScrollHandle::new();
         let doc_sidebar_scrollbar_state = ScrollbarState::new(doc_sidebar_scroll_handle.clone());
 
+        let initial_tokens = cx.theme().tokens;
+
         let mut workspace = Self {
             core,
             input,
@@ -3837,9 +3839,9 @@ impl Workspace {
             last_editor_size: None,
             last_terminal_bounds: None,
             // Temporary defaults; recomputed below
-            cached_bg_color: black(),
-            cached_text_color: white(),
-            cached_border_color: white(),
+            cached_bg_color: initial_tokens.editor.background,
+            cached_text_color: initial_tokens.chrome.text_on_chrome,
+            cached_border_color: initial_tokens.chrome.border_default,
             colors_dirty: true,
             cached_font_metrics_key: None,
             cached_char_width: None,
@@ -4037,6 +4039,7 @@ impl Workspace {
 
     fn render_documentation_sidebar(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let tokens = &cx.theme().tokens;
+        let file_tree_tokens = tokens.file_tree_tokens();
         let markdown_style = MarkdownStyle::from_tokens(tokens).compact();
 
         let mut body = div()
@@ -4055,14 +4058,14 @@ impl Workspace {
             body = body.child(
                 div()
                     .text_sm()
-                    .text_color(tokens.chrome.text_chrome_secondary)
+                    .text_color(file_tree_tokens.item_text_secondary)
                     .child("Loading documentation..."),
             );
         } else if self.doc_sidebar_entries.is_empty() {
             body = body.child(
                 div()
                     .text_sm()
-                    .text_color(tokens.chrome.text_chrome_secondary)
+                    .text_color(file_tree_tokens.item_text_secondary)
                     .child("No documentation available."),
             );
         } else {
@@ -4075,14 +4078,14 @@ impl Workspace {
                         .when(index > 0, |section| {
                             section
                                 .border_t_1()
-                                .border_color(tokens.chrome.border_muted)
+                                .border_color(file_tree_tokens.separator)
                                 .pt(tokens.sizes.space_4)
                         })
                         .child(
                             div()
                                 .text_xs()
                                 .font_weight(FontWeight::MEDIUM)
-                                .text_color(tokens.chrome.text_chrome_secondary)
+                                .text_color(file_tree_tokens.item_text_secondary)
                                 .child(entry.server_name.clone()),
                         )
                         .child(markdown(entry.markdown.clone(), markdown_style.clone())),
@@ -4122,7 +4125,8 @@ impl Workspace {
             .flex()
             .flex_col()
             .overflow_hidden()
-            .bg(tokens.chrome.file_tree_background)
+            .bg(file_tree_tokens.background)
+            .text_color(file_tree_tokens.item_text)
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(
                 div()
@@ -4132,7 +4136,7 @@ impl Workspace {
                     .justify_between()
                     .px(tokens.sizes.space_3)
                     .border_b_1()
-                    .border_color(tokens.chrome.border_muted)
+                    .border_color(file_tree_tokens.separator)
                     .child(
                         div()
                             .flex()
@@ -4140,12 +4144,12 @@ impl Workspace {
                             .gap(tokens.sizes.space_2)
                             .text_sm()
                             .font_weight(FontWeight::MEDIUM)
-                            .text_color(tokens.chrome.text_on_chrome)
+                            .text_color(file_tree_tokens.item_text)
                             .child(
                                 svg()
                                     .path("icons/book-text.svg")
                                     .size(px(14.0))
-                                    .text_color(tokens.chrome.text_on_chrome)
+                                    .text_color(file_tree_tokens.item_text)
                                     .flex_shrink_0(),
                             )
                             .child("Documentation"),
@@ -4159,9 +4163,7 @@ impl Workspace {
                             .justify_center()
                             .rounded(tokens.sizes.radius_sm)
                             .cursor_pointer()
-                            .hover(|button| {
-                                button.bg(tokens.button_tokens().ghost_background_hover)
-                            })
+                            .hover(move |button| button.bg(file_tree_tokens.item_background_hover))
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|workspace, _event, _window, cx| {
@@ -4173,7 +4175,7 @@ impl Workspace {
                                 svg()
                                     .path("icons/close.svg")
                                     .size(px(12.0))
-                                    .text_color(tokens.chrome.text_chrome_secondary),
+                                    .text_color(file_tree_tokens.item_text_secondary),
                             ),
                     ),
             )
