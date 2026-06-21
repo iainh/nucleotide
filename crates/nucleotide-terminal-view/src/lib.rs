@@ -145,6 +145,11 @@ impl TerminalViewModel {
     }
 
     #[cfg(feature = "emulator")]
+    pub fn clear_input_sender(&mut self) {
+        self.input_tx = None;
+    }
+
+    #[cfg(feature = "emulator")]
     pub fn apply_frame(&mut self, frame: FramePayload) {
         match frame {
             FramePayload::Full(snapshot) => self.set_snapshot(snapshot),
@@ -844,6 +849,20 @@ mod tests {
         assert!(model.scroll_wheel_by_pixel_delta(10.0));
         assert_eq!(model.display_offset, 0);
         assert_eq!(rx.try_recv().unwrap(), b"\x1b[A".to_vec());
+    }
+
+    #[test]
+    fn terminal_clear_input_sender_closes_direct_input_channel() {
+        let mut model = TerminalViewModel::new(TerminalId(1));
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        model.set_input_sender(tx);
+        model.clear_input_sender();
+
+        assert!(matches!(
+            rx.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Disconnected)
+        ));
     }
 
     #[test]

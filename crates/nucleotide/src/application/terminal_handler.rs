@@ -326,6 +326,10 @@ impl core::EventHandler for TerminalRuntimeHandler {
                     senders.remove(id);
                 }
                 if let Some(entry) = self.sessions.remove(id) {
+                    #[cfg(feature = "terminal-emulator")]
+                    if let Ok(mut view) = entry.view.lock() {
+                        view.clear_input_sender();
+                    }
                     // Close input channel to stop input task
                     drop(entry.input_tx);
                     // Best-effort: kill session and join workers
