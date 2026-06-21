@@ -110,7 +110,6 @@ nucleotide-vcs = { path = "crates/nucleotide-vcs" }
 
 [patch."https://github.com/helix-editor/helix"]
 helix-lsp = { path = "vendor/helix-lsp" }
-helix-term = { path = "vendor/helix-term" }
 
 [patch.crates-io]
 # Zed workspace crates rely on these patched async primitives. Patches in
