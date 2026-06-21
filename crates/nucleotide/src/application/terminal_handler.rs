@@ -141,6 +141,10 @@ impl TerminalRuntimeHandler {
         });
 
         let (tx, rx_input) = std::sync::mpsc::channel::<Vec<u8>>();
+        #[cfg(feature = "terminal-emulator")]
+        if let Ok(mut guard) = view.lock() {
+            guard.set_input_sender(tx.clone());
+        }
         let session_for_input = session_arc.clone();
         let input_task = std::thread::spawn(move || {
             while let Ok(bytes) = rx_input.recv() {

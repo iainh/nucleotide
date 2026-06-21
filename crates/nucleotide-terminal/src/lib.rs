@@ -43,6 +43,15 @@ pub mod frame {
         pub cursor_col: u16,
         pub history_size: usize,
         pub display_offset: usize,
+        pub input_mode: TerminalInputMode,
+    }
+
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    pub struct TerminalInputMode {
+        pub application_cursor: bool,
+        pub alternate_screen: bool,
+        pub alternate_scroll: bool,
+        pub mouse_mode: bool,
     }
 
     #[cfg(feature = "emulator")]
@@ -356,11 +365,12 @@ pub mod session {
 #[cfg(feature = "emulator")]
 pub mod engine {
     use crate::frame::{
-        Cell, DEFAULT_BACKGROUND, DEFAULT_FOREGROUND, FramePayload, GridSnapshot, ansi_color,
+        Cell, DEFAULT_BACKGROUND, DEFAULT_FOREGROUND, FramePayload, GridSnapshot,
+        TerminalInputMode, ansi_color,
     };
     use alacritty_terminal::event::{Event as TermEvent, EventListener};
     use alacritty_terminal::grid::{Dimensions, Scroll};
-    use alacritty_terminal::term::{self, RenderableContent, Term};
+    use alacritty_terminal::term::{self, RenderableContent, Term, TermMode};
     use alacritty_terminal::vte::ansi::{
         self, Color as VteColor, NamedColor as VteNamedColor, Rgb as VteRgb,
     };
@@ -486,6 +496,12 @@ pub mod engine {
                     cursor_col: (cursor.column.0 as u16),
                     history_size,
                     display_offset: grid_display_offset,
+                    input_mode: TerminalInputMode {
+                        application_cursor: content.mode.contains(TermMode::APP_CURSOR),
+                        alternate_screen: content.mode.contains(TermMode::ALT_SCREEN),
+                        alternate_scroll: content.mode.contains(TermMode::ALTERNATE_SCROLL),
+                        mouse_mode: content.mode.intersects(TermMode::MOUSE_MODE),
+                    },
                 }));
             }
             None
@@ -742,6 +758,18 @@ pub mod engine {
                 AlacrittyEngine::color_to_cell_color(VteColor::Spec(rgb)),
                 0xcc0000
             );
+        }
+
+        #[test]
+        fn application_cursor_mode_is_reported_in_frames() {
+            let mut engine = AlacrittyEngine::new(5, 2);
+
+            engine.feed_bytes(b"\x1b[?1h");
+
+            let Some(FramePayload::Full(snapshot)) = engine.take_frame() else {
+                panic!("expected full snapshot");
+            };
+            assert!(snapshot.input_mode.application_cursor);
         }
     }
 
