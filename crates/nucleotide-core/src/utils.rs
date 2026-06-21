@@ -6,27 +6,42 @@ use helix_view::input::KeyEvent;
 use helix_view::keyboard::{KeyCode, KeyModifiers};
 use nucleotide_logging::{debug, warn};
 
-/// Detect the runtime directory when running from a macOS bundle
-#[cfg(target_os = "macos")]
+/// Detect the bundled runtime directory for packaged desktop builds.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn detect_bundle_runtime() -> Option<std::path::PathBuf> {
     let exe = std::env::current_exe().ok()?;
-    let macos_dir = exe.parent()?;
-    let contents_dir = macos_dir.parent()?;
 
-    [
-        contents_dir.join("Resources").join("runtime"),
-        macos_dir.join("runtime"),
-    ]
-    .into_iter()
-    .find(|runtime| runtime.is_dir())
+    bundle_runtime_candidates(&exe)
+        .into_iter()
+        .find(|runtime| runtime.is_dir())
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn bundle_runtime_candidates(exe: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let Some(exe_dir) = exe.parent() else {
+        return Vec::new();
+    };
+
+    let mut candidates = Vec::new();
+
+    #[cfg(target_os = "macos")]
+    if let Some(contents_dir) = exe_dir.parent() {
+        candidates.push(contents_dir.join("Resources").join("runtime"));
+        candidates.push(exe_dir.join("runtime"));
+    }
+
+    #[cfg(target_os = "windows")]
+    candidates.push(exe_dir.join("runtime"));
+
+    candidates
 }
 
 /// Return a synthetic manifest directory that makes helix-loader prefer `runtime`.
 ///
 /// helix-loader gives highest priority to `<CARGO_MANIFEST_DIR>/../runtime`.
-/// For app bundles, pointing this at a path under the same parent as the bundled
+/// For packaged apps, pointing this at a path under the same parent as the bundled
 /// runtime keeps bundled grammars ahead of stale user runtime files.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn manifest_dir_for_runtime(runtime: &std::path::Path) -> Option<std::path::PathBuf> {
     runtime.parent().map(|parent| parent.join("nucleotide"))
 }
@@ -327,17 +342,33 @@ mod tests {
         assert_eq!(key_event.modifiers, KeyModifiers::NONE);
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[test]
     fn manifest_dir_points_helix_loader_at_runtime_sibling() {
-        let runtime = std::path::Path::new("/App/Contents/Resources/runtime");
+        let runtime = if cfg!(target_os = "windows") {
+            std::path::Path::new(r"C:\Nucleotide\runtime")
+        } else {
+            std::path::Path::new("/App/Contents/Resources/runtime")
+        };
         let manifest_dir = manifest_dir_for_runtime(runtime).unwrap();
 
         assert_eq!(
-            manifest_dir,
-            std::path::Path::new("/App/Contents/Resources/nucleotide")
+            manifest_dir.file_name().unwrap(),
+            std::ffi::OsStr::new("nucleotide")
         );
         assert_eq!(manifest_dir.parent().unwrap().join("runtime"), runtime);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_bundle_runtime_is_next_to_executable() {
+        let exe = std::path::Path::new(r"C:\Nucleotide\nucl.exe");
+        let candidates = bundle_runtime_candidates(exe);
+
+        assert_eq!(
+            candidates,
+            vec![std::path::PathBuf::from(r"C:\Nucleotide\runtime")]
+        );
     }
 
     #[test]

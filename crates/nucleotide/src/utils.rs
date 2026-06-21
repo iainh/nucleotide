@@ -4,11 +4,10 @@
 // Re-export utilities from lower layers
 pub use nucleotide_core::utils::translate_key;
 
-// Only available on macOS
 #[cfg(target_os = "macos")]
-pub use nucleotide_core::utils::{
-    detect_bundle_runtime, manifest_dir_for_runtime, setup_macos_dock_environment,
-};
+pub use nucleotide_core::utils::setup_macos_dock_environment;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+pub use nucleotide_core::utils::{detect_bundle_runtime, manifest_dir_for_runtime};
 pub use nucleotide_ui::theme_utils::color_to_hsla;
 
 /// Load the Helix tutor document

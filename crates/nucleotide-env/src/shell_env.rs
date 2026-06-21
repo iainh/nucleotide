@@ -207,8 +207,7 @@ impl ProjectEnvironment {
                 )
             })?;
 
-        // Get user's shell
-        let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+        let shell = default_environment_shell();
 
         debug!(shell = %shell, directory = %directory.display(), "Executing shell environment capture");
 
@@ -910,6 +909,29 @@ pub mod shell_command_builder {
         let shell_name = detect_shell_type(shell);
         let mut command = Command::new(shell);
 
+        if matches!(shell_name, "powershell" | "pwsh") {
+            let escaped_dir = quote_path_for_powershell_literal(directory);
+            let command_string = format!(
+                "Set-Location -LiteralPath {}; $envText = ((Get-ChildItem Env:) | ForEach-Object {{ \"$($_.Name)=$($_.Value)\" }}) -join [char]0; $envText += [char]0; $bytes = [System.Text.Encoding]::UTF8.GetBytes($envText); [Console]::OpenStandardOutput().Write($bytes, 0, $bytes.Length)",
+                escaped_dir
+            );
+            command
+                .arg("-NoProfile")
+                .arg("-NonInteractive")
+                .arg("-Command")
+                .arg(command_string);
+            return Ok(command);
+        }
+
+        if shell_name == "cmd" {
+            let escaped_dir = quote_path_for_cmd(directory);
+            command
+                .arg("/d")
+                .arg("/c")
+                .arg(format!("cd /d {} && set", escaped_dir));
+            return Ok(command);
+        }
+
         // Quote directory path for POSIX shells to avoid breaking on characters like '
         let escaped_dir = quote_path_for_shell(directory);
 
@@ -959,6 +981,26 @@ pub mod shell_command_builder {
         quoted
     }
 
+    pub(crate) fn quote_path_for_powershell_literal(path: &Path) -> String {
+        let path_str = path.to_string_lossy();
+        let mut quoted = String::with_capacity(path_str.len() + 2);
+        quoted.push('\'');
+        for ch in path_str.chars() {
+            if ch == '\'' {
+                quoted.push('\'');
+            }
+            quoted.push(ch);
+        }
+        quoted.push('\'');
+        quoted
+    }
+
+    pub(crate) fn quote_path_for_cmd(path: &Path) -> String {
+        let path_str = path.to_string_lossy();
+        let escaped = path_str.replace('"', "\"\"");
+        format!("\"{}\"", escaped)
+    }
+
     /// Build a generic shell command (for testing)
     pub fn build_shell_command(shell: &str) -> Command {
         let mut command = Command::new(shell);
@@ -986,18 +1028,145 @@ pub mod shell_command_builder {
 /// Detect shell type from shell path
 pub fn detect_shell_type(shell_path: &str) -> &'static str {
     let shell_name = std::path::Path::new(shell_path)
-        .file_name()
+        .file_stem()
+        .or_else(|| std::path::Path::new(shell_path).file_name())
         .and_then(|name| name.to_str())
-        .unwrap_or("unknown");
+        .unwrap_or("unknown")
+        .to_ascii_lowercase();
 
-    match shell_name {
+    match shell_name.as_str() {
         "bash" => "bash",
         "zsh" => "zsh",
         "fish" => "fish",
         "tcsh" => "tcsh",
         "csh" => "csh",
         "nu" => "nu",
+        "powershell" => "powershell",
+        "pwsh" => "pwsh",
+        "cmd" => "cmd",
         _ => "unknown",
+    }
+}
+
+fn default_environment_shell() -> String {
+    #[cfg(windows)]
+    {
+        windows_shell::system_shell()
+    }
+
+    #[cfg(not(windows))]
+    {
+        env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string())
+    }
+}
+
+#[cfg(windows)]
+mod windows_shell {
+    use std::path::PathBuf;
+    use std::sync::LazyLock;
+
+    pub(super) fn system_shell() -> String {
+        static SYSTEM_SHELL: LazyLock<String> = LazyLock::new(detect_system_shell);
+        (*SYSTEM_SHELL).clone()
+    }
+
+    fn detect_system_shell() -> String {
+        for path in [
+            find_pwsh_in_programfiles(false, false),
+            find_pwsh_in_programfiles(true, false),
+            find_pwsh_in_msix(false),
+            find_pwsh_in_programfiles(false, true),
+            find_pwsh_in_msix(true),
+            find_pwsh_in_programfiles(true, true),
+            find_pwsh_in_scoop(),
+            which::which_global("pwsh.exe").ok(),
+            which::which_global("powershell.exe").ok(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            return path.to_string_lossy().trim().to_string();
+        }
+
+        std::env::var("COMSPEC")
+            .ok()
+            .filter(|shell| !shell.trim().is_empty())
+            .unwrap_or_else(|| "cmd.exe".to_string())
+    }
+
+    fn find_pwsh_in_programfiles(find_alternate: bool, find_preview: bool) -> Option<PathBuf> {
+        #[cfg(target_pointer_width = "64")]
+        let env_var = if find_alternate {
+            "ProgramFiles(x86)"
+        } else {
+            "ProgramFiles"
+        };
+
+        #[cfg(target_pointer_width = "32")]
+        let env_var = if find_alternate {
+            "ProgramW6432"
+        } else {
+            "ProgramFiles"
+        };
+
+        let install_base_dir = PathBuf::from(std::env::var_os(env_var)?).join("PowerShell");
+        install_base_dir
+            .read_dir()
+            .ok()?
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_ok_and(|file_type| file_type.is_dir()))
+            .filter_map(|entry| {
+                let dir_name = entry.file_name();
+                let dir_name = dir_name.to_string_lossy();
+                let version = if find_preview {
+                    let dash_index = dir_name.find('-')?;
+                    if &dir_name[dash_index + 1..] != "preview" {
+                        return None;
+                    }
+                    dir_name[..dash_index].parse::<u32>().ok()?
+                } else {
+                    dir_name.parse::<u32>().ok()?
+                };
+
+                let exe_path = entry.path().join("pwsh.exe");
+                exe_path.exists().then_some((version, exe_path))
+            })
+            .max_by_key(|(version, _)| *version)
+            .map(|(_, path)| path)
+    }
+
+    fn find_pwsh_in_msix(find_preview: bool) -> Option<PathBuf> {
+        let msix_app_dir =
+            PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("Microsoft\\WindowsApps");
+        if !msix_app_dir.exists() {
+            return None;
+        }
+
+        let prefix = if find_preview {
+            "Microsoft.PowerShellPreview_"
+        } else {
+            "Microsoft.PowerShell_"
+        };
+
+        msix_app_dir
+            .read_dir()
+            .ok()?
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_ok_and(|file_type| file_type.is_dir()))
+            .find_map(|entry| {
+                if !entry.file_name().to_string_lossy().starts_with(prefix) {
+                    return None;
+                }
+
+                let exe_path = entry.path().join("pwsh.exe");
+                exe_path.exists().then_some(exe_path)
+            })
+    }
+
+    fn find_pwsh_in_scoop() -> Option<PathBuf> {
+        let pwsh_exe =
+            PathBuf::from(std::env::var_os("USERPROFILE")?).join("scoop\\shims\\pwsh.exe");
+        pwsh_exe.exists().then_some(pwsh_exe)
     }
 }
 
@@ -1008,16 +1177,13 @@ pub fn parse_shell_environment(
     let output_str = String::from_utf8_lossy(output);
     let mut env_map = HashMap::new();
 
-    // Split on null bytes for reliable parsing
-    for line in output_str.split('\0') {
-        if line.is_empty() {
-            continue;
+    if output_str.contains('\0') {
+        for line in output_str.split('\0') {
+            insert_env_line(&mut env_map, line);
         }
-
-        if let Some(eq_pos) = line.find('=') {
-            let key = line[..eq_pos].to_string();
-            let value = line[eq_pos + 1..].to_string();
-            env_map.insert(key, value);
+    } else {
+        for line in output_str.lines() {
+            insert_env_line(&mut env_map, line.trim_end_matches('\r'));
         }
     }
 
@@ -1028,6 +1194,18 @@ pub fn parse_shell_environment(
     }
 
     Ok(env_map)
+}
+
+fn insert_env_line(env_map: &mut HashMap<String, String>, line: &str) {
+    if line.is_empty() {
+        return;
+    }
+
+    if let Some(eq_pos) = line.find('=') {
+        let key = line[..eq_pos].to_string();
+        let value = line[eq_pos + 1..].to_string();
+        env_map.insert(key, value);
+    }
 }
 
 /// Legacy compatibility: Maintain existing function signature for current code

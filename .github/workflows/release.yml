@@ -162,10 +162,55 @@ jobs:
           name: macos-universal-build
           path: Nucleotide-universal.dmg
 
+  build-windows:
+    name: Build Windows
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Build Windows package
+        shell: pwsh
+        run: |
+          .\scripts\package-windows-test.ps1 `
+            -Release `
+            -Clean `
+            -OutputDir dist\nucleotide-windows-x86_64
+
+      - name: Create Windows zip
+        shell: pwsh
+        run: |
+          Compress-Archive `
+            -Path dist\nucleotide-windows-x86_64\* `
+            -DestinationPath nucleotide-windows-x86_64.zip `
+            -Force
+
+          Get-Item nucleotide-windows-x86_64.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build
+          path: nucleotide-windows-x86_64.zip
+
   create-release:
     name: Create Release
     runs-on: ubuntu-latest
-    needs: [build-linux, build-macos-universal]
+    needs: [build-linux, build-macos-universal, build-windows]
     permissions:
       contents: write
     
@@ -184,6 +229,7 @@ jobs:
           cp artifacts/macos-universal-build/Nucleotide-universal.dmg release/Nucleotide.dmg
           cp artifacts/macos-x86_64-build/Nucleotide-x86_64.dmg release/
           cp artifacts/macos-aarch64-build/Nucleotide-aarch64.dmg release/
+          cp artifacts/windows-build/nucleotide-windows-x86_64.zip release/
           
           # Generate checksums
           cd release
@@ -217,6 +263,9 @@ jobs:
             
             ### Linux
             - **x86_64:** `nucleotide-linux-x86_64.tar.gz`
+
+            ### Windows
+            - **x86_64:** `nucleotide-windows-x86_64.zip`
             
             ## Installation
             
@@ -235,6 +284,12 @@ jobs:
                ```bash
                ./bin/nucl
                ```
+
+            ### Windows
+            1. Download and extract `nucleotide-windows-x86_64.zip`.
+            2. Run `nucl.exe` from the extracted directory. `nucl.cmd` remains available for terminal launches.
+            3. Optional: run `install-windows-context-menu.cmd` to add per-user Explorer "Open with Nucleotide", Open With app, and App Paths entries; add `-RegisterCommonFileTypes` to list Nucleotide in Open With for common source/config files, add `-StartMenuShortcut` to create a Start Menu shortcut, or add `-AddToPath` for terminal launches.
+            4. Launching files or folders while Nucleotide is already running forwards them to the existing window.
             
             ## Checksums
             SHA256 checksums are available in `SHA256SUMS`
@@ -244,4 +299,5 @@ jobs:
             release/Nucleotide-x86_64.dmg
             release/Nucleotide-aarch64.dmg
             release/nucleotide-linux-x86_64.tar.gz
+            release/nucleotide-windows-x86_64.zip
             release/SHA256SUMS

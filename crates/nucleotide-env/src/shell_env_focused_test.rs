@@ -35,6 +35,9 @@ mod focused_shell_env_tests {
         assert_eq!(detect_shell_type("/usr/local/bin/fish"), "fish");
         assert_eq!(detect_shell_type("/bin/tcsh"), "tcsh");
         assert_eq!(detect_shell_type("/bin/zsh"), "zsh");
+        assert_eq!(detect_shell_type("pwsh.exe"), "pwsh");
+        assert_eq!(detect_shell_type("PowerShell.EXE"), "powershell");
+        assert_eq!(detect_shell_type("C:\\Windows\\System32\\cmd.exe"), "cmd");
         assert_eq!(detect_shell_type("/unknown/shell"), "unknown");
     }
 
@@ -46,6 +49,22 @@ mod focused_shell_env_tests {
         assert_eq!(parsed.get("PATH"), Some(&"/usr/bin:/bin".to_string()));
         assert_eq!(parsed.get("HOME"), Some(&"/Users/test".to_string()));
         assert_eq!(parsed.get("SHELL"), Some(&"/bin/bash".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_environment_parsing_accepts_cmd_set_output() {
+        let test_output =
+            b"Path=C:\\Windows\\System32;C:\\Windows\r\nCOMSPEC=C:\\Windows\\System32\\cmd.exe\r\n";
+        let parsed = parse_shell_environment(test_output).unwrap();
+
+        assert_eq!(
+            parsed.get("Path"),
+            Some(&"C:\\Windows\\System32;C:\\Windows".to_string())
+        );
+        assert_eq!(
+            parsed.get("COMSPEC"),
+            Some(&"C:\\Windows\\System32\\cmd.exe".to_string())
+        );
     }
 
     #[tokio::test]
@@ -75,6 +94,29 @@ mod focused_shell_env_tests {
         let debug_str = format!("{:?}", cmd);
         assert!(debug_str.contains("cd"));
         assert!(debug_str.contains("env -0"));
+    }
+
+    #[tokio::test]
+    async fn test_windows_environment_capture_commands() {
+        let powershell_cmd = shell_command_builder::build_environment_capture_command(
+            "pwsh.exe",
+            Path::new("C:\\Users\\Test User\\project's app"),
+        )
+        .unwrap();
+        let powershell_debug = format!("{:?}", powershell_cmd);
+        assert!(powershell_debug.contains("-NoProfile"));
+        assert!(powershell_debug.contains("Set-Location -LiteralPath"));
+        assert!(powershell_debug.contains("project''s app"));
+
+        let cmd_cmd = shell_command_builder::build_environment_capture_command(
+            "cmd.exe",
+            Path::new("C:\\Users\\Test User\\project"),
+        )
+        .unwrap();
+        let cmd_debug = format!("{:?}", cmd_cmd);
+        assert!(cmd_debug.contains("/d"));
+        assert!(cmd_debug.contains("cd /d"));
+        assert!(cmd_debug.contains("&& set"));
     }
 
     #[tokio::test]
