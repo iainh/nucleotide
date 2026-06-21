@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 /// Default theme for light mode
-pub const DEFAULT_LIGHT_THEME: &str = "nucleotide-outdoors";
+pub const DEFAULT_LIGHT_THEME: &str = "nucleotide-cyan-light";
 
 /// Default theme for dark mode
 pub const DEFAULT_DARK_THEME: &str = "nucleotide-teal";
@@ -62,7 +62,7 @@ pub struct ThemeConfig {
     #[serde(default)]
     pub mode: ThemeMode,
 
-    /// Theme to use in light mode (defaults to "nucleotide-outdoors" if not specified)
+    /// Theme to use in light mode (defaults to "nucleotide-cyan-light" if not specified)
     #[serde(default)]
     pub light_theme: Option<String>,
 
@@ -730,7 +730,7 @@ fn load_project_markers_config(dir: &Path) -> anyhow::Result<ProjectMarkersConfi
 ///
 /// [editor]
 /// [editor.font]
-/// family = "SF Mono"
+/// family = "Cascadia Mono"
 /// weight = "medium"
 /// size = 14.0
 ///

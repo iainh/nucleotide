@@ -79,7 +79,7 @@ fn default_font_family() -> String {
     if cfg!(target_os = "macos") {
         "SF Mono".to_string()
     } else if cfg!(target_os = "windows") {
-        "Consolas".to_string()
+        "Cascadia Mono".to_string()
     } else {
         "monospace".to_string()
     }
