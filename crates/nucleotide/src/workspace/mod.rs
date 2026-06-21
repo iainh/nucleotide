@@ -47,7 +47,9 @@ use nucleotide_ui::{
 use crate::input_coordinator::{FocusGroup, InputContext, InputCoordinator};
 use nucleotide_lsp::ServerStatus;
 
-use crate::application::{ProjectEnvironmentProvider, find_workspace_root_from};
+use crate::application::{
+    LspCompletionTrigger, ProjectEnvironmentProvider, find_workspace_root_from,
+};
 use crate::document::DocumentView;
 use crate::file_tree::{
     FileTreeConfig, FileTreeEvent, FileTreeView, sidebar::ProjectTreeContextMenuIntent,
@@ -855,6 +857,27 @@ pub struct Workspace {
     cached_font_metrics_key: Option<(String, f32, nucleotide_types::FontWeight)>,
     cached_char_width: Option<f32>,
     cached_line_height: Option<f32>,
+    active_completion_session: Option<ActiveCompletionSession>,
+}
+
+#[derive(Clone, Debug)]
+struct ActiveCompletionSession {
+    doc_id: DocumentId,
+    view_id: ViewId,
+    is_incomplete: bool,
+    requested_prefix: String,
+}
+
+fn should_retrigger_incomplete_completion_for_focused_session(
+    session: &ActiveCompletionSession,
+    current_prefix: &str,
+    focused_doc_id: Option<DocumentId>,
+    focused_view_id: ViewId,
+) -> bool {
+    session.is_incomplete
+        && session.requested_prefix != current_prefix
+        && focused_doc_id == Some(session.doc_id)
+        && focused_view_id == session.view_id
 }
 
 // Pending file operation kinds awaiting user input (used with the prompt overlay)
@@ -3854,6 +3877,7 @@ impl Workspace {
             cached_font_metrics_key: None,
             cached_char_width: None,
             cached_line_height: None,
+            active_completion_session: None,
         };
 
         // Compute initial theme-derived colors once
@@ -6937,15 +6961,33 @@ impl Workspace {
         match trigger {
             crate::types::CompletionTrigger::Manual => {
                 nucleotide_logging::info!("Manual completion triggered (CTRL+Space)");
-                self.process_completion_trigger(cursor, doc_id, view_id, true, cx);
+                self.process_completion_trigger(
+                    cursor,
+                    doc_id,
+                    view_id,
+                    LspCompletionTrigger::Manual,
+                    cx,
+                );
             }
             crate::types::CompletionTrigger::Character(c) => {
                 nucleotide_logging::info!(character = %c, "Character-triggered completion");
-                self.process_completion_trigger(cursor, doc_id, view_id, false, cx);
+                self.process_completion_trigger(
+                    cursor,
+                    doc_id,
+                    view_id,
+                    LspCompletionTrigger::Character(*c),
+                    cx,
+                );
             }
             crate::types::CompletionTrigger::Automatic => {
                 nucleotide_logging::info!("Automatic completion triggered");
-                self.process_completion_trigger(cursor, doc_id, view_id, false, cx);
+                self.process_completion_trigger(
+                    cursor,
+                    doc_id,
+                    view_id,
+                    LspCompletionTrigger::Automatic,
+                    cx,
+                );
             }
         }
 
@@ -9336,6 +9378,10 @@ impl Workspace {
 
     /// Manage completion input context based on completion state
     fn manage_completion_context(&mut self, has_completion: bool) {
+        if !has_completion {
+            self.active_completion_session = None;
+        }
+
         // Check current context stack to see if completion context is active
         let completion_context_active = false; // TODO: Replace with InputCoordinator call
 
@@ -9649,15 +9695,31 @@ impl Workspace {
         match event {
             CompletionEvent::ManualTrigger { cursor, doc, view } => {
                 info!(cursor = *cursor, doc_id = ?doc, view_id = ?view, "Processing manual completion trigger");
-                self.process_completion_trigger(*cursor, *doc, *view, true, cx);
+                self.process_completion_trigger(
+                    *cursor,
+                    *doc,
+                    *view,
+                    LspCompletionTrigger::Manual,
+                    cx,
+                );
             }
             CompletionEvent::AutoTrigger { cursor, doc, view } => {
                 info!(cursor = *cursor, doc_id = ?doc, view_id = ?view, "Processing auto completion trigger");
-                self.process_completion_trigger(*cursor, *doc, *view, false, cx);
+                self.process_completion_trigger(
+                    *cursor,
+                    *doc,
+                    *view,
+                    LspCompletionTrigger::Automatic,
+                    cx,
+                );
             }
             CompletionEvent::TriggerChar { cursor, doc, view } => {
                 info!(cursor = *cursor, doc_id = ?doc, view_id = ?view, "Processing trigger character completion");
-                self.process_completion_trigger(*cursor, *doc, *view, false, cx);
+                let trigger = self
+                    .completion_character_before_cursor(*cursor, *doc, cx)
+                    .map(LspCompletionTrigger::Character)
+                    .unwrap_or(LspCompletionTrigger::Automatic);
+                self.process_completion_trigger(*cursor, *doc, *view, trigger, cx);
             }
             CompletionEvent::DeleteText { cursor: _ } => {
                 info!("Processing delete text - hiding completions");
@@ -9689,10 +9751,60 @@ impl Workspace {
     pub fn update_completion_filter_auto(&mut self, cx: &mut Context<Self>) -> bool {
         // Get current text under cursor to determine new prefix
         if let Some(current_prefix) = self.get_current_completion_prefix(cx) {
-            self.update_completion_filter(current_prefix, cx)
+            let updated = self.update_completion_filter(current_prefix.clone(), cx);
+            self.retrigger_incomplete_completion_if_needed(&current_prefix, cx);
+            updated
         } else {
             false
         }
+    }
+
+    fn retrigger_incomplete_completion_if_needed(
+        &mut self,
+        current_prefix: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self.active_completion_session.as_mut() else {
+            return;
+        };
+
+        let (focused_doc_id, focused_view_id) = {
+            let core = self.core.read(cx);
+            let view_id = core.editor.tree.focus;
+            let doc_id = core.editor.tree.try_get(view_id).map(|view| view.doc);
+            (doc_id, view_id)
+        };
+
+        if !should_retrigger_incomplete_completion_for_focused_session(
+            session,
+            current_prefix,
+            focused_doc_id,
+            focused_view_id,
+        ) {
+            return;
+        }
+
+        let doc_id = session.doc_id;
+        let view_id = session.view_id;
+        session.requested_prefix = current_prefix.to_string();
+
+        let Some(cursor) = self.completion_cursor(doc_id, view_id, cx) else {
+            return;
+        };
+
+        nucleotide_logging::debug!(
+            prefix = %current_prefix,
+            doc_id = ?doc_id,
+            view_id = ?view_id,
+            "Retriggering incomplete LSP completion list"
+        );
+        self.start_completion_request(
+            cursor,
+            doc_id,
+            view_id,
+            LspCompletionTrigger::Incomplete,
+            cx,
+        );
     }
 
     /// Get the current word prefix under the cursor for completion filtering
@@ -9796,23 +9908,26 @@ impl Workspace {
         cursor: usize,
         doc_id: helix_view::DocumentId,
         view_id: helix_view::ViewId,
-        is_manual: bool,
+        trigger: LspCompletionTrigger,
         cx: &mut Context<Self>,
     ) {
-        info!(cursor = cursor, doc_id = ?doc_id, view_id = ?view_id, is_manual = is_manual, "Requesting completions through Nucleotide");
+        info!(cursor = cursor, doc_id = ?doc_id, view_id = ?view_id, trigger = ?trigger, "Requesting completions through Nucleotide");
 
-        if is_manual && self.manual_completion_needs_lsp_settle_delay(cursor, doc_id, cx) {
+        if matches!(trigger, LspCompletionTrigger::Manual)
+            && self.manual_completion_needs_lsp_settle_delay(cursor, doc_id, cx)
+        {
             self.start_completion_request_after_delay(
                 cursor,
                 doc_id,
                 view_id,
+                trigger,
                 std::time::Duration::from_millis(30),
                 cx,
             );
             return;
         }
 
-        self.start_completion_request(cursor, doc_id, view_id, cx);
+        self.start_completion_request(cursor, doc_id, view_id, trigger, cx);
     }
 
     fn start_completion_request_after_delay(
@@ -9820,6 +9935,7 @@ impl Workspace {
         cursor: usize,
         doc_id: helix_view::DocumentId,
         view_id: helix_view::ViewId,
+        trigger: LspCompletionTrigger,
         delay: std::time::Duration,
         cx: &mut Context<Self>,
     ) {
@@ -9828,7 +9944,10 @@ impl Workspace {
 
             if let Some(this) = this.upgrade() {
                 this.update(cx, move |workspace, cx| {
-                    workspace.start_completion_request(cursor, doc_id, view_id, cx);
+                    let cursor = workspace
+                        .completion_cursor(doc_id, view_id, cx)
+                        .unwrap_or(cursor);
+                    workspace.start_completion_request(cursor, doc_id, view_id, trigger, cx);
                 });
             }
         })
@@ -9840,10 +9959,11 @@ impl Workspace {
         cursor: usize,
         doc_id: helix_view::DocumentId,
         view_id: helix_view::ViewId,
+        trigger: LspCompletionTrigger,
         cx: &mut Context<Self>,
     ) {
         let completion_request = self.core.update(cx, |core, _cx| {
-            core.prepare_lsp_completions_with_prefix(cursor, doc_id, view_id)
+            core.prepare_lsp_completions_with_prefix(cursor, doc_id, view_id, trigger)
         });
 
         let completion_request = match completion_request {
@@ -9880,6 +10000,7 @@ impl Workspace {
         completion_result: anyhow::Result<(
             Vec<nucleotide_events::completion::CompletionItem>,
             String,
+            bool,
         )>,
         cursor: usize,
         doc_id: helix_view::DocumentId,
@@ -9887,10 +10008,11 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         match completion_result {
-            Ok((completion_items, prefix)) => {
+            Ok((completion_items, prefix, is_incomplete)) => {
                 nucleotide_logging::info!(
                     item_count = completion_items.len(),
                     prefix = %prefix,
+                    is_incomplete = is_incomplete,
                     "Received completion items from Nucleotide LSP path"
                 );
 
@@ -9904,6 +10026,7 @@ impl Workspace {
                         cursor,
                         doc_id,
                         view_id,
+                        is_incomplete,
                         cx,
                     );
                 }
@@ -9940,6 +10063,19 @@ impl Workspace {
         )
     }
 
+    fn completion_character_before_cursor(
+        &self,
+        cursor: usize,
+        doc_id: helix_view::DocumentId,
+        cx: &mut Context<Self>,
+    ) -> Option<char> {
+        let core = self.core.read(cx);
+        let doc = core.editor.document(doc_id)?;
+        let text = doc.text();
+        let cursor = cursor.min(text.len_chars());
+        text.chars_at(cursor).reversed().next()
+    }
+
     fn manual_completion_needs_lsp_settle_delay(
         &self,
         cursor: usize,
@@ -9969,8 +10105,9 @@ impl Workspace {
         items: Vec<nucleotide_events::completion::CompletionItem>,
         prefix: String,
         _cursor: usize,
-        _doc_id: helix_view::DocumentId,
-        _view_id: helix_view::ViewId,
+        doc_id: helix_view::DocumentId,
+        view_id: helix_view::ViewId,
+        is_incomplete: bool,
         cx: &mut Context<Self>,
     ) {
         // Convert between completion item types (same as existing method)
@@ -10035,8 +10172,16 @@ impl Workspace {
         nucleotide_logging::info!(
             ui_item_count = ui_items.len(),
             prefix = %prefix,
+            is_incomplete = is_incomplete,
             "Converted to UI completion items with prefix, creating filtered completion view"
         );
+
+        self.active_completion_session = Some(ActiveCompletionSession {
+            doc_id,
+            view_id,
+            is_incomplete,
+            requested_prefix: prefix.clone(),
+        });
 
         // Create completion view with prefix filtering
         let ui_items_count = ui_items.len();
@@ -10067,6 +10212,7 @@ impl Workspace {
     /// Hide completions
     fn hide_completions(&mut self, cx: &mut Context<Self>) {
         info!("Hiding completions via overlay dismiss");
+        self.active_completion_session = None;
         self.overlay.update(cx, |overlay, cx| {
             overlay.dismiss_completion(cx);
         });
@@ -10159,7 +10305,7 @@ impl Workspace {
             "Calling real LSP completion directly from workspace"
         );
 
-        self.start_completion_request(cursor, doc_id, view_id, cx);
+        self.start_completion_request(cursor, doc_id, view_id, LspCompletionTrigger::Manual, cx);
     }
 
     // REMOVED: Old completion coordinator initialization method replaced by event-based approach
@@ -14087,6 +14233,61 @@ mod tests {
         ));
         assert!(!should_refine_completion_for_focused_document(
             true, None, doc_id
+        ));
+    }
+
+    #[test]
+    fn incomplete_completion_retrigger_follows_focused_session() {
+        let doc_id = DocumentId::default();
+        let view_id = test_view_id(1);
+        let session = ActiveCompletionSession {
+            doc_id,
+            view_id,
+            is_incomplete: true,
+            requested_prefix: "pri".to_string(),
+        };
+
+        assert!(should_retrigger_incomplete_completion_for_focused_session(
+            &session,
+            "prin",
+            Some(doc_id),
+            view_id
+        ));
+    }
+
+    #[test]
+    fn incomplete_completion_retrigger_ignores_complete_or_unchanged_sessions() {
+        let doc_id = DocumentId::default();
+        let view_id = test_view_id(1);
+        let mut session = ActiveCompletionSession {
+            doc_id,
+            view_id,
+            is_incomplete: false,
+            requested_prefix: "pri".to_string(),
+        };
+
+        assert!(!should_retrigger_incomplete_completion_for_focused_session(
+            &session,
+            "prin",
+            Some(doc_id),
+            view_id
+        ));
+
+        session.is_incomplete = true;
+        assert!(!should_retrigger_incomplete_completion_for_focused_session(
+            &session,
+            "pri",
+            Some(doc_id),
+            view_id
+        ));
+        assert!(!should_retrigger_incomplete_completion_for_focused_session(
+            &session, "prin", None, view_id
+        ));
+        assert!(!should_retrigger_incomplete_completion_for_focused_session(
+            &session,
+            "prin",
+            Some(doc_id),
+            test_view_id(2)
         ));
     }
 
