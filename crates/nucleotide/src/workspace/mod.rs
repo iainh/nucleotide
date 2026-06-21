@@ -1362,24 +1362,12 @@ fn completion_menu_action(key: &str, control: bool, shift: bool) -> Option<MenuK
     }
 }
 
-fn completion_refinement_key(key: &str, control: bool, alt: bool, platform: bool) -> bool {
-    if control || alt || platform {
-        return false;
-    }
-
-    if matches!(key, "backspace" | "delete") {
-        return true;
-    }
-
-    let mut chars = key.chars();
-    let Some(ch) = chars.next() else {
-        return false;
-    };
-    if chars.next().is_some() {
-        return false;
-    }
-
-    ch.is_alphanumeric() || matches!(ch, '_' | '$' | '@' | '-' | '.' | ':' | '>')
+fn should_refine_completion_for_focused_document(
+    has_completion: bool,
+    focused_doc_id: Option<DocumentId>,
+    doc_id: DocumentId,
+) -> bool {
+    has_completion && focused_doc_id == Some(doc_id)
 }
 
 fn tab_activation_target_after_close<T: Copy + Eq>(
@@ -5458,14 +5446,6 @@ impl Workspace {
             return;
         }
 
-        let refine_completion_after_helix = self.overlay.read(cx).has_completion()
-            && completion_refinement_key(
-                ev.keystroke.key.as_str(),
-                ev.keystroke.modifiers.control,
-                ev.keystroke.modifiers.alt,
-                ev.keystroke.modifiers.platform,
-            );
-
         // Check if completion is visible and handle navigation/control keys
         if self.overlay.read(cx).has_completion() {
             if self.handle_regular_completion_menu_key(ev, cx) {
@@ -5498,14 +5478,6 @@ impl Workspace {
                 self.input.update(cx, |_, cx| {
                     cx.emit(crate::InputEvent::Key(helix_key));
                 });
-
-                if refine_completion_after_helix {
-                    nucleotide_logging::debug!(
-                        key = %ev.keystroke.key,
-                        "Scheduling completion refinement after Helix applies text input"
-                    );
-                    self.schedule_completion_filter_update(cx);
-                }
 
                 // Extra debug for ctrl-x specifically
                 if helix_key
@@ -6731,6 +6703,21 @@ impl Workspace {
             self.unregister_preview_document(doc_id, cx);
         }
 
+        let focused_doc_id = {
+            let core = self.core.read(cx);
+            core.editor
+                .tree
+                .try_get(core.editor.tree.focus)
+                .map(|view| view.doc)
+        };
+        if should_refine_completion_for_focused_document(
+            self.overlay.read(cx).has_completion(),
+            focused_doc_id,
+            doc_id,
+        ) {
+            self.update_completion_filter_auto(cx);
+        }
+
         // Document content changed - update specific document view
         self.update_specific_document_view(doc_id, cx);
         cx.notify();
@@ -6745,6 +6732,20 @@ impl Workspace {
         // Selection/cursor moved - update status and specific view
         info!("Selection changed in doc {:?}, view {:?}", doc_id, view_id);
         self.update_specific_document_view(doc_id, cx);
+        let focused_doc_id = {
+            let core = self.core.read(cx);
+            core.editor
+                .tree
+                .try_get(core.editor.tree.focus)
+                .map(|view| view.doc)
+        };
+        if should_refine_completion_for_focused_document(
+            self.overlay.read(cx).has_completion(),
+            focused_doc_id,
+            doc_id,
+        ) {
+            self.update_completion_filter_auto(cx);
+        }
         if let Some(view_entity) = self.view_manager.get_document_view(&view_id) {
             view_entity.update(cx, |view, cx| {
                 view.request_cursor_reveal();
@@ -9692,21 +9693,6 @@ impl Workspace {
         } else {
             false
         }
-    }
-
-    /// Schedule a completion filter update to happen after current key processing
-    /// This ensures the document text is updated before we extract the new prefix
-    fn schedule_completion_filter_update(&mut self, cx: &mut Context<Self>) {
-        // Use defer to schedule the filter update after the current key processing
-        let workspace_handle = cx.entity().downgrade();
-        cx.defer(move |cx| {
-            if let Some(workspace) = workspace_handle.upgrade() {
-                workspace.update(cx, |workspace, cx| {
-                    nucleotide_logging::debug!("Executing deferred completion filter update");
-                    workspace.update_completion_filter_auto(cx);
-                });
-            }
-        });
     }
 
     /// Get the current word prefix under the cursor for completion filtering
@@ -13588,7 +13574,13 @@ fn completion_edit_offset(
         offset_encoding,
     )?;
     let start = range.from();
-    let end = range.to();
+    let mut end = range.to();
+    let text = doc.slice(..);
+
+    if should_extend_completion_edit_to_cursor(text, start, end, primary_cursor) {
+        end = primary_cursor;
+    }
+
     Some((
         (
             start as i128 - primary_cursor as i128,
@@ -13596,6 +13588,17 @@ fn completion_edit_offset(
         ),
         start,
     ))
+}
+
+fn should_extend_completion_edit_to_cursor(
+    text: RopeSlice<'_>,
+    start: usize,
+    end: usize,
+    primary_cursor: usize,
+) -> bool {
+    end < primary_cursor
+        && primary_cursor <= text.len_chars()
+        && start == completion_word_start(text, primary_cursor)
 }
 
 fn lsp_text_edit_from_completion(edit: &nucleotide_ui::CompletionTextEdit) -> lsp::TextEdit {
@@ -14063,31 +14066,28 @@ mod tests {
     }
 
     #[test]
-    fn completion_refinement_keys_track_text_editing_input() {
-        assert!(completion_refinement_key("a", false, false, false));
-        assert!(completion_refinement_key("A", false, false, false));
-        assert!(completion_refinement_key("_", false, false, false));
-        assert!(completion_refinement_key("$", false, false, false));
-        assert!(completion_refinement_key("@", false, false, false));
-        assert!(completion_refinement_key("-", false, false, false));
-        assert!(completion_refinement_key(".", false, false, false));
-        assert!(completion_refinement_key(":", false, false, false));
-        assert!(completion_refinement_key(">", false, false, false));
-        assert!(completion_refinement_key("backspace", false, false, false));
-        assert!(completion_refinement_key("delete", false, false, false));
+    fn completion_refinement_follows_focused_document() {
+        let doc_id = DocumentId::default();
+
+        assert!(should_refine_completion_for_focused_document(
+            true,
+            Some(doc_id),
+            doc_id
+        ));
     }
 
     #[test]
-    fn completion_refinement_keys_ignore_control_chords() {
-        assert!(!completion_refinement_key("n", true, false, false));
-        assert!(!completion_refinement_key("p", true, false, false));
-        assert!(!completion_refinement_key("a", false, true, false));
-        assert!(!completion_refinement_key("a", false, false, true));
-        assert!(!completion_refinement_key("tab", false, false, false));
-        assert!(!completion_refinement_key("enter", false, false, false));
-        assert!(!completion_refinement_key("escape", false, false, false));
-        assert!(!completion_refinement_key("space", false, false, false));
-        assert!(!completion_refinement_key("/", false, false, false));
+    fn completion_refinement_ignores_missing_completion_or_focus() {
+        let doc_id = DocumentId::default();
+
+        assert!(!should_refine_completion_for_focused_document(
+            false,
+            Some(doc_id),
+            doc_id
+        ));
+        assert!(!should_refine_completion_for_focused_document(
+            true, None, doc_id
+        ));
     }
 
     #[test]
@@ -14120,6 +14120,54 @@ mod tests {
 
         assert_eq!(offset, (-3, 0));
         assert_eq!(start, 12);
+    }
+
+    #[test]
+    fn completion_edit_offset_extends_stale_range_to_live_word() {
+        let rope = Rope::from("println");
+        let edit = nucleotide_ui::CompletionTextEdit {
+            range: nucleotide_ui::CompletionRange {
+                start: nucleotide_ui::CompletionPosition {
+                    line: 0,
+                    character: 0,
+                },
+                end: nucleotide_ui::CompletionPosition {
+                    line: 0,
+                    character: 5,
+                },
+            },
+            new_text: "println!()".to_string(),
+        };
+
+        let (offset, start) =
+            completion_edit_offset(&rope, &edit, OffsetEncoding::Utf8, 7).unwrap();
+
+        assert_eq!(offset, (-7, 0));
+        assert_eq!(start, 0);
+    }
+
+    #[test]
+    fn completion_edit_offset_keeps_range_when_it_starts_inside_word() {
+        let rope = Rope::from("println");
+        let edit = nucleotide_ui::CompletionTextEdit {
+            range: nucleotide_ui::CompletionRange {
+                start: nucleotide_ui::CompletionPosition {
+                    line: 0,
+                    character: 2,
+                },
+                end: nucleotide_ui::CompletionPosition {
+                    line: 0,
+                    character: 5,
+                },
+            },
+            new_text: "intln!()".to_string(),
+        };
+
+        let (offset, start) =
+            completion_edit_offset(&rope, &edit, OffsetEncoding::Utf8, 7).unwrap();
+
+        assert_eq!(offset, (-5, -2));
+        assert_eq!(start, 2);
     }
 
     #[test]
