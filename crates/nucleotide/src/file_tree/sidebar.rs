@@ -10,8 +10,8 @@ use gpui::{
     Window, div, px,
 };
 use nucleotide_types::VcsStatus;
-use nucleotide_ui::Theme;
 use nucleotide_ui::VcsIcon;
+use nucleotide_ui::{Theme, ThemedContext as _};
 
 use crate::file_tree::{
     FileKind, FileTreeDisplayDensity, FileTreeEntry, entry::FileTreeFlattenedSegment,
@@ -171,7 +171,10 @@ impl ProjectTreeDragPreview {
 }
 
 impl Render for ProjectTreeDragPreview {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let tokens = &cx.theme().tokens;
+        let preview_bg = nucleotide_ui::tokens::with_alpha(tokens.chrome.surface_overlay, 0.72);
+
         div().pl(self.position.x).pt(self.position.y).child(
             div()
                 .h(px(PROJECT_TREE_ROW_HEIGHT_PX))
@@ -179,8 +182,8 @@ impl Render for ProjectTreeDragPreview {
                 .flex()
                 .items_center()
                 .rounded(px(PROJECT_TREE_ROW_RADIUS_PX))
-                .bg(gpui::black().opacity(0.72))
-                .text_color(gpui::white())
+                .bg(preview_bg)
+                .text_color(tokens.chrome.text_on_chrome)
                 .text_size(px(13.0))
                 .child(self.entry.file_name.clone()),
         )
