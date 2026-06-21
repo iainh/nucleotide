@@ -239,12 +239,14 @@ impl ProjectEnvironment {
                 if output.status.success() {
                     let directory_env = parse_shell_environment(&output.stdout)?;
 
+                    let baseline_path = baseline_env.get("PATH").cloned();
                     let mut combined_env = baseline_env;
 
                     // Directory shell environment takes precedence over process environment
                     for (key, value) in directory_env {
                         combined_env.insert(key, value);
                     }
+                    merge_path_like_var(&mut combined_env, "PATH", baseline_path.as_deref());
 
                     // Add origin marker for directory shell environment
                     combined_env
@@ -536,7 +538,7 @@ fn merge_native_flake_environment(
         restore_baseline_var(&mut environment, baseline, key);
     }
 
-    match merge_xdg_data_dirs(
+    match merge_colon_separated_paths(
         environment.get("XDG_DATA_DIRS").map(String::as_str),
         baseline.get("XDG_DATA_DIRS").map(String::as_str),
     ) {
@@ -547,6 +549,12 @@ fn merge_native_flake_environment(
             environment.remove("XDG_DATA_DIRS");
         }
     }
+
+    merge_path_like_var(
+        &mut environment,
+        "PATH",
+        baseline.get("PATH").map(String::as_str),
+    );
 
     environment
 }
@@ -563,12 +571,27 @@ fn restore_baseline_var(
     }
 }
 
-fn merge_xdg_data_dirs(new_value: Option<&str>, old_value: Option<&str>) -> Option<String> {
+fn merge_path_like_var(
+    environment: &mut HashMap<String, String>,
+    key: &str,
+    baseline_value: Option<&str>,
+) {
+    match merge_colon_separated_paths(environment.get(key).map(String::as_str), baseline_value) {
+        Some(value) => {
+            environment.insert(key.to_string(), value);
+        }
+        None => {
+            environment.remove(key);
+        }
+    }
+}
+
+fn merge_colon_separated_paths(new_value: Option<&str>, old_value: Option<&str>) -> Option<String> {
     let mut dirs: Vec<&str> = Vec::new();
 
     for value in [new_value, old_value].into_iter().flatten() {
         for dir in value.split(':') {
-            let dir = dir.trim_end_matches('/');
+            let dir = normalize_colon_path_entry(dir);
             if !dir.is_empty() && !dirs.contains(&dir) {
                 dirs.push(dir);
             }
@@ -576,6 +599,14 @@ fn merge_xdg_data_dirs(new_value: Option<&str>, old_value: Option<&str>) -> Opti
     }
 
     (!dirs.is_empty()).then(|| dirs.join(":"))
+}
+
+fn normalize_colon_path_entry(dir: &str) -> &str {
+    if dir == "/" {
+        dir
+    } else {
+        dir.trim_end_matches('/')
+    }
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -1228,6 +1259,40 @@ mod tests {
         );
         assert!(!env.contains_key("TEMP"));
         assert!(!env.contains_key("NIX_BUILD_TOP"));
+    }
+
+    #[test]
+    fn test_native_flake_environment_preserves_baseline_path_suffixes() {
+        let baseline = HashMap::from([(
+            "PATH".to_string(),
+            "/Users/test/.cargo/bin:/usr/bin:/bin".to_string(),
+        )]);
+        let exported = HashMap::from([(
+            "PATH".to_string(),
+            "/nix/store/tool/bin:/project/.direnv/bin".to_string(),
+        )]);
+
+        let env = merge_native_flake_environment(&baseline, exported);
+
+        assert_eq!(
+            env.get("PATH").map(String::as_str),
+            Some("/nix/store/tool/bin:/project/.direnv/bin:/Users/test/.cargo/bin:/usr/bin:/bin")
+        );
+    }
+
+    #[test]
+    fn test_path_merge_preserves_project_order_and_deduplicates_baseline() {
+        let mut env = HashMap::from([(
+            "PATH".to_string(),
+            "/project/bin:/usr/bin:/nix/bin".to_string(),
+        )]);
+
+        merge_path_like_var(&mut env, "PATH", Some("/usr/local/bin:/usr/bin:/bin"));
+
+        assert_eq!(
+            env.get("PATH").map(String::as_str),
+            Some("/project/bin:/usr/bin:/nix/bin:/usr/local/bin:/bin")
+        );
     }
 
     #[test]
