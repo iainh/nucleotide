@@ -1517,6 +1517,19 @@ impl GlobalInputDispatcher {
 /// Encode a GPUI key event into terminal bytes using an Alacritty/xterm-compatible mapping.
 /// Centralized here so both app overlays and terminal views use the same encoder.
 pub fn encode_terminal_key_event(event: &KeyDownEvent) -> Vec<u8> {
+    encode_terminal_key_event_with_mode(event, TerminalKeyEncodingMode::default())
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TerminalKeyEncodingMode {
+    pub application_cursor: bool,
+}
+
+/// Encode a GPUI key event into terminal bytes using terminal mode-sensitive mappings.
+pub fn encode_terminal_key_event_with_mode(
+    event: &KeyDownEvent,
+    mode: TerminalKeyEncodingMode,
+) -> Vec<u8> {
     use gpui::Modifiers;
 
     let ks = &event.keystroke;
@@ -1540,7 +1553,7 @@ pub fn encode_terminal_key_event(event: &KeyDownEvent) -> Vec<u8> {
     // Named terminal keys must win over key_char. Some platforms/tests can attach
     // control-character text to keys like Enter or Backspace, but terminals expect
     // xterm control bytes/sequences for those keys.
-    if let Some(bytes) = encode_named_terminal_key(&ks.key, mods) {
+    if let Some(bytes) = encode_named_terminal_key(&ks.key, mods, mode) {
         return bytes;
     }
 
@@ -1571,7 +1584,11 @@ pub fn encode_terminal_key_event(event: &KeyDownEvent) -> Vec<u8> {
     Vec::new()
 }
 
-fn encode_named_terminal_key(key: &str, mods: &gpui::Modifiers) -> Option<Vec<u8>> {
+fn encode_named_terminal_key(
+    key: &str,
+    mods: &gpui::Modifiers,
+    mode: TerminalKeyEncodingMode,
+) -> Option<Vec<u8>> {
     match key {
         // Basics
         "enter" => {
@@ -1609,6 +1626,8 @@ fn encode_named_terminal_key(key: &str, mods: &gpui::Modifiers) -> Option<Vec<u8
             };
             if mods.shift || mods.alt || mods.control {
                 Some(csi_with_mod_final(b"1", xterm_mod_value(mods), final_byte))
+            } else if mode.application_cursor {
+                Some(vec![0x1B, b'O', final_byte])
             } else {
                 Some(vec![0x1B, b'[', final_byte])
             }
@@ -1954,5 +1973,18 @@ mod tests {
         let event = key_event("f5", None, gpui::Modifiers::shift());
 
         assert_eq!(encode_terminal_key_event(&event), b"\x1b[15;2~".to_vec());
+    }
+
+    #[test]
+    fn terminal_application_cursor_mode_uses_ss3_arrows() {
+        let event = key_event("up", None, gpui::Modifiers::none());
+        let mode = TerminalKeyEncodingMode {
+            application_cursor: true,
+        };
+
+        assert_eq!(
+            encode_terminal_key_event_with_mode(&event, mode),
+            b"\x1bOA".to_vec()
+        );
     }
 }

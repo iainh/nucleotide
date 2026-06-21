@@ -10,7 +10,7 @@ use gpui::{FontWeight, Hsla, InteractiveElement, hsla, rgb};
 #[cfg(feature = "emulator")]
 use nucleotide_terminal::frame::{
     Cell, DEFAULT_BACKGROUND, DEFAULT_FOREGROUND, FramePayload, GridDiff, GridSnapshot,
-    ansi_color_index,
+    TerminalInputMode, ansi_color_index,
 };
 use nucleotide_ui::ThemedContext;
 #[cfg(feature = "emulator")]
@@ -85,6 +85,10 @@ pub struct TerminalViewModel {
     scroll_dragging: bool,
     #[cfg(feature = "emulator")]
     wheel_scroll_remainder: f32,
+    #[cfg(feature = "emulator")]
+    input_mode: TerminalInputMode,
+    #[cfg(feature = "emulator")]
+    input_tx: Option<std::sync::mpsc::Sender<Vec<u8>>>,
     /// Set to true when the shell process has exited
     exited: bool,
 }
@@ -119,6 +123,10 @@ impl TerminalViewModel {
             scroll_dragging: false,
             #[cfg(feature = "emulator")]
             wheel_scroll_remainder: 0.0,
+            #[cfg(feature = "emulator")]
+            input_mode: TerminalInputMode::default(),
+            #[cfg(feature = "emulator")]
+            input_tx: None,
             exited: false,
         }
     }
@@ -129,6 +137,11 @@ impl TerminalViewModel {
         tx: std::sync::mpsc::Sender<nucleotide_terminal::session::ControlMsg>,
     ) {
         self.control_tx = Some(tx);
+    }
+
+    #[cfg(feature = "emulator")]
+    pub fn set_input_sender(&mut self, tx: std::sync::mpsc::Sender<Vec<u8>>) {
+        self.input_tx = Some(tx);
     }
 
     #[cfg(feature = "emulator")]
@@ -150,6 +163,11 @@ impl TerminalViewModel {
     }
 
     #[cfg(feature = "emulator")]
+    pub fn input_mode(&self) -> TerminalInputMode {
+        self.input_mode
+    }
+
+    #[cfg(feature = "emulator")]
     fn set_snapshot(&mut self, snapshot: GridSnapshot) {
         self.cols = snapshot.cols;
         self.rows = snapshot.rows_len;
@@ -162,6 +180,7 @@ impl TerminalViewModel {
         if !self.scroll_dragging {
             self.display_offset = snapshot.display_offset;
         }
+        self.input_mode = snapshot.input_mode;
         self.dirty.resize_and_fill(self.grid.len(), true);
     }
 
@@ -257,6 +276,17 @@ impl TerminalViewModel {
         let cell_h = self.cell_height.max(1.0);
         let raw_lines = self.wheel_scroll_remainder + pixel_delta_y / cell_h;
 
+        if self.should_send_alternate_scroll_input() {
+            let whole_lines = raw_lines.trunc() as i32;
+            self.wheel_scroll_remainder = raw_lines - whole_lines as f32;
+
+            if whole_lines == 0 {
+                return false;
+            }
+
+            return self.send_alternate_scroll_input(whole_lines);
+        }
+
         if (raw_lines < 0.0 && self.display_offset == 0)
             || (raw_lines > 0.0 && self.display_offset == self.history_size)
         {
@@ -278,6 +308,34 @@ impl TerminalViewModel {
 
         let new_offset = requested_offset.clamp(0, self.history_size as i32) as usize;
         self.set_display_offset_internal(new_offset, false)
+    }
+
+    #[cfg(feature = "emulator")]
+    fn should_send_alternate_scroll_input(&self) -> bool {
+        self.input_mode.alternate_screen
+            && self.input_mode.alternate_scroll
+            && !self.input_mode.mouse_mode
+    }
+
+    #[cfg(feature = "emulator")]
+    fn send_alternate_scroll_input(&self, line_delta: i32) -> bool {
+        let Some(tx) = &self.input_tx else {
+            return false;
+        };
+
+        let sequence: &[u8] = match (line_delta > 0, self.input_mode.application_cursor) {
+            (true, true) => b"\x1bOA",
+            (true, false) => b"\x1b[A",
+            (false, true) => b"\x1bOB",
+            (false, false) => b"\x1b[B",
+        };
+        let line_count = line_delta.unsigned_abs() as usize;
+        let mut bytes = Vec::with_capacity(sequence.len() * line_count);
+        for _ in 0..line_count {
+            bytes.extend_from_slice(sequence);
+        }
+
+        tx.send(bytes).is_ok()
     }
 
     #[cfg(feature = "emulator")]
@@ -769,6 +827,23 @@ mod tests {
 
         assert!(model.scroll_wheel_by_pixel_delta(12.0));
         assert_eq!(model.display_offset, 1);
+    }
+
+    #[test]
+    fn terminal_alternate_scroll_sends_arrow_input_instead_of_scrollback() {
+        let mut model = TerminalViewModel::new(TerminalId(1));
+        let (tx, rx) = std::sync::mpsc::channel();
+        model.set_input_sender(tx);
+        model.cell_height = 10.0;
+        model.input_mode = TerminalInputMode {
+            alternate_screen: true,
+            alternate_scroll: true,
+            ..TerminalInputMode::default()
+        };
+
+        assert!(model.scroll_wheel_by_pixel_delta(10.0));
+        assert_eq!(model.display_offset, 0);
+        assert_eq!(rx.try_recv().unwrap(), b"\x1b[A".to_vec());
     }
 
     #[test]

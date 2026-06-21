@@ -5126,6 +5126,14 @@ impl Workspace {
         {
             if let Some(panel) = &self.embedded_terminal_panel {
                 let id = panel.read(cx).active;
+                #[cfg(feature = "terminal-emulator")]
+                let bytes = {
+                    let mode = nucleotide_terminal_view::get_view_model(id)
+                        .and_then(|vm| vm.lock().ok().map(|guard| guard.input_mode()))
+                        .unwrap_or_default();
+                    crate::overlay::translate_key_to_bytes_with_mode(ev, mode)
+                };
+                #[cfg(not(feature = "terminal-emulator"))]
                 let bytes = crate::overlay::translate_key_to_bytes(ev);
                 if !bytes.is_empty() {
                     // Snap scroll back to cursor when the user types
@@ -12301,6 +12309,16 @@ impl Render for Workspace {
                                 }
                                 if let Some(panel) = &this.embedded_terminal_panel {
                                     let id = panel.read(cx).active;
+                                    #[cfg(feature = "terminal-emulator")]
+                                    let bytes = {
+                                        let mode = nucleotide_terminal_view::get_view_model(id)
+                                            .and_then(|vm| {
+                                                vm.lock().ok().map(|guard| guard.input_mode())
+                                            })
+                                            .unwrap_or_default();
+                                        crate::overlay::translate_key_to_bytes_with_mode(event, mode)
+                                    };
+                                    #[cfg(not(feature = "terminal-emulator"))]
                                     let bytes = crate::overlay::translate_key_to_bytes(event);
                                     if !bytes.is_empty() {
                                         // Snap scroll back to cursor when the user types
