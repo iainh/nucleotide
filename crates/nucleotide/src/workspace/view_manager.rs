@@ -3,10 +3,10 @@
 
 use crate::document::DocumentView;
 use crate::workspace::Workspace;
-use gpui::{AppContext, Context, Entity, Focusable, SharedString, Window};
+use gpui::{Context, Entity, Focusable, Window};
 use helix_view::ViewId;
-use nucleotide_logging::{debug, info, instrument, warn};
-use std::collections::{HashMap, HashSet};
+use nucleotide_logging::{debug, info, instrument};
+use std::collections::HashMap;
 
 /// Manages document views, focus state, and view coordination
 /// Extracted from Workspace to reduce complexity and improve modularity
@@ -84,149 +84,6 @@ impl ViewManager {
                 if view.set_focused(is_focused) {
                     cx.notify();
                 }
-            });
-        }
-    }
-
-    /// Update document views based on editor state
-    #[instrument(skip(self, cx))]
-    pub fn update_document_views(&mut self, cx: &mut Context<Workspace>) -> Option<SharedString> {
-        let mut view_ids = HashSet::new();
-        // Will be initialized from collected state below
-
-        // Read editor state to get current views and collect view information
-        let workspace = cx.entity();
-        let core = workspace.read(cx).core.clone();
-        let input = workspace.read(cx).input.clone();
-
-        // Collect all the data we need in one go to avoid borrowing conflicts
-        // Clone the necessary data to avoid lifetime issues
-        let (view_data, right_borders_set, focused_file_name_result, focused_view_id_result) = {
-            let core_read = core.read(cx);
-            let editor = &core_read.editor;
-
-            // Clone view data to avoid borrowing issues
-            let view_data: Vec<(helix_view::View, bool)> = editor
-                .tree
-                .views()
-                .map(|(view, is_focused)| (view.clone(), is_focused))
-                .collect();
-
-            let mut right_borders = HashSet::new();
-            let mut focused_file_name = None;
-            let mut focused_view_id = None;
-
-            for (view, is_focused) in &view_data {
-                let view_id = view.id;
-
-                // Check if this view has a right border (part of split layout)
-                if editor
-                    .tree
-                    .find_split_in_direction(view_id, helix_view::tree::Direction::Right)
-                    .is_some()
-                {
-                    right_borders.insert(view_id);
-                }
-
-                // Get filename for focused view
-                if *is_focused {
-                    if let Some(doc) = editor.document(view.doc) {
-                        focused_file_name = doc.path().and_then(|p| {
-                            p.file_name()
-                                .and_then(|name| name.to_str())
-                                .map(|s| SharedString::from(s.to_string()))
-                        });
-                    }
-                    focused_view_id = Some(view_id);
-                }
-            }
-
-            (view_data, right_borders, focused_file_name, focused_view_id)
-        };
-        // Important: core_read is dropped here
-
-        // Update the focused file name and view ID
-        let focused_file_name: Option<SharedString> = focused_file_name_result;
-        if let Some(fv_id) = focused_view_id_result {
-            self.focused_view_id = Some(fv_id);
-        }
-
-        // Track which views have right borders (split layout detection)
-        let _right_borders = right_borders_set;
-
-        // Update or create document views for all active views
-        for (view, is_focused) in view_data {
-            let view_id = view.id;
-            view_ids.insert(view_id);
-
-            // Update existing view or create new one
-            if let Some(view_entity) = self.documents.get(&view_id) {
-                view_entity.update(cx, |view, cx| {
-                    if view.set_focused(is_focused) {
-                        cx.notify();
-                    }
-                    // TODO: Update text style when needed
-                });
-            } else {
-                // Create new view if it doesn't exist
-                let view_entity = cx.new(|cx| {
-                    let doc_focus_handle = cx.focus_handle();
-
-                    // Build a text style from the configured editor font
-                    let editor_font = cx.global::<crate::types::EditorFontConfig>();
-                    let fixed_family = cx
-                        .global::<crate::types::FontSettings>()
-                        .fixed_font
-                        .family
-                        .clone();
-
-                    let ui_theme = cx.global::<nucleotide_ui::Theme>();
-                    let default_style = gpui::TextStyle {
-                        color: ui_theme.tokens.editor.text_primary,
-                        font_family: gpui::SharedString::from(fixed_family),
-                        font_fallbacks: Default::default(),
-                        font_features: Default::default(),
-                        font_size: gpui::AbsoluteLength::Pixels(gpui::px(editor_font.size)),
-                        font_weight: gpui::FontWeight::from(editor_font.weight),
-                        font_style: gpui::FontStyle::Normal,
-                        line_height: gpui::phi(),
-                        line_clamp: Default::default(),
-                        background_color: None,
-                        underline: Default::default(),
-                        strikethrough: Default::default(),
-                        white_space: Default::default(),
-                        text_align: Default::default(),
-                        text_overflow: Default::default(),
-                    };
-
-                    DocumentView::new(
-                        core.clone(),
-                        Some(input.clone()),
-                        view_id,
-                        default_style,
-                        &doc_focus_handle,
-                        is_focused,
-                    )
-                });
-                self.documents.insert(view_id, view_entity);
-            }
-        }
-
-        // Remove views that no longer exist in the editor
-        self.documents
-            .retain(|view_id, _| view_ids.contains(view_id));
-
-        focused_file_name
-    }
-
-    /// Update only the currently focused document view
-    #[instrument(skip(self, cx))]
-    pub fn update_current_document_view(&mut self, cx: &mut Context<Workspace>) {
-        if let Some(focused_view_id) = self.focused_view_id
-            && let Some(view_entity) = self.documents.get(&focused_view_id)
-        {
-            view_entity.update(cx, |_view, cx| {
-                cx.notify();
             });
         }
     }
