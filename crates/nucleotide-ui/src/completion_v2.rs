@@ -2164,6 +2164,7 @@ mod tests {
         #[gpui::test]
         async fn test_update_filter_refines_existing_completion_results(cx: &mut TestAppContext) {
             let completion_items = vec![
+                CompletionItem::new("print()").with_kind(CompletionItemKind::Function),
                 CompletionItem::new("print").with_kind(CompletionItemKind::Function),
                 CompletionItem::new("println").with_kind(CompletionItemKind::Function),
                 CompletionItem::new("process").with_kind(CompletionItemKind::Function),
@@ -2179,7 +2180,7 @@ mod tests {
             cx.run_until_parked();
 
             completion_view.update(cx, |view, cx| {
-                assert_eq!(view.item_count(), 4);
+                assert_eq!(view.item_count(), 5);
                 view.update_filter("pr".to_string(), cx);
             });
 
@@ -2192,8 +2193,21 @@ mod tests {
                     .collect();
                 labels.sort();
 
-                assert_eq!(labels, vec!["print", "println", "process"]);
-                view.update_filter("pri".to_string(), cx);
+                assert_eq!(labels, vec!["print", "print()", "println", "process"]);
+                view.update_filter("print".to_string(), cx);
+            });
+
+            cx.run_until_parked();
+
+            completion_view.update(cx, |view, cx| {
+                let mut labels: Vec<_> = (0..view.item_count())
+                    .filter_map(|index| view.get_item_at_index(index))
+                    .map(|item| item.text.to_string())
+                    .collect();
+                labels.sort();
+
+                assert_eq!(labels, vec!["print", "print()", "println"]);
+                view.update_filter("printl".to_string(), cx);
             });
 
             cx.run_until_parked();
@@ -2205,7 +2219,7 @@ mod tests {
                     .collect();
                 labels.sort();
 
-                assert_eq!(labels, vec!["print", "println"]);
+                assert_eq!(labels, vec!["println"]);
             });
         }
 
