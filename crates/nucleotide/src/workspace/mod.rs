@@ -5120,10 +5120,9 @@ impl Workspace {
 
     /// Simplified key handler that delegates to the InputCoordinator
     fn handle_key(&mut self, ev: &KeyDownEvent, window: &Window, cx: &mut Context<Self>) {
-        // If embedded terminal is focused, route all keys to it and stop here
-        if self.terminal_panel_visible
-            && (self.terminal_active || self.terminal_focus.is_focused(window))
-        {
+        // If embedded terminal is focused, route all keys to it and stop here.
+        // Terminal visibility alone must not steal editor input.
+        if self.terminal_panel_visible && self.terminal_focus.is_focused(window) {
             if let Some(panel) = &self.embedded_terminal_panel {
                 let id = panel.read(cx).active;
                 #[cfg(feature = "terminal-emulator")]
@@ -12287,8 +12286,9 @@ impl Render for Workspace {
                 );
 
                 if self.terminal_panel_visible {
-                    // Bottom terminal panel using shared split helper inside an absolute wrapper
-                    // Absolute wrapper to own interactions and sizing
+                    // Bottom terminal panel using shared split helper inside an absolute wrapper.
+                    // Keep terminal focus and key handling scoped to the bottom panel content so
+                    // editor clicks above it can focus documents normally.
                     root = root.child(
                         div()
                             .absolute()
@@ -12296,60 +12296,6 @@ impl Render for Workspace {
                             .left_0()
                             .right_0()
                             .bottom_0()
-                            .track_focus(&self.terminal_focus)
-                            .on_mouse_down(MouseButton::Left, cx.listener(|this: &mut Workspace, _ev: &MouseDownEvent, window, cx| {
-                                window.focus(&this.terminal_focus, cx);
-                                this.terminal_active = true;
-                                cx.notify();
-                                cx.stop_propagation();
-                            }))
-                            .on_key_down(cx.listener(|this: &mut Workspace, event: &gpui::KeyDownEvent, window, cx| {
-                                if !this.terminal_focus.is_focused(window) {
-                                    return;
-                                }
-                                if let Some(panel) = &this.embedded_terminal_panel {
-                                    let id = panel.read(cx).active;
-                                    #[cfg(feature = "terminal-emulator")]
-                                    let bytes = {
-                                        let mode = nucleotide_terminal_view::get_view_model(id)
-                                            .and_then(|vm| {
-                                                vm.lock().ok().map(|guard| guard.input_mode())
-                                            })
-                                            .unwrap_or_default();
-                                        crate::overlay::translate_key_to_bytes_with_mode(event, mode)
-                                    };
-                                    #[cfg(not(feature = "terminal-emulator"))]
-                                    let bytes = crate::overlay::translate_key_to_bytes(event);
-                                    if !bytes.is_empty() {
-                                        // Snap scroll back to cursor when the user types
-                                        #[cfg(feature = "terminal-emulator")]
-                                        if let Some(vm) = nucleotide_terminal_view::get_view_model(id)
-                                            && let Ok(mut guard) = vm.lock()
-                                        {
-                                            guard.scroll_to_bottom();
-                                        }
-                                        // Fast path: bypass event queue
-                                        #[cfg(feature = "terminal-emulator")]
-                                        let sent = this.core.read(cx).terminal_input_senders
-                                            .lock()
-                                            .ok()
-                                            .and_then(|senders| {
-                                                senders.get(&id).map(|tx| { let _ = tx.send(bytes.clone()); })
-                                            })
-                                            .is_some();
-                                        #[cfg(not(feature = "terminal-emulator"))]
-                                        let sent = false;
-                                        if !sent {
-                                            this.core.update(cx, |app, _| {
-                                                if let Some(bus) = &app.event_aggregator {
-                                                    bus.dispatch_terminal(nucleotide_events::v2::terminal::Event::Input { id, bytes });
-                                                }
-                                            });
-                                        }
-                                        cx.stop_propagation();
-                                    }
-                                }
-                            }))
                             // Track resize drags at the wrapper level for reliability
                             .on_mouse_move(cx.listener(
                                 move |this: &mut Workspace, ev: &MouseMoveEvent, window, cx| {
@@ -12390,7 +12336,24 @@ impl Render for Workspace {
                                 {
                                     let mut c = div().relative().size_full();
                                     if let Some(panel) = &self.embedded_terminal_panel {
-                                        c = c.child(div().size_full().overflow_hidden().child(panel.clone()));
+                                        c = c.child(
+                                            div()
+                                                .size_full()
+                                                .overflow_hidden()
+                                                .track_focus(&self.terminal_focus)
+                                                .on_mouse_down(MouseButton::Left, cx.listener(|this: &mut Workspace, _ev: &MouseDownEvent, window, cx| {
+                                                    window.focus(&this.terminal_focus, cx);
+                                                    this.terminal_active = true;
+                                                    cx.notify();
+                                                    cx.stop_propagation();
+                                                }))
+                                                .on_key_down(cx.listener(|this: &mut Workspace, event: &gpui::KeyDownEvent, window, cx| {
+                                                    if this.terminal_focus.is_focused(window) {
+                                                        this.handle_key(event, window, cx);
+                                                    }
+                                                }))
+                                                .child(panel.clone()),
+                                        );
                                     } else {
                                         c = c.child(div().flex().items_center().justify_center().child("starting terminal..."));
                                     }
