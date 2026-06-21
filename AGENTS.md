@@ -14,7 +14,7 @@
 - Linux setup: see `docs/linux_install.md` for distro prerequisites and runtime notes.
 - Architecture check: `./scripts/check-layering.sh`.
 - Dependency checks: `cargo deny check` and `cargo +nightly udeps --all-targets --workspace`.
-- macOS bundle: `./bundle-mac.sh` then `open Nucleotide.app`.
+- macOS bundle: `./scripts/bundle-mac.sh` then `open Nucleotide.app`.
 
 ## Coding Style & Naming Conventions
 - Rust 2024 edition; format with `rustfmt` (2‑space or default rustfmt indentation).
