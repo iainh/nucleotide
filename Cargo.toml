@@ -6,12 +6,10 @@ members = [
     "crates/nucleotide-core",
     "crates/nucleotide-editor",
     "crates/nucleotide-ui",
-    "crates/nucleotide-workspace",
     "crates/nucleotide-lsp",
     "crates/nucleotide-project",
     "crates/nucleotide-env",
     "crates/nucleotide-vcs",
-    "crates/nucleotide-test-lsp",
     "crates/nucleotide-lsp-proxy",
     "crates/nucleotide",
     "crates/nucleotide-terminal",
@@ -105,12 +103,10 @@ nucleotide-logging = { path = "crates/nucleotide-logging" }
 nucleotide-core = { path = "crates/nucleotide-core" }
 nucleotide-editor = { path = "crates/nucleotide-editor" }
 nucleotide-ui = { path = "crates/nucleotide-ui" }
-nucleotide-workspace = { path = "crates/nucleotide-workspace" }
 nucleotide-lsp = { path = "crates/nucleotide-lsp" }
 nucleotide-project = { path = "crates/nucleotide-project" }
 nucleotide-env = { path = "crates/nucleotide-env" }
 nucleotide-vcs = { path = "crates/nucleotide-vcs" }
-nucleotide-test-lsp = { path = "crates/nucleotide-test-lsp" }
 
 [patch."https://github.com/iainh/helix"]
 helix-lsp = { path = "vendor/helix-lsp" }

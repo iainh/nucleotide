@@ -3,6 +3,7 @@ name = "nucleotide-lsp-proxy"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+readme = "README.md"
 publish = false
 
 [dependencies]
@@ -13,4 +14,3 @@ serde_json.workspace = true
 chrono.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-
