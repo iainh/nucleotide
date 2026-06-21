@@ -36,6 +36,7 @@ pub struct PlatformTitleBar {
     id: ElementId,
     platform_style: PlatformStyle,
     title: String,
+    show_title: bool,
     inset_applied: bool,
 }
 
@@ -46,12 +47,17 @@ impl PlatformTitleBar {
             id: id.into(),
             platform_style,
             title: String::new(),
+            show_title: true,
             inset_applied: false,
         }
     }
 
     pub fn set_title(&mut self, title: String) {
         self.title = title;
+    }
+
+    pub fn set_show_title(&mut self, show_title: bool) {
+        self.show_title = show_title;
     }
 
     pub fn height(_window: &Window) -> Pixels {
@@ -198,21 +204,23 @@ impl Render for PlatformTitleBar {
                     .justify_center() // Center the content
                     .relative() // For absolute positioning of window controls
                     .px_2()
-                    .child(
-                        // Title text - centered and styled with computed colors
-                        div().flex().items_center().gap_2().child({
-                            #[cfg(debug_assertions)]
-                            debug!(
-                                "TITLEBAR RENDER: Applying text color to title: {:?}",
-                                titlebar_tokens.foreground
-                            );
-                            div()
-                                .text_size(cx.global::<crate::Theme>().tokens.sizes.text_md) // Themed titlebar font size
-                                .font_weight(gpui::FontWeight::MEDIUM) // Slightly bold for titlebar
-                                .text_color(titlebar_tokens.foreground)
-                                .child(self.title.clone())
-                        }),
-                    ),
+                    .when(self.show_title, |content| {
+                        content.child(
+                            // Title text - centered and styled with computed colors
+                            div().flex().items_center().gap_2().child({
+                                #[cfg(debug_assertions)]
+                                debug!(
+                                    "TITLEBAR RENDER: Applying text color to title: {:?}",
+                                    titlebar_tokens.foreground
+                                );
+                                div()
+                                    .text_size(cx.global::<crate::Theme>().tokens.sizes.text_md) // Themed titlebar font size
+                                    .font_weight(gpui::FontWeight::MEDIUM) // Slightly bold for titlebar
+                                    .text_color(titlebar_tokens.foreground)
+                                    .child(self.title.clone())
+                            }),
+                        )
+                    }),
             )
             // Always add window controls on Linux/Windows. macOS uses native controls.
             .map(|title_bar| match self.platform_style {
