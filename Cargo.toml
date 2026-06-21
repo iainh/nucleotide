@@ -36,18 +36,18 @@ gpui = { git = "https://github.com/zed-industries/zed", package = "gpui", featur
 gpui_tokio = { git = "https://github.com/zed-industries/zed", package = "gpui_tokio" }
 gpui_platform = { git = "https://github.com/zed-industries/zed", package = "gpui_platform", features = ["font-kit", "runtime_shaders", "wayland", "x11"] }
 
-# Helix dependencies - pinned to specific commit for reproducible builds
-# To update: git ls-remote https://github.com/iainh/helix refs/heads/nucleotide-lsp-integration
-helix-core = { git = "https://github.com/iainh/helix", rev = "cd2ee5a29e7309e69af5cd5529e3bef1759bdbd4" }
-helix-event = { git = "https://github.com/iainh/helix", rev = "cd2ee5a29e7309e69af5cd5529e3bef1759bdbd4" }
-helix-loader = { git = "https://github.com/iainh/helix", rev = "cd2ee5a29e7309e69af5cd5529e3bef1759bdbd4" }
-helix-lsp = { git = "https://github.com/iainh/helix", rev = "cd2ee5a29e7309e69af5cd5529e3bef1759bdbd4" }
-helix-term = { git = "https://github.com/iainh/helix", rev = "cd2ee5a29e7309e69af5cd5529e3bef1759bdbd4" }
-helix-tui = { git = "https://github.com/iainh/helix", rev = "cd2ee5a29e7309e69af5cd5529e3bef1759bdbd4" }
-helix-view = { git = "https://github.com/iainh/helix", rev = "cd2ee5a29e7309e69af5cd5529e3bef1759bdbd4" }
-helix-vcs = { git = "https://github.com/iainh/helix", rev = "cd2ee5a29e7309e69af5cd5529e3bef1759bdbd4" }
-helix-parsec = { git = "https://github.com/iainh/helix", rev = "cd2ee5a29e7309e69af5cd5529e3bef1759bdbd4" }
-helix-stdx = { git = "https://github.com/iainh/helix", rev = "cd2ee5a29e7309e69af5cd5529e3bef1759bdbd4" }
+# Helix dependencies - pinned to the upstream base revision that our vendored
+# Nucleotide-specific patches were developed against.
+helix-core = { git = "https://github.com/helix-editor/helix", rev = "5a8fb732f26d6aabe757ffd2108ee66e8ef25236" }
+helix-event = { git = "https://github.com/helix-editor/helix", rev = "5a8fb732f26d6aabe757ffd2108ee66e8ef25236" }
+helix-loader = { git = "https://github.com/helix-editor/helix", rev = "5a8fb732f26d6aabe757ffd2108ee66e8ef25236" }
+helix-lsp = { git = "https://github.com/helix-editor/helix", rev = "5a8fb732f26d6aabe757ffd2108ee66e8ef25236" }
+helix-term = { git = "https://github.com/helix-editor/helix", rev = "5a8fb732f26d6aabe757ffd2108ee66e8ef25236" }
+helix-tui = { git = "https://github.com/helix-editor/helix", rev = "5a8fb732f26d6aabe757ffd2108ee66e8ef25236" }
+helix-view = { git = "https://github.com/helix-editor/helix", rev = "5a8fb732f26d6aabe757ffd2108ee66e8ef25236" }
+helix-vcs = { git = "https://github.com/helix-editor/helix", rev = "5a8fb732f26d6aabe757ffd2108ee66e8ef25236" }
+helix-parsec = { git = "https://github.com/helix-editor/helix", rev = "5a8fb732f26d6aabe757ffd2108ee66e8ef25236" }
+helix-stdx = { git = "https://github.com/helix-editor/helix", rev = "5a8fb732f26d6aabe757ffd2108ee66e8ef25236" }
 
 # Common dependencies
 tokio = { version = "1.32", features = ["full"] }
@@ -108,8 +108,10 @@ nucleotide-project = { path = "crates/nucleotide-project" }
 nucleotide-env = { path = "crates/nucleotide-env" }
 nucleotide-vcs = { path = "crates/nucleotide-vcs" }
 
-[patch."https://github.com/iainh/helix"]
+[patch."https://github.com/helix-editor/helix"]
 helix-lsp = { path = "vendor/helix-lsp" }
+helix-term = { path = "vendor/helix-term" }
+helix-view = { path = "vendor/helix-view" }
 
 [patch.crates-io]
 # Zed workspace crates rely on these patched async primitives. Patches in

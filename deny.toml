@@ -346,8 +346,8 @@ allow-git = [
     "https://github.com/zed-industries/font-kit",
     # WGPU fork used by GPUI
     "https://github.com/zed-industries/wgpu.git",
-    # Helix fork pinned by Nucleotide
-    "https://github.com/iainh/helix",
+    # Upstream Helix crates pinned by Nucleotide
+    "https://github.com/helix-editor/helix",
     # Test dependency pinned from upstream
     "https://github.com/proptest-rs/proptest",
     # XIM input method support used by GPUI
