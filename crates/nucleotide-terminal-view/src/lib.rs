@@ -40,6 +40,10 @@ impl DirtyFlags {
         }
     }
 
+    fn mark_all(&mut self) {
+        self.flags.fill(true);
+    }
+
     fn take(&mut self) -> Vec<usize> {
         let mut dirty = Vec::new();
         for (i, f) in self.flags.iter_mut().enumerate() {
@@ -170,8 +174,9 @@ impl TerminalViewModel {
         self.cursor_row = diff.cursor_row.min(self.rows.saturating_sub(1));
         self.cursor_col = diff.cursor_col.min(self.cols.saturating_sub(1));
         if let Some(delta) = diff.scrolled {
+            let visible_rows = self.grid.len();
             if delta > 0 {
-                let d = delta as usize;
+                let d = (delta as usize).min(visible_rows);
                 for _ in 0..d {
                     self.grid.remove(0);
                 }
@@ -179,7 +184,7 @@ impl TerminalViewModel {
                     self.grid.push(vec![blank_cell(); self.cols as usize]);
                 }
             } else if delta < 0 {
-                let d = (-delta) as usize;
+                let d = ((-delta) as usize).min(visible_rows);
                 for _ in 0..d {
                     self.grid.pop();
                 }
@@ -187,6 +192,7 @@ impl TerminalViewModel {
                     self.grid.insert(0, vec![blank_cell(); self.cols as usize]);
                 }
             }
+            self.dirty.mark_all();
         }
         for line in diff.lines {
             let row = line.row as usize;
@@ -763,6 +769,39 @@ mod tests {
 
         assert!(model.scroll_wheel_by_pixel_delta(12.0));
         assert_eq!(model.display_offset, 1);
+    }
+
+    #[test]
+    fn terminal_diff_scroll_marks_visible_rows_dirty() {
+        let mut model = TerminalViewModel::new(TerminalId(1));
+        model.resize_grid(4, 3, Some((8.0, 16.0)));
+        model.take_dirty_rows();
+
+        model.apply_frame(FramePayload::Diff(GridDiff {
+            lines: Vec::new(),
+            scrolled: Some(1),
+            cursor_row: 0,
+            cursor_col: 0,
+        }));
+
+        assert_eq!(model.take_dirty_rows(), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn terminal_diff_scroll_clamps_delta_to_visible_rows() {
+        let mut model = TerminalViewModel::new(TerminalId(1));
+        model.resize_grid(4, 3, Some((8.0, 16.0)));
+        model.take_dirty_rows();
+
+        model.apply_frame(FramePayload::Diff(GridDiff {
+            lines: Vec::new(),
+            scrolled: Some(8),
+            cursor_row: 0,
+            cursor_col: 0,
+        }));
+
+        assert_eq!(model.grid.len(), 3);
+        assert_eq!(model.take_dirty_rows(), vec![0, 1, 2]);
     }
 
     #[test]
