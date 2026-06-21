@@ -1635,21 +1635,53 @@ fn encode_named_terminal_key(key: &str, mods: &gpui::Modifiers) -> Option<Vec<u8
             Some(csi_with_mod_tilde(code, mods))
         }
 
-        // Function keys (basic)
-        "f1" => Some(b"\x1bOP".to_vec()),
-        "f2" => Some(b"\x1bOQ".to_vec()),
-        "f3" => Some(b"\x1bOR".to_vec()),
-        "f4" => Some(b"\x1bOS".to_vec()),
-        "f5" => Some(b"\x1b[15~".to_vec()),
-        "f6" => Some(b"\x1b[17~".to_vec()),
-        "f7" => Some(b"\x1b[18~".to_vec()),
-        "f8" => Some(b"\x1b[19~".to_vec()),
-        "f9" => Some(b"\x1b[20~".to_vec()),
-        "f10" => Some(b"\x1b[21~".to_vec()),
-        "f11" => Some(b"\x1b[23~".to_vec()),
-        "f12" => Some(b"\x1b[24~".to_vec()),
+        // Function keys
+        "f1" | "f2" | "f3" | "f4" | "f5" | "f6" | "f7" | "f8" | "f9" | "f10" | "f11" | "f12" => {
+            Some(encode_function_key(key, mods))
+        }
 
         _ => None,
+    }
+}
+
+fn encode_function_key(key: &str, mods: &gpui::Modifiers) -> Vec<u8> {
+    let modified = mods.shift || mods.alt || mods.control;
+
+    match key {
+        "f1" | "f2" | "f3" | "f4" => {
+            let final_byte = match key {
+                "f1" => b'P',
+                "f2" => b'Q',
+                "f3" => b'R',
+                _ => b'S',
+            };
+            if modified {
+                csi_with_mod_final(b"1", xterm_mod_value(mods), final_byte)
+            } else {
+                vec![0x1B, b'O', final_byte]
+            }
+        }
+        "f5" => csi_function_key_tilde(15, mods),
+        "f6" => csi_function_key_tilde(17, mods),
+        "f7" => csi_function_key_tilde(18, mods),
+        "f8" => csi_function_key_tilde(19, mods),
+        "f9" => csi_function_key_tilde(20, mods),
+        "f10" => csi_function_key_tilde(21, mods),
+        "f11" => csi_function_key_tilde(23, mods),
+        "f12" => csi_function_key_tilde(24, mods),
+        _ => Vec::new(),
+    }
+}
+
+fn csi_function_key_tilde(code: u8, mods: &gpui::Modifiers) -> Vec<u8> {
+    if mods.shift || mods.alt || mods.control {
+        csi_with_mod_tilde(code, mods)
+    } else {
+        let mut out = Vec::with_capacity(6);
+        out.extend_from_slice(b"\x1b[");
+        out.extend_from_slice(code.to_string().as_bytes());
+        out.push(b'~');
+        out
     }
 }
 
@@ -1915,5 +1947,12 @@ mod tests {
         let event = key_event("x", Some("x"), gpui::Modifiers::none());
 
         assert_eq!(encode_terminal_key_event(&event), b"x".to_vec());
+    }
+
+    #[test]
+    fn terminal_shift_f5_uses_xterm_modifier_sequence() {
+        let event = key_event("f5", None, gpui::Modifiers::shift());
+
+        assert_eq!(encode_terminal_key_event(&event), b"\x1b[15;2~".to_vec());
     }
 }
