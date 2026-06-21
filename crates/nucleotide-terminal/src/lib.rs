@@ -93,6 +93,7 @@ pub mod frame {
 pub mod session {
     use anyhow::{Context, Result};
     use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+    use std::collections::BTreeMap;
     use std::io::{Read, Write};
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
@@ -166,7 +167,7 @@ pub mod session {
             if let Some(cwd) = &cfg.cwd {
                 cmd.cwd(cwd);
             }
-            for (k, v) in &cfg.env {
+            for (k, v) in terminal_env_with_defaults(&cfg.env) {
                 cmd.env(k, v);
             }
 
@@ -357,6 +358,74 @@ pub mod session {
         #[cfg(not(windows))]
         {
             std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
+        }
+    }
+
+    fn terminal_env_with_defaults(env: &[(String, String)]) -> Vec<(String, String)> {
+        let mut merged = env.iter().cloned().collect::<BTreeMap<_, _>>();
+
+        merged.insert("NUCLEOTIDE_TERM".to_string(), "true".to_string());
+        merged.insert("TERM_PROGRAM".to_string(), "nucleotide".to_string());
+        merged.insert("TERM".to_string(), "xterm-256color".to_string());
+        merged.insert("COLORTERM".to_string(), "truecolor".to_string());
+        merged.insert(
+            "TERM_PROGRAM_VERSION".to_string(),
+            env!("CARGO_PKG_VERSION").to_string(),
+        );
+
+        merged.into_iter().collect()
+    }
+
+    #[cfg(test)]
+    mod env_tests {
+        use super::*;
+
+        fn env_map(env: Vec<(String, String)>) -> BTreeMap<String, String> {
+            env.into_iter().collect()
+        }
+
+        fn pair(key: &str, value: &str) -> (String, String) {
+            (key.to_string(), value.to_string())
+        }
+
+        #[test]
+        fn terminal_env_sets_zed_style_terminal_defaults() {
+            let env = env_map(terminal_env_with_defaults(&[]));
+
+            assert_eq!(env.get("TERM").map(String::as_str), Some("xterm-256color"));
+            assert_eq!(env.get("COLORTERM").map(String::as_str), Some("truecolor"));
+            assert_eq!(
+                env.get("TERM_PROGRAM").map(String::as_str),
+                Some("nucleotide")
+            );
+            assert_eq!(env.get("NUCLEOTIDE_TERM").map(String::as_str), Some("true"));
+            assert_eq!(
+                env.get("TERM_PROGRAM_VERSION").map(String::as_str),
+                Some(env!("CARGO_PKG_VERSION"))
+            );
+        }
+
+        #[test]
+        fn terminal_env_overrides_stale_terminal_values_like_zed() {
+            let env = env_map(terminal_env_with_defaults(&[
+                pair("TERM", "dumb"),
+                pair("COLORTERM", "false"),
+                pair("TERM_PROGRAM", "other"),
+            ]));
+
+            assert_eq!(env.get("TERM").map(String::as_str), Some("xterm-256color"));
+            assert_eq!(env.get("COLORTERM").map(String::as_str), Some("truecolor"));
+            assert_eq!(
+                env.get("TERM_PROGRAM").map(String::as_str),
+                Some("nucleotide")
+            );
+        }
+
+        #[test]
+        fn terminal_env_preserves_unrelated_overrides() {
+            let env = env_map(terminal_env_with_defaults(&[pair("PATH", "/custom/bin")]));
+
+            assert_eq!(env.get("PATH").map(String::as_str), Some("/custom/bin"));
         }
     }
 }
