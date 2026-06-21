@@ -2004,7 +2004,25 @@ impl Application {
                 }
 
                 if let Some(request) = outcome.completion_requested {
-                    self.trigger_completion_manual(request.doc_id, request.view_id);
+                    if let Some(doc) = self.editor.document(request.doc_id) {
+                        let cursor = doc
+                            .selection(request.view_id)
+                            .primary()
+                            .cursor(doc.text().slice(..));
+                        cx.emit(crate::Update::CompletionEvent(
+                            helix_view::handlers::completion::CompletionEvent::ManualTrigger {
+                                cursor,
+                                doc: request.doc_id,
+                                view: request.view_id,
+                            },
+                        ));
+                    } else {
+                        nucleotide_logging::warn!(
+                            doc_id = ?request.doc_id,
+                            view_id = ?request.view_id,
+                            "Document not found for native completion request"
+                        );
+                    }
                 }
 
                 if let Some(request) = outcome.lsp_navigation_requested {
@@ -5074,34 +5092,6 @@ impl Application {
         ))
     }
 
-    /// Trigger manual completion (e.g., from CTRL+Space)
-    pub fn trigger_completion_manual(
-        &mut self,
-        doc_id: helix_view::DocumentId,
-        view_id: helix_view::ViewId,
-    ) {
-        nucleotide_logging::info!(
-            "🚀 APPLICATION TRIGGER MANUAL: doc {:?}, view {:?}",
-            doc_id,
-            view_id
-        );
-
-        // Get current cursor position
-        if let Some(cursor) = self.get_cursor_position(doc_id, view_id) {
-            // Send manual trigger event to completion coordinator
-            self.send_completion_trigger_event(
-                doc_id,
-                view_id,
-                cursor,
-                helix_view::handlers::completion::CompletionEvent::ManualTrigger {
-                    cursor,
-                    doc: doc_id,
-                    view: view_id,
-                },
-            );
-        }
-    }
-
     pub fn trigger_lsp_navigation(
         &mut self,
         request: editor_input::NativeLspNavigationRequest,
@@ -5592,202 +5582,6 @@ impl Application {
         self.editor.ensure_cursor_in_view(view_id);
 
         Ok((doc_id, view_id))
-    }
-
-    /// Trigger completion on character input
-    pub fn trigger_completion_character(
-        &mut self,
-        doc_id: helix_view::DocumentId,
-        view_id: helix_view::ViewId,
-        character: char,
-    ) {
-        nucleotide_logging::info!(
-            doc_id = ?doc_id,
-            view_id = ?view_id,
-            character = %character,
-            "Triggering character completion"
-        );
-
-        // Get current cursor position
-        if let Some(cursor) = self.get_cursor_position(doc_id, view_id) {
-            // Send character trigger event to completion coordinator
-            self.send_completion_trigger_event(
-                doc_id,
-                view_id,
-                cursor,
-                helix_view::handlers::completion::CompletionEvent::TriggerChar {
-                    cursor,
-                    doc: doc_id,
-                    view: view_id,
-                },
-            );
-        }
-    }
-
-    /// Trigger automatic completion
-    pub fn trigger_completion_automatic(
-        &mut self,
-        doc_id: helix_view::DocumentId,
-        view_id: helix_view::ViewId,
-    ) {
-        nucleotide_logging::info!(
-            doc_id = ?doc_id,
-            view_id = ?view_id,
-            "Triggering automatic completion"
-        );
-
-        // Get current cursor position
-        if let Some(cursor) = self.get_cursor_position(doc_id, view_id) {
-            // Send auto trigger event to completion coordinator
-            self.send_completion_trigger_event(
-                doc_id,
-                view_id,
-                cursor,
-                helix_view::handlers::completion::CompletionEvent::AutoTrigger {
-                    cursor,
-                    doc: doc_id,
-                    view: view_id,
-                },
-            );
-        }
-    }
-
-    /// Helper method to send completion trigger events directly to Helix
-    fn send_completion_trigger_event(
-        &mut self,
-        doc_id: helix_view::DocumentId,
-        view_id: helix_view::ViewId,
-        cursor: usize,
-        event: helix_view::handlers::completion::CompletionEvent,
-    ) {
-        // Hook 01: Completion event received in our application
-        let event_type = match &event {
-            helix_view::handlers::completion::CompletionEvent::AutoTrigger { .. } => "AutoTrigger",
-            helix_view::handlers::completion::CompletionEvent::ManualTrigger { .. } => {
-                "ManualTrigger"
-            }
-            helix_view::handlers::completion::CompletionEvent::TriggerChar { .. } => "TriggerChar",
-            _ => "Other",
-        };
-        crate::completion_interception::hook_01_completion_event_received(
-            event_type,
-            &format!("{:?}", doc_id),
-            &format!("{:?}", view_id),
-            cursor,
-        );
-
-        nucleotide_logging::info!(
-            "📡 SENDING TO HELIX: Completion event for doc {:?}, view {:?}, cursor {}",
-            doc_id,
-            view_id,
-            cursor
-        );
-
-        // Hook 02: About to send to Helix handler
-        crate::completion_interception::hook_02_handler_processing(
-            &format!("{:?}", doc_id),
-            &format!("{:?}", view_id),
-        );
-
-        // GPUI Integration: Use direct completion call instead of async event system
-        // This bypasses Helix's async event loop which doesn't work properly with GPUI
-        let mut trigger_kind = match &event {
-            helix_view::handlers::completion::CompletionEvent::AutoTrigger { .. } => {
-                helix_term::handlers::completion::TriggerKind::Auto
-            }
-            helix_view::handlers::completion::CompletionEvent::ManualTrigger { .. } => {
-                helix_term::handlers::completion::TriggerKind::Manual
-            }
-            helix_view::handlers::completion::CompletionEvent::TriggerChar { .. } => {
-                helix_term::handlers::completion::TriggerKind::TriggerChar
-            }
-            _ => {
-                nucleotide_logging::warn!(
-                    "Unsupported completion event type, defaulting to Manual"
-                );
-                helix_term::handlers::completion::TriggerKind::Manual
-            }
-        };
-
-        // If user pressed ManualTrigger but we're right after a known trigger character,
-        // upgrade the trigger to TriggerChar so rust-analyzer receives a trigger-character context.
-        if matches!(
-            event,
-            helix_view::handlers::completion::CompletionEvent::ManualTrigger { .. }
-        ) && let Some(doc) = self.editor.document(doc_id)
-        {
-            let text = doc.text();
-            if let Some(cursor) = self.get_cursor_position(doc_id, view_id) {
-                let cursor_chars = text.byte_to_char(cursor.min(text.len_bytes()));
-                if let Some(prev_ch) = text.chars_at(cursor_chars).reversed().next()
-                    && matches!(prev_ch, ':' | '.' | '\'' | '(')
-                {
-                    nucleotide_logging::info!(
-                        prev_char = %prev_ch,
-                        "Upgrading ManualTrigger to TriggerChar based on context"
-                    );
-                    trigger_kind = helix_term::handlers::completion::TriggerKind::TriggerChar;
-                }
-            }
-        }
-
-        nucleotide_logging::info!(
-            "🎯 DIRECT_COMPLETION_CALL: Using direct completion bypass for GPUI compatibility"
-        );
-
-        // If the user just typed an identifier character and immediately hit ManualTrigger,
-        // give the LSP a brief moment to receive the didChange before requesting completions.
-        // This avoids races where RA still sees the old buffer (leading to null results).
-        if matches!(
-            event,
-            helix_view::handlers::completion::CompletionEvent::ManualTrigger { .. }
-        ) && let Some(doc) = self.editor.document(doc_id)
-        {
-            let text = doc.text();
-            if let Some(cursor) = self.get_cursor_position(doc_id, view_id) {
-                let cursor_chars = text.byte_to_char(cursor.min(text.len_bytes()));
-                if let Some(prev_ch) = text.chars_at(cursor_chars).reversed().next()
-                    && (helix_core::chars::char_is_word(prev_ch) || prev_ch == ':')
-                {
-                    // Small, bounded delay to allow didChange to propagate
-                    std::thread::sleep(std::time::Duration::from_millis(30));
-                }
-            }
-        }
-
-        // Call the direct completion function that bypasses async event system
-        if let Err(e) = helix_term::handlers::completion::request_completions_direct(
-            &mut self.editor,
-            &mut self.compositor,
-            doc_id,
-            view_id,
-            trigger_kind,
-        ) {
-            nucleotide_logging::error!("Direct completion request failed: {}", e);
-        }
-
-        // Hook 20: Event sent to Helix directly
-        crate::completion_interception::hook_20_final_status(
-            "direct_completion_called",
-            "Direct completion function called bypassing async event system",
-        );
-    }
-
-    /// Get cursor position for a document view
-    fn get_cursor_position(
-        &self,
-        doc_id: helix_view::DocumentId,
-        view_id: helix_view::ViewId,
-    ) -> Option<usize> {
-        // Get the document from Helix editor
-        if let Some(doc) = self.editor.document(doc_id) {
-            let selection = doc.selection(view_id);
-            let cursor = selection.primary().cursor(doc.text().slice(..));
-            Some(cursor)
-        } else {
-            nucleotide_logging::warn!(doc_id = ?doc_id, "Document not found for cursor position");
-            None
-        }
     }
 
     // NOTE: handle_crank_event is defined earlier in the file and includes completion processing
