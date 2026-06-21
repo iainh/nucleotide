@@ -4212,21 +4212,6 @@ impl Application {
         let text = doc.text();
         let cursor_pos = cursor.min(text.len_chars());
 
-        // Use the first available language server for now
-        // TODO: Handle multiple language servers or select the best one
-        let language_server = language_servers[0];
-        let offset_encoding = language_server.offset_encoding();
-        let position = helix_lsp::util::pos_to_lsp_pos(text, cursor_pos, offset_encoding);
-
-        nucleotide_logging::debug!(
-            cursor_chars = cursor_pos,
-            line = position.line,
-            character = position.character,
-            offset_encoding = ?offset_encoding,
-            server_count = language_servers.len(),
-            "Requesting completions from language servers"
-        );
-
         // Create LSP completion context, upgrading to TriggerCharacter when applicable
         // rust-analyzer advertises trigger characters like ':', '.', '\'', '('
         let mut completion_context = helix_lsp::lsp::CompletionContext {
@@ -4247,189 +4232,86 @@ impl Application {
 
         // Get document identifier for LSP request
         let doc_id_lsp = doc.identifier();
+        let mut our_items = Vec::new();
 
-        nucleotide_logging::info!(
-            line = position.line,
-            character = position.character,
-            offset_encoding = ?offset_encoding,
-            server_id = ?language_server.id(),
-            "Making actual LSP completion request"
-        );
+        for language_server in &language_servers {
+            let offset_encoding = language_server.offset_encoding();
+            let position = helix_lsp::util::pos_to_lsp_pos(text, cursor_pos, offset_encoding);
 
-        // Optional: log outgoing LSP completion request for traffic tracing
-        crate::lsp_traffic_logger::log_outgoing(
-            language_server.id(),
-            language_server.name(),
-            "textDocument/completion",
-            &serde_json::json!({
-                "textDocument": doc_id_lsp,
-                "position": {"line": position.line, "character": position.character},
-                "context": {
-                    "triggerKind": completion_context.trigger_kind,
-                    "triggerCharacter": completion_context.trigger_character
+            nucleotide_logging::debug!(
+                cursor_chars = cursor_pos,
+                line = position.line,
+                character = position.character,
+                offset_encoding = ?offset_encoding,
+                server_id = ?language_server.id(),
+                server_count = language_servers.len(),
+                "Requesting completions from language server"
+            );
+
+            nucleotide_logging::info!(
+                line = position.line,
+                character = position.character,
+                offset_encoding = ?offset_encoding,
+                server_id = ?language_server.id(),
+                "Making actual LSP completion request"
+            );
+
+            crate::lsp_traffic_logger::log_outgoing(
+                language_server.id(),
+                language_server.name(),
+                "textDocument/completion",
+                &serde_json::json!({
+                    "textDocument": doc_id_lsp.clone(),
+                    "position": {"line": position.line, "character": position.character},
+                    "context": {
+                        "triggerKind": completion_context.trigger_kind,
+                        "triggerCharacter": completion_context.trigger_character
+                    }
+                }),
+            );
+
+            let Some(completion_future) = language_server.completion(
+                doc_id_lsp.clone(),
+                position,
+                None,
+                completion_context.clone(),
+            ) else {
+                nucleotide_logging::warn!(
+                    server_id = ?language_server.id(),
+                    "Language server does not support completions"
+                );
+                continue;
+            };
+
+            let lsp_response = match tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(completion_future)
+            }) {
+                Ok(Some(response)) => response,
+                Ok(None) => {
+                    nucleotide_logging::info!(
+                        server_id = ?language_server.id(),
+                        "LSP server returned no completions"
+                    );
+                    continue;
                 }
-            }),
-        );
-
-        // Make the LSP completion request
-        let completion_future =
-            language_server.completion(doc_id_lsp, position, None, completion_context);
-
-        let lsp_response = match completion_future {
-            Some(future) => {
-                // Since this is a sync method, we need to block on the async result
-                // In a real implementation, this should be properly async
-                match tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current().block_on(future)
-                }) {
-                    Ok(Some(response)) => response,
-                    Ok(None) => {
-                        nucleotide_logging::info!("LSP server returned no completions");
-                        return Ok(vec![]);
-                    }
-                    Err(e) => {
-                        nucleotide_logging::warn!(error = %e, "LSP completion request failed");
-                        return Ok(vec![]);
-                    }
+                Err(e) => {
+                    nucleotide_logging::warn!(
+                        server_id = ?language_server.id(),
+                        error = %e,
+                        "LSP completion request failed"
+                    );
+                    continue;
                 }
-            }
-            None => {
-                nucleotide_logging::warn!("Language server does not support completions");
-                return Ok(vec![]);
-            }
-        };
+            };
 
-        // Convert LSP response to our completion items
-        let lsp_items = match lsp_response {
-            helix_lsp::lsp::CompletionResponse::Array(items) => items,
-            helix_lsp::lsp::CompletionResponse::List(list) => list.items,
-        };
-
-        nucleotide_logging::info!(
-            item_count = lsp_items.len(),
-            "Received LSP completion items, converting to our format"
-        );
-
-        // Convert LSP completion items to our format
-        let our_items: Vec<nucleotide_events::completion::CompletionItem> = lsp_items
-            .into_iter()
-            .map(|item| {
-                use nucleotide_events::completion::{CompletionItem, CompletionItemKind};
-
-                // Convert LSP completion item kind to our kind
-                let kind = match item.kind {
-                    Some(helix_lsp::lsp::CompletionItemKind::TEXT) => CompletionItemKind::Text,
-                    Some(helix_lsp::lsp::CompletionItemKind::METHOD) => CompletionItemKind::Method,
-                    Some(helix_lsp::lsp::CompletionItemKind::FUNCTION) => {
-                        CompletionItemKind::Function
-                    }
-                    Some(helix_lsp::lsp::CompletionItemKind::CONSTRUCTOR) => {
-                        CompletionItemKind::Constructor
-                    }
-                    Some(helix_lsp::lsp::CompletionItemKind::FIELD) => CompletionItemKind::Field,
-                    Some(helix_lsp::lsp::CompletionItemKind::VARIABLE) => {
-                        CompletionItemKind::Variable
-                    }
-                    Some(helix_lsp::lsp::CompletionItemKind::CLASS) => CompletionItemKind::Class,
-                    Some(helix_lsp::lsp::CompletionItemKind::INTERFACE) => {
-                        CompletionItemKind::Interface
-                    }
-                    Some(helix_lsp::lsp::CompletionItemKind::MODULE) => CompletionItemKind::Module,
-                    Some(helix_lsp::lsp::CompletionItemKind::PROPERTY) => {
-                        CompletionItemKind::Property
-                    }
-                    Some(helix_lsp::lsp::CompletionItemKind::UNIT) => CompletionItemKind::Unit,
-                    Some(helix_lsp::lsp::CompletionItemKind::VALUE) => CompletionItemKind::Value,
-                    Some(helix_lsp::lsp::CompletionItemKind::ENUM) => CompletionItemKind::Enum,
-                    Some(helix_lsp::lsp::CompletionItemKind::KEYWORD) => {
-                        CompletionItemKind::Keyword
-                    }
-                    Some(helix_lsp::lsp::CompletionItemKind::SNIPPET) => {
-                        CompletionItemKind::Snippet
-                    }
-                    Some(helix_lsp::lsp::CompletionItemKind::COLOR) => CompletionItemKind::Color,
-                    Some(helix_lsp::lsp::CompletionItemKind::FILE) => CompletionItemKind::File,
-                    Some(helix_lsp::lsp::CompletionItemKind::REFERENCE) => {
-                        CompletionItemKind::Reference
-                    }
-                    Some(helix_lsp::lsp::CompletionItemKind::FOLDER) => CompletionItemKind::Folder,
-                    Some(helix_lsp::lsp::CompletionItemKind::ENUM_MEMBER) => {
-                        CompletionItemKind::EnumMember
-                    }
-                    Some(helix_lsp::lsp::CompletionItemKind::CONSTANT) => {
-                        CompletionItemKind::Constant
-                    }
-                    Some(helix_lsp::lsp::CompletionItemKind::STRUCT) => CompletionItemKind::Struct,
-                    Some(helix_lsp::lsp::CompletionItemKind::EVENT) => CompletionItemKind::Event,
-                    Some(helix_lsp::lsp::CompletionItemKind::OPERATOR) => {
-                        CompletionItemKind::Operator
-                    }
-                    Some(helix_lsp::lsp::CompletionItemKind::TYPE_PARAMETER) => {
-                        CompletionItemKind::TypeParameter
-                    }
-                    Some(_) => CompletionItemKind::Text, // Catch-all for unknown kinds
-                    None => CompletionItemKind::Text,    // Default fallback
-                };
-
-                let insert_text = lsp_completion_insert_text(&item);
-                let insert_text_format = lsp_completion_insert_text_format(&item);
-
-                // Extract signature information from label_details.detail or item.detail as fallback
-                let signature_info = item
-                    .label_details
-                    .as_ref()
-                    .and_then(|details| details.detail.clone())
-                    .or_else(|| {
-                        // Use item.detail as fallback for signature info if it looks like a function signature
-                        item.detail.as_ref().and_then(|detail| {
-                            if detail.contains('(') && detail.contains(')') {
-                                Some(detail.clone())
-                            } else {
-                                None
-                            }
-                        })
-                    });
-
-                // Extract type information from label_details.description or parse from detail
-                let type_info = item
-                    .label_details
-                    .as_ref()
-                    .and_then(|details| details.description.clone())
-                    .or_else(|| {
-                        // Try to extract return type info from detail field
-                        item.detail.as_ref().and_then(|detail| {
-                            if let Some(arrow_pos) = detail.find(" -> ") {
-                                Some(detail[(arrow_pos + 4)..].trim().to_string())
-                            } else if detail.contains(':') && !detail.contains('(') {
-                                // For variables/fields with type annotations like "field: Type"
-                                detail.split(':').nth(1).map(|s| s.trim().to_string())
-                            } else {
-                                None
-                            }
-                        })
-                    });
-
-                // Enhanced LSP data extraction complete
-
-                CompletionItem::new(item.label.clone(), kind)
-                    .with_insert_text(insert_text)
-                    .with_insert_text_format(insert_text_format)
-                    .with_detail(item.detail.unwrap_or_default())
-                    .with_signature_info(signature_info.unwrap_or_default())
-                    .with_type_info(type_info.unwrap_or_default())
-                    .with_documentation(
-                        item.documentation
-                            .as_ref()
-                            .map(|doc| match doc {
-                                helix_lsp::lsp::Documentation::String(s) => s.clone(),
-                                helix_lsp::lsp::Documentation::MarkupContent(markup) => {
-                                    markup.value.clone()
-                                }
-                            })
-                            .unwrap_or_default(),
-                    )
-            })
-            .collect();
+            let mut server_items = lsp_completion_items_from_response(lsp_response);
+            nucleotide_logging::info!(
+                server_id = ?language_server.id(),
+                item_count = server_items.len(),
+                "Received LSP completion items from language server"
+            );
+            our_items.append(&mut server_items);
+        }
 
         Ok(our_items)
     }
@@ -6288,6 +6170,99 @@ fn lsp_completion_insert_text_format(
     }
 }
 
+fn lsp_completion_items_from_response(
+    response: lsp::CompletionResponse,
+) -> Vec<nucleotide_events::completion::CompletionItem> {
+    let lsp_items = match response {
+        lsp::CompletionResponse::Array(items) => items,
+        lsp::CompletionResponse::List(list) => list.items,
+    };
+
+    lsp_items.into_iter().map(lsp_completion_item).collect()
+}
+
+fn lsp_completion_item(item: lsp::CompletionItem) -> nucleotide_events::completion::CompletionItem {
+    use nucleotide_events::completion::{CompletionItem, CompletionItemKind};
+
+    let kind = match item.kind {
+        Some(lsp::CompletionItemKind::TEXT) => CompletionItemKind::Text,
+        Some(lsp::CompletionItemKind::METHOD) => CompletionItemKind::Method,
+        Some(lsp::CompletionItemKind::FUNCTION) => CompletionItemKind::Function,
+        Some(lsp::CompletionItemKind::CONSTRUCTOR) => CompletionItemKind::Constructor,
+        Some(lsp::CompletionItemKind::FIELD) => CompletionItemKind::Field,
+        Some(lsp::CompletionItemKind::VARIABLE) => CompletionItemKind::Variable,
+        Some(lsp::CompletionItemKind::CLASS) => CompletionItemKind::Class,
+        Some(lsp::CompletionItemKind::INTERFACE) => CompletionItemKind::Interface,
+        Some(lsp::CompletionItemKind::MODULE) => CompletionItemKind::Module,
+        Some(lsp::CompletionItemKind::PROPERTY) => CompletionItemKind::Property,
+        Some(lsp::CompletionItemKind::UNIT) => CompletionItemKind::Unit,
+        Some(lsp::CompletionItemKind::VALUE) => CompletionItemKind::Value,
+        Some(lsp::CompletionItemKind::ENUM) => CompletionItemKind::Enum,
+        Some(lsp::CompletionItemKind::KEYWORD) => CompletionItemKind::Keyword,
+        Some(lsp::CompletionItemKind::SNIPPET) => CompletionItemKind::Snippet,
+        Some(lsp::CompletionItemKind::COLOR) => CompletionItemKind::Color,
+        Some(lsp::CompletionItemKind::FILE) => CompletionItemKind::File,
+        Some(lsp::CompletionItemKind::REFERENCE) => CompletionItemKind::Reference,
+        Some(lsp::CompletionItemKind::FOLDER) => CompletionItemKind::Folder,
+        Some(lsp::CompletionItemKind::ENUM_MEMBER) => CompletionItemKind::EnumMember,
+        Some(lsp::CompletionItemKind::CONSTANT) => CompletionItemKind::Constant,
+        Some(lsp::CompletionItemKind::STRUCT) => CompletionItemKind::Struct,
+        Some(lsp::CompletionItemKind::EVENT) => CompletionItemKind::Event,
+        Some(lsp::CompletionItemKind::OPERATOR) => CompletionItemKind::Operator,
+        Some(lsp::CompletionItemKind::TYPE_PARAMETER) => CompletionItemKind::TypeParameter,
+        Some(_) | None => CompletionItemKind::Text,
+    };
+
+    let insert_text = lsp_completion_insert_text(&item);
+    let insert_text_format = lsp_completion_insert_text_format(&item);
+
+    let signature_info = item
+        .label_details
+        .as_ref()
+        .and_then(|details| details.detail.clone())
+        .or_else(|| {
+            item.detail.as_ref().and_then(|detail| {
+                if detail.contains('(') && detail.contains(')') {
+                    Some(detail.clone())
+                } else {
+                    None
+                }
+            })
+        });
+
+    let type_info = item
+        .label_details
+        .as_ref()
+        .and_then(|details| details.description.clone())
+        .or_else(|| {
+            item.detail.as_ref().and_then(|detail| {
+                if let Some(arrow_pos) = detail.find(" -> ") {
+                    Some(detail[(arrow_pos + 4)..].trim().to_string())
+                } else if detail.contains(':') && !detail.contains('(') {
+                    detail.split(':').nth(1).map(|s| s.trim().to_string())
+                } else {
+                    None
+                }
+            })
+        });
+
+    CompletionItem::new(item.label.clone(), kind)
+        .with_insert_text(insert_text)
+        .with_insert_text_format(insert_text_format)
+        .with_detail(item.detail.unwrap_or_default())
+        .with_signature_info(signature_info.unwrap_or_default())
+        .with_type_info(type_info.unwrap_or_default())
+        .with_documentation(
+            item.documentation
+                .as_ref()
+                .map(|doc| match doc {
+                    lsp::Documentation::String(s) => s.clone(),
+                    lsp::Documentation::MarkupContent(markup) => markup.value.clone(),
+                })
+                .unwrap_or_default(),
+        )
+}
+
 const MIN_BUFFER_WORD_COMPLETION_PREFIX_CHARS: usize = 2;
 const MAX_LOCAL_COMPLETION_ITEMS: usize = 128;
 
@@ -6485,8 +6460,8 @@ mod tests {
     use super::{
         NativeSymbolItem, NativeSymbolTarget, buffer_word_completion_items,
         dedupe_completion_items, local_path_completion_context, lsp_completion_insert_text,
-        lsp_completion_insert_text_format, lsp_symbol_picker, native_symbol_item_from_lsp,
-        path_completion_items, syntax_symbol_kind_from_capture_name,
+        lsp_completion_insert_text_format, lsp_completion_items_from_response, lsp_symbol_picker,
+        native_symbol_item_from_lsp, path_completion_items, syntax_symbol_kind_from_capture_name,
     };
     use crate::test_utils::test_support::{
         TestUpdate, create_counting_channel, create_test_diagnostic_events,
@@ -6655,6 +6630,37 @@ mod tests {
         assert_eq!(
             lsp_completion_insert_text_format(&plain),
             nucleotide_events::completion::InsertTextFormat::PlainText
+        );
+    }
+
+    #[test]
+    fn lsp_completion_items_from_response_converts_all_items() {
+        let response = lsp::CompletionResponse::Array(vec![
+            lsp::CompletionItem {
+                label: "function".to_string(),
+                kind: Some(lsp::CompletionItemKind::FUNCTION),
+                insert_text: Some("function()".to_string()),
+                ..Default::default()
+            },
+            lsp::CompletionItem {
+                label: "snippet".to_string(),
+                kind: Some(lsp::CompletionItemKind::SNIPPET),
+                insert_text_format: Some(lsp::InsertTextFormat::SNIPPET),
+                ..Default::default()
+            },
+        ]);
+
+        let items = lsp_completion_items_from_response(response);
+
+        assert_eq!(items.len(), 2);
+        assert_eq!(
+            items[0].kind,
+            nucleotide_events::completion::CompletionItemKind::Function
+        );
+        assert_eq!(items[0].insert_text, "function()");
+        assert_eq!(
+            items[1].insert_text_format,
+            nucleotide_events::completion::InsertTextFormat::Snippet
         );
     }
 
