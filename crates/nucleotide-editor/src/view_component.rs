@@ -313,8 +313,8 @@ mod tests {
     };
 
     use gpui::{
-        AppContext as _, Empty, Entity, FocusHandle, IntoElement as _, Keystroke, MouseButton,
-        Render, ScrollDelta, ScrollWheelEvent, TestAppContext, TouchPhase, point, px, size,
+        AppContext as _, Empty, Entity, FocusHandle, Keystroke, MouseButton, Render, ScrollDelta,
+        ScrollWheelEvent, TestAppContext, TouchPhase, point, px, size,
     };
 
     use super::*;

@@ -57,7 +57,6 @@ helix-term.workspace = true
 # Dependencies used by extracted code
 anyhow.workspace = true
 arc-swap.workspace = true
-ctor.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true
 futures-util.workspace = true
@@ -92,6 +91,7 @@ smallvec.workspace = true
 
 # macOS integration
 [target.'cfg(target_os = "macos")'.dependencies]
+ctor.workspace = true
 objc2.workspace = true
 objc2-foundation.workspace = true
 objc2-app-kit.workspace = true

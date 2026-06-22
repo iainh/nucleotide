@@ -943,6 +943,7 @@ fn app_menus() -> Vec<Menu> {
     ]
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn dock_menu_items() -> Vec<MenuItem> {
     vec![
         MenuItem::action("Open...", OpenFile),
@@ -1693,6 +1694,7 @@ mod tests {
         );
     }
 
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[test]
     fn dock_menu_items_dispatch_existing_open_actions() {
         let items = dock_menu_items();

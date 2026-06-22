@@ -92,9 +92,7 @@ where
 mod tests {
     use std::{cell::Cell, rc::Rc};
 
-    use gpui::{
-        IntoElement as _, ParentElement as _, Styled as _, TestAppContext, div, point, px, size,
-    };
+    use gpui::{ParentElement as _, Styled as _, TestAppContext, div, point, px, size};
 
     use super::*;
 
