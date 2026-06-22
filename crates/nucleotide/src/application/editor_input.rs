@@ -1787,6 +1787,7 @@ fn log_completion_key_context(editor: &Editor, key: KeyEvent) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::{Path, PathBuf};
     use std::str::FromStr;
     use std::sync::Arc;
 
@@ -1807,6 +1808,10 @@ mod tests {
             document_colors: doc_colors_tx,
             word_index: helix_view::handlers::word_index::Handler::spawn(),
         }
+    }
+
+    fn canonicalize_for_assertion(path: &Path) -> PathBuf {
+        path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
     }
 
     fn test_editor_with_text(text: &str) -> Editor {
@@ -3538,7 +3543,9 @@ mod tests {
             .and_then(|view| editor.document(view.doc))
             .and_then(|doc| doc.path())
             .cloned();
-        assert_eq!(focused_path.as_deref(), Some(target_path.as_path()));
+        let focused_path = focused_path.as_deref().map(canonicalize_for_assertion);
+        let expected_path = canonicalize_for_assertion(&target_path);
+        assert_eq!(focused_path.as_deref(), Some(expected_path.as_path()));
     }
 
     #[tokio::test(flavor = "current_thread")]
