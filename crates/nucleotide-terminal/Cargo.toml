@@ -16,6 +16,8 @@ tokio.workspace = true
 anyhow.workspace = true
 portable-pty = "0.9"
 alacritty_terminal = { version = "0.25", optional = true }
+
+[target.'cfg(windows)'.dependencies]
 which.workspace = true
 
 [features]
