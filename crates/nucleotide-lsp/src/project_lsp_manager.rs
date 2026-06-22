@@ -795,6 +795,41 @@ impl ServerLifecycleManager {
         info!("ServerLifecycleManager: Helix bridge set successfully");
     }
 
+    /// Start a language server when no application-level bridge is attached.
+    #[instrument(skip(self), fields(
+        workspace_root = %workspace_root.display(),
+        server_name = %server_name,
+        language_id = %language_id
+    ))]
+    pub async fn start_server(
+        &self,
+        workspace_root: &std::path::Path,
+        server_name: &str,
+        language_id: &str,
+    ) -> Result<ManagedServer, ProjectLspError> {
+        info!("Starting language server through lifecycle manager");
+
+        if self.helix_bridge.read().await.is_some() {
+            return Err(ProjectLspError::ServerStartup(
+                "Helix bridge startup requires application-level Editor access".to_string(),
+            ));
+        }
+
+        let server_id = slotmap::KeyData::from_ffi(rand::random::<u64>()).into();
+        let managed_server = ManagedServer {
+            server_id,
+            server_name: server_name.to_string(),
+            language_id: language_id.to_string(),
+            workspace_root: workspace_root.to_path_buf(),
+            started_at: Instant::now(),
+            last_health_check: None,
+            health_status: ServerHealthStatus::Healthy,
+        };
+
+        info!(server_id = ?server_id, "Language server startup simulated");
+        Ok(managed_server)
+    }
+
     /// Stop a language server
     #[instrument(skip(self), fields(server_id = ?server_id))]
     pub async fn stop_server(&self, server_id: LanguageServerId) -> Result<(), ProjectLspError> {

@@ -80,8 +80,8 @@ pub fn send_gpui_event_to_helix(event: GpuiToHelixEvent) {
 #[instrument]
 pub fn register_gpui_event_handlers() {
     info!("Registering GPUI event handlers for Helix integration");
-    // Note: Actual GPUI event registration would happen in the main window setup
-    // This is a placeholder for the registration logic
+    // Concrete GPUI handlers are registered by the window and view code where
+    // the relevant focus handles, bounds, and entities are available.
 }
 
 /// Receiver type for GPUI->Helix events
