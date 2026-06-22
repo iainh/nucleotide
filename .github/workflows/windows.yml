@@ -33,6 +33,8 @@ jobs:
           .\scripts\package-windows-test.ps1 `
             -Release `
             -Clean `
+            -SkipFetchGrammars `
+            -SkipBuildGrammars `
             -OutputDir dist\nucleotide-windows-x86_64
 
       - name: Create Windows zip
