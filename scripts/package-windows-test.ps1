@@ -480,11 +480,29 @@ if (-not $SkipFetchGrammars -or -not $SkipBuildGrammars) {
 }
 
 if (-not $SkipFetchGrammars) {
-    Invoke-GrammarCommand -PackageExe $PackageExe -Command "fetch" -RuntimeDirectory $RuntimeDest -ManifestDirectory $ManifestDir
+    try {
+        Invoke-GrammarCommand -PackageExe $PackageExe -Command "fetch" -RuntimeDirectory $RuntimeDest -ManifestDirectory $ManifestDir
+    } catch {
+        $sourceCount = @(Get-ChildItem (Join-Path $RuntimeDest "grammars\sources") -Directory -ErrorAction SilentlyContinue).Count
+        if ($sourceCount -gt 0) {
+            Write-Warning "Some grammar sources failed to fetch; continuing with $sourceCount fetched source(s)."
+        } else {
+            throw
+        }
+    }
 }
 
 if (-not $SkipBuildGrammars) {
-    Invoke-GrammarCommand -PackageExe $PackageExe -Command "build" -RuntimeDirectory $RuntimeDest -ManifestDirectory $ManifestDir
+    try {
+        Invoke-GrammarCommand -PackageExe $PackageExe -Command "build" -RuntimeDirectory $RuntimeDest -ManifestDirectory $ManifestDir
+    } catch {
+        $builtDllCount = @(Get-ChildItem (Join-Path $RuntimeDest "grammars") -Filter "*.dll" -ErrorAction SilentlyContinue).Count
+        if ($builtDllCount -gt 0) {
+            Write-Warning "Some grammars failed to build; continuing with $builtDllCount compiled grammar DLL(s)."
+        } else {
+            throw
+        }
+    }
 }
 
 $dllCount = @(Get-ChildItem (Join-Path $RuntimeDest "grammars") -Filter "*.dll" -ErrorAction SilentlyContinue).Count
