@@ -2,8 +2,8 @@
 // ABOUTME: Provides minimize, maximize/restore, and close buttons with platform-specific styling
 
 use gpui::{
-    App, Hsla, InteractiveElement, IntoElement, MouseButton, ParentElement, RenderOnce, Styled,
-    Window, WindowControlArea, svg,
+    App, Hsla, InteractiveElement, IntoElement, MouseButton, ParentElement, RenderOnce, Rgba,
+    StatefulInteractiveElement, Styled, Window, WindowControlArea, svg,
 };
 
 use crate::styling::{ColorTheory, StyleSize, StyleState, StyleVariant, compute_component_style};
@@ -28,6 +28,36 @@ impl WindowControlType {
             WindowControlType::Close => "icons/close.svg",
         }
     }
+
+    pub fn windows_caption_icon(&self) -> &'static str {
+        match self {
+            WindowControlType::Minimize => "\u{e921}",
+            WindowControlType::Restore => "\u{e923}",
+            WindowControlType::Maximize => "\u{e922}",
+            WindowControlType::Close => "\u{e8bb}",
+        }
+    }
+
+    pub fn window_control_area(&self) -> WindowControlArea {
+        match self {
+            WindowControlType::Minimize => WindowControlArea::Min,
+            WindowControlType::Restore | WindowControlType::Maximize => WindowControlArea::Max,
+            WindowControlType::Close => WindowControlArea::Close,
+        }
+    }
+}
+
+const WINDOWS_CAPTION_BUTTON_WIDTH: f32 = 46.0;
+const WINDOWS_CAPTION_ICON_SIZE: f32 = 10.0;
+
+fn windows_close_hover_background() -> Hsla {
+    Rgba {
+        r: 232.0 / 255.0,
+        g: 17.0 / 255.0,
+        b: 35.0 / 255.0,
+        a: 1.0,
+    }
+    .into()
 }
 
 #[cfg(target_os = "windows")]
@@ -280,6 +310,70 @@ impl RenderOnce for WindowControl {
 }
 
 #[derive(IntoElement)]
+struct WindowsCaptionButton {
+    id: gpui::ElementId,
+    control_type: WindowControlType,
+    titlebar_tokens: TitleBarTokens,
+    theme_tokens: crate::DesignTokens,
+}
+
+impl WindowsCaptionButton {
+    fn new(
+        id: impl Into<gpui::ElementId>,
+        control_type: WindowControlType,
+        titlebar_tokens: TitleBarTokens,
+        theme_tokens: crate::DesignTokens,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            control_type,
+            titlebar_tokens,
+            theme_tokens,
+        }
+    }
+}
+
+impl RenderOnce for WindowsCaptionButton {
+    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+        let (hover_bg, hover_fg, active_bg, active_fg) = match self.control_type {
+            WindowControlType::Close => {
+                let close_bg = windows_close_hover_background();
+                (
+                    close_bg,
+                    gpui::white(),
+                    ColorTheory::with_alpha(close_bg, 0.8),
+                    ColorTheory::with_alpha(gpui::white(), 0.8),
+                )
+            }
+            WindowControlType::Minimize
+            | WindowControlType::Restore
+            | WindowControlType::Maximize => (
+                self.theme_tokens.chrome.surface_hover,
+                self.titlebar_tokens.foreground,
+                self.theme_tokens.chrome.surface_active,
+                self.titlebar_tokens.foreground,
+            ),
+        };
+
+        gpui::div()
+            .id(self.id)
+            .occlude()
+            .flex()
+            .justify_center()
+            .items_center()
+            .w(gpui::px(WINDOWS_CAPTION_BUTTON_WIDTH))
+            .h_full()
+            .font_family("Segoe MDL2 Assets")
+            .text_size(gpui::px(WINDOWS_CAPTION_ICON_SIZE))
+            .text_color(self.titlebar_tokens.foreground)
+            .hover(|button| button.bg(hover_bg).text_color(hover_fg))
+            .active(|button| button.bg(active_bg).text_color(active_fg))
+            .window_control_area(self.control_type.window_control_area())
+            .child(self.control_type.windows_caption_icon())
+    }
+}
+
+#[derive(IntoElement)]
 pub struct WindowControls {
     platform_style: PlatformStyle,
     window_control_area: Option<WindowControlArea>,
@@ -314,13 +408,19 @@ impl RenderOnce for WindowControls {
             .flex_row()
             .id("window-controls")
             .absolute()
-            .right_2()
             .top_0()
             .bottom_0()
-            .items_center()
-            .px_2()
-            .gap_1()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
+
+        controls = if self.platform_style == PlatformStyle::Windows {
+            controls
+                .right(gpui::px(0.0))
+                .content_stretch()
+                .px(gpui::px(0.0))
+                .gap(gpui::px(0.0))
+        } else {
+            controls.right_2().items_center().px_2().gap_1()
+        };
 
         if let Some(area) = self.window_control_area {
             controls = controls.window_control_area(area);
@@ -369,32 +469,29 @@ impl RenderOnce for WindowControls {
                         titlebar_tokens,
                         &theme_tokens,
                     )),
-                PlatformStyle::Windows => {
-                    // Windows order: minimize, maximize, close
-                    controls
-                        .child(WindowControl::with_tokens(
-                            "minimize",
-                            WindowControlType::Minimize,
-                            titlebar_tokens,
-                            &theme_tokens,
-                        ))
-                        .child(WindowControl::with_tokens(
-                            "maximize-or-restore",
-                            if window.is_maximized() {
-                                WindowControlType::Restore
-                            } else {
-                                WindowControlType::Maximize
-                            },
-                            titlebar_tokens,
-                            &theme_tokens,
-                        ))
-                        .child(WindowControl::with_tokens(
-                            "close",
-                            WindowControlType::Close,
-                            titlebar_tokens,
-                            &theme_tokens,
-                        ))
-                }
+                PlatformStyle::Windows => controls
+                    .child(WindowsCaptionButton::new(
+                        "minimize",
+                        WindowControlType::Minimize,
+                        titlebar_tokens,
+                        theme_tokens,
+                    ))
+                    .child(WindowsCaptionButton::new(
+                        "maximize-or-restore",
+                        if window.is_maximized() {
+                            WindowControlType::Restore
+                        } else {
+                            WindowControlType::Maximize
+                        },
+                        titlebar_tokens,
+                        theme_tokens,
+                    ))
+                    .child(WindowsCaptionButton::new(
+                        "close",
+                        WindowControlType::Close,
+                        titlebar_tokens,
+                        theme_tokens,
+                    )),
                 PlatformStyle::Mac => {
                     // macOS uses native traffic lights, return empty container
                     controls
@@ -423,23 +520,30 @@ impl RenderOnce for WindowControls {
                     ))
                     .child(WindowControl::new("close", WindowControlType::Close, cx)),
                 PlatformStyle::Windows => {
-                    // Windows order: minimize, maximize, close
+                    let theme_tokens = cx.global::<crate::Theme>().tokens;
                     controls
-                        .child(WindowControl::new(
+                        .child(WindowsCaptionButton::new(
                             "minimize",
                             WindowControlType::Minimize,
-                            cx,
+                            theme_tokens.titlebar_tokens(),
+                            theme_tokens,
                         ))
-                        .child(WindowControl::new(
+                        .child(WindowsCaptionButton::new(
                             "maximize-or-restore",
                             if window.is_maximized() {
                                 WindowControlType::Restore
                             } else {
                                 WindowControlType::Maximize
                             },
-                            cx,
+                            theme_tokens.titlebar_tokens(),
+                            theme_tokens,
                         ))
-                        .child(WindowControl::new("close", WindowControlType::Close, cx))
+                        .child(WindowsCaptionButton::new(
+                            "close",
+                            WindowControlType::Close,
+                            theme_tokens.titlebar_tokens(),
+                            theme_tokens,
+                        ))
                 }
                 PlatformStyle::Mac => {
                     // macOS uses native traffic lights, return empty container
