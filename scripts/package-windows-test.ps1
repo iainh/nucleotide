@@ -493,6 +493,7 @@ if (-not $SkipFetchGrammars) {
         $sourceCount = @(Get-ChildItem (Join-Path $RuntimeDest "grammars\sources") -Directory -ErrorAction SilentlyContinue).Count
         if ($sourceCount -gt 0) {
             Write-Warning "Some grammar sources failed to fetch; continuing with $sourceCount fetched source(s)."
+            $global:LASTEXITCODE = 0
         } else {
             throw
         }
@@ -506,6 +507,7 @@ if (-not $SkipBuildGrammars) {
         $builtDllCount = @(Get-ChildItem (Join-Path $RuntimeDest "grammars") -Filter "*.dll" -ErrorAction SilentlyContinue).Count
         if ($builtDllCount -gt 0) {
             Write-Warning "Some grammars failed to build; continuing with $builtDllCount compiled grammar DLL(s)."
+            $global:LASTEXITCODE = 0
         } else {
             throw
         }
