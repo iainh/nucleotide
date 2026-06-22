@@ -486,6 +486,16 @@ impl OverlayView {
                 )
                 .detach();
 
+                cx.subscribe(
+                    completion_view,
+                    |_this, _completion_view, event: &nucleotide_ui::CompletionWarningEvent, cx| {
+                        cx.emit(nucleotide_ui::CompletionWarningEvent {
+                            message: event.message.clone(),
+                        });
+                    },
+                )
+                .detach();
+
                 cx.notify();
             }
             crate::Update::TerminalPanel(panel) => {
@@ -1513,6 +1523,7 @@ impl Focusable for OverlayView {
 }
 impl EventEmitter<DismissEvent> for OverlayView {}
 impl EventEmitter<nucleotide_ui::completion_v2::CompleteViaHelixEvent> for OverlayView {}
+impl EventEmitter<nucleotide_ui::completion_v2::CompletionWarningEvent> for OverlayView {}
 
 impl Render for OverlayView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {

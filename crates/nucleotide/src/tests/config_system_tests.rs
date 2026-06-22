@@ -11,6 +11,7 @@ mod tests {
     };
     use crate::file_tree::FileTreeDisplayDensity;
 
+    use helix_view::theme::Loader as ThemeLoader;
     use nucleotide_types::{FontConfig, FontWeight, ProjectMarkersConfig};
     use std::fs;
     use std::path::Path;
@@ -64,6 +65,46 @@ mod tests {
         assert!(!config.window.blur_dark_themes);
         assert!(config.window.appearance_follows_theme);
         assert_eq!(config.file_tree.density, FileTreeDisplayDensity::Default);
+    }
+
+    #[test]
+    fn bundled_nucleotide_themes_load_with_helix_theme_loader() {
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        let theme_dir = temp_dir.path().join("themes");
+        fs::create_dir_all(&theme_dir).expect("Failed to create theme directory");
+
+        let asset_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/themes");
+        let mut theme_names = Vec::new();
+
+        for entry in fs::read_dir(&asset_dir).expect("Failed to read bundled theme directory") {
+            let entry = entry.expect("Failed to read bundled theme entry");
+            let path = entry.path();
+            if path.extension().and_then(|extension| extension.to_str()) != Some("toml") {
+                continue;
+            }
+
+            let file_name = path
+                .file_name()
+                .expect("Theme path should have a file name");
+            fs::copy(&path, theme_dir.join(file_name)).expect("Failed to copy bundled theme");
+
+            let theme_name = path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .expect("Theme file should have a UTF-8 stem")
+                .to_string();
+            theme_names.push(theme_name);
+        }
+
+        theme_names.sort();
+        assert!(!theme_names.is_empty());
+
+        let loader = ThemeLoader::new(&[temp_dir.path().to_path_buf()]);
+        for theme_name in theme_names {
+            loader.load(&theme_name).unwrap_or_else(|error| {
+                panic!("Failed to load bundled theme {theme_name}: {error}")
+            });
+        }
     }
 
     #[test]

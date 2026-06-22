@@ -2596,7 +2596,8 @@ impl Application {
                         message: status.status,
                         severity: status.severity
                     })));
-                    // TODO: show multiple status messages at once to avoid clobbering
+                    // Keep Helix's single status slot current while the GPUI
+                    // notification view keeps recent status messages stacked.
                     let helix_severity = match msg.severity {
                         helix_event::status::Severity::Hint => helix_view::editor::Severity::Hint,
                         helix_event::status::Severity::Info => helix_view::editor::Severity::Info,

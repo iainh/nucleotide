@@ -1447,6 +1447,26 @@ fn editor_status_matches(a: &EditorStatus, b: &EditorStatus) -> bool {
     a.status == b.status && a.severity == b.severity
 }
 
+fn integration_status_severity(severity: &str) -> Severity {
+    match severity.to_ascii_lowercase().as_str() {
+        "error" => Severity::Error,
+        "warning" | "warn" => Severity::Warning,
+        "hint" => Severity::Hint,
+        _ => Severity::Info,
+    }
+}
+
+fn editor_domain_status_severity(
+    severity: nucleotide_events::v2::editor::StatusSeverity,
+) -> Severity {
+    match severity {
+        nucleotide_events::v2::editor::StatusSeverity::Info
+        | nucleotide_events::v2::editor::StatusSeverity::Success => Severity::Info,
+        nucleotide_events::v2::editor::StatusSeverity::Warning => Severity::Warning,
+        nucleotide_events::v2::editor::StatusSeverity::Error => Severity::Error,
+    }
+}
+
 fn unsaved_buffers_remaining_status(names: Vec<String>) -> EditorStatus {
     let buffer_count = names.len();
     EditorStatus {
@@ -3752,6 +3772,20 @@ impl Workspace {
             &overlay,
             |workspace, _overlay, event: &nucleotide_ui::CompleteViaHelixEvent, cx| {
                 workspace.handle_completion_via_helix(event.item_index, cx);
+            },
+        )
+        .detach();
+
+        cx.subscribe(
+            &overlay,
+            |workspace, _overlay, event: &nucleotide_ui::CompletionWarningEvent, cx| {
+                workspace.push_editor_status_notification(
+                    EditorStatus {
+                        status: event.message.to_string(),
+                        severity: Severity::Warning,
+                    },
+                    cx,
+                );
             },
         )
         .detach();
@@ -7938,7 +7972,13 @@ impl Workspace {
 
         if !settings_path.exists() {
             nucleotide_logging::warn!("Configuration file not found: {}", settings_path.display());
-            // Could create a notification here in the future
+            self.push_editor_status_notification(
+                EditorStatus {
+                    status: format!("Configuration file not found: {}", settings_path.display()),
+                    severity: Severity::Warning,
+                },
+                cx,
+            );
             return;
         }
 
@@ -8012,7 +8052,13 @@ impl Workspace {
             }
             Err(e) => {
                 nucleotide_logging::error!("Failed to reload configuration: {}", e);
-                // Could show an error notification here in the future
+                self.push_editor_status_notification(
+                    EditorStatus {
+                        status: format!("Failed to reload configuration: {e}"),
+                        severity: Severity::Error,
+                    },
+                    cx,
+                );
             }
         }
     }
@@ -8613,28 +8659,17 @@ impl Workspace {
                             }
                         }
                     }
-                    crate::types::AppEvent::Document(_doc_event) => {
-                        // Document events are handled through legacy Update system
-                        // Future enhancement: Implement direct V2 document event handlers
+                    crate::types::AppEvent::Document(doc_event) => {
+                        self.handle_document_domain_event(doc_event, cx);
                     }
-                    crate::types::AppEvent::Editor(_editor_event) => {
-                        // Editor events are handled through legacy Update system
-                        // Future enhancement: Implement direct V2 editor event handlers
+                    crate::types::AppEvent::Editor(editor_event) => {
+                        self.handle_editor_domain_event(editor_event, cx);
                     }
                     crate::types::AppEvent::Vcs(vcs_event) => {
-                        // VCS events for diff gutter indicators and repository status
-                        debug!(vcs_event = ?vcs_event, "VCS event received");
-                        // TODO: Update gutter indicators based on VCS events
+                        self.handle_vcs_domain_event(vcs_event, cx);
                     }
                     crate::types::AppEvent::Integration(integration_event) => {
-                        // Integration events for UI synchronization
-                        debug!(integration_event = ?integration_event, "Integration event received");
-                        // TODO: Handle integration events for UI updates
-                        // These events coordinate between document changes and UI elements like:
-                        // - File tree highlighting
-                        // - Tab bar updates
-                        // - Save indicator changes
-                        // - Diagnostic indicator updates
+                        self.handle_integration_event(integration_event, cx);
                     }
                     crate::types::AppEvent::Diagnostics(_d) => {
                         // Diagnostics domain events are handled upstream to update LspState
@@ -9489,6 +9524,352 @@ impl Workspace {
             VcsEvent::Error { message } => {
                 warn!(message = %message, "Workspace: VCS service error");
             }
+        }
+    }
+
+    fn handle_integration_event(
+        &mut self,
+        event: &crate::types::IntegrationEvent,
+        cx: &mut Context<Self>,
+    ) {
+        use nucleotide_events::integration::{Event as IntegrationEvent, RecoveryAction, SyncType};
+
+        debug!(integration_event = ?event, "Integration event received");
+
+        match event {
+            IntegrationEvent::DocumentViewSync {
+                doc_id,
+                view_id,
+                sync_type,
+            } => {
+                match sync_type {
+                    SyncType::FocusSync => self.handle_view_focused(*view_id, cx),
+                    SyncType::SelectionToView | SyncType::ViewToDocument | SyncType::ScrollSync => {
+                        self.update_specific_document_view(*doc_id, cx);
+                    }
+                }
+                cx.notify();
+            }
+            IntegrationEvent::UiEditorSync { sync_type, data } => {
+                self.handle_ui_editor_sync_event(*sync_type, data, cx);
+            }
+            IntegrationEvent::ErrorRecoveryCoordination {
+                recovery_action: RecoveryAction::ShowUserError { message },
+                ..
+            } => {
+                self.push_editor_status_notification(
+                    EditorStatus {
+                        status: message.clone(),
+                        severity: Severity::Error,
+                    },
+                    cx,
+                );
+            }
+            IntegrationEvent::ErrorRecoveryCoordination { .. }
+            | IntegrationEvent::LspDocumentAssociation { .. }
+            | IntegrationEvent::CompletionCoordination { .. }
+            | IntegrationEvent::WorkspaceLspCoordination { .. } => {
+                cx.notify();
+            }
+        }
+    }
+
+    fn handle_document_domain_event(
+        &mut self,
+        event: &crate::types::DocumentEvent,
+        cx: &mut Context<Self>,
+    ) {
+        use nucleotide_events::v2::document::Event as DocumentEvent;
+
+        debug!(document_event = ?event, "Document domain event received");
+
+        match event {
+            DocumentEvent::ContentChanged { doc_id, .. } => {
+                self.handle_document_changed(*doc_id, cx);
+            }
+            DocumentEvent::Opened { doc_id, .. } => {
+                self.handle_document_opened(*doc_id, cx);
+            }
+            DocumentEvent::Closed { doc_id, .. } => {
+                self.handle_document_closed(*doc_id, cx);
+            }
+            DocumentEvent::Saved { doc_id, path, .. } => {
+                self.push_document_saved_notification(path.to_str(), cx);
+                self.update_specific_document_view(*doc_id, cx);
+                cx.notify();
+            }
+            DocumentEvent::SaveFailed {
+                doc_id,
+                path,
+                error,
+            } => {
+                self.push_editor_status_notification(
+                    EditorStatus {
+                        status: format!("Failed to save {}: {error}", path.display()),
+                        severity: Severity::Error,
+                    },
+                    cx,
+                );
+                self.update_specific_document_view(*doc_id, cx);
+            }
+            DocumentEvent::LanguageDetected { doc_id, .. } => {
+                self.update_specific_document_view(*doc_id, cx);
+                cx.notify();
+            }
+            DocumentEvent::DiagnosticsUpdated { doc_id, .. } => {
+                self.handle_diagnostics_changed(*doc_id, cx);
+            }
+        }
+    }
+
+    fn handle_editor_domain_event(
+        &mut self,
+        event: &crate::types::EditorEvent,
+        cx: &mut Context<Self>,
+    ) {
+        use nucleotide_events::v2::editor::Event as EditorEvent;
+
+        debug!(editor_event = ?event, "Editor domain event received");
+
+        match event {
+            EditorEvent::ModeChanged {
+                previous_mode,
+                new_mode,
+                ..
+            } => {
+                self.handle_mode_changed(previous_mode, new_mode, cx);
+            }
+            EditorEvent::StatusChanged {
+                message, severity, ..
+            } => {
+                self.push_editor_status_notification(
+                    EditorStatus {
+                        status: message.clone(),
+                        severity: editor_domain_status_severity(*severity),
+                    },
+                    cx,
+                );
+            }
+            EditorEvent::ConfigurationChanged { .. } => {
+                self.update_document_views(cx);
+                cx.notify();
+            }
+            EditorEvent::RedrawRequested { .. } => {
+                self.handle_redraw(cx);
+            }
+            EditorEvent::ShutdownRequested { force, .. } => {
+                if *force {
+                    let handle = self.handle.clone();
+                    let core = self.core.clone();
+                    quit(core, handle, cx);
+                    cx.quit();
+                } else {
+                    cx.notify();
+                }
+            }
+            EditorEvent::CommandExecuted { success, .. } => {
+                if !success {
+                    cx.notify();
+                }
+            }
+            EditorEvent::MacroRecordingChanged { .. }
+            | EditorEvent::SearchCompleted { .. }
+            | EditorEvent::ReplaceCompleted { .. } => {
+                cx.notify();
+            }
+        }
+    }
+
+    fn handle_vcs_domain_event(
+        &mut self,
+        event: &nucleotide_events::v2::vcs::Event,
+        cx: &mut Context<Self>,
+    ) {
+        use nucleotide_events::v2::vcs::Event as VcsDomainEvent;
+
+        debug!(vcs_event = ?event, "VCS domain event received");
+
+        match event {
+            VcsDomainEvent::DiffStatusChanged { doc_id, path, .. }
+            | VcsDomainEvent::DiffCalculationCompleted { doc_id, path, .. } => {
+                self.update_vcs_document_view(*doc_id, path, cx);
+            }
+            VcsDomainEvent::DiffCalculationFailed {
+                doc_id,
+                path,
+                error,
+            } => {
+                self.push_editor_status_notification(
+                    EditorStatus {
+                        status: format!("Failed to calculate diff for {}: {error}", path.display()),
+                        severity: Severity::Error,
+                    },
+                    cx,
+                );
+                self.update_vcs_document_view(*doc_id, path, cx);
+            }
+            VcsDomainEvent::FileStageStatusChanged { path, .. }
+            | VcsDomainEvent::FileTrackingChanged { path, .. } => {
+                self.update_open_document_for_path(path, cx);
+                if let Some(file_tree) = &self.file_tree {
+                    file_tree.update(cx, |_tree, cx| cx.notify());
+                }
+                cx.notify();
+            }
+            VcsDomainEvent::RepositoryHeadChanged { .. }
+            | VcsDomainEvent::DiffProviderStatusChanged { .. } => {
+                if let Some(file_tree) = &self.file_tree {
+                    file_tree.update(cx, |_tree, cx| cx.notify());
+                }
+                cx.notify();
+            }
+        }
+    }
+
+    fn handle_ui_editor_sync_event(
+        &mut self,
+        sync_type: nucleotide_events::integration::UiEditorSyncType,
+        data: &nucleotide_events::integration::UiEditorSyncData,
+        cx: &mut Context<Self>,
+    ) {
+        use nucleotide_events::integration::{
+            FileTreeAction, TabBarAction, UiEditorSyncData, UiEditorSyncType,
+        };
+
+        match (sync_type, data) {
+            (
+                UiEditorSyncType::DocumentViewRefresh,
+                UiEditorSyncData::DocumentViewData { doc_id, .. },
+            ) => {
+                self.update_specific_document_view(*doc_id, cx);
+            }
+            (
+                UiEditorSyncType::SaveIndicatorUpdate,
+                UiEditorSyncData::SaveIndicatorData { doc_id, .. },
+            ) => {
+                self.update_specific_document_view(*doc_id, cx);
+                cx.notify();
+            }
+            (
+                UiEditorSyncType::DiagnosticIndicatorUpdate,
+                UiEditorSyncData::DiagnosticData { doc_id, .. },
+            ) => {
+                self.handle_diagnostics_changed(*doc_id, cx);
+            }
+            (
+                UiEditorSyncType::FileTreeUpdate,
+                UiEditorSyncData::FileTreeData { doc_id, action },
+            ) => {
+                match action {
+                    FileTreeAction::Refresh => {
+                        if let Some(file_tree) = &self.file_tree {
+                            file_tree.update(cx, |_tree, cx| cx.notify());
+                        }
+                    }
+                    FileTreeAction::HighlightDocument | FileTreeAction::ShowDocument => {
+                        self.sync_file_tree_selection_for_document(*doc_id, cx);
+                    }
+                }
+                cx.notify();
+            }
+            (UiEditorSyncType::TabBarUpdate, UiEditorSyncData::TabBarData { doc_id, action }) => {
+                match action {
+                    TabBarAction::AddTab => self.ensure_document_in_order(*doc_id),
+                    TabBarAction::RemoveTab => {
+                        self.document_order
+                            .retain(|candidate| *candidate != *doc_id);
+                    }
+                    TabBarAction::UpdateTab
+                    | TabBarAction::HighlightTab
+                    | TabBarAction::ShowSaveIndicator
+                    | TabBarAction::HideSaveIndicator => {}
+                }
+                cx.notify();
+            }
+            (UiEditorSyncType::ModeSync, UiEditorSyncData::ModeData { .. }) => {
+                self.update_current_document_view(cx);
+                cx.notify();
+            }
+            (UiEditorSyncType::StatusSync, UiEditorSyncData::StatusData { message, severity }) => {
+                self.push_editor_status_notification(
+                    EditorStatus {
+                        status: message.clone(),
+                        severity: integration_status_severity(severity),
+                    },
+                    cx,
+                );
+            }
+            (UiEditorSyncType::ThemeChange, UiEditorSyncData::ThemeData { .. })
+            | (UiEditorSyncType::FontChange, UiEditorSyncData::FontData { .. }) => {
+                cx.notify();
+            }
+            _ => {
+                debug!(
+                    sync_type = ?sync_type,
+                    data = ?data,
+                    "Ignoring mismatched UI-editor sync payload"
+                );
+            }
+        }
+    }
+
+    fn update_vcs_document_view(
+        &mut self,
+        doc_id: helix_view::DocumentId,
+        path: &Path,
+        cx: &mut Context<Self>,
+    ) {
+        let has_document = self.core.read(cx).editor.document(doc_id).is_some();
+        if has_document {
+            self.update_specific_document_view(doc_id, cx);
+        } else {
+            self.update_open_document_for_path(path, cx);
+        }
+        cx.notify();
+    }
+
+    fn update_open_document_for_path(&mut self, path: &Path, cx: &mut Context<Self>) {
+        if let Some(doc_id) = self.document_id_for_path(path, cx) {
+            self.update_specific_document_view(doc_id, cx);
+        }
+    }
+
+    fn document_id_for_path(
+        &self,
+        path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Option<helix_view::DocumentId> {
+        let core = self.core.read(cx);
+        core.editor
+            .documents
+            .iter()
+            .find_map(|(doc_id, doc)| {
+                doc.path()
+                    .is_some_and(|doc_path| doc_path == path)
+                    .then_some(doc_id)
+            })
+            .copied()
+    }
+
+    fn sync_file_tree_selection_for_document(
+        &mut self,
+        doc_id: helix_view::DocumentId,
+        cx: &mut Context<Self>,
+    ) {
+        let doc_path = {
+            let core = self.core.read(cx);
+            core.editor
+                .document(doc_id)
+                .and_then(|doc| doc.path())
+                .map(|path| path.to_path_buf())
+        };
+
+        if let Some(path) = doc_path
+            && let Some(file_tree) = &self.file_tree
+        {
+            file_tree.update(cx, |tree, cx| {
+                tree.sync_selection_with_file(Some(path.as_path()), cx);
+            });
         }
     }
 
@@ -16230,6 +16611,28 @@ mod tests {
             "2 unsaved buffers remaining: [\"main.rs\", \"lib.rs\"]"
         );
         assert_eq!(status.severity, Severity::Error);
+    }
+
+    #[test]
+    fn editor_domain_status_severity_maps_to_workspace_severity() {
+        use nucleotide_events::v2::editor::StatusSeverity;
+
+        assert_eq!(
+            editor_domain_status_severity(StatusSeverity::Info),
+            Severity::Info
+        );
+        assert_eq!(
+            editor_domain_status_severity(StatusSeverity::Success),
+            Severity::Info
+        );
+        assert_eq!(
+            editor_domain_status_severity(StatusSeverity::Warning),
+            Severity::Warning
+        );
+        assert_eq!(
+            editor_domain_status_severity(StatusSeverity::Error),
+            Severity::Error
+        );
     }
 
     #[test]

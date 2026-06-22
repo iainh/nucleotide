@@ -28,6 +28,12 @@ pub struct CompleteViaHelixEvent {
     pub item_index: usize,
 }
 
+/// Event emitted when completion has a non-fatal user-facing warning.
+#[derive(Debug, Clone)]
+pub struct CompletionWarningEvent {
+    pub message: SharedString,
+}
+
 /// Candidate for fuzzy matching - lightweight representation of completion items
 #[derive(Debug, Clone)]
 pub struct StringMatchCandidate {
@@ -1217,7 +1223,9 @@ impl CompletionView {
             ErrorHandlingResult::ShowWarning(context) => {
                 self.last_error = Some(context.clone());
                 if let Some(message) = &context.user_message {
-                    // TODO: Show user notification
+                    cx.emit(CompletionWarningEvent {
+                        message: SharedString::from(message.clone()),
+                    });
                     nucleotide_logging::warn!(message = %message, "Completion warning");
                 }
             }
@@ -1470,6 +1478,7 @@ impl Focusable for CompletionView {
 
 impl EventEmitter<DismissEvent> for CompletionView {}
 impl EventEmitter<CompleteViaHelixEvent> for CompletionView {}
+impl EventEmitter<CompletionWarningEvent> for CompletionView {}
 
 impl Render for CompletionView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
