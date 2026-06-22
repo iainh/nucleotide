@@ -73,7 +73,7 @@ fn vcs_event_to_domain_events(event: &VcsEvent) -> Vec<DomainVcsEvent> {
                 doc_id: helix_view::DocumentId::default(), // TODO: Get actual doc_id when available
                 path: file_path.clone(),
                 hunks: domain_hunks,
-                diff_base_revision: None, // TODO: Add base revision tracking
+                diff_base_revision: diff_base_revision_for_file(file_path),
             }]
         }
         VcsEvent::RepositoryStarted { root_path } => vec![DomainVcsEvent::RepositoryHeadChanged {
@@ -126,6 +126,10 @@ fn current_git_head(root_path: &Path) -> Option<String> {
     }
 
     parse_git_head_output(&output.stdout)
+}
+
+fn diff_base_revision_for_file(file_path: &Path) -> Option<String> {
+    file_path.parent().and_then(current_git_head)
 }
 
 fn parse_git_head_output(stdout: &[u8]) -> Option<String> {
@@ -1145,5 +1149,61 @@ mod tests {
                 working_status: None,
             } if event_path == &path
         ));
+    }
+
+    #[test]
+    fn diff_hunks_include_current_head_as_base_revision() {
+        let repo = tempfile::tempdir().expect("create temp git repository");
+        run_git(repo.path(), &["init"]);
+        run_git(repo.path(), &["config", "user.name", "Nucleotide Test"]);
+        run_git(
+            repo.path(),
+            &["config", "user.email", "nucleotide-test@example.com"],
+        );
+
+        let file_path = repo.path().join("src/lib.rs");
+        std::fs::create_dir_all(file_path.parent().expect("file has parent"))
+            .expect("create source directory");
+        std::fs::write(&file_path, "pub fn answer() -> u8 { 42 }\n").expect("write test file");
+        run_git(repo.path(), &["add", "."]);
+        run_git(repo.path(), &["commit", "-m", "initial"]);
+
+        let head = current_git_head(repo.path()).expect("repo should have a HEAD commit");
+        let events = vcs_event_to_domain_events(&VcsEvent::DiffHunksUpdated {
+            file_path: file_path.clone(),
+            hunks: vec![DiffHunkInfo {
+                change_type: DiffChangeType::Modification,
+                after_start: 1,
+                after_end: 2,
+                before_start: 1,
+                before_end: 1,
+            }],
+        });
+
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            &events[0],
+            DomainVcsEvent::DiffStatusChanged {
+                path,
+                diff_base_revision: Some(base_revision),
+                ..
+            } if path == &file_path && base_revision == &head
+        ));
+    }
+
+    fn run_git(root: &Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .output()
+            .expect("execute git command");
+
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}{}",
+            args,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }

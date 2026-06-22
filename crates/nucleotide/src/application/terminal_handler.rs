@@ -200,7 +200,6 @@ impl core::EventHandler for TerminalRuntimeHandler {
                     cols: Some(80),
                     rows: Some(24),
                 };
-                // No bus needed here yet; placeholder for future reporting
                 self.handle_spawn(*id, &cfg);
             }
             TerminalEvent::CommandSpawnRequested {

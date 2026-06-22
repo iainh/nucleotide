@@ -307,6 +307,25 @@ impl gpui::Global for ComponentRegistry {}
 pub fn init(cx: &mut App, config: Option<UIConfig>) {
     let config = config.unwrap_or_default();
 
+    providers::init_provider_system();
+
+    let mut theme_provider = providers::ThemeProvider::new(config.default_theme.clone());
+    theme_provider.initialize(cx);
+
+    let mut configuration_provider = configuration_provider_from_ui_config(&config);
+    configuration_provider.initialize(cx);
+
+    let mut event_provider = providers::EventHandlingProvider::new();
+    event_provider.analytics_config.enable_analytics = config.enable_performance_monitoring;
+    event_provider.analytics_config.track_performance = config.enable_performance_monitoring;
+    event_provider.initialize(cx);
+
+    providers::update_provider_context(|context| {
+        context.register_global_provider(theme_provider);
+        context.register_global_provider(configuration_provider);
+        context.register_global_provider(event_provider);
+    });
+
     // Setup global theme
     cx.set_global(config.default_theme.clone());
 
@@ -328,10 +347,40 @@ pub fn init(cx: &mut App, config: Option<UIConfig>) {
     registry.register_component("DocumentationPanel");
 
     cx.set_global(registry);
+}
 
-    // TODO: Setup performance monitoring when enabled
-    // TODO: Setup event handling system
-    // TODO: Initialize accessibility features
+fn configuration_provider_from_ui_config(config: &UIConfig) -> providers::ConfigurationProvider {
+    let mut provider = if config.features.enable_accessibility {
+        providers::ConfigurationProvider::accessibility_focused()
+    } else if config.enable_performance_monitoring || config.features.enable_virtualization {
+        providers::ConfigurationProvider::performance_focused()
+    } else {
+        providers::ConfigurationProvider::new()
+    };
+
+    provider.ui_config.animation_config.enable_animations = config.features.enable_animations;
+    provider.performance_config.enable_virtualization = config.features.enable_virtualization;
+    provider
+        .feature_flags
+        .performance_features
+        .enable_virtualization = config.features.enable_virtualization;
+    provider
+        .feature_flags
+        .performance_features
+        .enable_performance_monitoring = config.enable_performance_monitoring;
+    provider.feature_flags.ui_features.enable_animations = config.features.enable_animations;
+
+    if config.features.enable_accessibility {
+        provider.accessibility_config.screen_reader_support = true;
+        provider.accessibility_config.high_contrast_mode = true;
+        provider
+            .accessibility_config
+            .focus_config
+            .show_focus_indicators = true;
+        provider.feature_flags.ui_features.enable_high_contrast = true;
+    }
+
+    provider
 }
 
 /// Get the current UI configuration
