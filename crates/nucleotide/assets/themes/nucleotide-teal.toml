@@ -16,12 +16,11 @@ operator = "aqua"
 special = "honey"
 "variable.other.member" = "white"
 variable = "seafoam"
-# variable = "almond" # TODO: metavariables only
 # "variable.parameter" = { fg = "seafoam", modifiers = ["underlined"] }
 "variable.parameter" = { fg = "seafoam" }
 "variable.builtin" = "mint"
 type = "white"
-"type.builtin" = "white" # TODO: distinguish?
+"type.builtin" = "mint"
 constructor = "aqua"
 function = "white"
 "function.macro" = "aqua"
@@ -49,7 +48,8 @@ tabstop = { modifiers = ["italic"], bg = "forest" }
 "diff.minus" = "#f22c86"
 "diff.delta" = "#14b8a6"
 
-# TODO: differentiate doc comment
+"comment.block.documentation" = { fg = "silver", modifiers = ["italic"] }
+"comment.line.documentation" = { fg = "silver", modifiers = ["italic"] }
 # concat (ERROR) @error.syntax and "MISSING ;" selectors for errors
 
 "ui.background" = { bg = "ocean" }
@@ -73,7 +73,6 @@ tabstop = { modifiers = ["italic"], bg = "forest" }
 
 "ui.selection" = { bg = "#0e7490" }
 "ui.selection.primary" = { bg = "#0e7490" }
-# TODO: namespace ui.cursor as ui.selection.cursor?
 "ui.cursor.select" = { bg = "teal-bright" }
 "ui.cursor.insert" = { bg = "white" }
 "ui.cursor.primary.select" = { bg = "teal-bright" }

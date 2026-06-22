@@ -16,7 +16,6 @@ operator = "sage-dark"
 special = "coral-rust"
 "variable.other.member" = "warm-purple"
 variable = "charcoal"
-# variable = "plum" # TODO: metavariables only
 # "variable.parameter" = { fg = "charcoal", modifiers = ["underlined"] }
 "variable.parameter" = { fg = "charcoal" }
 "variable.builtin" = "deep-teal"
@@ -49,7 +48,8 @@ tabstop = { modifiers = ["italic"], bg = "cream" }
 "diff.minus" = "#dc2626"
 "diff.delta" = "#0891b2"
 
-# TODO: differentiate doc comment
+"comment.block.documentation" = { fg = "forest-accent", modifiers = ["italic"] }
+"comment.line.documentation" = { fg = "forest-accent", modifiers = ["italic"] }
 # concat (ERROR) @error.syntax and "MISSING ;" selectors for errors
 
 "ui.background" = { bg = "camping-cream" }
@@ -73,7 +73,6 @@ tabstop = { modifiers = ["italic"], bg = "cream" }
 
 "ui.selection" = { bg = "sage-light" }
 "ui.selection.primary" = { bg = "sage-light" }
-# TODO: namespace ui.cursor as ui.selection.cursor?
 "ui.cursor.select" = { bg = "sage-bright" }
 "ui.cursor.insert" = { bg = "coal" }
 "ui.cursor.primary.select" = { bg = "sage-bright" }

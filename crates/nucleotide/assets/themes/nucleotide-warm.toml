@@ -16,12 +16,11 @@ operator = "amber-dark"
 special = "rust-dark"
 "variable.other.member" = "midnight"
 variable = "charcoal"
-# variable = "rust-dark" # TODO: metavariables only
 # "variable.parameter" = { fg = "charcoal", modifiers = ["underlined"] }
 "variable.parameter" = { fg = "charcoal" }
 "variable.builtin" = "ocean-dark"
 type = "midnight"
-"type.builtin" = "midnight" # TODO: distinguish?
+"type.builtin" = "yale-blue"
 constructor = "yale-blue"
 function = "midnight"
 "function.macro" = "yale-blue"
@@ -49,7 +48,8 @@ tabstop = { modifiers = ["italic"], bg = "buff" }
 "diff.minus" = "#c73e1d"
 "diff.delta" = "#0f4a7f"
 
-# TODO: differentiate doc comment
+"comment.block.documentation" = { fg = "rust-dark", modifiers = ["italic"] }
+"comment.line.documentation" = { fg = "rust-dark", modifiers = ["italic"] }
 # concat (ERROR) @error.syntax and "MISSING ;" selectors for errors
 
 "ui.background" = { bg = "beige" }
@@ -73,7 +73,6 @@ tabstop = { modifiers = ["italic"], bg = "buff" }
 
 "ui.selection" = { bg = "#f4d35e66" }
 "ui.selection.primary" = { bg = "#f4d35e66" }
-# TODO: namespace ui.cursor as ui.selection.cursor?
 "ui.cursor.select" = { bg = "naples-yellow" }
 "ui.cursor.insert" = { bg = "midnight" }
 "ui.cursor.primary.select" = { bg = "naples-yellow" }
