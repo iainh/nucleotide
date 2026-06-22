@@ -30,15 +30,15 @@ use gpui::{AppContext, Context, Entity, IntoElement, Render, Window};
 use gpui::{ParentElement, Styled, div, px};
 
 #[cfg(target_os = "windows")]
-const WINDOWS_CONTROL_BUTTON_SIZE: f32 = 24.0;
+const WINDOWS_CONTROL_BUTTON_SIZE: f32 = 46.0;
 #[cfg(target_os = "windows")]
 const WINDOWS_CONTROL_BUTTON_COUNT: f32 = 3.0;
 #[cfg(target_os = "windows")]
-const WINDOWS_CONTROL_GAP: f32 = 4.0;
+const WINDOWS_CONTROL_GAP: f32 = 0.0;
 #[cfg(target_os = "windows")]
-const WINDOWS_CONTROL_HORIZONTAL_PADDING: f32 = 16.0;
+const WINDOWS_CONTROL_HORIZONTAL_PADDING: f32 = 0.0;
 #[cfg(target_os = "windows")]
-const WINDOWS_CONTROL_RIGHT_INSET: f32 = 8.0;
+const WINDOWS_CONTROL_RIGHT_INSET: f32 = 0.0;
 
 pub struct TitleBar {
     platform_titlebar: Entity<PlatformTitleBar>,

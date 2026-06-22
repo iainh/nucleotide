@@ -4,17 +4,46 @@
 use gpui::prelude::FluentBuilder;
 use gpui::{
     Anchor, AnchoredPositionMode, Context, ElementId, FocusHandle, InteractiveElement, IntoElement,
-    KeyDownEvent, MouseButton, ParentElement, Pixels, Render, SharedString, Styled, Window,
-    WindowControlArea, anchored, deferred, div, point, px,
+    KeyDownEvent, MouseButton, MouseDownEvent, ParentElement, Pixels, Render, SharedString, Styled,
+    Window, anchored, deferred, div, point, px,
 };
 
 use gpui::{OwnedMenu, OwnedMenuItem};
 
-use crate::{Button, ButtonSize, ButtonVariant, Theme, tokens::ColorContext};
+use crate::{Theme, tokens::ColorContext};
 
 #[derive(Clone)]
 struct MenuEntry {
     menu: OwnedMenu,
+}
+
+#[derive(Clone, Copy)]
+struct MenuBarMetrics {
+    gap: Pixels,
+    leading_padding: Pixels,
+    trigger_height: Pixels,
+    trigger_padding_x: Pixels,
+    trigger_radius: Pixels,
+}
+
+fn menu_bar_metrics(embedded_in_titlebar: bool) -> MenuBarMetrics {
+    if embedded_in_titlebar {
+        MenuBarMetrics {
+            gap: px(0.0),
+            leading_padding: px(4.0),
+            trigger_height: px(22.0),
+            trigger_padding_x: px(7.0),
+            trigger_radius: px(2.0),
+        }
+    } else {
+        MenuBarMetrics {
+            gap: px(4.0),
+            leading_padding: px(8.0),
+            trigger_height: px(28.0),
+            trigger_padding_x: px(12.0),
+            trigger_radius: px(4.0),
+        }
+    }
 }
 
 pub struct ApplicationMenu {
@@ -174,25 +203,23 @@ impl Render for ApplicationMenu {
         };
 
         let row_h = self.row_height;
+        let metrics = menu_bar_metrics(self.embedded_in_titlebar);
+        let chrome = theme.tokens.chrome;
 
         let mut container = div()
             .id(self.id.clone())
             .relative()
-            .w_full()
             .h(row_h)
             .min_h(row_h)
             .flex()
             .flex_row()
             .items_center()
-            .gap_2()
-            .pl_2()
+            .gap(metrics.gap)
+            .pl(metrics.leading_padding)
             .bg(titlebar_tokens.background)
             .border_color(titlebar_tokens.border)
             .when(!self.embedded_in_titlebar, |container| {
-                container.border_b_1()
-            })
-            .when(self.embedded_in_titlebar, |container| {
-                container.window_control_area(WindowControlArea::Drag)
+                container.w_full().border_b_1()
             })
             .track_focus(&self.focus_handle)
             // Handle Esc to close the menu while focused
@@ -208,17 +235,32 @@ impl Render for ApplicationMenu {
         // Menu triggers
         for (i, entry) in self.entries.iter().enumerate() {
             let name = entry.menu.name.clone();
+            let id = SharedString::from(format!("menu-trigger-{}", name));
+            let is_open = self.open_index == Some(i);
             container = container.child(
-                Button::new(SharedString::from(format!("menu-trigger-{}", name)), name)
-                    .variant(ButtonVariant::Ghost)
-                    .size(ButtonSize::Small)
-                    .on_click(
-                        cx.listener(move |this, ev: &gpui::ClickEvent, _window, cx| {
+                div()
+                    .id(id)
+                    .h(metrics.trigger_height)
+                    .px(metrics.trigger_padding_x)
+                    .flex()
+                    .items_center()
+                    .rounded(metrics.trigger_radius)
+                    .text_size(theme.tokens.sizes.text_sm)
+                    .text_color(titlebar_tokens.foreground)
+                    .cursor_pointer()
+                    .when(is_open, |trigger| trigger.bg(chrome.surface_hover))
+                    .hover(|trigger| trigger.bg(chrome.surface_hover))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, ev: &MouseDownEvent, window, cx| {
+                            window.prevent_default();
                             this.open_index = Some(i);
-                            this.anchor_x = Some(f32::from(ev.position().x));
+                            this.anchor_x = Some(f32::from(ev.position.x));
                             cx.notify();
+                            cx.stop_propagation();
                         }),
-                    ),
+                    )
+                    .child(name),
             );
         }
 
