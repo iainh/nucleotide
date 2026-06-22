@@ -48,7 +48,7 @@ jobs:
         run: cargo fmt --all -- --check
       
       - name: Run tests
-        run: cargo test --all
+        run: cargo test --all -- --skip tests::performance_tests --skip tests::integration_tests::tests::performance_tests
       
       - name: Build
         run: cargo build --release

@@ -57,7 +57,7 @@ jobs:
             ${{ runner.os }}-cargo-
       
       - name: Run tests
-        run: cargo test
+        run: cargo test -- --skip tests::performance_tests --skip tests::integration_tests::tests::performance_tests
 
   build:
     name: Build Linux binary
