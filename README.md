@@ -54,7 +54,7 @@ The package includes an optional per-user shell integration script:
 ```
 
 See `docs/windows_install.md` for Explorer, Open With, Start Menu, App Paths,
-and terminal `PATH` options.
+`nucleotide://`, Windows Installed apps, and terminal `PATH` options.
 
 ## Development Setup
 

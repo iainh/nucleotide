@@ -29,7 +29,7 @@ use gpui::{
 };
 use gpui::{FontFeatures, FontWeight};
 use helix_core::syntax::config::LanguageServerFeature;
-use helix_core::{Rope, RopeSlice, Selection};
+use helix_core::{Position, Rope, RopeSlice, Selection, pos_at_coords};
 use helix_lsp::{OffsetEncoding, lsp};
 use helix_stdx::rope::RopeSliceExt;
 use helix_view::input::KeyEvent;
@@ -7853,12 +7853,21 @@ impl Workspace {
                     .preview_tabs
                     .enable_preview_from_project_panel
         };
-        self.open_file_internal(path, false, preview_from_project_panel, cx);
+        self.open_file_internal(path, false, preview_from_project_panel, None, cx);
     }
 
     fn handle_open_file(&mut self, path: &std::path::Path, cx: &mut Context<Self>) {
         // Open file and focus the editor
-        self.open_file_internal(path, true, false, cx);
+        self.open_file_internal(path, true, false, None, cx);
+    }
+
+    pub fn open_file_at(
+        &mut self,
+        path: &std::path::Path,
+        position: Position,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_file_internal(path, true, false, Some(position), cx);
     }
 
     /// Open the nucleotide.toml settings file
@@ -7916,7 +7925,7 @@ impl Workspace {
         }
 
         // Open the settings file
-        self.open_file_internal(&settings_path, true, false, cx);
+        self.open_file_internal(&settings_path, true, false, None, cx);
     }
 
     /// Reload the nucleotide.toml configuration without restarting
@@ -8013,6 +8022,7 @@ impl Workspace {
         path: &std::path::Path,
         should_focus: bool,
         preview_from_project_panel: bool,
+        initial_position: Option<Position>,
         cx: &mut Context<Self>,
     ) {
         // Open the specified file in the editor
@@ -8142,11 +8152,15 @@ impl Workspace {
                                 .switch(doc_id, helix_view::editor::Action::Replace);
                         }
 
-                        // Set the selection to the start; the native document view
+                        // Set the selection to the requested position, or to the start by default.
                         // will reveal it after views are refreshed below.
                         if let Some(doc) = core.editor.document_mut(doc_id) {
-                            let pos = Selection::point(0);
+                            let offset = initial_position
+                                .map(|position| pos_at_coords(doc.text().slice(..), position, true))
+                                .unwrap_or(0);
+                            let pos = Selection::point(offset);
                             doc.set_selection(view_id, pos);
+                            core.editor.ensure_cursor_in_view(view_id);
                             reveal_opened_view = Some(view_id);
                         }
                     }
