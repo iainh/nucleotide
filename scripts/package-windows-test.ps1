@@ -402,12 +402,19 @@ function Invoke-GrammarCommand {
         $env:CARGO_MANIFEST_DIR = $ManifestDirectory
 
         if ($Profile -eq "release") {
+            $DebugExe = Join-Path $RepoRoot "target\debug\nucl.exe"
             Push-Location $RepoRoot
             try {
-                Invoke-Checked -Command "cargo" -Arguments @("run", "-p", "nucleotide", "--", "--grammar", $Command)
+                Invoke-Checked -Command "cargo" -Arguments @("build", "-p", "nucleotide")
             } finally {
                 Pop-Location
             }
+
+            if (-not (Test-Path $DebugExe)) {
+                throw "Debug helper binary not found: $DebugExe"
+            }
+
+            Invoke-Checked -Command $DebugExe -Arguments @("--grammar", $Command)
         } else {
             Push-Location (Split-Path $PackageExe -Parent)
             try {
