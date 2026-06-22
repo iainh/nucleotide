@@ -1597,7 +1597,7 @@ fn gui_main(
                         cx.new(|cx| nucleotide_ui::titlebar::TitleBar::new("titlebar", cx));
 
                     workspace.update(cx, |workspace, cx| {
-                        workspace.set_titlebar(titlebar.into());
+                        workspace.set_titlebar(titlebar);
                         cx.notify();
                     });
                 }

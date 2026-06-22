@@ -121,6 +121,13 @@ impl EnvironmentBadge {
     }
 }
 
+fn titlebar_filename(filename: Option<&str>) -> String {
+    filename
+        .filter(|name| !name.is_empty())
+        .unwrap_or("Nucleotide")
+        .to_string()
+}
+
 #[cfg(target_os = "macos")]
 fn add_recent_project(path: &Path, cx: &mut App) {
     if path.is_dir() {
@@ -861,7 +868,7 @@ pub struct Workspace {
     doc_sidebar_resize_start_width: f32,
     doc_sidebar_scroll_handle: ScrollHandle,
     doc_sidebar_scrollbar_state: ScrollbarState,
-    titlebar: Option<gpui::AnyView>,
+    titlebar: Option<Entity<nucleotide_ui::titlebar::TitleBar>>,
     appearance_observer_set: bool,
     needs_appearance_update: bool,
     needs_window_appearance_update: bool,
@@ -5714,8 +5721,26 @@ impl Workspace {
         panic!("Use Workspace::with_views instead - views must be created in window context");
     }
 
-    pub fn set_titlebar(&mut self, titlebar: gpui::AnyView) {
+    pub fn set_titlebar(&mut self, titlebar: Entity<nucleotide_ui::titlebar::TitleBar>) {
         self.titlebar = Some(titlebar);
+    }
+
+    fn update_titlebar_filename(
+        &mut self,
+        filename: Option<&str>,
+        notify: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(titlebar) = &self.titlebar else {
+            return;
+        };
+
+        let filename = titlebar_filename(filename);
+        titlebar.update(cx, |titlebar, cx| {
+            if titlebar.set_filename(filename) && notify {
+                cx.notify();
+            }
+        });
     }
 
     #[instrument(skip(self, cx))]
@@ -7054,17 +7079,8 @@ impl Workspace {
         info!("View focused: {:?}", view_id);
         self.view_manager.handle_view_focused(view_id, cx);
 
-        // TODO: Update titlebar with current filename
-        // AnyView doesn't have update method, need to refactor titlebar storage
-        // if let Some(titlebar) = &self.titlebar {
-        //     if let Some(filename) = self.current_filename(cx) {
-        //         titlebar.update(cx, |titlebar, _cx| {
-        //             if let Some(titlebar) = titlebar.downcast_mut::<nucleotide_ui::titlebar::TitleBar>() {
-        //                 titlebar.set_filename(filename);
-        //             }
-        //         });
-        //     }
-        // }
+        let focused_filename = self.current_filename(cx);
+        self.update_titlebar_filename(focused_filename.as_deref(), true, cx);
 
         // Sync file tree selection with the newly focused view
         let doc_path = {
@@ -8633,8 +8649,16 @@ impl Workspace {
                                         let overlay = self.overlay.clone();
                                         show_buffer_picker(core, handle, overlay, cx);
                                     }
-                                    _ => {
-                                        // Other overlay types not yet implemented
+                                    OverlayType::Search
+                                    | OverlayType::Completion
+                                    | OverlayType::Prompt
+                                    | OverlayType::Dialog
+                                    | OverlayType::Tooltip
+                                    | OverlayType::ContextMenu => {
+                                        nucleotide_logging::debug!(
+                                            overlay_type = ?overlay_type,
+                                            "OverlayShown is handled by its owning UI component"
+                                        );
                                     }
                                 }
                             }
@@ -12264,6 +12288,8 @@ impl Render for Workspace {
             None
         })();
 
+        self.update_titlebar_filename(focused_file_name.as_deref(), false, cx);
+
         // For native titlebar - we still set the window title
         let window_title = if let Some(ref path) = focused_file_name {
             format!("{path} — Helix") // Using em dash like macOS
@@ -14867,6 +14893,13 @@ mod tests {
             None
         );
         assert_eq!(EnvironmentBadge::from_environment_marker(None), None);
+    }
+
+    #[test]
+    fn titlebar_filename_uses_focused_file_or_app_name() {
+        assert_eq!(titlebar_filename(Some("main.rs")), "main.rs");
+        assert_eq!(titlebar_filename(Some("")), "Nucleotide");
+        assert_eq!(titlebar_filename(None), "Nucleotide");
     }
 
     #[cfg(target_os = "windows")]
