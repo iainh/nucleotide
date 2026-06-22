@@ -49,6 +49,11 @@ jobs:
 
           Write-Host "Windows package contains $($grammarDlls.Count) grammar DLL(s)."
 
+          $grammarSources = "dist\nucleotide-windows-x86_64\runtime\grammars\sources"
+          if (Test-Path $grammarSources) {
+            throw "Windows package must not contain grammar sources: $grammarSources"
+          }
+
       - name: Create Windows zip
         shell: pwsh
         run: |
