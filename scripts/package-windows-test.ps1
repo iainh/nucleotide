@@ -429,6 +429,16 @@ function Invoke-GrammarCommand {
     }
 }
 
+function Remove-PackagedGrammarSources {
+    param([string]$RuntimeDirectory)
+
+    $grammarSources = Join-Path $RuntimeDirectory "grammars\sources"
+    if (Test-Path $grammarSources) {
+        Remove-Item -LiteralPath $grammarSources -Recurse -Force
+        Write-Host "Removed packaged grammar sources: $grammarSources"
+    }
+}
+
 $PackageDir = Resolve-PackagePath $OutputDir
 $RuntimeDest = Join-Path $PackageDir "runtime"
 $ManifestDir = Join-Path $PackageDir "nucleotide"
@@ -513,6 +523,8 @@ if (-not $SkipBuildGrammars) {
         }
     }
 }
+
+Remove-PackagedGrammarSources -RuntimeDirectory $RuntimeDest
 
 $dllCount = @(Get-ChildItem (Join-Path $RuntimeDest "grammars") -Filter "*.dll" -ErrorAction SilentlyContinue).Count
 $queryCount = @(Get-ChildItem (Join-Path $RuntimeDest "queries") -Directory -ErrorAction SilentlyContinue).Count
