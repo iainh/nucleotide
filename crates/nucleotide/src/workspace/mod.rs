@@ -8217,6 +8217,16 @@ impl Workspace {
         });
     }
 
+    fn push_document_saved_notification(&mut self, path: Option<&str>, cx: &mut Context<Self>) {
+        let message = path
+            .map(|path| format!("saved to {path}"))
+            .unwrap_or_else(|| "document saved".to_string());
+
+        self.notifications.update(cx, |notifications, cx| {
+            notifications.push_success("Saved", message, cx);
+        });
+    }
+
     fn sync_current_editor_status_notification(&mut self, cx: &mut Context<Self>) {
         let Some(status) = self
             .core
@@ -8440,6 +8450,14 @@ impl Workspace {
                             crate::types::CoreEvent::DocumentClosed { doc_id } => {
                                 self.handle_document_closed(*doc_id, cx);
                             }
+                            crate::types::CoreEvent::DocumentSaved { doc_id, path } => {
+                                debug!(
+                                    doc_id = ?doc_id,
+                                    path = ?path,
+                                    "Document saved notification received"
+                                );
+                                self.push_document_saved_notification(path.as_deref(), cx);
+                            }
                             crate::types::CoreEvent::ViewFocused { view_id } => {
                                 self.handle_view_focused(*view_id, cx);
                             }
@@ -8450,7 +8468,6 @@ impl Workspace {
                             } => {
                                 self.handle_completion_requested(*doc_id, *view_id, trigger, cx);
                             }
-                            _ => {}
                         }
                     }
                     crate::types::AppEvent::Terminal(term_event) => {
@@ -9289,7 +9306,13 @@ impl Workspace {
             }
             FileTreeEvent::VcsRefreshStarted { repository_root } => {
                 info!("VCS refresh started for repository: {:?}", repository_root);
-                // TODO: Show loading indicator in status bar
+                self.push_editor_status_notification(
+                    EditorStatus {
+                        status: format!("Refreshing VCS status for {}", repository_root.display()),
+                        severity: Severity::Info,
+                    },
+                    cx,
+                );
                 cx.notify();
             }
             FileTreeEvent::VcsStatusChanged {
@@ -9313,7 +9336,16 @@ impl Workspace {
                     "VCS refresh failed for repository: {:?} - {}",
                     repository_root, error
                 );
-                // TODO: Show error notification to user
+                self.push_editor_status_notification(
+                    EditorStatus {
+                        status: format!(
+                            "VCS refresh failed for {}: {error}",
+                            repository_root.display()
+                        ),
+                        severity: Severity::Error,
+                    },
+                    cx,
+                );
                 cx.notify();
             }
             FileTreeEvent::RefreshVcs { force } => {
@@ -9637,24 +9669,19 @@ impl Workspace {
             self.active_completion_session = None;
         }
 
-        // Check current context stack to see if completion context is active
-        let completion_context_active = false; // TODO: Replace with InputCoordinator call
+        let completion_context_active =
+            self.input_coordinator.current_context() == InputContext::Completion;
 
         match (has_completion, completion_context_active) {
             (true, false) => {
-                // Completion appeared, push completion context
-                // DISABLED: // OLD: self.global_input.push_context("completion");
+                self.input_coordinator
+                    .push_context(InputContext::Completion);
                 nucleotide_logging::debug!("Pushed completion context");
             }
             (false, true) => {
-                // Completion disappeared, pop completion context
-                // DISABLED: Completion context management
-                /*
-                if let Some(popped) = // OLD: self.global_input.pop_context() {
-                    nucleotide_logging::debug!(context = popped, "Popped completion context");
+                if let Some(popped) = self.input_coordinator.pop_context() {
+                    nucleotide_logging::debug!(context = ?popped, "Popped completion context");
                 }
-                */
-                debug!("Completion disappeared - context management disabled");
             }
             _ => {
                 // No context change needed

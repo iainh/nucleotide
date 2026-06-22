@@ -367,6 +367,16 @@ impl ApplicationCore {
                 // Generate a unique request ID
                 let request_id = self.completion_handler.next_request_id().await;
 
+                let cursor_position = Self::completion_cursor_position(editor, *doc_id, *view_id)
+                    .unwrap_or_else(|| {
+                        warn!(
+                            doc_id = ?doc_id,
+                            view_id = ?view_id,
+                            "Completion requested for unknown view or document; using origin cursor"
+                        );
+                        nucleotide_events::v2::completion::Position::new(0, 0)
+                    });
+
                 let v2_event = nucleotide_events::v2::completion::Event::Requested {
                     doc_id: *doc_id,
                     view_id: *view_id,
@@ -381,10 +391,7 @@ impl ApplicationCore {
                             nucleotide_events::v2::completion::CompletionTrigger::Automatic
                         }
                     },
-                    cursor_position: nucleotide_events::v2::completion::Position {
-                        line: 0,
-                        column: 0,
-                    }, // TODO: Extract actual cursor position
+                    cursor_position,
                     request_id,
                 };
 
@@ -501,6 +508,31 @@ impl ApplicationCore {
             was_movement: true,
         })
     }
+
+    fn completion_cursor_position(
+        editor: &helix_view::Editor,
+        doc_id: helix_view::DocumentId,
+        view_id: helix_view::ViewId,
+    ) -> Option<nucleotide_events::v2::completion::Position> {
+        let view = editor.tree.try_get(view_id)?;
+        if view.doc != doc_id {
+            return None;
+        }
+
+        let doc = editor.document(doc_id)?;
+        let text = doc.text().slice(..);
+        let cursor = doc.selection(view.id).primary().cursor(text);
+
+        Some(Self::completion_position_from_cursor(text, cursor))
+    }
+
+    fn completion_position_from_cursor(
+        text: helix_core::RopeSlice<'_>,
+        cursor: usize,
+    ) -> nucleotide_events::v2::completion::Position {
+        let coords = helix_core::coords_at_pos(text, cursor);
+        nucleotide_events::v2::completion::Position::new(coords.row, coords.col)
+    }
 }
 
 impl Default for ApplicationCore {
@@ -512,6 +544,45 @@ impl Default for ApplicationCore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
+    use arc_swap::{ArcSwap, access::Map};
+    use helix_core::syntax;
+    use helix_view::{
+        DocumentId, Editor, document::Mode, editor::Config, graphics::Rect, handlers::Handlers,
+        theme,
+    };
+    use nucleotide_core::event_bridge::BridgedEvent;
+    use nucleotide_events::v2::document::ChangeType;
+
+    fn test_handlers() -> Handlers {
+        let (completion_tx, _) = tokio::sync::mpsc::channel(1);
+        let (signature_tx, _) = tokio::sync::mpsc::channel(1);
+        let (auto_save_tx, _) = tokio::sync::mpsc::channel(1);
+        let (doc_colors_tx, _) = tokio::sync::mpsc::channel(1);
+
+        Handlers {
+            completions: helix_view::handlers::completion::CompletionHandler::new(completion_tx),
+            signature_hints: signature_tx,
+            auto_save: auto_save_tx,
+            document_colors: doc_colors_tx,
+            word_index: helix_view::handlers::word_index::Handler::spawn(),
+        }
+    }
+
+    fn test_editor() -> Editor {
+        let config = Arc::new(ArcSwap::new(Arc::new(Config::default())));
+        let syntax_loader = Arc::new(ArcSwap::from_pointee(syntax::Loader::default()));
+        let theme_loader = Arc::new(theme::Loader::new(&[]));
+
+        Editor::new(
+            Rect::new(0, 0, 80, 24),
+            theme_loader,
+            syntax_loader,
+            Arc::new(Map::new(Arc::clone(&config), |config: &Config| config)),
+            test_handlers(),
+        )
+    }
 
     #[tokio::test]
     async fn test_application_core_initialization() {
@@ -526,37 +597,72 @@ mod tests {
     async fn test_document_changed_event_processing() {
         let mut core = ApplicationCore::new();
         core.initialize().unwrap();
+        let mut editor = test_editor();
+        let doc_id = DocumentId::default();
 
-        // TODO: Editor creation is complex for unit tests
-        // For now, just test the core initialization and skip editor-dependent tests
-        // This test would require a properly configured Editor instance
-        // which involves complex dependencies (theme loader, syntax loader, config, handlers)
+        core.process_v2_event(
+            &BridgedEvent::DocumentChanged {
+                doc_id,
+                change_summary: ChangeType::Replace,
+            },
+            &mut editor,
+        )
+        .await
+        .unwrap();
 
-        // The core functionality works, as evidenced by the core.initialize() success
-        assert!(core.is_initialized());
+        let metadata = core.document_handler().get_metadata(&doc_id).unwrap();
+        assert_eq!(metadata.revision, 0);
+        assert!(metadata.is_modified);
     }
 
     #[tokio::test]
     async fn test_mode_changed_event_processing() {
         let mut core = ApplicationCore::new();
         core.initialize().unwrap();
+        let mut editor = test_editor();
 
-        // TODO: Complex Editor setup needed for full testing
-        // This test would verify that mode change events are processed correctly
-        // For now, just verify the core is initialized and handlers are available
+        core.process_v2_event(
+            &BridgedEvent::ModeChanged {
+                old_mode: Mode::Normal,
+                new_mode: Mode::Insert,
+            },
+            &mut editor,
+        )
+        .await
+        .unwrap();
 
-        assert!(core.is_initialized());
-        // Note: editor_handler methods are available for when we add proper editor setup
+        assert_eq!(core.editor_handler().get_current_mode(), Mode::Insert);
     }
 
     #[tokio::test]
     async fn test_uninitialized_core_error() {
-        let core = ApplicationCore::new();
+        let mut core = ApplicationCore::new();
+        let mut editor = test_editor();
 
-        // Test that uninitialized core reports correct state
+        let result = core
+            .process_v2_event(
+                &BridgedEvent::ModeChanged {
+                    old_mode: Mode::Normal,
+                    new_mode: Mode::Insert,
+                },
+                &mut editor,
+            )
+            .await;
+
+        assert!(result.is_err());
         assert!(!core.is_initialized());
+    }
 
-        // TODO: Full error testing would require editor setup
-        // For now, verify the core correctly reports its initialization state
+    #[test]
+    fn test_completion_position_from_cursor_uses_line_and_column() {
+        let text = helix_core::Rope::from("alpha\nbeta\ngamma");
+        let cursor = text.line_to_char(1) + 2;
+
+        let position = ApplicationCore::completion_position_from_cursor(text.slice(..), cursor);
+
+        assert_eq!(
+            position,
+            nucleotide_events::v2::completion::Position::new(1, 2)
+        );
     }
 }

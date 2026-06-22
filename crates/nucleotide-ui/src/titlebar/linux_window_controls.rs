@@ -8,7 +8,7 @@ use gpui::{
 
 use crate::styling::ColorTheory;
 use crate::titlebar::linux_platform_detector::{
-    DesktopEnvironment, LinuxPlatformInfo, WindowButtonLayout, WindowManager, get_platform_info,
+    DesktopEnvironment, LinuxPlatformInfo, WindowButtonLayout, get_platform_info,
 };
 use crate::tokens::TitleBarTokens;
 use nucleotide_logging::debug;
@@ -19,8 +19,6 @@ pub enum LinuxControlType {
     Restore,
     Maximize,
     Close,
-    // Linux-specific controls
-    Shade, // Roll up window (XFCE, some WMs)
 }
 
 impl LinuxControlType {
@@ -30,7 +28,6 @@ impl LinuxControlType {
             LinuxControlType::Restore => "icons/window-restore.svg",
             LinuxControlType::Maximize => "icons/window-maximize.svg",
             LinuxControlType::Close => "icons/close.svg",
-            LinuxControlType::Shade => "icons/chevron-up.svg",
         }
     }
 
@@ -177,14 +174,6 @@ impl LinuxWindowControl {
                 platform_info.supports_maximize
             }
             LinuxControlType::Close => true, // Always enabled
-            LinuxControlType::Shade => {
-                // Shade is supported by XFCE and some other WMs
-                matches!(platform_info.desktop_environment, DesktopEnvironment::Xfce)
-                    || matches!(
-                        platform_info.window_manager,
-                        WindowManager::Openbox | WindowManager::Fluxbox
-                    )
-            }
         };
 
         debug!(
@@ -264,10 +253,6 @@ impl RenderOnce for LinuxWindowControl {
                         debug!("Close button clicked");
                         cx.quit();
                     }
-                    LinuxControlType::Shade => {
-                        debug!("Shade button clicked (custom implementation needed)");
-                        // TODO: Implement window shading
-                    }
                 }
             })
     }
@@ -332,15 +317,6 @@ impl LinuxWindowControls {
                     controls.push(maximize_button);
                 }
                 controls.push(LinuxControlType::Close);
-
-                // Add extra controls for certain environments
-                if matches!(
-                    self.platform_info.desktop_environment,
-                    DesktopEnvironment::Xfce
-                ) {
-                    // XFCE can have shade button
-                    controls.insert(0, LinuxControlType::Shade);
-                }
             }
         }
 
@@ -385,7 +361,6 @@ impl RenderOnce for LinuxWindowControls {
                 LinuxControlType::Maximize => "linux-maximize",
                 LinuxControlType::Restore => "linux-restore",
                 LinuxControlType::Close => "linux-close",
-                LinuxControlType::Shade => "linux-shade",
             };
 
             container = container.child(LinuxWindowControl::new(
