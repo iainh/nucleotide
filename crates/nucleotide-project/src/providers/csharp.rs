@@ -1025,7 +1025,7 @@ EndGlobal
 
         let provider = CSharpManifestProvider::new();
         let delegate = Arc::new(FsDelegate);
-        let query = ManifestQuery::new(&nested_file, 10, delegate);
+        let query = ManifestQuery::new(&nested_file, 3, delegate);
 
         // Should detect as .NET project based on indicators
         let result = provider.search(query).await.unwrap();
