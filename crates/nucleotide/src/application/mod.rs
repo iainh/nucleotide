@@ -323,6 +323,66 @@ impl Application {
             LspUiState::Activity(_) => format!("{}-{}", server_id, LSP_TOKEN_ACTIVITY),
         }
     }
+
+    /// Drain bridged events that must be handled from the synchronous maintenance path.
+    fn process_pending_bridged_events_sync(&mut self, handle: &tokio::runtime::Handle) {
+        let mut bridged_events = Vec::new();
+
+        if let Some(ref mut rx) = self.event_bridge_rx {
+            loop {
+                match rx.try_recv() {
+                    Ok(event) => bridged_events.push(event),
+                    Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
+                    Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                        info!("Bridged event channel disconnected");
+                        break;
+                    }
+                }
+            }
+        }
+
+        for bridged_event in bridged_events {
+            if let Err(error) = handle.block_on(self.process_v2_event(&bridged_event)) {
+                warn!(
+                    error = %error,
+                    bridged_event = ?bridged_event,
+                    "Failed to process bridged event from maintenance path"
+                );
+            }
+
+            if let event_bridge::BridgedEvent::LspServerStartupRequested {
+                workspace_root,
+                server_name,
+                language_id,
+            } = bridged_event
+            {
+                info!(
+                    workspace_root = %workspace_root.display(),
+                    server_name = %server_name,
+                    language_id = %language_id,
+                    "Routing bridged LSP startup request to sync command processor"
+                );
+
+                let command = nucleotide_events::ProjectLspCommand::LspServerStartupRequested {
+                    server_name,
+                    workspace_root,
+                    language_id,
+                };
+
+                if let Some(ref sender) = self.project_lsp_command_tx {
+                    if let Err(error) = sender.send(command) {
+                        error!(
+                            error = %error,
+                            "Failed to route bridged LSP startup request"
+                        );
+                    }
+                } else {
+                    warn!("No LSP command sender available for bridged startup request");
+                }
+            }
+        }
+    }
+
     /// Process pending LSP commands synchronously by draining the channel
     fn process_pending_lsp_commands_sync(&mut self, handle: &tokio::runtime::Handle) {
         let _guard = handle.enter();
@@ -2409,6 +2469,11 @@ impl Application {
 
         // NOTE: Completion results processing is handled by the Workspace
         // NOTE: LSP completion requests are now processed event-driven in start_event_driven_lsp_completion_processing
+
+        // Project detection emits startup requests through the bridged event
+        // channel. Drain those first so this same maintenance tick can start
+        // the corresponding LSP servers.
+        self.process_pending_bridged_events_sync(&handle);
 
         // Process pending LSP commands synchronously by draining the channel
         // (Single pass is sufficient; the channel is drained in one call.)
