@@ -129,7 +129,11 @@ async fn test_project_environment_provider_integration() {
 
     // Should have basic environment variables
     assert!(env_contains_key(&env, "PATH"));
-    assert!(env.contains_key("HOME") || env.contains_key("USER"));
+    assert!(
+        env_contains_key(&env, "HOME")
+            || env_contains_key(&env, "USER")
+            || env_contains_key(&env, "USERNAME")
+    );
 
     // Should have the directory shell environment marker
     assert_eq!(

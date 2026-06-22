@@ -83,6 +83,7 @@ impl ApplicationMenu {
         }
     }
 
+    #[cfg(target_os = "windows")]
     pub fn new_embedded_in_titlebar(cx: &mut Context<Self>) -> Self {
         let mut menu = Self::new(cx);
         menu.embedded_in_titlebar = true;
