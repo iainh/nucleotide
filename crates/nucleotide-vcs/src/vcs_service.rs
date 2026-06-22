@@ -229,6 +229,8 @@ pub struct VcsService {
     config: VcsConfig,
     /// Last time VCS status was checked
     last_check: Option<Instant>,
+    /// Whether an async status refresh is already running
+    status_refresh_in_flight: bool,
     /// Cache TTL for individual entries
     cache_ttl: Duration,
     /// Whether monitoring is currently active
@@ -256,6 +258,7 @@ impl VcsService {
             event_bus: None,
             config,
             last_check: None,
+            status_refresh_in_flight: false,
             cache_ttl: Duration::from_secs(5), // 5 second cache TTL
             is_monitoring: false,
             cache_stats: RefCell::new(CacheStats::default()),
@@ -283,7 +286,7 @@ impl VcsService {
                             "VCS: Refreshing due to monitoring request (last check was {} seconds ago)",
                             last_check.elapsed().as_secs()
                         );
-                        self.refresh_status(cx);
+                        self.refresh_status_async(cx);
                     } else {
                         debug!(
                             "VCS: Skipping refresh due to recent check ({}s ago)",
@@ -292,7 +295,7 @@ impl VcsService {
                     }
                 } else {
                     // No previous check, do an initial refresh
-                    self.refresh_status(cx);
+                    self.refresh_status_async(cx);
                 }
             }
             return;
@@ -309,8 +312,9 @@ impl VcsService {
         self.is_monitoring = self.config.enabled;
 
         if self.is_monitoring {
-            // Initial status check
-            self.refresh_status(cx);
+            // Initial status check. This runs asynchronously so startup does
+            // not block on spawning git or reading repository state.
+            self.refresh_status_async(cx);
 
             // Schedule periodic updates
             self.schedule_next_check();
@@ -329,6 +333,7 @@ impl VcsService {
         self.diff_handles.clear();
         self.diff_hunks_cache.clear();
         self.last_check = None;
+        self.status_refresh_in_flight = false;
     }
 
     fn absolute_path(&self, path: &Path) -> Option<PathBuf> {
@@ -786,6 +791,68 @@ impl VcsService {
         }
 
         self.last_check = Some(Instant::now());
+    }
+
+    /// Refresh VCS status without blocking the UI/startup path.
+    fn refresh_status_async(&mut self, cx: &mut Context<Self>) {
+        let root_path = match &self.root_path {
+            Some(path) => path.clone(),
+            None => return,
+        };
+
+        if self.status_refresh_in_flight {
+            debug!(root_path = %root_path.display(), "VCS: Status refresh already in flight");
+            return;
+        }
+
+        self.maintain_cache();
+        self.status_refresh_in_flight = true;
+        let max_files = self.config.max_files;
+        let refresh_root_path = root_path.clone();
+
+        debug!(root_path = %root_path.display(), "VCS: Starting async status refresh");
+        cx.spawn(async move |this, cx| {
+            let refresh_result = cx
+                .background_executor()
+                .spawn(async move { run_git_status(&refresh_root_path, max_files) })
+                .await;
+
+            if let Some(this) = this.upgrade() {
+                this.update(cx, |service, cx| {
+                    service.status_refresh_in_flight = false;
+
+                    if service.root_path.as_ref() != Some(&root_path) || !service.is_monitoring {
+                        debug!(
+                            root_path = %root_path.display(),
+                            "VCS: Ignoring stale async status result"
+                        );
+                        return;
+                    }
+
+                    match refresh_result {
+                        Ok(new_status) => {
+                            debug!(
+                                status_count = new_status.len(),
+                                "VCS: Got async git status results"
+                            );
+                            service.update_status_cache(new_status, cx);
+                        }
+                        Err(error) => {
+                            error!(error = %error, "VCS: Failed to get async git status");
+                            service.emit_vcs_event(
+                                VcsEvent::Error {
+                                    message: format!("Git status failed: {}", error),
+                                },
+                                cx,
+                            );
+                        }
+                    }
+
+                    service.last_check = Some(Instant::now());
+                });
+            }
+        })
+        .detach();
     }
 
     /// Update the status cache and emit events for changes
