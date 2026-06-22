@@ -7549,7 +7549,7 @@ mod tests {
 
         // Process events (simulating what Application::step would do)
         let mut update_count = 0;
-        while let Ok(_) = event_rx.try_recv() {
+        while event_rx.try_recv().is_ok() {
             update_count += 1;
         }
 

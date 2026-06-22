@@ -12,6 +12,11 @@ use tempfile;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::timeout;
 
+fn env_contains_key(env: &HashMap<String, String>, key: &str) -> bool {
+    env.keys()
+        .any(|candidate| candidate.eq_ignore_ascii_case(key))
+}
+
 /// Test the timeout handling in LSP command response system
 #[tokio::test]
 async fn test_lsp_command_timeout_handling() {
@@ -250,7 +255,10 @@ async fn test_environment_integration_with_timeout() {
         .expect("Should successfully get environment");
 
     // Should have basic environment variables
-    assert!(env.contains_key("PATH"), "Environment should contain PATH");
+    assert!(
+        env_contains_key(&env, "PATH"),
+        "Environment should contain PATH"
+    );
     assert!(!env.is_empty(), "Environment should not be empty");
 
     println!(

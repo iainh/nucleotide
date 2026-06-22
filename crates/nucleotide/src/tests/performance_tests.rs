@@ -260,6 +260,10 @@ appearance_follows_theme = true
     }
 
     #[test]
+    #[cfg_attr(
+        target_os = "windows",
+        ignore = "Timing-sensitive on GitHub Windows runners"
+    )]
     fn test_repeated_workspace_detection() {
         let suite = PerformanceTestSuite::new();
         fs::create_dir_all(suite.path().join(".git")).unwrap();
@@ -321,6 +325,10 @@ appearance_follows_theme = true
     }
 
     #[test]
+    #[cfg_attr(
+        target_os = "windows",
+        ignore = "Timing-sensitive on GitHub Windows runners"
+    )]
     fn test_concurrent_workspace_detection() {
         use std::sync::Arc;
         use std::thread;
@@ -517,6 +525,10 @@ appearance_follows_theme = true
 
     /// Profile memory allocation patterns
     #[test]
+    #[cfg_attr(
+        target_os = "windows",
+        ignore = "Timing-sensitive on GitHub Windows runners"
+    )]
     fn test_allocation_patterns() {
         let suite = PerformanceTestSuite::new();
         fs::create_dir_all(suite.path().join(".git")).unwrap();

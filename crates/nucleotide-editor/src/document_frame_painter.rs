@@ -1155,8 +1155,10 @@ mod tests {
     }
 
     fn test_editor_with_text(text: &str) -> (Editor, DocumentId, ViewId) {
-        let mut config = Config::default();
-        config.cursorline = true;
+        let config = Config {
+            cursorline: true,
+            ..Config::default()
+        };
         test_editor_with_config(text, config)
     }
 
@@ -1364,8 +1366,10 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn native_frame_paint_plan_builds_soft_wrap_gutter_from_shared_plan() {
         let mut state = EditorViewState::new(px(20.0), px(8.0));
-        let mut config = Config::default();
-        config.cursorline = true;
+        let mut config = Config {
+            cursorline: true,
+            ..Config::default()
+        };
         config.soft_wrap.enable = Some(true);
         let (mut editor, doc_id, view_id) =
             test_editor_with_config("alpha beta gamma delta epsilon zeta eta theta\n", config);

@@ -11,6 +11,17 @@ fn create_test_dir() -> tempfile::TempDir {
     tempfile::tempdir().expect("Failed to create temporary directory")
 }
 
+fn env_contains_key(env: &HashMap<String, String>, key: &str) -> bool {
+    env.keys()
+        .any(|candidate| candidate.eq_ignore_ascii_case(key))
+}
+
+fn env_get<'a>(env: &'a HashMap<String, String>, key: &str) -> Option<&'a String> {
+    env.iter()
+        .find(|(candidate, _)| candidate.eq_ignore_ascii_case(key))
+        .map(|(_, value)| value)
+}
+
 /// Tests for CLI environment detection and inheritance
 /// These tests verify that when Nucleotide is launched from a terminal,
 /// it correctly detects and uses the CLI environment variables
@@ -124,7 +135,7 @@ mod directory_shell_tests {
         let env = result.unwrap();
 
         // Should have basic environment variables
-        assert!(env.contains_key("PATH"));
+        assert!(env_contains_key(&env, "PATH"));
         assert_eq!(
             env.get("ZED_ENVIRONMENT"),
             Some(&"worktree-shell".to_string())
@@ -151,8 +162,8 @@ mod directory_shell_tests {
             .unwrap();
 
         // Initially both will be the same, but after direnv integration they may differ
-        assert!(env1.contains_key("PATH"));
-        assert!(env2.contains_key("PATH"));
+        assert!(env_contains_key(&env1, "PATH"));
+        assert!(env_contains_key(&env2, "PATH"));
     }
 
     #[tokio::test]
@@ -166,9 +177,9 @@ mod directory_shell_tests {
 
         // Depending on implementation, this might be Ok with fallback or Err
         // For now, expecting graceful handling
-        if result.is_err() {
+        if let Err(error) = result {
             assert!(matches!(
-                result.unwrap_err(),
+                error,
                 ShellEnvironmentError::ShellExecutionFailed(_)
             ));
         }
@@ -451,7 +462,7 @@ mod direnv_integration_tests {
 
         if let Ok(env) = result {
             // Should have basic environment variables from shell
-            assert!(env.contains_key("PATH"));
+            assert!(env_contains_key(&env, "PATH"));
 
             // Direnv typically sets DIRENV_DIR, but only if direnv is installed and configured
             if env.contains_key("DIRENV_DIR") {
@@ -492,7 +503,7 @@ mod direnv_integration_tests {
 
         if let Ok(env) = result {
             // If any development tools are available, they should be in PATH
-            if let Some(path) = env.get("PATH") {
+            if let Some(path) = env_get(&env, "PATH") {
                 // This is a general test - specific tools will vary by system
                 assert!(!path.is_empty());
                 assert!(path.contains(":") || path.len() > 10); // Should be a real PATH
@@ -526,8 +537,8 @@ mod lsp_integration_tests {
         let env = lsp_env.unwrap();
 
         // LSP should have PATH with development tools
-        assert!(env.contains_key("PATH"));
-        assert!(env.get("PATH").unwrap().contains("rust"));
+        assert!(env_contains_key(&env, "PATH"));
+        assert!(env_get(&env, "PATH").unwrap().contains("rust"));
 
         // Should have CARGO_HOME for rust-analyzer
         assert_eq!(
@@ -557,7 +568,7 @@ mod lsp_integration_tests {
         let env = merged_env.unwrap();
 
         // Should have both project and LSP-specific variables
-        assert!(env.contains_key("PATH")); // From project
+        assert!(env_contains_key(&env, "PATH")); // From project
         assert_eq!(env.get("RUST_LOG"), Some(&"debug".to_string())); // LSP-specific
         assert_eq!(env.get("LSP_TIMEOUT"), Some(&"30".to_string())); // LSP-specific
     }
@@ -588,7 +599,7 @@ mod lsp_integration_tests {
         // Should have the same core environment variables
         let reg_env = regular_env.unwrap();
         let lsp_env = lsp_env.unwrap();
-        assert_eq!(reg_env.get("PATH"), lsp_env.get("PATH"));
+        assert_eq!(env_get(&reg_env, "PATH"), env_get(&lsp_env, "PATH"));
     }
 }
 

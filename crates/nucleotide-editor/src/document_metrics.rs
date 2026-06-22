@@ -308,13 +308,13 @@ mod tests {
     fn metrics_cache_reuses_matching_soft_wrap_layout() {
         let mut config = Config::default();
         config.soft_wrap.enable = Some(true);
-        let (mut document, view) = test_document_with_config(config, "abcdefghijklmnopqrstuvwxyz");
+        let (document, view) = test_document_with_config(config, "abcdefghijklmnopqrstuvwxyz");
         let mut cache = EditorDocumentMetricsCache::default();
         let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(160.0), px(80.0)));
         let gutter_columns = view.gutter_offset(&document);
 
-        let first = cache.resolve(&mut document, None, bounds, gutter_columns, px(8.0), 1);
-        let second = cache.resolve(&mut document, None, bounds, gutter_columns, px(8.0), 1);
+        let first = cache.resolve(&document, None, bounds, gutter_columns, px(8.0), 1);
+        let second = cache.resolve(&document, None, bounds, gutter_columns, px(8.0), 1);
 
         assert!(first.soft_wrap);
         assert_eq!(second.visual_rows, first.visual_rows);
@@ -330,7 +330,7 @@ mod tests {
         let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(160.0), px(80.0)));
         let gutter_columns = view.gutter_offset(&document);
 
-        let first = cache.resolve(&mut document, None, bounds, gutter_columns, px(8.0), 1);
+        let first = cache.resolve(&document, None, bounds, gutter_columns, px(8.0), 1);
         let insert_at = document.text().len_chars();
         let inserted_text = "abcdefghijklmnopqrstuvwxyz".repeat(20);
         let transaction = Transaction::change(
@@ -338,7 +338,7 @@ mod tests {
             [(insert_at, insert_at, Some(inserted_text.into()))].into_iter(),
         );
         document.apply(&transaction, view.id);
-        let second = cache.resolve(&mut document, None, bounds, gutter_columns, px(8.0), 1);
+        let second = cache.resolve(&document, None, bounds, gutter_columns, px(8.0), 1);
 
         assert!(second.visual_rows > first.visual_rows);
     }
