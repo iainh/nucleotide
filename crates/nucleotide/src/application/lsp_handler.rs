@@ -9,6 +9,7 @@ use nucleotide_logging::{debug, error, info, instrument, warn};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::RwLock;
 
 /// LSP event handler for V2 domain events
@@ -20,6 +21,8 @@ pub struct LspHandler {
     server_health: Arc<RwLock<HashMap<LanguageServerId, ServerHealth>>>,
     /// Progress tracking by server
     progress_tokens: Arc<RwLock<HashMap<LanguageServerId, Vec<String>>>>,
+    /// Server startup request time by workspace and server name
+    pending_startups: HashMap<(PathBuf, String), Instant>,
     /// LSP command dispatcher for routing commands from events
     command_dispatcher: Option<LspCommandDispatcher>,
     /// Initialization state
@@ -33,6 +36,7 @@ impl LspHandler {
             active_servers: Arc::new(RwLock::new(HashMap::new())),
             server_health: Arc::new(RwLock::new(HashMap::new())),
             progress_tokens: Arc::new(RwLock::new(HashMap::new())),
+            pending_startups: HashMap::new(),
             command_dispatcher: None,
             initialized: false,
         }
@@ -92,13 +96,19 @@ impl LspHandler {
                 "Language server initialized"
             );
 
+            let startup_time_ms = self
+                .pending_startups
+                .remove(&(workspace_root.clone(), server_name.clone()))
+                .map(|started_at| started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64)
+                .unwrap_or(0);
+
             // Add to active servers
             let active_server = ActiveServer {
                 server_id: *server_id,
                 server_name: server_name.clone(),
                 language_ids: vec![], // Will be populated when we know the language
                 health: ServerHealth::Healthy,
-                startup_time_ms: 0, // Will be tracked in future iteration
+                startup_time_ms,
             };
 
             let mut servers = self.active_servers.write().await;
@@ -372,6 +382,11 @@ impl EventHandler<Event> for LspHandler {
                     "🚀 V2_HANDLER: Processing server startup request"
                 );
 
+                self.pending_startups.insert(
+                    (workspace_root.clone(), server_name.clone()),
+                    Instant::now(),
+                );
+
                 if let Some(dispatcher) = &self.command_dispatcher {
                     // Use the dedicated fire-and-forget command for startup requests
                     // This routes to process_pending_lsp_commands_sync in the application loop
@@ -436,6 +451,16 @@ mod tests {
         let server_id = LanguageServerId::default();
         let workspace_root = PathBuf::from("/test/workspace");
 
+        let startup_event = Event::ServerStartupRequested {
+            workspace_root: workspace_root.clone(),
+            server_name: "rust-analyzer".to_string(),
+            language_id: "rust".to_string(),
+        };
+        let result = handler.handle(startup_event).await;
+        assert!(result.is_ok());
+
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+
         // Test server initialization
         let init_event = Event::ServerInitialized {
             server_id,
@@ -460,6 +485,7 @@ mod tests {
         let servers = handler.get_active_servers(&workspace_root).await;
         assert_eq!(servers.len(), 1);
         assert_eq!(servers[0].server_name, "rust-analyzer");
+        assert!(servers[0].startup_time_ms > 0);
 
         // Test server exit
         let exit_event = Event::ServerExited {

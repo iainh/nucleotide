@@ -572,18 +572,14 @@ impl ProjectDetector {
             "Selected project type based on highest priority custom marker"
         );
 
-        // Map project name to ProjectType
-        // For now, return a custom project type - in future we could extend ProjectType enum
-        // to handle custom project types from configuration
         let project_type = self.map_custom_project_to_builtin_type(project_name);
 
         Ok(Some(project_type))
     }
 
-    /// Map custom project name to builtin ProjectType
-    /// This is a temporary solution - ideally ProjectType would be extensible
+    /// Map custom project names to known types where possible, preserving
+    /// unmatched names as explicit custom project types.
     fn map_custom_project_to_builtin_type(&self, project_name: &str) -> ProjectType {
-        // Try to infer from project name or use Unknown
         let project_lower = project_name.to_lowercase();
 
         if project_lower.contains("rust") {
@@ -601,12 +597,10 @@ impl ProjectDetector {
             ProjectType::Go
         } else if project_lower.contains("cpp") || project_lower.contains("c++") {
             ProjectType::Cpp
-        } else if project_lower.contains("c") {
+        } else if custom_project_name_has_token(&project_lower, "c") {
             ProjectType::C
         } else {
-            // For truly custom project types, we use Unknown but still get the benefit
-            // of the custom language server configuration
-            ProjectType::Unknown
+            ProjectType::Other(project_name.to_string())
         }
     }
 
@@ -771,6 +765,12 @@ impl ProjectDetector {
             ProjectType::Unknown => "unknown".to_string(),
         }
     }
+}
+
+fn custom_project_name_has_token(project_name: &str, token: &str) -> bool {
+    project_name
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .any(|part| part == token)
 }
 
 /// Server lifecycle management
@@ -952,6 +952,24 @@ mod tests {
         assert_eq!(project_info.workspace_root, workspace_root);
         assert!(matches!(project_info.project_type, ProjectType::Rust));
         assert_eq!(project_info.language_servers, vec!["rust-analyzer"]);
+    }
+
+    #[test]
+    fn test_custom_project_type_mapping_preserves_unknown_names() {
+        let detector = ProjectDetector::new(ProjectMarkersConfig::default());
+
+        assert!(matches!(
+            detector.map_custom_project_to_builtin_type("rust-workspace"),
+            ProjectType::Rust
+        ));
+        assert!(matches!(
+            detector.map_custom_project_to_builtin_type("c-project"),
+            ProjectType::C
+        ));
+        assert_eq!(
+            detector.map_custom_project_to_builtin_type("bespoke-toolchain"),
+            ProjectType::Other("bespoke-toolchain".to_string())
+        );
     }
 
     #[test]

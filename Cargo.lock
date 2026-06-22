@@ -5453,6 +5453,7 @@ dependencies = [
  "nucleotide-events",
  "nucleotide-logging",
  "nucleotide-types",
+ "tempfile",
 ]
 
 [[package]]

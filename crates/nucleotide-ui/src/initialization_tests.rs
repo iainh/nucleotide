@@ -3,7 +3,9 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::{ComponentRegistry, Theme, UIConfig, UIFeatures};
+    use crate::{
+        ComponentRegistry, Theme, UIConfig, UIFeatures, configuration_provider_from_ui_config,
+    };
 
     #[test]
     fn test_ui_config_default() {
@@ -197,5 +199,62 @@ mod tests {
 
         #[cfg(not(debug_assertions))]
         assert!(!config.enable_performance_monitoring);
+    }
+
+    #[test]
+    fn test_ui_config_initializes_provider_performance_flags() {
+        let config = UIConfig {
+            default_theme: Theme::from_tokens(crate::tokens::DesignTokens::dark()),
+            enable_performance_monitoring: true,
+            features: UIFeatures {
+                enable_virtualization: true,
+                enable_animations: false,
+                enable_accessibility: false,
+                enable_debug_utils: false,
+            },
+        };
+
+        let provider = configuration_provider_from_ui_config(&config);
+
+        assert!(provider.performance_config.enable_virtualization);
+        assert!(
+            provider
+                .feature_flags
+                .performance_features
+                .enable_performance_monitoring
+        );
+        assert!(
+            provider
+                .feature_flags
+                .performance_features
+                .enable_virtualization
+        );
+        assert!(!provider.ui_config.animation_config.enable_animations);
+    }
+
+    #[test]
+    fn test_ui_config_initializes_provider_accessibility_flags() {
+        let config = UIConfig {
+            default_theme: Theme::from_tokens(crate::tokens::DesignTokens::dark()),
+            enable_performance_monitoring: false,
+            features: UIFeatures {
+                enable_virtualization: false,
+                enable_animations: true,
+                enable_accessibility: true,
+                enable_debug_utils: false,
+            },
+        };
+
+        let provider = configuration_provider_from_ui_config(&config);
+
+        assert!(provider.accessibility_config.screen_reader_support);
+        assert!(provider.accessibility_config.high_contrast_mode);
+        assert!(
+            provider
+                .accessibility_config
+                .focus_config
+                .show_focus_indicators
+        );
+        assert!(provider.feature_flags.ui_features.enable_high_contrast);
     }
 }

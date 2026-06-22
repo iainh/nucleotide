@@ -774,10 +774,16 @@ impl Application {
                 self.core.lsp_handler.handle(v2_event).await?;
             }
 
-            _ => {
-                debug!(event = ?bridged_event, "V2 processing not yet implemented for this event type");
-                // Other events (Completion, etc.) will be handled
-                // as we implement their respective handlers in future phases
+            event_bridge::BridgedEvent::LanguageServerInitialized { .. }
+            | event_bridge::BridgedEvent::LanguageServerExited { .. }
+            | event_bridge::BridgedEvent::CompletionRequested { .. }
+            | event_bridge::BridgedEvent::DiagnosticsPickerRequested { .. }
+            | event_bridge::BridgedEvent::FilePickerRequested
+            | event_bridge::BridgedEvent::BufferPickerRequested => {
+                debug!(
+                    event = ?bridged_event,
+                    "Bridged event is handled by the GPUI context loop"
+                );
             }
         }
 
@@ -4865,12 +4871,33 @@ impl Application {
         &mut self,
         workspace_root: &std::path::Path,
     ) -> Result<nucleotide_events::ProjectDetectionResult, ProjectLspCommandError> {
-        info!("Processing DetectAndStartProject command - not yet implemented");
+        use nucleotide_events::ProjectDetectionResult;
 
-        // For now, return not implemented error
-        Err(ProjectLspCommandError::Internal(
-            "DetectAndStartProject not yet implemented".to_string(),
-        ))
+        info!(
+            workspace_root = %workspace_root.display(),
+            "Processing DetectAndStartProject command"
+        );
+
+        let manager_project_info =
+            if let Some(manager) = self.project_lsp_manager.read().await.as_ref() {
+                manager.get_project_info(workspace_root).await
+            } else {
+                None
+            };
+
+        let (project_type, language_servers) = manager_project_info
+            .map(|project| (project.project_type, project.language_servers))
+            .unwrap_or_else(|| detect_project_lsp_metadata(workspace_root));
+
+        let servers_started = self
+            .start_detected_project_servers(workspace_root, &project_type, &language_servers)
+            .await;
+
+        Ok(ProjectDetectionResult {
+            project_type,
+            language_servers,
+            servers_started,
+        })
     }
 
     /// Handle StopServer command
@@ -4881,13 +4908,17 @@ impl Application {
     ) -> Result<(), ProjectLspCommandError> {
         info!(
             server_id = ?server_id,
-            "Processing StopServer command - not yet implemented"
+            "Processing StopServer command"
         );
 
-        // For now, return not implemented error
-        Err(ProjectLspCommandError::Internal(
-            "StopServer not yet implemented".to_string(),
-        ))
+        let bridge = self.helix_lsp_bridge.read().await.clone().ok_or_else(|| {
+            ProjectLspCommandError::Internal("HelixLspBridge not initialized".to_string())
+        })?;
+
+        bridge
+            .stop_server(&mut self.editor, server_id)
+            .await
+            .map_err(|error| ProjectLspCommandError::Internal(error.to_string()))
     }
 
     /// Handle GetProjectStatus command
@@ -4896,12 +4927,44 @@ impl Application {
         &mut self,
         workspace_root: &std::path::Path,
     ) -> Result<nucleotide_events::ProjectStatus, ProjectLspCommandError> {
-        info!("Processing GetProjectStatus command - not yet implemented");
+        use nucleotide_events::ProjectStatus;
 
-        // For now, return not implemented error
-        Err(ProjectLspCommandError::Internal(
-            "GetProjectStatus not yet implemented".to_string(),
-        ))
+        info!(
+            workspace_root = %workspace_root.display(),
+            "Processing GetProjectStatus command"
+        );
+
+        let manager_state = if let Some(manager) = self.project_lsp_manager.read().await.as_ref() {
+            Some((
+                manager.get_project_info(workspace_root).await,
+                manager.get_managed_servers(workspace_root).await,
+            ))
+        } else {
+            None
+        };
+
+        let project_type = manager_state
+            .as_ref()
+            .and_then(|(project_info, _)| project_info.as_ref())
+            .map(|project| project.project_type.clone())
+            .unwrap_or_else(|| detect_project_type_from_workspace(workspace_root));
+
+        let active_servers = manager_state
+            .map(|(_, servers)| {
+                servers
+                    .into_iter()
+                    .map(active_server_info_from_managed_server)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        let health_status = project_health_status(&active_servers);
+
+        Ok(ProjectStatus {
+            project_type,
+            active_servers,
+            health_status,
+        })
     }
 
     fn restore_project_environment_overrides(&mut self) {
@@ -4945,7 +5008,7 @@ impl Application {
         env_updates
     }
 
-    /// Handle EnsureDocumentTracked command
+    /// Handle RestartServersForWorkspaceChange command
     #[instrument(skip(self))]
     async fn handle_restart_servers_for_workspace_change_command(
         &mut self,
@@ -5092,85 +5155,48 @@ impl Application {
         &mut self,
         workspace_root: &std::path::Path,
     ) -> Vec<nucleotide_events::ServerStartResult> {
+        let (project_type, language_servers) = detect_project_lsp_metadata(workspace_root);
+        self.start_detected_project_servers(workspace_root, &project_type, &language_servers)
+            .await
+    }
+
+    async fn start_detected_project_servers(
+        &mut self,
+        workspace_root: &std::path::Path,
+        project_type: &nucleotide_events::ProjectType,
+        language_servers: &[String],
+    ) -> Vec<nucleotide_events::ServerStartResult> {
         let mut results = Vec::new();
 
         info!(
             workspace_root = %workspace_root.display(),
+            project_type = ?project_type,
+            language_servers = ?language_servers,
             "Detecting project type and starting appropriate LSP servers"
         );
 
-        // Rust project detection
-        if workspace_root.join("Cargo.toml").exists() {
-            info!("Rust project detected - starting rust-analyzer");
-            match self
-                .start_lsp_server_direct(workspace_root, "rust-analyzer", "rust")
-                .await
-            {
-                Ok(server_result) => {
-                    results.push(server_result);
-                    info!("✅ Successfully started rust-analyzer");
-                }
-                Err(e) => {
-                    error!(error = %e, "❌ Failed to start rust-analyzer");
-                    // For errors, we'll just log them but not add to results
-                    // since the return type expects successful starts
-                }
-            }
-        }
+        for server_name in language_servers {
+            let language_id = project_server_language_id(project_type, server_name);
+            info!(
+                server_name = %server_name,
+                language_id = %language_id,
+                "Starting detected project language server"
+            );
 
-        // TypeScript/JavaScript project detection
-        if workspace_root.join("package.json").exists()
-            || workspace_root.join("tsconfig.json").exists()
-        {
-            info!("TypeScript/JavaScript project detected - starting typescript-language-server");
             match self
-                .start_lsp_server_direct(workspace_root, "typescript-language-server", "typescript")
+                .start_lsp_server_direct(workspace_root, server_name, &language_id)
                 .await
             {
                 Ok(server_result) => {
                     results.push(server_result);
-                    info!("✅ Successfully started typescript-language-server");
+                    info!(server_name = %server_name, "Successfully started detected language server");
                 }
                 Err(e) => {
-                    error!(error = %e, "❌ Failed to start typescript-language-server");
-                }
-            }
-        }
-
-        // Python project detection
-        if workspace_root.join("pyproject.toml").exists()
-            || workspace_root.join("requirements.txt").exists()
-            || workspace_root.join("setup.py").exists()
-            || workspace_root.join("Pipfile").exists()
-        {
-            info!("Python project detected - starting pylsp");
-            match self
-                .start_lsp_server_direct(workspace_root, "pylsp", "python")
-                .await
-            {
-                Ok(server_result) => {
-                    results.push(server_result);
-                    info!("✅ Successfully started pylsp");
-                }
-                Err(e) => {
-                    error!(error = %e, "❌ Failed to start pylsp");
-                }
-            }
-        }
-
-        // Go project detection
-        if workspace_root.join("go.mod").exists() || workspace_root.join("go.sum").exists() {
-            info!("Go project detected - starting gopls");
-            match self
-                .start_lsp_server_direct(workspace_root, "gopls", "go")
-                .await
-            {
-                Ok(server_result) => {
-                    results.push(server_result);
-                    info!("✅ Successfully started gopls");
-                }
-                Err(e) => {
-                    error!(error = %e, "❌ Failed to start gopls");
+                    error!(
+                        error = %e,
+                        server_name = %server_name,
+                        "Failed to start detected language server"
+                    );
                 }
             }
         }
@@ -5199,13 +5225,16 @@ impl Application {
         info!(
             server_id = ?server_id,
             doc_id = ?doc_id,
-            "Processing EnsureDocumentTracked command - not yet implemented"
+            "Processing EnsureDocumentTracked command"
         );
 
-        // For now, return not implemented error
-        Err(ProjectLspCommandError::Internal(
-            "EnsureDocumentTracked not yet implemented".to_string(),
-        ))
+        let bridge = self.helix_lsp_bridge.read().await.clone().ok_or_else(|| {
+            ProjectLspCommandError::Internal("HelixLspBridge not initialized".to_string())
+        })?;
+
+        bridge
+            .ensure_document_tracked(&mut self.editor, server_id, doc_id)
+            .map_err(|error| ProjectLspCommandError::Internal(error.to_string()))
     }
 
     pub fn trigger_lsp_navigation(
@@ -6712,6 +6741,156 @@ fn dedupe_completion_items(items: &mut Vec<nucleotide_events::completion::Comple
     items.retain(|item| seen.insert((item.label.clone(), item.insert_text.clone())));
 }
 
+fn detect_project_lsp_metadata(
+    workspace_root: &Path,
+) -> (nucleotide_events::ProjectType, Vec<String>) {
+    let project_type = detect_project_type_from_workspace(workspace_root);
+    let language_servers = language_servers_for_project_type(&project_type);
+    (project_type, language_servers)
+}
+
+fn detect_project_type_from_workspace(workspace_root: &Path) -> nucleotide_events::ProjectType {
+    use nucleotide_events::ProjectType;
+
+    if workspace_root.join("Cargo.toml").exists() {
+        return ProjectType::Rust;
+    }
+
+    if workspace_root.join("tsconfig.json").exists() {
+        return ProjectType::TypeScript;
+    }
+
+    if workspace_root.join("package.json").exists() {
+        return ProjectType::JavaScript;
+    }
+
+    if workspace_root.join("pyproject.toml").exists()
+        || workspace_root.join("requirements.txt").exists()
+        || workspace_root.join("setup.py").exists()
+        || workspace_root.join("Pipfile").exists()
+    {
+        return ProjectType::Python;
+    }
+
+    if workspace_root.join("go.mod").exists() || workspace_root.join("go.sum").exists() {
+        return ProjectType::Go;
+    }
+
+    if workspace_root.join("CMakeLists.txt").exists() {
+        return ProjectType::Cpp;
+    }
+
+    if workspace_root.join("Makefile").exists() {
+        return ProjectType::C;
+    }
+
+    ProjectType::Unknown
+}
+
+fn language_servers_for_project_type(project_type: &nucleotide_events::ProjectType) -> Vec<String> {
+    use nucleotide_events::ProjectType;
+
+    match project_type {
+        ProjectType::Rust => vec!["rust-analyzer".to_string()],
+        ProjectType::TypeScript | ProjectType::JavaScript => {
+            vec!["typescript-language-server".to_string()]
+        }
+        ProjectType::Python => vec!["pylsp".to_string()],
+        ProjectType::Go => vec!["gopls".to_string()],
+        ProjectType::C | ProjectType::Cpp => vec!["clangd".to_string()],
+        ProjectType::Mixed(project_types) => {
+            let mut servers = project_types
+                .iter()
+                .flat_map(language_servers_for_project_type)
+                .collect::<Vec<_>>();
+            servers.sort();
+            servers.dedup();
+            servers
+        }
+        ProjectType::Other(_) | ProjectType::Unknown => Vec::new(),
+    }
+}
+
+fn primary_language_id_for_project_type(project_type: &nucleotide_events::ProjectType) -> String {
+    use nucleotide_events::ProjectType;
+
+    match project_type {
+        ProjectType::Rust => "rust".to_string(),
+        ProjectType::TypeScript => "typescript".to_string(),
+        ProjectType::JavaScript => "javascript".to_string(),
+        ProjectType::Python => "python".to_string(),
+        ProjectType::Go => "go".to_string(),
+        ProjectType::C => "c".to_string(),
+        ProjectType::Cpp => "cpp".to_string(),
+        ProjectType::Mixed(_) | ProjectType::Unknown => "unknown".to_string(),
+        ProjectType::Other(name) => name.to_ascii_lowercase().replace(' ', "_"),
+    }
+}
+
+fn project_server_language_id(
+    project_type: &nucleotide_events::ProjectType,
+    server_name: &str,
+) -> String {
+    match server_name {
+        "rust-analyzer" => "rust".to_string(),
+        "typescript-language-server" => match project_type {
+            nucleotide_events::ProjectType::JavaScript => "javascript".to_string(),
+            _ => "typescript".to_string(),
+        },
+        "pylsp" | "pyright" => "python".to_string(),
+        "gopls" => "go".to_string(),
+        "clangd" => match project_type {
+            nucleotide_events::ProjectType::C => "c".to_string(),
+            _ => "cpp".to_string(),
+        },
+        _ => primary_language_id_for_project_type(project_type),
+    }
+}
+
+fn active_server_info_from_managed_server(
+    server: nucleotide_lsp::ManagedServer,
+) -> nucleotide_events::ActiveServerInfo {
+    nucleotide_events::ActiveServerInfo {
+        server_id: server.server_id,
+        server_name: server.server_name,
+        language_id: server.language_id,
+        health: server.health_status,
+    }
+}
+
+fn project_health_status(
+    active_servers: &[nucleotide_events::ActiveServerInfo],
+) -> nucleotide_events::ProjectHealthStatus {
+    use nucleotide_events::{ProjectHealthStatus, ServerHealthStatus};
+
+    let unhealthy_count = active_servers
+        .iter()
+        .filter(|server| {
+            matches!(
+                server.health,
+                ServerHealthStatus::Failed { .. } | ServerHealthStatus::Crashed
+            )
+        })
+        .count();
+
+    if unhealthy_count == active_servers.len() && unhealthy_count > 0 {
+        return ProjectHealthStatus::Failed;
+    }
+
+    if unhealthy_count > 0 {
+        return ProjectHealthStatus::Degraded;
+    }
+
+    if active_servers
+        .iter()
+        .any(|server| matches!(server.health, ServerHealthStatus::Unresponsive))
+    {
+        return ProjectHealthStatus::PartiallyHealthy;
+    }
+
+    ProjectHealthStatus::Healthy
+}
+
 /// Determines which environment variables should be updated globally for LSP servers
 /// This is a safelist approach to avoid unintended side effects from shell environment
 fn should_update_env_var(key: &str) -> bool {
@@ -6756,10 +6935,11 @@ mod tests {
     use super::{
         LspCompletionTrigger, NativeSymbolItem, NativeSymbolTarget, PendingCompletionRequest,
         buffer_word_completion_items, completion_context_for_trigger, dedupe_completion_items,
-        local_path_completion_context, lsp_completion_insert_text,
+        detect_project_lsp_metadata, local_path_completion_context, lsp_completion_insert_text,
         lsp_completion_insert_text_format, lsp_completion_items_from_response,
         lsp_completion_response_is_incomplete, lsp_symbol_picker, native_symbol_item_from_lsp,
-        path_completion_items, syntax_symbol_kind_from_capture_name,
+        path_completion_items, project_health_status, project_server_language_id,
+        syntax_symbol_kind_from_capture_name,
     };
     use crate::test_utils::test_support::{
         TestUpdate, create_counting_channel, create_test_diagnostic_events,
@@ -6868,6 +7048,98 @@ mod tests {
                 assert_eq!(location.end, 126);
             }
         }
+    }
+
+    #[test]
+    fn project_lsp_metadata_detects_builtin_project_types() {
+        let rust_project = tempdir().unwrap();
+        fs::write(
+            rust_project.path().join("Cargo.toml"),
+            "[package]\nname = \"demo\"\n",
+        )
+        .unwrap();
+        let (project_type, language_servers) = detect_project_lsp_metadata(rust_project.path());
+        assert!(matches!(project_type, nucleotide_events::ProjectType::Rust));
+        assert_eq!(language_servers, vec!["rust-analyzer"]);
+
+        let ts_project = tempdir().unwrap();
+        fs::write(ts_project.path().join("tsconfig.json"), "{}").unwrap();
+        let (project_type, language_servers) = detect_project_lsp_metadata(ts_project.path());
+        assert!(matches!(
+            project_type,
+            nucleotide_events::ProjectType::TypeScript
+        ));
+        assert_eq!(language_servers, vec!["typescript-language-server"]);
+
+        let unknown_project = tempdir().unwrap();
+        let (project_type, language_servers) = detect_project_lsp_metadata(unknown_project.path());
+        assert!(matches!(
+            project_type,
+            nucleotide_events::ProjectType::Unknown
+        ));
+        assert!(language_servers.is_empty());
+    }
+
+    #[test]
+    fn project_lsp_server_language_id_matches_server_and_project() {
+        assert_eq!(
+            project_server_language_id(
+                &nucleotide_events::ProjectType::JavaScript,
+                "typescript-language-server",
+            ),
+            "javascript"
+        );
+        assert_eq!(
+            project_server_language_id(&nucleotide_events::ProjectType::Cpp, "clangd"),
+            "cpp"
+        );
+        assert_eq!(
+            project_server_language_id(&nucleotide_events::ProjectType::Python, "pyright"),
+            "python"
+        );
+    }
+
+    #[test]
+    fn project_health_status_summarizes_active_servers() {
+        use nucleotide_events::{ActiveServerInfo, ProjectHealthStatus, ServerHealthStatus};
+
+        let healthy = ActiveServerInfo {
+            server_id: helix_lsp::LanguageServerId::default(),
+            server_name: "rust-analyzer".to_string(),
+            language_id: "rust".to_string(),
+            health: ServerHealthStatus::Healthy,
+        };
+        let unresponsive = ActiveServerInfo {
+            server_id: helix_lsp::LanguageServerId::default(),
+            server_name: "pylsp".to_string(),
+            language_id: "python".to_string(),
+            health: ServerHealthStatus::Unresponsive,
+        };
+        let failed = ActiveServerInfo {
+            server_id: helix_lsp::LanguageServerId::default(),
+            server_name: "gopls".to_string(),
+            language_id: "go".to_string(),
+            health: ServerHealthStatus::Failed {
+                error: "exited".to_string(),
+            },
+        };
+
+        assert!(matches!(
+            project_health_status(std::slice::from_ref(&healthy)),
+            ProjectHealthStatus::Healthy
+        ));
+        assert!(matches!(
+            project_health_status(&[healthy.clone(), unresponsive]),
+            ProjectHealthStatus::PartiallyHealthy
+        ));
+        assert!(matches!(
+            project_health_status(&[healthy, failed.clone()]),
+            ProjectHealthStatus::Degraded
+        ));
+        assert!(matches!(
+            project_health_status(&[failed]),
+            ProjectHealthStatus::Failed
+        ));
     }
 
     #[test]

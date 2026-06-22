@@ -16,3 +16,4 @@ helix-view.workspace = true
 gpui.workspace = true
 
 [dev-dependencies]
+tempfile.workspace = true

@@ -222,9 +222,85 @@ impl EventHandler<EditorEvent> for EditorHandler {
                 self.handle_command_executed(command_name, execution_time_ms, success, context)
                     .await
             }
-            _ => {
-                // Other events not yet implemented - log for future reference
-                debug!(event = ?event, "Editor event not yet handled by V2 system");
+            EditorEvent::StatusChanged {
+                message,
+                severity,
+                timeout_ms,
+            } => {
+                debug!(
+                    message = %message,
+                    severity = ?severity,
+                    timeout_ms = ?timeout_ms,
+                    "Editor status event observed"
+                );
+                Ok(())
+            }
+            EditorEvent::ConfigurationChanged {
+                section,
+                key,
+                previous_value,
+                new_value,
+            } => {
+                debug!(
+                    section = ?section,
+                    key = %key,
+                    previous_value = ?previous_value,
+                    new_value = %new_value,
+                    "Editor configuration event observed"
+                );
+                Ok(())
+            }
+            EditorEvent::MacroRecordingChanged {
+                is_recording,
+                register,
+            } => {
+                debug!(
+                    is_recording = is_recording,
+                    register = ?register,
+                    "Editor macro recording event observed"
+                );
+                Ok(())
+            }
+            EditorEvent::ShutdownRequested { reason, force } => {
+                info!(
+                    reason = ?reason,
+                    force = force,
+                    "Editor shutdown event observed"
+                );
+                Ok(())
+            }
+            EditorEvent::RedrawRequested { reason, urgent } => {
+                debug!(
+                    reason = ?reason,
+                    urgent = urgent,
+                    "Editor redraw event observed"
+                );
+                Ok(())
+            }
+            EditorEvent::SearchCompleted {
+                query,
+                match_count,
+                search_time_ms,
+            } => {
+                debug!(
+                    query = %query,
+                    match_count = match_count,
+                    search_time_ms = search_time_ms,
+                    "Editor search event observed"
+                );
+                Ok(())
+            }
+            EditorEvent::ReplaceCompleted {
+                pattern,
+                replacement,
+                replacement_count,
+            } => {
+                debug!(
+                    pattern = %pattern,
+                    replacement = %replacement,
+                    replacement_count = replacement_count,
+                    "Editor replace event observed"
+                );
                 Ok(())
             }
         }
@@ -241,7 +317,10 @@ impl Default for EditorHandler {
 mod tests {
     use super::*;
     use helix_view::document::Mode;
-    use nucleotide_events::v2::editor::{CommandContext, Event as EditorEvent, ModeChangeContext};
+    use nucleotide_events::v2::editor::{
+        CommandContext, ConfigSection, Event as EditorEvent, ModeChangeContext, RedrawReason,
+        ShutdownReason, StatusSeverity,
+    };
 
     #[tokio::test]
     async fn test_editor_handler_initialization() {
@@ -353,6 +432,41 @@ mod tests {
         assert_eq!(recent_commands.len(), 100);
         assert_eq!(recent_commands[0].command_name, "command_5"); // First 5 were removed
         assert_eq!(recent_commands[99].command_name, "command_104");
+    }
+
+    #[tokio::test]
+    async fn test_non_stateful_editor_events_are_accepted() {
+        let mut handler = EditorHandler::new();
+        handler.initialize().unwrap();
+
+        let events = [
+            EditorEvent::StatusChanged {
+                message: "ready".to_string(),
+                severity: StatusSeverity::Info,
+                timeout_ms: Some(1000),
+            },
+            EditorEvent::ConfigurationChanged {
+                section: ConfigSection::Editor,
+                key: "line-number".to_string(),
+                previous_value: Some("absolute".to_string()),
+                new_value: "relative".to_string(),
+            },
+            EditorEvent::ShutdownRequested {
+                reason: ShutdownReason::UserRequest,
+                force: false,
+            },
+            EditorEvent::RedrawRequested {
+                reason: RedrawReason::StatusUpdate,
+                urgent: false,
+            },
+        ];
+
+        for event in events {
+            handler.handle(event).await.unwrap();
+        }
+
+        assert_eq!(handler.get_current_mode(), Mode::Normal);
+        assert!(handler.get_recent_commands(10).is_empty());
     }
 
     #[tokio::test]
