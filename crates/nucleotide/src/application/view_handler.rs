@@ -466,7 +466,7 @@ mod tests {
         };
         let event = ViewEvent::Scrolled {
             view_id,
-            scroll_position: scroll_position.clone(),
+            scroll_position,
             direction: ScrollDirection::Down,
         };
 

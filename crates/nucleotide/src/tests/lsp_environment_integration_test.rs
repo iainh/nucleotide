@@ -9,6 +9,17 @@ use std::sync::Arc;
 use tempfile;
 use tokio::sync::broadcast;
 
+fn env_contains_key(env: &HashMap<String, String>, key: &str) -> bool {
+    env.keys()
+        .any(|candidate| candidate.eq_ignore_ascii_case(key))
+}
+
+fn env_get<'a>(env: &'a HashMap<String, String>, key: &str) -> Option<&'a String> {
+    env.iter()
+        .find(|(candidate, _)| candidate.eq_ignore_ascii_case(key))
+        .map(|(_, value)| value)
+}
+
 /// Mock environment provider for testing
 struct MockEnvironmentProvider {
     mock_env: HashMap<String, String>,
@@ -117,7 +128,7 @@ async fn test_project_environment_provider_integration() {
     let env = env_result.unwrap();
 
     // Should have basic environment variables
-    assert!(env.contains_key("PATH"));
+    assert!(env_contains_key(&env, "PATH"));
     assert!(env.contains_key("HOME") || env.contains_key("USER"));
 
     // Should have the directory shell environment marker
@@ -129,7 +140,7 @@ async fn test_project_environment_provider_integration() {
     println!("✅ ProjectEnvironmentProvider successfully bridges ProjectEnvironment to LSP system");
     println!("✅ Environment includes {} variables", env.len());
 
-    if let Some(path) = env.get("PATH") {
+    if let Some(path) = env_get(&env, "PATH") {
         println!("✅ PATH available for LSP servers: {}", path);
     }
 }

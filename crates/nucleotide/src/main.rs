@@ -636,6 +636,7 @@ struct ProtocolOpenRequest {
     working_directory: Option<PathBuf>,
 }
 
+#[cfg(target_os = "windows")]
 const NUCLEOTIDE_URL_SCHEME: &str = "nucleotide";
 
 fn parse_file_url(url_str: &str) -> Option<PathBuf> {
@@ -647,6 +648,7 @@ fn parse_file_url(url_str: &str) -> Option<PathBuf> {
     None
 }
 
+#[cfg(target_os = "windows")]
 fn path_from_url_query_value(value: &str) -> Option<PathBuf> {
     if value.is_empty() {
         None
@@ -657,6 +659,7 @@ fn path_from_url_query_value(value: &str) -> Option<PathBuf> {
     }
 }
 
+#[cfg(target_os = "windows")]
 fn one_based_query_position(line: Option<&str>, column: Option<&str>) -> helix_core::Position {
     let row = line
         .and_then(|line| line.parse::<usize>().ok())
@@ -670,6 +673,7 @@ fn one_based_query_position(line: Option<&str>, column: Option<&str>) -> helix_c
     helix_core::Position::new(row, col)
 }
 
+#[cfg(target_os = "windows")]
 fn parse_nucleotide_url(url_str: &str) -> Option<ProtocolOpenRequest> {
     let url = Url::parse(url_str).ok()?;
     if url.scheme() != NUCLEOTIDE_URL_SCHEME {
@@ -1734,6 +1738,7 @@ mod tests {
         assert!(parse_startup_dock_action(["nucl", "--dock-action", "0", "extra"]).is_err());
     }
 
+    #[cfg(target_os = "windows")]
     #[test]
     fn nucleotide_url_parser_accepts_focus_only_open() {
         let request = parse_nucleotide_url("nucleotide://open").unwrap();
@@ -1742,6 +1747,7 @@ mod tests {
         assert_eq!(request.working_directory, None);
     }
 
+    #[cfg(target_os = "windows")]
     #[test]
     fn nucleotide_url_parser_rejects_other_schemes_and_actions() {
         assert!(parse_nucleotide_url("https://example.com").is_none());

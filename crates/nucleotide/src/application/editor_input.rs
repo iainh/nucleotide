@@ -3419,7 +3419,10 @@ mod tests {
             assert!(outcome.handled_by_native_command);
         }
 
-        assert_eq!(focused_document_text(&editor), "(one) two\n\n");
+        assert_eq!(
+            focused_document_text(&editor).replace("\r\n", "\n"),
+            "(one) two\n\n"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -3500,10 +3503,11 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let target_path = temp_dir.path().join("target.txt");
         std::fs::write(&target_path, "opened\n").unwrap();
+        let target_text = target_path.display().to_string();
 
         let mut bridge = EditorInputBridge::new(Keymaps::default());
-        let mut editor = test_editor_with_text(&format!("{}\n", target_path.display()));
-        set_test_cursor(&mut editor, 0);
+        let mut editor = test_editor_with_text(&format!("{}\n", target_text));
+        set_test_selection(&mut editor, 0, target_text.len());
         let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
         let mut jobs = Jobs::new();
 
@@ -3529,10 +3533,11 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn editor_input_bridge_requests_native_picker_for_goto_directory() {
         let temp_dir = tempfile::tempdir().unwrap();
+        let target_text = temp_dir.path().display().to_string();
 
         let mut bridge = EditorInputBridge::new(Keymaps::default());
-        let mut editor = test_editor_with_text(&format!("{}\n", temp_dir.path().display()));
-        set_test_cursor(&mut editor, 0);
+        let mut editor = test_editor_with_text(&format!("{}\n", target_text));
+        set_test_selection(&mut editor, 0, target_text.len());
         let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
         let mut jobs = Jobs::new();
 

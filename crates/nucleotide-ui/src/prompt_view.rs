@@ -413,26 +413,6 @@ impl PromptView {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn prompt_font_comes_from_ui_font_config() {
-        let ui_font = nucleotide_types::UiFontConfig {
-            family: "Test UI Font".to_string(),
-            size: 13.0,
-            weight: nucleotide_types::FontWeight::Medium,
-        };
-
-        let font = PromptView::font_from_ui_config(&ui_font);
-
-        assert_eq!(font.family, "Test UI Font");
-        assert_eq!(font.weight, gpui::FontWeight::MEDIUM);
-        assert_eq!(font.style, gpui::FontStyle::Normal);
-    }
-}
-
 impl Focusable for PromptView {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus_handle.clone()
@@ -708,5 +688,25 @@ impl Render for PromptView {
                     )
                 },
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prompt_font_comes_from_ui_font_config() {
+        let ui_font = nucleotide_types::UiFontConfig {
+            family: "Test UI Font".to_string(),
+            size: 13.0,
+            weight: nucleotide_types::FontWeight::Medium,
+        };
+
+        let font = PromptView::font_from_ui_config(&ui_font);
+
+        assert_eq!(font.family, "Test UI Font");
+        assert_eq!(font.weight, gpui::FontWeight::MEDIUM);
+        assert_eq!(font.style, gpui::FontStyle::Normal);
     }
 }

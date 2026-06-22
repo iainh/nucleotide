@@ -479,7 +479,7 @@ mod tests {
             UiEditorSyncType::TabBarUpdate,
         ];
 
-        for (sync_type, data) in sync_types.into_iter().zip(sync_data_variants.into_iter()) {
+        for (sync_type, data) in sync_types.into_iter().zip(sync_data_variants) {
             let _event = Event::ui_editor_sync(sync_type, data);
         }
     }

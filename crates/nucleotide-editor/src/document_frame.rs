@@ -538,9 +538,11 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn frame_uses_explicit_editor_render_state() {
-        let mut config = Config::default();
-        config.cursorline = true;
-        config.rulers = vec![2, 4];
+        let config = Config {
+            cursorline: true,
+            rulers: vec![2, 4],
+            ..Config::default()
+        };
         let (editor, doc_id, view_id) = test_editor_with_config(config);
         let document = editor.document(doc_id).unwrap();
         let view = editor.tree.try_get(view_id).unwrap();

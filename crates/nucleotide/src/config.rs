@@ -1005,9 +1005,9 @@ enable_fallback = false
 
         let config: GuiConfig = toml::from_str(config_str).expect("Failed to parse LSP config");
 
-        assert_eq!(config.lsp.project_lsp_startup, true);
+        assert!(config.lsp.project_lsp_startup);
         assert_eq!(config.lsp.startup_timeout_ms, 3000);
-        assert_eq!(config.lsp.enable_fallback, false);
+        assert!(!config.lsp.enable_fallback);
     }
 
     #[test]
@@ -1015,9 +1015,9 @@ enable_fallback = false
         let config = GuiConfig::default();
 
         // Test default values
-        assert_eq!(config.lsp.project_lsp_startup, false);
+        assert!(!config.lsp.project_lsp_startup);
         assert_eq!(config.lsp.startup_timeout_ms, 5000);
-        assert_eq!(config.lsp.enable_fallback, true);
+        assert!(config.lsp.enable_fallback);
         assert_eq!(config.max_tabs, None);
         assert!(config.tab_bar.show);
         assert!(config.tab_bar.show_nav_history_buttons);
@@ -1080,9 +1080,9 @@ enable_fallback = false
             gui: gui_config,
         };
 
-        assert_eq!(config.is_project_lsp_startup_enabled(), true);
+        assert!(config.is_project_lsp_startup_enabled());
         assert_eq!(config.lsp_startup_timeout_ms(), 2000);
-        assert_eq!(config.is_lsp_fallback_enabled(), false);
+        assert!(!config.is_lsp_fallback_enabled());
     }
 
     #[test]
@@ -1114,9 +1114,9 @@ dark_theme = "monokai"
         assert!(gui_config.lsp.validate().is_ok());
 
         // Test all LSP feature flag values
-        assert_eq!(gui_config.lsp.project_lsp_startup, true);
+        assert!(gui_config.lsp.project_lsp_startup);
         assert_eq!(gui_config.lsp.startup_timeout_ms, 3000);
-        assert_eq!(gui_config.lsp.enable_fallback, true);
+        assert!(gui_config.lsp.enable_fallback);
 
         // Test convenience methods via full config
         let config = Config {
@@ -1124,16 +1124,18 @@ dark_theme = "monokai"
             gui: gui_config,
         };
 
-        assert_eq!(config.is_project_lsp_startup_enabled(), true);
+        assert!(config.is_project_lsp_startup_enabled());
         assert_eq!(config.lsp_startup_timeout_ms(), 3000);
-        assert_eq!(config.is_lsp_fallback_enabled(), true);
+        assert!(config.is_lsp_fallback_enabled());
     }
 
     #[test]
     fn test_invalid_lsp_configuration_validation() {
         // Test invalid timeout (0)
-        let mut config = LspConfig::default();
-        config.startup_timeout_ms = 0;
+        let mut config = LspConfig {
+            startup_timeout_ms: 0,
+            ..LspConfig::default()
+        };
         assert!(config.validate().is_err());
 
         // Test invalid timeout (too high)
@@ -1148,8 +1150,10 @@ dark_theme = "monokai"
     #[test]
     fn test_lsp_config_sanitization() {
         // Test sanitizing invalid timeout (0)
-        let mut config = LspConfig::default();
-        config.startup_timeout_ms = 0;
+        let mut config = LspConfig {
+            startup_timeout_ms: 0,
+            ..LspConfig::default()
+        };
         let sanitized = config.sanitized();
         assert_eq!(sanitized.startup_timeout_ms, 5000);
 
@@ -1244,9 +1248,9 @@ priority = 70
         let config: ProjectMarkersConfig =
             toml::from_str(config_str).expect("Failed to parse ProjectMarkersConfig");
 
-        assert_eq!(config.enable_project_markers, true);
+        assert!(config.enable_project_markers);
         assert_eq!(config.detection_timeout_ms, 2000);
-        assert_eq!(config.enable_builtin_fallback, false);
+        assert!(!config.enable_builtin_fallback);
         assert_eq!(config.markers.len(), 2);
 
         let rust_web = config
@@ -1270,9 +1274,9 @@ priority = 70
     fn test_project_markers_config_defaults() {
         let config = ProjectMarkersConfig::default();
 
-        assert_eq!(config.enable_project_markers, false);
+        assert!(!config.enable_project_markers);
         assert_eq!(config.detection_timeout_ms, 1000);
-        assert_eq!(config.enable_builtin_fallback, true);
+        assert!(config.enable_builtin_fallback);
         assert!(config.markers.is_empty());
     }
 

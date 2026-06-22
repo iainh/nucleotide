@@ -127,6 +127,7 @@ impl FrameFixture {
             line_height: self.line_height,
             scroll_line_offset: px(0.0),
             soft_wrap_minimum_columns: EDITOR_MINIMUM_VIEWPORT_COLUMNS,
+            gutter_columns: self.view.gutter_offset(&self.document),
             fg_color: self.fg_color,
             font: self.font.clone(),
             default_text_style: Style::default(),
