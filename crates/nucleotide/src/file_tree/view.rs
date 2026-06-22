@@ -153,6 +153,8 @@ pub struct FileTreeView {
     pending_fs_events: std::collections::HashMap<PathBuf, FileTreeEvent>,
     /// Last file system event time for debouncing
     last_fs_event_time: Option<std::time::Instant>,
+    /// Whether the initial tree load is running in the background.
+    initial_load_in_flight: bool,
 }
 
 impl FileTreeView {
@@ -187,15 +189,11 @@ impl FileTreeView {
             file_watcher: None,
             pending_fs_events: std::collections::HashMap::new(),
             last_fs_event_time: None,
+            initial_load_in_flight: false,
         };
 
         // Auto-select the first entry if there are any entries
-        let entries = instance.tree.visible_entries();
-        if !entries.is_empty() {
-            let path = entries[0].path.clone();
-            instance.selected_path = Some(path.clone());
-            instance.selected_paths.insert(path);
-        }
+        instance.select_first_visible_entry();
 
         // Apply test VCS statuses for demonstration
         instance.apply_test_statuses(cx);
@@ -210,30 +208,7 @@ impl FileTreeView {
         tokio_handle: Option<tokio::runtime::Handle>,
         cx: &mut Context<Self>,
     ) -> Self {
-        let mut tree = FileTree::new(root_path.clone(), config.clone());
-
-        // Load initial tree structure
-        if let Err(e) = tree.load() {
-            error!(error = %e, "Failed to load file tree");
-        }
-
-        // Try to create file watcher if filesystem watching is enabled
-        let file_watcher = if config.watch_filesystem {
-            debug!(root_path = ?root_path, "Attempting to create file system watcher");
-            match FileTreeWatcher::new(root_path.clone()) {
-                Ok(watcher) => {
-                    debug!(root_path = ?root_path, "File system watcher created successfully");
-                    Some(watcher)
-                }
-                Err(e) => {
-                    warn!(error = %e, root_path = ?root_path, "Failed to create file system watcher");
-                    None
-                }
-            }
-        } else {
-            debug!("File system watching disabled in config");
-            None
-        };
+        let tree = FileTree::new(root_path.clone(), config);
 
         let scroll_handle = UniformListScrollHandle::new();
         let horizontal_scroll_handle = ScrollHandle::new();
@@ -254,31 +229,91 @@ impl FileTreeView {
             vertical_scrollbar_state,
             horizontal_scrollbar_state,
             _tokio_handle: tokio_handle,
-            file_watcher,
+            file_watcher: None,
             pending_fs_events: std::collections::HashMap::new(),
             last_fs_event_time: None,
+            initial_load_in_flight: false,
         };
 
-        // Auto-select the first entry if there are any entries
-        let entries = instance.tree.visible_entries();
-        if !entries.is_empty() {
-            let path = entries[0].path.clone();
-            instance.selected_path = Some(path.clone());
-            instance.selected_paths.insert(path);
-        }
+        instance.start_initial_load(cx);
 
         // VCS monitoring will be handled by the global VCS service
         // The file tree will query VCS status at render time via get_vcs_status_for_entry
 
-        // Start file watcher if enabled
-        if instance.file_watcher.is_some() {
-            debug!("Starting file system watcher");
-            instance.start_file_watcher(cx);
-        } else {
-            debug!("No file watcher available, file watching disabled");
+        instance
+    }
+
+    fn select_first_visible_entry(&mut self) {
+        let entries = self.tree.visible_entries();
+        if let Some(entry) = entries.first() {
+            let path = entry.path.clone();
+            self.selected_path = Some(path.clone());
+            self.selected_paths.insert(path);
+        }
+    }
+
+    fn start_initial_load(&mut self, cx: &mut Context<Self>) {
+        if self.initial_load_in_flight {
+            return;
         }
 
-        instance
+        self.initial_load_in_flight = true;
+        let root_path = self.tree.root_path().to_path_buf();
+        let config = self.tree.config().clone();
+
+        cx.spawn(async move |this, cx| {
+            let load_result = cx
+                .background_executor()
+                .spawn(async move {
+                    let mut tree = FileTree::new(root_path, config);
+                    tree.load().map(|_| tree)
+                })
+                .await;
+
+            if let Some(this) = this.upgrade() {
+                this.update(cx, |view, cx| {
+                    view.initial_load_in_flight = false;
+
+                    match load_result {
+                        Ok(tree) => {
+                            let root_path = tree.root_path().to_path_buf();
+                            let watch_filesystem = tree.config().watch_filesystem;
+
+                            view.tree = tree;
+                            view.selected_path = None;
+                            view.selected_paths.clear();
+                            view.select_first_visible_entry();
+
+                            if watch_filesystem {
+                                debug!(root_path = ?root_path, "Attempting to create file system watcher");
+                                match FileTreeWatcher::new(root_path.clone()) {
+                                    Ok(watcher) => {
+                                        debug!(root_path = ?root_path, "File system watcher created successfully");
+                                        view.file_watcher = Some(watcher);
+                                        view.start_file_watcher(cx);
+                                    }
+                                    Err(error) => {
+                                        warn!(
+                                            error = %error,
+                                            root_path = ?root_path,
+                                            "Failed to create file system watcher"
+                                        );
+                                    }
+                                }
+                            } else {
+                                debug!("File system watching disabled in config");
+                            }
+                        }
+                        Err(error) => {
+                            error!(error = %error, "Failed to load file tree");
+                        }
+                    }
+
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
     }
 
     /// Get the current selection
@@ -1925,6 +1960,28 @@ mod tests {
         std::fs::write(root_path.join("main.rs"), "fn main() {}\n").unwrap();
 
         let view = cx.new(|cx| FileTreeView::new(root_path.clone(), test_config(), cx));
+
+        view.read_with(cx, |view, _cx| {
+            assert_eq!(view.selected_path(), Some(&root_path));
+            assert_eq!(view.selected_paths(), vec![root_path]);
+        });
+    }
+
+    #[gpui::test]
+    async fn runtime_constructor_defers_initial_load(cx: &mut TestAppContext) {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root_path = temp_dir.path().to_path_buf();
+        std::fs::write(root_path.join("main.rs"), "fn main() {}\n").unwrap();
+
+        let view =
+            cx.new(|cx| FileTreeView::new_with_runtime(root_path.clone(), test_config(), None, cx));
+
+        view.read_with(cx, |view, _cx| {
+            assert_eq!(view.selected_path(), None);
+            assert!(view.selected_paths().is_empty());
+        });
+
+        cx.run_until_parked();
 
         view.read_with(cx, |view, _cx| {
             assert_eq!(view.selected_path(), Some(&root_path));
