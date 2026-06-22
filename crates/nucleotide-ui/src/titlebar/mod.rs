@@ -25,9 +25,11 @@ pub use linux_titlebar::LinuxTitlebar;
 #[cfg(target_os = "linux")]
 pub use linux_window_controls::LinuxWindowControls;
 
+#[cfg(target_os = "windows")]
+use gpui::px;
 use gpui::{AppContext, Context, Entity, IntoElement, Render, Window};
 #[cfg(not(target_os = "macos"))]
-use gpui::{ParentElement, Styled, div, px};
+use gpui::{ParentElement, Styled, div};
 
 #[cfg(target_os = "windows")]
 const WINDOWS_CONTROL_BUTTON_SIZE: f32 = 46.0;

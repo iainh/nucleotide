@@ -1415,7 +1415,7 @@ fn handle_native_file_navigation(
     let (base_path, targets) = native_file_navigation_targets(context.editor);
 
     for target in targets {
-        if url::Url::parse(&target).is_ok() {
+        if target_is_external_url(&target) {
             return KeymapDispatch::Unhandled;
         }
 
@@ -1434,6 +1434,17 @@ fn handle_native_file_navigation(
     }
 
     KeymapDispatch::Handled
+}
+
+fn target_is_external_url(target: &str) -> bool {
+    if target.len() >= 3 {
+        let bytes = target.as_bytes();
+        if bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && matches!(bytes[2], b'\\' | b'/') {
+            return false;
+        }
+    }
+
+    url::Url::parse(target).is_ok()
 }
 
 fn native_file_navigation_targets(editor: &Editor) -> (PathBuf, Vec<String>) {
@@ -3577,6 +3588,18 @@ mod tests {
             }
             _ => panic!("expected gf to resolve to goto_file"),
         }
+    }
+
+    #[test]
+    fn file_navigation_leaves_real_urls_unhandled() {
+        assert!(target_is_external_url("https://example.com/file.rs"));
+        assert!(target_is_external_url("file:///tmp/file.rs"));
+    }
+
+    #[test]
+    fn file_navigation_accepts_windows_drive_paths() {
+        assert!(!target_is_external_url("C:\\Users\\test\\file.rs"));
+        assert!(!target_is_external_url("D:/a/nucleotide/target.txt"));
     }
 
     #[test]
