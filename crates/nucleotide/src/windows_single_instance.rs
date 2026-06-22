@@ -16,7 +16,7 @@ use windows_sys::Win32::System::Pipes::{
 };
 use windows_sys::Win32::System::Threading::CreateMutexW;
 
-use crate::ExternalOpenRequest;
+use crate::{ExternalOpenFile, ExternalOpenRequest};
 
 const MUTEX_NAME: &str = "Local\\org.spiralpoint.nucleotide.SingleInstance";
 const PIPE_NAME: &str = r"\\.\pipe\org.spiralpoint.nucleotide.open";
@@ -251,10 +251,24 @@ fn open_pipe(pipe_name: windows_sys::core::PCWSTR) -> Result<HANDLE> {
 }
 
 fn request_from_args(args: &Args, dock_action: Option<usize>) -> ExternalOpenRequest {
-    let paths = args.files.keys().cloned().collect::<Vec<_>>();
+    let files = args
+        .files
+        .iter()
+        .flat_map(|(path, positions)| {
+            let positions = if positions.is_empty() {
+                vec![helix_core::Position::default()]
+            } else {
+                positions.clone()
+            };
+
+            positions
+                .into_iter()
+                .map(|position| ExternalOpenFile::new(path.clone(), position))
+        })
+        .collect::<Vec<_>>();
 
     ExternalOpenRequest {
-        paths,
+        files,
         working_directory: args.working_directory.clone(),
         dock_action,
     }
@@ -277,19 +291,43 @@ mod tests {
         let project = PathBuf::from(r"C:\Users\Example\project");
         let file = project.join("src").join("main.rs");
         args.working_directory = Some(project.clone());
-        args.files.insert(file.clone(), vec![Position::default()]);
+        args.files.insert(file.clone(), vec![Position::new(4, 2)]);
 
         let request = request_from_args(&args, Some(1));
 
-        assert_eq!(request.paths, vec![file]);
+        assert_eq!(
+            request.files,
+            vec![ExternalOpenFile::new(file, Position::new(4, 2))]
+        );
         assert_eq!(request.working_directory, Some(project));
         assert_eq!(request.dock_action, Some(1));
     }
 
     #[test]
+    fn request_from_args_preserves_multiple_file_positions() {
+        let mut args = Args::default();
+        let file = PathBuf::from(r"C:\Users\Example\project\src\main.rs");
+        args.files
+            .insert(file.clone(), vec![Position::new(2, 0), Position::new(5, 3)]);
+
+        let request = request_from_args(&args, None);
+
+        assert_eq!(
+            request.files,
+            vec![
+                ExternalOpenFile::new(file.clone(), Position::new(2, 0)),
+                ExternalOpenFile::new(file, Position::new(5, 3)),
+            ]
+        );
+    }
+
+    #[test]
     fn request_json_round_trips_windows_paths() {
         let request = ExternalOpenRequest {
-            paths: vec![PathBuf::from(r"C:\Users\Example\project\src\main.rs")],
+            files: vec![ExternalOpenFile::new(
+                PathBuf::from(r"C:\Users\Example\project\src\main.rs"),
+                Position::new(10, 4),
+            )],
             working_directory: Some(PathBuf::from(r"C:\Users\Example\project")),
             dock_action: None,
         };
@@ -307,7 +345,10 @@ mod tests {
             std::process::id()
         );
         let request = ExternalOpenRequest {
-            paths: vec![PathBuf::from(r"C:\Users\Example\project")],
+            files: vec![ExternalOpenFile::new(
+                PathBuf::from(r"C:\Users\Example\project"),
+                Position::default(),
+            )],
             working_directory: None,
             dock_action: Some(0),
         };

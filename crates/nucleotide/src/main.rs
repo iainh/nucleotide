@@ -327,6 +327,59 @@ fn startup_dock_action() -> Result<Option<usize>> {
 }
 
 #[cfg(target_os = "windows")]
+fn is_nucleotide_url_arg(value: &str) -> bool {
+    value
+        .get(..NUCLEOTIDE_URL_SCHEME.len() + 1)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("nucleotide:"))
+}
+
+#[cfg(target_os = "windows")]
+fn parse_startup_protocol_request<I, S>(args: I) -> Result<Option<ProtocolOpenRequest>>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut argv = args.into_iter();
+    let _program = argv.next();
+
+    let Some(url) = argv.next() else {
+        return Ok(None);
+    };
+
+    let url = url.as_ref();
+    if !is_nucleotide_url_arg(url) {
+        return Ok(None);
+    }
+
+    if argv.next().is_some() {
+        anyhow::bail!("nucleotide:// URL launches cannot be combined with files or other flags");
+    }
+
+    parse_nucleotide_url(url)
+        .with_context(|| format!("unsupported Nucleotide URL: {url}"))
+        .map(Some)
+}
+
+#[cfg(target_os = "windows")]
+fn startup_protocol_request() -> Result<Option<ProtocolOpenRequest>> {
+    parse_startup_protocol_request(std::env::args())
+}
+
+#[cfg(target_os = "windows")]
+fn apply_protocol_request_to_args(args: &mut Args, request: ProtocolOpenRequest) {
+    if let Some(working_directory) = request.working_directory {
+        args.working_directory = Some(working_directory);
+    }
+
+    for file in request.files {
+        args.files
+            .entry(file.path)
+            .and_modify(|positions| positions.push(file.position))
+            .or_insert_with(|| vec![file.position]);
+    }
+}
+
+#[cfg(target_os = "windows")]
 const WINDOWS_APP_USER_MODEL_ID: &str = "org.spiralpoint.nucleotide";
 
 #[cfg(target_os = "windows")]
@@ -363,6 +416,14 @@ fn startup_dock_action() -> Result<Option<usize>> {
     Ok(None)
 }
 
+#[cfg(not(target_os = "windows"))]
+fn startup_protocol_request() -> Result<Option<ProtocolOpenRequest>> {
+    Ok(None)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn apply_protocol_request_to_args(_args: &mut Args, _request: ProtocolOpenRequest) {}
+
 #[instrument]
 fn main() -> Result<()> {
     // Set HELIX_RUNTIME for packaged apps before any Helix runtime lookup occurs.
@@ -372,11 +433,15 @@ fn main() -> Result<()> {
     install_panic_handler();
 
     let initial_dock_action = startup_dock_action()?;
-    let mut args = if initial_dock_action.is_some() {
+    let initial_protocol_request = startup_protocol_request()?;
+    let mut args = if initial_dock_action.is_some() || initial_protocol_request.is_some() {
         Args::default()
     } else {
         nucleotide::cli::parse_args()?
     };
+    if let Some(request) = initial_protocol_request {
+        apply_protocol_request_to_args(&mut args, request);
+    }
 
     helix_loader::initialize_config_file(args.config_file.clone());
     helix_loader::initialize_log_file(args.log_file.clone());
@@ -503,8 +568,48 @@ fn main() -> Result<()> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+struct ExternalOpenPosition {
+    row: usize,
+    col: usize,
+}
+
+impl From<helix_core::Position> for ExternalOpenPosition {
+    fn from(position: helix_core::Position) -> Self {
+        Self {
+            row: position.row,
+            col: position.col,
+        }
+    }
+}
+
+impl From<ExternalOpenPosition> for helix_core::Position {
+    fn from(position: ExternalOpenPosition) -> Self {
+        Self::new(position.row, position.col)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+struct ExternalOpenFile {
+    path: PathBuf,
+    position: ExternalOpenPosition,
+}
+
+impl ExternalOpenFile {
+    fn new(path: PathBuf, position: helix_core::Position) -> Self {
+        Self {
+            path,
+            position: position.into(),
+        }
+    }
+
+    fn path(path: PathBuf) -> Self {
+        Self::new(path, helix_core::Position::default())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 struct ExternalOpenRequest {
-    paths: Vec<PathBuf>,
+    files: Vec<ExternalOpenFile>,
     working_directory: Option<PathBuf>,
     dock_action: Option<usize>,
 }
@@ -512,12 +617,26 @@ struct ExternalOpenRequest {
 impl ExternalOpenRequest {
     fn paths(paths: Vec<PathBuf>) -> Self {
         Self {
-            paths,
+            files: paths.into_iter().map(ExternalOpenFile::path).collect(),
             working_directory: None,
             dock_action: None,
         }
     }
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProtocolOpenFile {
+    path: PathBuf,
+    position: helix_core::Position,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProtocolOpenRequest {
+    files: Vec<ProtocolOpenFile>,
+    working_directory: Option<PathBuf>,
+}
+
+const NUCLEOTIDE_URL_SCHEME: &str = "nucleotide";
 
 fn parse_file_url(url_str: &str) -> Option<PathBuf> {
     if let Ok(url) = Url::parse(url_str)
@@ -526,6 +645,76 @@ fn parse_file_url(url_str: &str) -> Option<PathBuf> {
         return url.to_file_path().ok();
     }
     None
+}
+
+fn path_from_url_query_value(value: &str) -> Option<PathBuf> {
+    if value.is_empty() {
+        None
+    } else if let Some(path) = parse_file_url(value) {
+        Some(path)
+    } else {
+        Some(PathBuf::from(value))
+    }
+}
+
+fn one_based_query_position(line: Option<&str>, column: Option<&str>) -> helix_core::Position {
+    let row = line
+        .and_then(|line| line.parse::<usize>().ok())
+        .unwrap_or(1)
+        .saturating_sub(1);
+    let col = column
+        .and_then(|column| column.parse::<usize>().ok())
+        .unwrap_or(1)
+        .saturating_sub(1);
+
+    helix_core::Position::new(row, col)
+}
+
+fn parse_nucleotide_url(url_str: &str) -> Option<ProtocolOpenRequest> {
+    let url = Url::parse(url_str).ok()?;
+    if url.scheme() != NUCLEOTIDE_URL_SCHEME {
+        return None;
+    }
+
+    let action = url.host_str().unwrap_or_default();
+    if !action.is_empty() && !action.eq_ignore_ascii_case("open") {
+        return None;
+    }
+
+    let mut paths = Vec::new();
+    let mut working_directory = None;
+    let mut line = None;
+    let mut column = None;
+
+    for (key, value) in url.query_pairs() {
+        let value = value.into_owned();
+        match key.as_ref() {
+            "path" | "file" | "url" => {
+                if let Some(path) = path_from_url_query_value(&value) {
+                    paths.push(path);
+                }
+            }
+            "cwd" | "dir" | "directory" | "working_dir" | "working-directory" => {
+                working_directory = path_from_url_query_value(&value);
+            }
+            "line" | "row" => {
+                line = Some(value);
+            }
+            "column" | "col" | "character" => {
+                column = Some(value);
+            }
+            _ => {}
+        }
+    }
+
+    let position = one_based_query_position(line.as_deref(), column.as_deref());
+    Some(ProtocolOpenRequest {
+        files: paths
+            .into_iter()
+            .map(|path| ProtocolOpenFile { path, position })
+            .collect(),
+        working_directory,
+    })
 }
 
 fn open_request_workspace_dir(path: &Path) -> Option<PathBuf> {
@@ -1318,9 +1507,9 @@ fn gui_main(
                         let mut new_working_dir = request.working_directory.clone();
 
                         if new_working_dir.is_none() {
-                            for path in &request.paths {
-                                if path.exists()
-                                    && let Some(dir) = open_request_workspace_dir(path)
+                            for file in &request.files {
+                                if file.path.exists()
+                                    && let Some(dir) = open_request_workspace_dir(&file.path)
                                 {
                                     new_working_dir = Some(dir.clone());
                                     info!(directory = ?dir, "Will change working directory");
@@ -1364,23 +1553,33 @@ fn gui_main(
                             }
                         }
 
-                        // Now open all the files
-                        for path in request.paths {
+                        // Now open all files/folders in the request.
+                        for file in request.files {
+                            let path = file.path;
                             if path.exists() {
-                                // Send OpenFile update to the workspace
-                                cx.update(|cx| {
-                                    workspace_clone.update(cx, |_workspace, cx| {
-                                        cx.emit(Update::Event(
-                                            nucleotide::types::AppEvent::Workspace(
-                                                nucleotide::types::WorkspaceEvent::FileSelected {
-                                                    path: path.clone(),
-                                                    source:
-                                                        nucleotide_events::v2::workspace::SelectionSource::Command,
-                                                },
-                                            ),
-                                        ));
+                                if path.is_file() {
+                                    let position = file.position.into();
+                                    cx.update(|cx| {
+                                        workspace_clone.update(cx, |workspace, cx| {
+                                            workspace.open_file_at(&path, position, cx);
+                                        });
                                     });
-                                });
+                                } else {
+                                    // Send folder selections through the workspace event path.
+                                    cx.update(|cx| {
+                                        workspace_clone.update(cx, |_workspace, cx| {
+                                            cx.emit(Update::Event(
+                                                nucleotide::types::AppEvent::Workspace(
+                                                    nucleotide::types::WorkspaceEvent::FileSelected {
+                                                        path: path.clone(),
+                                                        source:
+                                                            nucleotide_events::v2::workspace::SelectionSource::Command,
+                                                    },
+                                                ),
+                                            ));
+                                        });
+                                    });
+                                }
                             } else {
                                 warn!(file = %path.display(), "File does not exist");
                             }
@@ -1533,6 +1732,127 @@ mod tests {
         assert!(parse_startup_dock_action(["nucl", "--dock-action"]).is_err());
         assert!(parse_startup_dock_action(["nucl", "--dock-action", "abc"]).is_err());
         assert!(parse_startup_dock_action(["nucl", "--dock-action", "0", "extra"]).is_err());
+    }
+
+    #[test]
+    fn nucleotide_url_parser_accepts_focus_only_open() {
+        let request = parse_nucleotide_url("nucleotide://open").unwrap();
+
+        assert!(request.files.is_empty());
+        assert_eq!(request.working_directory, None);
+    }
+
+    #[test]
+    fn nucleotide_url_parser_rejects_other_schemes_and_actions() {
+        assert!(parse_nucleotide_url("https://example.com").is_none());
+        assert!(parse_nucleotide_url("nucleotide://settings").is_none());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn nucleotide_url_parser_decodes_windows_paths() {
+        let request = parse_nucleotide_url(
+            "nucleotide://open?path=C%3A%5CUsers%5CIain%5Cproject&dir=C%3A%5CUsers%5CIain",
+        )
+        .unwrap();
+
+        assert_eq!(
+            request.files,
+            vec![ProtocolOpenFile {
+                path: PathBuf::from(r"C:\Users\Iain\project"),
+                position: helix_core::Position::default(),
+            }]
+        );
+        assert_eq!(
+            request.working_directory,
+            Some(PathBuf::from(r"C:\Users\Iain"))
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn nucleotide_url_parser_accepts_file_urls() {
+        let request = parse_nucleotide_url(
+            "nucleotide://open?url=file%3A%2F%2F%2FC%3A%2FUsers%2FIain%2Fproject%2Fmain.rs",
+        )
+        .unwrap();
+
+        assert_eq!(
+            request.files,
+            vec![ProtocolOpenFile {
+                path: PathBuf::from(r"C:\Users\Iain\project\main.rs"),
+                position: helix_core::Position::default(),
+            }]
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn nucleotide_url_parser_accepts_one_based_line_and_column() {
+        let request = parse_nucleotide_url(
+            "nucleotide://open?path=C%3A%5CUsers%5CIain%5Cproject%5Cmain.rs&line=42&column=7",
+        )
+        .unwrap();
+
+        assert_eq!(
+            request.files,
+            vec![ProtocolOpenFile {
+                path: PathBuf::from(r"C:\Users\Iain\project\main.rs"),
+                position: helix_core::Position::new(41, 6),
+            }]
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn startup_protocol_parser_accepts_single_nucleotide_url() {
+        let request = parse_startup_protocol_request(["nucl", "nucleotide://open"]).unwrap();
+
+        assert_eq!(
+            request,
+            Some(ProtocolOpenRequest {
+                files: Vec::new(),
+                working_directory: None,
+            })
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn startup_protocol_request_applies_positions_to_args() {
+        let request = parse_startup_protocol_request([
+            "nucl",
+            "nucleotide://open?path=C%3A%5CUsers%5CIain%5Cproject%5Cmain.rs&line=3&column=9",
+        ])
+        .unwrap()
+        .unwrap();
+        let mut args = Args::default();
+
+        apply_protocol_request_to_args(&mut args, request);
+
+        assert_eq!(
+            args.files
+                .get(&PathBuf::from(r"C:\Users\Iain\project\main.rs"))
+                .cloned(),
+            Some(vec![helix_core::Position::new(2, 8)])
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn startup_protocol_parser_ignores_normal_cli_args() {
+        assert_eq!(
+            parse_startup_protocol_request(["nucl", "src/main.rs"]).unwrap(),
+            None
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn startup_protocol_parser_rejects_combined_args() {
+        assert!(
+            parse_startup_protocol_request(["nucl", "nucleotide://open", "src/main.rs"]).is_err()
+        );
     }
 
     #[cfg(target_os = "windows")]

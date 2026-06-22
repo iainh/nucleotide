@@ -20,6 +20,8 @@ Adds or removes per-user Windows shell integration for Nucleotide:
   Open with Nucleotide in folder background context menus
   Nucleotide as an Open With application
   Nucleotide App Paths registration for Windows shell launches
+  nucleotide:// URL protocol registration
+  Nucleotide Shell Integration entry in Windows Installed apps
   Optional Open With registration for common source and config file types
   Optional Start Menu shortcut
   Optional user PATH entry for terminal launches
@@ -100,6 +102,25 @@ function Set-RegistryExpandString {
 
     try {
         $key.SetValue($Name, $Value, [Microsoft.Win32.RegistryValueKind]::ExpandString)
+    } finally {
+        $key.Dispose()
+    }
+}
+
+function Set-RegistryDWord {
+    param(
+        [string]$SubKey,
+        [string]$Name,
+        [int]$Value
+    )
+
+    $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($SubKey)
+    if (-not $key) {
+        throw "Could not create registry key: HKCU\$SubKey"
+    }
+
+    try {
+        $key.SetValue($Name, $Value, [Microsoft.Win32.RegistryValueKind]::DWord)
     } finally {
         $key.Dispose()
     }
@@ -436,6 +457,120 @@ function Remove-StartMenuShortcut {
     }
 }
 
+function New-NucleotideIntegrationUninstallCommand {
+    $cmdPath = Join-Path $InstallDir "install-windows-context-menu.cmd"
+    if (Test-Path -LiteralPath $cmdPath) {
+        return "$(Quote-CommandPart $cmdPath) -Uninstall -InstallDir $(Quote-CommandPart $InstallDir)"
+    }
+
+    return "powershell.exe -NoProfile -ExecutionPolicy Bypass -File $(Quote-CommandPart $PSCommandPath) -Uninstall -InstallDir $(Quote-CommandPart $InstallDir)"
+}
+
+function Get-NucleotideDisplayVersion {
+    try {
+        $versionInfo = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($ExePath)
+        if (-not [string]::IsNullOrWhiteSpace($versionInfo.ProductVersion)) {
+            return $versionInfo.ProductVersion.Trim()
+        }
+        if (-not [string]::IsNullOrWhiteSpace($versionInfo.FileVersion)) {
+            return $versionInfo.FileVersion.Trim()
+        }
+    } catch {
+        Write-Warning "Could not read nucl.exe version information: $_"
+    }
+
+    $null
+}
+
+function Register-NucleotideUninstallEntry {
+    Set-RegistryString -SubKey $UninstallKey -Name "DisplayName" -Value "Nucleotide Shell Integration"
+    Set-RegistryString -SubKey $UninstallKey -Name "DisplayIcon" -Value $IconPath
+    $displayVersion = Get-NucleotideDisplayVersion
+    if (-not [string]::IsNullOrWhiteSpace($displayVersion)) {
+        Set-RegistryString -SubKey $UninstallKey -Name "DisplayVersion" -Value $displayVersion
+    }
+    Set-RegistryString -SubKey $UninstallKey -Name "Publisher" -Value "Nucleotide contributors"
+    Set-RegistryString -SubKey $UninstallKey -Name "InstallLocation" -Value $InstallDir
+    Set-RegistryString -SubKey $UninstallKey -Name "UninstallString" -Value (New-NucleotideIntegrationUninstallCommand)
+    Set-RegistryString -SubKey $UninstallKey -Name "Comments" -Value "Removes Nucleotide per-user Explorer, Open With, App Paths, URL protocol, Start Menu, and PATH integration. Delete the extracted package directory separately."
+    Set-RegistryDWord -SubKey $UninstallKey -Name "NoModify" -Value 1
+    Set-RegistryDWord -SubKey $UninstallKey -Name "NoRepair" -Value 1
+}
+
+function Ensure-WindowsShellNotificationsType {
+    if (-not ("Nucleotide.WindowsShellNotifications" -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+namespace Nucleotide
+{
+    public static class WindowsShellNotifications
+    {
+        private static readonly IntPtr HWND_BROADCAST = new IntPtr(0xffff);
+        private const int WM_SETTINGCHANGE = 0x001A;
+        private const int SMTO_ABORTIFHUNG = 0x0002;
+        private const int SHCNE_ASSOCCHANGED = 0x08000000;
+        private const uint SHCNF_IDLIST = 0x0000;
+
+        [DllImport("shell32.dll")]
+        private static extern void SHChangeNotify(
+            int wEventId,
+            uint uFlags,
+            IntPtr dwItem1,
+            IntPtr dwItem2);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern IntPtr SendMessageTimeout(
+            IntPtr hWnd,
+            int Msg,
+            UIntPtr wParam,
+            string lParam,
+            int fuFlags,
+            int uTimeout,
+            out UIntPtr lpdwResult);
+
+        public static void NotifyAssociationChanged()
+        {
+            SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, IntPtr.Zero, IntPtr.Zero);
+        }
+
+        public static void BroadcastEnvironmentChanged()
+        {
+            UIntPtr result;
+            SendMessageTimeout(
+                HWND_BROADCAST,
+                WM_SETTINGCHANGE,
+                UIntPtr.Zero,
+                "Environment",
+                SMTO_ABORTIFHUNG,
+                5000,
+                out result);
+        }
+    }
+}
+'@
+    }
+}
+
+function Notify-WindowsAssociationChanged {
+    try {
+        Ensure-WindowsShellNotificationsType
+        [Nucleotide.WindowsShellNotifications]::NotifyAssociationChanged()
+    } catch {
+        Write-Warning "Could not notify Windows about association changes: $_"
+    }
+}
+
+function Notify-WindowsEnvironmentChanged {
+    try {
+        Ensure-WindowsShellNotificationsType
+        [Nucleotide.WindowsShellNotifications]::BroadcastEnvironmentChanged()
+    } catch {
+        Write-Warning "Could not notify Windows about environment changes: $_"
+    }
+}
+
 $ExplorerEntries = @(
     @{
         Key = "Software\Classes\*\shell\Nucleotide"
@@ -463,7 +598,11 @@ $ApplicationKey = "Software\Classes\Applications\nucl.exe"
 $ApplicationIconKey = "$ApplicationKey\DefaultIcon"
 $ApplicationCommandKey = "$ApplicationKey\shell\open\command"
 $AppPathsKey = "Software\Microsoft\Windows\CurrentVersion\App Paths\nucl.exe"
+$ProtocolKey = "Software\Classes\nucleotide"
+$ProtocolIconKey = "$ProtocolKey\DefaultIcon"
+$ProtocolCommandKey = "$ProtocolKey\shell\open\command"
 $SettingsKey = "Software\SpiralPoint\Nucleotide"
+$UninstallKey = "Software\Microsoft\Windows\CurrentVersion\Uninstall\NucleotideShellIntegration"
 $SourceFileProgId = "Nucleotide.SourceFile"
 $SourceFileProgIdKey = "Software\Classes\$SourceFileProgId"
 $CommonFileTypeExtensions = @(
@@ -484,13 +623,19 @@ if ($Uninstall) {
     }
     Remove-RegistryTree -SubKey $ApplicationKey
     Remove-RegistryTree -SubKey $AppPathsKey
+    Remove-RegistryTree -SubKey $ProtocolKey
     Remove-RegistryTree -SubKey $SourceFileProgIdKey
     $pathRemovalStatus = Remove-InstallDirFromUserPath
     Remove-RegistryTree -SubKey $SettingsKey
+    Remove-RegistryTree -SubKey $UninstallKey
     foreach ($extension in $CommonFileTypeExtensions) {
         Remove-RegistryValue -SubKey "Software\Classes\$extension\OpenWithProgids" -Name $SourceFileProgId
     }
     Remove-StartMenuShortcut
+    Notify-WindowsAssociationChanged
+    if ($pathRemovalStatus -eq "removed") {
+        Notify-WindowsEnvironmentChanged
+    }
     Write-Host "Removed Nucleotide Explorer integration for the current user."
     if ($pathRemovalStatus -eq "removed") {
         Write-Host "Removed Nucleotide from the current user's PATH. Open a new terminal to see the updated PATH."
@@ -516,6 +661,12 @@ Set-RegistryString -SubKey $ApplicationIconKey -Name "" -Value $IconPath
 Set-RegistryString -SubKey $ApplicationCommandKey -Name "" -Value (New-NucleotideCommand -ArgumentToken '"%1"')
 Set-RegistryString -SubKey $AppPathsKey -Name "" -Value $ExePath
 Set-RegistryString -SubKey $AppPathsKey -Name "Path" -Value $InstallDir
+Set-RegistryString -SubKey $ProtocolKey -Name "" -Value "URL:Nucleotide Protocol"
+Set-RegistryString -SubKey $ProtocolKey -Name "URL Protocol" -Value ""
+Set-RegistryString -SubKey $ProtocolKey -Name "AppUserModelID" -Value $AppUserModelId
+Set-RegistryString -SubKey $ProtocolIconKey -Name "" -Value "$IconPath,0"
+Set-RegistryString -SubKey $ProtocolCommandKey -Name "" -Value (New-NucleotideCommand -ArgumentToken '"%1"')
+Register-NucleotideUninstallEntry
 
 if ($RegisterCommonFileTypes) {
     Set-RegistryString -SubKey $SourceFileProgIdKey -Name "" -Value "Nucleotide Source File"
@@ -537,10 +688,13 @@ Write-Host "  Executable: $LauncherPath"
 Write-Host "  Icon:     $IconPath"
 Write-Host "  AppID:    $AppUserModelId"
 Write-Host "  App Paths: nucl.exe"
+Write-Host "  Protocol: nucleotide://"
+Write-Host "  Uninstall: Windows Settings > Installed apps > Nucleotide Shell Integration"
 
 if ($AddToPath) {
     $pathStatus = Add-InstallDirToUserPath
     if ($pathStatus -eq "added") {
+        Notify-WindowsEnvironmentChanged
         Write-Host "  PATH:     added $InstallDir"
         Write-Host "            Open a new terminal to use nucl.exe or nucl.cmd from PATH."
     } else {
@@ -556,3 +710,6 @@ if ($StartMenuShortcut) {
     $shortcutPath = New-NucleotideStartMenuShortcut
     Write-Host "  Shortcut: $shortcutPath"
 }
+
+Notify-WindowsAssociationChanged
+Write-Host "  Shell:    notified Windows about association changes"

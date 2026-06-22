@@ -40,10 +40,24 @@ This registers:
 - `Open with Nucleotide` for drive roots.
 - Nucleotide as an `Open With` application.
 - `nucl.exe` as a per-user Windows App Paths entry for shell launches.
+- `nucleotide://` as a per-user URL protocol.
+- `Nucleotide Shell Integration` in Windows Settings > Installed apps.
 
 The script writes only to current-user registry locations under `HKCU`, so it does not require administrator privileges.
 Explorer entries and Start Menu shortcuts launch `nucl.exe` directly, avoiding the console window used by batch-file launchers.
 The App Paths entry lets Windows shell launchers locate `nucl.exe` without changing terminal `PATH`.
+After install or uninstall, the script notifies Windows that file associations and URL protocol handlers changed so Explorer and Open With pickers can refresh without signing out.
+The URL protocol lets Windows and browser links launch or focus Nucleotide:
+
+```text
+nucleotide://open
+nucleotide://open?path=C%3A%5CUsers%5Cme%5Cproject
+nucleotide://open?url=file%3A%2F%2F%2FC%3A%2FUsers%2Fme%2Fproject%2Fsrc%2Fmain.rs
+nucleotide://open?path=C%3A%5CUsers%5Cme%5Cproject%5Csrc%5Cmain.rs&line=42&column=7
+```
+
+`line` and `column` values are one-based, matching editor UI line numbers.
+When Nucleotide is already running, protocol launches, including file positions, are forwarded to the existing window through the same single-instance channel as file, folder, and Jump List launches.
 
 To also add Nucleotide to the `Open With` picker for common source and config file extensions without changing default apps:
 
@@ -66,12 +80,15 @@ To also add the install directory to the current user's `PATH` for terminal laun
 ```
 
 Open a new terminal after this step to use `nucl.exe` or `nucl.cmd` from `PATH`. The uninstall step removes the `PATH` entry only when this script added it.
+The script broadcasts the user environment change to Windows after adding or removing PATH, but already-running terminals keep their original environment.
 
 To remove the entries:
 
 ```powershell
 .\install-windows-context-menu.cmd -Uninstall
 ```
+
+You can also remove the shell integration from Windows Settings > Installed apps. This removes the per-user Explorer, Open With, App Paths, URL protocol, Start Menu, and PATH integration; delete the extracted package directory separately when you no longer want the binaries.
 
 If the script is run from outside the package directory, pass `-InstallDir`:
 

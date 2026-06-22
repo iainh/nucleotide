@@ -288,7 +288,7 @@ jobs:
             ### Windows
             1. Download and extract `nucleotide-windows-x86_64.zip`.
             2. Run `nucl.exe` from the extracted directory. `nucl.cmd` remains available for terminal launches.
-            3. Optional: run `install-windows-context-menu.cmd` to add per-user Explorer "Open with Nucleotide", Open With app, and App Paths entries; add `-RegisterCommonFileTypes` to list Nucleotide in Open With for common source/config files, add `-StartMenuShortcut` to create a Start Menu shortcut, or add `-AddToPath` for terminal launches.
+            3. Optional: run `install-windows-context-menu.cmd` to add per-user Explorer "Open with Nucleotide", Open With app, App Paths, `nucleotide://`, and Windows Installed apps entries; add `-RegisterCommonFileTypes` to list Nucleotide in Open With for common source/config files, add `-StartMenuShortcut` to create a Start Menu shortcut, or add `-AddToPath` for terminal launches.
             4. Launching files or folders while Nucleotide is already running forwards them to the existing window.
             
             ## Checksums
