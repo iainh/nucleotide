@@ -13,7 +13,9 @@ use crate::titlebar::linux_platform_detector::{
 };
 use crate::titlebar::linux_window_controls::LinuxWindowControls;
 use crate::tokens::{ColorContext, TitleBarTokens};
-use nucleotide_logging::{debug, info, warn};
+use nucleotide_logging::debug;
+#[cfg(debug_assertions)]
+use nucleotide_logging::{info, warn};
 
 #[derive(Debug, Clone)]
 pub struct LinuxTitlebarStyle {
