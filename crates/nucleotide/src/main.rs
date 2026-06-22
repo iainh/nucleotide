@@ -1202,66 +1202,45 @@ fn gui_main(
                     app.post_init(cx);
                 });
 
-                // Start step() as a background task to process LSP events including progress messages
-                let app_for_step = app.downgrade();
-                cx.spawn(async move |cx| {
-                    let mut interval = tokio::time::interval(std::time::Duration::from_millis(200));
-
-                    loop {
-                        interval.tick().await;
-
-                        if let Some(app_entity) = app_for_step.upgrade() {
-                            // Run step() in a non-blocking way to process LSP events
-                            let should_continue = app_entity.update(cx, |app, cx| {
-                                // Use now_or_never to avoid blocking - this processes waiting events
-                                use futures_util::future::FutureExt;
-                                if let Some(_step_result) = app.step(cx).now_or_never() {
-                                    // Step completed immediately, which means events were processed
-                                }
-                                // Continue as long as there are views
-                                app.editor.tree.views().count() > 0
-                            });
-
-                            if !should_continue {
-                                break;
-                            }
-                        } else {
-                            break;
-                        }
-                    }
-                }).detach();
-
-                // Start continuous event processing to fix the now_or_never() cancellation issue
-                app.update(cx, |app, cx| {
-                    app.handle_periodic_maintenance(cx, handle.clone());
-                });
-
-                // Start periodic maintenance timer 
+                // Start event/LSP maintenance after the root workspace has been
+                // returned so first-window construction does less scheduling work.
                 let app_weak = app.downgrade();
                 let handle_for_timer = handle.clone();
-                cx.spawn(async move |cx| {
-                    let mut interval = tokio::time::interval(std::time::Duration::from_millis(200));
+                cx.defer(move |cx| {
+                    if let Some(app_entity) = app_weak.upgrade() {
+                        app_entity.update(cx, |app, cx| {
+                            app.handle_periodic_maintenance(cx, handle_for_timer.clone());
+                        });
+                    }
 
-                    loop {
-                        interval.tick().await;
+                    let app_weak = app_weak.clone();
+                    let handle_for_timer = handle_for_timer.clone();
+                    cx.spawn(async move |cx| {
+                        let mut interval =
+                            tokio::time::interval(std::time::Duration::from_millis(200));
 
-                        if let Some(app_entity) = app_weak.upgrade() {
-                            let should_continue = app_entity.update(cx, |app, cx| {
-                                app.handle_periodic_maintenance(cx, handle_for_timer.clone());
-                                app.editor.tree.views().count() > 0
-                            });
+                        loop {
+                            interval.tick().await;
 
-                            if !should_continue {
+                            if let Some(app_entity) = app_weak.upgrade() {
+                                let should_continue = app_entity.update(cx, |app, cx| {
+                                    app.handle_periodic_maintenance(cx, handle_for_timer.clone());
+                                    app.editor.tree.views().count() > 0
+                                });
+
+                                if !should_continue {
+                                    break;
+                                }
+                            } else {
                                 break;
                             }
-                        } else {
-                            break;
                         }
-                    }
-                }).detach();
+                    })
+                    .detach();
+                });
 
-                // step() is now integrated into handle_periodic_maintenance()
-                // This processes LSP messages including $/progress via the periodic timer above
+                // step() is integrated into handle_periodic_maintenance().
+                // This processes LSP messages including $/progress via the timer above.
 
                 nucleotide_logging::info!("Application initialized with continuous event processing");
 
