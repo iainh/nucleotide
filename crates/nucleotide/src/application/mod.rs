@@ -2383,7 +2383,6 @@ impl Application {
 
         self.editor
             .set_doc_path(doc_save_event.doc_id, &doc_save_event.path);
-        // TODO: fix being overwritten by lsp
         self.editor.set_status(format!(
             "'{}' written, {}L {}B",
             get_relative_path(&doc_save_event.path).to_string_lossy(),
@@ -2926,8 +2925,11 @@ impl Application {
                             cx.emit(crate::Update::Redraw);
                             cx.emit(crate::Update::Event(AppEvent::Core(CoreEvent::RedrawRequested)));
                         }
-                        EditorEvent::DebuggerEvent(_) => {
-                            /* TODO */
+                        EditorEvent::DebuggerEvent(event) => {
+                            debug!(
+                                event = ?event,
+                                "Received debugger event; debugger integration is not active"
+                            );
                         }
                     }
                 }

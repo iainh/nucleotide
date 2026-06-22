@@ -116,7 +116,8 @@ pub enum WorkingStatus {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum VcsProviderType {
     Git,
-    // Future: Mercurial, SVN, etc.
+    Mercurial,
+    Subversion,
 }
 
 /// Type of file change in VCS
@@ -224,6 +225,23 @@ mod tests {
                 path: PathBuf::from("/test/file.rs"),
                 stage_status: status,
                 working_status: Some(WorkingStatus::Modified),
+            };
+        }
+    }
+
+    #[test]
+    fn test_vcs_provider_type_variants() {
+        let provider_types = [
+            VcsProviderType::Git,
+            VcsProviderType::Mercurial,
+            VcsProviderType::Subversion,
+        ];
+
+        for provider_type in provider_types {
+            let _event = Event::DiffProviderStatusChanged {
+                repository_path: PathBuf::from("/test/repository"),
+                provider_type,
+                is_available: true,
             };
         }
     }

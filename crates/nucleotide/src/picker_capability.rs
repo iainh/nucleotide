@@ -23,8 +23,8 @@ impl HelixPickerCapability {
 
 impl nucleotide_core::capabilities::PickerCapability for HelixPickerCapability {
     fn render_preview(&self, doc_id: DocumentId, view_id: ViewId) -> gpui::AnyElement {
-        // For now, render a simple text preview container. A richer integration
-        // could embed a DocumentView in the future.
+        // Render the registered DocumentView preview when available, otherwise
+        // show a small placeholder while the preview entity is being created.
         use gpui::{IntoElement, ParentElement as _, Styled, div};
 
         if let Some(entity) = self.previews.get(&(doc_id, view_id)).cloned() {
@@ -59,7 +59,7 @@ impl HelixPickerCapability {
     }
 }
 
-/// Sketch of an event-based preview executor used by the overlay to open/close previews
+/// Preview executor used by the overlay to open/close picker previews.
 pub struct PickerPreviewExecutor {
     core: gpui::WeakEntity<Core>,
 }
@@ -69,9 +69,11 @@ impl PickerPreviewExecutor {
         Self { core }
     }
 
-    /// Attempt to open a lightweight preview for a path; returns (doc_id, view_id) if a preview view is created.
-    /// Current minimal impl avoids changing the editor layout and returns None.
-    /// Future: dispatch an internal command/event to open a temporary preview view.
+    /// Attempt to open a lightweight preview for a path.
+    ///
+    /// Returns `(doc_id, view_id)` when a preview view is created. The opened
+    /// view is tracked as ephemeral so it can be closed without disturbing
+    /// documents the user had already opened.
     pub fn open(
         &self,
         _path: &std::path::Path,

@@ -381,17 +381,15 @@ impl<T> Render for SmartPopup<T>
 where
     T: IntoElement + Clone + 'static,
 {
-    fn render(&mut self, _window: &mut gpui::Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut gpui::Window, _cx: &mut Context<Self>) -> impl IntoElement {
         if !self.visible {
             return div().id("hidden-popup");
         }
 
-        // TODO: Get window bounds for positioning calculation when API is available
-        // For now, use default positioning
         let estimated_content_size = size(px(300.0), px(200.0));
         let window_bounds = gpui::Bounds {
             origin: gpui::point(px(0.0), px(0.0)),
-            size: size(px(1920.0), px(1080.0)),
+            size: window.viewport_size(),
         };
 
         let position =
