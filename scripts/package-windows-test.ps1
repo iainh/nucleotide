@@ -401,11 +401,20 @@ function Invoke-GrammarCommand {
         $env:HELIX_RUNTIME = $RuntimeDirectory
         $env:CARGO_MANIFEST_DIR = $ManifestDirectory
 
-        Push-Location (Split-Path $PackageExe -Parent)
-        try {
-            Invoke-Checked -Command $PackageExe -Arguments @("--grammar", $Command)
-        } finally {
-            Pop-Location
+        if ($Profile -eq "release") {
+            Push-Location $RepoRoot
+            try {
+                Invoke-Checked -Command "cargo" -Arguments @("run", "-p", "nucleotide", "--", "--grammar", $Command)
+            } finally {
+                Pop-Location
+            }
+        } else {
+            Push-Location (Split-Path $PackageExe -Parent)
+            try {
+                Invoke-Checked -Command $PackageExe -Arguments @("--grammar", $Command)
+            } finally {
+                Pop-Location
+            }
         }
     } finally {
         $env:HELIX_RUNTIME = $oldHelixRuntime
