@@ -1,0 +1,19 @@
+[package]
+name = "nucleotide-process"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+description = "Process spawning helpers for Nucleotide"
+categories = ["text-editors", "gui"]
+rust-version = "1.95"
+
+[dependencies]
+tokio = { workspace = true, optional = true, features = ["process"] }
+
+[features]
+default = []
+tokio = ["dep:tokio"]

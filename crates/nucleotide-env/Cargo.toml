@@ -8,6 +8,7 @@ repository = "https://github.com/iainh/nucleotide"
 
 [dependencies]
 nucleotide-logging.workspace = true
+nucleotide-process = { workspace = true, features = ["tokio"] }
 serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync", "time", "process"] }

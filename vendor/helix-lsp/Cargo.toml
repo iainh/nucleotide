@@ -19,6 +19,7 @@ helix-loader = { git = "https://github.com/helix-editor/helix", rev = "5a8fb732f
 helix-lsp-types = { git = "https://github.com/helix-editor/helix", rev = "5a8fb732f26d6aabe757ffd2108ee66e8ef25236" }
 
 anyhow = "1.0"
+nucleotide-process = { path = "../../crates/nucleotide-process", features = ["tokio"] }
 futures-executor = "0.3"
 futures-util = { version = "0.3", features = ["std", "async-await"], default-features = false }
 globset = "0.4.16"

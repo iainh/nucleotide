@@ -215,7 +215,7 @@ impl ProjectEnvironment {
         let command = shell_command_builder::build_environment_capture_command(&shell, directory)?;
 
         // Convert to tokio command for async execution
-        let mut tokio_command = tokio::process::Command::new(command.get_program());
+        let mut tokio_command = nucleotide_process::tokio_command(command.get_program());
         for arg in command.get_args() {
             tokio_command.arg(arg);
         }
@@ -749,7 +749,7 @@ async fn run_nix_print_dev_env_with_binary(
         fs::create_dir_all(parent)?;
     }
 
-    let mut command = tokio::process::Command::new(nix_binary);
+    let mut command = nucleotide_process::tokio_command(nix_binary);
     command
         .current_dir(directory)
         .arg("--extra-experimental-features")
@@ -784,7 +784,7 @@ async fn run_nix_print_dev_env_with_binary(
 }
 
 async fn wipe_native_flake_profile_history(nix_binary: &Path, profile: &Path) {
-    let mut command = tokio::process::Command::new(nix_binary);
+    let mut command = nucleotide_process::tokio_command(nix_binary);
     command
         .arg("--extra-experimental-features")
         .arg("nix-command flakes")
@@ -907,7 +907,7 @@ pub mod shell_command_builder {
         directory: &Path,
     ) -> Result<Command, ShellEnvironmentError> {
         let shell_name = detect_shell_type(shell);
-        let mut command = Command::new(shell);
+        let mut command = nucleotide_process::command(shell);
 
         if matches!(shell_name, "powershell" | "pwsh") {
             let escaped_dir = quote_path_for_powershell_literal(directory);
@@ -1003,7 +1003,7 @@ pub mod shell_command_builder {
 
     /// Build a generic shell command (for testing)
     pub fn build_shell_command(shell: &str) -> Command {
-        let mut command = Command::new(shell);
+        let mut command = nucleotide_process::command(shell);
         let shell_name = detect_shell_type(shell);
 
         match shell_name {

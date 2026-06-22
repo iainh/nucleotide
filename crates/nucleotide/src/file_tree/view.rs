@@ -963,7 +963,7 @@ impl FileTreeView {
 
                         // We can't use for_each_changed_file as it uses tokio::spawn_blocking
                         // Instead, let's manually call git status
-                        match std::process::Command::new("git")
+                        match nucleotide_process::command("git")
                             .arg("status")
                             .arg("--porcelain")
                             .current_dir(&root_path)

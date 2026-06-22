@@ -8,6 +8,7 @@ repository = "https://github.com/iainh/nucleotide"
 
 [dependencies]
 nucleotide-logging.workspace = true
+nucleotide-process.workspace = true
 nucleotide-types.workspace = true
 nucleotide-events.workspace = true
 helix-vcs.workspace = true

@@ -5126,7 +5126,7 @@ impl Workspace {
         #[cfg(target_os = "windows")]
         {
             use std::io::Write;
-            let mut child = match std::process::Command::new("cmd")
+            let mut child = match nucleotide_process::command("cmd")
                 .args(["/C", "clip"])
                 .stdin(std::process::Stdio::piped())
                 .spawn()
