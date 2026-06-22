@@ -82,15 +82,16 @@ impl EditorAccess for Application {
 }
 
 impl CommandExecution for Application {
-    fn execute_command(&mut self, _command: &str, _args: &[String]) -> Result<(), String> {
-        // This would need to be implemented based on how commands are executed
-        // For now, returning a placeholder
-        Ok(())
+    fn execute_command(&mut self, command: &str, _args: &[String]) -> Result<(), String> {
+        Err(format!(
+            "command execution is not available through editor capabilities: {command}"
+        ))
     }
 
-    fn execute_normal_command(&mut self, _keys: &str) -> Result<(), String> {
-        // This would need to be implemented based on key handling
-        Ok(())
+    fn execute_normal_command(&mut self, keys: &str) -> Result<(), String> {
+        Err(format!(
+            "normal command execution is not available through editor capabilities: {keys}"
+        ))
     }
 }
 
@@ -231,9 +232,10 @@ impl nucleotide_core::ThemeProvider for Application {
 }
 
 impl nucleotide_core::CommandExecutor for Application {
-    fn execute_command(&self, _name: &str, _args: Vec<String>) -> Result<(), String> {
-        // Note: changed to &self to match trait definition
-        Ok(())
+    fn execute_command(&self, name: &str, _args: Vec<String>) -> Result<(), String> {
+        Err(format!(
+            "command execution is not available through command executor: {name}"
+        ))
     }
 
     fn has_command(&self, _name: &str) -> bool {

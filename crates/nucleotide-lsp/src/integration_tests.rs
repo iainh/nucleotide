@@ -9,7 +9,7 @@ mod lsp_lifecycle_integration_tests {
     use std::time::{Duration, Instant};
 
     // use helix_view::{Editor, Document, DocumentId, ViewId};
-    use nucleotide_events::{ProjectLspEvent, ProjectType};
+    use nucleotide_events::{ProjectLspEvent, ProjectType, ServerHealthStatus};
     use nucleotide_logging::{info, warn};
     // use slotmap::SlotMap;
     use tokio::sync::RwLock;
@@ -901,32 +901,26 @@ edition = "2021"
         let _ = helper.cleanup_test_directory().await;
 
         let config = ProjectLspConfig::default();
-        let _lifecycle_manager = ServerLifecycleManager::new(config);
+        let lifecycle_manager = ServerLifecycleManager::new(config);
 
-        // Test without bridge (should use mock ID)
-        let _rust_project = helper
+        let rust_project = helper
             .create_rust_project("editor_integration")
             .await
             .expect("Failed to create test project");
 
-        // TODO: start_server method not yet implemented on ServerLifecycleManager
-        // let result = lifecycle_manager
-        //     .start_server(&rust_project, "rust-analyzer", "rust")
-        //     .await;
+        let managed_server = lifecycle_manager
+            .start_server(&rust_project, "rust-analyzer", "rust")
+            .await
+            .expect("Server startup should succeed with mock implementation");
 
-        // assert!(
-        //     result.is_ok(),
-        //     "Server startup should succeed with mock implementation"
-        // );
-
-        // if let Ok(managed_server) = result {
-        //     assert_eq!(managed_server.server_name, "rust-analyzer");
-        //     assert_eq!(managed_server.language_id, "rust");
-        //     assert_eq!(managed_server.workspace_root, rust_project);
-        // }
-
-        // For now, just test that the lifecycle manager was created successfully
-        // Note: helix_bridge field is private, so we can't test its initial state
+        assert_eq!(managed_server.server_name, "rust-analyzer");
+        assert_eq!(managed_server.language_id, "rust");
+        assert_eq!(managed_server.workspace_root, rust_project);
+        assert!(matches!(
+            managed_server.health_status,
+            ServerHealthStatus::Healthy
+        ));
+        assert!(managed_server.last_health_check.is_none());
 
         let _ = helper.cleanup_test_directory().await;
     }

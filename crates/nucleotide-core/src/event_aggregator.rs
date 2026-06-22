@@ -76,8 +76,7 @@ impl EventAggregator {
                     AppEvent::Integration(e) => handler.handle_integration(e),
                     AppEvent::Diagnostics(e) => handler.handle_diagnostics(e),
                     AppEvent::Core(_) => {
-                        // Core events are handled through the legacy Update system
-                        // Future enhancement: Migrate core events to proper V2 domain events
+                        // Core events are consumed by the workspace Update path.
                     }
                 }
             }
