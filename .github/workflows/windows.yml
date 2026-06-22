@@ -33,9 +33,21 @@ jobs:
           .\scripts\package-windows-test.ps1 `
             -Release `
             -Clean `
-            -SkipFetchGrammars `
-            -SkipBuildGrammars `
             -OutputDir dist\nucleotide-windows-x86_64
+
+      - name: Verify grammar DLLs
+        shell: pwsh
+        run: |
+          $grammarDlls = Get-ChildItem `
+            -Path dist\nucleotide-windows-x86_64\runtime\grammars `
+            -Filter *.dll `
+            -File
+
+          if ($grammarDlls.Count -eq 0) {
+            throw "Windows package does not contain any grammar DLLs."
+          }
+
+          Write-Host "Windows package contains $($grammarDlls.Count) grammar DLL(s)."
 
       - name: Create Windows zip
         shell: pwsh
