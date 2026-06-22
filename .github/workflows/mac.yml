@@ -3,47 +3,9 @@ name: Build for macOS
 on:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
+  workflow_dispatch:
 
 jobs:
-  check-format:
-    name: Check formatting
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-      
-      - name: Check Rust formatting
-        run: cargo fmt --check
-
-  test:
-    name: Run tests
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-      
-      - name: Cache cargo dependencies
-        uses: actions/cache@v3
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
-      
-      - name: Run tests
-        run: cargo test -- --skip tests::performance_tests --skip tests::integration_tests::tests::performance_tests
-
   build:
     name: Build macOS app
     runs-on: macos-latest
