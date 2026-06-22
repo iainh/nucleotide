@@ -1078,6 +1078,7 @@ pub mod engine {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use super::session::{TerminalSession, TerminalSessionCfg};
 
     #[cfg(unix)]
