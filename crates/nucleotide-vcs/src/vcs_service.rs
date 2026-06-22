@@ -115,7 +115,7 @@ fn domain_working_status(status: VcsStatus) -> Option<DomainWorkingStatus> {
 }
 
 fn current_git_head(root_path: &Path) -> Option<String> {
-    let output = std::process::Command::new("git")
+    let output = nucleotide_process::command("git")
         .args(["rev-parse", "--verify", "HEAD"])
         .current_dir(root_path)
         .output()
@@ -860,7 +860,7 @@ fn run_git_status(
     let mut status_map = HashMap::new();
 
     // Run git status --porcelain
-    let output = std::process::Command::new("git")
+    let output = nucleotide_process::command("git")
         .arg("status")
         .arg("--porcelain")
         .current_dir(root_path)

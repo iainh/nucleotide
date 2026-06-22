@@ -4,7 +4,7 @@ use helix_term::args::Args;
 
 fn get_git_commit_hash() -> Option<String> {
     // Try to get git commit hash at runtime
-    if let Ok(output) = std::process::Command::new("git")
+    if let Ok(output) = nucleotide_process::command("git")
         .args(["rev-parse", "--short", "HEAD"])
         .output()
         && output.status.success()

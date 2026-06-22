@@ -4,7 +4,6 @@ use serde_json::Value as JsonValue;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::io::{self, AsyncReadExt, AsyncWriteExt};
-use tokio::process::Command;
 use tokio::sync::Mutex as AsyncMutex;
 
 #[derive(Debug)]
@@ -178,7 +177,7 @@ async fn main() -> Result<()> {
     let args = parse_args()?;
 
     // Start real server child process
-    let mut child = Command::new(&args.server_cmd)
+    let mut child = nucleotide_process::tokio_command(&args.server_cmd)
         .args(&args.server_args)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())

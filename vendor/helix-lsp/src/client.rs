@@ -28,7 +28,7 @@ use std::{future::Future, sync::OnceLock};
 use std::{path::Path, process::Stdio};
 use tokio::{
     io::{BufReader, BufWriter},
-    process::{Child, Command},
+    process::Child,
     sync::{
         mpsc::{channel, UnboundedReceiver, UnboundedSender},
         Notify, OnceCell,
@@ -351,7 +351,7 @@ impl Client {
         // Resolve path to the binary
         let cmd = helix_stdx::env::which(cmd)?;
 
-        let process = Command::new(cmd)
+        let process = nucleotide_process::tokio_command(cmd)
             .envs(server_environment)
             .args(args)
             .stdin(Stdio::piped())

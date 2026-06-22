@@ -3763,6 +3763,7 @@ dependencies = [
  "helix-lsp-types",
  "helix-stdx",
  "log",
+ "nucleotide-process",
  "parking_lot",
  "serde",
  "serde_json",
@@ -5026,6 +5027,7 @@ dependencies = [
  "nucleotide-events",
  "nucleotide-logging",
  "nucleotide-lsp",
+ "nucleotide-process",
  "nucleotide-project",
  "nucleotide-terminal",
  "nucleotide-terminal-panel",
@@ -5093,6 +5095,7 @@ name = "nucleotide-env"
 version = "0.1.0"
 dependencies = [
  "nucleotide-logging",
+ "nucleotide-process",
  "serde_json",
  "tempfile",
  "thiserror 1.0.69",
@@ -5160,11 +5163,19 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "nucleotide-process",
  "serde",
  "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "nucleotide-process"
+version = "0.1.0"
+dependencies = [
+ "tokio",
 ]
 
 [[package]]
@@ -5242,6 +5253,7 @@ dependencies = [
  "nucleotide-core",
  "nucleotide-events",
  "nucleotide-logging",
+ "nucleotide-process",
  "nucleotide-types",
  "pulldown-cmark",
  "raw-window-handle",
@@ -5261,6 +5273,7 @@ dependencies = [
  "helix-view",
  "nucleotide-events",
  "nucleotide-logging",
+ "nucleotide-process",
  "nucleotide-types",
  "tempfile",
 ]
