@@ -72,8 +72,12 @@ impl TitleBar {
         }
     }
 
-    pub fn set_filename(&mut self, filename: String) {
+    pub fn set_filename(&mut self, filename: String) -> bool {
+        if self.filename == filename {
+            return false;
+        }
         self.filename = filename;
+        true
     }
 
     pub fn height(window: &Window) -> gpui::Pixels {
