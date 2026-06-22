@@ -531,6 +531,7 @@ struct MarkdownParser {
     table_alignments: Vec<TableAlignment>,
     table_rows: Vec<Vec<RichText>>,
     current_table_row: Vec<RichText>,
+    in_table: bool,
 }
 
 impl MarkdownParser {
@@ -561,6 +562,7 @@ impl MarkdownParser {
             table_alignments: Vec::new(),
             table_rows: Vec::new(),
             current_table_row: Vec::new(),
+            in_table: false,
         }
     }
 
@@ -636,6 +638,7 @@ impl MarkdownParser {
             Tag::Table(alignments) => {
                 self.table_alignments = alignments.into_iter().map(TableAlignment::from).collect();
                 self.table_rows.clear();
+                self.in_table = true;
             }
             Tag::TableHead | Tag::TableRow => {
                 self.current_table_row.clear();
@@ -657,6 +660,10 @@ impl MarkdownParser {
     fn handle_end(&mut self, tag: TagEnd) {
         match tag {
             TagEnd::Paragraph => {
+                if self.in_table {
+                    return;
+                }
+
                 if let Some(level) = self.heading.take() {
                     self.flush_heading(level);
                 } else if self.block_quote_depth > 0 {
@@ -694,7 +701,10 @@ impl MarkdownParser {
                     self.active_style.italic = false;
                 }
             }
-            TagEnd::Table => self.flush_table(),
+            TagEnd::Table => {
+                self.in_table = false;
+                self.flush_table();
+            }
             TagEnd::TableHead | TagEnd::TableRow => {
                 if !self.current_table_row.is_empty() {
                     self.table_rows
@@ -1324,7 +1334,6 @@ fn render_table(
                 div()
                     .flex()
                     .flex_col()
-                    .h_full()
                     .border_color(style.code_border)
                     .when(column_index > 0, |this| this.border_l_1())
                     .when(row_index > 0, |this| this.border_t_1())
@@ -1409,6 +1418,8 @@ mod tests {
             MarkdownBlock::Table { alignments, rows }
                 if alignments == &[TableAlignment::Left, TableAlignment::Right]
                     && rows.len() == 2
+                    && rows[0].iter().map(RichText::plain_text).collect::<Vec<_>>() == ["A", "B"]
+                    && rows[1].iter().map(RichText::plain_text).collect::<Vec<_>>() == ["left", "right"]
         ));
     }
 
