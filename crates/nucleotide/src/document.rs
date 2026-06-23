@@ -254,7 +254,7 @@ impl Render for DocumentView {
                 editor_content = editor_content.on_key_down(move |ev, _window, cx| {
                     let key = crate::utils::translate_key(&ev.keystroke);
                     input.update(cx, |_, cx| {
-                        cx.emit(InputEvent::Key(key));
+                        cx.emit(InputEvent::key_down(key, ev.is_held));
                     });
                     true
                 });
