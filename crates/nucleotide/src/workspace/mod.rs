@@ -3840,9 +3840,6 @@ impl Workspace {
             info!("Workspace: No file tree to subscribe to");
         }
 
-        // Initialize workspace-specific actions with the input coordinator
-        Self::register_workspace_actions(&input_coordinator);
-
         // Create about window and theme debug overlay
         let about_window = cx.new(|_cx| AboutWindow::new());
         let theme_debug = cx.new(|_cx| nucleotide_ui::ThemeDebugView::new());
@@ -5082,49 +5079,6 @@ impl Workspace {
             this.core.read(cx).dispatch_workspace_event(event);
         }
         this.close_context_menu(cx);
-    }
-
-    /// Register workspace-specific actions with the input coordinator
-    fn register_workspace_actions(coordinator: &Arc<InputCoordinator>) {
-        info!("Registering workspace actions with InputCoordinator");
-
-        // Register ToggleFileTree action (Ctrl+B)
-        coordinator.register_global_action("ToggleFileTree", || {
-            info!("ToggleFileTree action triggered");
-            // This will need to be implemented differently - we need access to workspace
-            // For now, this is just a placeholder structure
-        });
-
-        // Register ShowFileFinder action (Ctrl+P)
-        coordinator.register_global_action("ShowFileFinder", || {
-            info!("ShowFileFinder action triggered");
-            // Placeholder
-        });
-
-        // Register ShowCommandPrompt action (Ctrl+Shift+P)
-        coordinator.register_global_action("ShowCommandPrompt", || {
-            info!("ShowCommandPrompt action triggered");
-            // Placeholder
-        });
-
-        // Register ShowBufferPicker action
-        coordinator.register_global_action("ShowBufferPicker", || {
-            info!("ShowBufferPicker action triggered");
-            // Placeholder
-        });
-
-        // Register focus group navigation actions
-        coordinator.register_global_action("FocusEditor", || {
-            info!("FocusEditor action triggered");
-            // Placeholder
-        });
-
-        coordinator.register_global_action("FocusFileTree", || {
-            info!("FocusFileTree action triggered");
-            // Placeholder
-        });
-
-        info!("Completed workspace action registration");
     }
 
     /// Update the input context based on current focus state
