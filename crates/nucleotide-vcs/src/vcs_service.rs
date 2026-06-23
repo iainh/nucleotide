@@ -477,7 +477,7 @@ impl VcsService {
             change_count = affected_paths.len(),
             "VCS: Refreshing after filesystem changes"
         );
-        self.refresh_status(cx);
+        self.refresh_status_async(cx);
 
         for path in affected_paths {
             self.refresh_diff_metadata_from_disk(&path, cx);
@@ -553,7 +553,7 @@ impl VcsService {
         // In a more sophisticated implementation, we could run git status
         // specifically for these paths
         if paths.len() > 10 && self.root_path.is_some() {
-            self.refresh_status(cx);
+            self.refresh_status_async(cx);
         }
     }
 
@@ -640,7 +640,7 @@ impl VcsService {
                 total_count = picker_paths.len(),
                 "High cache miss ratio, performing full refresh before picker population"
             );
-            self.refresh_status(cx);
+            self.refresh_status_async(cx);
         }
 
         // Now return the bulk results
@@ -745,7 +745,7 @@ impl VcsService {
         }
 
         debug!("VCS: Force refresh requested");
-        self.refresh_status(cx);
+        self.refresh_status_async(cx);
     }
 
     /// Check if a repository is being monitored
@@ -756,41 +756,6 @@ impl VcsService {
     /// Get the root path being monitored
     pub fn root_path(&self) -> Option<&Path> {
         self.root_path.as_deref()
-    }
-
-    /// Internal method to refresh VCS status
-    fn refresh_status(&mut self, cx: &mut Context<Self>) {
-        let root_path = match &self.root_path {
-            Some(path) => path.clone(),
-            None => return,
-        };
-
-        debug!(root_path = %root_path.display(), "VCS: Refreshing status");
-
-        // Perform cache maintenance before refresh
-        self.maintain_cache();
-
-        // Run git status synchronously for now to avoid async issues
-        match run_git_status(&root_path, self.config.max_files) {
-            Ok(new_status) => {
-                debug!(
-                    status_count = new_status.len(),
-                    "VCS: Got git status results"
-                );
-                self.update_status_cache(new_status, cx);
-            }
-            Err(e) => {
-                error!(error = %e, "VCS: Failed to get git status");
-                self.emit_vcs_event(
-                    VcsEvent::Error {
-                        message: format!("Git status failed: {}", e),
-                    },
-                    cx,
-                );
-            }
-        }
-
-        self.last_check = Some(Instant::now());
     }
 
     /// Refresh VCS status without blocking the UI/startup path.
