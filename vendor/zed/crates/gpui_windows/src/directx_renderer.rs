@@ -1,10 +1,11 @@
 use std::{
     slice,
-    sync::{Arc, OnceLock},
+    sync::{Arc, LazyLock},
 };
 
 use anyhow::{Context, Result};
 use gpui_util::ResultExt;
+use parking_lot::RwLock;
 use windows::{
     Win32::{
         Foundation::HWND,
@@ -28,12 +29,15 @@ const RENDER_TARGET_FORMAT: DXGI_FORMAT = DXGI_FORMAT_B8G8R8A8_UNORM;
 // This configuration is used for MSAA rendering on paths only, and it's guaranteed to be supported by DirectX 11.
 const PATH_MULTISAMPLE_COUNT: u32 = 4;
 
+#[derive(Clone, Copy)]
 pub(crate) struct FontInfo {
     pub gamma_ratios: [f32; 4],
     pub grayscale_enhanced_contrast: f32,
     pub subpixel_enhanced_contrast: f32,
     pub is_bgr: bool,
 }
+
+static CACHED_FONT_INFO: LazyLock<RwLock<Option<FontInfo>>> = LazyLock::new(|| RwLock::new(None));
 
 pub(crate) struct DirectXRenderer {
     hwnd: HWND,
@@ -43,7 +47,6 @@ pub(crate) struct DirectXRenderer {
     globals: DirectXGlobalElements,
     pipelines: DirectXRenderPipelines,
     direct_composition: Option<DirectComposition>,
-    font_info: &'static FontInfo,
 
     width: u32,
     height: u32,
@@ -170,7 +173,6 @@ impl DirectXRenderer {
             globals,
             pipelines,
             direct_composition,
-            font_info: Self::get_font_info(),
             width: 1,
             height: 1,
             skip_draws: false,
@@ -188,15 +190,16 @@ impl DirectXRenderer {
             .as_ref()
             .expect("devices missing")
             .device_context;
+        let font_info = Self::get_font_info().context("Getting DirectWrite font information")?;
         update_buffer(
             device_context,
             self.globals.global_params_buffer.as_ref().unwrap(),
             &[GlobalParams {
-                gamma_ratios: self.font_info.gamma_ratios,
+                gamma_ratios: font_info.gamma_ratios,
                 viewport_size: [resources.viewport.Width, resources.viewport.Height],
-                grayscale_enhanced_contrast: self.font_info.grayscale_enhanced_contrast,
-                subpixel_enhanced_contrast: self.font_info.subpixel_enhanced_contrast,
-                is_bgr: self.font_info.is_bgr as u32,
+                grayscale_enhanced_contrast: font_info.grayscale_enhanced_contrast,
+                subpixel_enhanced_contrast: font_info.subpixel_enhanced_contrast,
+                is_bgr: font_info.is_bgr as u32,
                 _pad: [0; 3],
             }],
         )?;
@@ -734,19 +737,24 @@ impl DirectXRenderer {
         })
     }
 
-    pub(crate) fn get_font_info() -> &'static FontInfo {
-        static CACHED_FONT_INFO: OnceLock<FontInfo> = OnceLock::new();
-        CACHED_FONT_INFO.get_or_init(|| unsafe {
-            let factory: IDWriteFactory5 = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED).unwrap();
-            let render_params: IDWriteRenderingParams1 =
-                factory.CreateRenderingParams().unwrap().cast().unwrap();
-            FontInfo {
-                gamma_ratios: gpui::get_gamma_correction_ratios(render_params.GetGamma()),
-                grayscale_enhanced_contrast: render_params.GetGrayscaleEnhancedContrast(),
-                subpixel_enhanced_contrast: render_params.GetEnhancedContrast(),
-                is_bgr: render_params.GetPixelGeometry() == DWRITE_PIXEL_GEOMETRY_BGR,
-            }
-        })
+    pub(crate) fn get_font_info() -> Result<FontInfo> {
+        if let Some(font_info) = *CACHED_FONT_INFO.read() {
+            return Ok(font_info);
+        }
+
+        let mut cached_font_info = CACHED_FONT_INFO.write();
+        if let Some(font_info) = *cached_font_info {
+            return Ok(font_info);
+        }
+
+        let factory: IDWriteFactory5 = unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)? };
+        let font_info = create_direct_write_font_info(&factory)?;
+        *cached_font_info = Some(font_info);
+        Ok(font_info)
+    }
+
+    pub(crate) fn invalidate_font_info() {
+        *CACHED_FONT_INFO.write() = None;
     }
 
     pub(crate) fn mark_drawable(&mut self) {

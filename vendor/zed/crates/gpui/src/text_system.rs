@@ -13,8 +13,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Bounds, DevicePixels, Hsla, Pixels, PlatformTextSystem, Point, Result, SharedString, Size,
-    StrikethroughStyle, TextRenderingMode, UnderlineStyle, px,
+    Bounds, DevicePixels, DirectWriteTextRenderingParams, Hsla, Pixels, PlatformTextSystem, Point,
+    Result, SharedString, Size, StrikethroughStyle, TextRenderingMode, UnderlineStyle, px,
 };
 use anyhow::{Context as _, anyhow};
 use collections::FxHashMap;
@@ -96,6 +96,17 @@ impl TextSystem {
         names.sort_unstable();
         names.dedup();
         names
+    }
+
+    /// Sets DirectWrite-specific text rendering parameters on Windows.
+    pub fn set_direct_write_text_rendering_params(
+        &self,
+        params: Option<DirectWriteTextRenderingParams>,
+    ) -> Result<()> {
+        self.platform_text_system
+            .set_direct_write_text_rendering_params(params)?;
+        self.raster_bounds.write().clear();
+        Ok(())
     }
 
     /// Add a font's data to the text system.
