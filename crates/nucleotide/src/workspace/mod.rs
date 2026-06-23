@@ -4005,13 +4005,6 @@ impl Workspace {
         workspace
     }
 
-    /// Process completion results directly from Helix's completion system
-    fn process_completion_results(&mut self, _cx: &mut Context<Self>) {
-        // Completion results are now processed directly through Helix's completion system
-        // via hooks that we register to capture when Helix has completion results ready
-        // This method is kept as a placeholder for when we implement the hook-based system
-    }
-
     /// Rescan a single directory and update the file tree entries for that folder only
     fn rescan_directory(&mut self, dir: &Path, cx: &mut Context<Self>) {
         if let Some(ref file_tree) = self.file_tree {
@@ -10834,13 +10827,6 @@ impl Workspace {
         self.start_completion_request(cursor, doc_id, view_id, LspCompletionTrigger::Manual, cx);
     }
 
-    // REMOVED: Old completion coordinator initialization method replaced by event-based approach
-    // See the implementation at the end of the file that uses the event system
-
-    // REMOVED: Complex cross-thread completion methods replaced by event-based approach
-    // The Application now handles completion results and emits Update::Completion events
-    // which the workspace receives via the existing event subscription
-
     /// Handle completion acceptance via Helix's transaction system
     fn handle_completion_via_helix(&mut self, item_index: usize, cx: &mut Context<Self>) {
         nucleotide_logging::info!(
@@ -11983,9 +11969,6 @@ impl Render for Workspace {
             }
             self.needs_file_tree_refresh = false;
         }
-
-        // Process completion results from the coordinator
-        self.process_completion_results(cx);
 
         self.sync_file_tree_width_for_viewport(f32::from(window.viewport_size().width));
 

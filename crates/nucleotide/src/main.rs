@@ -1158,9 +1158,8 @@ fn gui_main(
 
                 nucleotide_logging::info!("Application initialized with continuous event processing");
 
-                // Completion is now handled directly through Helix's completion system
-                nucleotide_logging::info!("Using direct Helix completion integration - no coordinator needed");
-
+                // Completion is handled directly through Helix's completion events.
+                nucleotide_logging::info!("Using direct Helix completion integration");
 
                 cx.activate(true);
                 cx.set_menus(app_menus());
@@ -1346,7 +1345,6 @@ fn gui_main(
                 // Create workspace
 
                 let workspace = cx.new(|cx| {
-                    // With direct Helix integration, we no longer need completion coordinator channels
                     let mut workspace = workspace::Workspace::with_views(
                         app,
                         input_1.clone(),

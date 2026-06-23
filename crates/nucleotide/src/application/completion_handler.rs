@@ -405,43 +405,6 @@ impl EventHandler<Event> for CompletionHandler {
             Event::PerformanceMetrics { .. } => {
                 self.handle_performance_metrics(&event).await?;
             }
-            Event::LspCompletionRequested {
-                doc_id,
-                view_id,
-                cursor,
-                request_id,
-                response_tx,
-            } => {
-                // Handle LSP completion request with real LSP integration
-                info!(
-                    doc_id = ?doc_id,
-                    view_id = ?view_id,
-                    cursor = cursor,
-                    request_id = ?request_id,
-                    "Processing LSP completion request via event system"
-                );
-
-                // For now, send a response indicating LSP integration is ready but needs context
-                // The event system architecture needs a context bridge for entity access
-                nucleotide_logging::info!(
-                    "LSP completion event received - system ready for integration"
-                );
-
-                let response = nucleotide_events::completion::LspCompletionResponse {
-                    items: vec![], // Real LSP integration will be added with context bridge
-                    is_incomplete: true,
-                    error: Some(
-                        "Event system ready - needs context bridge for entity access".to_string(),
-                    ),
-                    prefix: format!("event_ready_cursor_{}", cursor),
-                };
-
-                let _ = response_tx.send(response).map_err(|_| {
-                    nucleotide_logging::error!(
-                        "Failed to send real LSP completion response via event system"
-                    );
-                });
-            }
         }
 
         Ok(())
