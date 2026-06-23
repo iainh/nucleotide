@@ -22,21 +22,6 @@ pub enum CoreEvent {
         query: String,
     },
 
-    // Document events
-    DocumentChanged {
-        doc_id: helix_view::DocumentId,
-    },
-    DocumentOpened {
-        doc_id: helix_view::DocumentId,
-    },
-    DocumentClosed {
-        doc_id: helix_view::DocumentId,
-    },
-    DocumentSaved {
-        doc_id: helix_view::DocumentId,
-        path: Option<String>,
-    },
-
     // Editor/view events
     SelectionChanged {
         doc_id: helix_view::DocumentId,
@@ -48,9 +33,6 @@ pub enum CoreEvent {
     ModeChanged {
         old_mode: helix_view::document::Mode,
         new_mode: helix_view::document::Mode,
-    },
-    DiagnosticsChanged {
-        doc_id: helix_view::DocumentId,
     },
     CompletionRequested {
         doc_id: helix_view::DocumentId,

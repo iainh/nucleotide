@@ -108,9 +108,6 @@ pub enum Update {
     },
     OpenFile(std::path::PathBuf),
     OpenDirectory(std::path::PathBuf),
-    DocumentChanged {
-        doc_id: helix_view::DocumentId,
-    },
     SelectionChanged {
         doc_id: helix_view::DocumentId,
         view_id: helix_view::ViewId,
@@ -118,15 +115,6 @@ pub enum Update {
     ModeChanged {
         old_mode: helix_view::document::Mode,
         new_mode: helix_view::document::Mode,
-    },
-    DiagnosticsChanged {
-        doc_id: helix_view::DocumentId,
-    },
-    DocumentOpened {
-        doc_id: helix_view::DocumentId,
-    },
-    DocumentClosed {
-        doc_id: helix_view::DocumentId,
     },
     ViewFocused {
         view_id: helix_view::ViewId,
@@ -188,16 +176,12 @@ impl std::fmt::Debug for Update {
             Update::RegexSelectionSubmitted { action, regex } => {
                 write!(f, "RegexSelectionSubmitted({action:?}, {regex:?})")
             }
-            Update::DocumentChanged { doc_id } => write!(f, "DocumentChanged({doc_id:?})"),
             Update::SelectionChanged { doc_id, view_id } => {
                 write!(f, "SelectionChanged(doc: {doc_id:?}, view: {view_id:?})")
             }
             Update::ModeChanged { old_mode, new_mode } => {
                 write!(f, "ModeChanged({old_mode:?} -> {new_mode:?})")
             }
-            Update::DiagnosticsChanged { doc_id } => write!(f, "DiagnosticsChanged({doc_id:?})"),
-            Update::DocumentOpened { doc_id } => write!(f, "DocumentOpened({doc_id:?})"),
-            Update::DocumentClosed { doc_id } => write!(f, "DocumentClosed({doc_id:?})"),
             Update::ViewFocused { view_id } => write!(f, "ViewFocused({view_id:?})"),
             Update::LanguageServerInitialized { server_id } => {
                 write!(f, "LanguageServerInitialized({server_id:?})")

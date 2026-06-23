@@ -963,9 +963,20 @@ impl OverlayView {
                                                 *ls_id,
                                             );
                                             for doc_id in changed_documents {
-                                                core_cx.emit(crate::Update::DocumentChanged {
-                                                    doc_id,
-                                                });
+                                                let revision = core
+                                                    .editor
+                                                    .document_mut(doc_id)
+                                                    .map(|doc| doc.get_current_revision() as u64)
+                                                    .unwrap_or_default();
+                                                core_cx.emit(crate::Update::Event(
+                                                    crate::types::AppEvent::Document(
+                                                        nucleotide_events::v2::document::Event::ContentChanged {
+                                                            doc_id,
+                                                            revision,
+                                                            change_summary: nucleotide_events::v2::document::ChangeType::Bulk,
+                                                        },
+                                                    ),
+                                                ));
                                             }
                                             core_cx.notify();
                                         });
