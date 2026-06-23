@@ -13,12 +13,13 @@ use helix_view::{
     view::ViewPosition,
 };
 use nucleotide_editor::{
-    EDITOR_MINIMUM_VIEWPORT_COLUMNS, EditorDocumentFrame, EditorDocumentFrameParams,
-    EditorLineHighlightContext, EditorViewport, EditorViewportSurfaceLayout,
-    SoftWrapHighlightedLineRunsBatchParams, SoftWrapVisualLine, UnwrappedHighlightedLine,
-    UnwrappedHighlightedLinesParams, VisibleLinePlan, document_soft_wrap_render_plan,
-    editor_document_frame, line_viewport_plan, soft_wrap_highlighted_line_runs_batch,
-    unwrapped_highlighted_lines, unwrapped_visible_line_plans,
+    EDITOR_MINIMUM_VIEWPORT_COLUMNS, EditorCursorReveal, EditorDocumentFrame,
+    EditorDocumentFrameParams, EditorLineHighlightContext, EditorViewport,
+    EditorViewportSurfaceLayout, SoftWrapHighlightedLineRunsBatchParams, SoftWrapVisualLine,
+    UnwrappedHighlightedLine, UnwrappedHighlightedLinesParams, VisibleLinePlan,
+    document_soft_wrap_render_plan, editor_document_frame, line_viewport_plan,
+    soft_wrap_highlighted_line_runs_batch, unwrapped_highlighted_lines,
+    unwrapped_visible_line_plans,
 };
 
 const LARGE_LINE_COUNT: usize = 20_000;
@@ -289,6 +290,33 @@ impl ViewportFixture {
             ),
         )
     }
+
+    fn reveal_cursor_at_line(
+        &mut self,
+        line_idx: usize,
+    ) -> nucleotide_editor::EditorViewportSurfaceUpdate {
+        let cursor = {
+            let text = self.document.text();
+            let line_idx = line_idx.min(text.len_lines().saturating_sub(1));
+            text.line_to_char(line_idx)
+        };
+        self.document
+            .set_selection(self.view_id, Selection::single(cursor, cursor));
+
+        self.viewport.sync_surface_layout_for_view(
+            &mut self.document,
+            &mut self.view,
+            self.view_id,
+            EditorViewportSurfaceLayout::for_editor(
+                Some(&self.theme),
+                self.bounds,
+                self.cell_width,
+                self.line_height,
+                5,
+                Some(EditorCursorReveal::Scrolloff),
+            ),
+        )
+    }
 }
 
 fn bench_frame_prep(c: &mut Criterion) {
@@ -333,6 +361,51 @@ fn bench_soft_wrap_viewport_sync(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_cursor_reveal_viewport_sync(c: &mut Criterion) {
+    let mut group = c.benchmark_group("cursor_reveal_viewport_sync");
+
+    group.bench_function("soft_wrap_static_deep_cursor", |b| {
+        b.iter_batched(
+            || {
+                (
+                    ViewportFixture::new(LARGE_LINE_COUNT, LONG_LINE_LEN),
+                    LARGE_LINE_COUNT / 2,
+                )
+            },
+            |(mut fixture, line)| {
+                for _ in 0..32 {
+                    black_box(fixture.reveal_cursor_at_line(line));
+                }
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    group.bench_function("soft_wrap_moving_deep_cursor", |b| {
+        b.iter_batched(
+            || {
+                (
+                    ViewportFixture::new(LARGE_LINE_COUNT, LONG_LINE_LEN),
+                    LARGE_LINE_COUNT / 2,
+                )
+            },
+            |(mut fixture, mut line)| {
+                for _ in 0..32 {
+                    line = if line + 1 < LARGE_LINE_COUNT {
+                        line + 1
+                    } else {
+                        LARGE_LINE_COUNT / 2
+                    };
+                    black_box(fixture.reveal_cursor_at_line(line));
+                }
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    group.finish();
+}
+
 fn bench_visible_highlighting(c: &mut Criterion) {
     let mut group = c.benchmark_group("scrolling_visible_highlights");
     let first_row = LARGE_LINE_COUNT / 2;
@@ -355,6 +428,7 @@ criterion_group!(
     benches,
     bench_frame_prep,
     bench_soft_wrap_viewport_sync,
+    bench_cursor_reveal_viewport_sync,
     bench_visible_highlighting
 );
 criterion_main!(benches);
