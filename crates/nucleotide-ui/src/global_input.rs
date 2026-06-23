@@ -58,6 +58,11 @@ impl FocusCoordinator {
             *slot = Some(h);
         }
     }
+    pub fn clear_completion_focus(&self) {
+        if let Ok(mut slot) = self.completion.write() {
+            *slot = None;
+        }
+    }
     pub fn completion_focus(&self) -> Option<FocusHandle> {
         self.completion.read().ok().and_then(|g| g.clone())
     }
@@ -65,6 +70,11 @@ impl FocusCoordinator {
     pub fn set_prompt_focus(&self, h: FocusHandle) {
         if let Ok(mut slot) = self.prompt.write() {
             *slot = Some(h);
+        }
+    }
+    pub fn clear_prompt_focus(&self) {
+        if let Ok(mut slot) = self.prompt.write() {
+            *slot = None;
         }
     }
     pub fn prompt_focus(&self) -> Option<FocusHandle> {
@@ -83,6 +93,11 @@ impl FocusCoordinator {
     pub fn set_picker_focus(&self, h: FocusHandle) {
         if let Ok(mut slot) = self.picker.write() {
             *slot = Some(h);
+        }
+    }
+    pub fn clear_picker_focus(&self) {
+        if let Ok(mut slot) = self.picker.write() {
+            *slot = None;
         }
     }
     pub fn picker_focus(&self) -> Option<FocusHandle> {
@@ -1880,6 +1895,19 @@ mod tests {
             manager.priorities.get("test-group"),
             Some(&FocusPriority::Normal)
         );
+    }
+
+    #[test]
+    fn focus_coordinator_clear_methods_are_idempotent() {
+        let coordinator = FocusCoordinator::default();
+
+        coordinator.clear_picker_focus();
+        coordinator.clear_prompt_focus();
+        coordinator.clear_completion_focus();
+
+        assert!(coordinator.picker_focus().is_none());
+        assert!(coordinator.prompt_focus().is_none());
+        assert!(coordinator.completion_focus().is_none());
     }
 
     #[test]

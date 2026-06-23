@@ -6954,7 +6954,7 @@ impl Workspace {
 
         // Clear the overlay first to hide the prompt
         self.overlay.update(cx, |overlay, cx| {
-            overlay.clear(cx);
+            overlay.dismiss_all(cx);
         });
 
         // We need to execute the search directly in Helix since we've replaced the prompt
@@ -7092,7 +7092,7 @@ impl Workspace {
         info!(query = query, "Global search submitted");
 
         self.overlay.update(cx, |overlay, cx| {
-            overlay.clear(cx);
+            overlay.dismiss_all(cx);
         });
 
         if query.is_empty() {
@@ -7179,7 +7179,7 @@ impl Workspace {
         );
 
         self.overlay.update(cx, |overlay, cx| {
-            overlay.clear(cx);
+            overlay.dismiss_all(cx);
         });
 
         if regex_text.is_empty() {
@@ -7347,7 +7347,8 @@ impl Workspace {
             };
 
             // Clear the overlay and dispatch the event
-            self.overlay.update(cx, |overlay, cx| overlay.clear(cx));
+            self.overlay
+                .update(cx, |overlay, cx| overlay.dismiss_all(cx));
             self.dispatch_workspace_file_op_and_process(event, cx);
 
             if let Some(notification) = lsp_file_operation
@@ -7365,7 +7366,8 @@ impl Workspace {
         // No pending file op: proceed with normal command handling
 
         // Clear the overlay first to hide the prompt
-        self.overlay.update(cx, |overlay, cx| overlay.clear(cx));
+        self.overlay
+            .update(cx, |overlay, cx| overlay.dismiss_all(cx));
 
         if self.handle_runnable_command(command, cx) {
             return;
@@ -11916,10 +11918,7 @@ impl Render for Workspace {
                     cx,
                     &[
                         nucleotide_ui::FocusRole::Terminal,
-                        nucleotide_ui::FocusRole::Picker,
-                        nucleotide_ui::FocusRole::Prompt,
                         nucleotide_ui::FocusRole::FileTree,
-                        nucleotide_ui::FocusRole::Completion,
                     ],
                 );
             } else {
