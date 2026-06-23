@@ -8207,18 +8207,12 @@ impl Workspace {
                 self.handle_regex_selection_submitted(*action, regex, cx)
             }
             // Helix event bridge - respond to automatic Helix events
-            crate::Update::DocumentChanged { doc_id } => self.handle_document_changed(*doc_id, cx),
             crate::Update::SelectionChanged { doc_id, view_id } => {
                 self.handle_selection_changed(*doc_id, *view_id, cx)
             }
             crate::Update::ModeChanged { old_mode, new_mode } => {
                 self.handle_mode_changed(old_mode, new_mode, cx)
             }
-            crate::Update::DiagnosticsChanged { doc_id } => {
-                self.handle_diagnostics_changed(*doc_id, cx)
-            }
-            crate::Update::DocumentOpened { doc_id } => self.handle_document_opened(*doc_id, cx),
-            crate::Update::DocumentClosed { doc_id } => self.handle_document_closed(*doc_id, cx),
             crate::Update::ViewFocused { view_id } => self.handle_view_focused(*view_id, cx),
             crate::Update::LanguageServerInitialized { server_id, .. } => {
                 self.handle_language_server_initialized(*server_id, cx)
@@ -8268,31 +8262,11 @@ impl Workspace {
                                     cx,
                                 );
                             }
-                            crate::types::CoreEvent::DocumentChanged { doc_id } => {
-                                self.handle_document_changed(*doc_id, cx);
-                            }
                             crate::types::CoreEvent::SelectionChanged { doc_id, view_id } => {
                                 self.handle_selection_changed(*doc_id, *view_id, cx);
                             }
                             crate::types::CoreEvent::ModeChanged { old_mode, new_mode } => {
                                 self.handle_mode_changed(old_mode, new_mode, cx);
-                            }
-                            crate::types::CoreEvent::DiagnosticsChanged { doc_id } => {
-                                self.handle_diagnostics_changed(*doc_id, cx);
-                            }
-                            crate::types::CoreEvent::DocumentOpened { doc_id } => {
-                                self.handle_document_opened(*doc_id, cx);
-                            }
-                            crate::types::CoreEvent::DocumentClosed { doc_id } => {
-                                self.handle_document_closed(*doc_id, cx);
-                            }
-                            crate::types::CoreEvent::DocumentSaved { doc_id, path } => {
-                                debug!(
-                                    doc_id = ?doc_id,
-                                    path = ?path,
-                                    "Document saved notification received"
-                                );
-                                self.push_document_saved_notification(path.as_deref(), cx);
                             }
                             crate::types::CoreEvent::ViewFocused { view_id } => {
                                 self.handle_view_focused(*view_id, cx);
@@ -9516,60 +9490,9 @@ impl Workspace {
         data: &nucleotide_events::integration::UiEditorSyncData,
         cx: &mut Context<Self>,
     ) {
-        use nucleotide_events::integration::{
-            FileTreeAction, TabBarAction, UiEditorSyncData, UiEditorSyncType,
-        };
+        use nucleotide_events::integration::{UiEditorSyncData, UiEditorSyncType};
 
         match (sync_type, data) {
-            (
-                UiEditorSyncType::DocumentViewRefresh,
-                UiEditorSyncData::DocumentViewData { doc_id, .. },
-            ) => {
-                self.update_specific_document_view(*doc_id, cx);
-            }
-            (
-                UiEditorSyncType::SaveIndicatorUpdate,
-                UiEditorSyncData::SaveIndicatorData { doc_id, .. },
-            ) => {
-                self.update_specific_document_view(*doc_id, cx);
-                cx.notify();
-            }
-            (
-                UiEditorSyncType::DiagnosticIndicatorUpdate,
-                UiEditorSyncData::DiagnosticData { doc_id, .. },
-            ) => {
-                self.handle_diagnostics_changed(*doc_id, cx);
-            }
-            (
-                UiEditorSyncType::FileTreeUpdate,
-                UiEditorSyncData::FileTreeData { doc_id, action },
-            ) => {
-                match action {
-                    FileTreeAction::Refresh => {
-                        if let Some(file_tree) = &self.file_tree {
-                            file_tree.update(cx, |_tree, cx| cx.notify());
-                        }
-                    }
-                    FileTreeAction::HighlightDocument | FileTreeAction::ShowDocument => {
-                        self.sync_file_tree_selection_for_document(*doc_id, cx);
-                    }
-                }
-                cx.notify();
-            }
-            (UiEditorSyncType::TabBarUpdate, UiEditorSyncData::TabBarData { doc_id, action }) => {
-                match action {
-                    TabBarAction::AddTab => self.ensure_document_in_order(*doc_id),
-                    TabBarAction::RemoveTab => {
-                        self.document_order
-                            .retain(|candidate| *candidate != *doc_id);
-                    }
-                    TabBarAction::UpdateTab
-                    | TabBarAction::HighlightTab
-                    | TabBarAction::ShowSaveIndicator
-                    | TabBarAction::HideSaveIndicator => {}
-                }
-                cx.notify();
-            }
             (UiEditorSyncType::ModeSync, UiEditorSyncData::ModeData { .. }) => {
                 self.update_current_document_view(cx);
                 cx.notify();
@@ -9633,28 +9556,6 @@ impl Workspace {
                     .then_some(doc_id)
             })
             .copied()
-    }
-
-    fn sync_file_tree_selection_for_document(
-        &mut self,
-        doc_id: helix_view::DocumentId,
-        cx: &mut Context<Self>,
-    ) {
-        let doc_path = {
-            let core = self.core.read(cx);
-            core.editor
-                .document(doc_id)
-                .and_then(|doc| doc.path())
-                .map(|path| path.to_path_buf())
-        };
-
-        if let Some(path) = doc_path
-            && let Some(file_tree) = &self.file_tree
-        {
-            file_tree.update(cx, |tree, cx| {
-                tree.sync_selection_with_file(Some(path.as_path()), cx);
-            });
-        }
     }
 
     fn update_key_hints(&mut self, cx: &mut Context<Self>) {

@@ -386,12 +386,16 @@ impl Application {
         }
 
         for bridged_event in bridged_events {
-            if let Err(error) = handle.block_on(self.process_v2_event(&bridged_event)) {
-                warn!(
-                    error = %error,
-                    bridged_event = ?bridged_event,
-                    "Failed to process bridged event from maintenance path"
-                );
+            match handle.block_on(self.process_v2_event(&bridged_event)) {
+                Ok(Some(event)) => cx.emit(crate::Update::Event(event)),
+                Ok(None) => {}
+                Err(error) => {
+                    warn!(
+                        error = %error,
+                        bridged_event = ?bridged_event,
+                        "Failed to process bridged event from maintenance path"
+                    );
+                }
             }
 
             self.handle_bridged_event_with_gpui_context(&bridged_event, cx);
@@ -808,12 +812,12 @@ impl Application {
     async fn process_v2_event(
         &mut self,
         bridged_event: &event_bridge::BridgedEvent,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<Option<AppEvent>, Box<dyn std::error::Error + Send + Sync>> {
         use nucleotide_events::v2::document::Event as DocumentEvent;
         use nucleotide_events::v2::handler::EventHandler;
 
         // Process V2 events for all supported event types
-        match bridged_event {
+        let event = match bridged_event {
             event_bridge::BridgedEvent::DocumentChanged {
                 doc_id,
                 change_summary,
@@ -838,14 +842,7 @@ impl Application {
                     revision = revision,
                     "Processing DocumentChanged through V2 handler"
                 );
-                self.core
-                    .document_handler
-                    .handle(v2_event)
-                    .await
-                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
-
-                // Emit UI update events for document changes
-                self.emit_document_ui_events(*doc_id, revision).await;
+                self.handle_document_v2_event(v2_event).await?
             }
 
             event_bridge::BridgedEvent::SelectionChanged { doc_id, view_id } => {
@@ -860,6 +857,7 @@ impl Application {
                     .handle(v2_event)
                     .await
                     .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+                None
             }
 
             event_bridge::BridgedEvent::ModeChanged { old_mode, new_mode } => {
@@ -879,6 +877,7 @@ impl Application {
                     .handle(v2_event)
                     .await
                     .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+                None
             }
 
             event_bridge::BridgedEvent::DocumentOpened { doc_id } => {
@@ -901,14 +900,7 @@ impl Application {
                 };
 
                 debug!(doc_id = ?doc_id, "Processing DocumentOpened through V2 handler");
-                self.core
-                    .document_handler
-                    .handle(v2_event)
-                    .await
-                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
-
-                // Emit UI update events for document opened
-                self.emit_document_opened_ui_events(*doc_id).await;
+                self.handle_document_v2_event(v2_event).await?
             }
 
             event_bridge::BridgedEvent::DocumentClosed {
@@ -922,14 +914,7 @@ impl Application {
                 };
 
                 debug!(doc_id = ?doc_id, "Processing DocumentClosed through V2 handler");
-                self.core
-                    .document_handler
-                    .handle(v2_event)
-                    .await
-                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
-
-                // Emit UI update events for document closed
-                self.emit_document_closed_ui_events(*doc_id).await;
+                self.handle_document_v2_event(v2_event).await?
             }
 
             event_bridge::BridgedEvent::DiagnosticsChanged { doc_id } => {
@@ -970,15 +955,7 @@ impl Application {
                     diagnostic_count = diagnostic_count,
                     "DIAG: Processing DiagnosticsChanged through V2 handler"
                 );
-                self.core
-                    .document_handler
-                    .handle(v2_event)
-                    .await
-                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
-
-                // Emit UI update events for diagnostics changes
-                self.emit_diagnostics_ui_events(*doc_id, error_count, warning_count)
-                    .await;
+                self.handle_document_v2_event(v2_event).await?
             }
 
             event_bridge::BridgedEvent::ViewFocused { view_id } => {
@@ -1006,6 +983,7 @@ impl Application {
                 } else {
                     nucleotide_logging::warn!(view_id = ?view_id, "Ignoring focus event for unknown view");
                 }
+                None
             }
 
             event_bridge::BridgedEvent::LanguageServerInitialized { .. }
@@ -1018,146 +996,26 @@ impl Application {
                     event = ?bridged_event,
                     "Bridged event is handled by the GPUI context loop"
                 );
+                None
             }
-        }
-
-        Ok(())
-    }
-
-    /// Emit UI events when a document changes
-    async fn emit_document_ui_events(&mut self, doc_id: helix_view::DocumentId, revision: u64) {
-        use nucleotide_events::integration::{
-            Event as IntegrationEvent, UiEditorSyncData, UiEditorSyncType,
         };
 
-        debug!(doc_id = ?doc_id, revision = revision, "Emitting document UI update events");
-
-        // Emit document view refresh event
-        let view_refresh_event = IntegrationEvent::ui_editor_sync(
-            UiEditorSyncType::DocumentViewRefresh,
-            UiEditorSyncData::DocumentViewData { doc_id, revision },
-        );
-
-        // Get document modification status for save indicator
-        let is_modified = if let Some(document) = self.editor.document(doc_id) {
-            document.is_modified()
-        } else {
-            false
-        };
-
-        let save_indicator_event = IntegrationEvent::ui_editor_sync(
-            UiEditorSyncType::SaveIndicatorUpdate,
-            UiEditorSyncData::SaveIndicatorData {
-                doc_id,
-                is_modified,
-            },
-        );
-
-        // Dispatch integration events through the event aggregator
-        if let Some(event_aggregator) = &self.event_aggregator {
-            event_aggregator.dispatch_integration(view_refresh_event);
-            event_aggregator.dispatch_integration(save_indicator_event);
-            debug!(doc_id = ?doc_id, "Dispatched document UI integration events");
-        } else {
-            debug!(integration_event = ?view_refresh_event, "Would emit document view refresh (no event aggregator)");
-            debug!(integration_event = ?save_indicator_event, "Would emit save indicator update (no event aggregator)");
-        }
+        Ok(event)
     }
 
-    /// Emit UI events when a document is opened
-    async fn emit_document_opened_ui_events(&mut self, doc_id: helix_view::DocumentId) {
-        use nucleotide_events::integration::{
-            Event as IntegrationEvent, FileTreeAction, TabBarAction, UiEditorSyncData,
-            UiEditorSyncType,
-        };
-
-        debug!(doc_id = ?doc_id, "Emitting document opened UI events");
-
-        // Emit file tree update to highlight the opened document
-        let file_tree_event = IntegrationEvent::ui_editor_sync(
-            UiEditorSyncType::FileTreeUpdate,
-            UiEditorSyncData::FileTreeData {
-                doc_id,
-                action: FileTreeAction::HighlightDocument,
-            },
-        );
-
-        // Emit tab bar update to add the new tab
-        let tab_bar_event = IntegrationEvent::ui_editor_sync(
-            UiEditorSyncType::TabBarUpdate,
-            UiEditorSyncData::TabBarData {
-                doc_id,
-                action: TabBarAction::AddTab,
-            },
-        );
-
-        // Dispatch integration events through the event aggregator
-        if let Some(event_aggregator) = &self.event_aggregator {
-            event_aggregator.dispatch_integration(file_tree_event);
-            event_aggregator.dispatch_integration(tab_bar_event);
-            debug!(doc_id = ?doc_id, "Dispatched document opened UI integration events");
-        } else {
-            debug!(integration_event = ?file_tree_event, "Would emit file tree update (no event aggregator)");
-            debug!(integration_event = ?tab_bar_event, "Would emit tab bar add (no event aggregator)");
-        }
-    }
-
-    /// Emit UI events when a document is closed
-    async fn emit_document_closed_ui_events(&mut self, doc_id: helix_view::DocumentId) {
-        use nucleotide_events::integration::{
-            Event as IntegrationEvent, TabBarAction, UiEditorSyncData, UiEditorSyncType,
-        };
-
-        debug!(doc_id = ?doc_id, "Emitting document closed UI events");
-
-        // Emit tab bar update to remove the tab
-        let tab_bar_event = IntegrationEvent::ui_editor_sync(
-            UiEditorSyncType::TabBarUpdate,
-            UiEditorSyncData::TabBarData {
-                doc_id,
-                action: TabBarAction::RemoveTab,
-            },
-        );
-
-        // Dispatch integration events through the event aggregator
-        if let Some(event_aggregator) = &self.event_aggregator {
-            event_aggregator.dispatch_integration(tab_bar_event);
-            debug!(doc_id = ?doc_id, "Dispatched document closed UI integration events");
-        } else {
-            debug!(integration_event = ?tab_bar_event, "Would emit tab bar remove (no event aggregator)");
-        }
-    }
-
-    /// Emit UI events when document diagnostics change
-    async fn emit_diagnostics_ui_events(
+    async fn handle_document_v2_event(
         &mut self,
-        doc_id: helix_view::DocumentId,
-        error_count: usize,
-        warning_count: usize,
-    ) {
-        use nucleotide_events::integration::{
-            Event as IntegrationEvent, UiEditorSyncData, UiEditorSyncType,
-        };
+        event: nucleotide_events::v2::document::Event,
+    ) -> Result<Option<AppEvent>, Box<dyn std::error::Error + Send + Sync>> {
+        use nucleotide_events::v2::handler::EventHandler;
 
-        debug!(doc_id = ?doc_id, error_count = error_count, warning_count = warning_count, "Emitting diagnostics UI events");
+        self.core
+            .document_handler
+            .handle(event.clone())
+            .await
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
 
-        // Emit diagnostic indicator update
-        let diagnostic_event = IntegrationEvent::ui_editor_sync(
-            UiEditorSyncType::DiagnosticIndicatorUpdate,
-            UiEditorSyncData::DiagnosticData {
-                doc_id,
-                error_count,
-                warning_count,
-            },
-        );
-
-        // Dispatch integration events through the event aggregator
-        if let Some(event_aggregator) = &self.event_aggregator {
-            event_aggregator.dispatch_integration(diagnostic_event);
-            debug!(doc_id = ?doc_id, error_count = error_count, warning_count = warning_count, "Dispatched diagnostic UI integration events");
-        } else {
-            debug!(integration_event = ?diagnostic_event, "Would emit diagnostic indicator update (no event aggregator)");
-        }
+        Ok(Some(AppEvent::Document(event)))
     }
 
     /// Handle language server message, adapted from Helix's implementation
@@ -2646,7 +2504,7 @@ impl Application {
 
         self.process_pending_helix_jobs_sync(cx);
         self.process_pending_gpui_to_helix_events_sync();
-        self.process_ready_editor_events_sync(cx);
+        self.process_ready_editor_events_sync(cx, &handle);
 
         // Project detection emits startup requests through the bridged event
         // channel. Drain those first so this same maintenance tick can start
@@ -2799,9 +2657,14 @@ impl Application {
         // The missing piece is to start step() as a background task during initialization
     }
 
-    fn process_ready_editor_events_sync(&mut self, cx: &mut gpui::Context<crate::Core>) {
+    fn process_ready_editor_events_sync(
+        &mut self,
+        cx: &mut gpui::Context<crate::Core>,
+        handle: &tokio::runtime::Handle,
+    ) {
         while let Some(event) = self.editor.wait_event().now_or_never() {
             use helix_view::editor::EditorEvent;
+            use nucleotide_events::v2::document::Event as DocumentEvent;
             debug!(
                 event_type = ?std::mem::discriminant(&event),
                 "MAINTENANCE: Processing ready editor event"
@@ -2811,17 +2674,22 @@ impl Application {
                 EditorEvent::DocumentSaved(event) => {
                     self.handle_document_write(&event);
                     if let Ok(event) = event {
-                        let path = self
-                            .editor
-                            .document(event.doc_id)
-                            .and_then(|doc| doc.path())
-                            .map(|p| p.to_string_lossy().to_string());
-                        cx.emit(crate::Update::Event(AppEvent::Core(
-                            CoreEvent::DocumentSaved {
-                                doc_id: event.doc_id,
-                                path,
-                            },
-                        )));
+                        let v2_event = DocumentEvent::Saved {
+                            doc_id: event.doc_id,
+                            path: event.path.clone(),
+                            revision: event.revision as u64,
+                        };
+                        match handle.block_on(self.handle_document_v2_event(v2_event)) {
+                            Ok(Some(event)) => cx.emit(crate::Update::Event(event)),
+                            Ok(None) => {}
+                            Err(error) => {
+                                warn!(
+                                    error = %error,
+                                    doc_id = ?event.doc_id,
+                                    "Failed to process document saved event"
+                                );
+                            }
+                        }
                     }
                 }
                 EditorEvent::IdleTimer => {
