@@ -434,7 +434,7 @@ function New-NucleotideStartMenuShortcut {
     try {
         $shortcut = $shell.CreateShortcut($shortcutPath)
         $shortcut.TargetPath = $LauncherPath
-        $shortcut.WorkingDirectory = $InstallDir
+        $shortcut.WorkingDirectory = ""
         $shortcut.IconLocation = $IconPath
         $shortcut.Description = "Nucleotide"
         $shortcut.Save()

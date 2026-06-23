@@ -223,6 +223,48 @@ pub fn find_workspace_root_from(start_dir: &Path) -> PathBuf {
     start_dir.to_path_buf()
 }
 
+#[cfg(any(target_os = "windows", test))]
+fn path_matches_existing_path(left: &Path, right: &Path) -> bool {
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left == right,
+    }
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn current_dir_is_executable_dir(current_dir: &Path, current_exe: &Path) -> bool {
+    current_exe
+        .parent()
+        .is_some_and(|exe_dir| path_matches_existing_path(current_dir, exe_dir))
+}
+
+fn workspace_marker_exists(path: &Path) -> bool {
+    path.join(".git").exists()
+        || path.join(".svn").exists()
+        || path.join(".hg").exists()
+        || path.join(".jj").exists()
+        || path.join(".helix").exists()
+}
+
+pub fn implicit_workspace_root_from_current_dir() -> Option<PathBuf> {
+    let current_dir = std::env::current_dir().ok()?;
+
+    #[cfg(target_os = "windows")]
+    if let Ok(current_exe) = std::env::current_exe()
+        && current_dir_is_executable_dir(&current_dir, &current_exe)
+    {
+        info!(
+            current_dir = %current_dir.display(),
+            executable = %current_exe.display(),
+            "Skipping implicit workspace detection from executable directory"
+        );
+        return None;
+    }
+
+    let workspace_root = find_workspace_root_from(&current_dir);
+    workspace_marker_exists(&workspace_root).then_some(workspace_root)
+}
+
 // Removed unused structs - now using event-driven architecture instead
 
 // Removed unused Tag-related structs and enums
@@ -5896,24 +5938,12 @@ pub fn init_editor(
         // Fallback: Use current working directory if it's a valid project root
         // This handles the case where workspace_root was detected in main.rs and set as CWD,
         // but no explicit files or working directory were passed via command line args
-        if let Ok(current_dir) = std::env::current_dir() {
-            let workspace_root = find_workspace_root_from(&current_dir);
-            // Check if we found a valid project marker
-            if workspace_root.join(".git").exists()
-                || workspace_root.join(".svn").exists()
-                || workspace_root.join(".hg").exists()
-                || workspace_root.join(".jj").exists()
-                || workspace_root.join(".helix").exists()
-            {
-                nucleotide_logging::info!(
-                    current_dir = %current_dir.display(),
-                    project_directory = %workspace_root.display(),
-                    "Using current working directory as project directory (workspace_root fallback)"
-                );
-                Some(workspace_root)
-            } else {
-                None
-            }
+        if let Some(workspace_root) = implicit_workspace_root_from_current_dir() {
+            nucleotide_logging::info!(
+                project_directory = %workspace_root.display(),
+                "Using current working directory as project directory (workspace_root fallback)"
+            );
+            Some(workspace_root)
         } else {
             None
         }
@@ -6963,13 +6993,14 @@ mod tests {
     use super::{
         Application, ApplicationCore, EditorInputBridge, LspCompletionTrigger, MaintenanceWake,
         NativeSymbolItem, NativeSymbolTarget, PendingCompletionRequest,
-        buffer_word_completion_items, completion_context_for_trigger, dedupe_completion_items,
-        detect_project_lsp_metadata, diagnostic_picker_path_label, diagnostic_severity_label,
-        home_requires_login_shell_capture, local_path_completion_context,
-        lsp_completion_insert_text, lsp_completion_insert_text_format,
-        lsp_completion_items_from_response, lsp_completion_response_is_incomplete,
-        lsp_symbol_picker, native_symbol_item_from_lsp, path_completion_items,
-        project_health_status, project_server_language_id, syntax_symbol_kind_from_capture_name,
+        buffer_word_completion_items, completion_context_for_trigger,
+        current_dir_is_executable_dir, dedupe_completion_items, detect_project_lsp_metadata,
+        diagnostic_picker_path_label, diagnostic_severity_label, home_requires_login_shell_capture,
+        local_path_completion_context, lsp_completion_insert_text,
+        lsp_completion_insert_text_format, lsp_completion_items_from_response,
+        lsp_completion_response_is_incomplete, lsp_symbol_picker, native_symbol_item_from_lsp,
+        path_completion_items, project_health_status, project_server_language_id,
+        syntax_symbol_kind_from_capture_name,
     };
     use crate::test_utils::test_support::{
         TestUpdate, create_counting_channel, create_test_diagnostic_events,
@@ -7009,6 +7040,28 @@ mod tests {
             .build()
             .expect("test tokio runtime")
     });
+
+    #[test]
+    fn current_dir_is_executable_dir_matches_executable_parent() {
+        let exe_dir = tempdir().unwrap();
+        let exe_path = exe_dir.path().join("nucl.exe");
+        fs::write(&exe_path, "").unwrap();
+
+        assert!(current_dir_is_executable_dir(exe_dir.path(), &exe_path));
+    }
+
+    #[test]
+    fn current_dir_is_executable_dir_rejects_other_directories() {
+        let exe_dir = tempdir().unwrap();
+        let current_dir = tempdir().unwrap();
+        let exe_path = exe_dir.path().join("nucl.exe");
+        fs::write(&exe_path, "").unwrap();
+
+        assert!(!current_dir_is_executable_dir(
+            current_dir.path(),
+            &exe_path
+        ));
+    }
 
     #[test]
     fn diagnostic_picker_path_label_prefers_project_relative_path() {
