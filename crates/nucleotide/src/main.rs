@@ -183,22 +183,14 @@ fn determine_workspace_root(args: &Args) -> Result<Option<PathBuf>> {
     }
 
     // Priority 4: Try to find workspace root from current directory
-    if let Ok(current_dir) = std::env::current_dir() {
-        let workspace_root = nucleotide::application::find_workspace_root_from(&current_dir);
-        // Check if we found a valid project marker (even if it's the current dir itself)
-        if workspace_root.join(".git").exists()
-            || workspace_root.join(".svn").exists()
-            || workspace_root.join(".hg").exists()
-            || workspace_root.join(".jj").exists()
-            || workspace_root.join(".helix").exists()
-        {
-            info!(
-                current_dir = ?current_dir,
-                workspace_root = ?workspace_root,
-                "Found workspace root from current directory"
-            );
-            return Ok(Some(workspace_root));
-        }
+    if let Some(workspace_root) =
+        nucleotide::application::implicit_workspace_root_from_current_dir()
+    {
+        info!(
+            workspace_root = ?workspace_root,
+            "Found workspace root from current directory"
+        );
+        return Ok(Some(workspace_root));
     }
 
     // No specific workspace root found
