@@ -188,6 +188,13 @@ fn direct_write_measuring_mode(rendering_mode: DirectWriteRenderingMode) -> DWRI
     }
 }
 
+fn force_grayscale_text_rendering() -> bool {
+    DIRECT_WRITE_TEXT_RENDERING_PARAMS
+        .read()
+        .as_ref()
+        .is_some_and(|params| params.rendering_mode == Some(DirectWriteRenderingMode::Aliased))
+}
+
 fn glyph_analysis_rendering_mode(rendering_mode: DWRITE_RENDERING_MODE1) -> DWRITE_RENDERING_MODE1 {
     match rendering_mode {
         DWRITE_RENDERING_MODE1_DEFAULT | DWRITE_RENDERING_MODE1_OUTLINE => {
@@ -485,6 +492,14 @@ impl PlatformTextSystem for DirectWriteTextSystem {
         _font_id: FontId,
         _font_size: Pixels,
     ) -> TextRenderingMode {
+        // Aliased DirectWrite analysis produces DWRITE_TEXTURE_ALIASED_1x1,
+        // while GPUI selects atlas format and shader path from
+        // RenderGlyphParams::subpixel_rendering. Keep platform-default glyphs
+        // on the monochrome path when aliased rendering is configured.
+        if force_grayscale_text_rendering() {
+            return TextRenderingMode::Grayscale;
+        }
+
         if self.components.system_subpixel_rendering {
             TextRenderingMode::Subpixel
         } else {
