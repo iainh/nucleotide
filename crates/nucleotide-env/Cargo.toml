@@ -7,6 +7,7 @@ license.workspace = true
 repository = "https://github.com/iainh/nucleotide"
 
 [dependencies]
+dirs.workspace = true
 nucleotide-logging.workspace = true
 nucleotide-process = { workspace = true, features = ["tokio"] }
 serde_json.workspace = true

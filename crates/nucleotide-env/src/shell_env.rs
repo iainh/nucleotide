@@ -12,6 +12,9 @@ use std::time::SystemTime;
 use tokio::sync::{RwLock, Semaphore};
 use tokio::time::{Duration, timeout};
 
+const DIRECTORY_SHELL_CAPTURE_TIMEOUT_SECONDS: u64 = 10;
+const PROCESS_SHELL_CAPTURE_TIMEOUT_SECONDS: u64 = 10;
+
 /// Error types for shell environment operations
 #[derive(Debug, thiserror::Error)]
 pub enum ShellEnvironmentError {
@@ -67,6 +70,9 @@ pub struct ProjectEnvironment {
     /// Cached error messages per directory  
     environment_errors: Arc<RwLock<HashMap<PathBuf, String>>>,
 
+    /// Cached login-shell process environment for GUI launches without CLI inheritance.
+    process_shell_environment: Arc<RwLock<Option<HashMap<String, String>>>>,
+
     /// Semaphore to limit concurrent shell executions
     shell_execution_semaphore: Arc<Semaphore>,
 }
@@ -85,6 +91,7 @@ impl ProjectEnvironment {
             cli_environment: cli_env,
             directory_environments: Arc::new(RwLock::new(HashMap::new())),
             environment_errors: Arc::new(RwLock::new(HashMap::new())),
+            process_shell_environment: Arc::new(RwLock::new(None)),
             shell_execution_semaphore: Arc::new(Semaphore::new(3)), // Limit concurrent shell executions
         }
     }
@@ -95,7 +102,7 @@ impl ProjectEnvironment {
         &self,
         directory: &Path,
     ) -> Result<HashMap<String, String>, ShellEnvironmentError> {
-        let baseline_env = self.baseline_environment();
+        let baseline_env = self.baseline_environment().await;
 
         // Priority 1: Directory-specific environment (cached)
         let canonical_dir = directory
@@ -178,16 +185,115 @@ impl ProjectEnvironment {
             .await
     }
 
-    fn baseline_environment(&self) -> HashMap<String, String> {
+    async fn baseline_environment(&self) -> HashMap<String, String> {
         let mut combined_env: HashMap<String, String> = std::env::vars().collect();
 
         if let Some(cli_env) = &self.cli_environment {
             for (key, value) in cli_env {
                 combined_env.insert(key.clone(), value.clone());
             }
+
+            if login_shell_process_environment_supported()
+                && environment_home_requires_repair(&combined_env)
+            {
+                warn!(
+                    home = %combined_env.get("HOME").map(String::as_str).unwrap_or("<unset>"),
+                    "CLI environment has unusable HOME; repairing with login shell baseline"
+                );
+                let mut repaired_env = self.login_shell_process_environment(combined_env).await;
+                repaired_env.insert("ZED_ENVIRONMENT".to_string(), "cli".to_string());
+                return repaired_env;
+            }
+
+            return combined_env;
+        }
+
+        if login_shell_process_environment_supported() {
+            return self.login_shell_process_environment(combined_env).await;
         }
 
         combined_env
+    }
+
+    async fn login_shell_process_environment(
+        &self,
+        process_env: HashMap<String, String>,
+    ) -> HashMap<String, String> {
+        if let Some(cached) = self.process_shell_environment.read().await.clone() {
+            return cached;
+        }
+
+        let _permit = match self.shell_execution_semaphore.acquire().await {
+            Ok(permit) => permit,
+            Err(_) => return process_env,
+        };
+
+        if let Some(cached) = self.process_shell_environment.read().await.clone() {
+            return cached;
+        }
+
+        let Some(home_dir) = login_shell_home_dir(&process_env) else {
+            warn!("Could not determine user home directory for login shell environment capture");
+            *self.process_shell_environment.write().await = Some(process_env.clone());
+            return process_env;
+        };
+
+        let shell = default_environment_shell();
+        debug!(
+            shell = %shell,
+            home_dir = %home_dir.display(),
+            "Capturing login shell environment for process baseline"
+        );
+
+        let mut baseline = process_env;
+        if environment_home_requires_repair(&baseline) {
+            baseline.insert("HOME".to_string(), home_dir.to_string_lossy().into_owned());
+        }
+
+        match capture_shell_environment_with_timeout(
+            &shell,
+            &home_dir,
+            PROCESS_SHELL_CAPTURE_TIMEOUT_SECONDS,
+            Some(&baseline),
+        )
+        .await
+        {
+            Ok(shell_env) => {
+                let process_path = baseline.get("PATH").cloned();
+                for (key, value) in shell_env {
+                    baseline.insert(key, value);
+                }
+                merge_path_like_var(&mut baseline, "PATH", process_path.as_deref());
+                apply_environment_to_process(&baseline);
+                info!(
+                    env_count = baseline.len(),
+                    "Captured and applied login shell environment for process baseline"
+                );
+            }
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    "Failed to capture login shell environment; using process environment baseline"
+                );
+            }
+        }
+
+        *self.process_shell_environment.write().await = Some(baseline.clone());
+        baseline
+    }
+
+    /// Capture and apply the login shell baseline early for GUI launches.
+    ///
+    /// This is useful when the application was launched by the OS instead of the CLI:
+    /// the process can start with a minimal launcher environment, while child tools
+    /// expect the user's configured shell environment.
+    pub async fn bootstrap_process_environment(&self) -> HashMap<String, String> {
+        self.baseline_environment().await
+    }
+
+    /// Return the inherited CLI environment, if this instance was opened from a CLI.
+    pub fn cli_environment(&self) -> Option<HashMap<String, String>> {
+        self.cli_environment.clone()
     }
 
     /// Load shell environment for specific directory with proper cd command
@@ -211,101 +317,68 @@ impl ProjectEnvironment {
 
         debug!(shell = %shell, directory = %directory.display(), "Executing shell environment capture");
 
-        // Build shell-specific command
-        let command = shell_command_builder::build_environment_capture_command(&shell, directory)?;
+        match capture_shell_environment_with_timeout(
+            &shell,
+            directory,
+            DIRECTORY_SHELL_CAPTURE_TIMEOUT_SECONDS,
+            Some(&baseline_env),
+        )
+        .await
+        {
+            Ok(directory_env) => {
+                let baseline_path = baseline_env.get("PATH").cloned();
+                let mut combined_env = baseline_env;
 
-        // Convert to tokio command for async execution
-        let mut tokio_command = nucleotide_process::tokio_command(command.get_program());
-        for arg in command.get_args() {
-            tokio_command.arg(arg);
-        }
-        for (key, value) in command.get_envs() {
-            if let Some(value) = value {
-                tokio_command.env(key, value);
-            } else {
-                tokio_command.env_remove(key);
-            }
-        }
-        if let Some(dir) = command.get_current_dir() {
-            tokio_command.current_dir(dir);
-        }
-
-        // Execute with timeout - use 2 seconds to ensure we timeout before caller's 3-second limit
-        let result = timeout(Duration::from_secs(2), tokio_command.output()).await;
-
-        match result {
-            Ok(Ok(output)) => {
-                if output.status.success() {
-                    let directory_env = parse_shell_environment(&output.stdout)?;
-
-                    let baseline_path = baseline_env.get("PATH").cloned();
-                    let mut combined_env = baseline_env;
-
-                    // Directory shell environment takes precedence over process environment
-                    for (key, value) in directory_env {
-                        combined_env.insert(key, value);
-                    }
-                    merge_path_like_var(&mut combined_env, "PATH", baseline_path.as_deref());
-
-                    // Add origin marker for directory shell environment
-                    combined_env
-                        .insert("ZED_ENVIRONMENT".to_string(), "worktree-shell".to_string());
-
-                    // Cache successful result
-                    let cached_env = CachedEnvironment {
-                        environment: combined_env.clone(),
-                        origin: EnvironmentOrigin::DirectoryShell,
-                        directory: directory.clone(),
-                        native_watch_state: None,
-                    };
-
-                    {
-                        let mut cache = self.directory_environments.write().await;
-                        cache.insert(directory.clone(), cached_env);
-                    }
-
-                    // Clear any previous errors
-                    {
-                        let mut errors = self.environment_errors.write().await;
-                        errors.remove(directory);
-                    }
-
-                    info!(
-                        directory = %directory.display(),
-                        env_count = combined_env.len(),
-                        "Successfully loaded directory shell environment"
-                    );
-
-                    Ok(combined_env)
-                } else {
-                    let error_msg = String::from_utf8_lossy(&output.stderr).to_string();
-                    let error = ShellEnvironmentError::ShellExecutionFailed(error_msg.clone());
-
-                    // Cache error
-                    {
-                        let mut errors = self.environment_errors.write().await;
-                        errors.insert(directory.clone(), error_msg);
-                    }
-
-                    Err(error)
+                // Directory shell environment takes precedence over process environment
+                for (key, value) in directory_env {
+                    combined_env.insert(key, value);
                 }
-            }
-            Ok(Err(io_error)) => {
-                let error = ShellEnvironmentError::IoError(io_error);
-                error!(error = %error, "IO error during shell execution");
-                Err(error)
-            }
-            Err(_timeout_error) => {
-                let error = ShellEnvironmentError::Timeout(2);
-                warn!(directory = %directory.display(), "Shell environment capture timed out");
+                merge_path_like_var(&mut combined_env, "PATH", baseline_path.as_deref());
 
-                // Cache timeout error
+                // Add origin marker for directory shell environment
+                combined_env.insert("ZED_ENVIRONMENT".to_string(), "worktree-shell".to_string());
+
+                // Cache successful result
+                let cached_env = CachedEnvironment {
+                    environment: combined_env.clone(),
+                    origin: EnvironmentOrigin::DirectoryShell,
+                    directory: directory.clone(),
+                    native_watch_state: None,
+                };
+
+                {
+                    let mut cache = self.directory_environments.write().await;
+                    cache.insert(directory.clone(), cached_env);
+                }
+
+                // Clear any previous errors
                 {
                     let mut errors = self.environment_errors.write().await;
-                    errors.insert(
-                        directory.clone(),
-                        "Shell environment capture timed out".to_string(),
-                    );
+                    errors.remove(directory);
+                }
+
+                info!(
+                    directory = %directory.display(),
+                    env_count = combined_env.len(),
+                    "Successfully loaded directory shell environment"
+                );
+
+                Ok(combined_env)
+            }
+            Err(error) => {
+                match &error {
+                    ShellEnvironmentError::Timeout(_) => {
+                        warn!(directory = %directory.display(), "Shell environment capture timed out");
+                    }
+                    ShellEnvironmentError::IoError(_) => {
+                        error!(error = %error, "IO error during shell execution");
+                    }
+                    _ => {}
+                }
+
+                {
+                    let mut errors = self.environment_errors.write().await;
+                    errors.insert(directory.clone(), error.to_string());
                 }
 
                 Err(error)
@@ -335,7 +408,7 @@ impl ProjectEnvironment {
             return Ok(None);
         };
 
-        let exported = run_nix_print_dev_env(directory, &plan).await?;
+        let exported = run_nix_print_dev_env(directory, &plan, baseline_env).await?;
         let mut environment = merge_native_flake_environment(baseline_env, exported);
         environment.insert("ZED_ENVIRONMENT".to_string(), "native-flake".to_string());
 
@@ -524,6 +597,14 @@ const NIX_DIRENV_RESTORED_VARS: &[&str] = &[
     "terminfo",
 ];
 
+const CALLER_OWNED_ENV_VARS: &[&str] = &[
+    "HOME",
+    "XDG_CACHE_HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_STATE_HOME",
+];
+
 fn merge_native_flake_environment(
     baseline: &HashMap<String, String>,
     exported: HashMap<String, String>,
@@ -554,6 +635,7 @@ fn merge_native_flake_environment(
         "PATH",
         baseline.get("PATH").map(String::as_str),
     );
+    restore_caller_owned_vars(&mut environment, baseline);
 
     environment
 }
@@ -598,6 +680,32 @@ fn merge_colon_separated_paths(new_value: Option<&str>, old_value: Option<&str>)
     }
 
     (!dirs.is_empty()).then(|| dirs.join(":"))
+}
+
+fn restore_caller_owned_vars(
+    environment: &mut HashMap<String, String>,
+    baseline: &HashMap<String, String>,
+) {
+    for key in CALLER_OWNED_ENV_VARS {
+        restore_caller_owned_var(environment, baseline, key);
+    }
+}
+
+fn restore_caller_owned_var(
+    environment: &mut HashMap<String, String>,
+    baseline: &HashMap<String, String>,
+    key: &str,
+) {
+    match baseline.get(key).filter(|value| {
+        !value.trim().is_empty() && !home_path_is_placeholder(Path::new(value.as_str()))
+    }) {
+        Some(value) => {
+            environment.insert(key.to_string(), value.clone());
+        }
+        None => {
+            environment.remove(key);
+        }
+    }
 }
 
 fn normalize_colon_path_entry(dir: &str) -> &str {
@@ -735,13 +843,15 @@ fn split_envrc_words(line: &str) -> Result<Vec<String>, String> {
 async fn run_nix_print_dev_env(
     directory: &Path,
     plan: &NativeFlakePlan,
+    baseline_env: &HashMap<String, String>,
 ) -> Result<HashMap<String, String>, ShellEnvironmentError> {
-    run_nix_print_dev_env_with_binary(directory, plan, Path::new("nix")).await
+    run_nix_print_dev_env_with_binary(directory, plan, baseline_env, Path::new("nix")).await
 }
 
 async fn run_nix_print_dev_env_with_binary(
     directory: &Path,
     plan: &NativeFlakePlan,
+    baseline_env: &HashMap<String, String>,
     nix_binary: &Path,
 ) -> Result<HashMap<String, String>, ShellEnvironmentError> {
     let profile = native_flake_profile_path(directory);
@@ -751,6 +861,7 @@ async fn run_nix_print_dev_env_with_binary(
 
     let mut command = nucleotide_process::tokio_command(nix_binary);
     command
+        .envs(baseline_env)
         .current_dir(directory)
         .arg("--extra-experimental-features")
         .arg("nix-command flakes")
@@ -886,6 +997,117 @@ fn non_empty_env_path(key: &str) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+async fn capture_shell_environment_with_timeout(
+    shell: &str,
+    directory: &Path,
+    timeout_seconds: u64,
+    baseline_env: Option<&HashMap<String, String>>,
+) -> Result<HashMap<String, String>, ShellEnvironmentError> {
+    let command = shell_command_builder::build_environment_capture_command(shell, directory)?;
+
+    let mut tokio_command = nucleotide_process::tokio_command(command.get_program());
+    if let Some(baseline_env) = baseline_env {
+        tokio_command.envs(baseline_env);
+    }
+    for arg in command.get_args() {
+        tokio_command.arg(arg);
+    }
+    for (key, value) in command.get_envs() {
+        if let Some(value) = value {
+            tokio_command.env(key, value);
+        } else {
+            tokio_command.env_remove(key);
+        }
+    }
+    if let Some(dir) = command.get_current_dir() {
+        tokio_command.current_dir(dir);
+    }
+
+    let result = timeout(Duration::from_secs(timeout_seconds), tokio_command.output()).await;
+
+    match result {
+        Ok(Ok(output)) if output.status.success() => parse_shell_environment(&output.stdout),
+        Ok(Ok(output)) => {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            Err(ShellEnvironmentError::ShellExecutionFailed(stderr))
+        }
+        Ok(Err(io_error)) => Err(ShellEnvironmentError::IoError(io_error)),
+        Err(_) => Err(ShellEnvironmentError::Timeout(timeout_seconds)),
+    }
+}
+
+fn apply_environment_to_process(environment: &HashMap<String, String>) {
+    for (key, value) in environment {
+        if key.contains('=') || key.is_empty() {
+            continue;
+        }
+
+        // SAFETY: This is called during environment initialization/capture and mirrors
+        // the app-wide process environment used by child tools launched afterwards.
+        unsafe {
+            std::env::set_var(key, value);
+        }
+    }
+}
+
+fn login_shell_process_environment_supported() -> bool {
+    cfg!(unix) && !cfg!(test)
+}
+
+fn environment_home_requires_repair(environment: &HashMap<String, String>) -> bool {
+    environment
+        .get("HOME")
+        .is_none_or(|home| home.trim().is_empty() || home_path_is_placeholder(Path::new(home)))
+}
+
+fn login_shell_home_dir(process_env: &HashMap<String, String>) -> Option<PathBuf> {
+    if let Some(home) = process_env
+        .get("HOME")
+        .and_then(|home| usable_home_dir(Path::new(home)))
+    {
+        return Some(home);
+    }
+
+    if let Some(home) = dirs::home_dir().and_then(|home| usable_home_dir(&home)) {
+        return Some(home);
+    }
+
+    process_env
+        .get("USER")
+        .or_else(|| process_env.get("LOGNAME"))
+        .and_then(|user| fallback_home_for_user(user))
+}
+
+fn usable_home_dir(path: &Path) -> Option<PathBuf> {
+    if path.as_os_str().is_empty() || home_path_is_placeholder(path) || !path.is_dir() {
+        return None;
+    }
+
+    Some(path.to_path_buf())
+}
+
+fn home_path_is_placeholder(path: &Path) -> bool {
+    let value = path.to_string_lossy();
+    value == "/homeless-shelter" || value.contains("/homeless-shelter/")
+}
+
+fn fallback_home_for_user(user: &str) -> Option<PathBuf> {
+    if user.trim().is_empty() || user.contains('/') || user.contains('\\') {
+        return None;
+    }
+
+    #[cfg(target_os = "macos")]
+    let candidates = [PathBuf::from("/Users").join(user)];
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let candidates = [PathBuf::from("/home").join(user)];
+
+    #[cfg(not(unix))]
+    let candidates: [PathBuf; 0] = [];
+
+    candidates.into_iter().find(|path| path.is_dir())
+}
+
 fn stable_hash_hex(bytes: &[u8]) -> String {
     // FNV-1a is sufficient here: this is only a stable cache directory key.
     let mut hash = 0xcbf29ce484222325_u64;
@@ -945,21 +1167,23 @@ pub mod shell_command_builder {
             "fish" => {
                 // Fish requires special handling to trigger hooks
                 command_string = format!("cd {}; emit fish_prompt; env -0", escaped_dir);
-                command.arg("-l").arg("-c").arg(command_string);
+                command.arg("-l").arg("-i").arg("-c").arg(command_string);
             }
             "tcsh" | "csh" => {
-                // tcsh/csh should use arg0 technique, but std::process::Command doesn't support it
-                // Use -c without -l flag (shell will inherit login status from parent)
+                // csh/tcsh require setting argv[0] to "-" for login shell mode, which
+                // std::process::Command cannot do portably here. Keep the command
+                // non-login instead of passing unsupported flags.
                 command.arg("-c").arg(command_string);
             }
             "nu" => {
-                // Nushell requires ^ prefix for external commands
-                let nu_command = format!("cd {}; ^env -0", escaped_dir);
-                command.arg("-l").arg("-c").arg(nu_command);
+                // Nushell does not allow non-interactive login shells. Use eval mode.
+                let nu_command = format!("cd {}; ^env -0; exit", escaped_dir);
+                command.arg("-l").arg("-e").arg(nu_command);
             }
             _ => {
-                // Default shells (bash, zsh) use standard -l flag
-                command.arg("-l").arg("-c").arg(command_string);
+                // Default POSIX-style shells use login + interactive mode so startup
+                // files and prompt-hook integrations can populate the environment.
+                command.arg("-l").arg("-i").arg("-c").arg(command_string);
             }
         }
 
@@ -1492,6 +1716,86 @@ mod tests {
     }
 
     #[test]
+    fn test_native_flake_environment_restores_caller_owned_home_and_xdg_vars() {
+        let home = tempfile::tempdir().unwrap();
+        let home_path = home.path().to_string_lossy().to_string();
+        let cache_path = home.path().join(".cache").to_string_lossy().to_string();
+        let config_path = home.path().join(".config").to_string_lossy().to_string();
+        let data_path = home
+            .path()
+            .join(".local/share")
+            .to_string_lossy()
+            .to_string();
+        let state_path = home
+            .path()
+            .join(".local/state")
+            .to_string_lossy()
+            .to_string();
+        let baseline = HashMap::from([
+            ("HOME".to_string(), home_path.clone()),
+            ("XDG_CACHE_HOME".to_string(), cache_path.clone()),
+            ("XDG_CONFIG_HOME".to_string(), config_path.clone()),
+            ("XDG_DATA_HOME".to_string(), data_path.clone()),
+            ("XDG_STATE_HOME".to_string(), state_path.clone()),
+        ]);
+        let exported = HashMap::from([
+            ("HOME".to_string(), "/homeless-shelter".to_string()),
+            (
+                "CARGO_HOME".to_string(),
+                "/homeless-shelter/.cargo".to_string(),
+            ),
+            (
+                "PIP_CACHE_DIR".to_string(),
+                "/homeless-shelter/.cache/pip".to_string(),
+            ),
+            (
+                "XDG_CACHE_HOME".to_string(),
+                "/homeless-shelter/.cache".to_string(),
+            ),
+            (
+                "XDG_CONFIG_HOME".to_string(),
+                "/homeless-shelter/.config".to_string(),
+            ),
+            (
+                "XDG_DATA_HOME".to_string(),
+                "/homeless-shelter/.local/share".to_string(),
+            ),
+            (
+                "XDG_STATE_HOME".to_string(),
+                "/homeless-shelter/.local/state".to_string(),
+            ),
+        ]);
+
+        let env = merge_native_flake_environment(&baseline, exported);
+
+        assert_eq!(env.get("HOME"), Some(&home_path));
+        assert_eq!(
+            env.get("XDG_CACHE_HOME").map(String::as_str),
+            Some(cache_path.as_str())
+        );
+        assert_eq!(
+            env.get("XDG_CONFIG_HOME").map(String::as_str),
+            Some(config_path.as_str())
+        );
+        assert_eq!(
+            env.get("XDG_DATA_HOME").map(String::as_str),
+            Some(data_path.as_str())
+        );
+        assert_eq!(
+            env.get("XDG_STATE_HOME").map(String::as_str),
+            Some(state_path.as_str())
+        );
+        assert_eq!(
+            env.get("CARGO_HOME").map(String::as_str),
+            Some("/homeless-shelter/.cargo")
+        );
+        assert_eq!(
+            env.get("PIP_CACHE_DIR").map(String::as_str),
+            Some("/homeless-shelter/.cache/pip")
+        );
+    }
+
+    #[test]
     fn test_native_watch_paths_include_defaults_and_deduplicate() {
         let directory = Path::new("/project");
         let envrc_path = directory.join(".envrc");
@@ -1625,7 +1929,7 @@ mod tests {
 printf '%s\n' "$@" >> '{}'
 case "$*" in
   *"print-dev-env"*)
-    printf '%s\n' '{{"variables":{{"PATH":{{"type":"exported","value":"/fake/bin"}}}}}}'
+    printf '{{"variables":{{"PATH":{{"type":"exported","value":"/fake/bin"}},"HOME":{{"type":"exported","value":"%s"}},"CARGO_HOME":{{"type":"exported","value":"%s"}}}}}}\n' "$HOME" "$CARGO_HOME"
     ;;
   *"profile wipe-history"*)
     exit 0
@@ -1649,11 +1953,22 @@ esac
             watched_files: Vec::new(),
         };
 
-        let env = run_nix_print_dev_env_with_binary(project_dir.path(), &plan, &fake_nix)
-            .await
-            .unwrap();
+        let baseline = HashMap::from([
+            ("HOME".to_string(), "/Users/test".to_string()),
+            ("CARGO_HOME".to_string(), "/Users/test/.cargo".to_string()),
+        ]);
+
+        let env =
+            run_nix_print_dev_env_with_binary(project_dir.path(), &plan, &baseline, &fake_nix)
+                .await
+                .unwrap();
 
         assert_eq!(env.get("PATH"), Some(&"/fake/bin".to_string()));
+        assert_eq!(env.get("HOME"), Some(&"/Users/test".to_string()));
+        assert_eq!(
+            env.get("CARGO_HOME"),
+            Some(&"/Users/test/.cargo".to_string())
+        );
         let calls = std::fs::read_to_string(calls_file).unwrap();
         assert!(calls.contains("print-dev-env"));
         assert!(calls.contains("--json"));
@@ -1691,12 +2006,85 @@ esac
             .collect();
 
         assert!(args.contains(&"-l".to_string()));
+        assert!(args.contains(&"-i".to_string()));
         assert!(args.contains(&"-c".to_string()));
         let command_string = args
             .iter()
             .find(|s| s.contains("cd "))
             .expect("missing command string");
         assert!(command_string.contains(r#"cd '/tmp/it'"'"'s complicated' && env -0"#));
+    }
+
+    #[test]
+    fn test_build_environment_capture_command_uses_shell_specific_login_modes() {
+        let fish = shell_command_builder::build_environment_capture_command(
+            "/opt/homebrew/bin/fish",
+            Path::new("/tmp/project"),
+        )
+        .expect("fish command should build");
+        let fish_args: Vec<String> = fish
+            .get_args()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect();
+        assert!(fish_args.contains(&"-l".to_string()));
+        assert!(fish_args.contains(&"-i".to_string()));
+        assert!(fish_args.contains(&"-c".to_string()));
+
+        let nu = shell_command_builder::build_environment_capture_command(
+            "/opt/homebrew/bin/nu",
+            Path::new("/tmp/project"),
+        )
+        .expect("nu command should build");
+        let nu_args: Vec<String> = nu
+            .get_args()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect();
+        assert!(nu_args.contains(&"-l".to_string()));
+        assert!(nu_args.contains(&"-e".to_string()));
+        assert!(!nu_args.contains(&"-i".to_string()));
+
+        let csh = shell_command_builder::build_environment_capture_command(
+            "/bin/tcsh",
+            Path::new("/tmp/project"),
+        )
+        .expect("tcsh command should build");
+        let csh_args: Vec<String> = csh
+            .get_args()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect();
+        assert!(!csh_args.contains(&"-l".to_string()));
+        assert!(!csh_args.contains(&"-i".to_string()));
+        assert!(csh_args.contains(&"-c".to_string()));
+    }
+
+    #[test]
+    fn test_login_shell_home_dir_does_not_return_homeless_shelter() {
+        let env = HashMap::from([
+            ("HOME".to_string(), "/homeless-shelter".to_string()),
+            ("USER".to_string(), "definitely-not-a-real-user".to_string()),
+        ]);
+
+        assert_ne!(
+            login_shell_home_dir(&env).as_deref(),
+            Some(Path::new("/homeless-shelter"))
+        );
+    }
+
+    #[test]
+    fn test_environment_home_requires_repair_for_missing_or_placeholder_home() {
+        assert!(environment_home_requires_repair(&HashMap::new()));
+        assert!(environment_home_requires_repair(&HashMap::from([(
+            "HOME".to_string(),
+            String::new(),
+        )])));
+        assert!(environment_home_requires_repair(&HashMap::from([(
+            "HOME".to_string(),
+            "/homeless-shelter".to_string(),
+        )])));
+        assert!(!environment_home_requires_repair(&HashMap::from([(
+            "HOME".to_string(),
+            "/Users/test".to_string(),
+        )])));
     }
 
     #[tokio::test]
