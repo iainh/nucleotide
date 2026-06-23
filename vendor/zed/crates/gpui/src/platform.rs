@@ -811,6 +811,13 @@ pub trait PlatformDispatcher: Send + Sync {
 #[expect(missing_docs)]
 pub trait PlatformTextSystem: Send + Sync {
     fn add_fonts(&self, fonts: Vec<Cow<'static, [u8]>>) -> Result<()>;
+    /// Set DirectWrite-specific text rendering parameters.
+    fn set_direct_write_text_rendering_params(
+        &self,
+        _params: Option<DirectWriteTextRenderingParams>,
+    ) -> Result<()> {
+        Ok(())
+    }
     /// Get all available font names.
     fn all_font_names(&self) -> Vec<String>;
     /// Get the font ID for a font descriptor.
@@ -1742,6 +1749,53 @@ pub enum TextRenderingMode {
     Subpixel,
     /// Use grayscale text rendering.
     Grayscale,
+}
+
+/// DirectWrite rendering parameters to use on Windows.
+///
+/// Each field is optional. A `None` field leaves that specific value at the
+/// system/DirectWrite default, while [`App::set_direct_write_text_rendering_params`](crate::App::set_direct_write_text_rendering_params)
+/// accepts `None` for the whole struct to reset all overrides.
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+pub struct DirectWriteTextRenderingParams {
+    /// Gamma correction value passed to DirectWrite.
+    pub gamma: Option<f32>,
+    /// Enhanced contrast value passed to DirectWrite.
+    pub enhanced_contrast: Option<f32>,
+    /// ClearType level passed to DirectWrite.
+    pub clear_type_level: Option<f32>,
+    /// Pixel geometry passed to DirectWrite.
+    pub pixel_geometry: Option<DirectWritePixelGeometry>,
+    /// Rendering mode passed to DirectWrite.
+    pub rendering_mode: Option<DirectWriteRenderingMode>,
+}
+
+/// DirectWrite pixel geometry used for subpixel text rendering on Windows.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum DirectWritePixelGeometry {
+    /// Disable subpixel colour layout.
+    Flat,
+    /// Red-green-blue subpixel order.
+    Rgb,
+    /// Blue-green-red subpixel order.
+    Bgr,
+}
+
+/// DirectWrite rendering mode used for glyph rasterization on Windows.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum DirectWriteRenderingMode {
+    /// Let DirectWrite choose the rendering mode.
+    Default,
+    /// Aliased text rendering.
+    Aliased,
+    /// GDI-compatible classic ClearType rendering.
+    GdiClassic,
+    /// GDI-compatible natural ClearType rendering.
+    GdiNatural,
+    /// Natural ClearType rendering.
+    Natural,
+    /// Natural symmetric ClearType rendering.
+    NaturalSymmetric,
 }
 
 /// The options that can be configured for a file dialog prompt

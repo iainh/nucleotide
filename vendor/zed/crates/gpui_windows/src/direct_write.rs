@@ -2,6 +2,7 @@ use std::{
     borrow::Cow,
     ffi::{c_uint, c_void},
     mem::ManuallyDrop,
+    sync::LazyLock,
 };
 
 use anyhow::{Context, Result};
@@ -50,6 +51,18 @@ struct DirectWriteComponents {
     system_subpixel_rendering: bool,
 }
 
+static DIRECT_WRITE_TEXT_RENDERING_PARAMS: LazyLock<
+    RwLock<Option<DirectWriteTextRenderingParams>>,
+> = LazyLock::new(|| RwLock::new(None));
+
+pub(crate) struct ResolvedDirectWriteRenderingParams {
+    rendering_params: IDWriteRenderingParams3,
+    rendering_params_base: IDWriteRenderingParams,
+    rendering_mode_override: Option<DWRITE_RENDERING_MODE1>,
+    measuring_mode: DWRITE_MEASURING_MODE,
+    grid_fit_mode: DWRITE_GRID_FIT_MODE,
+}
+
 impl Drop for DirectWriteComponents {
     fn drop(&mut self) {
         unsafe {
@@ -57,6 +70,125 @@ impl Drop for DirectWriteComponents {
                 .factory
                 .UnregisterFontFileLoader(&self.in_memory_loader);
         }
+    }
+}
+
+pub(crate) fn set_direct_write_text_rendering_params(
+    params: Option<DirectWriteTextRenderingParams>,
+) {
+    *DIRECT_WRITE_TEXT_RENDERING_PARAMS.write() = params;
+    DirectXRenderer::invalidate_font_info();
+}
+
+pub(crate) fn resolve_direct_write_rendering_params(
+    factory: &IDWriteFactory5,
+) -> Result<ResolvedDirectWriteRenderingParams> {
+    let params = *DIRECT_WRITE_TEXT_RENDERING_PARAMS.read();
+    let system_smoothing = get_system_font_smoothing();
+
+    unsafe {
+        let defaults: IDWriteRenderingParams1 = factory.CreateRenderingParams()?.cast()?;
+        let gamma = params
+            .and_then(|params| params.gamma)
+            .or(system_smoothing.gamma)
+            .unwrap_or_else(|| defaults.GetGamma());
+        let enhanced_contrast = params
+            .and_then(|params| params.enhanced_contrast)
+            .unwrap_or_else(|| defaults.GetEnhancedContrast());
+        let grayscale_enhanced_contrast = params
+            .and_then(|params| params.enhanced_contrast)
+            .unwrap_or_else(|| defaults.GetGrayscaleEnhancedContrast());
+        let clear_type_level = params
+            .and_then(|params| params.clear_type_level)
+            .unwrap_or_else(|| defaults.GetClearTypeLevel());
+        let pixel_geometry = params
+            .and_then(|params| params.pixel_geometry)
+            .or(system_smoothing.pixel_geometry)
+            .map(direct_write_pixel_geometry)
+            .unwrap_or_else(|| defaults.GetPixelGeometry());
+        let rendering_mode_override = params.and_then(|params| params.rendering_mode);
+        let rendering_mode = rendering_mode_override
+            .map(direct_write_rendering_mode)
+            .unwrap_or(DWRITE_RENDERING_MODE1_DEFAULT);
+        let measuring_mode = rendering_mode_override
+            .map(direct_write_measuring_mode)
+            .unwrap_or(DWRITE_MEASURING_MODE_NATURAL);
+        let grid_fit_mode = rendering_mode_override
+            .map(direct_write_grid_fit_mode)
+            .unwrap_or(DWRITE_GRID_FIT_MODE_DEFAULT);
+
+        let rendering_params = factory.CreateCustomRenderingParams(
+            gamma,
+            enhanced_contrast,
+            grayscale_enhanced_contrast,
+            clear_type_level,
+            pixel_geometry,
+            rendering_mode,
+            grid_fit_mode,
+        )?;
+        let rendering_params_base = rendering_params.cast()?;
+
+        Ok(ResolvedDirectWriteRenderingParams {
+            rendering_params,
+            rendering_params_base,
+            rendering_mode_override: rendering_mode_override.map(direct_write_rendering_mode),
+            measuring_mode,
+            grid_fit_mode,
+        })
+    }
+}
+
+pub(crate) fn create_direct_write_font_info(factory: &IDWriteFactory5) -> Result<crate::FontInfo> {
+    let rendering_params = resolve_direct_write_rendering_params(factory)?.rendering_params;
+    unsafe {
+        Ok(crate::FontInfo {
+            gamma_ratios: gpui::get_gamma_correction_ratios(rendering_params.GetGamma()),
+            grayscale_enhanced_contrast: rendering_params.GetGrayscaleEnhancedContrast(),
+            subpixel_enhanced_contrast: rendering_params.GetEnhancedContrast(),
+            is_bgr: rendering_params.GetPixelGeometry() == DWRITE_PIXEL_GEOMETRY_BGR,
+        })
+    }
+}
+
+fn direct_write_pixel_geometry(pixel_geometry: DirectWritePixelGeometry) -> DWRITE_PIXEL_GEOMETRY {
+    match pixel_geometry {
+        DirectWritePixelGeometry::Flat => DWRITE_PIXEL_GEOMETRY_FLAT,
+        DirectWritePixelGeometry::Rgb => DWRITE_PIXEL_GEOMETRY_RGB,
+        DirectWritePixelGeometry::Bgr => DWRITE_PIXEL_GEOMETRY_BGR,
+    }
+}
+
+fn direct_write_rendering_mode(rendering_mode: DirectWriteRenderingMode) -> DWRITE_RENDERING_MODE1 {
+    match rendering_mode {
+        DirectWriteRenderingMode::Default => DWRITE_RENDERING_MODE1_DEFAULT,
+        DirectWriteRenderingMode::Aliased => DWRITE_RENDERING_MODE1_ALIASED,
+        DirectWriteRenderingMode::GdiClassic => DWRITE_RENDERING_MODE1_GDI_CLASSIC,
+        DirectWriteRenderingMode::GdiNatural => DWRITE_RENDERING_MODE1_GDI_NATURAL,
+        DirectWriteRenderingMode::Natural => DWRITE_RENDERING_MODE1_NATURAL,
+        DirectWriteRenderingMode::NaturalSymmetric => DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC,
+    }
+}
+
+fn direct_write_measuring_mode(rendering_mode: DirectWriteRenderingMode) -> DWRITE_MEASURING_MODE {
+    match rendering_mode {
+        DirectWriteRenderingMode::Aliased | DirectWriteRenderingMode::GdiClassic => {
+            DWRITE_MEASURING_MODE_GDI_CLASSIC
+        }
+        DirectWriteRenderingMode::GdiNatural => DWRITE_MEASURING_MODE_GDI_NATURAL,
+        DirectWriteRenderingMode::Default
+        | DirectWriteRenderingMode::Natural
+        | DirectWriteRenderingMode::NaturalSymmetric => DWRITE_MEASURING_MODE_NATURAL,
+    }
+}
+
+fn direct_write_grid_fit_mode(rendering_mode: DirectWriteRenderingMode) -> DWRITE_GRID_FIT_MODE {
+    match rendering_mode {
+        DirectWriteRenderingMode::Aliased
+        | DirectWriteRenderingMode::GdiClassic
+        | DirectWriteRenderingMode::GdiNatural => DWRITE_GRID_FIT_MODE_ENABLED,
+        DirectWriteRenderingMode::Default
+        | DirectWriteRenderingMode::Natural
+        | DirectWriteRenderingMode::NaturalSymmetric => DWRITE_GRID_FIT_MODE_DEFAULT,
     }
 }
 
@@ -226,6 +358,21 @@ impl DirectWriteTextSystem {
 impl PlatformTextSystem for DirectWriteTextSystem {
     fn add_fonts(&self, fonts: Vec<Cow<'static, [u8]>>) -> Result<()> {
         self.state.write().add_fonts(&self.components, fonts)
+    }
+
+    fn set_direct_write_text_rendering_params(
+        &self,
+        params: Option<DirectWriteTextRenderingParams>,
+    ) -> Result<()> {
+        let previous = *DIRECT_WRITE_TEXT_RENDERING_PARAMS.read();
+        set_direct_write_text_rendering_params(params);
+
+        if let Err(error) = resolve_direct_write_rendering_params(&self.components.factory) {
+            set_direct_write_text_rendering_params(previous);
+            return Err(error);
+        }
+
+        Ok(())
     }
 
     fn all_font_names(&self) -> Vec<String> {
@@ -696,22 +843,27 @@ impl DirectWriteState {
             / gpui::SUBPIXEL_VARIANTS_Y as f32
             / params.scale_factor;
 
-        let mut rendering_mode = DWRITE_RENDERING_MODE1::default();
-        let mut grid_fit_mode = DWRITE_GRID_FIT_MODE::default();
-        unsafe {
-            font.font_face.GetRecommendedRenderingMode(
-                params.font_size.as_f32(),
-                // Using 96 as scale is applied by the transform
-                96.0,
-                96.0,
-                Some(&transform),
-                false,
-                DWRITE_OUTLINE_THRESHOLD_ANTIALIASED,
-                DWRITE_MEASURING_MODE_NATURAL,
-                None,
-                &mut rendering_mode,
-                &mut grid_fit_mode,
-            )?;
+        let rendering_params = resolve_direct_write_rendering_params(&components.factory)?;
+        let mut rendering_mode = rendering_params.rendering_mode_override.unwrap_or_default();
+        let mut grid_fit_mode = rendering_params.grid_fit_mode;
+        let measuring_mode = rendering_params.measuring_mode;
+
+        if rendering_params.rendering_mode_override.is_none() {
+            unsafe {
+                font.font_face.GetRecommendedRenderingMode(
+                    params.font_size.as_f32(),
+                    // Using 96 as scale is applied by the transform
+                    96.0,
+                    96.0,
+                    Some(&transform),
+                    false,
+                    DWRITE_OUTLINE_THRESHOLD_ANTIALIASED,
+                    measuring_mode,
+                    Some(&rendering_params.rendering_params_base),
+                    &mut rendering_mode,
+                    &mut grid_fit_mode,
+                )?;
+            }
         }
         let rendering_mode = match rendering_mode {
             DWRITE_RENDERING_MODE1_OUTLINE => DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC,
@@ -729,7 +881,7 @@ impl DirectWriteState {
                 &glyph_run,
                 Some(&transform),
                 rendering_mode,
-                DWRITE_MEASURING_MODE_NATURAL,
+                measuring_mode,
                 grid_fit_mode,
                 antialias_mode,
                 baseline_origin_x,
@@ -1102,14 +1254,14 @@ impl DirectWriteState {
             gamma_ratios,
             grayscale_enhanced_contrast,
             ..
-        } = DirectXRenderer::get_font_info();
+        } = DirectXRenderer::get_font_info()?;
 
         for layer in glyph_layers {
             let params = GlyphLayerTextureParams {
                 run_color: layer.run_color,
                 bounds: layer.bounds,
-                gamma_ratios: *gamma_ratios,
-                grayscale_enhanced_contrast: *grayscale_enhanced_contrast,
+                gamma_ratios,
+                grayscale_enhanced_contrast,
                 _pad: [0f32; 3],
             };
             unsafe {
@@ -1796,20 +1948,76 @@ fn get_name(string: IDWriteLocalizedStrings, locale: &HSTRING) -> Result<String>
     Ok(String::from_utf16_lossy(&name_vec[..name_length]))
 }
 
+#[derive(Clone, Copy, Debug)]
+struct WindowsFontSmoothing {
+    enabled: bool,
+    smoothing_type: u32,
+    gamma: Option<f32>,
+    pixel_geometry: Option<DirectWritePixelGeometry>,
+}
+
+impl WindowsFontSmoothing {
+    fn subpixel_rendering(self) -> bool {
+        self.enabled && self.smoothing_type == FE_FONTSMOOTHINGCLEARTYPE
+    }
+}
+
+fn get_system_font_smoothing() -> WindowsFontSmoothing {
+    WindowsFontSmoothing {
+        enabled: system_parameters_info_bool(SPI_GETFONTSMOOTHING).unwrap_or(true),
+        smoothing_type: system_parameters_info_uint(SPI_GETFONTSMOOTHINGTYPE)
+            .unwrap_or(FE_FONTSMOOTHINGCLEARTYPE),
+        gamma: system_parameters_info_uint(SPI_GETFONTSMOOTHINGCONTRAST)
+            .map(|contrast| contrast as f32 / 1000.0)
+            .filter(|gamma| *gamma > 0.0),
+        pixel_geometry: system_parameters_info_uint(SPI_GETFONTSMOOTHINGORIENTATION)
+            .and_then(system_pixel_geometry),
+    }
+}
+
 fn get_system_subpixel_rendering() -> bool {
+    get_system_font_smoothing().subpixel_rendering()
+}
+
+fn system_parameters_info_uint(action: SYSTEM_PARAMETERS_INFO_ACTION) -> Option<u32> {
     let mut value = c_uint::default();
     let result = unsafe {
         SystemParametersInfoW(
-            SPI_GETFONTSMOOTHINGTYPE,
+            action,
             0,
             Some((&mut value) as *mut c_uint as *mut c_void),
             SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS::default(),
         )
     };
     if result.log_err().is_some() {
-        value == FE_FONTSMOOTHINGCLEARTYPE
+        Some(value)
     } else {
-        true
+        None
+    }
+}
+
+fn system_parameters_info_bool(action: SYSTEM_PARAMETERS_INFO_ACTION) -> Option<bool> {
+    let mut value = BOOL(0);
+    let result = unsafe {
+        SystemParametersInfoW(
+            action,
+            0,
+            Some((&mut value) as *mut BOOL as *mut c_void),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS::default(),
+        )
+    };
+    if result.log_err().is_some() {
+        Some(value.as_bool())
+    } else {
+        None
+    }
+}
+
+fn system_pixel_geometry(orientation: u32) -> Option<DirectWritePixelGeometry> {
+    match orientation {
+        FE_FONTSMOOTHINGORIENTATIONRGB => Some(DirectWritePixelGeometry::Rgb),
+        FE_FONTSMOOTHINGORIENTATIONBGR => Some(DirectWritePixelGeometry::Bgr),
+        _ => None,
     }
 }
 
