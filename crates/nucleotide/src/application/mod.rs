@@ -2657,6 +2657,20 @@ impl Application {
         // The missing piece is to start step() as a background task during initialization
     }
 
+    pub fn drain_interactive_helix_work(
+        &mut self,
+        cx: &mut gpui::Context<crate::Core>,
+        handle: tokio::runtime::Handle,
+    ) -> bool {
+        let _guard = handle.enter();
+
+        self.process_pending_helix_jobs_sync(cx);
+        self.process_pending_gpui_to_helix_events_sync();
+        self.process_ready_editor_events_sync(cx, &handle);
+
+        self.editor.write_count > 0 || !self.jobs.wait_futures.is_empty()
+    }
+
     fn process_ready_editor_events_sync(
         &mut self,
         cx: &mut gpui::Context<crate::Core>,
