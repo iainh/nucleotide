@@ -318,7 +318,7 @@ impl Application {
         }
     }
 
-    fn set_editor_status_feedback(
+    pub(crate) fn set_editor_status_feedback(
         &mut self,
         cx: &mut gpui::Context<crate::Core>,
         message: String,

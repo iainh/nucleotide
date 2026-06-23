@@ -2366,7 +2366,7 @@ impl Workspace {
         self.last_run_task = Some(task.clone());
         self.active_run_terminal = Some((terminal_id, run_id));
 
-        self.core.update(cx, |app, _cx| {
+        self.core.update(cx, |app, app_cx| {
             if let Some(bus) = &app.event_aggregator {
                 bus.dispatch_run(RunEvent::Requested { task: task.clone() });
                 bus.dispatch_run(RunEvent::Started {
@@ -2380,16 +2380,12 @@ impl Workspace {
                 });
                 bus.process_events();
             }
-            app.editor
-                .set_status(format!("Running {}: {command_line}", task.label()));
+            app.set_editor_status_feedback(
+                app_cx,
+                format!("Running {}: {command_line}", task.label()),
+                Severity::Info,
+            );
         });
-        self.push_editor_status_notification(
-            EditorStatus {
-                status: format!("Running {}", task.label()),
-                severity: Severity::Info,
-            },
-            cx,
-        );
     }
 
     fn set_run_status(
@@ -2399,17 +2395,9 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let message = message.into();
-        self.core.update(cx, |app, _cx| match severity {
-            Severity::Error => app.editor.set_error(message.clone()),
-            _ => app.editor.set_status(message.clone()),
+        self.core.update(cx, |app, app_cx| {
+            app.set_editor_status_feedback(app_cx, message, severity);
         });
-        self.push_editor_status_notification(
-            EditorStatus {
-                status: message,
-                severity,
-            },
-            cx,
-        );
     }
 
     /// Compute document and LSP context for the status bar without triggering borrow conflicts.
