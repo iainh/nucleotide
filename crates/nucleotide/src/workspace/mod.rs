@@ -6717,6 +6717,8 @@ impl Workspace {
         view_id: helix_view::ViewId,
         cx: &mut Context<Self>,
     ) {
+        let _timer = nucleotide_logging::PerfTimer::new("Workspace::handle_selection_changed")
+            .with_warn_threshold(std::time::Duration::from_millis(4));
         // Selection/cursor moved - update status and specific view
         nucleotide_logging::trace!(doc_id = ?doc_id, view_id = ?view_id, "Selection changed");
         self.update_specific_document_view(doc_id, cx);

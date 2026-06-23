@@ -24,11 +24,12 @@ use helix_view::{
     input::KeyEvent,
     keyboard::{KeyCode, KeyModifiers},
 };
-use nucleotide_logging::{debug, info};
+use nucleotide_logging::{PerfTimer, debug, info};
 use std::{
     borrow::Cow,
     num::NonZeroUsize,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,6 +115,8 @@ impl EditorInputBridge {
         editor: &mut Editor,
         jobs: &mut Jobs,
     ) -> EditorInputOutcome {
+        let _timer = PerfTimer::new("EditorInputBridge::handle_key")
+            .with_warn_threshold(Duration::from_millis(4));
         log_completion_key_context(editor, key);
 
         let before_focused_view_id = editor.tree.focus;
