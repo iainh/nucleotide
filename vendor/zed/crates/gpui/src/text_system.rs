@@ -368,6 +368,13 @@ impl TextSystem {
         self.platform_text_system
             .recommended_rendering_mode(font_id, font_size)
     }
+
+    /// Returns whether the platform's active rendering parameters require
+    /// grayscale text, even if the application requested subpixel text.
+    pub(crate) fn should_force_grayscale_text_rendering(&self) -> bool {
+        self.platform_text_system
+            .should_force_grayscale_text_rendering()
+    }
 }
 
 /// The GPUI text layout subsystem.

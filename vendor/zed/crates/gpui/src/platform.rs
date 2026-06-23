@@ -843,6 +843,11 @@ pub trait PlatformTextSystem: Send + Sync {
     /// Returns the recommended text rendering mode for the given font and size.
     fn recommended_rendering_mode(&self, _font_id: FontId, _font_size: Pixels)
     -> TextRenderingMode;
+    /// Returns whether the platform's active rendering parameters require
+    /// grayscale text, even if the application requested subpixel text.
+    fn should_force_grayscale_text_rendering(&self) -> bool {
+        false
+    }
     /// Returns the dilation level to use for a glyph painted in the given color.
     fn glyph_dilation_for_color(&self, _color: Hsla) -> u8 {
         0
