@@ -2177,13 +2177,12 @@ impl Application {
         }
 
         // Create the picker
-        Some(crate::picker::Picker::native(
-            "Switch Buffer",
-            items,
-            |_index| {
+        Some(
+            crate::picker::Picker::native("Switch Buffer", items, |_index| {
                 // Buffer selection is handled by the overlay
-            },
-        ))
+            })
+            .with_preview(true),
+        )
     }
 
     fn create_jumplist_picker(&mut self) -> Option<crate::picker::Picker> {
