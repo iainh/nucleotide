@@ -13,6 +13,7 @@ pub enum Picker {
         title: SharedString,
         items: Vec<PickerItem>,
         on_select: Arc<dyn Fn(usize) + Send + Sync>,
+        show_preview: bool,
     },
 }
 
@@ -27,7 +28,19 @@ impl Picker {
             title: title.into(),
             items,
             on_select: Arc::new(on_select),
+            show_preview: false,
         }
+    }
+
+    /// Configure whether this picker should render the preview pane.
+    pub fn with_preview(mut self, show_preview: bool) -> Self {
+        match &mut self {
+            Picker::Native {
+                show_preview: preview,
+                ..
+            } => *preview = show_preview,
+        }
+        self
     }
 
     /// Create a native directory picker
@@ -44,6 +57,7 @@ impl Picker {
                 // This won't be called for directory picker
                 // Directory selection will be handled through events
             }),
+            show_preview: false,
         }
     }
 }
@@ -51,11 +65,17 @@ impl Picker {
 impl std::fmt::Debug for Picker {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Picker::Native { title, items, .. } => f
+            Picker::Native {
+                title,
+                items,
+                show_preview,
+                ..
+            } => f
                 .debug_struct("Native")
                 .field("title", title)
                 .field("items", items)
                 .field("on_select", &"<function>")
+                .field("show_preview", show_preview)
                 .finish(),
         }
     }
@@ -75,6 +95,7 @@ impl RenderOnce for PickerElement {
                 title,
                 items,
                 on_select: _,
+                ..
             } => {
                 // Native GPUI picker rendering
                 let ui_font = cx.global::<nucleotide_types::UiFontConfig>();
@@ -202,6 +223,33 @@ impl RenderOnce for PickerElement {
                                 )
                         )
                 }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_picker_disables_preview_by_default() {
+        let picker = Picker::native("Actions", Vec::new(), |_| {});
+
+        match picker {
+            Picker::Native { show_preview, .. } => {
+                assert!(!show_preview);
+            }
+        }
+    }
+
+    #[test]
+    fn native_picker_can_opt_into_preview() {
+        let picker = Picker::native("Open File", Vec::new(), |_| {}).with_preview(true);
+
+        match picker {
+            Picker::Native { show_preview, .. } => {
+                assert!(show_preview);
             }
         }
     }

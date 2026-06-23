@@ -2341,7 +2341,7 @@ impl Workspace {
             })
             .collect::<Vec<_>>();
 
-        let picker = crate::picker::Picker::native("Run", items, |_| {});
+        let picker = crate::picker::Picker::native("Run", items, |_| {}).with_preview(true);
         emit_picker_update(picker, &self.overlay, cx);
     }
 
@@ -13752,7 +13752,8 @@ fn open_at(
     let file_picker = crate::picker::Picker::native("Open File", items, |_index| {
         // This callback is no longer used - file opening is handled via OpenFile events
         // The overlay will emit OpenFile events when files are selected
-    });
+    })
+    .with_preview(true);
 
     info!("Emitting file picker to overlay");
 
@@ -13904,7 +13905,8 @@ fn show_buffer_picker(
     let buffer_picker = crate::picker::Picker::native("Switch Buffer", items, move |index| {
         info!("Buffer selected at index: {}", index);
         // The overlay will handle buffer switching via the stored document ID
-    });
+    })
+    .with_preview(true);
 
     emit_picker_update(buffer_picker, &overlay, cx);
 }

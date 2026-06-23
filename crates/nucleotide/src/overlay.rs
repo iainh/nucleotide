@@ -592,9 +592,9 @@ impl OverlayView {
                         title,
                         items,
                         on_select,
+                        show_preview,
                     } => {
                         let is_file_finder = title.as_ref() == "Open File";
-                        let uses_preview = title.as_ref() != "Code Actions";
                         let items = items.clone();
                         let on_select = on_select.clone();
                         let core_weak = self.core.clone();
@@ -605,9 +605,7 @@ impl OverlayView {
                             let mut view = Self::create_picker_view_with_context(cx);
                             let items_for_callback = items.clone();
 
-                            // Enable preview by default, especially for buffer picker.
-                            // Action-only pickers execute commands and do not have useful previews.
-                            view = view.with_preview(uses_preview);
+                            view = view.with_preview(*show_preview);
 
                             view = view.with_items(items);
 
