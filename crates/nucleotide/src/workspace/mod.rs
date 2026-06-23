@@ -6545,14 +6545,7 @@ impl Workspace {
 
                 match config_event {
                     ConfigEvent::Refresh | ConfigEvent::Update(_) => {
-                        // Configuration has changed, refresh the UI
-                        info!("Config changed, refreshing UI - calling cx.notify()");
-
-                        // Force a complete workspace refresh by clearing render state
-                        // This ensures that changes like bufferline visibility are properly applied
-                        self.update_document_views(cx);
-
-                        cx.notify();
+                        self.refresh_after_editor_config_change(cx);
                     }
                 }
             }
@@ -6561,6 +6554,12 @@ impl Workspace {
                 info!("editor event {ev:?} not handled");
             }
         }
+    }
+
+    fn refresh_after_editor_config_change(&mut self, cx: &mut Context<Self>) {
+        // Changes like bufferline visibility affect the view set and chrome.
+        self.update_document_views(cx);
+        cx.notify();
     }
 
     fn handle_redraw(&mut self, cx: &mut Context<Self>) {
@@ -7561,30 +7560,22 @@ impl Workspace {
         let bufferline_after = core.read(cx).editor.config().bufferline.clone();
         info!(bufferline_config = ?bufferline_after, "Bufferline config after command execution");
 
-        // Manual trigger: if bufferline config changed, force a workspace refresh
-        // This is a workaround since ConfigEvent might not always be triggered properly
+        // If command execution changed bufferline visibility, refresh workspace chrome directly.
         let changed = if bufferline_before != bufferline_after {
-            info!(old_config = ?bufferline_before, new_config = ?bufferline_after, "Bufferline config changed - forcing workspace refresh");
+            info!(old_config = ?bufferline_before, new_config = ?bufferline_after, "Bufferline config changed - refreshing workspace chrome");
             true
         } else {
             false
         };
 
-        cx.notify();
-
         if changed {
-            // Force workspace to refresh by emitting a fake ConfigEvent
-            cx.emit(crate::Update::EditorEvent(
-                helix_view::editor::EditorEvent::ConfigEvent(
-                    helix_view::editor::ConfigEvent::Refresh,
-                ),
-            ));
+            self.refresh_after_editor_config_change(cx);
+        } else {
+            // Commands such as hsplit/vsplit/wclose mutate Helix's view tree.
+            // Keep the GPUI document-view entities in lockstep before the next render.
+            self.update_document_views(cx);
+            cx.notify();
         }
-
-        // Commands such as hsplit/vsplit/wclose mutate Helix's view tree.
-        // Keep the GPUI document-view entities in lockstep before the next render.
-        self.update_document_views(cx);
-        cx.notify();
 
         // Log bufferline config in workspace context after command execution
         let bufferline_after_workspace = &core.read(cx).editor.config().bufferline;
