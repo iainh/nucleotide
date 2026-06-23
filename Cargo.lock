@@ -5205,7 +5205,6 @@ dependencies = [
  "anyhow",
  "portable-pty",
  "tokio",
- "which 8.0.4",
 ]
 
 [[package]]
