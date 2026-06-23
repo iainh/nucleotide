@@ -16,6 +16,9 @@ pub const DEFAULT_DARK_THEME: &str = "nucleotide-teal";
 
 const GPUI_SYSTEM_UI_FONT: &str = ".SystemUIFont";
 
+/// Complete example configuration used for new `nucleotide.toml` files.
+pub const NUCLEOTIDE_EXAMPLE_CONFIG: &str = include_str!("../nucleotide.example.toml");
+
 fn normalize_ui_font(mut font: FontConfig) -> FontConfig {
     if matches!(
         font.family.as_str(),
@@ -639,10 +642,15 @@ fn load_gui_config(dir: &Path) -> anyhow::Result<GuiConfig> {
         GuiConfig::default()
     };
 
-    // Load project markers configuration from project_markers.toml
+    // Load project markers configuration from project_markers.toml when present.
     match load_project_markers_config(dir) {
-        Ok(project_markers_config) => {
+        Ok(Some(project_markers_config)) => {
             config.project_markers = project_markers_config;
+        }
+        Ok(None) => {
+            nucleotide_logging::info!(
+                "No project markers configuration file found, using nucleotide.toml settings"
+            );
         }
         Err(err) => {
             nucleotide_logging::warn!(
@@ -690,8 +698,8 @@ fn load_gui_config(dir: &Path) -> anyhow::Result<GuiConfig> {
     Ok(config)
 }
 
-/// Load project markers configuration from project_markers.toml
-fn load_project_markers_config(dir: &Path) -> anyhow::Result<ProjectMarkersConfig> {
+/// Load project markers configuration from project_markers.toml when present.
+fn load_project_markers_config(dir: &Path) -> anyhow::Result<Option<ProjectMarkersConfig>> {
     let markers_config_path = dir.join("project_markers.toml");
 
     nucleotide_logging::info!(
@@ -712,42 +720,14 @@ fn load_project_markers_config(dir: &Path) -> anyhow::Result<ProjectMarkersConfi
             "Loaded project markers configuration"
         );
 
-        Ok(config)
+        Ok(Some(config))
     } else {
-        nucleotide_logging::info!("No project markers configuration file found, using defaults");
-        // Return default project markers configuration if file doesn't exist
-        Ok(ProjectMarkersConfig::default())
+        Ok(None)
     }
 }
 
-/// Example nucleotide.toml configuration:
-/// ```toml
-/// [ui]
-/// [ui.font]
-/// family = ".SystemUIFont"
-/// weight = "normal"
-/// size = 13.0
-///
-/// [editor]
-/// [editor.font]
-/// family = "Cascadia Mono"
-/// weight = "medium"
-/// size = 14.0
-///
-/// [lsp]
-/// project_lsp_startup = true
-/// startup_timeout_ms = 5000
-/// enable_fallback = true
-///
-/// [file_tree]
-/// density = "default" # compact, default, or relaxed
-/// flatten_empty_directories = true
-///
-/// [project_markers]
-/// enable_project_markers = true
-/// detection_timeout_ms = 1000
-/// enable_builtin_fallback = true
-/// ```
+/// The complete example `nucleotide.toml` content is embedded in
+/// [`NUCLEOTIDE_EXAMPLE_CONFIG`].
 ///
 /// Example project_markers.toml configuration:
 /// ```toml
@@ -889,6 +869,162 @@ flatten_empty_directories = false
         assert!(config.preview_tabs.enable_keep_preview_on_code_navigation);
         assert_eq!(config.file_tree.density, FileTreeDisplayDensity::Compact);
         assert!(!config.file_tree.flatten_empty_directories);
+    }
+
+    #[test]
+    fn nucleotide_example_config_parses_and_documents_supported_fields() {
+        let config: GuiConfig =
+            toml::from_str(NUCLEOTIDE_EXAMPLE_CONFIG).expect("example config should parse");
+
+        assert_eq!(config.theme.mode, ThemeMode::System);
+        assert_eq!(config.theme.get_light_theme(), DEFAULT_LIGHT_THEME);
+        assert_eq!(config.theme.get_dark_theme(), DEFAULT_DARK_THEME);
+        assert!(config.ui.font.is_none());
+        assert!(config.editor.font.is_none());
+        assert!(config.window.appearance_follows_theme);
+        assert!(config.tab_bar.show);
+        assert_eq!(
+            config.tabs.show_close_button,
+            TabCloseButtonVisibility::Hover
+        );
+        assert!(config.preview_tabs.enabled);
+        assert_eq!(config.file_tree.density, FileTreeDisplayDensity::Default);
+        assert_eq!(config.file_ops.delete_behavior, DeleteBehavior::Trash);
+        assert!(!config.lsp.project_lsp_startup);
+        assert!(!config.project_markers.enable_project_markers);
+
+        for setting in [
+            "max_tabs",
+            "[theme]",
+            "mode",
+            "light_theme",
+            "dark_theme",
+            "[window]",
+            "blur_dark_themes",
+            "appearance_follows_theme",
+            "[ui.font]",
+            "[editor.font]",
+            "family",
+            "weight",
+            "size",
+            "line_height",
+            "[tab_bar]",
+            "show_nav_history_buttons",
+            "show_tab_bar_buttons",
+            "show_pinned_tabs_in_separate_row",
+            "[tabs]",
+            "git_status",
+            "file_icons",
+            "show_diagnostics",
+            "show_close_button",
+            "close_position",
+            "activate_on_close",
+            "[preview_tabs]",
+            "enable_preview_from_project_panel",
+            "enable_preview_from_file_finder",
+            "enable_preview_from_multibuffer",
+            "enable_preview_multibuffer_from_code_navigation",
+            "enable_preview_file_from_code_navigation",
+            "enable_keep_preview_on_code_navigation",
+            "[file_tree]",
+            "density",
+            "flatten_empty_directories",
+            "[file_ops]",
+            "delete_behavior",
+            "[lsp]",
+            "project_lsp_startup",
+            "startup_timeout_ms",
+            "enable_fallback",
+            "[project_markers]",
+            "enable_project_markers",
+            "detection_timeout_ms",
+            "enable_builtin_fallback",
+            "[project_markers.markers.<name>]",
+            "markers",
+            "language_server",
+            "root_strategy",
+            "priority",
+        ] {
+            assert!(
+                NUCLEOTIDE_EXAMPLE_CONFIG.contains(setting),
+                "example config should document `{setting}`"
+            );
+        }
+    }
+
+    #[test]
+    fn docs_example_matches_bundled_example_config() {
+        assert_eq!(
+            NUCLEOTIDE_EXAMPLE_CONFIG,
+            include_str!("../../../docs/examples/nucleotide.example.toml")
+        );
+    }
+
+    #[test]
+    fn gui_config_keeps_project_markers_from_nucleotide_toml_without_override_file() {
+        let temp_dir = tempfile::TempDir::new().expect("should create temp directory");
+        std::fs::write(
+            temp_dir.path().join("nucleotide.toml"),
+            r#"
+[project_markers]
+enable_project_markers = true
+detection_timeout_ms = 1500
+enable_builtin_fallback = false
+
+[project_markers.markers.rust]
+markers = ["Cargo.toml"]
+language_server = "rust-analyzer"
+root_strategy = "closest"
+priority = 80
+"#,
+        )
+        .expect("should write nucleotide config");
+
+        let config = load_gui_config(temp_dir.path()).expect("should load GUI config");
+
+        assert!(config.project_markers.enable_project_markers);
+        assert_eq!(config.project_markers.detection_timeout_ms, 1500);
+        assert!(!config.project_markers.enable_builtin_fallback);
+        assert_eq!(config.project_markers.markers.len(), 1);
+        assert_eq!(
+            config
+                .project_markers
+                .markers
+                .get("rust")
+                .expect("rust marker should load")
+                .language_server,
+            "rust-analyzer"
+        );
+    }
+
+    #[test]
+    fn project_markers_toml_overrides_nucleotide_toml_project_markers() {
+        let temp_dir = tempfile::TempDir::new().expect("should create temp directory");
+        std::fs::write(
+            temp_dir.path().join("nucleotide.toml"),
+            r#"
+[project_markers]
+enable_project_markers = true
+detection_timeout_ms = 1500
+enable_builtin_fallback = true
+"#,
+        )
+        .expect("should write nucleotide config");
+        std::fs::write(
+            temp_dir.path().join("project_markers.toml"),
+            r#"
+enable_project_markers = false
+detection_timeout_ms = 2500
+enable_builtin_fallback = false
+"#,
+        )
+        .expect("should write project markers config");
+
+        let config = load_gui_config(temp_dir.path()).expect("should load GUI config");
+
+        assert!(!config.project_markers.enable_project_markers);
+        assert_eq!(config.project_markers.detection_timeout_ms, 2500);
+        assert!(!config.project_markers.enable_builtin_fallback);
     }
 
     #[test]

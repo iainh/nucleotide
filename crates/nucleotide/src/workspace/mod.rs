@@ -7698,39 +7698,10 @@ impl Workspace {
             return;
         }
 
-        // Create an empty nucleotide.toml if it doesn't exist
+        // Create a default nucleotide.toml if it doesn't exist
         if !settings_path.exists() {
-            let default_config = r#"# Nucleotide Configuration
-# This file contains GUI-specific settings for Nucleotide
-
-[ui]
-# Font configuration for the UI
-# font = { family = ".SystemUIFont", size = 14.0, weight = "Medium" }
-
-# Enable or disable animations
-# animations = true
-
-[theme]
-# Theme mode: "auto", "light", or "dark"
-# mode = "auto"
-
-# Override default themes (optional)
-# light_theme = "onelight"
-# dark_theme = "onedark"
-
-[lsp]
-# Language server configuration
-# Enable/disable completion suggestions
-# completion_enabled = true
-
-# Maximum number of completion items
-# max_completion_items = 100
-
-# Completion delay in milliseconds
-# completion_delay = 100
-"#;
-
-            if let Err(e) = std::fs::write(&settings_path, default_config) {
+            if let Err(e) = std::fs::write(&settings_path, crate::config::NUCLEOTIDE_EXAMPLE_CONFIG)
+            {
                 nucleotide_logging::error!("Failed to create default nucleotide.toml: {}", e);
                 return;
             }
