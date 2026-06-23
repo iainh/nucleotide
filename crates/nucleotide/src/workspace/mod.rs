@@ -5520,14 +5520,15 @@ impl Workspace {
                 debug!("Key event handled by InputCoordinator");
             }
             InputResult::SendToHelix(helix_key) => {
-                nucleotide_logging::info!(
+                nucleotide_logging::trace!(
                     key = ?helix_key,
-                    "DEBUG: Sending key to Helix editor - completion test"
+                    is_held = ev.is_held,
+                    "Sending key to Helix editor"
                 );
 
                 // Send the key to Helix
                 self.input.update(cx, |_, cx| {
-                    cx.emit(crate::InputEvent::Key(helix_key));
+                    cx.emit(crate::InputEvent::key_down(helix_key, ev.is_held));
                 });
 
                 // Extra debug for ctrl-x specifically
@@ -6717,7 +6718,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         // Selection/cursor moved - update status and specific view
-        info!("Selection changed in doc {:?}, view {:?}", doc_id, view_id);
+        nucleotide_logging::trace!(doc_id = ?doc_id, view_id = ?view_id, "Selection changed");
         self.update_specific_document_view(doc_id, cx);
         let focused_doc_id = {
             let core = self.core.read(cx);
@@ -11007,9 +11008,8 @@ impl Workspace {
             modifiers: KeyModifiers::empty(),
         };
 
-        self.input.update(cx, |_, cx| {
-            cx.emit(crate::InputEvent::Key(key_event));
-        });
+        self.input
+            .update(cx, |_, cx| cx.emit(crate::InputEvent::key(key_event)));
         nucleotide_logging::debug!("Sent Enter to accept completion");
     }
 
@@ -11044,9 +11044,8 @@ impl Workspace {
             modifiers: KeyModifiers::empty(),
         };
 
-        self.input.update(cx, |_, cx| {
-            cx.emit(crate::InputEvent::Key(key_event));
-        });
+        self.input
+            .update(cx, |_, cx| cx.emit(crate::InputEvent::key(key_event)));
         nucleotide_logging::debug!("Started search mode");
     }
 
@@ -11367,9 +11366,8 @@ impl Workspace {
         });
 
         let key_event = utils::translate_key(&keystroke);
-        self.input.update(cx, |_, cx| {
-            cx.emit(InputEvent::Key(key_event));
-        });
+        self.input
+            .update(cx, |_, cx| cx.emit(InputEvent::key(key_event)));
     }
 
     /// Adjust the editor font size

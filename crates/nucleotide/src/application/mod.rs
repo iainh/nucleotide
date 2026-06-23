@@ -40,7 +40,11 @@ use futures_util::{
 use helix_core::{Position, RopeSlice, Selection, Uri, pos_at_coords, syntax};
 use helix_lsp::{LanguageServerId, LspProgressMap, OffsetEncoding, lsp};
 use helix_stdx::path::{self as helix_path, get_path_suffix, get_relative_path};
-use helix_view::document::from_reader;
+use helix_view::{
+    document::{Mode, from_reader},
+    input::KeyEvent,
+    keyboard::{KeyCode, KeyModifiers},
+};
 use nucleotide_events::{ProjectLspCommand, ProjectLspCommandError};
 use nucleotide_lsp::{HelixLspBridge, ProjectLspManager, ServerStatus};
 
@@ -272,7 +276,7 @@ pub fn implicit_workspace_root_from_current_dir() -> Option<PathBuf> {
 use anyhow::Error;
 use nucleotide_core::{EventAggregatorHandle, EventBus, event_bridge, gpui_to_helix_bridge};
 use nucleotide_events::v2::diagnostics::Event as DiagnosticsEvent;
-use nucleotide_logging::{Level, debug, error, info, instrument, span, timed, warn};
+use nucleotide_logging::{Level, PerfTimer, debug, error, info, instrument, span, timed, warn};
 use nucleotide_lsp::lsp_state::DiagnosticInfo;
 
 use crate::types::{AppEvent, CoreEvent, Update};
@@ -353,9 +357,38 @@ pub struct Application {
     pub sync_cycle_counter: Arc<std::sync::atomic::AtomicUsize>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InputKeyEvent {
+    pub key: KeyEvent,
+    pub is_held: bool,
+}
+
+impl InputKeyEvent {
+    pub fn new(key: KeyEvent) -> Self {
+        Self {
+            key,
+            is_held: false,
+        }
+    }
+
+    pub fn from_key_down(key: KeyEvent, is_held: bool) -> Self {
+        Self { key, is_held }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum InputEvent {
-    Key(helix_view::input::KeyEvent),
+    Key(InputKeyEvent),
+}
+
+impl InputEvent {
+    pub fn key(key: KeyEvent) -> Self {
+        Self::Key(InputKeyEvent::new(key))
+    }
+
+    pub fn key_down(key: KeyEvent, is_held: bool) -> Self {
+        Self::Key(InputKeyEvent::from_key_down(key, is_held))
+    }
 }
 
 pub struct Input;
@@ -369,6 +402,26 @@ impl gpui::EventEmitter<InputEvent> for Input {}
 const LSP_TOKEN_IDLE: &str = "idle";
 const LSP_TOKEN_ACTIVITY: &str = "activity";
 const LSP_MSG_READY: &str = "Ready";
+
+fn is_navigation_repeat_key(key: &KeyEvent, mode: Mode) -> bool {
+    let has_shortcut_modifier = key
+        .modifiers
+        .intersects(KeyModifiers::ALT | KeyModifiers::SUPER);
+    match key.code {
+        KeyCode::Left
+        | KeyCode::Right
+        | KeyCode::Up
+        | KeyCode::Down
+        | KeyCode::Home
+        | KeyCode::End
+        | KeyCode::PageUp
+        | KeyCode::PageDown => !has_shortcut_modifier,
+        KeyCode::Char('h' | 'j' | 'k' | 'l') => {
+            mode != Mode::Insert && key.modifiers == KeyModifiers::NONE
+        }
+        _ => false,
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum LspUiState {
@@ -2354,8 +2407,23 @@ impl Application {
     ) {
         let _guard = handle.enter();
         match event {
-            InputEvent::Key(key) => {
-                nucleotide_logging::info!(key = ?key, "DEBUG: Handling key event in Application");
+            InputEvent::Key(input) => {
+                let key = input.key;
+                let mode_before = self.editor.mode();
+                let is_navigation_repeat =
+                    input.is_held && is_navigation_repeat_key(&key, mode_before);
+                let _timer = PerfTimer::new(if input.is_held {
+                    "application_handle_held_key"
+                } else {
+                    "application_handle_key"
+                })
+                .with_warn_threshold(std::time::Duration::from_millis(8));
+                nucleotide_logging::trace!(
+                    key = ?key,
+                    is_held = input.is_held,
+                    is_navigation_repeat,
+                    "Handling key event in Application"
+                );
 
                 let outcome = self.editor_input.handle_key(
                     key,
@@ -2363,6 +2431,14 @@ impl Application {
                     &mut self.editor,
                     &mut self.jobs,
                 );
+                let has_explicit_ui_request = outcome.completion_requested.is_some()
+                    || outcome.picker_requested.is_some()
+                    || outcome.prompt_requested.is_some()
+                    || outcome.lsp_navigation_requested.is_some()
+                    || outcome.workspace_requested.is_some();
+                let selection_or_viewport_updated = outcome.selection_changed
+                    || outcome.viewport_scroll_requested.is_some()
+                    || outcome.viewport_cursor_requested.is_some();
 
                 if outcome.selection_changed
                     && let Some(doc_id) = outcome.focused_doc_id
@@ -2493,11 +2569,15 @@ impl Application {
                     }
                 }
 
-                self.emit_overlays(cx);
+                if !is_navigation_repeat || has_explicit_ui_request {
+                    self.emit_overlays(cx);
+                }
 
-                cx.emit(crate::Update::Event(AppEvent::Core(
-                    CoreEvent::RedrawRequested,
-                )));
+                if !is_navigation_repeat || !selection_or_viewport_updated {
+                    cx.emit(crate::Update::Event(AppEvent::Core(
+                        CoreEvent::RedrawRequested,
+                    )));
+                }
             }
         }
     }
