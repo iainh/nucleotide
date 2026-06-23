@@ -58,9 +58,12 @@ static DIRECT_WRITE_TEXT_RENDERING_PARAMS: LazyLock<
 pub(crate) struct ResolvedDirectWriteRenderingParams {
     rendering_params: IDWriteRenderingParams3,
     rendering_params_base: IDWriteRenderingParams,
-    rendering_mode_override: Option<DWRITE_RENDERING_MODE1>,
     measuring_mode: DWRITE_MEASURING_MODE,
-    grid_fit_mode: DWRITE_GRID_FIT_MODE,
+}
+
+struct GlyphRunAnalysis {
+    analysis: IDWriteGlyphRunAnalysis,
+    texture_type: DWRITE_TEXTURE_TYPE,
 }
 
 impl Drop for DirectWriteComponents {
@@ -113,10 +116,14 @@ pub(crate) fn resolve_direct_write_rendering_params(
         let measuring_mode = rendering_mode_override
             .map(direct_write_measuring_mode)
             .unwrap_or(DWRITE_MEASURING_MODE_NATURAL);
-        let grid_fit_mode = rendering_mode_override
-            .map(direct_write_grid_fit_mode)
-            .unwrap_or(DWRITE_GRID_FIT_MODE_DEFAULT);
 
+        // IDWriteFactory3::CreateCustomRenderingParams explicitly accepts
+        // DWRITE_RENDERING_MODE1_DEFAULT and DWRITE_GRID_FIT_MODE_DEFAULT as
+        // automatic choices:
+        // https://learn.microsoft.com/windows/win32/api/dwrite_3/nf-dwrite_3-idwritefactory3-createcustomrenderingparams
+        //
+        // These params are not fed directly to CreateGlyphRunAnalysis; that API
+        // has stricter requirements and is handled below.
         let rendering_params = factory.CreateCustomRenderingParams(
             gamma,
             enhanced_contrast,
@@ -124,16 +131,14 @@ pub(crate) fn resolve_direct_write_rendering_params(
             clear_type_level,
             pixel_geometry,
             rendering_mode,
-            grid_fit_mode,
+            DWRITE_GRID_FIT_MODE_DEFAULT,
         )?;
         let rendering_params_base = rendering_params.cast()?;
 
         Ok(ResolvedDirectWriteRenderingParams {
             rendering_params,
             rendering_params_base,
-            rendering_mode_override: rendering_mode_override.map(direct_write_rendering_mode),
             measuring_mode,
-            grid_fit_mode,
         })
     }
 }
@@ -171,24 +176,65 @@ fn direct_write_rendering_mode(rendering_mode: DirectWriteRenderingMode) -> DWRI
 
 fn direct_write_measuring_mode(rendering_mode: DirectWriteRenderingMode) -> DWRITE_MEASURING_MODE {
     match rendering_mode {
-        DirectWriteRenderingMode::Aliased | DirectWriteRenderingMode::GdiClassic => {
-            DWRITE_MEASURING_MODE_GDI_CLASSIC
-        }
+        // DWRITE_RENDERING_MODE1 documents the GDI modes' matching measuring
+        // modes. Other rendering modes use natural measuring.
+        // https://learn.microsoft.com/windows/win32/api/dwrite_3/ne-dwrite_3-dwrite_rendering_mode1
+        DirectWriteRenderingMode::GdiClassic => DWRITE_MEASURING_MODE_GDI_CLASSIC,
         DirectWriteRenderingMode::GdiNatural => DWRITE_MEASURING_MODE_GDI_NATURAL,
         DirectWriteRenderingMode::Default
+        | DirectWriteRenderingMode::Aliased
         | DirectWriteRenderingMode::Natural
         | DirectWriteRenderingMode::NaturalSymmetric => DWRITE_MEASURING_MODE_NATURAL,
     }
 }
 
-fn direct_write_grid_fit_mode(rendering_mode: DirectWriteRenderingMode) -> DWRITE_GRID_FIT_MODE {
+fn glyph_analysis_rendering_mode(rendering_mode: DWRITE_RENDERING_MODE1) -> DWRITE_RENDERING_MODE1 {
     match rendering_mode {
-        DirectWriteRenderingMode::Aliased
-        | DirectWriteRenderingMode::GdiClassic
-        | DirectWriteRenderingMode::GdiNatural => DWRITE_GRID_FIT_MODE_ENABLED,
-        DirectWriteRenderingMode::Default
-        | DirectWriteRenderingMode::Natural
-        | DirectWriteRenderingMode::NaturalSymmetric => DWRITE_GRID_FIT_MODE_DEFAULT,
+        DWRITE_RENDERING_MODE1_DEFAULT | DWRITE_RENDERING_MODE1_OUTLINE => {
+            DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC
+        }
+        mode => mode,
+    }
+}
+
+fn glyph_analysis_grid_fit_mode(
+    grid_fit_mode: DWRITE_GRID_FIT_MODE,
+    rendering_mode: DWRITE_RENDERING_MODE1,
+) -> DWRITE_GRID_FIT_MODE {
+    if grid_fit_mode != DWRITE_GRID_FIT_MODE_DEFAULT {
+        return grid_fit_mode;
+    }
+
+    match rendering_mode {
+        DWRITE_RENDERING_MODE1_ALIASED
+        | DWRITE_RENDERING_MODE1_GDI_CLASSIC
+        | DWRITE_RENDERING_MODE1_GDI_NATURAL => DWRITE_GRID_FIT_MODE_ENABLED,
+        _ => DWRITE_GRID_FIT_MODE_DISABLED,
+    }
+}
+
+fn glyph_analysis_antialias_mode(
+    subpixel_rendering: bool,
+    rendering_mode: DWRITE_RENDERING_MODE1,
+) -> DWRITE_TEXT_ANTIALIAS_MODE {
+    if subpixel_rendering && rendering_mode != DWRITE_RENDERING_MODE1_ALIASED {
+        DWRITE_TEXT_ANTIALIAS_MODE_CLEARTYPE
+    } else {
+        DWRITE_TEXT_ANTIALIAS_MODE_GRAYSCALE
+    }
+}
+
+fn glyph_analysis_texture_type(
+    subpixel_rendering: bool,
+    rendering_mode: DWRITE_RENDERING_MODE1,
+) -> DWRITE_TEXTURE_TYPE {
+    // DWRITE_TEXTURE_TYPE documents ALIASED_1x1 as one byte per pixel and
+    // CLEARTYPE_3x1 as three bytes per pixel:
+    // https://learn.microsoft.com/windows/win32/api/dwrite/ne-dwrite-dwrite_texture_type
+    if subpixel_rendering && rendering_mode != DWRITE_RENDERING_MODE1_ALIASED {
+        DWRITE_TEXTURE_CLEARTYPE_3x1
+    } else {
+        DWRITE_TEXTURE_ALIASED_1x1
     }
 }
 
@@ -814,7 +860,7 @@ impl DirectWriteState {
         &self,
         components: &DirectWriteComponents,
         params: &RenderGlyphParams,
-    ) -> Result<IDWriteGlyphRunAnalysis> {
+    ) -> Result<GlyphRunAnalysis> {
         let font = &self.fonts[params.font_id.0];
         let glyph_id = [params.glyph_id.0 as u16];
         let advance = [0.0];
@@ -844,38 +890,38 @@ impl DirectWriteState {
             / params.scale_factor;
 
         let rendering_params = resolve_direct_write_rendering_params(&components.factory)?;
-        let mut rendering_mode = rendering_params.rendering_mode_override.unwrap_or_default();
-        let mut grid_fit_mode = rendering_params.grid_fit_mode;
+        let mut rendering_mode = DWRITE_RENDERING_MODE1_DEFAULT;
+        let mut grid_fit_mode = DWRITE_GRID_FIT_MODE_DEFAULT;
         let measuring_mode = rendering_params.measuring_mode;
 
-        if rendering_params.rendering_mode_override.is_none() {
-            unsafe {
-                font.font_face.GetRecommendedRenderingMode(
-                    params.font_size.as_f32(),
-                    // Using 96 as scale is applied by the transform
-                    96.0,
-                    96.0,
-                    Some(&transform),
-                    false,
-                    DWRITE_OUTLINE_THRESHOLD_ANTIALIASED,
-                    measuring_mode,
-                    Some(&rendering_params.rendering_params_base),
-                    &mut rendering_mode,
-                    &mut grid_fit_mode,
-                )?;
-            }
+        unsafe {
+            // IDWriteFontFace2/3::GetRecommendedRenderingMode is the documented
+            // way to resolve a rendering params object that may override the
+            // rendering mode, and it returns a compatible grid-fit mode:
+            // https://learn.microsoft.com/windows/win32/api/dwrite_2/nf-dwrite_2-idwritefontface2-getrecommendedrenderingmode
+            font.font_face.GetRecommendedRenderingMode(
+                params.font_size.as_f32(),
+                // Using 96 as scale is applied by the transform
+                96.0,
+                96.0,
+                Some(&transform),
+                false,
+                DWRITE_OUTLINE_THRESHOLD_ANTIALIASED,
+                measuring_mode,
+                Some(&rendering_params.rendering_params_base),
+                &mut rendering_mode,
+                &mut grid_fit_mode,
+            )?;
         }
-        let rendering_mode = match rendering_mode {
-            DWRITE_RENDERING_MODE1_OUTLINE => DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC,
-            m => m,
-        };
+        let rendering_mode = glyph_analysis_rendering_mode(rendering_mode);
+        let grid_fit_mode = glyph_analysis_grid_fit_mode(grid_fit_mode, rendering_mode);
 
-        let antialias_mode = if params.subpixel_rendering {
-            DWRITE_TEXT_ANTIALIAS_MODE_CLEARTYPE
-        } else {
-            DWRITE_TEXT_ANTIALIAS_MODE_GRAYSCALE
-        };
+        let antialias_mode =
+            glyph_analysis_antialias_mode(params.subpixel_rendering, rendering_mode);
 
+        // IDWriteFactory2/3::CreateGlyphRunAnalysis requires a raster rendering
+        // mode, not DEFAULT/OUTLINE, and requires non-default grid fitting:
+        // https://learn.microsoft.com/windows/win32/api/dwrite_2/nf-dwrite_2-idwritefactory2-createglyphrunanalysis
         let glyph_analysis = unsafe {
             components.factory.CreateGlyphRunAnalysis(
                 &glyph_run,
@@ -888,7 +934,10 @@ impl DirectWriteState {
                 baseline_origin_y,
             )
         }?;
-        Ok(glyph_analysis)
+        Ok(GlyphRunAnalysis {
+            analysis: glyph_analysis,
+            texture_type: glyph_analysis_texture_type(params.subpixel_rendering, rendering_mode),
+        })
     }
 
     fn raster_bounds(
@@ -898,13 +947,11 @@ impl DirectWriteState {
     ) -> Result<Bounds<DevicePixels>> {
         let glyph_analysis = self.create_glyph_run_analysis(components, params)?;
 
-        let texture_type = if params.subpixel_rendering {
-            DWRITE_TEXTURE_CLEARTYPE_3x1
-        } else {
-            DWRITE_TEXTURE_ALIASED_1x1
+        let bounds = unsafe {
+            glyph_analysis
+                .analysis
+                .GetAlphaTextureBounds(glyph_analysis.texture_type)?
         };
-
-        let bounds = unsafe { glyph_analysis.GetAlphaTextureBounds(texture_type)? };
 
         if bounds.right < bounds.left {
             Ok(Bounds {
@@ -969,12 +1016,12 @@ impl DirectWriteState {
         glyph_bounds: Bounds<DevicePixels>,
     ) -> Result<Vec<u8>> {
         let glyph_analysis = self.create_glyph_run_analysis(components, params)?;
-        if !params.subpixel_rendering {
+        if glyph_analysis.texture_type == DWRITE_TEXTURE_ALIASED_1x1 {
             let mut bitmap_data =
                 vec![0u8; glyph_bounds.size.width.0 as usize * glyph_bounds.size.height.0 as usize];
             unsafe {
-                glyph_analysis.CreateAlphaTexture(
-                    DWRITE_TEXTURE_ALIASED_1x1,
+                glyph_analysis.analysis.CreateAlphaTexture(
+                    glyph_analysis.texture_type,
                     &RECT {
                         left: glyph_bounds.origin.x.0,
                         top: glyph_bounds.origin.y.0,
@@ -995,8 +1042,8 @@ impl DirectWriteState {
         let mut bitmap_data = vec![0u8; pixel_count * 4];
 
         unsafe {
-            glyph_analysis.CreateAlphaTexture(
-                DWRITE_TEXTURE_CLEARTYPE_3x1,
+            glyph_analysis.analysis.CreateAlphaTexture(
+                glyph_analysis.texture_type,
                 &RECT {
                     left: glyph_bounds.origin.x.0,
                     top: glyph_bounds.origin.y.0,
@@ -1087,13 +1134,16 @@ impl DirectWriteState {
             let color_run = unsafe { &*color_run };
             let image_format = color_run.glyphImageFormat & !DWRITE_GLYPH_IMAGE_FORMATS_TRUETYPE;
             if image_format == DWRITE_GLYPH_IMAGE_FORMATS_COLR {
+                // IDWriteFactory2/3::CreateGlyphRunAnalysis requires
+                // gridFitMode to be non-default:
+                // https://learn.microsoft.com/windows/win32/api/dwrite_2/nf-dwrite_2-idwritefactory2-createglyphrunanalysis
                 let color_analysis = unsafe {
                     components.factory.CreateGlyphRunAnalysis(
                         &color_run.Base.glyphRun as *const _,
                         Some(&transform),
                         DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC,
                         DWRITE_MEASURING_MODE_NATURAL,
-                        DWRITE_GRID_FIT_MODE_DEFAULT,
+                        DWRITE_GRID_FIT_MODE_DISABLED,
                         DWRITE_TEXT_ANTIALIAS_MODE_GRAYSCALE,
                         baseline_origin_x,
                         baseline_origin_y,
