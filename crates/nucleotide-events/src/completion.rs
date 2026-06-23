@@ -16,15 +16,6 @@ pub enum Event {
         request_id: CompletionRequestId,
     },
 
-    /// LSP completion request with response channel
-    LspCompletionRequested {
-        doc_id: DocumentId,
-        view_id: ViewId,
-        cursor: usize,
-        request_id: CompletionRequestId,
-        response_tx: tokio::sync::oneshot::Sender<LspCompletionResponse>,
-    },
-
     Cancelled {
         request_id: CompletionRequestId,
         reason: CancellationReason,
@@ -257,15 +248,6 @@ pub struct CompletionMetrics {
     pub render_duration_ms: u64,
     pub total_items: usize,
     pub visible_items: usize,
-}
-
-/// Response from LSP completion request
-#[derive(Debug, Clone)]
-pub struct LspCompletionResponse {
-    pub items: Vec<CompletionItem>,
-    pub is_incomplete: bool,
-    pub error: Option<String>,
-    pub prefix: String,
 }
 
 impl Position {

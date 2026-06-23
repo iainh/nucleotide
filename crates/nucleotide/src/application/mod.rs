@@ -6213,9 +6213,6 @@ pub fn init_editor(
     let editor_input = EditorInputBridge::new(native_keymaps);
     let jobs = Jobs::new();
 
-    // Initialize completion coordinator - but we need to do this after Application is created
-    // since it needs access to the Core. This will be done in the workspace.
-
     // CRITICAL: Create ProjectEnvironment BEFORE LSP system so LSP can get proper environment
     let project_environment = Arc::new(detect_and_create_project_environment());
     if project_environment.cli_environment().is_none() {
@@ -6244,7 +6241,7 @@ pub fn init_editor(
     }));
 
     nucleotide_logging::info!(
-        "Application created with completion_rx stored and LSP manager initialized - ready for coordinator initialization"
+        "Application created with direct completion and LSP manager initialized"
     );
 
     // Initialize V2 Event Aggregator and register core handlers
