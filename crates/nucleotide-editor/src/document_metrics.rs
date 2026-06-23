@@ -11,7 +11,7 @@ use helix_core::{
     softwrapped_dimensions,
 };
 use helix_stdx::rope::RopeSliceExt;
-use helix_view::{Document, Theme};
+use helix_view::{Document, DocumentId, Theme};
 use nucleotide_logging::PerfTimer;
 
 use crate::EditorSurfaceGeometry;
@@ -56,7 +56,9 @@ impl From<&TextFormat> for EditorTextFormatCacheKey {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct EditorDocumentMetricsCacheKey {
+    document_id: DocumentId,
     document_version: i32,
+    text_len: usize,
     gutter_columns: u16,
     viewport_columns: u16,
     minimum_columns: u16,
@@ -71,8 +73,10 @@ struct CachedEditorDocumentMetrics {
 
 #[derive(Clone, Debug, Default)]
 pub struct EditorDocumentMetricsCache {
-    last: Option<CachedEditorDocumentMetrics>,
+    entries: Vec<CachedEditorDocumentMetrics>,
 }
+
+const DOCUMENT_METRICS_CACHE_CAPACITY: usize = 4;
 
 impl EditorDocumentMetrics {
     pub fn resolve(
@@ -133,26 +137,48 @@ impl EditorDocumentMetricsCache {
             minimum_columns,
         );
         let key = EditorDocumentMetricsCacheKey {
+            document_id: document.id(),
             document_version: document.version(),
+            text_len: document.text().len_chars(),
             gutter_columns,
             viewport_columns,
             minimum_columns,
             text_format: EditorTextFormatCacheKey::from(&text_format),
         };
 
-        if let Some(cached) = &self.last
-            && cached.key == key
-        {
-            return cached.metrics.clone();
+        if let Some(index) = self.entries.iter().position(|cached| cached.key == key) {
+            let cached = self.entries.remove(index);
+            let metrics = cached.metrics.clone();
+            self.entries.insert(0, cached);
+            return metrics;
         }
 
         let metrics =
             EditorDocumentMetrics::from_text_format(document, viewport_columns, text_format);
-        self.last = Some(CachedEditorDocumentMetrics {
-            key,
-            metrics: metrics.clone(),
-        });
+        self.entries.insert(
+            0,
+            CachedEditorDocumentMetrics {
+                key,
+                metrics: metrics.clone(),
+            },
+        );
+        if self.entries.len() > DOCUMENT_METRICS_CACHE_CAPACITY {
+            self.entries.truncate(DOCUMENT_METRICS_CACHE_CAPACITY);
+        }
         metrics
+    }
+}
+
+#[cfg(test)]
+impl EditorDocumentMetricsCache {
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    fn front_viewport_columns(&self) -> Option<u16> {
+        self.entries
+            .first()
+            .map(|entry| entry.metrics.viewport_columns)
     }
 }
 
@@ -319,6 +345,34 @@ mod tests {
         assert!(first.soft_wrap);
         assert_eq!(second.visual_rows, first.visual_rows);
         assert_eq!(second.viewport_columns, first.viewport_columns);
+    }
+
+    #[test]
+    fn metrics_cache_keeps_multiple_layouts() {
+        let mut config = Config::default();
+        config.soft_wrap.enable = Some(true);
+        let (document, view) = test_document_with_config(config, "abcdefghijklmnopqrstuvwxyz");
+        let mut cache = EditorDocumentMetricsCache::default();
+        let narrow_bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(160.0), px(80.0)));
+        let wide_bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(240.0), px(80.0)));
+        let gutter_columns = view.gutter_offset(&document);
+
+        let narrow = cache.resolve(&document, None, narrow_bounds, gutter_columns, px(8.0), 1);
+        let wide = cache.resolve(&document, None, wide_bounds, gutter_columns, px(8.0), 1);
+
+        assert_ne!(narrow.viewport_columns, wide.viewport_columns);
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache.front_viewport_columns(), Some(wide.viewport_columns));
+
+        let narrow_again =
+            cache.resolve(&document, None, narrow_bounds, gutter_columns, px(8.0), 1);
+
+        assert_eq!(narrow_again.viewport_columns, narrow.viewport_columns);
+        assert_eq!(cache.len(), 2);
+        assert_eq!(
+            cache.front_viewport_columns(),
+            Some(narrow.viewport_columns)
+        );
     }
 
     #[test]
