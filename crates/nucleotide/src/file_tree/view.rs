@@ -155,6 +155,8 @@ pub struct FileTreeView {
     last_fs_event_time: Option<std::time::Instant>,
     /// Whether the initial tree load is running in the background.
     initial_load_in_flight: bool,
+    /// Monotonic revision for structural tree changes.
+    tree_revision: u64,
 }
 
 impl FileTreeView {
@@ -190,6 +192,7 @@ impl FileTreeView {
             pending_fs_events: std::collections::HashMap::new(),
             last_fs_event_time: None,
             initial_load_in_flight: false,
+            tree_revision: 0,
         };
 
         // Auto-select the first entry if there are any entries
@@ -233,6 +236,7 @@ impl FileTreeView {
             pending_fs_events: std::collections::HashMap::new(),
             last_fs_event_time: None,
             initial_load_in_flight: false,
+            tree_revision: 0,
         };
 
         instance.start_initial_load(cx);
@@ -258,6 +262,8 @@ impl FileTreeView {
         }
 
         self.initial_load_in_flight = true;
+        self.tree_revision = self.tree_revision.wrapping_add(1);
+        let load_revision = self.tree_revision;
         let root_path = self.tree.root_path().to_path_buf();
         let config = self.tree.config().clone();
 
@@ -274,15 +280,27 @@ impl FileTreeView {
                 this.update(cx, |view, cx| {
                     view.initial_load_in_flight = false;
 
+                    if view.tree_revision != load_revision {
+                        debug!(
+                            current_revision = view.tree_revision,
+                            load_revision,
+                            "Ignoring stale initial file tree load"
+                        );
+                        return;
+                    }
+
                     match load_result {
                         Ok(tree) => {
                             let root_path = tree.root_path().to_path_buf();
                             let watch_filesystem = tree.config().watch_filesystem;
+                            let previous_selected_path = view.selected_path.clone();
+                            let previous_selected_paths = view.selected_paths.clone();
 
                             view.tree = tree;
-                            view.selected_path = None;
-                            view.selected_paths.clear();
-                            view.select_first_visible_entry();
+                            view.restore_selection_after_tree_replace(
+                                previous_selected_path,
+                                previous_selected_paths,
+                            );
 
                             if watch_filesystem {
                                 debug!(root_path = ?root_path, "Attempting to create file system watcher");
@@ -316,6 +334,26 @@ impl FileTreeView {
         .detach();
     }
 
+    fn restore_selection_after_tree_replace(
+        &mut self,
+        previous_selected_path: Option<PathBuf>,
+        previous_selected_paths: BTreeSet<PathBuf>,
+    ) {
+        self.selected_paths = previous_selected_paths
+            .into_iter()
+            .filter(|path| self.tree.entry_by_path(path).is_some())
+            .collect();
+        self.selected_path = previous_selected_path
+            .filter(|path| self.tree.entry_by_path(path).is_some())
+            .or_else(|| self.selected_paths.iter().next().cloned());
+
+        if self.selected_path.is_none() {
+            self.select_first_visible_entry();
+        } else if let Some(selected_path) = &self.selected_path {
+            self.selected_paths.insert(selected_path.clone());
+        }
+    }
+
     /// Get the current selection
     pub fn selected_path(&self) -> Option<&PathBuf> {
         self.selected_path.as_ref()
@@ -333,6 +371,7 @@ impl FileTreeView {
 
     /// Update file-tree configuration and redraw with the new rendering settings.
     pub fn set_config(&mut self, config: FileTreeConfig, cx: &mut Context<Self>) {
+        self.tree_revision = self.tree_revision.wrapping_add(1);
         self.tree.set_config(config);
         cx.notify();
     }
@@ -656,6 +695,7 @@ impl FileTreeView {
             if let Err(e) = self.tree.collapse_directory(path) {
                 error!(path = %path.display(), error = %e, "Failed to collapse directory");
             } else {
+                self.tree_revision = self.tree_revision.wrapping_add(1);
                 cx.emit(FileTreeEvent::DirectoryToggled {
                     path: path.to_path_buf(),
                     expanded: false,
@@ -703,6 +743,7 @@ impl FileTreeView {
                                         "Failed to expand directory"
                                     );
                                 } else {
+                                    view.tree_revision = view.tree_revision.wrapping_add(1);
                                     cx.emit(FileTreeEvent::DirectoryToggled {
                                         path: path_buf.clone(),
                                         expanded: true,
@@ -864,6 +905,7 @@ impl FileTreeView {
         if let Err(e) = self.tree.refresh() {
             error!(error = %e, "Failed to refresh file tree");
         } else {
+            self.tree_revision = self.tree_revision.wrapping_add(1);
             // Apply test VCS statuses for demonstration
             self.apply_test_statuses(cx);
             cx.notify();
@@ -882,6 +924,8 @@ impl FileTreeView {
                 }
                 if let Err(e) = self.tree.expand_directory_with_entries(dir, entries) {
                     error!(path=%dir.display(), error=%e, "Failed to refresh directory entries");
+                } else {
+                    self.tree_revision = self.tree_revision.wrapping_add(1);
                 }
                 cx.notify();
             }
@@ -1986,6 +2030,28 @@ mod tests {
         view.read_with(cx, |view, _cx| {
             assert_eq!(view.selected_path(), Some(&root_path));
             assert_eq!(view.selected_paths(), vec![root_path]);
+        });
+    }
+
+    #[gpui::test]
+    async fn deferred_initial_load_preserves_existing_selection(cx: &mut TestAppContext) {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root_path = temp_dir.path().to_path_buf();
+        let file_path = root_path.join("main.rs");
+        std::fs::write(&file_path, "fn main() {}\n").unwrap();
+
+        let view =
+            cx.new(|cx| FileTreeView::new_with_runtime(root_path.clone(), test_config(), None, cx));
+
+        view.update(cx, |view, cx| {
+            view.select_path(Some(file_path.clone()), cx);
+        });
+
+        cx.run_until_parked();
+
+        view.read_with(cx, |view, _cx| {
+            assert_eq!(view.selected_path(), Some(&file_path));
+            assert_eq!(view.selected_paths(), vec![file_path]);
         });
     }
 
