@@ -405,4 +405,9 @@ impl PlatformAtlas for TestAtlas {
         let mut state = self.0.lock();
         state.tiles.remove(key);
     }
+
+    fn clear(&self) {
+        let mut state = self.0.lock();
+        state.tiles.clear();
+    }
 }
