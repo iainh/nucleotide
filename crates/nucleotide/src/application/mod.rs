@@ -7091,26 +7091,312 @@ fn should_update_env_var(key: &str) -> bool {
 mod tests {
 
     use super::{
-        LspCompletionTrigger, NativeSymbolItem, NativeSymbolTarget, PendingCompletionRequest,
-        buffer_word_completion_items, completion_context_for_trigger, dedupe_completion_items,
-        detect_project_lsp_metadata, home_requires_login_shell_capture,
-        local_path_completion_context, lsp_completion_insert_text,
-        lsp_completion_insert_text_format, lsp_completion_items_from_response,
-        lsp_completion_response_is_incomplete, lsp_symbol_picker, native_symbol_item_from_lsp,
-        path_completion_items, project_health_status, project_server_language_id,
-        syntax_symbol_kind_from_capture_name,
+        Application, ApplicationCore, EditorInputBridge, LspCompletionTrigger, NativeSymbolItem,
+        NativeSymbolTarget, PendingCompletionRequest, buffer_word_completion_items,
+        completion_context_for_trigger, dedupe_completion_items, detect_project_lsp_metadata,
+        home_requires_login_shell_capture, local_path_completion_context,
+        lsp_completion_insert_text, lsp_completion_insert_text_format,
+        lsp_completion_items_from_response, lsp_completion_response_is_incomplete,
+        lsp_symbol_picker, native_symbol_item_from_lsp, path_completion_items,
+        project_health_status, project_server_language_id, syntax_symbol_kind_from_capture_name,
     };
     use crate::test_utils::test_support::{
         TestUpdate, create_counting_channel, create_test_diagnostic_events,
         create_test_document_events, create_test_selection_events,
     };
+    use arc_swap::{ArcSwap, access::Map};
     use futures_util::{FutureExt, stream::FuturesOrdered};
-    use helix_lsp::{OffsetEncoding, lsp};
+    use gpui::{AppContext, Entity};
+    use helix_core::syntax;
+    use helix_lsp::{LspProgressMap, OffsetEncoding, lsp};
+    use helix_term::{
+        compositor::Compositor, config::Config as HelixConfig, job::Jobs, keymap::Keymaps,
+    };
+    use helix_view::{editor::Config as EditorConfig, graphics::Rect, handlers::Handlers, theme};
+    use nucleotide_core::event_bridge;
     use nucleotide_events::completion::{CompletionItem, CompletionItemKind};
+    use std::cell::RefCell;
+    use std::collections::HashMap;
     use std::fs;
     use std::path::{Path, PathBuf};
+    use std::rc::Rc;
+    use std::sync::{Arc, LazyLock, atomic::Ordering};
     use std::time::Duration;
     use tempfile::tempdir;
+    use tokio::sync::{RwLock, mpsc};
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum CapturedUpdate {
+        ShowFilePicker,
+        ShowBufferPicker,
+        StatusChanged(String, crate::types::Severity),
+    }
+
+    static TEST_RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test tokio runtime")
+    });
+
+    fn test_gui_config() -> crate::config::Config {
+        let mut gui = crate::config::GuiConfig::default();
+        gui.lsp.project_lsp_startup = false;
+        crate::config::Config {
+            helix: HelixConfig::default(),
+            gui,
+        }
+    }
+
+    fn test_handlers() -> Handlers {
+        let _runtime = TEST_RUNTIME.enter();
+        let (completion_tx, _) = tokio::sync::mpsc::channel(1);
+        let (signature_tx, _) = tokio::sync::mpsc::channel(1);
+        let (auto_save_tx, _) = tokio::sync::mpsc::channel(1);
+        let (doc_colors_tx, _) = tokio::sync::mpsc::channel(1);
+
+        Handlers {
+            completions: helix_view::handlers::completion::CompletionHandler::new(completion_tx),
+            signature_hints: signature_tx,
+            auto_save: auto_save_tx,
+            document_colors: doc_colors_tx,
+            word_index: helix_view::handlers::word_index::Handler::spawn(),
+        }
+    }
+
+    fn new_test_application(cx: &mut gpui::TestAppContext) -> Entity<Application> {
+        cx.new(|cx| {
+            let _runtime = TEST_RUNTIME.enter();
+            let helix_config = Arc::new(ArcSwap::from_pointee(HelixConfig::default()));
+            let editor_config = Arc::new(ArcSwap::from_pointee(EditorConfig::default()));
+            let syntax_loader = Arc::new(ArcSwap::from_pointee(syntax::Loader::default()));
+            let theme_loader = Arc::new(theme::Loader::new(&[]));
+            let editor = helix_view::Editor::new(
+                Rect::new(0, 0, 80, 24),
+                theme_loader,
+                syntax_loader,
+                Arc::new(Map::new(
+                    Arc::clone(&editor_config),
+                    |config: &EditorConfig| config,
+                )),
+                test_handlers(),
+            );
+            let compositor = Compositor::new(Rect::new(0, 0, 80, 24));
+            let native_keymaps = Keymaps::default();
+            let editor_input = EditorInputBridge::new(native_keymaps);
+            let gui_config = test_gui_config();
+            let lsp_manager =
+                nucleotide_lsp::LspManager::new(Arc::new(nucleotide_lsp::LspManagerConfig {
+                    project_lsp_startup: gui_config.gui.lsp.project_lsp_startup,
+                    startup_timeout_ms: gui_config.gui.lsp.startup_timeout_ms,
+                    enable_fallback: gui_config.gui.lsp.enable_fallback,
+                }));
+            let (project_lsp_command_tx, project_lsp_command_rx) =
+                tokio::sync::mpsc::unbounded_channel();
+            let dispatcher =
+                nucleotide_core::LspCommandDispatcher::new(project_lsp_command_tx.clone());
+            let mut core = ApplicationCore::new();
+            core.initialize().expect("test application core");
+            core.lsp_handler_mut().set_command_dispatcher(dispatcher);
+            let mut cli_env = HashMap::new();
+            cli_env.insert("HOME".to_string(), "/tmp".to_string());
+
+            let mut app = Application {
+                editor,
+                compositor,
+                editor_input,
+                jobs: Jobs::new(),
+                lsp_progress: LspProgressMap::new(),
+                lsp_state: None,
+                project_directory: None,
+                event_bridge_rx: None,
+                gpui_to_helix_rx: None,
+                config: gui_config,
+                helix_config_arc: helix_config,
+                lsp_manager,
+                project_lsp_manager: Arc::new(RwLock::new(None)),
+                helix_lsp_bridge: Arc::new(RwLock::new(None)),
+                project_lsp_command_tx: Some(project_lsp_command_tx),
+                project_lsp_command_rx: Arc::new(RwLock::new(Some(project_lsp_command_rx))),
+                project_lsp_processor_started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                project_lsp_system_initialized: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                shell_env_cache: Arc::new(tokio::sync::Mutex::new(
+                    nucleotide_env::ShellEnvironmentCache::new(),
+                )),
+                project_environment: Arc::new(nucleotide_env::ProjectEnvironment::new(Some(
+                    cli_env,
+                ))),
+                project_env_overrides: HashMap::new(),
+                core,
+                event_aggregator: None,
+                #[cfg(feature = "terminal-emulator")]
+                terminal_input_senders: Default::default(),
+                sync_cycle_counter: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            };
+
+            app.project_lsp_system_initialized
+                .store(true, Ordering::Release);
+            app.project_lsp_processor_started
+                .store(true, Ordering::Release);
+            app.lsp_state = Some(cx.new(|_cx| nucleotide_lsp::LspState::new()));
+            app
+        })
+    }
+
+    fn subscribe_application_updates(
+        cx: &mut gpui::TestAppContext,
+        app: &Entity<Application>,
+    ) -> Rc<RefCell<Vec<CapturedUpdate>>> {
+        let updates = Rc::new(RefCell::new(Vec::new()));
+        let updates_for_subscription = updates.clone();
+
+        cx.update(|cx| {
+            cx.subscribe(app, move |_app, update: &crate::Update, _cx| match update {
+                crate::Update::ShowFilePicker => {
+                    updates_for_subscription
+                        .borrow_mut()
+                        .push(CapturedUpdate::ShowFilePicker);
+                }
+                crate::Update::ShowBufferPicker => {
+                    updates_for_subscription
+                        .borrow_mut()
+                        .push(CapturedUpdate::ShowBufferPicker);
+                }
+                crate::Update::Event(crate::types::AppEvent::Core(
+                    crate::types::CoreEvent::StatusChanged { message, severity },
+                )) => {
+                    updates_for_subscription
+                        .borrow_mut()
+                        .push(CapturedUpdate::StatusChanged(message.clone(), *severity));
+                }
+                _ => {}
+            })
+            .detach();
+        });
+
+        updates
+    }
+
+    fn run_periodic_maintenance(cx: &mut gpui::TestAppContext, app: &Entity<Application>) {
+        let handle = TEST_RUNTIME.handle().clone();
+        app.update(cx, |app, cx| {
+            app.handle_periodic_maintenance(cx, handle);
+        });
+    }
+
+    #[gpui::test]
+    async fn maintenance_drains_picker_bridged_events(cx: &mut gpui::TestAppContext) {
+        let app = new_test_application(cx);
+        let updates = subscribe_application_updates(cx, &app);
+        let (tx, rx) = mpsc::unbounded_channel();
+
+        app.update(cx, |app, _cx| {
+            app.event_bridge_rx = Some(rx);
+        });
+
+        tx.send(event_bridge::BridgedEvent::FilePickerRequested)
+            .expect("file picker event");
+        tx.send(event_bridge::BridgedEvent::BufferPickerRequested)
+            .expect("buffer picker event");
+
+        run_periodic_maintenance(cx, &app);
+
+        let updates = updates.borrow();
+        assert!(updates.contains(&CapturedUpdate::ShowFilePicker));
+        assert!(updates.contains(&CapturedUpdate::ShowBufferPicker));
+    }
+
+    #[gpui::test]
+    async fn maintenance_registers_lsp_initialized_in_lsp_state(cx: &mut gpui::TestAppContext) {
+        let app = new_test_application(cx);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let server_id = helix_lsp::LanguageServerId::default();
+
+        app.update(cx, |app, _cx| {
+            app.event_bridge_rx = Some(rx);
+        });
+
+        tx.send(event_bridge::BridgedEvent::LanguageServerInitialized { server_id })
+            .expect("language server initialized event");
+
+        run_periodic_maintenance(cx, &app);
+
+        let lsp_state = app.read_with(cx, |app, _cx| {
+            app.lsp_state.clone().expect("test lsp state")
+        });
+        lsp_state.read_with(cx, |state, _cx| {
+            let server = state.servers.get(&server_id).expect("registered server");
+            assert_eq!(server.status, nucleotide_lsp::ServerStatus::Running);
+        });
+    }
+
+    #[gpui::test]
+    async fn maintenance_drains_job_status_to_editor_and_notifications(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let app = new_test_application(cx);
+        let updates = subscribe_application_updates(cx, &app);
+        let (tx, rx) = mpsc::channel(4);
+
+        app.update(cx, |app, _cx| {
+            app.jobs.status_messages = rx;
+        });
+
+        tx.send(helix_event::status::StatusMessage {
+            severity: helix_event::status::Severity::Warning,
+            message: "indexing workspace".into(),
+        })
+        .await
+        .expect("status message");
+
+        run_periodic_maintenance(cx, &app);
+
+        assert!(updates.borrow().contains(&CapturedUpdate::StatusChanged(
+            "indexing workspace".to_string(),
+            crate::types::Severity::Warning,
+        )));
+        app.read_with(cx, |app, _cx| {
+            let (message, severity) = app.editor.get_status().expect("editor status");
+            assert_eq!(message.as_ref(), "indexing workspace");
+            assert_eq!(*severity, helix_view::editor::Severity::Warning);
+        });
+    }
+
+    #[gpui::test]
+    async fn maintenance_lsp_startup_command_emits_status_feedback(cx: &mut gpui::TestAppContext) {
+        let app = new_test_application(cx);
+        let updates = subscribe_application_updates(cx, &app);
+        let sender = app.read_with(cx, |app, _cx| {
+            app.project_lsp_command_tx
+                .clone()
+                .expect("project lsp command sender")
+        });
+        let workspace_root = tempdir().expect("workspace root");
+
+        sender
+            .send(
+                nucleotide_events::ProjectLspCommand::LspServerStartupRequested {
+                    server_name: "test-language-server".to_string(),
+                    workspace_root: workspace_root.path().to_path_buf(),
+                    language_id: "test".to_string(),
+                },
+            )
+            .expect("startup command");
+
+        run_periodic_maintenance(cx, &app);
+
+        let updates = updates.borrow();
+        assert!(updates.iter().any(|update| matches!(
+            update,
+            CapturedUpdate::StatusChanged(message, crate::types::Severity::Info)
+                if message == "Starting language server: test-language-server"
+        )));
+        assert!(updates.iter().any(|update| matches!(
+            update,
+            CapturedUpdate::StatusChanged(message, crate::types::Severity::Error)
+                if message.contains("Failed to start language server test-language-server")
+        )));
+    }
 
     #[test]
     fn home_bootstrap_detection_flags_missing_or_placeholder_home() {
