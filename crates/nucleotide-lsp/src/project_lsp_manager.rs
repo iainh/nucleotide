@@ -223,14 +223,30 @@ impl ProjectLspManager {
                 .project_detector
                 .get_primary_language_id(&project_info.project_type);
 
-            // Send LSP server startup event through the existing event bridge
-            nucleotide_core::event_bridge::send_bridged_event(
-                nucleotide_core::event_bridge::BridgedEvent::LspServerStartupRequested {
+            if let Some(ref command_sender) = self.lsp_command_sender {
+                let command = ProjectLspCommand::LspServerStartupRequested {
                     workspace_root: project_info.workspace_root.clone(),
                     server_name: server_name.clone(),
                     language_id: language_id.clone(),
-                },
-            );
+                };
+
+                if let Err(error) = command_sender.send(command) {
+                    warn!(
+                        error = %error,
+                        server_name = %server_name,
+                        language_id = %language_id,
+                        workspace_root = %project_info.workspace_root.display(),
+                        "Failed to send proactive LSP startup command"
+                    );
+                }
+            } else {
+                warn!(
+                    server_name = %server_name,
+                    language_id = %language_id,
+                    workspace_root = %project_info.workspace_root.display(),
+                    "No LSP command sender available for proactive startup"
+                );
+            }
 
             // Also send ProjectLspEvent for test listeners
             let _ = self.event_tx.send(ProjectLspEvent::ServerStartupRequested {
@@ -243,7 +259,7 @@ impl ProjectLspManager {
                 server_name = %server_name,
                 language_id = %language_id,
                 workspace_root = %project_info.workspace_root.display(),
-                "Successfully sent LspServerStartupRequested events through both event bridge and ProjectLsp event system"
+                "Queued proactive LSP startup request"
             );
         }
 

@@ -297,11 +297,6 @@ enum LspUiState {
 }
 
 impl Application {
-    /// Check if rust-analyzer is already running for the current project
-    fn is_rust_analyzer_running(&self) -> bool {
-        // For simplicity, assume rust-analyzer is not running and let the start method handle duplicates
-        false
-    }
     fn lsp_title_for_state(state: &LspUiState) -> &'static str {
         match state {
             LspUiState::Idle => "Connected",
@@ -487,35 +482,6 @@ impl Application {
                     }
                 }
             }
-            event_bridge::BridgedEvent::LspServerStartupRequested {
-                workspace_root,
-                server_name,
-                language_id,
-            } => {
-                info!(
-                    workspace_root = %workspace_root.display(),
-                    server_name = %server_name,
-                    language_id = %language_id,
-                    "Routing bridged LSP startup request to sync command processor"
-                );
-
-                let command = nucleotide_events::ProjectLspCommand::LspServerStartupRequested {
-                    server_name: server_name.clone(),
-                    workspace_root: workspace_root.clone(),
-                    language_id: language_id.clone(),
-                };
-
-                if let Some(ref sender) = self.project_lsp_command_tx {
-                    if let Err(error) = sender.send(command) {
-                        error!(
-                            error = %error,
-                            "Failed to route bridged LSP startup request"
-                        );
-                    }
-                } else {
-                    warn!("No LSP command sender available for bridged startup request");
-                }
-            }
             event_bridge::BridgedEvent::DiagnosticsPickerRequested { workspace } => {
                 self.emit_diagnostics_picker(*workspace, cx);
             }
@@ -679,64 +645,6 @@ impl Application {
             info!("🚀 INIT: Initializing LSP system at cycle 1");
             if let Err(e) = handle.block_on(self.initialize_project_lsp_system()) {
                 error!(error = %e, "Failed to initialize project LSP system");
-            }
-        }
-
-        // DIRECT APPROACH: Check if we need to start rust-analyzer for current project
-        // Wait for 10 cycles to let the system fully initialize
-        if self.config.gui.lsp.project_lsp_startup {
-            debug!(
-                project_directory = ?self.project_directory,
-                cycle_count = cycle_count,
-                "🔧 SYNC: Checking project directory for direct LSP startup"
-            );
-            if let Some(ref project_dir) = self.project_directory {
-                let has_cargo_toml = project_dir.join("Cargo.toml").exists();
-                let rust_analyzer_running = self.is_rust_analyzer_running();
-
-                // Only try LSP startup after system has had time to initialize (cycle 10+)
-                // and if no servers are currently running
-                let any_servers_running = self.editor.language_servers.iter_clients().count() > 0;
-                if cycle_count >= 10 && !any_servers_running {
-                    info!(
-                        has_cargo_toml = has_cargo_toml,
-                        rust_analyzer_running = rust_analyzer_running,
-                        cycle_count = cycle_count,
-                        "🔧 SYNC: Project checks for direct LSP startup"
-                    );
-                    // Check if HelixLspBridge is initialized before attempting to start server
-                    let bridge_initialized = handle.block_on(async {
-                        let bridge_guard = self.helix_lsp_bridge.read().await;
-                        bridge_guard.is_some()
-                    });
-
-                    info!(
-                        bridge_initialized = bridge_initialized,
-                        has_cargo_toml = has_cargo_toml,
-                        "🔧 SYNC: Bridge initialization check for project LSP startup"
-                    );
-
-                    if bridge_initialized {
-                        // Use generic project detection logic
-                        info!(
-                            project_root = %project_dir.display(),
-                            "🔧 SYNC: Starting LSP servers for detected project types"
-                        );
-
-                        let project_path = project_dir.clone();
-                        let detected_servers =
-                            handle.block_on(self.detect_and_start_project_servers(&project_path));
-
-                        if !detected_servers.is_empty() {
-                            info!(
-                                server_count = detected_servers.len(),
-                                "🚀 SYNC: Successfully started LSP servers using bridge approach"
-                            );
-                        } else {
-                            info!("🔧 SYNC: No project types detected - no LSP servers started");
-                        }
-                    }
-                }
             }
         }
 
@@ -1098,35 +1006,6 @@ impl Application {
                 } else {
                     nucleotide_logging::warn!(view_id = ?view_id, "Ignoring focus event for unknown view");
                 }
-            }
-
-            event_bridge::BridgedEvent::LspServerStartupRequested {
-                workspace_root,
-                server_name,
-                language_id,
-            } => {
-                info!(
-                    workspace_root = %workspace_root.display(),
-                    server_name = server_name,
-                    language_id = language_id,
-                    "SYNC: Processing LspServerStartupRequested event"
-                );
-
-                // Forward the event to the LSP handler for actual server startup
-                use nucleotide_events::v2::lsp::Event as LspEvent;
-                let v2_event = LspEvent::ServerStartupRequested {
-                    workspace_root: workspace_root.clone(),
-                    server_name: server_name.clone(),
-                    language_id: language_id.clone(),
-                };
-
-                debug!(
-                    workspace_root = %workspace_root.display(),
-                    server_name = server_name,
-                    "Processing LspServerStartupRequested through V2 LSP handler"
-                );
-
-                self.core.lsp_handler.handle(v2_event).await?;
             }
 
             event_bridge::BridgedEvent::LanguageServerInitialized { .. }
