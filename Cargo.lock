@@ -5145,7 +5145,6 @@ dependencies = [
  "helix-core",
  "helix-lsp",
  "helix-view",
- "nucleotide-core",
  "nucleotide-events",
  "nucleotide-logging",
  "nucleotide-types",

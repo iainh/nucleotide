@@ -14,7 +14,7 @@ This crate provides LSP integration, managing language servers and translating b
 
 ## Dependencies
 
-- `nucleotide-core`: For event system
+- `nucleotide-events`: For event system
 - `helix-lsp`: For LSP functionality
 - `helix-view`: For document integration
 - `tokio`: For async operations

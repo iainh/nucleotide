@@ -5842,7 +5842,6 @@ fn detect_and_create_project_environment() -> ProjectEnvironment {
     }
 }
 
-#[cfg(unix)]
 fn home_requires_login_shell_capture(home: Option<&str>) -> bool {
     let Some(home) = home else {
         return true;
