@@ -202,9 +202,7 @@ impl OverlayView {
     }
 
     pub fn dismiss_completion(&mut self, cx: &mut Context<Self>) {
-        let dismissed_completion = self.completion_view.take().is_some();
-
-        if dismissed_completion {
+        if self.clear_completion(cx) {
             cx.emit(DismissEvent);
             cx.notify();
         }
@@ -282,19 +280,97 @@ impl OverlayView {
         }
     }
 
-    pub fn clear(&mut self, cx: &mut Context<Self>) {
-        // Clean up picker before clearing
-        if let Some(picker) = &self.native_picker_view {
-            picker.update(cx, |picker, cx| {
-                picker.cleanup(cx);
-            });
+    pub fn dismiss_all(&mut self, cx: &mut Context<Self>) {
+        if self.clear_overlays(cx) {
+            cx.emit(DismissEvent);
         }
-        // Clear all overlay components
-        self.native_picker_view = None;
-        self.native_prompt_view = None;
-        self.completion_view = None;
-
         cx.notify();
+    }
+
+    fn clear_overlays(&mut self, cx: &mut Context<Self>) -> bool {
+        let dismissed_picker = self.clear_picker(cx);
+        let dismissed_prompt = self.clear_prompt(cx);
+        let dismissed_completion = self.clear_completion(cx);
+
+        dismissed_picker || dismissed_prompt || dismissed_completion
+    }
+
+    fn clear_picker(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(picker) = self.native_picker_view.take() else {
+            return false;
+        };
+
+        picker.update(cx, |picker, cx| {
+            picker.cleanup(cx);
+        });
+        Self::clear_picker_focus(cx);
+        true
+    }
+
+    fn clear_prompt(&mut self, cx: &mut Context<Self>) -> bool {
+        let dismissed = self.native_prompt_view.take().is_some();
+        if dismissed {
+            Self::clear_prompt_focus(cx);
+        }
+        dismissed
+    }
+
+    fn clear_completion(&mut self, cx: &mut Context<Self>) -> bool {
+        let dismissed = self.completion_view.take().is_some();
+        if dismissed {
+            Self::clear_completion_focus(cx);
+        }
+        dismissed
+    }
+
+    fn clear_picker_focus(cx: &mut Context<Self>) {
+        if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>().cloned() {
+            coord.clear_picker_focus();
+        }
+    }
+
+    fn clear_prompt_focus(cx: &mut Context<Self>) {
+        if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>().cloned() {
+            coord.clear_prompt_focus();
+        }
+    }
+
+    fn clear_completion_focus(cx: &mut Context<Self>) {
+        if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>().cloned() {
+            coord.clear_completion_focus();
+        }
+    }
+
+    fn dismiss_picker(&mut self, cx: &mut Context<Self>) {
+        if self.clear_picker(cx) {
+            cx.emit(DismissEvent);
+            cx.notify();
+        }
+    }
+
+    fn dismiss_prompt(&mut self, cx: &mut Context<Self>) {
+        if self.clear_prompt(cx) {
+            cx.emit(DismissEvent);
+            cx.notify();
+        }
+    }
+
+    fn replace_picker(&mut self, cx: &mut Context<Self>) {
+        if self.clear_picker(cx) {
+            cx.notify();
+        }
+    }
+
+    fn replace_prompt(&mut self, cx: &mut Context<Self>) {
+        if self.clear_prompt(cx) {
+            cx.notify();
+        }
+    }
+
+    fn replace_completion(&mut self, cx: &mut Context<Self>) {
+        if self.clear_completion(cx) {
+            cx.notify();
+        }
     }
 
     pub fn show_terminal_panel(
@@ -322,6 +398,7 @@ impl OverlayView {
         match ev {
             crate::Update::Prompt(prompt) => {
                 nucleotide_logging::info!("DIAG: Overlay Update::Prompt received");
+                self.replace_prompt(cx);
                 let Prompt {
                     prompt: prompt_text,
                     initial_input,
@@ -432,11 +509,10 @@ impl OverlayView {
                 // Subscribe to dismiss events from the prompt view
                 cx.subscribe(
                     &prompt_view,
-                    |this, _prompt_view, _event: &DismissEvent, cx| {
-                        this.native_prompt_view = None;
-                        // Emit dismiss event to notify workspace
-                        cx.emit(DismissEvent);
-                        cx.notify();
+                    |this, prompt_view, _event: &DismissEvent, cx| {
+                        if this.native_prompt_view.as_ref() == Some(&prompt_view) {
+                            this.dismiss_prompt(cx);
+                        }
                     },
                 )
                 .detach();
@@ -453,14 +529,17 @@ impl OverlayView {
                     "🎨 OVERLAY RECEIVED COMPLETION VIEW: Setting up completion overlay"
                 );
 
+                self.replace_completion(cx);
                 // Set up completion view with event subscription
                 self.completion_view = Some(completion_view.clone());
 
                 // Subscribe to dismiss events from completion view
                 cx.subscribe(
                     completion_view,
-                    |this, _completion_view, _event: &DismissEvent, cx| {
-                        this.dismiss_completion(cx);
+                    |this, completion_view, _event: &DismissEvent, cx| {
+                        if this.completion_view.as_ref() == Some(&completion_view) {
+                            this.dismiss_completion(cx);
+                        }
                     },
                 )
                 .detach();
@@ -506,12 +585,7 @@ impl OverlayView {
             crate::Update::Picker(picker) => {
                 nucleotide_logging::info!("DIAG: Overlay Update::Picker received");
                 // Clean up any existing picker before creating a new one
-                if let Some(existing_picker) = &self.native_picker_view {
-                    existing_picker.update(cx, |picker, cx| {
-                        picker.cleanup(cx);
-                    });
-                    self.native_picker_view = None;
-                }
+                self.replace_picker(cx);
 
                 match picker {
                     Picker::Native {
@@ -1187,14 +1261,9 @@ impl OverlayView {
                         cx.subscribe(
                             &picker_view,
                             |this, picker_view, _event: &DismissEvent, cx| {
-                                // Clean up the picker before clearing it
-                                picker_view.update(cx, |picker, cx| {
-                                    picker.cleanup(cx);
-                                });
-                                this.native_picker_view = None;
-                                // Emit dismiss event to notify workspace
-                                cx.emit(DismissEvent);
-                                cx.notify();
+                                if this.native_picker_view.as_ref() == Some(&picker_view) {
+                                    this.dismiss_picker(cx);
+                                }
                             },
                         )
                         .detach();
@@ -1556,21 +1625,7 @@ impl Render for OverlayView {
                     MouseButton::Left,
                     cx.listener(|this: &mut OverlayView, _e, window, cx| {
                         window.disable_focus();
-                        this.native_picker_view = None;
-                        cx.emit(DismissEvent);
-                        if let Some(coord) =
-                            cx.try_global::<nucleotide_ui::FocusCoordinator>().cloned()
-                        {
-                            let _ = coord.focus_first(
-                                window,
-                                cx,
-                                &[
-                                    nucleotide_ui::FocusRole::Editor,
-                                    nucleotide_ui::FocusRole::FileTree,
-                                ],
-                            );
-                        }
-                        cx.notify();
+                        this.dismiss_picker(cx);
                     }),
                 )
                 .child(
@@ -1605,21 +1660,7 @@ impl Render for OverlayView {
                     MouseButton::Left,
                     cx.listener(|this: &mut OverlayView, _e, window, cx| {
                         window.disable_focus();
-                        this.native_prompt_view = None;
-                        cx.emit(DismissEvent);
-                        if let Some(coord) =
-                            cx.try_global::<nucleotide_ui::FocusCoordinator>().cloned()
-                        {
-                            let _ = coord.focus_first(
-                                window,
-                                cx,
-                                &[
-                                    nucleotide_ui::FocusRole::Editor,
-                                    nucleotide_ui::FocusRole::FileTree,
-                                ],
-                            );
-                        }
-                        cx.notify();
+                        this.dismiss_prompt(cx);
                     }),
                 )
                 .child(
@@ -1660,21 +1701,7 @@ impl Render for OverlayView {
                     MouseButton::Left,
                     cx.listener(|this: &mut OverlayView, _e, window, cx| {
                         window.disable_focus();
-                        this.completion_view = None;
-                        cx.emit(DismissEvent);
-                        if let Some(coord) =
-                            cx.try_global::<nucleotide_ui::FocusCoordinator>().cloned()
-                        {
-                            let _ = coord.focus_first(
-                                window,
-                                cx,
-                                &[
-                                    nucleotide_ui::FocusRole::Editor,
-                                    nucleotide_ui::FocusRole::FileTree,
-                                ],
-                            );
-                        }
-                        cx.notify();
+                        this.dismiss_completion(cx);
                     }),
                 )
                 .child(
