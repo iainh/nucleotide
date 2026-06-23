@@ -364,8 +364,8 @@ impl EventHandler<Event> for LspHandler {
                 );
 
                 if let Some(dispatcher) = &self.command_dispatcher {
-                    // Use the dedicated fire-and-forget command for startup requests
-                    // This routes to process_pending_lsp_commands_sync in the application loop
+                    // Use the dedicated fire-and-forget command for startup requests.
+                    // The application maintenance runner wakes and starts the server on the UI thread.
                     let command = nucleotide_events::ProjectLspCommand::LspServerStartupRequested {
                         workspace_root: workspace_root.clone(),
                         server_name: server_name.clone(),

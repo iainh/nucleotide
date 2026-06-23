@@ -14,7 +14,7 @@ use gpui::{
 };
 
 // Import from the library crate instead of re-declaring modules
-use nucleotide::application::Application;
+use nucleotide::application::{Application, MaintenanceWake};
 use nucleotide::input_coordinator::InputCoordinator;
 use nucleotide::{self, ThemeManager, config, info_box, notification, overlay, types, workspace};
 use std::path::{Path, PathBuf};
@@ -1119,27 +1119,26 @@ fn gui_main(
                 // Start event/LSP maintenance after the root workspace has been
                 // returned so first-window construction does less scheduling work.
                 let app_weak = app.downgrade();
-                let handle_for_timer = handle.clone();
+                let handle_for_maintenance = handle.clone();
+                let (maintenance_wake, mut maintenance_wake_rx) = MaintenanceWake::channel();
+                app.update(cx, |app, _cx| {
+                    app.set_maintenance_wake(maintenance_wake.clone());
+                });
                 cx.defer(move |cx| {
-                    if let Some(app_entity) = app_weak.upgrade() {
-                        app_entity.update(cx, |app, cx| {
-                            app.handle_periodic_maintenance(cx, handle_for_timer.clone());
-                        });
-                    }
+                    maintenance_wake.notify();
 
                     let app_weak = app_weak.clone();
-                    let handle_for_timer = handle_for_timer.clone();
+                    let handle_for_maintenance = handle_for_maintenance.clone();
+                    let maintenance_wake = maintenance_wake.clone();
                     cx.spawn(async move |cx| {
-                        let mut interval =
-                            tokio::time::interval(std::time::Duration::from_millis(200));
-
-                        loop {
-                            interval.tick().await;
-
+                        while maintenance_wake_rx.recv().await.is_some() {
                             if let Some(app_entity) = app_weak.upgrade() {
                                 let should_continue = app_entity.update(cx, |app, cx| {
-                                    app.handle_periodic_maintenance(cx, handle_for_timer.clone());
-                                    app.editor.tree.views().count() > 0
+                                    app.drive_event_driven_maintenance(
+                                        cx,
+                                        handle_for_maintenance.clone(),
+                                        &maintenance_wake,
+                                    )
                                 });
 
                                 if !should_continue {
@@ -1153,8 +1152,8 @@ fn gui_main(
                     .detach();
                 });
 
-                // step() is integrated into handle_periodic_maintenance().
-                // This processes LSP messages including $/progress via the timer above.
+                // Helix/bridge maintenance is driven by source wakeups, including
+                // LSP messages such as $/progress.
 
                 nucleotide_logging::info!("Application initialized with continuous event processing");
 

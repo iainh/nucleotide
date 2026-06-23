@@ -24,15 +24,18 @@ pub use workspace_handler::WorkspaceHandler;
 
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
+    future::Future,
     path::{Path, PathBuf},
+    pin::Pin,
     sync::Arc,
+    task::{Context as TaskContext, Poll, Wake, Waker},
 };
 use tokio::sync::RwLock;
 
 use arc_swap::{ArcSwap, access::Map};
 use futures_util::{
     future::{BoxFuture, FutureExt},
-    stream::FuturesOrdered,
+    stream::{FuturesOrdered, StreamExt},
 };
 use helix_core::{Position, RopeSlice, Selection, Uri, pos_at_coords, syntax};
 use helix_lsp::{LanguageServerId, LspProgressMap, OffsetEncoding, lsp};
@@ -235,6 +238,40 @@ use crate::types::{AppEvent, CoreEvent, Update};
 use editor_input::EditorInputBridge;
 use gpui::EventEmitter;
 
+#[derive(Clone)]
+pub struct MaintenanceWake {
+    tx: tokio::sync::mpsc::UnboundedSender<()>,
+}
+
+impl MaintenanceWake {
+    pub fn channel() -> (Self, tokio::sync::mpsc::UnboundedReceiver<()>) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        (Self { tx }, rx)
+    }
+
+    pub fn notify(&self) {
+        let _ = self.tx.send(());
+    }
+
+    pub fn waker(&self) -> Waker {
+        Waker::from(Arc::new(MaintenanceWakeTask { wake: self.clone() }))
+    }
+}
+
+struct MaintenanceWakeTask {
+    wake: MaintenanceWake,
+}
+
+impl Wake for MaintenanceWakeTask {
+    fn wake(self: Arc<Self>) {
+        self.wake.notify();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.wake.notify();
+    }
+}
+
 pub struct Application {
     pub editor: Editor,
     pub compositor: Compositor,
@@ -266,6 +303,7 @@ pub struct Application {
     pub core: crate::application::ApplicationCore,
     // Event aggregator for dispatching integration events
     pub event_aggregator: Option<EventAggregatorHandle>,
+    maintenance_wake: Option<MaintenanceWake>,
     // Fast-path input senders for terminal — bypasses the event queue
     #[cfg(feature = "terminal-emulator")]
     pub terminal_input_senders: TerminalInputSenders,
@@ -297,6 +335,16 @@ enum LspUiState {
 }
 
 impl Application {
+    pub fn set_maintenance_wake(&mut self, wake: MaintenanceWake) {
+        self.maintenance_wake = Some(wake);
+    }
+
+    pub fn request_event_driven_maintenance(&self) {
+        if let Some(wake) = &self.maintenance_wake {
+            wake.notify();
+        }
+    }
+
     fn lsp_title_for_state(state: &LspUiState) -> &'static str {
         match state {
             LspUiState::Idle => "Connected",
@@ -364,26 +412,34 @@ impl Application {
         helix_event::request_redraw();
     }
 
-    /// Drain bridged events that must be handled from the synchronous maintenance path.
-    fn process_pending_bridged_events_sync(
+    fn poll_pending_bridged_events(
         &mut self,
         cx: &mut gpui::Context<crate::Core>,
         handle: &tokio::runtime::Handle,
-    ) {
+        task_cx: &mut TaskContext<'_>,
+    ) -> bool {
         let mut bridged_events = Vec::new();
+        let mut disconnected = false;
 
         if let Some(ref mut rx) = self.event_bridge_rx {
             loop {
-                match rx.try_recv() {
-                    Ok(event) => bridged_events.push(event),
-                    Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
-                    Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                match rx.poll_recv(task_cx) {
+                    Poll::Ready(Some(event)) => bridged_events.push(event),
+                    Poll::Ready(None) => {
                         info!("Bridged event channel disconnected");
+                        disconnected = true;
                         break;
                     }
+                    Poll::Pending => break,
                 }
             }
         }
+
+        if disconnected {
+            self.event_bridge_rx = None;
+        }
+
+        let progressed = !bridged_events.is_empty();
 
         for bridged_event in bridged_events {
             match handle.block_on(self.process_v2_event(&bridged_event)) {
@@ -400,6 +456,8 @@ impl Application {
 
             self.handle_bridged_event_with_gpui_context(&bridged_event, cx);
         }
+
+        progressed
     }
 
     fn handle_bridged_event_with_gpui_context(
@@ -568,79 +626,99 @@ impl Application {
         }
     }
 
-    fn process_pending_helix_jobs_sync(&mut self, cx: &mut gpui::Context<crate::Core>) {
+    fn poll_pending_helix_jobs(
+        &mut self,
+        cx: &mut gpui::Context<crate::Core>,
+        task_cx: &mut TaskContext<'_>,
+    ) -> bool {
+        let mut progressed = false;
+
         loop {
-            match self.jobs.callbacks.try_recv() {
-                Ok(callback) => {
+            match self.jobs.callbacks.poll_recv(task_cx) {
+                Poll::Ready(Some(callback)) => {
+                    progressed = true;
                     crate::completion_interception::hook_19_job_system("callback_received");
                     info!("📨 JOB CALLBACK RECEIVED: Processing job callback");
                     self.handle_job_callback(callback);
                 }
-                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
-                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                Poll::Ready(None) => {
                     info!("Helix job callback channel disconnected");
                     break;
                 }
+                Poll::Pending => break,
             }
         }
 
         loop {
-            match self.jobs.status_messages.try_recv() {
-                Ok(msg) => self.handle_job_status_message(msg, cx),
-                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
-                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+            match self.jobs.status_messages.poll_recv(task_cx) {
+                Poll::Ready(Some(msg)) => {
+                    progressed = true;
+                    self.handle_job_status_message(msg, cx);
+                }
+                Poll::Ready(None) => {
                     info!("Helix job status channel disconnected");
                     break;
                 }
+                Poll::Pending => break,
             }
         }
 
-        while let Some(Some(callback)) =
-            futures_util::StreamExt::next(&mut self.jobs.wait_futures).now_or_never()
-        {
+        while let Poll::Ready(Some(callback)) = self.jobs.wait_futures.poll_next_unpin(task_cx) {
+            progressed = true;
             self.jobs
                 .handle_callback(&mut self.editor, &mut self.compositor, callback);
         }
+
+        progressed
     }
 
-    fn process_pending_gpui_to_helix_events_sync(&mut self) {
+    fn poll_pending_gpui_to_helix_events(&mut self, task_cx: &mut TaskContext<'_>) -> bool {
+        let mut progressed = false;
+        let mut disconnected = false;
+
         if let Some(ref mut rx) = self.gpui_to_helix_rx {
             loop {
-                match rx.try_recv() {
-                    Ok(gpui_event) => {
+                match rx.poll_recv(task_cx) {
+                    Poll::Ready(Some(gpui_event)) => {
+                        progressed = true;
                         gpui_to_helix_bridge::handle_gpui_event_in_helix(
                             &gpui_event,
                             &mut self.editor,
                         );
                         helix_event::request_redraw();
                     }
-                    Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
-                    Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                    Poll::Ready(None) => {
                         info!("GPUI-to-Helix event channel disconnected");
+                        disconnected = true;
                         break;
                     }
+                    Poll::Pending => break,
                 }
             }
         }
+
+        if disconnected {
+            self.gpui_to_helix_rx = None;
+        }
+
+        progressed
     }
 
-    /// Process pending LSP commands synchronously by draining the channel
-    fn process_pending_lsp_commands_sync(
+    fn poll_pending_lsp_commands(
         &mut self,
         cx: &mut gpui::Context<crate::Core>,
         handle: &tokio::runtime::Handle,
-    ) {
+        task_cx: &mut TaskContext<'_>,
+    ) -> bool {
         let _guard = handle.enter();
 
-        debug!("🔧 SYNC: Starting synchronous LSP command processing");
+        debug!("🔧 SYNC: Starting event-driven LSP command processing");
 
-        // Increment sync cycle counter
         let cycle_count = self
             .sync_cycle_counter
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             + 1;
 
-        // Initialize project LSP system at cycle 1
         if cycle_count == 1
             && !self
                 .project_lsp_system_initialized
@@ -652,115 +730,113 @@ impl Application {
             }
         }
 
-        // Process all available commands in the channel
         let mut commands_processed = 0;
         loop {
-            let command = {
+            let (command, disconnected) = {
                 let mut rx_guard = handle.block_on(self.project_lsp_command_rx.write());
                 if let Some(ref mut rx) = rx_guard.as_mut() {
-                    match rx.try_recv() {
-                        Ok(command) => Some(command),
-                        Err(tokio::sync::mpsc::error::TryRecvError::Empty) => None,
-                        Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                    match rx.poll_recv(task_cx) {
+                        Poll::Ready(Some(command)) => (Some(command), false),
+                        Poll::Ready(None) => {
                             info!("LSP command channel disconnected");
-                            None
+                            *rx_guard = None;
+                            (None, true)
                         }
+                        Poll::Pending => (None, false),
                     }
                 } else {
-                    None
+                    (None, true)
                 }
             };
 
-            match command {
-                Some(lsp_command) => {
-                    commands_processed += 1;
-                    info!(
-                        command_type = ?std::mem::discriminant(&lsp_command),
-                        command_number = commands_processed,
-                        "🔧 SYNC: Processing LSP command synchronously"
-                    );
-                    // Process the command using the direct method
-                    match &lsp_command {
-                        nucleotide_events::ProjectLspCommand::LspServerStartupRequested {
-                            server_name,
-                            workspace_root,
-                            language_id,
-                        } => {
-                            info!(
-                                server_name = %server_name,
-                                workspace_root = %workspace_root.display(),
-                                language_id = %language_id,
-                                "🚀 SYNC: Starting LSP server directly from sync processor"
-                            );
-                            self.set_editor_status_feedback(
-                                cx,
-                                format!("Starting language server: {server_name}"),
-                                crate::types::Severity::Info,
-                            );
-
-                            let result = handle.block_on(self.start_lsp_server_direct(
-                                workspace_root,
-                                server_name,
-                                language_id,
-                            ));
-
-                            match result {
-                                Ok(server_result) => {
-                                    info!(
-                                        server_id = ?server_result.server_id,
-                                        server_name = %server_result.server_name,
-                                        "🚀 SYNC: LSP server started successfully"
-                                    );
-                                    self.set_editor_status_feedback(
-                                        cx,
-                                        format!(
-                                            "Language server started: {}",
-                                            server_result.server_name
-                                        ),
-                                        crate::types::Severity::Info,
-                                    );
-                                }
-                                Err(e) => {
-                                    error!(
-                                        error = %e,
-                                        server_name = %server_name,
-                                        "🚀 SYNC: Failed to start LSP server"
-                                    );
-                                    self.set_editor_status_feedback(
-                                        cx,
-                                        format!(
-                                            "Failed to start language server {server_name}: {e}"
-                                        ),
-                                        crate::types::Severity::Error,
-                                    );
-                                }
-                            }
-                        }
-                        _ => {
-                            // Process other commands using the async handler
-                            handle.block_on(self.handle_lsp_command(lsp_command));
-                        }
-                    }
-
-                    info!(
-                        command_number = commands_processed,
-                        "🔧 SYNC: LSP command processing completed"
-                    );
-                }
-                None => {
+            let Some(lsp_command) = command else {
+                if !disconnected {
                     debug!(
                         commands_processed = commands_processed,
                         "🔧 SYNC: No more commands available, exiting loop"
                     );
-                    break; // No more commands available
+                }
+                break;
+            };
+
+            commands_processed += 1;
+            info!(
+                command_type = ?std::mem::discriminant(&lsp_command),
+                command_number = commands_processed,
+                "🔧 SYNC: Processing LSP command synchronously"
+            );
+
+            match &lsp_command {
+                nucleotide_events::ProjectLspCommand::LspServerStartupRequested {
+                    server_name,
+                    workspace_root,
+                    language_id,
+                } => {
+                    info!(
+                        server_name = %server_name,
+                        workspace_root = %workspace_root.display(),
+                        language_id = %language_id,
+                        "🚀 SYNC: Starting LSP server directly from sync processor"
+                    );
+                    self.set_editor_status_feedback(
+                        cx,
+                        format!("Starting language server: {server_name}"),
+                        crate::types::Severity::Info,
+                    );
+
+                    let result = handle.block_on(self.start_lsp_server_direct(
+                        workspace_root,
+                        server_name,
+                        language_id,
+                    ));
+
+                    match result {
+                        Ok(server_result) => {
+                            info!(
+                                server_id = ?server_result.server_id,
+                                server_name = %server_result.server_name,
+                                workspace_root = %workspace_root.display(),
+                                "🚀 SYNC: LSP server started successfully"
+                            );
+                            self.set_editor_status_feedback(
+                                cx,
+                                format!("Language server started: {}", server_result.server_name),
+                                crate::types::Severity::Info,
+                            );
+                            self.sync_lsp_state(cx);
+                        }
+                        Err(e) => {
+                            error!(
+                                error = %e,
+                                server_name = %server_name,
+                                "🚀 SYNC: Failed to start LSP server"
+                            );
+                            self.set_editor_status_feedback(
+                                cx,
+                                format!("Failed to start language server {server_name}: {e}"),
+                                crate::types::Severity::Error,
+                            );
+                        }
+                    }
+                }
+                _ => {
+                    handle.block_on(self.handle_lsp_command(lsp_command));
+                    self.sync_lsp_state(cx);
                 }
             }
+
+            info!(
+                command_number = commands_processed,
+                "🔧 SYNC: LSP command processing completed"
+            );
         }
 
         debug!(
             total_commands_processed = commands_processed,
-            "🔧 SYNC: Completed synchronous LSP command processing"
+            "🔧 SYNC: Completed event-driven LSP command processing"
         );
+
+        commands_processed > 0
     }
     /// Dispatch a workspace event via the event aggregator if available
     pub fn dispatch_workspace_event(&self, event: nucleotide_events::v2::workspace::Event) {
@@ -2489,38 +2565,9 @@ impl Application {
         ));
     }
 
-    /// Legacy crank event handler - now only used for periodic maintenance tasks
-    /// LSP completion processing has been moved to event-driven architecture
-    /// Completion results processing has been left with Workspace as originally designed
-    pub fn handle_periodic_maintenance(
-        &mut self,
-        cx: &mut gpui::Context<crate::Core>,
-        handle: tokio::runtime::Handle,
-    ) {
-        let _guard = handle.enter();
-
-        // NOTE: Completion results processing is handled by the Workspace
-        // NOTE: LSP completion requests are now processed event-driven in start_event_driven_lsp_completion_processing
-
-        self.process_pending_helix_jobs_sync(cx);
-        self.process_pending_gpui_to_helix_events_sync();
-        self.process_ready_editor_events_sync(cx, &handle);
-
-        // Project detection emits startup requests through the bridged event
-        // channel. Drain those first so this same maintenance tick can start
-        // the corresponding LSP servers.
-        self.process_pending_bridged_events_sync(cx, &handle);
-
-        // Process pending LSP commands synchronously by draining the channel
-        // (Single pass is sufficient; the channel is drained in one call.)
-        self.process_pending_lsp_commands_sync(cx, &handle);
-
-        // Sync LSP state periodically
-        self.sync_lsp_state(cx);
-
-        // WORKAROUND: Clean up zombie progress operations that are at 100% but never ended
-        // Collect the language server IDs that have progress
+    fn cleanup_zombie_lsp_progress(&mut self) {
         use helix_lsp::lsp;
+
         let server_ids: Vec<LanguageServerId> = self
             .editor
             .language_servers
@@ -2652,102 +2699,144 @@ impl Application {
 
             self.lsp_progress.end_progress(server_id, &token);
         }
-
-        // NOTE: step() should run in its own background task, not block the UI thread
-        // The missing piece is to start step() as a background task during initialization
     }
 
-    pub fn drain_interactive_helix_work(
+    pub fn drive_event_driven_maintenance(
         &mut self,
         cx: &mut gpui::Context<crate::Core>,
         handle: tokio::runtime::Handle,
+        wake: &MaintenanceWake,
     ) -> bool {
         let _guard = handle.enter();
+        let waker = wake.waker();
+        let mut task_cx = TaskContext::from_waker(&waker);
+        let mut made_progress = false;
 
-        self.process_pending_helix_jobs_sync(cx);
-        self.process_pending_gpui_to_helix_events_sync();
-        self.process_ready_editor_events_sync(cx, &handle);
+        loop {
+            let mut progressed = false;
+            progressed |= self.poll_pending_helix_jobs(cx, &mut task_cx);
+            progressed |= self.poll_pending_gpui_to_helix_events(&mut task_cx);
+            progressed |= self.poll_ready_editor_events(cx, &handle, &mut task_cx);
+            progressed |= self.poll_pending_bridged_events(cx, &handle, &mut task_cx);
+            progressed |= self.poll_pending_lsp_commands(cx, &handle, &mut task_cx);
 
-        self.editor.write_count > 0 || !self.jobs.wait_futures.is_empty()
+            if !progressed {
+                break;
+            }
+
+            made_progress = true;
+        }
+
+        if made_progress {
+            self.sync_lsp_state(cx);
+            self.cleanup_zombie_lsp_progress();
+        }
+
+        self.editor.tree.views().count() > 0
     }
 
-    fn process_ready_editor_events_sync(
+    fn handle_editor_event_sync(
         &mut self,
+        event: helix_view::editor::EditorEvent,
         cx: &mut gpui::Context<crate::Core>,
         handle: &tokio::runtime::Handle,
-    ) {
-        while let Some(event) = self.editor.wait_event().now_or_never() {
-            use helix_view::editor::EditorEvent;
-            use nucleotide_events::v2::document::Event as DocumentEvent;
-            debug!(
-                event_type = ?std::mem::discriminant(&event),
-                "MAINTENANCE: Processing ready editor event"
-            );
+    ) -> bool {
+        use helix_view::editor::EditorEvent;
+        use nucleotide_events::v2::document::Event as DocumentEvent;
 
-            match event {
-                EditorEvent::DocumentSaved(event) => {
-                    self.handle_document_write(&event);
-                    if let Ok(event) = event {
-                        let v2_event = DocumentEvent::Saved {
-                            doc_id: event.doc_id,
-                            path: event.path.clone(),
-                            revision: event.revision as u64,
-                        };
-                        match handle.block_on(self.handle_document_v2_event(v2_event)) {
-                            Ok(Some(event)) => cx.emit(crate::Update::Event(event)),
-                            Ok(None) => {}
-                            Err(error) => {
-                                warn!(
-                                    error = %error,
-                                    doc_id = ?event.doc_id,
-                                    "Failed to process document saved event"
-                                );
-                            }
+        debug!(
+            event_type = ?std::mem::discriminant(&event),
+            "MAINTENANCE: Processing ready editor event"
+        );
+
+        match event {
+            EditorEvent::DocumentSaved(event) => {
+                self.handle_document_write(&event);
+                if let Ok(event) = event {
+                    let v2_event = DocumentEvent::Saved {
+                        doc_id: event.doc_id,
+                        path: event.path.clone(),
+                        revision: event.revision as u64,
+                    };
+                    match handle.block_on(self.handle_document_v2_event(v2_event)) {
+                        Ok(Some(event)) => cx.emit(crate::Update::Event(event)),
+                        Ok(None) => {}
+                        Err(error) => {
+                            warn!(
+                                error = %error,
+                                doc_id = ?event.doc_id,
+                                "Failed to process document saved event"
+                            );
                         }
                     }
                 }
-                EditorEvent::IdleTimer => {
-                    self.editor.clear_idle_timer();
+            }
+            EditorEvent::IdleTimer => {
+                self.editor.clear_idle_timer();
+            }
+            EditorEvent::Redraw => {
+                if self.editor.tree.views().count() == 0 {
+                    cx.emit(crate::Update::Event(AppEvent::Core(CoreEvent::ShouldQuit)));
+                    return false;
                 }
-                EditorEvent::Redraw => {
-                    if self.editor.tree.views().count() == 0 {
-                        cx.emit(crate::Update::Event(AppEvent::Core(CoreEvent::ShouldQuit)));
-                        break;
-                    }
-                    cx.emit(crate::Update::Event(AppEvent::Core(
-                        CoreEvent::RedrawRequested,
-                    )));
-                }
-                EditorEvent::ConfigEvent(config_event) => {
-                    self.handle_config_event(config_event, cx);
-                }
-                EditorEvent::LanguageServerMessage((id, call)) => {
-                    debug!(
-                        server_id = ?id,
-                        call_type = ?std::mem::discriminant(&call),
-                        "Received EditorEvent::LanguageServerMessage"
-                    );
-                    if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                        handle.block_on(self.handle_language_server_message(call, id));
-                    } else {
-                        warn!(
-                            server_id = ?id,
-                            "Cannot process language server message without Tokio runtime"
-                        );
-                    }
-                    cx.emit(crate::Update::Redraw);
-                    cx.emit(crate::Update::Event(AppEvent::Core(
-                        CoreEvent::RedrawRequested,
-                    )));
-                }
-                EditorEvent::DebuggerEvent(event) => {
-                    debug!(
-                        event = ?event,
-                        "Received debugger event; debugger integration is not active"
-                    );
-                }
+                cx.emit(crate::Update::Event(AppEvent::Core(
+                    CoreEvent::RedrawRequested,
+                )));
+            }
+            EditorEvent::ConfigEvent(config_event) => {
+                self.handle_config_event(config_event, cx);
+            }
+            EditorEvent::LanguageServerMessage((id, call)) => {
+                debug!(
+                    server_id = ?id,
+                    call_type = ?std::mem::discriminant(&call),
+                    "Received EditorEvent::LanguageServerMessage"
+                );
+                handle.block_on(self.handle_language_server_message(call, id));
+                self.sync_lsp_state(cx);
+                cx.emit(crate::Update::Redraw);
+                cx.emit(crate::Update::Event(AppEvent::Core(
+                    CoreEvent::RedrawRequested,
+                )));
+            }
+            EditorEvent::DebuggerEvent(event) => {
+                debug!(
+                    event = ?event,
+                    "Received debugger event; debugger integration is not active"
+                );
             }
         }
+
+        true
+    }
+
+    fn poll_ready_editor_events(
+        &mut self,
+        cx: &mut gpui::Context<crate::Core>,
+        handle: &tokio::runtime::Handle,
+        task_cx: &mut TaskContext<'_>,
+    ) -> bool {
+        let mut progressed = false;
+
+        loop {
+            let poll = {
+                let future = self.editor.wait_event();
+                tokio::pin!(future);
+                Future::poll(Pin::as_mut(&mut future), task_cx)
+            };
+
+            match poll {
+                Poll::Ready(event) => {
+                    progressed = true;
+                    if !self.handle_editor_event_sync(event, cx, handle) {
+                        break;
+                    }
+                }
+                Poll::Pending => break,
+            }
+        }
+
+        progressed
     }
 
     fn handle_config_event(
@@ -2820,7 +2909,11 @@ impl Application {
             return;
         };
 
-        self.handle_periodic_maintenance(cx, handle);
+        let wake = self
+            .maintenance_wake
+            .clone()
+            .unwrap_or_else(|| MaintenanceWake::channel().0);
+        self.drive_event_driven_maintenance(cx, handle, &wake);
     }
 
     // Removed unused handle_language_server_message - now handled via events
@@ -6184,6 +6277,7 @@ pub fn init_editor(
         core,
         // Event aggregator for UI and workspace events
         event_aggregator: Some(event_aggregator),
+        maintenance_wake: None,
         #[cfg(feature = "terminal-emulator")]
         terminal_input_senders,
         sync_cycle_counter: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
@@ -6849,14 +6943,15 @@ fn should_update_env_var(key: &str) -> bool {
 mod tests {
 
     use super::{
-        Application, ApplicationCore, EditorInputBridge, LspCompletionTrigger, NativeSymbolItem,
-        NativeSymbolTarget, PendingCompletionRequest, buffer_word_completion_items,
-        completion_context_for_trigger, dedupe_completion_items, detect_project_lsp_metadata,
-        home_requires_login_shell_capture, local_path_completion_context,
-        lsp_completion_insert_text, lsp_completion_insert_text_format,
-        lsp_completion_items_from_response, lsp_completion_response_is_incomplete,
-        lsp_symbol_picker, native_symbol_item_from_lsp, path_completion_items,
-        project_health_status, project_server_language_id, syntax_symbol_kind_from_capture_name,
+        Application, ApplicationCore, EditorInputBridge, LspCompletionTrigger, MaintenanceWake,
+        NativeSymbolItem, NativeSymbolTarget, PendingCompletionRequest,
+        buffer_word_completion_items, completion_context_for_trigger, dedupe_completion_items,
+        detect_project_lsp_metadata, home_requires_login_shell_capture,
+        local_path_completion_context, lsp_completion_insert_text,
+        lsp_completion_insert_text_format, lsp_completion_items_from_response,
+        lsp_completion_response_is_incomplete, lsp_symbol_picker, native_symbol_item_from_lsp,
+        path_completion_items, project_health_status, project_server_language_id,
+        syntax_symbol_kind_from_capture_name,
     };
     use crate::test_utils::test_support::{
         TestUpdate, create_counting_channel, create_test_diagnostic_events,
@@ -6987,6 +7082,7 @@ mod tests {
                 project_env_overrides: HashMap::new(),
                 core,
                 event_aggregator: None,
+                maintenance_wake: None,
                 #[cfg(feature = "terminal-emulator")]
                 terminal_input_senders: Default::default(),
                 sync_cycle_counter: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
@@ -7035,10 +7131,11 @@ mod tests {
         updates
     }
 
-    fn run_periodic_maintenance(cx: &mut gpui::TestAppContext, app: &Entity<Application>) {
+    fn run_event_driven_maintenance(cx: &mut gpui::TestAppContext, app: &Entity<Application>) {
         let handle = TEST_RUNTIME.handle().clone();
+        let (wake, _wake_rx) = MaintenanceWake::channel();
         app.update(cx, |app, cx| {
-            app.handle_periodic_maintenance(cx, handle);
+            app.drive_event_driven_maintenance(cx, handle, &wake);
         });
     }
 
@@ -7057,7 +7154,7 @@ mod tests {
         tx.send(event_bridge::BridgedEvent::BufferPickerRequested)
             .expect("buffer picker event");
 
-        run_periodic_maintenance(cx, &app);
+        run_event_driven_maintenance(cx, &app);
 
         let updates = updates.borrow();
         assert!(updates.contains(&CapturedUpdate::ShowFilePicker));
@@ -7077,7 +7174,7 @@ mod tests {
         tx.send(event_bridge::BridgedEvent::LanguageServerInitialized { server_id })
             .expect("language server initialized event");
 
-        run_periodic_maintenance(cx, &app);
+        run_event_driven_maintenance(cx, &app);
 
         let lsp_state = app.read_with(cx, |app, _cx| {
             app.lsp_state.clone().expect("test lsp state")
@@ -7107,7 +7204,7 @@ mod tests {
         .await
         .expect("status message");
 
-        run_periodic_maintenance(cx, &app);
+        run_event_driven_maintenance(cx, &app);
 
         assert!(updates.borrow().contains(&CapturedUpdate::StatusChanged(
             "indexing workspace".to_string(),
@@ -7141,7 +7238,7 @@ mod tests {
             )
             .expect("startup command");
 
-        run_periodic_maintenance(cx, &app);
+        run_event_driven_maintenance(cx, &app);
 
         let updates = updates.borrow();
         assert!(updates.iter().any(|update| matches!(

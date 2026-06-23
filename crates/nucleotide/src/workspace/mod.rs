@@ -955,7 +955,6 @@ pub struct Workspace {
     cached_char_width: Option<f32>,
     cached_line_height: Option<f32>,
     active_completion_session: Option<ActiveCompletionSession>,
-    save_event_drain_active: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -1446,28 +1445,6 @@ fn current_editor_status(editor: &helix_view::Editor) -> Option<EditorStatus> {
     editor
         .get_status()
         .map(|(status, severity)| helix_status_to_editor_status(status, severity))
-}
-
-fn command_may_save(command: &str) -> bool {
-    let Some(command_name) = command.split_whitespace().next() else {
-        return false;
-    };
-    let command_name = command_name.trim_end_matches('!');
-
-    matches!(
-        command_name,
-        "w" | "write"
-            | "wbc"
-            | "write-buffer-close"
-            | "wq"
-            | "x"
-            | "write-quit"
-            | "wa"
-            | "write-all"
-            | "wqa"
-            | "xa"
-            | "write-quit-all"
-    )
 }
 
 fn editor_status_matches(a: &EditorStatus, b: &EditorStatus) -> bool {
@@ -3978,7 +3955,6 @@ impl Workspace {
             cached_char_width: None,
             cached_line_height: None,
             active_completion_session: None,
-            save_event_drain_active: false,
         };
 
         // Compute initial theme-derived colors once
@@ -5902,10 +5878,9 @@ impl Workspace {
         // Update UI indicators and refresh project status display
         self.refresh_project_indicators(cx);
 
-        // Process any events that may have been sent during project detection
-        self.core.update(cx, |app, cx| {
-            app.handle_periodic_maintenance(cx, self.handle.clone());
-        });
+        // Process any events that may have been sent during project detection.
+        self.core
+            .update(cx, |app, _cx| app.request_event_driven_maintenance());
     }
 
     /// Set the current project root explicitly
@@ -5928,8 +5903,8 @@ impl Workspace {
     /// Subscribe to LSP state changes to update project indicators
     #[instrument(skip(self, cx))]
     fn setup_lsp_state_subscription(&mut self, cx: &mut Context<Self>) {
-        // For now, we'll update project status periodically rather than subscribing
-        // since LspState doesn't implement EventEmitter yet
+        // For now, refresh the status from explicit workspace/LSP update paths
+        // since LspState doesn't implement EventEmitter yet.
         if let Some(_lsp_state_entity) = self.core.read(cx).lsp_state.clone() {
             info!("LSP state available for project status updates");
 
@@ -7510,60 +7485,12 @@ impl Workspace {
         }
     }
 
-    fn schedule_save_event_drain(&mut self, cx: &mut Context<Self>) {
-        if self.save_event_drain_active {
-            return;
-        }
-
-        self.save_event_drain_active = true;
-
-        let core = self.core.clone();
-        let handle = self.handle.clone();
-        cx.spawn(async move |workspace, cx| {
-            let started_at = tokio::time::Instant::now();
-            let mut interval = tokio::time::interval(std::time::Duration::from_millis(10));
-
-            loop {
-                interval.tick().await;
-
-                let pending = core.update(cx, |core, cx| {
-                    core.drain_interactive_helix_work(cx, handle.clone())
-                });
-
-                if !pending {
-                    break;
-                }
-
-                if started_at.elapsed() >= std::time::Duration::from_secs(10) {
-                    let (pending_writes, pending_wait_jobs) = core.read_with(cx, |core, _cx| {
-                        (core.editor.write_count, core.jobs.wait_futures.len())
-                    });
-                    warn!(
-                        pending_writes = pending_writes,
-                        pending_wait_jobs = pending_wait_jobs,
-                        "Save event drain timed out with Helix work still pending"
-                    );
-                    break;
-                }
-            }
-
-            if let Some(workspace) = workspace.upgrade() {
-                workspace.update(cx, |workspace, cx| {
-                    workspace.save_event_drain_active = false;
-                    cx.notify();
-                });
-            }
-        })
-        .detach();
-    }
-
     fn execute_raw_command(&mut self, command: &str, cx: &mut Context<Self>) {
         use nucleotide_logging::info;
         // Execute the command through helix's command system
         let core = self.core.clone();
         let handle = self.handle.clone();
         let handle_for_command = handle.clone();
-        let command_may_save = command_may_save(command);
 
         info!(command = %command, "Executing raw command");
 
@@ -7611,14 +7538,7 @@ impl Workspace {
             self.push_editor_status_notification(status, cx);
         }
 
-        if command_may_save {
-            let pending = core.update(cx, |core, cx| {
-                core.drain_interactive_helix_work(cx, handle.clone())
-            });
-            if pending {
-                self.schedule_save_event_drain(cx);
-            }
-        }
+        core.update(cx, |core, _cx| core.request_event_driven_maintenance());
 
         // Check if theme changed after command execution and handle accordingly
         let theme_name_after = core.read(cx).editor.theme.name().to_string();
@@ -14621,28 +14541,6 @@ mod tests {
         match action {
             lsp::CodeActionOrCommand::Command(command) => &command.title,
             lsp::CodeActionOrCommand::CodeAction(code_action) => &code_action.title,
-        }
-    }
-
-    #[test]
-    fn save_command_classifier_matches_write_aliases() {
-        for command in [
-            "w",
-            "w!",
-            "write",
-            "write! src/main.rs",
-            "wq",
-            "x!",
-            "write-quit",
-            "wa",
-            "wqa!",
-            "write-buffer-close",
-        ] {
-            assert!(command_may_save(command), "{command}");
-        }
-
-        for command in ["q", "open README.md", "theme catppuccin", "fmt"] {
-            assert!(!command_may_save(command), "{command}");
         }
     }
 
