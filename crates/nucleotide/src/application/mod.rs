@@ -324,8 +324,58 @@ impl Application {
         }
     }
 
+    fn set_editor_status_feedback(
+        &mut self,
+        cx: &mut gpui::Context<crate::Core>,
+        message: String,
+        severity: crate::types::Severity,
+    ) {
+        match severity {
+            crate::types::Severity::Error => self.editor.set_error(message.clone()),
+            _ => self.editor.set_status(message.clone()),
+        }
+
+        cx.emit(crate::Update::Event(crate::types::AppEvent::Core(
+            crate::types::CoreEvent::StatusChanged { message, severity },
+        )));
+    }
+
+    fn handle_job_status_message(
+        &mut self,
+        msg: helix_event::status::StatusMessage,
+        cx: &mut gpui::Context<crate::Core>,
+    ) {
+        let severity = match msg.severity {
+            helix_event::status::Severity::Hint => crate::types::Severity::Hint,
+            helix_event::status::Severity::Info => crate::types::Severity::Info,
+            helix_event::status::Severity::Warning => crate::types::Severity::Warning,
+            helix_event::status::Severity::Error => crate::types::Severity::Error,
+        };
+
+        let helix_severity = match msg.severity {
+            helix_event::status::Severity::Hint => helix_view::editor::Severity::Hint,
+            helix_event::status::Severity::Info => helix_view::editor::Severity::Info,
+            helix_event::status::Severity::Warning => helix_view::editor::Severity::Warning,
+            helix_event::status::Severity::Error => helix_view::editor::Severity::Error,
+        };
+
+        let message = msg.message.to_string();
+        cx.emit(crate::Update::Event(AppEvent::Core(
+            CoreEvent::StatusChanged { message, severity },
+        )));
+
+        // Keep Helix's single status slot current while the GPUI notification
+        // view keeps recent status messages stacked.
+        self.editor.status_msg = Some((msg.message, helix_severity));
+        helix_event::request_redraw();
+    }
+
     /// Drain bridged events that must be handled from the synchronous maintenance path.
-    fn process_pending_bridged_events_sync(&mut self, handle: &tokio::runtime::Handle) {
+    fn process_pending_bridged_events_sync(
+        &mut self,
+        cx: &mut gpui::Context<crate::Core>,
+        handle: &tokio::runtime::Handle,
+    ) {
         let mut bridged_events = Vec::new();
 
         if let Some(ref mut rx) = self.event_bridge_rx {
@@ -350,12 +400,99 @@ impl Application {
                 );
             }
 
-            if let event_bridge::BridgedEvent::LspServerStartupRequested {
+            self.handle_bridged_event_with_gpui_context(&bridged_event, cx);
+        }
+    }
+
+    fn handle_bridged_event_with_gpui_context(
+        &mut self,
+        bridged_event: &event_bridge::BridgedEvent,
+        cx: &mut gpui::Context<crate::Core>,
+    ) {
+        match bridged_event {
+            event_bridge::BridgedEvent::DiagnosticsChanged { doc_id } => {
+                if let Some(document) = self.editor.document(*doc_id)
+                    && let (Some(lsp_state), Some(path)) = (&self.lsp_state, document.path())
+                {
+                    let diagnostics = document.diagnostics();
+                    let uri = helix_core::Uri::from(path.clone());
+                    let total = diagnostics.len();
+                    let errors = diagnostics
+                        .iter()
+                        .filter(|d| {
+                            matches!(d.severity, Some(helix_core::diagnostic::Severity::Error))
+                        })
+                        .count();
+                    let warnings = diagnostics
+                        .iter()
+                        .filter(|d| {
+                            matches!(d.severity, Some(helix_core::diagnostic::Severity::Warning))
+                        })
+                        .count();
+
+                    info!(
+                        uri = %uri.to_string(),
+                        total = total,
+                        errors = errors,
+                        warnings = warnings,
+                        "DIAG: Updating LspState diagnostics for URI"
+                    );
+
+                    lsp_state.update(cx, |state, cx| {
+                        let infos: Vec<DiagnosticInfo> = diagnostics
+                            .iter()
+                            .filter_map(|d| {
+                                d.provider
+                                    .language_server_id()
+                                    .map(|server_id| DiagnosticInfo {
+                                        diagnostic: d.clone(),
+                                        server_id,
+                                    })
+                            })
+                            .collect();
+                        state.set_diagnostics(uri.clone(), infos);
+                        cx.notify();
+                    });
+
+                    info!(uri = %uri.to_string(), "DIAG: LspState.set_diagnostics applied");
+
+                    if let Some(aggregator) = &self.event_aggregator {
+                        use helix_core::diagnostic::DiagnosticProvider;
+                        use std::collections::BTreeMap;
+
+                        let mut by_provider: BTreeMap<
+                            DiagnosticProvider,
+                            Vec<helix_core::diagnostic::Diagnostic>,
+                        > = BTreeMap::new();
+                        for diagnostic in diagnostics.iter().cloned() {
+                            by_provider
+                                .entry(diagnostic.provider.clone())
+                                .or_default()
+                                .push(diagnostic);
+                        }
+
+                        for (provider, diagnostics) in by_provider {
+                            info!(
+                                provider = ?provider,
+                                count = diagnostics.len(),
+                                "DIAG: Dispatching diagnostics provider set"
+                            );
+                            aggregator.dispatch_diagnostics(
+                                DiagnosticsEvent::DocumentDiagnosticsSet {
+                                    uri: uri.clone(),
+                                    diagnostics,
+                                    provider,
+                                },
+                            );
+                        }
+                    }
+                }
+            }
+            event_bridge::BridgedEvent::LspServerStartupRequested {
                 workspace_root,
                 server_name,
                 language_id,
-            } = bridged_event
-            {
+            } => {
                 info!(
                     workspace_root = %workspace_root.display(),
                     server_name = %server_name,
@@ -364,9 +501,9 @@ impl Application {
                 );
 
                 let command = nucleotide_events::ProjectLspCommand::LspServerStartupRequested {
-                    server_name,
-                    workspace_root,
-                    language_id,
+                    server_name: server_name.clone(),
+                    workspace_root: workspace_root.clone(),
+                    language_id: language_id.clone(),
                 };
 
                 if let Some(ref sender) = self.project_lsp_command_tx {
@@ -380,11 +517,150 @@ impl Application {
                     warn!("No LSP command sender available for bridged startup request");
                 }
             }
+            event_bridge::BridgedEvent::DiagnosticsPickerRequested { workspace } => {
+                self.emit_diagnostics_picker(*workspace, cx);
+            }
+            event_bridge::BridgedEvent::FilePickerRequested => {
+                info!("DIAG: FilePickerRequested received - emitting ShowFilePicker");
+                cx.emit(crate::Update::ShowFilePicker);
+            }
+            event_bridge::BridgedEvent::BufferPickerRequested => {
+                info!("DIAG: BufferPickerRequested received - emitting ShowBufferPicker");
+                cx.emit(crate::Update::ShowBufferPicker);
+            }
+            event_bridge::BridgedEvent::LanguageServerInitialized { server_id } => {
+                info!(
+                    server_id = ?server_id,
+                    "MAIN_LOOP: Processing LanguageServerInitialized event with GPUI context"
+                );
+
+                if let Some(lsp_state) = &self.lsp_state {
+                    lsp_state.update(cx, |state, cx| {
+                        let server_name = self
+                            .editor
+                            .language_server_by_id(*server_id)
+                            .map(|ls| ls.name().to_string())
+                            .unwrap_or_else(|| format!("Server-{}", server_id));
+                        let workspace_path = self
+                            .project_directory
+                            .as_ref()
+                            .map(|p| p.display().to_string());
+
+                        info!(
+                            server_id = ?server_id,
+                            server_name = %server_name,
+                            workspace = ?workspace_path,
+                            "MAIN_LOOP: Registering LSP server in statusline state"
+                        );
+
+                        state.register_server(*server_id, server_name, workspace_path);
+                        state.update_server_status(
+                            *server_id,
+                            nucleotide_lsp::ServerStatus::Running,
+                        );
+                        cx.notify();
+                    });
+                }
+            }
+            event_bridge::BridgedEvent::LanguageServerExited { server_id } => {
+                info!(
+                    server_id = ?server_id,
+                    "MAIN_LOOP: Processing LanguageServerExited event with GPUI context"
+                );
+
+                if let Some(lsp_state) = &self.lsp_state {
+                    lsp_state.update(cx, |state, cx| {
+                        info!(
+                            server_id = ?server_id,
+                            "MAIN_LOOP: Removing LSP server from statusline state"
+                        );
+
+                        state.remove_server(*server_id);
+                        cx.notify();
+                    });
+                }
+
+                if let Some(aggregator) = &self.event_aggregator {
+                    info!(server_id = ?server_id, "DIAG: Dispatching workspace diagnostics cleared for server");
+                    aggregator.dispatch_diagnostics(
+                        DiagnosticsEvent::WorkspaceDiagnosticsClearedForServer {
+                            server_id: *server_id,
+                        },
+                    );
+                }
+            }
+            event_bridge::BridgedEvent::CompletionRequested { .. }
+            | event_bridge::BridgedEvent::DocumentOpened { .. }
+            | event_bridge::BridgedEvent::DocumentChanged { .. }
+            | event_bridge::BridgedEvent::DocumentClosed { .. }
+            | event_bridge::BridgedEvent::SelectionChanged { .. }
+            | event_bridge::BridgedEvent::ModeChanged { .. }
+            | event_bridge::BridgedEvent::ViewFocused { .. } => {}
+        }
+    }
+
+    fn process_pending_helix_jobs_sync(&mut self, cx: &mut gpui::Context<crate::Core>) {
+        loop {
+            match self.jobs.callbacks.try_recv() {
+                Ok(callback) => {
+                    crate::completion_interception::hook_19_job_system("callback_received");
+                    info!("📨 JOB CALLBACK RECEIVED: Processing job callback");
+                    self.handle_job_callback(callback);
+                }
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                    info!("Helix job callback channel disconnected");
+                    break;
+                }
+            }
+        }
+
+        loop {
+            match self.jobs.status_messages.try_recv() {
+                Ok(msg) => self.handle_job_status_message(msg, cx),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                    info!("Helix job status channel disconnected");
+                    break;
+                }
+            }
+        }
+
+        while let Some(Some(callback)) =
+            futures_util::StreamExt::next(&mut self.jobs.wait_futures).now_or_never()
+        {
+            self.jobs
+                .handle_callback(&mut self.editor, &mut self.compositor, callback);
+        }
+    }
+
+    fn process_pending_gpui_to_helix_events_sync(&mut self) {
+        if let Some(ref mut rx) = self.gpui_to_helix_rx {
+            loop {
+                match rx.try_recv() {
+                    Ok(gpui_event) => {
+                        gpui_to_helix_bridge::handle_gpui_event_in_helix(
+                            &gpui_event,
+                            &mut self.editor,
+                        );
+                        helix_event::request_redraw();
+                    }
+                    Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
+                    Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                        info!("GPUI-to-Helix event channel disconnected");
+                        break;
+                    }
+                }
+            }
         }
     }
 
     /// Process pending LSP commands synchronously by draining the channel
-    fn process_pending_lsp_commands_sync(&mut self, handle: &tokio::runtime::Handle) {
+    fn process_pending_lsp_commands_sync(
+        &mut self,
+        cx: &mut gpui::Context<crate::Core>,
+        handle: &tokio::runtime::Handle,
+    ) {
         let _guard = handle.enter();
 
         debug!("🔧 SYNC: Starting synchronous LSP command processing");
@@ -505,6 +781,11 @@ impl Application {
                                 language_id = %language_id,
                                 "🚀 SYNC: Starting LSP server directly from sync processor"
                             );
+                            self.set_editor_status_feedback(
+                                cx,
+                                format!("Starting language server: {server_name}"),
+                                crate::types::Severity::Info,
+                            );
 
                             let result = handle.block_on(self.start_lsp_server_direct(
                                 workspace_root,
@@ -519,12 +800,27 @@ impl Application {
                                         server_name = %server_result.server_name,
                                         "🚀 SYNC: LSP server started successfully"
                                     );
+                                    self.set_editor_status_feedback(
+                                        cx,
+                                        format!(
+                                            "Language server started: {}",
+                                            server_result.server_name
+                                        ),
+                                        crate::types::Severity::Info,
+                                    );
                                 }
                                 Err(e) => {
                                     error!(
                                         error = %e,
                                         server_name = %server_name,
                                         "🚀 SYNC: Failed to start LSP server"
+                                    );
+                                    self.set_editor_status_feedback(
+                                        cx,
+                                        format!(
+                                            "Failed to start language server {server_name}: {e}"
+                                        ),
+                                        crate::types::Severity::Error,
                                     );
                                 }
                             }
@@ -2470,14 +2766,18 @@ impl Application {
         // NOTE: Completion results processing is handled by the Workspace
         // NOTE: LSP completion requests are now processed event-driven in start_event_driven_lsp_completion_processing
 
+        self.process_pending_helix_jobs_sync(cx);
+        self.process_pending_gpui_to_helix_events_sync();
+        self.process_ready_editor_events_sync(cx);
+
         // Project detection emits startup requests through the bridged event
         // channel. Drain those first so this same maintenance tick can start
         // the corresponding LSP servers.
-        self.process_pending_bridged_events_sync(&handle);
+        self.process_pending_bridged_events_sync(cx, &handle);
 
         // Process pending LSP commands synchronously by draining the channel
         // (Single pass is sufficient; the channel is drained in one call.)
-        self.process_pending_lsp_commands_sync(&handle);
+        self.process_pending_lsp_commands_sync(cx, &handle);
 
         // Sync LSP state periodically
         self.sync_lsp_state(cx);
@@ -2619,6 +2919,139 @@ impl Application {
 
         // NOTE: step() should run in its own background task, not block the UI thread
         // The missing piece is to start step() as a background task during initialization
+    }
+
+    fn process_ready_editor_events_sync(&mut self, cx: &mut gpui::Context<crate::Core>) {
+        while let Some(event) = self.editor.wait_event().now_or_never() {
+            use helix_view::editor::EditorEvent;
+            debug!(
+                event_type = ?std::mem::discriminant(&event),
+                "MAINTENANCE: Processing ready editor event"
+            );
+
+            match event {
+                EditorEvent::DocumentSaved(event) => {
+                    self.handle_document_write(&event);
+                    if let Ok(event) = event {
+                        let path = self
+                            .editor
+                            .document(event.doc_id)
+                            .and_then(|doc| doc.path())
+                            .map(|p| p.to_string_lossy().to_string());
+                        cx.emit(crate::Update::Event(AppEvent::Core(
+                            CoreEvent::DocumentSaved {
+                                doc_id: event.doc_id,
+                                path,
+                            },
+                        )));
+                    }
+                }
+                EditorEvent::IdleTimer => {
+                    self.editor.clear_idle_timer();
+                }
+                EditorEvent::Redraw => {
+                    if self.editor.tree.views().count() == 0 {
+                        cx.emit(crate::Update::Event(AppEvent::Core(CoreEvent::ShouldQuit)));
+                        break;
+                    }
+                    cx.emit(crate::Update::Event(AppEvent::Core(
+                        CoreEvent::RedrawRequested,
+                    )));
+                }
+                EditorEvent::ConfigEvent(config_event) => {
+                    self.handle_config_event(config_event, cx);
+                }
+                EditorEvent::LanguageServerMessage((id, call)) => {
+                    debug!(
+                        server_id = ?id,
+                        call_type = ?std::mem::discriminant(&call),
+                        "Received EditorEvent::LanguageServerMessage"
+                    );
+                    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                        handle.block_on(self.handle_language_server_message(call, id));
+                    } else {
+                        warn!(
+                            server_id = ?id,
+                            "Cannot process language server message without Tokio runtime"
+                        );
+                    }
+                    cx.emit(crate::Update::Redraw);
+                    cx.emit(crate::Update::Event(AppEvent::Core(
+                        CoreEvent::RedrawRequested,
+                    )));
+                }
+                EditorEvent::DebuggerEvent(event) => {
+                    debug!(
+                        event = ?event,
+                        "Received debugger event; debugger integration is not active"
+                    );
+                }
+            }
+        }
+    }
+
+    fn handle_config_event(
+        &mut self,
+        config_event: helix_view::editor::ConfigEvent,
+        cx: &mut gpui::Context<crate::Core>,
+    ) {
+        info!("Application received ConfigEvent: {:?}", config_event);
+        let old_config = self.editor.config();
+        info!("Old bufferline config: {:?}", old_config.bufferline);
+
+        match &config_event {
+            helix_view::editor::ConfigEvent::Update(new_editor_config) => {
+                info!(
+                    "New bufferline config in Update event: {:?}",
+                    new_editor_config.bufferline
+                );
+                self.config.apply_helix_config_update(new_editor_config);
+
+                let updated_helix_config = self.config.to_helix_config();
+                info!(
+                    "Updated helix config bufferline: {:?}",
+                    updated_helix_config.editor.bufferline
+                );
+                self.helix_config_arc.store(Arc::new(updated_helix_config));
+
+                self.update_lsp_manager_config();
+
+                info!("Config updated via generic patching system");
+            }
+            helix_view::editor::ConfigEvent::Refresh => {
+                info!("Config refresh requested - reloading from files");
+                if let Ok(fresh_config) = crate::config::Config::load() {
+                    self.config = fresh_config;
+                    let updated_helix_config = self.config.to_helix_config();
+                    self.helix_config_arc.store(Arc::new(updated_helix_config));
+
+                    self.update_lsp_manager_config();
+                }
+            }
+        }
+
+        self.editor.refresh_config(&old_config);
+        info!(
+            "After refresh_config, editor bufferline: {:?}",
+            self.editor.config().bufferline
+        );
+
+        for client in self.editor.language_servers.iter_clients() {
+            let cfg = client.config();
+            if let Some(cfg) = cfg {
+                info!(server = %client.name(), "Re-sending LSP didChangeConfiguration with current settings");
+                client.did_change_configuration(cfg.clone());
+            }
+        }
+
+        info!("Forwarding ConfigEvent to workspace");
+        cx.emit(crate::Update::EditorEvent(
+            helix_view::editor::EditorEvent::ConfigEvent(config_event),
+        ));
+        cx.emit(crate::Update::Redraw);
+        cx.emit(crate::Update::Event(AppEvent::Core(
+            CoreEvent::RedrawRequested,
+        )));
     }
 
     pub async fn step(&mut self, cx: &mut gpui::Context<'_, crate::Core>) {
