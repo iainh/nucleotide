@@ -1,46 +1,175 @@
-# Example Nucleotide Configuration
-# Place this file in ~/.config/helix/nucleotide.toml
+# Nucleotide configuration
+# Place this file as nucleotide.toml in your Helix config directory.
+# The usual path is ~/.config/helix/nucleotide.toml.
+#
+# This file controls Nucleotide GUI settings. Standard Helix editor settings
+# belong in config.toml in the same directory.
+#
+# Values below are the defaults used when the setting is omitted, unless the
+# comment says the default is unset.
 
-# Theme configuration for automatic light/dark mode switching
+# Limit how many editor tabs Nucleotide keeps open.
+# Default: unset, which keeps tabs open until you close them.
+# Set this to a positive integer to close older clean, unpinned tabs over the
+# limit.
+# max_tabs = 10
+
 [theme]
-# Mode can be "system", "light", or "dark"
-# - "system": Automatically switch between light and dark themes based on OS appearance
-# - "light": Always use light theme
-# - "dark": Always use dark theme
+# Select how the GUI chooses between light and dark themes.
+# Options: "system", "light", "dark". Default: "system".
 mode = "system"
 
-# Theme to use when system is in light mode
-# If not specified, defaults to "acme"
-# light_theme = "acme"
+# Theme used when light appearance is active. Default: "nucleotide-cyan-light".
+light_theme = "nucleotide-cyan-light"
 
-# Theme to use when system is in dark mode
-# If not specified, defaults to "nucleotide-teal"
-# dark_theme = "nucleotide-teal"
+# Theme used when dark appearance is active. Default: "nucleotide-teal".
+dark_theme = "nucleotide-teal"
 
-# Window appearance configuration
 [window]
-# Enable blur/vibrancy for dark themes (macOS only)
-# When true, dark themes will use a blurred/translucent window background
+# Enable blur/vibrancy for dark themes where the platform supports it.
+# Default: false.
 blur_dark_themes = false
 
-# Automatically adjust window appearance based on theme
-# When true, the window will update its appearance when themes change
+# Update the native window appearance when the theme changes. Default: true.
 appearance_follows_theme = true
 
-# UI configuration
-[ui]
-# Font settings for UI elements (menus, dialogs, etc.)
-[ui.font]
-family = "SF Pro Display"
-weight = "normal"
-size = 13.0
-line_height = 1.5
+# Font used for menus, prompts, pickers and other UI chrome.
+# Default: unset, which resolves to ".SystemUIFont", "normal", 13.0 and 1.5.
+# [ui.font]
+# family = ".SystemUIFont"
 
-# Editor configuration
-[editor]
-# Font settings for the editor
-[editor.font]
-family = "JetBrains Mono"
-weight = "normal"
-size = 14.0
-line_height = 1.4
+# Options: "thin", "extralight", "light", "normal", "medium", "semibold",
+# "bold", "extrabold", "black". Default: "normal".
+# weight = "normal"
+
+# Font size in pixels. Default: 13.0.
+# size = 13.0
+
+# Line-height multiplier. Default: 1.5.
+# line_height = 1.5
+
+# Font used in the editor view.
+# Default family when unset: "SF Mono" on macOS, "Cascadia Mono" on Windows,
+# and "monospace" on other platforms. Weight, size and line height default to
+# "normal", 14.0 and 1.5.
+# [editor.font]
+# family = "SF Mono"
+
+# Options: "thin", "extralight", "light", "normal", "medium", "semibold",
+# "bold", "extrabold", "black". Default: "normal".
+# weight = "normal"
+
+# Font size in pixels. Default: 14.0.
+# size = 14.0
+
+# Line-height multiplier. Default: 1.5.
+# line_height = 1.5
+
+[tab_bar]
+# Show the tab bar. Default: true.
+show = true
+
+# Show back/forward navigation buttons in the tab bar. Default: true.
+show_nav_history_buttons = true
+
+# Show tab-bar action buttons such as new file and split controls.
+# Default: true.
+show_tab_bar_buttons = true
+
+# Render pinned tabs in a separate row when both pinned and unpinned tabs are
+# open. Default: false.
+show_pinned_tabs_in_separate_row = false
+
+[tabs]
+# Show git status decorations on tabs. Default: false.
+git_status = false
+
+# Show file icons on tabs. Default: true.
+file_icons = true
+
+# Show diagnostic decorations on tabs.
+# Options: "off", "errors", "all". Default: "off".
+show_diagnostics = "off"
+
+# Show close buttons on unpinned tabs.
+# Options: "always", "hover", "hidden". Default: "hover".
+show_close_button = "hover"
+
+# Position the close or pin button on each tab.
+# Options: "left", "right". Default: "right".
+close_position = "right"
+
+# Choose which tab becomes active after closing the active tab.
+# Options: "history", "neighbour", "left_neighbour". Default: "history".
+activate_on_close = "history"
+
+[preview_tabs]
+# Enable preview tabs. Default: true.
+enabled = true
+
+# Open project-panel single-clicked files as preview tabs. Default: true.
+enable_preview_from_project_panel = true
+
+# Open file-finder selections as preview tabs. Default: false.
+enable_preview_from_file_finder = false
+
+# Open multibuffer files as preview tabs. Default: true.
+enable_preview_from_multibuffer = true
+
+# Open code-navigation multibuffers as preview tabs. Default: false.
+enable_preview_multibuffer_from_code_navigation = false
+
+# Open code-navigation files as preview tabs. Default: true.
+enable_preview_file_from_code_navigation = true
+
+# Keep preview tabs in preview mode after code navigation moves away from them.
+# Default: false.
+enable_keep_preview_on_code_navigation = false
+
+[file_tree]
+# Project tree row density.
+# Options: "compact", "default", "relaxed". Default: "default".
+density = "default"
+
+# Collapse single-child directory chains into one row. Default: true.
+flatten_empty_directories = true
+
+[file_ops]
+# Delete behaviour for file-tree delete actions.
+# Options: "trash", "permanent". Default: "trash".
+delete_behavior = "trash"
+
+[lsp]
+# Start language servers from detected project roots instead of individual
+# files. Default: false.
+project_lsp_startup = false
+
+# Maximum time to spend starting project LSPs, in milliseconds. Default: 5000.
+# Valid range: 1 to 60000.
+startup_timeout_ms = 5000
+
+# Fall back to file-based LSP startup if project detection fails. Default: true.
+enable_fallback = true
+
+[project_markers]
+# Use custom project markers for project detection. Default: false.
+enable_project_markers = false
+
+# Maximum time to spend detecting a project, in milliseconds. Default: 1000.
+# Valid range: 1 to 30000.
+detection_timeout_ms = 1000
+
+# Fall back to built-in project detection when no custom marker matches.
+# Default: true.
+enable_builtin_fallback = true
+
+# Default: no custom marker entries.
+# Add marker entries under [project_markers.markers.<name>] in this file.
+# If project_markers.toml exists in the Helix config directory, it overrides
+# this section.
+#
+# [project_markers.markers.rust]
+# markers = ["Cargo.toml"]
+# language_server = "rust-analyzer"
+# root_strategy = "closest" # Options: "first", "closest", "furthest". Default: "closest".
+# priority = 50             # Higher numbers win when multiple markers match. Default: 50.
