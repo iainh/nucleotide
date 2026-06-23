@@ -188,11 +188,43 @@ fn direct_write_measuring_mode(rendering_mode: DirectWriteRenderingMode) -> DWRI
     }
 }
 
-fn force_grayscale_text_rendering() -> bool {
-    DIRECT_WRITE_TEXT_RENDERING_PARAMS
-        .read()
-        .as_ref()
-        .is_some_and(|params| params.rendering_mode == Some(DirectWriteRenderingMode::Aliased))
+fn direct_write_params_require_grayscale_text_rendering() -> bool {
+    let params = DIRECT_WRITE_TEXT_RENDERING_PARAMS.read();
+    let Some(params) = params.as_ref() else {
+        return false;
+    };
+
+    // These DirectWrite parameters cannot produce true RGB-stripe subpixel
+    // coverage, so GPUI must not select the subpixel atlas or blend path.
+    //
+    // DWRITE_RENDERING_MODE1_ALIASED performs no antialiasing:
+    // https://learn.microsoft.com/windows/win32/api/dwrite_3/ne-dwrite_3-dwrite_rendering_mode1
+    if params.rendering_mode == Some(DirectWriteRenderingMode::Aliased) {
+        return true;
+    }
+
+    // DWRITE_PIXEL_GEOMETRY_FLAT treats RGB components as occupying the same
+    // point, so there is no physical subpixel stripe geometry to target:
+    // https://learn.microsoft.com/windows/win32/api/dwrite/ne-dwrite-dwrite_pixel_geometry
+    if params.pixel_geometry == Some(DirectWritePixelGeometry::Flat) {
+        return true;
+    }
+
+    // CreateCustomRenderingParams documents clearTypeLevel 0.0 as no
+    // ClearType, and 1.0 as full ClearType:
+    // https://learn.microsoft.com/windows/win32/api/dwrite_3/nf-dwrite_3-idwritefactory3-createcustomrenderingparams
+    if params
+        .clear_type_level
+        .is_some_and(|clear_type_level| clear_type_level <= 0.0)
+    {
+        return true;
+    }
+
+    false
+}
+
+fn effective_subpixel_rendering(requested_subpixel_rendering: bool) -> bool {
+    requested_subpixel_rendering && !direct_write_params_require_grayscale_text_rendering()
 }
 
 fn glyph_analysis_rendering_mode(rendering_mode: DWRITE_RENDERING_MODE1) -> DWRITE_RENDERING_MODE1 {
@@ -224,6 +256,7 @@ fn glyph_analysis_antialias_mode(
     subpixel_rendering: bool,
     rendering_mode: DWRITE_RENDERING_MODE1,
 ) -> DWRITE_TEXT_ANTIALIAS_MODE {
+    let subpixel_rendering = effective_subpixel_rendering(subpixel_rendering);
     if subpixel_rendering && rendering_mode != DWRITE_RENDERING_MODE1_ALIASED {
         DWRITE_TEXT_ANTIALIAS_MODE_CLEARTYPE
     } else {
@@ -238,6 +271,7 @@ fn glyph_analysis_texture_type(
     // DWRITE_TEXTURE_TYPE documents ALIASED_1x1 as one byte per pixel and
     // CLEARTYPE_3x1 as three bytes per pixel:
     // https://learn.microsoft.com/windows/win32/api/dwrite/ne-dwrite-dwrite_texture_type
+    let subpixel_rendering = effective_subpixel_rendering(subpixel_rendering);
     if subpixel_rendering && rendering_mode != DWRITE_RENDERING_MODE1_ALIASED {
         DWRITE_TEXTURE_CLEARTYPE_3x1
     } else {
@@ -492,11 +526,11 @@ impl PlatformTextSystem for DirectWriteTextSystem {
         _font_id: FontId,
         _font_size: Pixels,
     ) -> TextRenderingMode {
-        // Aliased DirectWrite analysis produces DWRITE_TEXTURE_ALIASED_1x1,
-        // while GPUI selects atlas format and shader path from
+        // Some DirectWrite parameters force grayscale coverage, while GPUI
+        // selects atlas format and shader path from
         // RenderGlyphParams::subpixel_rendering. Keep platform-default glyphs
-        // on the monochrome path when aliased rendering is configured.
-        if force_grayscale_text_rendering() {
+        // on the monochrome path when those parameters are configured.
+        if direct_write_params_require_grayscale_text_rendering() {
             return TextRenderingMode::Grayscale;
         }
 
@@ -505,6 +539,10 @@ impl PlatformTextSystem for DirectWriteTextSystem {
         } else {
             TextRenderingMode::Grayscale
         }
+    }
+
+    fn should_force_grayscale_text_rendering(&self) -> bool {
+        direct_write_params_require_grayscale_text_rendering()
     }
 }
 
@@ -1032,7 +1070,7 @@ impl DirectWriteState {
     ) -> Result<Vec<u8>> {
         let glyph_analysis = self.create_glyph_run_analysis(components, params)?;
         if glyph_analysis.texture_type == DWRITE_TEXTURE_ALIASED_1x1 {
-            let mut bitmap_data =
+            let mut alpha_data =
                 vec![0u8; glyph_bounds.size.width.0 as usize * glyph_bounds.size.height.0 as usize];
             unsafe {
                 glyph_analysis.analysis.CreateAlphaTexture(
@@ -1043,11 +1081,22 @@ impl DirectWriteState {
                         right: glyph_bounds.size.width.0 + glyph_bounds.origin.x.0,
                         bottom: glyph_bounds.size.height.0 + glyph_bounds.origin.y.0,
                     },
-                    &mut bitmap_data,
+                    &mut alpha_data,
                 )?;
             }
 
-            return Ok(bitmap_data);
+            // The GPUI window path clamps subpixel rendering when DirectWrite
+            // must return ALIASED_1x1 coverage. Keep the rasterizer robust for
+            // direct calls too: a subpixel atlas upload expects four bytes per
+            // pixel, so expand grayscale coverage into equal RGB channels.
+            if params.subpixel_rendering {
+                return Ok(alpha_data
+                    .into_iter()
+                    .flat_map(|pixel| [pixel, pixel, pixel, 0])
+                    .collect());
+            }
+
+            return Ok(alpha_data);
         }
 
         let width = glyph_bounds.size.width.0 as usize;
