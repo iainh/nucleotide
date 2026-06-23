@@ -1022,6 +1022,13 @@ fn gui_main(
             // Initialize preview tracker
             cx.set_global(nucleotide_core::preview_tracker::PreviewTracker::new());
 
+            if let Some(directwrite) = &config.gui.window.directwrite
+                && let Err(error) =
+                    cx.set_direct_write_text_rendering_params(Some(directwrite.to_gpui_params()))
+            {
+                warn!(error = %error, "Failed to apply DirectWrite text rendering settings");
+            }
+
             let options = window_options(cx, &config, is_dark_theme);
 
             let _ = cx.open_window(options, |#[allow(unused)] window, cx| {

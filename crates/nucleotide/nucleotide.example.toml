@@ -33,6 +33,20 @@ blur_dark_themes = false
 # Update the native window appearance when the theme changes. Default: true.
 appearance_follows_theme = true
 
+# Windows DirectWrite text rendering overrides. Defaults: unset, which uses
+# the Windows text smoothing and DirectWrite defaults.
+# [window.directwrite]
+# gamma = 1.8
+# enhanced_contrast = 0.75
+# clear_type_level = 1.0
+#
+# Options: "flat", "rgb", "bgr".
+# pixel_geometry = "rgb"
+#
+# Options: "default", "aliased", "gdi_classic", "gdi_natural", "natural",
+# "natural_symmetric".
+# rendering_mode = "default"
+
 # Font used for menus, prompts, pickers and other UI chrome.
 # Default: unset, which resolves to ".SystemUIFont", "normal", 13.0 and 1.5.
 # [ui.font]

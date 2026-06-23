@@ -100,6 +100,10 @@ pub struct WindowConfig {
     /// Automatically adjust window appearance based on theme
     #[serde(default = "default_true")]
     pub appearance_follows_theme: bool,
+
+    /// Windows DirectWrite text rendering overrides.
+    #[serde(default)]
+    pub directwrite: Option<DirectWriteConfig>,
 }
 
 impl Default for WindowConfig {
@@ -107,6 +111,99 @@ impl Default for WindowConfig {
         Self {
             blur_dark_themes: false,
             appearance_follows_theme: true,
+            directwrite: None,
+        }
+    }
+}
+
+/// Windows DirectWrite text rendering configuration.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct DirectWriteConfig {
+    /// Gamma correction value passed to DirectWrite.
+    #[serde(default)]
+    pub gamma: Option<f32>,
+
+    /// Enhanced contrast value passed to DirectWrite.
+    #[serde(default)]
+    pub enhanced_contrast: Option<f32>,
+
+    /// ClearType level passed to DirectWrite.
+    #[serde(default)]
+    pub clear_type_level: Option<f32>,
+
+    /// Pixel geometry passed to DirectWrite.
+    #[serde(default)]
+    pub pixel_geometry: Option<DirectWritePixelGeometry>,
+
+    /// Rendering mode passed to DirectWrite.
+    #[serde(default)]
+    pub rendering_mode: Option<DirectWriteRenderingMode>,
+}
+
+impl DirectWriteConfig {
+    /// Convert this configuration into GPUI's DirectWrite rendering parameters.
+    pub fn to_gpui_params(&self) -> gpui::DirectWriteTextRenderingParams {
+        gpui::DirectWriteTextRenderingParams {
+            gamma: self.gamma,
+            enhanced_contrast: self.enhanced_contrast,
+            clear_type_level: self.clear_type_level,
+            pixel_geometry: self.pixel_geometry.map(Into::into),
+            rendering_mode: self.rendering_mode.map(Into::into),
+        }
+    }
+}
+
+/// DirectWrite pixel geometry used for subpixel text rendering on Windows.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DirectWritePixelGeometry {
+    /// Disable subpixel colour layout.
+    Flat,
+    /// Red-green-blue subpixel order.
+    Rgb,
+    /// Blue-green-red subpixel order.
+    Bgr,
+}
+
+impl From<DirectWritePixelGeometry> for gpui::DirectWritePixelGeometry {
+    fn from(value: DirectWritePixelGeometry) -> Self {
+        match value {
+            DirectWritePixelGeometry::Flat => gpui::DirectWritePixelGeometry::Flat,
+            DirectWritePixelGeometry::Rgb => gpui::DirectWritePixelGeometry::Rgb,
+            DirectWritePixelGeometry::Bgr => gpui::DirectWritePixelGeometry::Bgr,
+        }
+    }
+}
+
+/// DirectWrite rendering mode used for glyph rasterization on Windows.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DirectWriteRenderingMode {
+    /// Let DirectWrite choose the rendering mode.
+    Default,
+    /// Aliased text rendering.
+    Aliased,
+    /// GDI-compatible classic ClearType rendering.
+    GdiClassic,
+    /// GDI-compatible natural ClearType rendering.
+    GdiNatural,
+    /// Natural ClearType rendering.
+    Natural,
+    /// Natural symmetric ClearType rendering.
+    NaturalSymmetric,
+}
+
+impl From<DirectWriteRenderingMode> for gpui::DirectWriteRenderingMode {
+    fn from(value: DirectWriteRenderingMode) -> Self {
+        match value {
+            DirectWriteRenderingMode::Default => gpui::DirectWriteRenderingMode::Default,
+            DirectWriteRenderingMode::Aliased => gpui::DirectWriteRenderingMode::Aliased,
+            DirectWriteRenderingMode::GdiClassic => gpui::DirectWriteRenderingMode::GdiClassic,
+            DirectWriteRenderingMode::GdiNatural => gpui::DirectWriteRenderingMode::GdiNatural,
+            DirectWriteRenderingMode::Natural => gpui::DirectWriteRenderingMode::Natural,
+            DirectWriteRenderingMode::NaturalSymmetric => {
+                gpui::DirectWriteRenderingMode::NaturalSymmetric
+            }
         }
     }
 }
@@ -796,6 +893,13 @@ family = "JetBrains Mono"
 weight = "normal"
 size = 14.5
 
+[window.directwrite]
+gamma = 1.8
+enhanced_contrast = 0.75
+clear_type_level = 0.6
+pixel_geometry = "bgr"
+rendering_mode = "gdi_classic"
+
 [tab_bar]
 show = false
 show_nav_history_buttons = false
@@ -839,6 +943,31 @@ flatten_empty_directories = false
         assert_eq!(editor_font.family, "JetBrains Mono");
         assert_eq!(editor_font.weight, FontWeight::Normal);
         assert_eq!(editor_font.size, 14.5);
+        let directwrite = config
+            .window
+            .directwrite
+            .as_ref()
+            .expect("DirectWrite config should be set");
+        assert_eq!(directwrite.gamma, Some(1.8));
+        assert_eq!(directwrite.enhanced_contrast, Some(0.75));
+        assert_eq!(directwrite.clear_type_level, Some(0.6));
+        assert_eq!(
+            directwrite.pixel_geometry,
+            Some(DirectWritePixelGeometry::Bgr)
+        );
+        assert_eq!(
+            directwrite.rendering_mode,
+            Some(DirectWriteRenderingMode::GdiClassic)
+        );
+        let gpui_params = directwrite.to_gpui_params();
+        assert_eq!(
+            gpui_params.pixel_geometry,
+            Some(gpui::DirectWritePixelGeometry::Bgr)
+        );
+        assert_eq!(
+            gpui_params.rendering_mode,
+            Some(gpui::DirectWriteRenderingMode::GdiClassic)
+        );
         assert_eq!(config.max_tabs.map(std::num::NonZeroUsize::get), Some(5));
         assert!(!config.tab_bar.show);
         assert!(!config.tab_bar.show_nav_history_buttons);
@@ -902,6 +1031,12 @@ flatten_empty_directories = false
             "[window]",
             "blur_dark_themes",
             "appearance_follows_theme",
+            "[window.directwrite]",
+            "gamma",
+            "enhanced_contrast",
+            "clear_type_level",
+            "pixel_geometry",
+            "rendering_mode",
             "[ui.font]",
             "[editor.font]",
             "family",
