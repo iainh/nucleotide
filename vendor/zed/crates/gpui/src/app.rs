@@ -1268,7 +1268,13 @@ impl App {
         params: Option<DirectWriteTextRenderingParams>,
     ) -> Result<()> {
         self.text_system
-            .set_direct_write_text_rendering_params(params)
+            .set_direct_write_text_rendering_params(params)?;
+
+        for window in self.windows.values_mut().flatten() {
+            window.clear_sprite_atlas();
+        }
+
+        Ok(())
     }
 
     /// Returns the current text rendering mode for the application.

@@ -123,6 +123,14 @@ impl PlatformAtlas for DirectXAtlas {
             }
         }
     }
+
+    fn clear(&self) {
+        let mut lock = self.0.lock();
+        lock.monochrome_textures = AtlasTextureList::default();
+        lock.polychrome_textures = AtlasTextureList::default();
+        lock.subpixel_textures = AtlasTextureList::default();
+        lock.tiles_by_key.clear();
+    }
 }
 
 impl DirectXAtlasState {
