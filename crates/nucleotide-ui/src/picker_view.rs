@@ -781,11 +781,7 @@ impl PickerView {
         let max_allowed_height = window_height * 0.6;
         let max_height = content_height.min(max_allowed_height).max(px(200.0)); // Min height of 200px
 
-        let (list_width, preview_width) = if show_preview {
-            (px(400.0), px(400.0))
-        } else {
-            (total_width, px(0.0))
-        };
+        let (list_width, preview_width) = Self::split_widths_for_preview(show_preview, total_width);
 
         CachedDimensions {
             window_size,
@@ -795,6 +791,18 @@ impl PickerView {
             preview_width,
             show_preview,
         }
+    }
+
+    fn split_widths_for_preview(show_preview: bool, total_width: Pixels) -> (Pixels, Pixels) {
+        if show_preview {
+            (px(400.0), total_width - px(400.0))
+        } else {
+            (total_width, px(0.0))
+        }
+    }
+
+    fn should_truncate_row_text(show_preview: bool) -> bool {
+        show_preview
     }
 
     fn load_preview_for_selected_item(&mut self, cx: &mut Context<Self>) {
@@ -1045,6 +1053,7 @@ impl PickerView {
         let list_width = dimensions.list_width;
         let preview_width = dimensions.preview_width;
         let show_preview = dimensions.show_preview;
+        let truncate_row_text = Self::should_truncate_row_text(show_preview);
         let ui_theme = cx.global::<crate::Theme>();
 
         div()
@@ -1228,6 +1237,7 @@ impl PickerView {
                             .child(
                                 div()
                                     .flex()
+                                    .w_full()
                                     .gap_2()
                                     .child(
                                         // ID header
@@ -1239,7 +1249,7 @@ impl PickerView {
                                     )
                                     .child(
                                         // Path header
-                                        div().flex_1().child("path"),
+                                        div().flex_1().min_w(px(0.0)).child("path"),
                                     ),
                             ),
                     )
@@ -1312,8 +1322,10 @@ impl PickerView {
                                                                 div()
                                                                     .flex()
                                                                     .items_center()
+                                                                    .gap_2()
                                                                     .px_3()
                                                                     .w_full()
+                                                                    .min_w(px(0.0))
                                                                     .when(is_selected, |this| {
                                                                         this.text_color(
                                                                             picker
@@ -1334,6 +1346,9 @@ impl PickerView {
                                                                         // Direct column access for buffer picker
                                                                         div()
                                                                         .flex()
+                                                                        .flex_1()
+                                                                        .w_full()
+                                                                        .min_w(px(0.0))
                                                                         .items_center()
                                                                         .gap_2()
                                                                         .font_family(Self::ui_font_family(cx))
@@ -1343,8 +1358,9 @@ impl PickerView {
                                                                                 .w(px(50.0))
                                                                                 .flex()
                                                                                 .items_center()
-                                                                                .overflow_hidden()
-                                                                                .text_ellipsis()
+                                                                                .when(truncate_row_text, |this| {
+                                                                                    this.overflow_hidden().text_ellipsis()
+                                                                                })
                                                                                 .child(id.clone())
                                                                         )
                                                                         .child(
@@ -1360,10 +1376,12 @@ impl PickerView {
                                                                             // Path column
                                                                             div()
                                                                                 .flex_1()
+                                                                                .min_w(px(0.0))
                                                                                 .flex()
                                                                                 .items_center()
-                                                                                .overflow_hidden()
-                                                                                .text_ellipsis()
+                                                                                .when(truncate_row_text, |this| {
+                                                                                    this.overflow_hidden().text_ellipsis()
+                                                                                })
                                                                                 .child(path.clone())
                                                                         )
                                                                     }
@@ -1389,9 +1407,12 @@ impl PickerView {
 
                                                                         div()
                                                                             .flex()
+                                                                            .flex_1()
+                                                                            .w_full()
+                                                                            .min_w(px(0.0))
                                                                             .items_center()
                                                                             .gap_3()
-                                                                            .overflow_hidden()
+                                                                            .when(truncate_row_text, |this| this.overflow_hidden())
                                                                             .child(
                                                                                 div()
                                                                                     .w(px(20.0))
@@ -1410,23 +1431,28 @@ impl PickerView {
                                                                             .child(
                                                                                 div()
                                                                                     .flex_1()
+                                                                                    .min_w(px(0.0))
                                                                                     .flex()
                                                                                     .flex_col()
                                                                                     .gap_1()
-                                                                                    .overflow_hidden()
+                                                                                    .when(truncate_row_text, |this| this.overflow_hidden())
                                                                                     .font_family(Self::ui_font_family(cx))
                                                                                     .child(
                                                                                         div()
-                                                                                            .overflow_hidden()
-                                                                                            .text_ellipsis()
+                                                                                            .w_full()
+                                                                                            .when(truncate_row_text, |this| {
+                                                                                                this.overflow_hidden().text_ellipsis()
+                                                                                            })
                                                                                             .text_size(text_sm)
                                                                                             .text_color(primary_text)
                                                                                             .child(format!("{path}:{line}")),
                                                                                     )
                                                                                     .child(
                                                                                         div()
-                                                                                            .overflow_hidden()
-                                                                                            .text_ellipsis()
+                                                                                            .w_full()
+                                                                                            .when(truncate_row_text, |this| {
+                                                                                                this.overflow_hidden().text_ellipsis()
+                                                                                            })
                                                                                             .text_size(text_sm)
                                                                                             .text_color(secondary_text)
                                                                                             .child(message.clone()),
@@ -1437,9 +1463,12 @@ impl PickerView {
                                                                         // File picker or other non-buffer items
                                                                         div()
                                                                             .flex()
+                                                                            .flex_1()
+                                                                            .w_full()
+                                                                            .min_w(px(0.0))
                                                                             .items_center()
                                                                             .gap_2()
-                                                                            .overflow_hidden()
+                                                                            .when(truncate_row_text, |this| this.overflow_hidden())
                                                                             .when_some(
                                                                                 item.file_path.as_ref(),
                                                                                 |this, file_path| {
@@ -1459,10 +1488,12 @@ impl PickerView {
                                                                             .child(
                                                                                 div()
                                                                                     .flex_1()
+                                                                                    .min_w(px(0.0))
                                                                                     .flex()
                                                                                     .items_center()
-                                                                                    .overflow_hidden()
-                                                                                    .text_ellipsis()
+                                                                                    .when(truncate_row_text, |this| {
+                                                                                        this.overflow_hidden().text_ellipsis()
+                                                                                    })
                                                                                     .font_family(Self::ui_font_family(cx))
                                                                                     .child(item.label.clone())
                                                                             )
@@ -1474,8 +1505,10 @@ impl PickerView {
                                                                 |this, sublabel| {
                                                                     this.child(
                                                                         div()
-                                                                            .overflow_hidden()
-                                                                            .text_ellipsis()
+                                                                            .flex_shrink_0()
+                                                                            .when(truncate_row_text, |this| {
+                                                                                this.overflow_hidden().text_ellipsis()
+                                                                            })
                                     .text_size(cx.global::<crate::Theme>().tokens.sizes.text_sm)
                                                                             .text_color(
                                                                                 picker
@@ -1495,6 +1528,7 @@ impl PickerView {
                                             },
                                         ),
                                     )
+                                    .w_full()
                                     .h_full() // Use fixed height instead of flex_1
                                     .track_scroll(&self.list_scroll_handle),
                                 )
@@ -1657,5 +1691,29 @@ mod tests {
         assert!(exact > fuzzy);
         assert!(PickerView::fuzzy_score("swf", "Save workspace file").is_some());
         assert!(PickerView::fuzzy_score("fwz", "Save workspace file").is_none());
+    }
+
+    #[test]
+    fn no_preview_layout_gives_full_width_to_list() {
+        let total_width = px(800.0);
+
+        let (list_width, preview_width) = PickerView::split_widths_for_preview(false, total_width);
+
+        assert_eq!(list_width, total_width);
+        assert_eq!(preview_width, px(0.0));
+    }
+
+    #[test]
+    fn preview_layout_splits_width_between_list_and_preview() {
+        let (list_width, preview_width) = PickerView::split_widths_for_preview(true, px(800.0));
+
+        assert_eq!(list_width, px(400.0));
+        assert_eq!(preview_width, px(400.0));
+    }
+
+    #[test]
+    fn no_preview_rows_do_not_force_text_truncation() {
+        assert!(!PickerView::should_truncate_row_text(false));
+        assert!(PickerView::should_truncate_row_text(true));
     }
 }
