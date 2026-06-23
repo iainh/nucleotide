@@ -151,6 +151,101 @@ impl DirectWriteConfig {
             rendering_mode: self.rendering_mode.map(Into::into),
         }
     }
+
+    /// Validate DirectWrite numeric ranges before passing them to GPUI.
+    pub fn validate(&self) -> Result<(), String> {
+        let mut errors = Vec::new();
+
+        if let Some(gamma) = self.gamma
+            && !valid_directwrite_gamma(gamma)
+        {
+            errors.push(format!(
+                "DirectWrite gamma must be finite and between 1.0 and 2.2 inclusive; got {gamma}"
+            ));
+        }
+
+        if let Some(enhanced_contrast) = self.enhanced_contrast
+            && !valid_directwrite_enhanced_contrast(enhanced_contrast)
+        {
+            errors.push(format!(
+                "DirectWrite enhanced_contrast must be finite and greater than or equal to 0.0; got {enhanced_contrast}"
+            ));
+        }
+
+        if let Some(clear_type_level) = self.clear_type_level
+            && !valid_directwrite_clear_type_level(clear_type_level)
+        {
+            errors.push(format!(
+                "DirectWrite clear_type_level must be finite and between 0.0 and 1.0 inclusive; got {clear_type_level}"
+            ));
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("; "))
+        }
+    }
+
+    /// Return a copy with invalid DirectWrite numeric fields unset.
+    pub fn sanitized(&self) -> Self {
+        let mut config = self.clone();
+
+        if config
+            .gamma
+            .is_some_and(|gamma| !valid_directwrite_gamma(gamma))
+        {
+            nucleotide_logging::warn!(
+                gamma = ?config.gamma,
+                "Invalid DirectWrite gamma; using DirectWrite default"
+            );
+            config.gamma = None;
+        }
+
+        if config.enhanced_contrast.is_some_and(|enhanced_contrast| {
+            !valid_directwrite_enhanced_contrast(enhanced_contrast)
+        }) {
+            nucleotide_logging::warn!(
+                enhanced_contrast = ?config.enhanced_contrast,
+                "Invalid DirectWrite enhanced_contrast; using DirectWrite default"
+            );
+            config.enhanced_contrast = None;
+        }
+
+        if config
+            .clear_type_level
+            .is_some_and(|clear_type_level| !valid_directwrite_clear_type_level(clear_type_level))
+        {
+            nucleotide_logging::warn!(
+                clear_type_level = ?config.clear_type_level,
+                "Invalid DirectWrite clear_type_level; using DirectWrite default"
+            );
+            config.clear_type_level = None;
+        }
+
+        config
+    }
+}
+
+// IDWriteFactory3::CreateCustomRenderingParams documents gamma as greater
+// than zero and no more than 256, enhanced contrast as zero or greater, and
+// clearTypeLevel as 0.0 through 1.0:
+// https://learn.microsoft.com/windows/win32/api/dwrite_3/nf-dwrite_3-idwritefactory3-createcustomrenderingparams
+//
+// GPUI currently applies gamma in its shader with a correction-ratio table
+// defined only for 1.0 through 2.2, so Nucleotide validates to that narrower
+// renderer-supported range instead of accepting DirectWrite values that would
+// be silently clamped by GPUI.
+fn valid_directwrite_gamma(value: f32) -> bool {
+    value.is_finite() && (1.0..=2.2).contains(&value)
+}
+
+fn valid_directwrite_enhanced_contrast(value: f32) -> bool {
+    value.is_finite() && value >= 0.0
+}
+
+fn valid_directwrite_clear_type_level(value: f32) -> bool {
+    value.is_finite() && (0.0..=1.0).contains(&value)
 }
 
 /// DirectWrite pixel geometry used for subpixel text rendering on Windows.
@@ -770,6 +865,20 @@ fn load_gui_config(dir: &Path) -> anyhow::Result<GuiConfig> {
         nucleotide_logging::info!("LSP configuration validation passed");
     }
 
+    // Validate and sanitize DirectWrite configuration
+    if let Some(directwrite) = config.window.directwrite.as_ref() {
+        if let Err(validation_error) = directwrite.validate() {
+            nucleotide_logging::error!(
+                config_path = %gui_config_path.display(),
+                error = %validation_error,
+                "Invalid DirectWrite configuration - using sanitized values"
+            );
+            config.window.directwrite = Some(directwrite.sanitized());
+        } else {
+            nucleotide_logging::info!("DirectWrite configuration validation passed");
+        }
+    }
+
     // Validate and sanitize project markers configuration
     if let Err(validation_error) = config.project_markers.validate() {
         nucleotide_logging::error!(
@@ -998,6 +1107,56 @@ flatten_empty_directories = false
         assert!(config.preview_tabs.enable_keep_preview_on_code_navigation);
         assert_eq!(config.file_tree.density, FileTreeDisplayDensity::Compact);
         assert!(!config.file_tree.flatten_empty_directories);
+    }
+
+    #[test]
+    fn directwrite_config_validates_numeric_ranges() {
+        let valid = DirectWriteConfig {
+            gamma: Some(1.8),
+            enhanced_contrast: Some(0.75),
+            clear_type_level: Some(0.6),
+            pixel_geometry: Some(DirectWritePixelGeometry::Rgb),
+            rendering_mode: Some(DirectWriteRenderingMode::Natural),
+        };
+        assert!(valid.validate().is_ok());
+
+        let invalid = DirectWriteConfig {
+            gamma: Some(0.9),
+            enhanced_contrast: Some(-0.1),
+            clear_type_level: Some(1.1),
+            pixel_geometry: Some(DirectWritePixelGeometry::Bgr),
+            rendering_mode: Some(DirectWriteRenderingMode::GdiClassic),
+        };
+        let error = invalid
+            .validate()
+            .expect_err("invalid DirectWrite values should fail validation");
+        assert!(error.contains("gamma"));
+        assert!(error.contains("enhanced_contrast"));
+        assert!(error.contains("clear_type_level"));
+    }
+
+    #[test]
+    fn directwrite_config_sanitized_drops_invalid_numeric_values() {
+        let invalid = DirectWriteConfig {
+            gamma: Some(f32::NAN),
+            enhanced_contrast: Some(f32::NEG_INFINITY),
+            clear_type_level: Some(-0.1),
+            pixel_geometry: Some(DirectWritePixelGeometry::Flat),
+            rendering_mode: Some(DirectWriteRenderingMode::Aliased),
+        };
+
+        let sanitized = invalid.sanitized();
+        assert_eq!(sanitized.gamma, None);
+        assert_eq!(sanitized.enhanced_contrast, None);
+        assert_eq!(sanitized.clear_type_level, None);
+        assert_eq!(
+            sanitized.pixel_geometry,
+            Some(DirectWritePixelGeometry::Flat)
+        );
+        assert_eq!(
+            sanitized.rendering_mode,
+            Some(DirectWriteRenderingMode::Aliased)
+        );
     }
 
     #[test]
