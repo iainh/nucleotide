@@ -133,10 +133,23 @@ struct CachedEditorViewportViewPositionPlan {
     plan: EditorViewportViewPositionPlan,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DocumentCursorVisualRowCacheKey {
+    base: EditorViewportConversionBaseKey,
+    cursor_char_idx: usize,
+}
+
+#[derive(Clone, Debug)]
+struct CachedDocumentCursorVisualRow {
+    key: DocumentCursorVisualRowCacheKey,
+    visual_row: usize,
+}
+
 #[derive(Clone, Debug, Default)]
 struct EditorViewportConversionCache {
     helix_snapshot: Option<CachedHelixViewportSnapshot>,
     view_position_plan: Option<CachedEditorViewportViewPositionPlan>,
+    cursor_visual_row: Option<CachedDocumentCursorVisualRow>,
 }
 
 impl EditorViewportConversionCache {
@@ -167,6 +180,15 @@ impl EditorViewportConversionCache {
         plan: EditorViewportViewPositionPlan,
     ) {
         self.view_position_plan = Some(CachedEditorViewportViewPositionPlan { key, plan });
+    }
+
+    fn cursor_visual_row(&self, key: &DocumentCursorVisualRowCacheKey) -> Option<usize> {
+        let cached = self.cursor_visual_row.as_ref()?;
+        (cached.key == *key).then_some(cached.visual_row)
+    }
+
+    fn store_cursor_visual_row(&mut self, key: DocumentCursorVisualRowCacheKey, visual_row: usize) {
+        self.cursor_visual_row = Some(CachedDocumentCursorVisualRow { key, visual_row });
     }
 }
 
@@ -828,7 +850,7 @@ impl EditorViewport {
 
         let cursor_revealed = if let Some(cursor_reveal) = layout.cursor_reveal {
             let cursor_visual_row =
-                { document_cursor_visual_row(document, view, view_id, &metrics.text_format) };
+                self.document_cursor_visual_row(document, view, view_id, &metrics.text_format);
             let scroll_update =
                 self.reveal_visual_row(cursor_visual_row, cursor_reveal, layout.scrolloff);
 
@@ -981,6 +1003,32 @@ impl EditorViewport {
         self.conversion_cache
             .borrow_mut()
             .store_helix_snapshot(key, snapshot);
+    }
+
+    fn document_cursor_visual_row(
+        &self,
+        document: &Document,
+        view: &helix_view::View,
+        view_id: ViewId,
+        text_format: &TextFormat,
+    ) -> usize {
+        let text = document.text().slice(..);
+        let cursor_char_idx = document.selection(view_id).primary().cursor(text);
+        let key = DocumentCursorVisualRowCacheKey {
+            base: viewport_conversion_base_key(document, view_id, text_format),
+            cursor_char_idx,
+        };
+
+        if let Some(visual_row) = self.conversion_cache.borrow().cursor_visual_row(&key) {
+            return visual_row;
+        }
+
+        let visual_row =
+            document_cursor_visual_row_for_cursor(document, view, text_format, cursor_char_idx);
+        self.conversion_cache
+            .borrow_mut()
+            .store_cursor_visual_row(key, visual_row);
+        visual_row
     }
 
     pub fn top_visual_row(&self) -> usize {
@@ -1243,6 +1291,16 @@ pub fn document_cursor_visual_row(
 ) -> usize {
     let text = document.text().slice(..);
     let cursor_char_idx = document.selection(view_id).primary().cursor(text);
+    document_cursor_visual_row_for_cursor(document, view, text_format, cursor_char_idx)
+}
+
+fn document_cursor_visual_row_for_cursor(
+    document: &Document,
+    view: &helix_view::View,
+    text_format: &TextFormat,
+    cursor_char_idx: usize,
+) -> usize {
+    let text = document.text().slice(..);
     let cursor_at_trailing_newline = cursor_char_idx == text.len_chars()
         && text.len_chars() > 0
         && text.char(text.len_chars() - 1) == '\n';
@@ -2247,6 +2305,31 @@ mod tests {
             ..key
         };
         assert_eq!(cache.view_position_plan(&changed_key), None);
+    }
+
+    #[test]
+    fn conversion_cache_reuses_matching_cursor_visual_row() {
+        let base = EditorViewportConversionBaseKey {
+            document_version: 1,
+            text_len: 12,
+            view_id: ViewId::default(),
+            text_format: EditorViewportTextFormatKey::from(&TextFormat::default()),
+        };
+        let key = DocumentCursorVisualRowCacheKey {
+            base: base.clone(),
+            cursor_char_idx: 8,
+        };
+        let mut cache = EditorViewportConversionCache::default();
+
+        assert_eq!(cache.cursor_visual_row(&key), None);
+        cache.store_cursor_visual_row(key.clone(), 4);
+        assert_eq!(cache.cursor_visual_row(&key), Some(4));
+
+        let changed_key = DocumentCursorVisualRowCacheKey {
+            cursor_char_idx: 9,
+            ..key
+        };
+        assert_eq!(cache.cursor_visual_row(&changed_key), None);
     }
 
     #[test]
