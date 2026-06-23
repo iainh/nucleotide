@@ -526,6 +526,13 @@ impl NativeCommandInput {
                     return NativeCommandResult::Handled(Vec::new());
                 }
 
+                if let Some(command) = native_insert_shortcut_command(key) {
+                    let mut last_mode = mode;
+                    execute_native_command(command, context, &mut last_mode);
+                    self.current_insert_replay.keys.push(key);
+                    return NativeCommandResult::Handled(Vec::new());
+                }
+
                 if let Some(ch) = key.char() {
                     commands::insert::insert_char(context, ch);
                     self.current_insert_replay.keys.push(key);
@@ -1702,6 +1709,18 @@ fn native_insert_completion_command(command: &MappableCommand) -> bool {
     matches!(command.name(), "completion")
 }
 
+fn native_insert_shortcut_command(key: KeyEvent) -> Option<&'static MappableCommand> {
+    match key {
+        KeyEvent {
+            code: KeyCode::Char(ch),
+            modifiers,
+        } if ch.eq_ignore_ascii_case(&'v') && modifiers == KeyModifiers::CONTROL => {
+            Some(&MappableCommand::paste_clipboard_after)
+        }
+        _ => None,
+    }
+}
+
 fn canonicalize_key(key: &mut KeyEvent) {
     if matches!(key.code, KeyCode::Char(_)) {
         key.modifiers.remove(KeyModifiers::SHIFT);
@@ -1793,7 +1812,10 @@ mod tests {
 
     use arc_swap::{ArcSwap, access::Map};
     use helix_core::{Selection, Transaction, syntax};
-    use helix_view::{editor::Action, editor::Config, graphics::Rect, handlers::Handlers, theme};
+    use helix_view::{
+        clipboard::ClipboardProvider, editor::Action, editor::Config, graphics::Rect,
+        handlers::Handlers, theme,
+    };
 
     fn test_handlers() -> Handlers {
         let (completion_tx, _) = tokio::sync::mpsc::channel(1);
@@ -1815,7 +1837,11 @@ mod tests {
     }
 
     fn test_editor_with_text(text: &str) -> Editor {
-        let config = Arc::new(ArcSwap::new(Arc::new(Config::default())));
+        test_editor_with_text_and_config(text, Config::default())
+    }
+
+    fn test_editor_with_text_and_config(text: &str, editor_config: Config) -> Editor {
+        let config = Arc::new(ArcSwap::new(Arc::new(editor_config)));
         let syntax_loader = Arc::new(ArcSwap::from_pointee(syntax::Loader::default()));
         let theme_loader = Arc::new(theme::Loader::new(&[]));
         let mut editor = Editor::new(
@@ -2506,6 +2532,43 @@ mod tests {
         assert!(!native_insert_command_supported(
             &MappableCommand::goto_file
         ));
+    }
+
+    #[test]
+    fn native_insert_shortcut_maps_ctrl_v_to_clipboard_paste() {
+        assert_eq!(
+            native_insert_shortcut_command(KeyEvent::from_str("C-v").unwrap()),
+            Some(&MappableCommand::paste_clipboard_after)
+        );
+        assert_eq!(
+            native_insert_shortcut_command(KeyEvent::from_str("C-S-v").unwrap()),
+            Some(&MappableCommand::paste_clipboard_after)
+        );
+        assert_eq!(native_insert_shortcut_command(plain_char_key('v')), None);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn editor_input_bridge_does_not_insert_literal_v_for_ctrl_v_in_insert_mode() {
+        let mut config = Config::default();
+        config.clipboard_provider = ClipboardProvider::None;
+        let mut editor = test_editor_with_text_and_config("", config);
+        let mut bridge = EditorInputBridge::new(Keymaps::default());
+        let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
+        let mut jobs = Jobs::new();
+
+        let enter_insert =
+            handle_key_str(&mut bridge, &mut editor, &mut compositor, &mut jobs, "i");
+        assert!(enter_insert.completion_requested.is_none());
+        assert_eq!(editor.mode(), Mode::Insert);
+        let text_before_paste = focused_document_text(&editor);
+
+        let ctrl_v = handle_key_str(&mut bridge, &mut editor, &mut compositor, &mut jobs, "C-v");
+
+        assert!(ctrl_v.completion_requested.is_none());
+        let text_after_paste = focused_document_text(&editor);
+        assert_eq!(text_after_paste, text_before_paste);
+        assert!(!text_after_paste.contains('v'));
+        assert_eq!(editor.mode(), Mode::Insert);
     }
 
     #[test]
