@@ -5094,6 +5094,7 @@ dependencies = [
 name = "nucleotide-env"
 version = "0.1.0"
 dependencies = [
+ "dirs 5.0.1",
  "nucleotide-logging",
  "nucleotide-process",
  "serde_json",

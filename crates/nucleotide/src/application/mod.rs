@@ -5156,6 +5156,12 @@ impl Application {
                     new_workspace_root = %new_workspace_root.display(),
                     env_var_count = env.len(),
                     path_length = env.get("PATH").map(|p| p.len()).unwrap_or(0),
+                    home = %env.get("HOME").map(String::as_str).unwrap_or("<unset>"),
+                    cargo_home = %env.get("CARGO_HOME").map(String::as_str).unwrap_or("<unset>"),
+                    xdg_cache_home = %env.get("XDG_CACHE_HOME").map(String::as_str).unwrap_or("<unset>"),
+                    xdg_config_home = %env.get("XDG_CONFIG_HOME").map(String::as_str).unwrap_or("<unset>"),
+                    xdg_data_home = %env.get("XDG_DATA_HOME").map(String::as_str).unwrap_or("<unset>"),
+                    xdg_state_home = %env.get("XDG_STATE_HOME").map(String::as_str).unwrap_or("<unset>"),
                     "Successfully captured project environment for LSP servers"
                 );
 
@@ -5846,13 +5852,14 @@ fn detect_project_root_from_file(file_path: &std::path::Path) -> Option<std::pat
     None
 }
 
-/// Detect if we need CLI environment and create appropriate ProjectEnvironment
-/// Detects dock launches vs command-line launches and handles environment accordingly
-#[cfg(target_os = "macos")]
+/// Detect if we need CLI environment and create appropriate ProjectEnvironment.
+/// GUI launchers on Unix-like desktops usually provide a minimal environment, so
+/// those launches use login-shell capture. CLI launches keep their inherited env.
+#[cfg(unix)]
 fn detect_and_create_project_environment() -> ProjectEnvironment {
     use std::env;
 
-    nucleotide_logging::info!("🔧 ENV_DETECT: Detecting launch environment for macOS");
+    nucleotide_logging::info!("ENV_DETECT: Detecting launch environment for Unix platform");
 
     // Check if we have a minimal PATH that indicates dock launch
     // Dock launches typically have very limited PATH like /usr/bin:/bin
@@ -5869,9 +5876,14 @@ fn detect_and_create_project_environment() -> ProjectEnvironment {
     let has_homebrew = path_components.iter().any(|&p| p.contains("homebrew"));
     let has_nix_system = path_components.contains(&"/run/current-system/sw/bin");
     let path_count = path_components.len();
+    let current_home = env::var("HOME").ok();
+    let current_cargo_home = env::var("CARGO_HOME").ok();
+    let current_xdg_cache_home = env::var("XDG_CACHE_HOME").ok();
+    let home_requires_bootstrap = home_requires_login_shell_capture(current_home.as_deref());
 
-    let likely_dock_launch =
+    let minimal_launcher_path =
         !has_cargo_bin && !has_usr_local && !has_homebrew && !has_nix_system && path_count <= 4;
+    let likely_gui_launch = minimal_launcher_path || home_requires_bootstrap;
 
     nucleotide_logging::info!(
         path_components = path_count,
@@ -5879,23 +5891,25 @@ fn detect_and_create_project_environment() -> ProjectEnvironment {
         has_usr_local = has_usr_local,
         has_homebrew = has_homebrew,
         has_nix_system = has_nix_system,
-        likely_dock_launch = likely_dock_launch,
+        minimal_launcher_path = minimal_launcher_path,
+        home_requires_bootstrap = home_requires_bootstrap,
+        likely_gui_launch = likely_gui_launch,
+        current_home = %current_home.as_deref().unwrap_or("<unset>"),
+        current_cargo_home = %current_cargo_home.as_deref().unwrap_or("<unset>"),
+        current_xdg_cache_home = %current_xdg_cache_home.as_deref().unwrap_or("<unset>"),
         current_path = %current_path,
-        "🔧 ENV_DETECT: Environment analysis"
+        "ENV_DETECT: Environment analysis"
     );
 
-    if likely_dock_launch {
+    if likely_gui_launch {
         nucleotide_logging::info!(
-            "🔧 ENV_DETECT: Dock launch detected - setting up enhanced environment"
+            "ENV_DETECT: GUI-style launch detected - enabling login shell environment capture"
         );
 
-        // For dock launches, we need to capture the full shell environment
-        // We'll set up the ProjectEnvironment to capture directory-specific environments
-        // which will include the full PATH from the user's shell
-        ProjectEnvironment::new(None) // Will use directory shell capture
+        ProjectEnvironment::new(None)
     } else {
         nucleotide_logging::info!(
-            "🔧 ENV_DETECT: Command-line launch detected - using process environment"
+            "ENV_DETECT: Command-line launch detected - using process environment"
         );
 
         // For command-line launches, we already have the full environment
@@ -5905,9 +5919,18 @@ fn detect_and_create_project_environment() -> ProjectEnvironment {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(unix)]
+fn home_requires_login_shell_capture(home: Option<&str>) -> bool {
+    let Some(home) = home else {
+        return true;
+    };
+
+    home.trim().is_empty() || home == "/homeless-shelter" || home.contains("/homeless-shelter/")
+}
+
+#[cfg(not(unix))]
 fn detect_and_create_project_environment() -> ProjectEnvironment {
-    // On non-macOS systems, always use process environment as CLI environment
+    // On platforms without Unix-style login shell capture, use the process environment.
     let cli_env: std::collections::HashMap<String, String> = std::env::vars().collect();
     ProjectEnvironment::new(Some(cli_env))
 }
@@ -6266,6 +6289,23 @@ pub fn init_editor(
 
     // CRITICAL: Create ProjectEnvironment BEFORE LSP system so LSP can get proper environment
     let project_environment = Arc::new(detect_and_create_project_environment());
+    if project_environment.cli_environment().is_none() {
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                let env = handle.block_on(project_environment.bootstrap_process_environment());
+                nucleotide_logging::info!(
+                    env_var_count = env.len(),
+                    "Bootstrapped process environment from login shell for GUI-style launch"
+                );
+            }
+            Err(error) => {
+                nucleotide_logging::warn!(
+                    error = %error,
+                    "Could not bootstrap process environment before runtime was available"
+                );
+            }
+        }
+    }
 
     // Create LSP manager with initial configuration (after ProjectEnvironment is ready)
     let lsp_manager = nucleotide_lsp::LspManager::new(Arc::new(nucleotide_lsp::LspManagerConfig {
@@ -6969,6 +7009,9 @@ fn should_update_env_var(key: &str) -> bool {
         // Development environment variables that tools depend on
         "JAVA_HOME" | "NODE_PATH" | "PYTHON_PATH" | "GOPATH" | "GOROOT" => true,
 
+        // User cache/config/data locations used across language ecosystems
+        "XDG_CACHE_HOME" | "XDG_CONFIG_HOME" | "XDG_DATA_HOME" | "XDG_STATE_HOME" => true,
+
         // Nix environment variables (common on macOS with Nix)
         var if var.starts_with("NIX_") => true,
 
@@ -7000,7 +7043,8 @@ mod tests {
     use super::{
         LspCompletionTrigger, NativeSymbolItem, NativeSymbolTarget, PendingCompletionRequest,
         buffer_word_completion_items, completion_context_for_trigger, dedupe_completion_items,
-        detect_project_lsp_metadata, local_path_completion_context, lsp_completion_insert_text,
+        detect_project_lsp_metadata, home_requires_login_shell_capture,
+        local_path_completion_context, lsp_completion_insert_text,
         lsp_completion_insert_text_format, lsp_completion_items_from_response,
         lsp_completion_response_is_incomplete, lsp_symbol_picker, native_symbol_item_from_lsp,
         path_completion_items, project_health_status, project_server_language_id,
@@ -7017,6 +7061,17 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::time::Duration;
     use tempfile::tempdir;
+
+    #[test]
+    fn home_bootstrap_detection_flags_missing_or_placeholder_home() {
+        assert!(home_requires_login_shell_capture(None));
+        assert!(home_requires_login_shell_capture(Some("")));
+        assert!(home_requires_login_shell_capture(Some("/homeless-shelter")));
+        assert!(home_requires_login_shell_capture(Some(
+            "/homeless-shelter/.cargo"
+        )));
+        assert!(!home_requires_login_shell_capture(Some("/Users/test")));
+    }
 
     #[test]
     fn syntax_symbol_kind_matches_helix_definition_captures() {

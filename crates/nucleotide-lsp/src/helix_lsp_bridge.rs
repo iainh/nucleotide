@@ -262,6 +262,12 @@ impl HelixLspBridge {
                     info!(
                         env_count = project_env.len(),
                         workspace_root = %workspace_root.display(),
+                        home = %project_env.get("HOME").map(String::as_str).unwrap_or("<unset>"),
+                        cargo_home = %project_env.get("CARGO_HOME").map(String::as_str).unwrap_or("<unset>"),
+                        xdg_cache_home = %project_env.get("XDG_CACHE_HOME").map(String::as_str).unwrap_or("<unset>"),
+                        xdg_config_home = %project_env.get("XDG_CONFIG_HOME").map(String::as_str).unwrap_or("<unset>"),
+                        xdg_data_home = %project_env.get("XDG_DATA_HOME").map(String::as_str).unwrap_or("<unset>"),
+                        xdg_state_home = %project_env.get("XDG_STATE_HOME").map(String::as_str).unwrap_or("<unset>"),
                         "Successfully retrieved project environment for LSP server"
                     );
 
@@ -281,7 +287,15 @@ impl HelixLspBridge {
                         }
 
                         // Log key variables for debugging
-                        if key == "PATH" || key == "CARGO_HOME" || key == "RUSTC" || key == "CARGO"
+                        if key == "PATH"
+                            || key == "HOME"
+                            || key == "CARGO_HOME"
+                            || key == "XDG_CACHE_HOME"
+                            || key == "XDG_CONFIG_HOME"
+                            || key == "XDG_DATA_HOME"
+                            || key == "XDG_STATE_HOME"
+                            || key == "RUSTC"
+                            || key == "CARGO"
                         {
                             debug!(key = %key, value = %value, "Set environment variable for LSP server");
                         }
