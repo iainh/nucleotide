@@ -257,4 +257,33 @@ mod tests {
         );
         assert!(provider.feature_flags.ui_features.enable_high_contrast);
     }
+
+    #[gpui::test]
+    async fn init_registers_required_global_providers(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            crate::init(cx, None);
+
+            crate::providers::with_provider_context(|context| {
+                assert!(
+                    context
+                        .get_global_provider::<crate::providers::ThemeProvider>()
+                        .is_some(),
+                    "theme provider should be installed during UI initialization"
+                );
+                assert!(
+                    context
+                        .get_global_provider::<crate::providers::ConfigurationProvider>()
+                        .is_some(),
+                    "configuration provider should be installed during UI initialization"
+                );
+                assert!(
+                    context
+                        .get_global_provider::<crate::providers::EventHandlingProvider>()
+                        .is_some(),
+                    "event provider should be installed during UI initialization"
+                );
+            })
+            .expect("provider system should be initialized");
+        });
+    }
 }
