@@ -58,12 +58,6 @@ pub enum BridgedEvent {
     FilePickerRequested,
     /// Request to show buffer picker (mapped from Helix keybindings)
     BufferPickerRequested,
-    /// LSP server startup requested for a project
-    LspServerStartupRequested {
-        workspace_root: std::path::PathBuf,
-        server_name: String,
-        language_id: String,
-    },
 }
 
 // Use the CompletionTrigger from nucleotide-types

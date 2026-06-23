@@ -156,12 +156,6 @@ pub mod test_support {
                             trigger: test_trigger,
                         }
                     }
-                    BridgedEvent::LspServerStartupRequested { .. } => {
-                        // For testing, we can ignore LSP server startup events
-                        TestUpdate::DocumentChanged {
-                            doc_id: helix_view::DocumentId::default(),
-                        }
-                    }
                     // Ignore UI picker-related bridged events in tests
                     BridgedEvent::DiagnosticsPickerRequested { .. }
                     | BridgedEvent::FilePickerRequested
