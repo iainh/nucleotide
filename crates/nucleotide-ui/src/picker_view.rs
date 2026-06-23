@@ -8,7 +8,7 @@ use gpui::prelude::FluentBuilder;
 use gpui::{
     App, DismissEvent, EventEmitter, FocusHandle, Focusable, Hsla, InteractiveElement, IntoElement,
     KeyDownEvent, ParentElement, Pixels, Render, Result, SharedString, Size, Styled, Task,
-    UniformListScrollHandle, div, px, uniform_list,
+    UniformListScrollHandle, div, px, svg, uniform_list,
 };
 use gpui::{Context, ScrollStrategy, Window};
 use helix_view::DocumentId;
@@ -23,6 +23,13 @@ pub enum ColumnData {
         id: String,
         flags: String,
         path: String,
+    },
+    Diagnostic {
+        severity: helix_core::diagnostic::Severity,
+        icon_path: String,
+        path: String,
+        line: usize,
+        message: String,
     },
 }
 
@@ -542,10 +549,54 @@ impl PickerView {
                     text.push(' ');
                     text.push_str(path);
                 }
+                ColumnData::Diagnostic {
+                    severity,
+                    path,
+                    line,
+                    message,
+                    ..
+                } => {
+                    text.push(' ');
+                    text.push_str(Self::diagnostic_severity_label(*severity));
+                    text.push(' ');
+                    text.push_str(path);
+                    text.push(':');
+                    text.push_str(&line.to_string());
+                    text.push(' ');
+                    text.push_str(message);
+                }
             }
         }
 
         text
+    }
+
+    fn diagnostic_severity_label(severity: helix_core::diagnostic::Severity) -> &'static str {
+        match severity {
+            helix_core::diagnostic::Severity::Error => "error",
+            helix_core::diagnostic::Severity::Warning => "warning",
+            helix_core::diagnostic::Severity::Info => "info",
+            helix_core::diagnostic::Severity::Hint => "hint",
+        }
+    }
+
+    fn diagnostic_severity_color(
+        tokens: &crate::tokens::DesignTokens,
+        severity: helix_core::diagnostic::Severity,
+    ) -> Hsla {
+        match severity {
+            helix_core::diagnostic::Severity::Error => tokens.editor.diagnostic_error,
+            helix_core::diagnostic::Severity::Warning => tokens.editor.diagnostic_warning,
+            helix_core::diagnostic::Severity::Info => tokens.editor.diagnostic_info,
+            helix_core::diagnostic::Severity::Hint => tokens.editor.diagnostic_hint,
+        }
+    }
+
+    fn row_height_for_item(item: &PickerItem) -> Pixels {
+        match &item.columns {
+            Some(ColumnData::Diagnostic { .. }) => px(44.0),
+            _ => px(32.0),
+        }
     }
 
     fn fuzzy_score(query: &str, candidate: &str) -> Option<usize> {
@@ -705,7 +756,15 @@ impl PickerView {
         let total_width = px(800.0); // Fixed width
 
         // Calculate height based on items with max 60% of window
-        let item_height = px(32.0); // Approximate height per item (including padding)
+        let item_height = if self
+            .items
+            .iter()
+            .any(|item| matches!(&item.columns, Some(ColumnData::Diagnostic { .. })))
+        {
+            px(44.0)
+        } else {
+            px(32.0)
+        };
         let header_footer_height = px(80.0); // Space for search bar, footer, etc.
 
         // Use filtered items if available, otherwise use all items
@@ -1238,7 +1297,7 @@ impl PickerView {
                                                         div()
                                                             .id(("picker-item", visible_idx))
                                                             .w_full() // Extend to full width
-                                                            .h_8() // Fixed height for items
+                                                            .h(Self::row_height_for_item(item)) // Fixed height for items
                                                             .flex() // Make it a flex container
                                                             .items_center() // Center content vertically
                                                             .cursor_pointer()
@@ -1307,6 +1366,72 @@ impl PickerView {
                                                                                 .text_ellipsis()
                                                                                 .child(path.clone())
                                                                         )
+                                                                    }
+                                                                    Some(ColumnData::Diagnostic {
+                                                                        severity,
+                                                                        icon_path,
+                                                                        path,
+                                                                        line,
+                                                                        message,
+                                                                    }) => {
+                                                                        let tokens = cx.global::<crate::Theme>().tokens;
+                                                                        let icon_color = Self::diagnostic_severity_color(
+                                                                            &tokens,
+                                                                            *severity,
+                                                                        );
+                                                                        let primary_text = if is_selected {
+                                                                            picker.style.modal_style.selected_text
+                                                                        } else {
+                                                                            picker.style.modal_style.text
+                                                                        };
+                                                                        let secondary_text = picker.style.modal_style.prompt_text;
+                                                                        let text_sm = tokens.sizes.text_sm;
+
+                                                                        div()
+                                                                            .flex()
+                                                                            .items_center()
+                                                                            .gap_3()
+                                                                            .overflow_hidden()
+                                                                            .child(
+                                                                                div()
+                                                                                    .w(px(20.0))
+                                                                                    .flex()
+                                                                                    .items_center()
+                                                                                    .justify_center()
+                                                                                    .flex_shrink_0()
+                                                                                    .child(
+                                                                                        svg()
+                                                                                            .path(icon_path.clone())
+                                                                                            .size(px(16.0))
+                                                                                            .text_color(icon_color)
+                                                                                            .flex_shrink_0(),
+                                                                                    ),
+                                                                            )
+                                                                            .child(
+                                                                                div()
+                                                                                    .flex_1()
+                                                                                    .flex()
+                                                                                    .flex_col()
+                                                                                    .gap_1()
+                                                                                    .overflow_hidden()
+                                                                                    .font_family(Self::ui_font_family(cx))
+                                                                                    .child(
+                                                                                        div()
+                                                                                            .overflow_hidden()
+                                                                                            .text_ellipsis()
+                                                                                            .text_size(text_sm)
+                                                                                            .text_color(primary_text)
+                                                                                            .child(format!("{path}:{line}")),
+                                                                                    )
+                                                                                    .child(
+                                                                                        div()
+                                                                                            .overflow_hidden()
+                                                                                            .text_ellipsis()
+                                                                                            .text_size(text_sm)
+                                                                                            .text_color(secondary_text)
+                                                                                            .child(message.clone()),
+                                                                                    ),
+                                                                            )
                                                                     }
                                                                     None => {
                                                                         // File picker or other non-buffer items
@@ -1498,6 +1623,30 @@ mod tests {
         assert!(search_text.contains("write"));
         assert!(search_text.contains("aliases: w"));
         assert!(search_text.contains("src/main.rs"));
+    }
+
+    #[test]
+    fn item_search_text_includes_diagnostic_columns() {
+        let item = PickerItem {
+            label: "warning crates/app/src/lib.rs:42 unused import".into(),
+            sublabel: None,
+            data: Arc::new(()),
+            file_path: None,
+            vcs_status: None,
+            columns: Some(ColumnData::Diagnostic {
+                severity: helix_core::diagnostic::Severity::Warning,
+                icon_path: "icons/triangle-alert.svg".into(),
+                path: "crates/app/src/lib.rs".into(),
+                line: 42,
+                message: "unused import".into(),
+            }),
+        };
+
+        let search_text = PickerView::item_search_text(&item);
+
+        assert!(search_text.contains("warning"));
+        assert!(search_text.contains("crates/app/src/lib.rs:42"));
+        assert!(search_text.contains("unused import"));
     }
 
     #[test]

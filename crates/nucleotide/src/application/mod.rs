@@ -2477,16 +2477,17 @@ impl Application {
             }
 
             let path = doc.path().cloned();
-            let path_label = path
-                .as_deref()
-                .map(get_relative_path)
-                .and_then(|path| path.to_str().map(str::to_owned))
-                .unwrap_or_else(|| "[scratch]".to_string());
+            let path_label =
+                diagnostic_picker_path_label(path.as_deref(), self.project_directory.as_deref());
 
             for diagnostic in doc.diagnostics() {
-                let severity = diagnostic_severity_label(diagnostic.severity);
+                let severity = diagnostic.severity.unwrap_or_default();
+                let severity_label = diagnostic_severity_label(severity);
                 let line = diagnostic.line + 1;
-                let label = format!("{severity} {path_label}:{line}");
+                let label = format!(
+                    "{severity_label} {path_label}:{line} {}",
+                    diagnostic.message
+                );
                 let data = crate::types::DiagnosticLocation {
                     doc_id: *doc_id,
                     path: path.clone(),
@@ -2495,11 +2496,18 @@ impl Application {
 
                 items.push(crate::picker_view::PickerItem {
                     label: label.into(),
-                    sublabel: Some(diagnostic.message.clone().into()),
+                    sublabel: None,
                     data: Arc::new(data),
                     file_path: path.clone(),
                     vcs_status: None,
-                    columns: None,
+                    columns: Some(crate::picker_view::ColumnData::Diagnostic {
+                        severity,
+                        icon_path: nucleotide_editor::diagnostic_severity_icon_path(severity)
+                            .to_string(),
+                        path: path_label.clone(),
+                        line,
+                        message: diagnostic.message.clone(),
+                    }),
                 });
             }
         }
@@ -3596,8 +3604,20 @@ fn lsp_locations_picker(
     })
 }
 
-fn diagnostic_severity_label(severity: Option<helix_core::diagnostic::Severity>) -> &'static str {
-    match severity.unwrap_or_default() {
+fn diagnostic_picker_path_label(path: Option<&Path>, project_directory: Option<&Path>) -> String {
+    path.map(|path| {
+        if let Some(relative_path) = project_directory.and_then(|root| path.strip_prefix(root).ok())
+        {
+            relative_path.display().to_string()
+        } else {
+            get_relative_path(path).display().to_string()
+        }
+    })
+    .unwrap_or_else(|| "[scratch]".to_string())
+}
+
+fn diagnostic_severity_label(severity: helix_core::diagnostic::Severity) -> &'static str {
+    match severity {
         helix_core::diagnostic::Severity::Error => "error",
         helix_core::diagnostic::Severity::Warning => "warning",
         helix_core::diagnostic::Severity::Info => "info",
@@ -6946,12 +6966,12 @@ mod tests {
         Application, ApplicationCore, EditorInputBridge, LspCompletionTrigger, MaintenanceWake,
         NativeSymbolItem, NativeSymbolTarget, PendingCompletionRequest,
         buffer_word_completion_items, completion_context_for_trigger, dedupe_completion_items,
-        detect_project_lsp_metadata, home_requires_login_shell_capture,
-        local_path_completion_context, lsp_completion_insert_text,
-        lsp_completion_insert_text_format, lsp_completion_items_from_response,
-        lsp_completion_response_is_incomplete, lsp_symbol_picker, native_symbol_item_from_lsp,
-        path_completion_items, project_health_status, project_server_language_id,
-        syntax_symbol_kind_from_capture_name,
+        detect_project_lsp_metadata, diagnostic_picker_path_label, diagnostic_severity_label,
+        home_requires_login_shell_capture, local_path_completion_context,
+        lsp_completion_insert_text, lsp_completion_insert_text_format,
+        lsp_completion_items_from_response, lsp_completion_response_is_incomplete,
+        lsp_symbol_picker, native_symbol_item_from_lsp, path_completion_items,
+        project_health_status, project_server_language_id, syntax_symbol_kind_from_capture_name,
     };
     use crate::test_utils::test_support::{
         TestUpdate, create_counting_channel, create_test_diagnostic_events,
@@ -6960,7 +6980,7 @@ mod tests {
     use arc_swap::{ArcSwap, access::Map};
     use futures_util::{FutureExt, stream::FuturesOrdered};
     use gpui::{AppContext, Entity};
-    use helix_core::syntax;
+    use helix_core::{diagnostic::Severity, syntax};
     use helix_lsp::{LspProgressMap, OffsetEncoding, lsp};
     use helix_term::{
         compositor::Compositor, config::Config as HelixConfig, job::Jobs, keymap::Keymaps,
@@ -6991,6 +7011,30 @@ mod tests {
             .build()
             .expect("test tokio runtime")
     });
+
+    #[test]
+    fn diagnostic_picker_path_label_prefers_project_relative_path() {
+        let project_root = Path::new("/workspace/nucleotide");
+        let diagnostic_path = project_root.join("crates/nucleotide/src/main.rs");
+
+        assert_eq!(
+            diagnostic_picker_path_label(Some(&diagnostic_path), Some(project_root)),
+            "crates/nucleotide/src/main.rs"
+        );
+    }
+
+    #[test]
+    fn diagnostic_picker_path_label_handles_scratch_documents() {
+        assert_eq!(diagnostic_picker_path_label(None, None), "[scratch]");
+    }
+
+    #[test]
+    fn diagnostic_severity_label_matches_picker_terms() {
+        assert_eq!(diagnostic_severity_label(Severity::Error), "error");
+        assert_eq!(diagnostic_severity_label(Severity::Warning), "warning");
+        assert_eq!(diagnostic_severity_label(Severity::Info), "info");
+        assert_eq!(diagnostic_severity_label(Severity::Hint), "hint");
+    }
 
     fn test_gui_config() -> crate::config::Config {
         let mut gui = crate::config::GuiConfig::default();
