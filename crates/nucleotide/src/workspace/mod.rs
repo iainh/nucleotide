@@ -37,7 +37,6 @@ use helix_view::keyboard::{KeyCode, KeyModifiers};
 use helix_view::{DocumentId, ViewId, graphics::Rect as HelixRect};
 use nucleotide_core::{event_bridge, gpui_to_helix_bridge};
 use nucleotide_logging::{debug, error, info, instrument, warn};
-use nucleotide_lsp::HelixLspBridge;
 use nucleotide_types::scrollbar::SCROLLBAR_THICKNESS;
 use nucleotide_ui::ThemedContext as UIThemedContext;
 
@@ -53,9 +52,7 @@ use nucleotide_ui::{
 use crate::input_coordinator::{FocusGroup, InputContext, InputCoordinator};
 use nucleotide_lsp::ServerStatus;
 
-use crate::application::{
-    LspCompletionTrigger, ProjectEnvironmentProvider, find_workspace_root_from,
-};
+use crate::application::{LspCompletionTrigger, find_workspace_root_from};
 use crate::document::DocumentView;
 use crate::file_tree::{
     FileSystemEventKind, FileTreeConfig, FileTreeEvent, FileTreeView,
@@ -903,7 +900,6 @@ pub struct Workspace {
     lsp_menu_pos: (f32, f32),
     document_order: Vec<helix_view::DocumentId>, // Ordered list of documents in opening order
     input_coordinator: Arc<InputCoordinator>,    // Central input coordination system
-    project_lsp_manager: Option<Arc<nucleotide_lsp::ProjectLspManager>>, // Project-level LSP management
     current_project_root: Option<std::path::PathBuf>, // Track current project root for change detection
     initial_project_startup_pending: bool, // Defer project/LSP startup until after first render
     environment_badge: Option<EnvironmentBadge>,
@@ -3926,7 +3922,6 @@ impl Workspace {
             lsp_menu_pos: (0.0, 0.0),
             document_order: Vec::new(),
             input_coordinator,
-            project_lsp_manager: None,
             current_project_root: root_path_for_manager.clone(),
             initial_project_startup_pending: root_path_for_manager.is_some(),
             environment_badge: None,
@@ -5650,66 +5645,6 @@ impl Workspace {
             return;
         };
 
-        if self.project_lsp_manager.is_none() {
-            info!(project_root = %root.display(), "Initializing ProjectLspManager after first render");
-
-            let core_config = self.core.read(cx).config.clone();
-            let config = nucleotide_lsp::ProjectLspConfig {
-                enable_proactive_startup: core_config.is_project_lsp_startup_enabled(),
-                health_check_interval: std::time::Duration::from_secs(30),
-                startup_timeout: std::time::Duration::from_millis(
-                    core_config.lsp_startup_timeout_ms(),
-                ),
-                max_concurrent_startups: 3,
-                project_markers: core_config.project_markers().clone(),
-            };
-
-            let lsp_command_sender = self.core.read(cx).get_project_lsp_command_sender();
-            let manager = Arc::new(nucleotide_lsp::ProjectLspManager::new(
-                config,
-                lsp_command_sender,
-            ));
-
-            let event_sender = manager.get_event_sender();
-            let env_provider = Arc::new(ProjectEnvironmentProvider::new(
-                self.core.read(cx).project_environment.clone(),
-            ));
-            let helix_bridge = HelixLspBridge::new_with_environment(event_sender, env_provider);
-
-            let manager_for_bridge = manager.clone();
-            let bridge_clone = helix_bridge.clone();
-            let bridge_runtime_handle = self.handle.clone();
-            bridge_runtime_handle.spawn(async move {
-                info!("Workspace deferred startup: Setting Helix bridge on ProjectLspManager");
-                manager_for_bridge
-                    .set_helix_bridge(Arc::new(bridge_clone))
-                    .await;
-                info!(
-                    "Workspace deferred startup: Successfully set Helix bridge on ProjectLspManager"
-                );
-            });
-
-            let manager_clone = manager.clone();
-            let runtime_handle = self.handle.clone();
-            let root_clone = root.clone();
-            runtime_handle.spawn(async move {
-                match manager_clone.start().await {
-                    Ok(()) => {
-                        info!(project_root = %root_clone.display(), "ProjectLspManager started successfully");
-                    }
-                    Err(error) => {
-                        error!(
-                            error = %error,
-                            project_root = %root_clone.display(),
-                            "Failed to start ProjectLspManager - LSP proactive startup disabled"
-                        );
-                    }
-                }
-            });
-
-            self.project_lsp_manager = Some(manager);
-        }
-
         info!(project_root = %root.display(), "Triggering deferred project detection and LSP startup");
         self.trigger_project_detection_and_lsp_startup(root, cx);
     }
@@ -5807,85 +5742,7 @@ impl Workspace {
                 }
             }
 
-            // Shutdown existing ProjectLspManager if present (workspace root changed)
-            if let Some(existing_manager) = self.project_lsp_manager.take() {
-                info!("Shutting down existing ProjectLspManager due to workspace change");
-                let runtime_handle = self.handle.clone();
-
-                // Wait for shutdown to complete before proceeding
-                let shutdown_complete = runtime_handle.block_on(async move {
-                    match existing_manager.stop().await {
-                        Ok(()) => {
-                            info!("Successfully stopped existing ProjectLspManager");
-                            true
-                        }
-                        Err(e) => {
-                            error!(error = %e, "Failed to stop existing ProjectLspManager");
-                            false
-                        }
-                    }
-                });
-
-                if !shutdown_complete {
-                    warn!(
-                        "Previous ProjectLspManager shutdown failed, proceeding with new manager anyway"
-                    );
-                }
-            }
-
-            // Create new ProjectLspManager for the new workspace root
-            info!("Creating new ProjectLspManager for new project directory");
-            // Get configuration from the core
-            let core_config = self.core.read(cx).config.clone();
-            let config = nucleotide_lsp::ProjectLspConfig {
-                enable_proactive_startup: core_config.is_project_lsp_startup_enabled(),
-                health_check_interval: std::time::Duration::from_secs(30),
-                startup_timeout: std::time::Duration::from_millis(
-                    core_config.lsp_startup_timeout_ms(),
-                ),
-                max_concurrent_startups: 3,
-                project_markers: core_config.project_markers().clone(),
-            };
-            // Get LSP command sender from Application for event-driven command pattern
-            let lsp_command_sender = self.core.read(cx).get_project_lsp_command_sender();
-
-            let manager = Arc::new(nucleotide_lsp::ProjectLspManager::new(
-                config,
-                lsp_command_sender,
-            ));
-
-            //  Set up HelixLspBridge for the ProjectLspManager
-            let event_sender = manager.get_event_sender();
-            let env_provider = Arc::new(ProjectEnvironmentProvider::new(
-                self.core.read(cx).project_environment.clone(),
-            ));
-            let helix_bridge =
-                nucleotide_lsp::HelixLspBridge::new_with_environment(event_sender, env_provider);
-
-            // Connect the bridge to the manager
-            let manager_for_bridge = manager.clone();
-            let bridge_clone = helix_bridge.clone();
-            let runtime_handle = self.handle.clone();
-            runtime_handle.spawn(async move {
-                info!("Workspace: Setting Helix bridge on ProjectLspManager");
-                manager_for_bridge
-                    .set_helix_bridge(Arc::new(bridge_clone))
-                    .await;
-                info!("Workspace: Successfully set Helix bridge on ProjectLspManager");
-            });
-
-            // Start the manager
-            let manager_clone = manager.clone();
-            let runtime_handle = self.handle.clone();
-            runtime_handle.spawn(async move {
-                if let Err(e) = manager_clone.start().await {
-                    error!(error = %e, "Failed to start ProjectLspManager");
-                }
-            });
-
-            self.project_lsp_manager = Some(manager);
-
-            // ⚡ CRITICAL: Restart LSP servers with new workspace root
+            // Restart existing LSP servers with the new workspace root.
             self.restart_lsp_servers_for_workspace_change(old_project_root, &dir, cx);
 
             // Trigger project detection and LSP coordination
@@ -6007,7 +5864,7 @@ impl Workspace {
         }
     }
 
-    /// Trigger project detection and coordinate with ProjectLspManager for proactive LSP startup
+    /// Trigger project detection and coordinate proactive LSP startup through Application.
     #[instrument(skip(self, cx))]
     fn trigger_project_detection_and_lsp_startup(
         &mut self,
@@ -6024,75 +5881,63 @@ impl Workspace {
         project_status.refresh_project_detection();
         info!("Project detection refresh completed");
 
-        // Coordinate with ProjectLspManager if available
-        if let Some(ref manager) = self.project_lsp_manager {
-            let manager_clone = manager.clone();
-            let runtime_handle = self.handle.clone();
-            let project_root_clone = project_root.clone();
+        if let Some(sender) = self.core.read(cx).get_project_lsp_command_sender() {
+            let span = tracing::info_span!(
+                "workspace_project_lsp_detect",
+                workspace_root = %project_root.display()
+            );
+            let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+            let command = nucleotide_events::ProjectLspCommand::DetectAndStartProject {
+                workspace_root: project_root.clone(),
+                response: response_tx,
+                span,
+            };
 
-            info!("Notifying ProjectLspManager about project detection and starting LSP servers");
-
-            runtime_handle.spawn(async move {
-                info!(project_root = %project_root_clone.display(), "Starting project detection via ProjectLspManager");
-
-                // PROJECT-LEVEL LSP: Use proper event-driven approach
-                match manager_clone.detect_project(project_root_clone.clone()).await {
-                    Ok(()) => {
-                        info!(
-                            project_root = %project_root_clone.display(),
-                            "Project detection completed successfully via ProjectLspManager"
-                        );
-
-                        // Get the project info to send proper LSP startup events
-                        if let Some(project_info) = manager_clone.get_project_info(&project_root_clone).await {
+            if let Err(error) = sender.send(command) {
+                error!(
+                    error = %error,
+                    project_root = %project_root.display(),
+                    "Failed to send DetectAndStartProject command"
+                );
+            } else {
+                let project_root_display = project_root.display().to_string();
+                self.handle.spawn(async move {
+                    let timeout = tokio::time::Duration::from_secs(30);
+                    match tokio::time::timeout(timeout, response_rx).await {
+                        Ok(Ok(Ok(result))) => {
                             info!(
-                                project_type = ?project_info.project_type,
-                                language_servers = ?project_info.language_servers,
-                                "EVENT-DRIVEN: Sending LspServerStartupRequested events"
+                                project_root = %project_root_display,
+                                project_type = ?result.project_type,
+                                language_servers = ?result.language_servers,
+                                servers_started = result.servers_started.len(),
+                                "Project detection and LSP startup completed"
                             );
-
-                            // Send LspServerStartupRequested events for each language server
-                            for server_name in &project_info.language_servers {
-                                info!(
-                                    server_name = %server_name,
-                                    project_root = %project_info.workspace_root.display(),
-                                    "EVENT: Sending LspServerStartupRequested"
-                                );
-
-                                // Create the event command
-                                let _command = nucleotide_events::ProjectLspCommand::LspServerStartupRequested {
-                                    server_name: server_name.clone(),
-                                    workspace_root: project_info.workspace_root.clone(),
-                                    language_id: "unknown".to_string(), // Best effort, updated when processed
-                                };
-
-                                // Project detection completed - LSP events will be sent from event bridge
-                                info!(
-                                    server_name = %server_name,
-                                    "📡 PROJECT: Server startup will be handled by event bridge"
-                                );
-                            }
-
-                            // Project detection completed successfully
-                            info!("Project detection completed - events handled by bridge");
-                        } else {
+                        }
+                        Ok(Ok(Err(error))) => {
+                            error!(
+                                error = %error,
+                                project_root = %project_root_display,
+                                "Project detection and LSP startup failed"
+                            );
+                        }
+                        Ok(Err(_)) => {
                             warn!(
-                                project_root = %project_root_clone.display(),
-                                "Project detected but no project info available"
+                                project_root = %project_root_display,
+                                "DetectAndStartProject response channel was dropped"
+                            );
+                        }
+                        Err(_) => {
+                            error!(
+                                project_root = %project_root_display,
+                                timeout_seconds = 30,
+                                "Project detection and LSP startup timed out"
                             );
                         }
                     }
-                    Err(e) => {
-                        error!(
-                            error = %e,
-                            project_root = %project_root_clone.display(),
-                            "Project detection failed via ProjectLspManager"
-                        );
-                    }
-                }
-            });
+                });
+            }
         } else {
-            warn!("ProjectLspManager not available - skipping LSP coordination");
+            warn!("No LSP command sender available - skipping project LSP coordination");
         }
 
         // Update UI indicators and refresh project status display
