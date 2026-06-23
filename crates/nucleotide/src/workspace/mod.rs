@@ -7744,8 +7744,15 @@ impl Workspace {
                     settings_path.display()
                 );
 
-                let old_max_tabs = self.core.read(cx).config.gui.max_tabs;
+                let (old_max_tabs, old_directwrite) = {
+                    let core = self.core.read(cx);
+                    (
+                        core.config.gui.max_tabs,
+                        core.config.gui.window.directwrite.clone(),
+                    )
+                };
                 let new_max_tabs = new_config.gui.max_tabs;
+                let new_directwrite = new_config.gui.window.directwrite.clone();
                 let preview_tabs_enabled = new_config.gui.preview_tabs.enabled;
                 let file_tree_config = file_tree_config_from_gui(&new_config.gui);
                 let ui_font = new_config.ui_font();
@@ -7773,6 +7780,19 @@ impl Workspace {
                     "UI font configuration updated: {} {}pt",
                     ui_font.family, ui_font.size
                 );
+
+                if old_directwrite != new_directwrite {
+                    let directwrite_params = new_directwrite
+                        .as_ref()
+                        .map(|config| config.to_gpui_params());
+                    if let Err(error) =
+                        cx.set_direct_write_text_rendering_params(directwrite_params)
+                    {
+                        warn!(error = %error, "Failed to apply DirectWrite text rendering settings");
+                    } else {
+                        info!("DirectWrite text rendering settings reloaded");
+                    }
+                }
 
                 self.core.update(cx, move |core, cx| {
                     core.config = new_config;

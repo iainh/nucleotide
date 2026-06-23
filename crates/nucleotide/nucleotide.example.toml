@@ -34,8 +34,8 @@ blur_dark_themes = false
 appearance_follows_theme = true
 
 # Windows DirectWrite text rendering overrides. Defaults: unset, which uses
-# the Windows text smoothing and DirectWrite defaults. Restart after changing
-# these values.
+# the Windows text smoothing and DirectWrite defaults. Reload configuration or
+# restart after changing these values.
 # [window.directwrite]
 # Range: 1.0 to 2.2. DirectWrite accepts a wider range, but GPUI's gamma
 # correction table is defined for this range.
