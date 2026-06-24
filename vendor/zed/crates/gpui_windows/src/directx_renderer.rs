@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     slice,
     sync::{Arc, LazyLock},
 };
@@ -8,7 +9,7 @@ use gpui_util::ResultExt;
 use parking_lot::RwLock;
 use windows::{
     Win32::{
-        Foundation::HWND,
+        Foundation::{HMONITOR, HWND},
         Graphics::{
             Direct3D::*,
             Direct3D11::*,
@@ -16,6 +17,7 @@ use windows::{
             DirectWrite::*,
             Dxgi::{Common::*, *},
         },
+        UI::WindowsAndMessaging::{MONITOR_DEFAULTTONEAREST, MonitorFromWindow},
     },
     core::Interface,
 };
@@ -37,7 +39,14 @@ pub(crate) struct FontInfo {
     pub is_bgr: bool,
 }
 
-static CACHED_FONT_INFO: LazyLock<RwLock<Option<FontInfo>>> = LazyLock::new(|| RwLock::new(None));
+static CACHED_FONT_INFO: LazyLock<RwLock<HashMap<Option<u64>, FontInfo>>> =
+    LazyLock::new(|| RwLock::new(HashMap::default()));
+
+fn font_info_cache_key(monitor: Option<HMONITOR>) -> Option<u64> {
+    monitor
+        .filter(|monitor| !monitor.is_invalid())
+        .map(|monitor| monitor.0 as u64)
+}
 
 pub(crate) struct DirectXRenderer {
     hwnd: HWND,
@@ -190,7 +199,8 @@ impl DirectXRenderer {
             .as_ref()
             .expect("devices missing")
             .device_context;
-        let font_info = Self::get_font_info().context("Getting DirectWrite font information")?;
+        let font_info = Self::get_font_info_for_monitor(self.monitor())
+            .context("Getting DirectWrite font information")?;
         update_buffer(
             device_context,
             self.globals.global_params_buffer.as_ref().unwrap(),
@@ -737,24 +747,30 @@ impl DirectXRenderer {
         })
     }
 
-    pub(crate) fn get_font_info() -> Result<FontInfo> {
-        if let Some(font_info) = *CACHED_FONT_INFO.read() {
+    fn monitor(&self) -> Option<HMONITOR> {
+        let monitor = unsafe { MonitorFromWindow(self.hwnd, MONITOR_DEFAULTTONEAREST) };
+        (!monitor.is_invalid()).then_some(monitor)
+    }
+
+    pub(crate) fn get_font_info_for_monitor(monitor: Option<HMONITOR>) -> Result<FontInfo> {
+        let cache_key = font_info_cache_key(monitor);
+        if let Some(font_info) = CACHED_FONT_INFO.read().get(&cache_key).copied() {
             return Ok(font_info);
         }
 
         let mut cached_font_info = CACHED_FONT_INFO.write();
-        if let Some(font_info) = *cached_font_info {
+        if let Some(font_info) = cached_font_info.get(&cache_key).copied() {
             return Ok(font_info);
         }
 
         let factory: IDWriteFactory5 = unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)? };
-        let font_info = create_direct_write_font_info(&factory)?;
-        *cached_font_info = Some(font_info);
+        let font_info = create_direct_write_font_info(&factory, monitor)?;
+        cached_font_info.insert(cache_key, font_info);
         Ok(font_info)
     }
 
     pub(crate) fn invalidate_font_info() {
-        *CACHED_FONT_INFO.write() = None;
+        CACHED_FONT_INFO.write().clear();
     }
 
     pub(crate) fn mark_drawable(&mut self) {
