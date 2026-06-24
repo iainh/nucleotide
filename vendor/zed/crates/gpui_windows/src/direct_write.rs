@@ -55,6 +55,9 @@ static DIRECT_WRITE_TEXT_RENDERING_PARAMS: LazyLock<
     RwLock<Option<DirectWriteTextRenderingParams>>,
 > = LazyLock::new(|| RwLock::new(None));
 
+const SUPPORTED_COLOR_GLYPH_IMAGE_FORMATS: DWRITE_GLYPH_IMAGE_FORMATS =
+    DWRITE_GLYPH_IMAGE_FORMATS_COLR;
+
 pub(crate) struct ResolvedDirectWriteRenderingParams {
     rendering_params: IDWriteRenderingParams3,
     rendering_params_base: IDWriteRenderingParams,
@@ -1209,13 +1212,12 @@ impl DirectWriteState {
             bidiLevel: 0,
         };
 
-        // todo: support formats other than COLR
         let color_enumerator = unsafe {
             components.factory.TranslateColorGlyphRun(
                 Vector2::new(baseline_origin_x, baseline_origin_y),
                 &glyph_run,
                 None,
-                DWRITE_GLYPH_IMAGE_FORMATS_COLR,
+                SUPPORTED_COLOR_GLYPH_IMAGE_FORMATS,
                 DWRITE_MEASURING_MODE_NATURAL,
                 Some(&transform),
                 0,
@@ -2198,16 +2200,15 @@ fn is_color_glyph(
         isSideways: BOOL(0),
         bidiLevel: 0,
     };
+    // Keep detection aligned with the formats rasterize_color can composite.
+    // Non-COLR formats need separate glyph image data handling before they can
+    // safely use the emoji/polychrome path.
     unsafe {
         factory.TranslateColorGlyphRun(
             Vector2::default(),
             &glyph_run as _,
             None,
-            DWRITE_GLYPH_IMAGE_FORMATS_COLR
-                | DWRITE_GLYPH_IMAGE_FORMATS_SVG
-                | DWRITE_GLYPH_IMAGE_FORMATS_PNG
-                | DWRITE_GLYPH_IMAGE_FORMATS_JPEG
-                | DWRITE_GLYPH_IMAGE_FORMATS_PREMULTIPLIED_B8G8R8A8,
+            SUPPORTED_COLOR_GLYPH_IMAGE_FORMATS,
             DWRITE_MEASURING_MODE_NATURAL,
             None,
             0,
