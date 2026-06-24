@@ -619,6 +619,7 @@ struct MarkdownParser {
     current_table_row: Vec<RichText>,
     in_table: bool,
     image_stack: Vec<ImageContext>,
+    current_block_has_inline_content: bool,
 }
 
 impl MarkdownParser {
@@ -659,6 +660,7 @@ impl MarkdownParser {
             current_table_row: Vec::new(),
             in_table: false,
             image_stack: Vec::new(),
+            current_block_has_inline_content: false,
         }
     }
 
@@ -678,13 +680,20 @@ impl MarkdownParser {
             Event::End(tag) => self.handle_end(tag),
             Event::Text(text) => self.handle_text(&text),
             Event::Code(code) => {
+                self.current_block_has_inline_content = true;
                 let mut style = self.active_style.clone();
                 style.code = true;
                 self.current_text.push(code.as_ref(), style);
             }
             Event::SoftBreak => self.current_text.push_space(self.active_style.clone()),
-            Event::HardBreak => self.current_text.push("\n", self.active_style.clone()),
-            Event::Rule => self.push_block(MarkdownBlock::Rule),
+            Event::HardBreak => {
+                self.current_block_has_inline_content = true;
+                self.current_text.push("\n", self.active_style.clone());
+            }
+            Event::Rule => {
+                self.flush_paragraph();
+                self.push_block(MarkdownBlock::Rule);
+            }
             Event::TaskListMarker(checked) => {
                 if let Some(MarkdownContainer::ListItem(item)) = self.containers.last_mut() {
                     item.checked = Some(checked);
@@ -696,22 +705,28 @@ impl MarkdownParser {
                 if self.in_html_block {
                     self.html_text.push_str(html.as_ref());
                 } else {
+                    self.current_block_has_inline_content = true;
                     self.current_text
                         .push(html.as_ref(), self.active_style.clone());
                 }
             }
-            Event::InlineHtml(html) => self
-                .current_text
-                .push(html.as_ref(), self.active_style.clone()),
+            Event::InlineHtml(html) => {
+                self.current_block_has_inline_content = true;
+                self.current_text
+                    .push(html.as_ref(), self.active_style.clone());
+            }
             Event::FootnoteReference(_) | Event::InlineMath(_) | Event::DisplayMath(_) => {}
         }
     }
 
     fn handle_start(&mut self, tag: Tag<'static>) {
         match tag {
-            Tag::Paragraph => {}
+            Tag::Paragraph => {
+                self.current_block_has_inline_content = false;
+            }
             Tag::Heading { level, .. } => {
                 self.heading = Some(heading_level(level));
+                self.current_block_has_inline_content = false;
             }
             Tag::BlockQuote(kind) => {
                 self.flush_current_text_into_open_list_item();
@@ -771,12 +786,14 @@ impl MarkdownParser {
                 self.refresh_inline_style_flags();
             }
             Tag::Link { dest_url, .. } => {
+                self.current_block_has_inline_content = true;
                 let url = SharedString::from(dest_url.to_string());
                 self.link_stack.push(url.clone());
                 self.active_style.link = true;
                 self.active_style.link_url = Some(url);
             }
             Tag::Image { dest_url, .. } => {
+                self.current_block_has_inline_content = true;
                 self.image_depth += 1;
                 self.image_stack.push(ImageContext {
                     dest_url: SharedString::from(dest_url.to_string()),
@@ -796,6 +813,7 @@ impl MarkdownParser {
             }
             Tag::TableCell => {
                 self.current_text = RichText::default();
+                self.current_block_has_inline_content = false;
             }
             Tag::FootnoteDefinition(_)
             | Tag::DefinitionList
@@ -884,6 +902,7 @@ impl MarkdownParser {
             TagEnd::TableCell => {
                 self.current_table_row
                     .push(std::mem::take(&mut self.current_text));
+                self.current_block_has_inline_content = false;
             }
             TagEnd::FootnoteDefinition
             | TagEnd::DefinitionList
@@ -900,6 +919,7 @@ impl MarkdownParser {
         if self.in_code_block {
             self.code_text.push_str(text.as_ref());
         } else {
+            self.current_block_has_inline_content = true;
             self.current_text
                 .push(text.as_ref(), self.active_style.clone());
         }
@@ -911,6 +931,7 @@ impl MarkdownParser {
 
     fn flush_heading(&mut self, level: u8) {
         let text = std::mem::take(&mut self.current_text);
+        self.current_block_has_inline_content = false;
         self.push_block(MarkdownBlock::Heading { level, text });
     }
 
@@ -951,7 +972,7 @@ impl MarkdownParser {
     }
 
     fn flush_current_text_into_open_list_item(&mut self) {
-        if self.current_text.is_empty() {
+        if self.current_text.is_empty() && !self.current_block_has_inline_content {
             return;
         }
 
@@ -961,13 +982,17 @@ impl MarkdownParser {
     }
 
     fn flush_current_text_as_paragraph(&mut self) {
-        if self.current_text.is_empty() {
+        let text_is_empty = self.current_text.is_empty();
+        if text_is_empty && !self.current_block_has_inline_content {
             return;
         }
 
         let text = std::mem::take(&mut self.current_text);
+        self.current_block_has_inline_content = false;
         if let Some(MarkdownContainer::ListItem(item)) = self.containers.last_mut()
             && item.text.is_empty()
+            && item.children.is_empty()
+            && !text_is_empty
         {
             item.text = text;
             return;
@@ -1736,6 +1761,21 @@ mod tests {
     }
 
     #[test]
+    fn empty_inline_link_text_preserves_paragraphs() {
+        let document = MarkdownDocument::parse("[](./target.md)\n\n[]()");
+
+        assert_eq!(document.blocks.len(), 2);
+        assert!(matches!(
+            &document.blocks[0],
+            MarkdownBlock::Paragraph(text) if text.is_empty()
+        ));
+        assert!(matches!(
+            &document.blocks[1],
+            MarkdownBlock::Paragraph(text) if text.is_empty()
+        ));
+    }
+
+    #[test]
     fn parses_extended_links_task_lists_quotes_and_tables() {
         let document = MarkdownDocument::parse_extended(
             "> See [docs](https://example.com)\n\n- [x] done\n- [ ] next\n\n| A | B |\n| :- | -: |\n| left | right |",
@@ -1916,6 +1956,43 @@ mod tests {
                     && matches!(
                         children.as_slice(),
                         [MarkdownBlock::Heading { level: 1, text }] if text.plain_text() == "Heading"
+                    )
+        ));
+    }
+
+    #[test]
+    fn list_item_paragraphs_after_child_blocks_keep_order() {
+        let document = MarkdownDocument::parse("- # Heading\n\n  details");
+
+        assert!(matches!(
+            &document.blocks[0],
+            MarkdownBlock::ListItem { text, children, .. }
+                if text.is_empty()
+                    && matches!(
+                        children.as_slice(),
+                        [
+                            MarkdownBlock::Heading { level: 1, text },
+                            MarkdownBlock::Paragraph(details),
+                        ] if text.plain_text() == "Heading"
+                            && details.plain_text() == "details"
+                    )
+        ));
+    }
+
+    #[test]
+    fn empty_link_first_list_paragraph_remains_a_child_block() {
+        let document = MarkdownDocument::parse("- [](./target.md)\n\n  details");
+
+        assert!(matches!(
+            &document.blocks[0],
+            MarkdownBlock::ListItem { text, children, .. }
+                if text.is_empty()
+                    && matches!(
+                        children.as_slice(),
+                        [
+                            MarkdownBlock::Paragraph(empty),
+                            MarkdownBlock::Paragraph(details),
+                        ] if empty.is_empty() && details.plain_text() == "details"
                     )
         ));
     }
