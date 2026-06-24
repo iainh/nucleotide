@@ -986,6 +986,7 @@ impl MarkdownParser {
                     .push(std::mem::take(&mut self.current_text));
                 self.current_inline_images.clear();
                 self.current_block_has_inline_content = false;
+                self.reset_inline_style_state();
             }
             TagEnd::FootnoteDefinition
             | TagEnd::DefinitionList
@@ -1017,6 +1018,7 @@ impl MarkdownParser {
         self.current_inline_images.clear();
         self.current_block_has_inline_content = false;
         self.push_block(MarkdownBlock::Heading { level, text });
+        self.reset_inline_style_state();
     }
 
     fn flush_code_block(&mut self) {
@@ -1077,6 +1079,7 @@ impl MarkdownParser {
         self.current_block_has_inline_content = false;
         if let Some(image) = self.take_standalone_image_block(&text) {
             self.push_block(image);
+            self.reset_inline_style_state();
             return;
         }
 
@@ -1087,10 +1090,12 @@ impl MarkdownParser {
             && !text_is_empty
         {
             item.text = text;
+            self.reset_inline_style_state();
             return;
         }
 
         self.push_block(MarkdownBlock::Paragraph(text));
+        self.reset_inline_style_state();
     }
 
     fn take_standalone_image_block(&mut self, text: &RichText) -> Option<MarkdownBlock> {
@@ -1133,6 +1138,14 @@ impl MarkdownParser {
         self.active_style.bold = self.strong_depth > 0;
         self.active_style.strikethrough = self.strikethrough_depth > 0;
         self.active_style.code = self.code_depth > 0;
+    }
+
+    fn reset_inline_style_state(&mut self) {
+        self.emphasis_depth = 0;
+        self.strong_depth = 0;
+        self.strikethrough_depth = 0;
+        self.code_depth = 0;
+        self.refresh_inline_style_flags();
     }
 
     fn refresh_link_style(&mut self) {
@@ -3053,6 +3066,32 @@ mod tests {
                         .spans()
                         .iter()
                         .any(|span| span.style.italic && span.style.strikethrough)
+        ));
+    }
+
+    #[test]
+    fn inline_html_styles_do_not_leak_between_blocks() {
+        let document = MarkdownDocument::parse("<em>foo\n\nbar\n\n- <strong>item\n- next");
+
+        assert!(matches!(
+            document.blocks.as_slice(),
+            [
+                MarkdownBlock::Paragraph(first),
+                MarkdownBlock::Paragraph(second),
+                MarkdownBlock::ListItem { text: item, .. },
+                MarkdownBlock::ListItem { text: next, .. },
+            ] if first.plain_text() == "foo"
+                && first.spans().iter().any(|span| span.style.italic)
+                && second.plain_text() == "bar"
+                && second.spans().iter().all(|span| !span.style.italic)
+                && item.plain_text() == "item"
+                && item.spans().iter().any(|span| span.style.bold)
+                && item.spans().iter().all(|span| !span.style.italic)
+                && next.plain_text() == "next"
+                && next
+                    .spans()
+                    .iter()
+                    .all(|span| !span.style.bold && !span.style.italic)
         ));
     }
 
