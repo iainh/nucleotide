@@ -12,8 +12,9 @@ mod linux_titlebar;
 #[cfg(target_os = "linux")]
 mod linux_window_controls;
 
-// Cross‑platform in-window application menu (non-macOS only)
-#[cfg(not(target_os = "macos"))]
+// Cross-platform in-window application menu. It is only rendered on non-macOS,
+// but compiling it everywhere keeps the shared menu code typechecked locally.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 mod application_menu;
 
 pub use platform_titlebar::PlatformTitleBar;

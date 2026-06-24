@@ -167,3 +167,19 @@ pub mod common {
         [MoveUp, MoveDown, MoveLeft, MoveRight, Confirm, Cancel,]
     );
 }
+
+pub mod menu {
+    use super::actions;
+
+    actions!(
+        menu,
+        [
+            SelectUp,
+            SelectDown,
+            SelectLeft,
+            SelectRight,
+            Confirm,
+            Cancel,
+        ]
+    );
+}
