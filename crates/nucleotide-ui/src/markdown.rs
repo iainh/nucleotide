@@ -213,6 +213,7 @@ pub enum MarkdownBlock {
         alt: RichText,
         title: Option<SharedString>,
         link_url: Option<SharedString>,
+        link_title: Option<SharedString>,
     },
     ListItem {
         ordered: bool,
@@ -419,6 +420,7 @@ struct InlineImage {
     alt: RichText,
     title: Option<SharedString>,
     link_url: Option<SharedString>,
+    link_title: Option<SharedString>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -506,6 +508,7 @@ struct ImageContext {
     start_text_len: usize,
     nesting_depth: usize,
     link_url: Option<SharedString>,
+    link_title: Option<SharedString>,
 }
 
 #[derive(Clone, Debug)]
@@ -523,6 +526,7 @@ struct ParsedImage {
     fallback_inserted: bool,
     nesting_depth: usize,
     link_url: Option<SharedString>,
+    link_title: Option<SharedString>,
 }
 
 #[derive(Clone, Debug)]
@@ -785,13 +789,15 @@ impl MarkdownParser {
             } => {
                 self.current_block_has_inline_content = true;
                 let nesting_depth = self.image_depth;
+                let link = self.link_stack.last();
                 self.image_depth += 1;
                 self.image_stack.push(ImageContext {
                     dest_url: SharedString::from(dest_url.to_string()),
                     title: nonempty_shared_string(&title),
                     start_text_len: self.current_text.text_len(),
                     nesting_depth,
-                    link_url: self.link_stack.last().map(|link| link.url.clone()),
+                    link_url: link.map(|link| link.url.clone()),
+                    link_title: link.and_then(|link| link.title.clone()),
                 });
                 self.refresh_inline_style_flags();
                 self.refresh_link_style();
@@ -898,6 +904,7 @@ impl MarkdownParser {
                             alt,
                             title: context.title.clone(),
                             link_url: context.link_url.clone(),
+                            link_title: context.link_title.clone(),
                         });
                     }
                     self.current_inline_images.push(ParsedImage {
@@ -908,6 +915,7 @@ impl MarkdownParser {
                         fallback_inserted,
                         nesting_depth: context.nesting_depth,
                         link_url: context.link_url,
+                        link_title: context.link_title,
                     });
                 }
                 self.image_depth = self.image_depth.saturating_sub(1);
@@ -1059,6 +1067,7 @@ impl MarkdownParser {
             alt,
             title: image.title,
             link_url: image.link_url,
+            link_title: image.link_title,
         })
     }
 
@@ -1229,11 +1238,13 @@ fn render_blocks(
                 alt,
                 title,
                 link_url,
+                link_title,
             } => render_image_block(
                 url,
                 alt,
                 title,
                 link_url,
+                link_title,
                 style,
                 &format!("{id_prefix}-image-{block_index}"),
             )
@@ -1672,19 +1683,22 @@ fn render_image_block(
     alt: RichText,
     title: Option<SharedString>,
     link_url: Option<SharedString>,
+    link_title: Option<SharedString>,
     style: &MarkdownStyle,
     block_id: &str,
 ) -> impl IntoElement {
     let fallback_style = style.clone();
     let fallback_id = format!("{block_id}-fallback");
     let fallback_link_url = link_url.clone();
-    let fallback_text = image_fallback_text(&url, alt, fallback_link_url);
+    let fallback_link_title = link_title.clone();
+    let tooltip_title = title.or_else(|| link_title.clone());
+    let fallback_text = image_fallback_text(&url, alt, fallback_link_url, fallback_link_title);
 
     div()
         .id(block_id.to_string())
         .w_full()
         .when(style.preview, |this| this.my(px(10.0)))
-        .when_some(title, |this, title| {
+        .when_some(tooltip_title, |this, title| {
             let tooltip_style = style.clone();
             this.tooltip(move |_window, cx| {
                 cx.new(|_| MarkdownTooltip {
@@ -1726,9 +1740,10 @@ fn render_inline_image(
     let fallback_style = style.clone();
     let fallback_id = format!("{image_id}-fallback");
     let link_url = image.link_url.clone();
-    let title = image.title.clone();
+    let link_title = image.link_title.clone();
+    let title = image.title.clone().or_else(|| image.link_title.clone());
     let url = image.url.clone();
-    let fallback_text = image_fallback_text(&url, image.alt, link_url.clone());
+    let fallback_text = image_fallback_text(&url, image.alt, link_url.clone(), link_title);
 
     div()
         .id(image_id.to_string())
@@ -1773,6 +1788,7 @@ fn image_fallback_text(
     url: &SharedString,
     alt: RichText,
     link_url: Option<SharedString>,
+    link_title: Option<SharedString>,
 ) -> RichText {
     if !alt.is_empty() {
         return alt;
@@ -1784,6 +1800,7 @@ fn image_fallback_text(
         InlineStyle {
             link: true,
             link_url: Some(link_url.unwrap_or_else(|| url.clone())),
+            link_title,
             ..InlineStyle::default()
         },
     );
@@ -2430,6 +2447,7 @@ mod tests {
             alt,
             title,
             link_url,
+            link_title,
         } = &document.blocks[0]
         else {
             panic!("expected standalone image block");
@@ -2438,6 +2456,7 @@ mod tests {
         assert_eq!(url.as_ref(), "https://example.com/logo.png");
         assert!(title.is_none());
         assert!(link_url.is_none());
+        assert!(link_title.is_none());
         assert_eq!(alt.plain_text(), "logo");
         assert_eq!(alt.spans().len(), 1);
         let span = &alt.spans()[0];
@@ -2455,6 +2474,7 @@ mod tests {
             alt,
             title,
             link_url,
+            link_title,
         } = &document.blocks[0]
         else {
             panic!("expected standalone image block");
@@ -2463,6 +2483,7 @@ mod tests {
         assert_eq!(url.as_ref(), "image.png");
         assert!(title.is_none());
         assert!(link_url.is_none());
+        assert!(link_title.is_none());
         assert!(alt.is_empty());
     }
 
@@ -2475,6 +2496,7 @@ mod tests {
             alt,
             title,
             link_url,
+            link_title,
         } = &document.blocks[0]
         else {
             panic!("expected standalone image block");
@@ -2483,6 +2505,7 @@ mod tests {
         assert_eq!(url.as_ref(), "/outer.png");
         assert!(title.is_none());
         assert!(link_url.is_none());
+        assert!(link_title.is_none());
         assert_eq!(alt.plain_text(), "foo bar");
     }
 
@@ -2497,11 +2520,12 @@ mod tests {
         assert!(text.is_empty());
         assert!(matches!(
             children.as_slice(),
-            [MarkdownBlock::Image { url, alt, title, link_url }]
+            [MarkdownBlock::Image { url, alt, title, link_url, link_title }]
                 if url.as_ref() == "logo.png"
                     && alt.plain_text() == "logo"
                     && title.is_none()
                     && link_url.is_none()
+                    && link_title.is_none()
         ));
     }
 
@@ -2596,6 +2620,7 @@ mod tests {
             alt,
             title,
             link_url,
+            link_title,
         } = &document.blocks[0]
         else {
             panic!("expected linked image block");
@@ -2605,6 +2630,30 @@ mod tests {
         assert!(title.is_none());
         assert_eq!(alt.plain_text(), "logo");
         assert_eq!(link_url.as_deref(), Some("https://example.com"));
+        assert!(link_title.is_none());
+    }
+
+    #[test]
+    fn standalone_image_inside_link_preserves_outer_link_title() {
+        let document =
+            MarkdownDocument::parse("[![logo](logo.png)](https://example.com \"Example title\")");
+
+        let MarkdownBlock::Image {
+            url,
+            alt,
+            title,
+            link_url,
+            link_title,
+        } = &document.blocks[0]
+        else {
+            panic!("expected linked image block");
+        };
+
+        assert_eq!(url.as_ref(), "logo.png");
+        assert_eq!(alt.plain_text(), "logo");
+        assert!(title.is_none());
+        assert_eq!(link_url.as_deref(), Some("https://example.com"));
+        assert_eq!(link_title.as_deref(), Some("Example title"));
     }
 
     #[test]
@@ -2622,6 +2671,31 @@ mod tests {
         assert!(image.title.is_none());
         assert_eq!(image.alt.plain_text(), "logo");
         assert_eq!(image.link_url.as_deref(), Some("https://example.com"));
+        assert!(image.link_title.is_none());
+    }
+
+    #[test]
+    fn inline_image_inside_link_preserves_outer_link_title() {
+        let document =
+            MarkdownDocument::parse("[![logo](logo.png)](https://example.com \"Example title\")");
+
+        let MarkdownBlock::Image { link_title, .. } = &document.blocks[0] else {
+            panic!("expected linked image block");
+        };
+
+        assert_eq!(link_title.as_deref(), Some("Example title"));
+
+        let document = MarkdownDocument::parse(
+            "[![logo](logo.png)](https://example.com \"Example title\") now",
+        );
+        let MarkdownBlock::Paragraph(text) = &document.blocks[0] else {
+            panic!("expected linked image paragraph");
+        };
+
+        assert_eq!(text.inline_images().len(), 1);
+        let image = &text.inline_images()[0];
+        assert_eq!(image.link_url.as_deref(), Some("https://example.com"));
+        assert_eq!(image.link_title.as_deref(), Some("Example title"));
     }
 
     #[test]
@@ -2630,6 +2704,7 @@ mod tests {
             &SharedString::from("logo.png"),
             RichText::default(),
             Some(SharedString::from("https://example.com")),
+            Some(SharedString::from("Example title")),
         );
 
         assert_eq!(fallback.plain_text(), "logo.png");
@@ -2637,6 +2712,10 @@ mod tests {
         assert_eq!(
             fallback.spans()[0].style.link_url.as_deref(),
             Some("https://example.com")
+        );
+        assert_eq!(
+            fallback.spans()[0].style.link_title.as_deref(),
+            Some("Example title")
         );
     }
 
