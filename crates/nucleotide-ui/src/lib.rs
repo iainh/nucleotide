@@ -26,6 +26,7 @@ pub mod input;
 pub mod key_hint_view;
 pub mod list_item;
 pub mod markdown;
+pub mod menu;
 pub mod notification;
 pub mod picker;
 pub mod picker_view;
@@ -108,6 +109,7 @@ pub use list_item::{
     ListItem, ListItemSpacing, ListItemState, ListItemVariant, SelectionMode, SelectionState,
 };
 pub use markdown::{MarkdownElement, MarkdownStyle, markdown};
+pub use menu::{MenuCheckSide, PopupMenu, PopupMenuItem};
 pub use picker::Picker;
 pub use prompt::Prompt;
 pub use providers::{
@@ -308,6 +310,7 @@ pub fn init(cx: &mut App, config: Option<UIConfig>) {
     let config = config.unwrap_or_default();
 
     providers::init_provider_system();
+    menu::init(cx);
 
     let mut theme_provider = providers::ThemeProvider::new(config.default_theme.clone());
     theme_provider.initialize(cx);
