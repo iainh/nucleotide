@@ -1769,8 +1769,8 @@ fn strip_html_markup(content: &str) -> String {
                 break;
             }
         } else if rest.starts_with('<') {
-            if let Some(end) = rest.find('>') {
-                cursor += end + ">".len();
+            if let Some(tag_len) = html_tag_len(rest) {
+                cursor += tag_len;
             } else {
                 text.push_str(rest);
                 break;
@@ -1815,15 +1815,33 @@ fn html_open_tag_name(markup: &str) -> Option<&str> {
 }
 
 fn html_raw_text_element_len(markup: &str, tag_name: &str) -> Option<usize> {
-    let opening_end = markup.find('>')?;
-    let after_opening_start = opening_end + ">".len();
+    let after_opening_start = html_tag_len(markup)?;
     let after_opening = &markup[after_opening_start..];
     let Some(closing_start) = find_closing_html_tag(after_opening, tag_name) else {
         return Some(markup.len());
     };
     let closing = &after_opening[closing_start..];
-    let closing_end = closing.find('>')?;
-    Some(after_opening_start + closing_start + closing_end + ">".len())
+    let closing_len = html_tag_len(closing)?;
+    Some(after_opening_start + closing_start + closing_len)
+}
+
+fn html_tag_len(markup: &str) -> Option<usize> {
+    if !markup.starts_with('<') {
+        return None;
+    }
+
+    let mut quote = None;
+    for (index, ch) in markup.char_indices().skip(1) {
+        match quote {
+            Some(active_quote) if ch == active_quote => quote = None,
+            Some(_) => {}
+            None if ch == '"' || ch == '\'' => quote = Some(ch),
+            None if ch == '>' => return Some(index + ch.len_utf8()),
+            None => {}
+        }
+    }
+
+    None
 }
 
 fn find_closing_html_tag(content: &str, tag_name: &str) -> Option<usize> {
@@ -2819,6 +2837,21 @@ mod tests {
         assert_eq!(
             visible_html_text("<pre><code>visible</code></pre>").as_ref(),
             "visible"
+        );
+    }
+
+    #[test]
+    fn html_block_display_ignores_quoted_greater_than_in_tags() {
+        assert_eq!(
+            visible_html_text("<a title=\">\">visible</a>").as_ref(),
+            "visible"
+        );
+        assert_eq!(
+            visible_html_text(
+                "<a foo=\"bar\" bam = 'baz <em>\"</em>'\n_boolean zoop:33=zoop:33 />"
+            )
+            .as_ref(),
+            ""
         );
     }
 
