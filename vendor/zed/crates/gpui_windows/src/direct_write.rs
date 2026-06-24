@@ -1480,6 +1480,7 @@ impl DirectWriteState {
                 )
             };
         }
+        unsafe { device_context.Unmap(&staging_texture, 0) };
 
         // Convert from premultiplied to straight alpha
         for chunk in rasterized.chunks_exact_mut(4) {
