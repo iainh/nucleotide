@@ -5,9 +5,9 @@ use gpui::prelude::{FluentBuilder, StyledImage};
 use gpui::{
     App, Bounds, CursorStyle, Element, ElementId, FontStyle, FontWeight, GlobalElementId,
     HighlightStyle, Hitbox, HitboxBehavior, Hsla, InspectorElementId, InteractiveElement,
-    IntoElement, LayoutId, MouseDownEvent, ParentElement, Pixels, Point, RenderOnce, SharedString,
-    StatefulInteractiveElement, StrikethroughStyle, Styled, StyledText, TextLayout, UnderlineStyle,
-    Window, div, img, px, relative, rems,
+    IntoElement, LayoutId, MouseButton, MouseDownEvent, ParentElement, Pixels, Point, RenderOnce,
+    SharedString, StatefulInteractiveElement, StrikethroughStyle, Styled, StyledText, TextLayout,
+    UnderlineStyle, Window, div, img, px, relative, rems,
 };
 use helix_core::{
     RopeSlice, Syntax,
@@ -212,6 +212,7 @@ pub enum MarkdownBlock {
     Image {
         url: SharedString,
         alt: RichText,
+        link_url: Option<SharedString>,
     },
     ListItem {
         ordered: bool,
@@ -555,7 +556,7 @@ struct ImageContext {
     dest_url: SharedString,
     start_text_len: usize,
     nesting_depth: usize,
-    in_link: bool,
+    link_url: Option<SharedString>,
 }
 
 #[derive(Clone, Debug)]
@@ -565,7 +566,7 @@ struct ParsedImage {
     end_text_len: usize,
     fallback_inserted: bool,
     nesting_depth: usize,
-    in_link: bool,
+    link_url: Option<SharedString>,
 }
 
 #[derive(Clone, Debug)]
@@ -823,7 +824,7 @@ impl MarkdownParser {
                     dest_url: SharedString::from(dest_url.to_string()),
                     start_text_len: self.current_text.text_len(),
                     nesting_depth,
-                    in_link: !self.link_stack.is_empty(),
+                    link_url: self.link_stack.last().cloned(),
                 });
                 self.refresh_inline_style_flags();
                 self.refresh_link_style();
@@ -918,7 +919,7 @@ impl MarkdownParser {
                         end_text_len: self.current_text.text_len(),
                         fallback_inserted,
                         nesting_depth: context.nesting_depth,
-                        in_link: context.in_link,
+                        link_url: context.link_url,
                     });
                 }
                 self.image_depth = self.image_depth.saturating_sub(1);
@@ -1053,7 +1054,6 @@ impl MarkdownParser {
             .iter()
             .find(|image| {
                 image.nesting_depth == 0
-                    && !image.in_link
                     && image.start_text_len == 0
                     && image.end_text_len == text.text_len()
             })?
@@ -1069,6 +1069,7 @@ impl MarkdownParser {
         Some(MarkdownBlock::Image {
             url: image.dest_url,
             alt,
+            link_url: image.link_url,
         })
     }
 
@@ -1229,10 +1230,14 @@ fn render_blocks(
                 &format!("{id_prefix}-html-block-{block_index}"),
             )
             .into_any_element(),
-            MarkdownBlock::Image { url, alt } => {
-                render_image_block(url, alt, style, &format!("{id_prefix}-image-{block_index}"))
-                    .into_any_element()
-            }
+            MarkdownBlock::Image { url, alt, link_url } => render_image_block(
+                url,
+                alt,
+                link_url,
+                style,
+                &format!("{id_prefix}-image-{block_index}"),
+            )
+            .into_any_element(),
             MarkdownBlock::ListItem { .. } => render_list_item(
                 block,
                 style,
@@ -1540,6 +1545,7 @@ fn render_html_block(
 fn render_image_block(
     url: SharedString,
     alt: RichText,
+    link_url: Option<SharedString>,
     style: &MarkdownStyle,
     block_id: &str,
 ) -> gpui::Div {
@@ -1550,6 +1556,14 @@ fn render_image_block(
     div()
         .w_full()
         .when(style.preview, |this| this.my(px(10.0)))
+        .when_some(link_url, |this, link_url| {
+            let link_url = link_url.to_string();
+            this.cursor_pointer()
+                .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
+                    cx.stop_propagation();
+                    cx.open_url(&link_url);
+                })
+        })
         .child(
             img(url)
                 .max_w_full()
@@ -2202,11 +2216,12 @@ mod tests {
     fn standalone_image_preserves_destination_and_plain_alt_text() {
         let document = MarkdownDocument::parse("![*logo*](https://example.com/logo.png)");
 
-        let MarkdownBlock::Image { url, alt } = &document.blocks[0] else {
+        let MarkdownBlock::Image { url, alt, link_url } = &document.blocks[0] else {
             panic!("expected standalone image block");
         };
 
         assert_eq!(url.as_ref(), "https://example.com/logo.png");
+        assert!(link_url.is_none());
         assert_eq!(alt.plain_text(), "logo");
         assert_eq!(alt.spans().len(), 1);
         let span = &alt.spans()[0];
@@ -2219,11 +2234,12 @@ mod tests {
     fn standalone_image_keeps_empty_alt_text_empty() {
         let document = MarkdownDocument::parse("![](image.png)");
 
-        let MarkdownBlock::Image { url, alt } = &document.blocks[0] else {
+        let MarkdownBlock::Image { url, alt, link_url } = &document.blocks[0] else {
             panic!("expected standalone image block");
         };
 
         assert_eq!(url.as_ref(), "image.png");
+        assert!(link_url.is_none());
         assert!(alt.is_empty());
     }
 
@@ -2231,11 +2247,12 @@ mod tests {
     fn standalone_nested_image_uses_outer_destination() {
         let document = MarkdownDocument::parse("![foo ![bar](/bar.png)](/outer.png)");
 
-        let MarkdownBlock::Image { url, alt } = &document.blocks[0] else {
+        let MarkdownBlock::Image { url, alt, link_url } = &document.blocks[0] else {
             panic!("expected standalone image block");
         };
 
         assert_eq!(url.as_ref(), "/outer.png");
+        assert!(link_url.is_none());
         assert_eq!(alt.plain_text(), "foo bar");
     }
 
@@ -2250,8 +2267,8 @@ mod tests {
         assert!(text.is_empty());
         assert!(matches!(
             children.as_slice(),
-            [MarkdownBlock::Image { url, alt }]
-                if url.as_ref() == "logo.png" && alt.plain_text() == "logo"
+            [MarkdownBlock::Image { url, alt, link_url }]
+                if url.as_ref() == "logo.png" && alt.plain_text() == "logo" && link_url.is_none()
         ));
     }
 
@@ -2296,18 +2313,37 @@ mod tests {
     }
 
     #[test]
-    fn image_inside_link_uses_outer_link_destination() {
+    fn standalone_image_inside_link_preserves_outer_link_destination() {
         let document = MarkdownDocument::parse("[![logo](logo.png)](https://example.com)");
+
+        let MarkdownBlock::Image { url, alt, link_url } = &document.blocks[0] else {
+            panic!("expected linked image block");
+        };
+
+        assert_eq!(url.as_ref(), "logo.png");
+        assert_eq!(alt.plain_text(), "logo");
+        assert_eq!(link_url.as_deref(), Some("https://example.com"));
+    }
+
+    #[test]
+    fn inline_image_inside_link_uses_outer_link_destination() {
+        let document = MarkdownDocument::parse("[![logo](logo.png)](https://example.com) now");
 
         let MarkdownBlock::Paragraph(text) = &document.blocks[0] else {
             panic!("expected linked image fallback paragraph");
         };
 
-        assert_eq!(text.plain_text(), "logo");
-        assert_eq!(text.spans().len(), 1);
-        let span = &text.spans()[0];
-        assert!(span.style.link);
-        assert_eq!(span.style.link_url.as_deref(), Some("https://example.com"));
+        assert_eq!(text.plain_text(), "logo now");
+        let logo_span = text
+            .spans()
+            .iter()
+            .find(|span| span.text == "logo")
+            .expect("logo alt text span");
+        assert!(logo_span.style.link);
+        assert_eq!(
+            logo_span.style.link_url.as_deref(),
+            Some("https://example.com")
+        );
     }
 
     #[test]
