@@ -4,9 +4,8 @@
 use gpui::prelude::FluentBuilder;
 use gpui::{
     Anchor, AnchoredPositionMode, Context, DismissEvent, ElementId, Entity, FocusHandle, Focusable,
-    InteractiveElement, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, OwnedMenu,
-    ParentElement, Pixels, Render, SharedString, Styled, Subscription, Window, anchored, deferred,
-    div, point, px,
+    InteractiveElement, IntoElement, MouseButton, MouseDownEvent, OwnedMenu, ParentElement, Pixels,
+    Render, SharedString, Styled, Subscription, Window, anchored, deferred, div, px,
 };
 
 use crate::actions::menu::{Cancel, SelectLeft, SelectRight};
@@ -54,7 +53,6 @@ pub struct ApplicationMenu {
     popup_index: Option<usize>,
     popup_menu: Option<Entity<PopupMenu>>,
     action_context: Option<FocusHandle>,
-    anchor_x: Option<f32>,
     row_height: Pixels,
     focus_handle: FocusHandle,
     embedded_in_titlebar: bool,
@@ -80,7 +78,6 @@ impl ApplicationMenu {
             popup_index: None,
             popup_menu: None,
             action_context: None,
-            anchor_x: None,
             row_height: titlebar_height,
             focus_handle: cx.focus_handle(),
             embedded_in_titlebar: false,
@@ -120,7 +117,6 @@ impl ApplicationMenu {
                 action_context.focus(window, cx);
             }
             self.action_context = None;
-            self.anchor_x = None;
         }
 
         cx.notify();
@@ -157,10 +153,6 @@ impl ApplicationMenu {
     fn cancel(&mut self, _: &Cancel, window: &mut Window, cx: &mut Context<Self>) {
         self.set_open_index(None, window, cx);
         cx.stop_propagation();
-    }
-
-    fn set_anchor_from_mouse(&mut self, event: &MouseMoveEvent) {
-        self.anchor_x = Some(f32::from(event.position.x));
     }
 
     fn build_popup_menu(
@@ -211,18 +203,18 @@ impl ApplicationMenu {
 
 impl Render for ApplicationMenu {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.global::<Theme>();
+        let tokens = cx.global::<Theme>().tokens;
         let titlebar_tokens = if let Some(provider) =
             crate::providers::use_provider::<crate::providers::ThemeProvider>()
         {
             provider.titlebar_tokens(ColorContext::OnSurface)
         } else {
-            theme.tokens.titlebar_tokens()
+            tokens.titlebar_tokens()
         };
 
         let row_h = self.row_height;
         let metrics = menu_bar_metrics(self.embedded_in_titlebar);
-        let chrome = theme.tokens.chrome;
+        let chrome = tokens.chrome;
 
         let mut container = div()
             .id(self.id.clone())
@@ -245,62 +237,62 @@ impl Render for ApplicationMenu {
             })
             .track_focus(&self.focus_handle);
 
-        for (index, entry) in self.entries.iter().enumerate() {
-            let name = entry.menu.name.clone();
+        for index in 0..self.entries.len() {
+            let name = self.entries[index].menu.name.clone();
             let id = SharedString::from(format!("menu-trigger-{}", name));
             let is_open = self.open_index == Some(index);
 
-            container = container.child(
-                div()
-                    .id(id)
-                    .h(metrics.trigger_height)
-                    .px(metrics.trigger_padding_x)
-                    .flex()
-                    .items_center()
-                    .rounded(metrics.trigger_radius)
-                    .text_size(theme.tokens.sizes.text_sm)
-                    .text_color(titlebar_tokens.foreground)
-                    .cursor_pointer()
-                    .when(is_open, |trigger| trigger.bg(chrome.surface_hover))
-                    .hover(|trigger| trigger.bg(chrome.surface_hover))
-                    .on_mouse_move(cx.listener(move |this, event, window, cx| {
-                        if this.open_index.is_some() && this.open_index != Some(index) {
-                            this.set_anchor_from_mouse(event);
-                            this.set_open_index(Some(index), window, cx);
-                        } else if this.open_index == Some(index) {
-                            this.set_anchor_from_mouse(event);
-                        }
-                    }))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                            window.prevent_default();
-                            cx.stop_propagation();
-                            this.anchor_x = Some(f32::from(event.position.x));
+            let mut trigger = div()
+                .id(id)
+                .relative()
+                .h(metrics.trigger_height)
+                .px(metrics.trigger_padding_x)
+                .flex()
+                .items_center()
+                .rounded(metrics.trigger_radius)
+                .text_size(tokens.sizes.text_sm)
+                .text_color(titlebar_tokens.foreground)
+                .cursor_pointer()
+                .when(is_open, |trigger| trigger.bg(chrome.surface_hover))
+                .hover(|trigger| trigger.bg(chrome.surface_hover))
+                .on_mouse_move(cx.listener(move |this, _, window, cx| {
+                    if this.open_index.is_some() && this.open_index != Some(index) {
+                        this.set_open_index(Some(index), window, cx);
+                    }
+                }))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _: &MouseDownEvent, window, cx| {
+                        window.prevent_default();
+                        cx.stop_propagation();
 
-                            let new_index = if this.open_index == Some(index) {
-                                None
-                            } else {
-                                Some(index)
-                            };
-                            this.set_open_index(new_index, window, cx);
-                        }),
-                    )
-                    .child(name),
-            );
-        }
+                        let new_index = if this.open_index == Some(index) {
+                            None
+                        } else {
+                            Some(index)
+                        };
+                        this.set_open_index(new_index, window, cx);
+                    }),
+                )
+                .child(name);
 
-        if let Some(index) = self.open_index {
-            let left = px(self.anchor_x.unwrap_or(8.0));
-            let popup_menu = self.build_popup_menu(index, window, cx);
-            let popup = anchored()
-                .position_mode(AnchoredPositionMode::Local)
-                .snap_to_window_with_margin(px(8.0))
-                .anchor(Anchor::TopLeft)
-                .position(point(left, row_h))
-                .child(div().occlude().child(popup_menu));
+            if is_open {
+                let popup_menu = self.build_popup_menu(index, window, cx);
+                let popup = anchored()
+                    .position_mode(AnchoredPositionMode::Local)
+                    .snap_to_window_with_margin(px(8.0))
+                    .anchor(Anchor::TopLeft)
+                    .child(
+                        div()
+                            .occlude()
+                            .top(metrics.trigger_height)
+                            .child(popup_menu),
+                    );
 
-            container = container.child(deferred(popup).with_priority(500));
+                trigger = trigger.child(deferred(popup).with_priority(500));
+            }
+
+            container = container.child(trigger);
         }
 
         container
@@ -366,7 +358,6 @@ mod tests {
                     popup_index: None,
                     popup_menu: None,
                     action_context: None,
-                    anchor_x: None,
                     row_height: px(34.0),
                     focus_handle: cx.focus_handle(),
                     embedded_in_titlebar: false,

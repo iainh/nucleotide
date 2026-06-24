@@ -600,11 +600,13 @@ impl PopupMenu {
                 self.render_row(index, selected, *disabled, cx)
                     .child(
                         div()
+                            .w_full()
                             .h(item_height)
                             .flex()
                             .flex_row()
                             .items_center()
                             .gap(tokens.sizes.space_2)
+                            .px(tokens.sizes.space_2)
                             .when(has_check_column, |this| {
                                 this.child(self.render_indicator(is_checked_left, *disabled, cx))
                             })
@@ -626,11 +628,13 @@ impl PopupMenu {
                 self.render_row(index, selected, *disabled, cx)
                     .child(
                         div()
+                            .w_full()
                             .h(item_height)
                             .flex()
                             .flex_row()
                             .items_center()
                             .gap(tokens.sizes.space_2)
+                            .px(tokens.sizes.space_2)
                             .when(has_check_column, |this| {
                                 this.child(self.render_indicator(false, *disabled, cx))
                             })
@@ -681,7 +685,6 @@ impl PopupMenu {
             .id(index)
             .relative()
             .w_full()
-            .px(tokens.sizes.space_2)
             .rounded(tokens.sizes.radius_sm)
             .text_size(tokens.sizes.text_sm)
             .text_color(if disabled {
@@ -763,7 +766,7 @@ impl Render for PopupMenu {
                     .id("popup-menu-items")
                     .flex()
                     .flex_col()
-                    .p(tokens.sizes.space_1)
+                    .py(tokens.sizes.space_1)
                     .min_w(self.min_width.unwrap_or(px(180.0)))
                     .max_w(self.max_width())
                     .when(self.scrollable, |this| {
