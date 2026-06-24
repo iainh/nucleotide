@@ -1300,8 +1300,6 @@ fn render_blocks(
             MarkdownBlock::HtmlBlock { text } => render_html_block(
                 text,
                 style,
-                helix_theme,
-                syntax_loader,
                 &format!("{id_prefix}-html-block-{block_index}"),
             )
             .into_any_element(),
@@ -1733,21 +1731,23 @@ fn inline_html_is_line_break(html: &str) -> bool {
     tag_name.eq_ignore_ascii_case("br")
 }
 
-fn render_html_block(
-    text: String,
-    style: &MarkdownStyle,
-    helix_theme: Option<&helix_view::Theme>,
-    syntax_loader: Option<&syntax::Loader>,
-    block_id: &str,
-) -> gpui::Div {
-    render_code_block(
-        text,
-        Some("html".to_string()),
-        style,
-        helix_theme,
-        syntax_loader,
-        block_id,
-    )
+fn render_html_block(text: String, style: &MarkdownStyle, block_id: &str) -> impl IntoElement {
+    div()
+        .id(block_id.to_string())
+        .w_full()
+        .text_size(style.body_font_size)
+        .text_color(style.body_color)
+        .line_height(relative(if style.preview { 1.55 } else { 1.45 }))
+        .when(style.preview, |this| this.mb(px(10.0)))
+        .child(StyledText::new(visible_html_text(&text)))
+}
+
+fn visible_html_text(content: &str) -> SharedString {
+    if content.is_empty() {
+        SharedString::from(" ")
+    } else {
+        SharedString::from(content.to_string())
+    }
 }
 
 fn render_image_block(
@@ -2594,6 +2594,15 @@ mod tests {
         assert!(inline_html_is_line_break("<BR class=\"line\">"));
         assert!(!inline_html_is_line_break("</br>"));
         assert!(!inline_html_is_line_break("<bracket>"));
+    }
+
+    #[test]
+    fn html_block_display_preserves_raw_text() {
+        assert_eq!(
+            visible_html_text("<section>\nraw\n</section>\n").as_ref(),
+            "<section>\nraw\n</section>\n"
+        );
+        assert_eq!(visible_html_text("").as_ref(), " ");
     }
 
     #[test]
