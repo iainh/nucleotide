@@ -45,8 +45,8 @@ use nucleotide_ui::notification::{StatusBarNotification, StatusBarNotificationSe
 use nucleotide_ui::scrollbar::{Scrollbar, ScrollbarState};
 use nucleotide_ui::{
     AboutWindow, Button, ButtonSize, ButtonVariant, ConfirmDialog, ConfirmDialogCallbacks,
-    ContextMenuCallbacks, ContextMenuEntry, ContextMenuState, MarkdownStyle, Tooltipped, markdown,
-    render_confirm_dialog, render_context_menu,
+    ContextMenuCallbacks, ContextMenuEntry, ContextMenuState, MarkdownStyle, Tooltipped,
+    markdown_extended, render_confirm_dialog, render_context_menu,
 };
 
 use crate::input_coordinator::{FocusGroup, InputContext, InputCoordinator};
@@ -4182,7 +4182,10 @@ impl Workspace {
                                 .text_color(file_tree_tokens.item_text_secondary)
                                 .child(entry.server_name.clone()),
                         )
-                        .child(markdown(entry.markdown.clone(), markdown_style.clone())),
+                        .child(markdown_extended(
+                            entry.markdown.clone(),
+                            markdown_style.clone(),
+                        )),
                 );
             }
         }

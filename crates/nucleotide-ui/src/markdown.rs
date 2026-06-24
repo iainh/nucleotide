@@ -136,18 +136,28 @@ impl gpui::Global for MarkdownSyntaxLoader {}
 pub struct MarkdownElement {
     source: SharedString,
     style: MarkdownStyle,
+    parse_mode: MarkdownParseMode,
 }
 
 pub fn markdown(source: impl Into<SharedString>, style: MarkdownStyle) -> MarkdownElement {
     MarkdownElement {
         source: source.into(),
         style,
+        parse_mode: MarkdownParseMode::CommonMark,
+    }
+}
+
+pub fn markdown_extended(source: impl Into<SharedString>, style: MarkdownStyle) -> MarkdownElement {
+    MarkdownElement {
+        source: source.into(),
+        style,
+        parse_mode: MarkdownParseMode::Extended,
     }
 }
 
 impl RenderOnce for MarkdownElement {
     fn render(self, _window: &mut Window, cx: &mut gpui::App) -> impl IntoElement {
-        let document = MarkdownDocument::parse(&self.source);
+        let document = MarkdownDocument::parse_with_mode(&self.source, self.parse_mode);
         let helix_theme = cx
             .try_global::<crate::theme_manager::ThemeManager>()
             .map(|theme_manager| theme_manager.helix_theme());
@@ -166,8 +176,22 @@ pub struct MarkdownDocument {
 
 impl MarkdownDocument {
     pub fn parse(source: &str) -> Self {
-        MarkdownParser::new(source).parse()
+        Self::parse_with_mode(source, MarkdownParseMode::CommonMark)
     }
+
+    pub fn parse_extended(source: &str) -> Self {
+        Self::parse_with_mode(source, MarkdownParseMode::Extended)
+    }
+
+    pub fn parse_with_mode(source: &str, mode: MarkdownParseMode) -> Self {
+        MarkdownParser::new(source, mode).parse()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MarkdownParseMode {
+    CommonMark,
+    Extended,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -587,11 +611,16 @@ struct MarkdownParser {
 }
 
 impl MarkdownParser {
-    fn new(source: &str) -> Self {
-        let options = Options::ENABLE_TABLES
-            | Options::ENABLE_STRIKETHROUGH
-            | Options::ENABLE_TASKLISTS
-            | Options::ENABLE_GFM;
+    fn new(source: &str, mode: MarkdownParseMode) -> Self {
+        let options = match mode {
+            MarkdownParseMode::CommonMark => Options::empty(),
+            MarkdownParseMode::Extended => {
+                Options::ENABLE_TABLES
+                    | Options::ENABLE_STRIKETHROUGH
+                    | Options::ENABLE_TASKLISTS
+                    | Options::ENABLE_GFM
+            }
+        };
 
         Self {
             events: Parser::new_ext(source, options)
@@ -1628,8 +1657,8 @@ mod tests {
     }
 
     #[test]
-    fn parses_links_task_lists_quotes_and_tables() {
-        let document = MarkdownDocument::parse(
+    fn parses_extended_links_task_lists_quotes_and_tables() {
+        let document = MarkdownDocument::parse_extended(
             "> See [docs](https://example.com)\n\n- [x] done\n- [ ] next\n\n| A | B |\n| :- | -: |\n| left | right |",
         );
 
@@ -1664,8 +1693,8 @@ mod tests {
     }
 
     #[test]
-    fn parses_gfm_alert_block_quotes() {
-        let document = MarkdownDocument::parse("> [!WARNING]\n> Check this carefully.");
+    fn parses_extended_gfm_alert_block_quotes() {
+        let document = MarkdownDocument::parse_extended("> [!WARNING]\n> Check this carefully.");
 
         assert!(matches!(
             &document.blocks[0],
@@ -1676,6 +1705,39 @@ mod tests {
                 &blocks[0],
                 MarkdownBlock::Paragraph(text) if text.plain_text() == "Check this carefully."
             )
+        ));
+    }
+
+    #[test]
+    fn commonmark_parse_keeps_extension_syntax_literal() {
+        let document = MarkdownDocument::parse(
+            "> [!WARNING]\n> Check this carefully.\n\n- [x] done\n\n| A | B |\n| :- | -: |\n\n~~strike~~",
+        );
+
+        assert!(matches!(
+            &document.blocks[0],
+            MarkdownBlock::BlockQuote { kind: None, blocks }
+                if matches!(
+                    &blocks[0],
+                    MarkdownBlock::Paragraph(text)
+                        if text.plain_text() == "[!WARNING] Check this carefully."
+                )
+        ));
+        assert!(matches!(
+            &document.blocks[1],
+            MarkdownBlock::ListItem { checked: None, text, .. }
+                if text.plain_text() == "[x] done"
+        ));
+        assert!(matches!(
+            &document.blocks[2],
+            MarkdownBlock::Paragraph(text)
+                if text.plain_text() == "| A | B | | :- | -: |"
+        ));
+        assert!(matches!(
+            &document.blocks[3],
+            MarkdownBlock::Paragraph(text)
+                if text.plain_text() == "~~strike~~"
+                    && text.spans().iter().all(|span| !span.style.strikethrough)
         ));
     }
 
