@@ -2940,6 +2940,23 @@ mod tests {
     }
 
     #[test]
+    fn fenced_code_info_strings_decode_escapes_and_entities() {
+        for (source, expected_language) in [
+            ("``` foo\\+bar\nfoo\n```", "foo+bar"),
+            ("``` f&ouml;&ouml;\nfoo\n```", "föö"),
+            ("~~~~    ruby startline=3 $%@#$\nfoo\n~~~~~~~", "ruby"),
+        ] {
+            let document = MarkdownDocument::parse(source);
+
+            assert!(matches!(
+                document.blocks.as_slice(),
+                [MarkdownBlock::CodeBlock { language: Some(language), text }]
+                    if language == expected_language && text == "foo\n"
+            ));
+        }
+    }
+
+    #[test]
     fn two_backtick_lines_parse_as_an_inline_code_span() {
         let document = MarkdownDocument::parse("``\nfoo\n``");
 
