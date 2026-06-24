@@ -844,11 +844,15 @@ pub trait PlatformTextSystem: Send + Sync {
     /// Layout a line of text with the given font runs.
     fn layout_line(&self, text: &str, font_size: Pixels, runs: &[FontRun]) -> LineLayout;
     /// Returns the recommended text rendering mode for the given font and size.
-    fn recommended_rendering_mode(&self, _font_id: FontId, _font_size: Pixels)
-    -> TextRenderingMode;
+    fn recommended_rendering_mode(
+        &self,
+        _font_id: FontId,
+        _font_size: Pixels,
+        _display_id: Option<DisplayId>,
+    ) -> TextRenderingMode;
     /// Returns whether the platform's active rendering parameters require
     /// grayscale text, even if the application requested subpixel text.
-    fn should_force_grayscale_text_rendering(&self) -> bool {
+    fn should_force_grayscale_text_rendering(&self, _display_id: Option<DisplayId>) -> bool {
         false
     }
     /// Returns the dilation level to use for a glyph painted in the given color.
@@ -982,6 +986,7 @@ impl PlatformTextSystem for NoopTextSystem {
         &self,
         _font_id: FontId,
         _font_size: Pixels,
+        _display_id: Option<DisplayId>,
     ) -> TextRenderingMode {
         TextRenderingMode::Grayscale
     }

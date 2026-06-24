@@ -365,16 +365,20 @@ impl TextSystem {
         &self,
         font_id: FontId,
         font_size: Pixels,
+        display_id: Option<DisplayId>,
     ) -> TextRenderingMode {
         self.platform_text_system
-            .recommended_rendering_mode(font_id, font_size)
+            .recommended_rendering_mode(font_id, font_size, display_id)
     }
 
     /// Returns whether the platform's active rendering parameters require
     /// grayscale text, even if the application requested subpixel text.
-    pub(crate) fn should_force_grayscale_text_rendering(&self) -> bool {
+    pub(crate) fn should_force_grayscale_text_rendering(
+        &self,
+        display_id: Option<DisplayId>,
+    ) -> bool {
         self.platform_text_system
-            .should_force_grayscale_text_rendering()
+            .should_force_grayscale_text_rendering(display_id)
     }
 }
 

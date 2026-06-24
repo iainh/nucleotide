@@ -5,10 +5,10 @@ use cosmic_text::{
     FontFeatures as CosmicFontFeatures, FontSystem, ShapeBuffer, ShapeLine,
 };
 use gpui::{
-    Bounds, DevicePixels, Font, FontFallbacks, FontFeatures, FontId, FontMetrics, FontRun, GlyphId,
-    LineLayout, Pixels, PlatformTextSystem, RenderGlyphParams, SUBPIXEL_VARIANTS_X,
-    SUBPIXEL_VARIANTS_Y, ShapedGlyph, ShapedRun, SharedString, Size, TextRenderingMode, point,
-    size,
+    Bounds, DevicePixels, DisplayId, Font, FontFallbacks, FontFeatures, FontId, FontMetrics,
+    FontRun, GlyphId, LineLayout, Pixels, PlatformTextSystem, RenderGlyphParams,
+    SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y, ShapedGlyph, ShapedRun, SharedString, Size,
+    TextRenderingMode, point, size,
 };
 
 use itertools::Itertools;
@@ -198,6 +198,7 @@ impl PlatformTextSystem for CosmicTextSystem {
         &self,
         _font_id: FontId,
         _font_size: Pixels,
+        _display_id: Option<DisplayId>,
     ) -> TextRenderingMode {
         TextRenderingMode::Subpixel
     }
