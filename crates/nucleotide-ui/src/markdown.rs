@@ -1836,15 +1836,98 @@ fn strip_html_markup(content: &str) -> String {
                 text.push('<');
                 cursor += '<'.len_utf8();
             }
-        } else if let Some(ch) = rest.chars().next() {
-            text.push(ch);
-            cursor += ch.len_utf8();
+        } else if let Some(next_tag_start) = rest.find('<') {
+            push_visible_html_text(&mut text, &rest[..next_tag_start]);
+            cursor += next_tag_start;
         } else {
+            push_visible_html_text(&mut text, rest);
             break;
         }
     }
 
     text
+}
+
+fn push_visible_html_text(text: &mut String, content: &str) {
+    let mut cursor = 0;
+
+    while cursor < content.len() {
+        let rest = &content[cursor..];
+        let Some(entity_start) = rest.find('&') else {
+            text.push_str(rest);
+            break;
+        };
+
+        text.push_str(&rest[..entity_start]);
+        let candidate = &rest[entity_start..];
+        let Some(entity_len) = html_entity_candidate_len(candidate) else {
+            text.push('&');
+            cursor += entity_start + '&'.len_utf8();
+            continue;
+        };
+
+        let entity = &candidate[..entity_len];
+        if let Some(decoded) = decode_commonmark_entity(entity) {
+            text.push_str(&decoded);
+        } else {
+            text.push_str(entity);
+        }
+        cursor += entity_start + entity_len;
+    }
+}
+
+fn html_entity_candidate_len(content: &str) -> Option<usize> {
+    let content = content.strip_prefix('&')?;
+    let mut chars = content.char_indices();
+    let (_, first) = chars.next()?;
+    if first == '#' {
+        return numeric_html_entity_len(content).map(|len| '&'.len_utf8() + len);
+    }
+    if !first.is_ascii_alphanumeric() {
+        return None;
+    }
+
+    for (index, ch) in chars {
+        if ch == ';' {
+            return Some('&'.len_utf8() + index + ch.len_utf8());
+        }
+        if !ch.is_ascii_alphanumeric() {
+            return None;
+        }
+    }
+
+    None
+}
+
+fn numeric_html_entity_len(content: &str) -> Option<usize> {
+    let digits = content
+        .strip_prefix("#x")
+        .or_else(|| content.strip_prefix("#X"));
+    if let Some(digits) = digits {
+        let len = digits.find(';').filter(|&index| {
+            index > 0 && digits[..index].chars().all(|ch| ch.is_ascii_hexdigit())
+        })?;
+        return Some("#x".len() + len + ';'.len_utf8());
+    }
+
+    let digits = content.strip_prefix('#')?;
+    let len = digits
+        .find(';')
+        .filter(|&index| index > 0 && digits[..index].chars().all(|ch| ch.is_ascii_digit()))?;
+    Some('#'.len_utf8() + len + ';'.len_utf8())
+}
+
+fn decode_commonmark_entity(entity: &str) -> Option<String> {
+    let mut decoded = String::new();
+    for event in Parser::new(entity) {
+        match event {
+            Event::Text(text) => decoded.push_str(text.as_ref()),
+            Event::Start(Tag::Paragraph) | Event::End(TagEnd::Paragraph) => {}
+            _ => return None,
+        }
+    }
+
+    (decoded != entity).then_some(decoded)
 }
 
 fn html_declaration(markup: &str) -> Option<&str> {
@@ -3143,6 +3226,22 @@ mod tests {
         );
         assert_eq!(visible_html_text("<![CDATA[a < b]]>").as_ref(), "a < b");
         assert_eq!(visible_html_text("").as_ref(), "");
+    }
+
+    #[test]
+    fn html_block_display_decodes_visible_entities() {
+        assert_eq!(
+            visible_html_text("<div>&lt; &amp; &copy; &#35; &#x1F642;</div>").as_ref(),
+            "< & © # 🙂"
+        );
+        assert_eq!(
+            visible_html_text("<div>&notanentity; &amp without semicolon</div>").as_ref(),
+            "&notanentity; &amp without semicolon"
+        );
+        assert_eq!(
+            visible_html_text("<![CDATA[&lt; stays raw]]>").as_ref(),
+            "&lt; stays raw"
+        );
     }
 
     #[test]
