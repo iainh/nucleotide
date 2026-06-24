@@ -68,8 +68,9 @@ use self::a11y::A11y;
 #[cfg(not(target_family = "wasm"))]
 use self::a11y::ROOT_NODE_ID;
 use crate::util::{
-    atomic_incr_if_not_zero, ceil_to_device_pixel, floor_to_device_pixel, round_half_toward_zero,
-    round_half_toward_zero_f64, round_stroke_to_device_pixel, round_to_device_pixel,
+    atomic_incr_if_not_zero, ceil_to_device_pixel, floor_to_device_pixel,
+    quantize_subpixel_device_position, round_half_toward_zero, round_half_toward_zero_f64,
+    round_stroke_to_device_pixel, round_to_device_pixel,
 };
 pub use prompts::*;
 
@@ -3856,17 +3857,13 @@ impl Window {
         let scale_factor = self.scale_factor();
         let glyph_origin = origin.scale(scale_factor);
 
-        let quantized_origin = Point::new(
-            round_half_toward_zero(glyph_origin.x.0 * SUBPIXEL_VARIANTS_X as f32)
-                / SUBPIXEL_VARIANTS_X as f32,
-            round_half_toward_zero(glyph_origin.y.0 * SUBPIXEL_VARIANTS_Y as f32)
-                / SUBPIXEL_VARIANTS_Y as f32,
-        );
-        let subpixel_variant = Point::new(
-            (quantized_origin.x.fract() * SUBPIXEL_VARIANTS_X as f32) as u8,
-            (quantized_origin.y.fract() * SUBPIXEL_VARIANTS_Y as f32) as u8,
-        );
-        let integer_origin = quantized_origin.map(|c| ScaledPixels(c.trunc()));
+        let (integer_x, subpixel_x) =
+            quantize_subpixel_device_position(glyph_origin.x.0, SUBPIXEL_VARIANTS_X);
+        let (integer_y, subpixel_y) =
+            quantize_subpixel_device_position(glyph_origin.y.0, SUBPIXEL_VARIANTS_Y);
+        let integer_origin = Point::new(ScaledPixels(integer_x), ScaledPixels(integer_y));
+        let subpixel_variant = Point::new(subpixel_x, subpixel_y);
+
         let subpixel_rendering = self.should_use_subpixel_rendering(font_id, font_size);
         let dilation = self.text_system().glyph_dilation_for_color(color);
         let params = RenderGlyphParams {

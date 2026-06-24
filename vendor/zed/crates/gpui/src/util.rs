@@ -142,6 +142,21 @@ pub(crate) fn round_to_device_pixel(logical: f32, scale_factor: f32) -> f32 {
 }
 
 #[inline]
+pub(crate) fn quantize_subpixel_device_position(
+    device_position: f32,
+    subpixel_variants: u8,
+) -> (f32, u8) {
+    debug_assert!(subpixel_variants > 0);
+
+    let subpixel_variants = subpixel_variants as i32;
+    let subpixel_units = round_half_toward_zero(device_position * subpixel_variants as f32) as i32;
+    let integer_position = subpixel_units.div_euclid(subpixel_variants);
+    let subpixel_variant = subpixel_units.rem_euclid(subpixel_variants);
+
+    (integer_position as f32, subpixel_variant as u8)
+}
+
+#[inline]
 pub(crate) fn round_stroke_to_device_pixel(logical: f32, scale_factor: f32) -> f32 {
     if logical == 0.0 {
         0.0
@@ -214,6 +229,20 @@ mod tests {
         assert_eq!(round_to_device_pixel(2.0, 2.0), 4.0);
         assert_eq!(floor_to_device_pixel(2.0, 2.0), 4.0);
         assert_eq!(ceil_to_device_pixel(2.0, 2.0), 4.0);
+    }
+
+    #[test]
+    fn test_quantize_subpixel_device_position() {
+        assert_eq!(quantize_subpixel_device_position(1.24, 4), (1.0, 1));
+        assert_eq!(quantize_subpixel_device_position(1.26, 4), (1.0, 1));
+        assert_eq!(quantize_subpixel_device_position(1.38, 4), (1.0, 2));
+
+        assert_eq!(quantize_subpixel_device_position(-0.24, 4), (-1.0, 3));
+        assert_eq!(quantize_subpixel_device_position(-0.26, 4), (-1.0, 3));
+        assert_eq!(quantize_subpixel_device_position(-1.25, 4), (-2.0, 3));
+
+        assert_eq!(quantize_subpixel_device_position(1.125, 4), (1.0, 0));
+        assert_eq!(quantize_subpixel_device_position(-1.125, 4), (-1.0, 0));
     }
 
     #[test]
