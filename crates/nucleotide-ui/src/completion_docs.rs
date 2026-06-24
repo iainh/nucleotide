@@ -11,7 +11,7 @@ use std::task::Poll;
 use std::time::{Duration, Instant};
 
 use crate::completion_v2::CompletionItem;
-use crate::markdown::{MarkdownStyle, markdown};
+use crate::markdown::{MarkdownStyle, markdown_extended};
 
 /// Documentation content with metadata
 #[derive(Debug, Clone)]
@@ -539,7 +539,7 @@ impl DocumentationPanel {
                                 .child("No documentation available"),
                         )
                     } else {
-                        div().child(markdown(
+                        div().child(markdown_extended(
                             content.markdown.clone(),
                             MarkdownStyle::from_tokens(tokens),
                         ))

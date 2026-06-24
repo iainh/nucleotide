@@ -108,7 +108,9 @@ pub use input::{Input, InputSize, InputVariant};
 pub use list_item::{
     ListItem, ListItemSpacing, ListItemState, ListItemVariant, SelectionMode, SelectionState,
 };
-pub use markdown::{MarkdownElement, MarkdownStyle, markdown};
+pub use markdown::{
+    MarkdownElement, MarkdownParseMode, MarkdownStyle, markdown, markdown_extended,
+};
 pub use menu::{MenuCheckSide, PopupMenu, PopupMenuItem};
 pub use picker::Picker;
 pub use prompt::Prompt;
