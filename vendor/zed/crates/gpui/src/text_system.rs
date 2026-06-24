@@ -13,8 +13,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Bounds, DevicePixels, DirectWriteTextRenderingParams, Hsla, Pixels, PlatformTextSystem, Point,
-    Result, SharedString, Size, StrikethroughStyle, TextRenderingMode, UnderlineStyle, px,
+    Bounds, DevicePixels, DirectWriteTextRenderingParams, DisplayId, Hsla, Pixels,
+    PlatformTextSystem, Point, Result, SharedString, Size, StrikethroughStyle, TextRenderingMode,
+    UnderlineStyle, px,
 };
 use anyhow::{Context as _, anyhow};
 use collections::FxHashMap;
@@ -1042,6 +1043,7 @@ pub struct RenderGlyphParams {
     pub font_id: FontId,
     pub glyph_id: GlyphId,
     pub font_size: Pixels,
+    pub display_id: Option<DisplayId>,
     pub subpixel_variant: Point<u8>,
     pub scale_factor: f32,
     pub is_emoji: bool,
@@ -1056,6 +1058,7 @@ impl Hash for RenderGlyphParams {
         self.font_id.0.hash(state);
         self.glyph_id.0.hash(state);
         self.font_size.0.to_bits().hash(state);
+        self.display_id.hash(state);
         self.subpixel_variant.hash(state);
         self.scale_factor.to_bits().hash(state);
         self.is_emoji.hash(state);

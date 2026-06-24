@@ -83,14 +83,35 @@ pub(crate) fn set_direct_write_text_rendering_params(
     DirectXRenderer::invalidate_font_info();
 }
 
+pub(crate) fn monitor_from_display_id(display_id: Option<DisplayId>) -> Option<HMONITOR> {
+    display_id
+        .map(|display_id| HMONITOR(u64::from(display_id) as _))
+        .filter(|monitor| !monitor.is_invalid())
+}
+
+fn create_default_rendering_params(
+    factory: &IDWriteFactory5,
+    monitor: Option<HMONITOR>,
+) -> Result<IDWriteRenderingParams1> {
+    unsafe {
+        if let Some(monitor) = monitor {
+            if let Ok(params) = factory.CreateMonitorRenderingParams(monitor) {
+                return Ok(params.cast()?);
+            }
+        }
+
+        Ok(factory.CreateRenderingParams()?.cast()?)
+    }
+}
+
 pub(crate) fn resolve_direct_write_rendering_params(
     factory: &IDWriteFactory5,
+    monitor: Option<HMONITOR>,
 ) -> Result<ResolvedDirectWriteRenderingParams> {
     let params = *DIRECT_WRITE_TEXT_RENDERING_PARAMS.read();
-    let system_smoothing = get_system_font_smoothing();
 
     unsafe {
-        let defaults: IDWriteRenderingParams1 = factory.CreateRenderingParams()?.cast()?;
+        let defaults = create_default_rendering_params(factory, monitor)?;
         let gamma = params
             .and_then(|params| params.gamma)
             .unwrap_or_else(|| defaults.GetGamma());
@@ -105,7 +126,6 @@ pub(crate) fn resolve_direct_write_rendering_params(
             .unwrap_or_else(|| defaults.GetClearTypeLevel());
         let pixel_geometry = params
             .and_then(|params| params.pixel_geometry)
-            .or(system_smoothing.pixel_geometry)
             .map(direct_write_pixel_geometry)
             .unwrap_or_else(|| defaults.GetPixelGeometry());
         let rendering_mode_override = params.and_then(|params| params.rendering_mode);
@@ -142,8 +162,12 @@ pub(crate) fn resolve_direct_write_rendering_params(
     }
 }
 
-pub(crate) fn create_direct_write_font_info(factory: &IDWriteFactory5) -> Result<crate::FontInfo> {
-    let rendering_params = resolve_direct_write_rendering_params(factory)?.rendering_params;
+pub(crate) fn create_direct_write_font_info(
+    factory: &IDWriteFactory5,
+    monitor: Option<HMONITOR>,
+) -> Result<crate::FontInfo> {
+    let rendering_params =
+        resolve_direct_write_rendering_params(factory, monitor)?.rendering_params;
     unsafe {
         Ok(crate::FontInfo {
             gamma_ratios: gpui::get_gamma_correction_ratios(rendering_params.GetGamma()),
@@ -453,7 +477,7 @@ impl PlatformTextSystem for DirectWriteTextSystem {
         let previous = *DIRECT_WRITE_TEXT_RENDERING_PARAMS.read();
         set_direct_write_text_rendering_params(params);
 
-        if let Err(error) = resolve_direct_write_rendering_params(&self.components.factory) {
+        if let Err(error) = resolve_direct_write_rendering_params(&self.components.factory, None) {
             set_direct_write_text_rendering_params(previous);
             return Err(error);
         }
@@ -941,7 +965,10 @@ impl DirectWriteState {
             / gpui::SUBPIXEL_VARIANTS_Y as f32
             / params.scale_factor;
 
-        let rendering_params = resolve_direct_write_rendering_params(&components.factory)?;
+        let rendering_params = resolve_direct_write_rendering_params(
+            &components.factory,
+            monitor_from_display_id(params.display_id),
+        )?;
         let mut rendering_mode = DWRITE_RENDERING_MODE1_DEFAULT;
         let mut grid_fit_mode = DWRITE_GRID_FIT_MODE_DEFAULT;
         let measuring_mode = rendering_params.measuring_mode;
@@ -1372,7 +1399,7 @@ impl DirectWriteState {
             gamma_ratios,
             grayscale_enhanced_contrast,
             ..
-        } = DirectXRenderer::get_font_info()?;
+        } = DirectXRenderer::get_font_info_for_monitor(monitor_from_display_id(params.display_id))?;
 
         for layer in glyph_layers {
             let params = GlyphLayerTextureParams {
@@ -2073,7 +2100,6 @@ fn get_name(string: IDWriteLocalizedStrings, locale: &HSTRING) -> Result<String>
 struct WindowsFontSmoothing {
     enabled: bool,
     smoothing_type: u32,
-    pixel_geometry: Option<DirectWritePixelGeometry>,
 }
 
 impl WindowsFontSmoothing {
@@ -2087,8 +2113,6 @@ fn get_system_font_smoothing() -> WindowsFontSmoothing {
         enabled: system_parameters_info_bool(SPI_GETFONTSMOOTHING).unwrap_or(true),
         smoothing_type: system_parameters_info_uint(SPI_GETFONTSMOOTHINGTYPE)
             .unwrap_or(FE_FONTSMOOTHINGCLEARTYPE),
-        pixel_geometry: system_parameters_info_uint(SPI_GETFONTSMOOTHINGORIENTATION)
-            .and_then(system_pixel_geometry),
     }
 }
 
@@ -2127,14 +2151,6 @@ fn system_parameters_info_bool(action: SYSTEM_PARAMETERS_INFO_ACTION) -> Option<
         Some(value.as_bool())
     } else {
         None
-    }
-}
-
-fn system_pixel_geometry(orientation: u32) -> Option<DirectWritePixelGeometry> {
-    match orientation {
-        FE_FONTSMOOTHINGORIENTATIONRGB => Some(DirectWritePixelGeometry::Rgb),
-        FE_FONTSMOOTHINGORIENTATIONBGR => Some(DirectWritePixelGeometry::Bgr),
-        _ => None,
     }
 }
 
