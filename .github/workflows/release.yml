@@ -183,29 +183,77 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Build Windows package
+      - name: Install cargo-bundle
+        shell: pwsh
+        run: cargo install cargo-bundle --version 0.11.0 --locked
+
+      - name: Prepare bundled runtime
         shell: pwsh
         run: |
-          .\scripts\package-windows-test.ps1 `
-            -Release `
-            -Clean `
-            -OutputDir dist\nucleotide-windows-x86_64
+          git clone --depth 1 --branch 25.07.1 https://github.com/helix-editor/helix.git helix-temp
+          try {
+            .\scripts\setup-windows-runtime.ps1 -RuntimeSource helix-temp\runtime
+          } finally {
+            Remove-Item -LiteralPath helix-temp -Recurse -Force
+          }
 
-      - name: Create Windows zip
+      - name: Build Windows MSI
         shell: pwsh
         run: |
-          Compress-Archive `
-            -Path dist\nucleotide-windows-x86_64\* `
-            -DestinationPath nucleotide-windows-x86_64.zip `
-            -Force
+          Push-Location crates\nucleotide
+          try {
+            cargo bundle --release --format wxsmsi
+          } finally {
+            Pop-Location
+          }
 
-          Get-Item nucleotide-windows-x86_64.zip
+          $installer = "target\release\bundle\wxsmsi\bin\Release\Nucleotide.msi"
+          if (-not (Test-Path $installer)) {
+            throw "Windows installer not found: $installer"
+          }
+
+          Copy-Item -LiteralPath $installer -Destination Nucleotide-windows-x86_64.msi -Force
+          Get-Item Nucleotide-windows-x86_64.msi
+
+      - name: Verify MSI payload
+        shell: pwsh
+        run: |
+          $extractDir = Join-Path $PWD "dist\windows-msi"
+          New-Item -ItemType Directory -Path $extractDir -Force | Out-Null
+
+          $installer = (Resolve-Path "Nucleotide-windows-x86_64.msi").Path
+          $process = Start-Process `
+            -FilePath msiexec.exe `
+            -ArgumentList @("/a", $installer, "/qn", "TARGETDIR=$extractDir") `
+            -Wait `
+            -PassThru
+
+          if ($process.ExitCode -ne 0) {
+            throw "Administrative MSI extraction failed with exit code $($process.ExitCode)."
+          }
+
+          $runtime = Get-ChildItem -Path $extractDir -Recurse -Directory -Filter runtime |
+            Select-Object -First 1
+          if (-not $runtime) {
+            throw "Extracted MSI does not contain a runtime directory."
+          }
+
+          $grammarDlls = Get-ChildItem -Path (Join-Path $runtime.FullName "grammars") -Filter *.dll -File
+          if ($grammarDlls.Count -eq 0) {
+            throw "Extracted MSI runtime does not contain any grammar DLLs."
+          }
+
+          $exe = Get-ChildItem -Path $extractDir -Recurse -Filter nucl.exe -File |
+            Select-Object -First 1
+          if (-not $exe) {
+            throw "Extracted MSI does not contain nucl.exe."
+          }
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: windows-build
-          path: nucleotide-windows-x86_64.zip
+          path: Nucleotide-windows-x86_64.msi
 
   create-release:
     name: Create Release
@@ -229,7 +277,7 @@ jobs:
           cp artifacts/macos-universal-build/Nucleotide-universal.dmg release/Nucleotide.dmg
           cp artifacts/macos-x86_64-build/Nucleotide-x86_64.dmg release/
           cp artifacts/macos-aarch64-build/Nucleotide-aarch64.dmg release/
-          cp artifacts/windows-build/nucleotide-windows-x86_64.zip release/
+          cp artifacts/windows-build/Nucleotide-windows-x86_64.msi release/
           
           # Generate checksums
           cd release
@@ -265,7 +313,7 @@ jobs:
             - **x86_64:** `nucleotide-linux-x86_64.tar.gz`
 
             ### Windows
-            - **x86_64:** `nucleotide-windows-x86_64.zip`
+            - **x86_64:** `Nucleotide-windows-x86_64.msi`
             
             ## Installation
             
@@ -286,10 +334,9 @@ jobs:
                ```
 
             ### Windows
-            1. Download and extract `nucleotide-windows-x86_64.zip`.
-            2. Run `nucl.exe` from the extracted directory. `nucl.cmd` remains available for terminal launches.
-            3. Optional: run `install-windows-context-menu.cmd` to add per-user Explorer "Open with Nucleotide", Open With app, App Paths, `nucleotide://`, and Windows Installed apps entries; add `-RegisterCommonFileTypes` to list Nucleotide in Open With for common source/config files, add `-StartMenuShortcut` to create a Start Menu shortcut, or add `-AddToPath` for terminal launches.
-            4. Launching files or folders while Nucleotide is already running forwards them to the existing window.
+            1. Download `Nucleotide-windows-x86_64.msi`.
+            2. Run the installer and launch Nucleotide from the Start Menu or desktop shortcut.
+            3. The installer includes the bundled Helix runtime and compiled Windows grammar DLLs.
             
             ## Checksums
             SHA256 checksums are available in `SHA256SUMS`
@@ -299,5 +346,5 @@ jobs:
             release/Nucleotide-x86_64.dmg
             release/Nucleotide-aarch64.dmg
             release/nucleotide-linux-x86_64.tar.gz
-            release/nucleotide-windows-x86_64.zip
+            release/Nucleotide-windows-x86_64.msi
             release/SHA256SUMS

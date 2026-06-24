@@ -31,7 +31,10 @@ fn bundle_runtime_candidates(exe: &std::path::Path) -> Vec<std::path::PathBuf> {
     }
 
     #[cfg(target_os = "windows")]
-    candidates.push(exe_dir.join("runtime"));
+    {
+        candidates.push(exe_dir.join("runtime"));
+        candidates.push(exe_dir.join("Resources").join("runtime"));
+    }
 
     candidates
 }
@@ -361,13 +364,16 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
-    fn windows_bundle_runtime_is_next_to_executable() {
+    fn windows_bundle_runtime_checks_cargo_bundle_locations() {
         let exe = std::path::Path::new(r"C:\Nucleotide\nucl.exe");
         let candidates = bundle_runtime_candidates(exe);
 
         assert_eq!(
             candidates,
-            vec![std::path::PathBuf::from(r"C:\Nucleotide\runtime")]
+            vec![
+                std::path::PathBuf::from(r"C:\Nucleotide\runtime"),
+                std::path::PathBuf::from(r"C:\Nucleotide\Resources\runtime")
+            ]
         );
     }
 

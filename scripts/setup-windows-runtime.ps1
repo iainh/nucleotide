@@ -2,7 +2,9 @@ param(
     [Alias("h", "?")]
     [switch]$Help,
     [switch]$SkipFetch,
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [string[]]$ExcludeGrammars = @("gotmpl"),
+    [string]$RuntimeSource
 )
 
 $ErrorActionPreference = "Stop"
@@ -11,28 +13,39 @@ if ($Help) {
     Write-Host @"
 Usage: .\scripts\setup-windows-runtime.cmd [options]
 
+Prepares the Helix runtime under crates\nucleotide\runtime for cargo-bundle's
+Windows MSI build.
+
 Options:
-  -SkipFetch   Do not fetch tree-sitter grammar sources.
-  -SkipBuild   Do not build tree-sitter grammar DLLs.
-  -Help        Show this help text.
+  -SkipFetch              Do not fetch tree-sitter grammar sources.
+  -SkipBuild              Do not build tree-sitter grammar DLLs.
+  -ExcludeGrammars <ids>  Grammar IDs to exclude from fetch/build. Comma-separated is OK. Defaults to gotmpl.
+  -RuntimeSource <path>   Runtime source directory. Defaults to Cargo's Helix checkout, then .\runtime.
+  -Help                   Show this help text.
 "@
     exit 0
 }
 
-$RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
-$RuntimeDest = Join-Path $RepoRoot "runtime"
+$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$BundleCrateRoot = Join-Path $RepoRoot "crates\nucleotide"
+$RuntimeDest = Join-Path $BundleCrateRoot "runtime"
 $GrammarDest = Join-Path $RuntimeDest "grammars"
+$ManifestDir = Join-Path $BundleCrateRoot "nucleotide"
 
 function Find-HelixRuntime {
-    $localRuntime = Join-Path $RepoRoot "runtime"
-    if ((Test-Path $localRuntime) -and (Test-Path (Join-Path $localRuntime "queries"))) {
-        return (Resolve-Path $localRuntime).Path
+    if (-not [string]::IsNullOrWhiteSpace($RuntimeSource)) {
+        if (-not (Test-Path -LiteralPath $RuntimeSource)) {
+            throw "RuntimeSource does not exist: $RuntimeSource"
+        }
+
+        return (Resolve-Path $RuntimeSource).Path
     }
 
     $cargoCheckouts = Join-Path $env:USERPROFILE ".cargo\git\checkouts"
     if (Test-Path $cargoCheckouts) {
         $runtime = Get-ChildItem $cargoCheckouts -Recurse -Directory -Filter "runtime" |
             Where-Object { $_.FullName -match "\\helix-[^\\]+\\[^\\]+\\runtime$" } |
+            Sort-Object LastWriteTime -Descending |
             Select-Object -First 1
 
         if ($runtime) {
@@ -40,52 +53,161 @@ function Find-HelixRuntime {
         }
     }
 
-    return $null
+    $localRuntime = Join-Path $RepoRoot "runtime"
+    if ((Test-Path $localRuntime) -and (Test-Path (Join-Path $localRuntime "queries"))) {
+        return (Resolve-Path $localRuntime).Path
+    }
+
+    throw @"
+Helix runtime directory not found.
+
+Run `cargo build -p nucleotide` once to populate Cargo's Helix checkout, clone
+Helix and copy its runtime directory to .\runtime, or pass
+-RuntimeSource <path-to-helix-runtime>.
+"@
+}
+
+function Copy-DirectoryContents {
+    param(
+        [string]$Source,
+        [string]$Destination
+    )
+
+    if (-not (Test-Path $Destination)) {
+        New-Item -ItemType Directory -Path $Destination | Out-Null
+    }
+
+    Get-ChildItem -LiteralPath $Source -Force | ForEach-Object {
+        Copy-Item -LiteralPath $_.FullName -Destination $Destination -Recurse -Force
+    }
 }
 
 function Copy-Runtime {
     param([string]$Source)
 
-    if (-not (Test-Path $RuntimeDest)) {
-        New-Item -ItemType Directory -Path $RuntimeDest | Out-Null
+    if (Test-Path $RuntimeDest) {
+        Remove-Item -LiteralPath $RuntimeDest -Recurse -Force
     }
 
-    Copy-Item (Join-Path $Source "*") $RuntimeDest -Recurse -Force
+    New-Item -ItemType Directory -Path $RuntimeDest | Out-Null
+    Copy-DirectoryContents -Source $Source -Destination $RuntimeDest
 
     $sourceLanguages = Join-Path $Source "languages.toml"
     $siblingLanguages = Join-Path (Split-Path $Source -Parent) "languages.toml"
     $destLanguages = Join-Path $RuntimeDest "languages.toml"
 
     if (Test-Path $sourceLanguages) {
-        Copy-Item $sourceLanguages $destLanguages -Force
+        Copy-Item -LiteralPath $sourceLanguages -Destination $destLanguages -Force
     } elseif (Test-Path $siblingLanguages) {
-        Copy-Item $siblingLanguages $destLanguages -Force
-    } elseif (-not (Test-Path $destLanguages)) {
+        Copy-Item -LiteralPath $siblingLanguages -Destination $destLanguages -Force
+    }
+
+    if (-not (Test-Path $destLanguages)) {
         throw "Could not find languages.toml next to Helix runtime source: $Source"
     }
+}
+
+function Copy-NucleotideThemes {
+    $themeSource = Join-Path $BundleCrateRoot "assets\themes"
+    if (-not (Test-Path $themeSource)) {
+        return
+    }
+
+    $themeDest = Join-Path $RuntimeDest "themes"
+    if (-not (Test-Path $themeDest)) {
+        New-Item -ItemType Directory -Path $themeDest | Out-Null
+    }
+
+    Get-ChildItem -LiteralPath $themeSource -Filter "*.toml" -File | ForEach-Object {
+        Copy-Item -LiteralPath $_.FullName -Destination $themeDest -Force
+    }
+}
+
+function Format-TomlStringList {
+    param([string[]]$Values)
+
+    $quoted = foreach ($value in $Values) {
+        '"' + $value.Replace('\', '\\').Replace('"', '\"') + '"'
+    }
+
+    Write-Output -NoEnumerate ($quoted -join ', ')
+}
+
+function Update-GrammarExclusions {
+    param([string[]]$GrammarIds)
+
+    $ids = @($GrammarIds | ForEach-Object { $_ -split ',' } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_.Trim() } | Sort-Object -Unique)
+    if ($ids.Count -eq 0) {
+        return
+    }
+
+    $languagesFile = Join-Path $RuntimeDest "languages.toml"
+    if (-not (Test-Path $languagesFile)) {
+        throw "Cannot exclude grammars because languages.toml is missing: $languagesFile"
+    }
+
+    $content = [System.IO.File]::ReadAllText($languagesFile)
+    $pattern = '(?m)^use-grammars\s*=\s*\{\s*except\s*=\s*\[(?<items>[^\]]*)\]\s*\}'
+    $match = [regex]::Match($content, $pattern)
+
+    if ($match.Success) {
+        $existing = @([regex]::Matches($match.Groups["items"].Value, '"([^"]+)"') | ForEach-Object { $_.Groups[1].Value })
+        $merged = @($existing + $ids | Sort-Object -Unique)
+        $grammarList = [string](Format-TomlStringList -Values $merged)
+        $replacement = "use-grammars = { except = [ $grammarList ] }"
+        $content = [regex]::Replace($content, $pattern, $replacement, 1)
+    } else {
+        $grammarList = [string](Format-TomlStringList -Values $ids)
+        $replacement = "use-grammars = { except = [ $grammarList ] }"
+        $content = $replacement + [Environment]::NewLine + [Environment]::NewLine + $content
+    }
+
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($languagesFile, $content, $utf8NoBom)
+    Write-Host "Excluded grammar IDs from bundled runtime: $($ids -join ', ')"
 }
 
 function Invoke-NuclGrammarCommand {
     param([string]$Command)
 
-    $env:HELIX_RUNTIME = $RuntimeDest
-    $env:CARGO_MANIFEST_DIR = Join-Path $RepoRoot "nucleotide"
+    $oldHelixRuntime = $env:HELIX_RUNTIME
+    $oldManifestDir = $env:CARGO_MANIFEST_DIR
 
-    cargo run -p nucleotide -- --grammar $Command
+    try {
+        $env:HELIX_RUNTIME = $RuntimeDest
+        $env:CARGO_MANIFEST_DIR = $ManifestDir
+
+        Push-Location $RepoRoot
+        try {
+            cargo run -p nucleotide -- --grammar $Command
+            if ($LASTEXITCODE -ne 0) {
+                throw "nucl --grammar $Command failed with exit code $LASTEXITCODE"
+            }
+        } finally {
+            Pop-Location
+        }
+    } finally {
+        $env:HELIX_RUNTIME = $oldHelixRuntime
+        $env:CARGO_MANIFEST_DIR = $oldManifestDir
+    }
+}
+
+function Remove-PackagedGrammarSources {
+    $grammarSources = Join-Path $GrammarDest "sources"
+    if (Test-Path $grammarSources) {
+        Remove-Item -LiteralPath $grammarSources -Recurse -Force
+        Write-Host "Removed grammar sources from bundled runtime: $grammarSources"
+    }
 }
 
 $runtimeSource = Find-HelixRuntime
-if (-not $runtimeSource) {
-    throw @"
-Helix runtime directory not found.
-
-Run `cargo build -p nucleotide` once to populate Cargo's Helix checkout, or clone Helix
-and copy its runtime directory to .\runtime.
-"@
-}
 
 Write-Host "Using Helix runtime source: $runtimeSource"
+Write-Host "Preparing cargo-bundle runtime: $RuntimeDest"
+
 Copy-Runtime -Source $runtimeSource
+Copy-NucleotideThemes
+Update-GrammarExclusions -GrammarIds $ExcludeGrammars
 
 if (-not (Test-Path $GrammarDest)) {
     New-Item -ItemType Directory -Path $GrammarDest | Out-Null
@@ -101,11 +223,13 @@ if (-not $SkipBuild) {
     Invoke-NuclGrammarCommand -Command "build"
 }
 
+Remove-PackagedGrammarSources
+
 $dllCount = @(Get-ChildItem $GrammarDest -Filter "*.dll" -ErrorAction SilentlyContinue).Count
 $queryCount = @(Get-ChildItem (Join-Path $RuntimeDest "queries") -Directory -ErrorAction SilentlyContinue).Count
 $themeCount = @(Get-ChildItem (Join-Path $RuntimeDest "themes") -Filter "*.toml" -ErrorAction SilentlyContinue).Count
 
-Write-Host "Runtime ready at: $RuntimeDest"
+Write-Host "Cargo-bundle runtime ready at: $RuntimeDest"
 Write-Host "  Grammar DLLs: $dllCount"
 Write-Host "  Query dirs:   $queryCount"
 Write-Host "  Themes:       $themeCount"
