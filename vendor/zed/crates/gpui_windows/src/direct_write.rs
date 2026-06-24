@@ -1186,11 +1186,11 @@ impl DirectWriteState {
         glyph_bounds: Bounds<DevicePixels>,
     ) -> Result<Vec<u8>> {
         let bitmap_size = glyph_bounds.size;
-        let subpixel_shift = params
-            .subpixel_variant
-            .map(|v| v as f32 / SUBPIXEL_VARIANTS_X as f32);
-        let baseline_origin_x = subpixel_shift.x / params.scale_factor;
-        let baseline_origin_y = subpixel_shift.y / params.scale_factor;
+        let baseline_origin_x =
+            params.subpixel_variant.x as f32 / SUBPIXEL_VARIANTS_X as f32 / params.scale_factor;
+        let baseline_origin_y = params.subpixel_variant.y as f32
+            / gpui::SUBPIXEL_VARIANTS_Y as f32
+            / params.scale_factor;
 
         let transform = DWRITE_MATRIX {
             m11: params.scale_factor,
