@@ -2344,6 +2344,76 @@ mod tests {
     }
 
     #[test]
+    fn commonmark_lazy_list_continuations_stay_in_item_text() {
+        for source in ["- foo\nbar", "- foo\n  bar"] {
+            let document = MarkdownDocument::parse(source);
+
+            assert!(matches!(
+                document.blocks.as_slice(),
+                [MarkdownBlock::ListItem { text, children, .. }]
+                    if text.plain_text() == "foo bar" && children.is_empty()
+            ));
+        }
+    }
+
+    #[test]
+    fn commonmark_list_continuation_paragraph_indent_controls_nesting() {
+        let document = MarkdownDocument::parse("- one\n\n two");
+
+        assert!(matches!(
+            document.blocks.as_slice(),
+            [
+                MarkdownBlock::ListItem { text, children, .. },
+                MarkdownBlock::Paragraph(paragraph),
+            ] if text.plain_text() == "one"
+                && children.is_empty()
+                && paragraph.plain_text() == "two"
+        ));
+
+        let document = MarkdownDocument::parse("- one\n\n  two");
+
+        assert!(matches!(
+            document.blocks.as_slice(),
+            [MarkdownBlock::ListItem { text, children, .. }]
+                if text.plain_text() == "one"
+                    && matches!(
+                        children.as_slice(),
+                        [MarkdownBlock::Paragraph(paragraph)] if paragraph.plain_text() == "two"
+                    )
+        ));
+    }
+
+    #[test]
+    fn commonmark_list_items_can_contain_only_child_blocks() {
+        let document = MarkdownDocument::parse("-\n  foo\n-\n  ```\n  bar\n  ```\n-\n      baz");
+
+        assert_eq!(document.blocks.len(), 3);
+        assert!(matches!(
+            &document.blocks[0],
+            MarkdownBlock::ListItem { text, children, .. }
+                if text.plain_text() == "foo" && children.is_empty()
+        ));
+        assert!(matches!(
+            &document.blocks[1],
+            MarkdownBlock::ListItem { text, children, .. }
+                if text.is_empty()
+                    && matches!(
+                        children.as_slice(),
+                        [MarkdownBlock::CodeBlock { language: None, text }] if text == "bar\n"
+                    )
+        ));
+        assert!(matches!(
+            &document.blocks[2],
+            MarkdownBlock::ListItem { text, children, .. }
+                if text.is_empty()
+                    && matches!(
+                        children.as_slice(),
+                        [MarkdownBlock::CodeBlock { language: None, text }] if text == "baz"
+                    )
+        ));
+    }
+
+    #[test]
     fn block_quotes_keep_nested_blocks() {
         let document = MarkdownDocument::parse("> # Heading\n>\n> - quoted\n>   - nested");
 
