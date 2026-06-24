@@ -279,7 +279,7 @@ impl Render for ApplicationMenu {
                 let popup_menu = self.build_popup_menu(index, window, cx);
                 let popup = anchored()
                     .position_mode(AnchoredPositionMode::Local)
-                    .position(point(-metrics.trigger_padding_x, metrics.trigger_height))
+                    .position(point(-metrics.trigger_padding_x, row_h))
                     .snap_to_window_with_margin(px(8.0))
                     .anchor(Anchor::TopLeft)
                     .child(div().occlude().child(popup_menu));
