@@ -806,7 +806,7 @@ impl MarkdownParser {
                 let link = self.link_stack.last();
                 self.image_depth += 1;
                 self.image_stack.push(ImageContext {
-                    dest_url: SharedString::from(dest_url.to_string()),
+                    dest_url: commonmark_url(&dest_url),
                     title: nonempty_shared_string(&title),
                     start_text_len: self.current_text.text_len(),
                     nesting_depth,
@@ -1125,10 +1125,61 @@ fn nonempty_shared_string(text: &CowStr<'_>) -> Option<SharedString> {
 }
 
 fn link_url(link_type: LinkType, dest_url: &CowStr<'_>) -> SharedString {
+    let url = commonmark_url(dest_url);
     match link_type {
-        LinkType::Email => SharedString::from(format!("mailto:{dest_url}")),
-        _ => SharedString::from(dest_url.to_string()),
+        LinkType::Email => SharedString::from(format!("mailto:{url}")),
+        _ => url,
     }
+}
+
+fn commonmark_url(url: &CowStr<'_>) -> SharedString {
+    SharedString::from(escape_commonmark_url(url.as_ref()))
+}
+
+fn escape_commonmark_url(url: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+
+    let mut escaped = String::new();
+    for byte in url.bytes() {
+        if commonmark_url_byte_is_safe(byte) {
+            escaped.push(byte as char);
+        } else {
+            escaped.push('%');
+            escaped.push(HEX[(byte >> 4) as usize] as char);
+            escaped.push(HEX[(byte & 0x0f) as usize] as char);
+        }
+    }
+    escaped
+}
+
+fn commonmark_url_byte_is_safe(byte: u8) -> bool {
+    // Store navigable URLs, not quoted HTML attributes, so keep '&' intact.
+    matches!(
+        byte,
+        b'!' | b'#'
+            | b'$'
+            | b'%'
+            | b'&'
+            | b'('
+            | b')'
+            | b'*'
+            | b'+'
+            | b','
+            | b'-'
+            | b'.'
+            | b'/'
+            | b'0'..=b'9'
+            | b':'
+            | b';'
+            | b'='
+            | b'?'
+            | b'@'
+            | b'A'..=b'Z'
+            | b'^'
+            | b'_'
+            | b'a'..=b'z'
+            | b'~'
+    )
 }
 
 fn heading_level(level: HeadingLevel) -> u8 {
@@ -3011,6 +3062,44 @@ mod tests {
         assert_eq!(&plain[parts.links[0].range.clone()], "docs");
         assert_eq!(parts.links[0].url.as_ref(), "https://example.com");
         assert_eq!(parts.links[0].title.as_deref(), Some("Docs title"));
+    }
+
+    #[test]
+    fn link_destinations_use_commonmark_url_escaping() {
+        for (source, expected_url) in [
+            ("[foo](/f&ouml;&ouml; \"f&ouml;&ouml;\")", "/f%C3%B6%C3%B6"),
+            ("[foo]\n\n[foo]: <my url>", "my%20url"),
+            (
+                "[foo]\n\n[foo]: /url\\bar\\*baz \"title\"",
+                "/url%5Cbar*baz",
+            ),
+            (
+                "[foo](https://example.com?foo=3&bar=4)",
+                "https://example.com?foo=3&bar=4",
+            ),
+        ] {
+            let document = MarkdownDocument::parse(source);
+            let MarkdownBlock::Paragraph(text) = &document.blocks[0] else {
+                panic!("expected linked paragraph");
+            };
+
+            assert_eq!(
+                text.spans()[0].style.link_url.as_deref(),
+                Some(expected_url)
+            );
+        }
+    }
+
+    #[test]
+    fn image_destinations_use_commonmark_url_escaping() {
+        let document = MarkdownDocument::parse("![foo](/f&ouml;&ouml; \"f&ouml;&ouml;\")");
+
+        let MarkdownBlock::Image { url, title, .. } = &document.blocks[0] else {
+            panic!("expected image block");
+        };
+
+        assert_eq!(url.as_ref(), "/f%C3%B6%C3%B6");
+        assert_eq!(title.as_deref(), Some("föö"));
     }
 
     #[test]
