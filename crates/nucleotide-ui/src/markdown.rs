@@ -767,17 +767,20 @@ impl MarkdownParser {
                 if self.in_html_block {
                     self.html_text.push_str(html.as_ref());
                 } else {
-                    self.current_block_has_inline_content = true;
-                    self.current_text
-                        .push(html.as_ref(), self.active_style.clone());
+                    self.handle_inline_html(html.as_ref());
                 }
             }
             Event::InlineHtml(html) => {
-                self.current_block_has_inline_content = true;
-                self.current_text
-                    .push(html.as_ref(), self.active_style.clone());
+                self.handle_inline_html(html.as_ref());
             }
             Event::FootnoteReference(_) | Event::InlineMath(_) | Event::DisplayMath(_) => {}
+        }
+    }
+
+    fn handle_inline_html(&mut self, html: &str) {
+        self.current_block_has_inline_content = true;
+        if inline_html_is_line_break(html) {
+            self.current_text.push("\n", self.active_style.clone());
         }
     }
 
@@ -1657,6 +1660,26 @@ fn visible_code_text(content: &str) -> SharedString {
     }
 }
 
+fn inline_html_is_line_break(html: &str) -> bool {
+    let html = html.trim();
+    let Some(body) = html
+        .strip_prefix('<')
+        .and_then(|html| html.strip_suffix('>'))
+    else {
+        return false;
+    };
+
+    if body.starts_with(['/', '!', '?']) {
+        return false;
+    }
+
+    let tag_name = body
+        .split(|ch: char| ch.is_ascii_whitespace() || ch == '/')
+        .next()
+        .unwrap_or_default();
+    tag_name.eq_ignore_ascii_case("br")
+}
+
 fn render_html_block(
     text: String,
     style: &MarkdownStyle,
@@ -2359,8 +2382,10 @@ mod tests {
     }
 
     #[test]
-    fn html_blocks_and_inline_html_are_preserved_as_visible_text() {
-        let document = MarkdownDocument::parse("<section>\nraw\n</section>\n\nText <kbd>Esc</kbd>");
+    fn html_blocks_store_raw_text_but_inline_html_is_hidden() {
+        let document = MarkdownDocument::parse(
+            "<section>\nraw\n</section>\n\nText <kbd>Esc</kbd>\n\nfoo<br />bar\n\nnot <bracket> tag",
+        );
 
         assert!(matches!(
             &document.blocks[0],
@@ -2368,8 +2393,22 @@ mod tests {
         ));
         assert!(matches!(
             &document.blocks[1],
-            MarkdownBlock::Paragraph(text) if text.plain_text() == "Text <kbd>Esc</kbd>"
+            MarkdownBlock::Paragraph(text) if text.plain_text() == "Text Esc"
         ));
+        assert!(matches!(
+            &document.blocks[2],
+            MarkdownBlock::Paragraph(text) if text.plain_text() == "foo\nbar"
+        ));
+        assert!(matches!(
+            &document.blocks[3],
+            MarkdownBlock::Paragraph(text) if text.plain_text() == "not  tag"
+        ));
+
+        assert!(inline_html_is_line_break("<br>"));
+        assert!(inline_html_is_line_break("<br/>"));
+        assert!(inline_html_is_line_break("<BR class=\"line\">"));
+        assert!(!inline_html_is_line_break("</br>"));
+        assert!(!inline_html_is_line_break("<bracket>"));
     }
 
     #[test]
