@@ -2,7 +2,10 @@ use std::{
     borrow::Cow,
     ffi::{c_uint, c_void},
     mem::ManuallyDrop,
-    sync::LazyLock,
+    sync::{
+        LazyLock,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use anyhow::{Context, Result};
@@ -48,12 +51,12 @@ struct DirectWriteComponents {
     builder: IDWriteFontSetBuilder1,
     text_renderer: TextRendererWrapper,
     system_ui_font_name: SharedString,
-    system_subpixel_rendering: bool,
 }
 
 static DIRECT_WRITE_TEXT_RENDERING_PARAMS: LazyLock<
     RwLock<Option<DirectWriteTextRenderingParams>>,
 > = LazyLock::new(|| RwLock::new(None));
+static SYSTEM_SUBPIXEL_RENDERING: AtomicBool = AtomicBool::new(true);
 
 const SUPPORTED_COLOR_GLYPH_IMAGE_FORMATS: DWRITE_GLYPH_IMAGE_FORMATS =
     DWRITE_GLYPH_IMAGE_FORMATS_COLR;
@@ -83,6 +86,11 @@ pub(crate) fn set_direct_write_text_rendering_params(
     params: Option<DirectWriteTextRenderingParams>,
 ) {
     *DIRECT_WRITE_TEXT_RENDERING_PARAMS.write() = params;
+    DirectXRenderer::invalidate_font_info();
+}
+
+pub(crate) fn refresh_direct_write_system_settings() {
+    SYSTEM_SUBPIXEL_RENDERING.store(get_system_subpixel_rendering(), Ordering::Relaxed);
     DirectXRenderer::invalidate_font_info();
 }
 
@@ -423,7 +431,7 @@ impl DirectWriteTextSystem {
 
         let gpu_state = GPUState::new(directx_devices)?;
 
-        let system_subpixel_rendering = get_system_subpixel_rendering();
+        refresh_direct_write_system_settings();
         let system_ui_font_name = get_system_ui_font_name();
         let components = DirectWriteComponents {
             locale,
@@ -432,7 +440,6 @@ impl DirectWriteTextSystem {
             builder,
             text_renderer,
             system_ui_font_name,
-            system_subpixel_rendering,
         };
 
         let system_font_collection = unsafe {
@@ -560,7 +567,7 @@ impl PlatformTextSystem for DirectWriteTextSystem {
             return TextRenderingMode::Grayscale;
         }
 
-        if self.components.system_subpixel_rendering {
+        if SYSTEM_SUBPIXEL_RENDERING.load(Ordering::Relaxed) {
             TextRenderingMode::Subpixel
         } else {
             TextRenderingMode::Grayscale
