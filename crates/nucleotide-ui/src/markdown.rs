@@ -910,10 +910,8 @@ impl MarkdownParser {
     }
 
     fn flush_heading(&mut self, level: u8) {
-        if !self.current_text.is_empty() {
-            let text = std::mem::take(&mut self.current_text);
-            self.push_block(MarkdownBlock::Heading { level, text });
-        }
+        let text = std::mem::take(&mut self.current_text);
+        self.push_block(MarkdownBlock::Heading { level, text });
     }
 
     fn flush_code_block(&mut self) {
@@ -1173,7 +1171,7 @@ fn render_rich_text(
     element_id: impl Into<gpui::ElementId>,
 ) -> gpui::Div {
     let parts = text.into_render_parts(style);
-    let text = StyledText::new(parts.text).with_highlights(parts.highlights);
+    let text = StyledText::new(visible_rich_text(&parts.text)).with_highlights(parts.highlights);
     let text = if parts.links.is_empty() {
         text.into_any_element()
     } else {
@@ -1185,6 +1183,14 @@ fn render_rich_text(
         .text_size(style.body_font_size)
         .text_color(color)
         .child(text)
+}
+
+fn visible_rich_text(content: &SharedString) -> SharedString {
+    if content.is_empty() {
+        SharedString::from(" ")
+    } else {
+        content.clone()
+    }
 }
 
 fn code_syntax_highlights(
@@ -1696,6 +1702,37 @@ mod tests {
                 if text.plain_text() == "fast"
                     && children.is_empty()
         ));
+    }
+
+    #[test]
+    fn empty_atx_headings_are_preserved() {
+        let document = MarkdownDocument::parse("##\n#\n### ###");
+
+        assert_eq!(document.blocks.len(), 3);
+        assert!(matches!(
+            &document.blocks[0],
+            MarkdownBlock::Heading { level: 2, text } if text.is_empty()
+        ));
+        assert!(matches!(
+            &document.blocks[1],
+            MarkdownBlock::Heading { level: 1, text } if text.is_empty()
+        ));
+        assert!(matches!(
+            &document.blocks[2],
+            MarkdownBlock::Heading { level: 3, text } if text.is_empty()
+        ));
+    }
+
+    #[test]
+    fn empty_rich_text_uses_visible_placeholder() {
+        assert_eq!(
+            visible_rich_text(&SharedString::from("")),
+            SharedString::from(" ")
+        );
+        assert_eq!(
+            visible_rich_text(&SharedString::from("heading")),
+            SharedString::from("heading")
+        );
     }
 
     #[test]
