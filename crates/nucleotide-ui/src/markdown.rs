@@ -2597,6 +2597,32 @@ mod tests {
     }
 
     #[test]
+    fn inline_html_br_tags_render_as_commonmark_line_breaks() {
+        let document = MarkdownDocument::parse(
+            "foo<br />bar\n\nfoo <BR class=\"line\"> baz\n\nnot <bracket> tag",
+        );
+
+        assert!(matches!(
+            &document.blocks[0],
+            MarkdownBlock::Paragraph(text) if text.plain_text() == "foo\nbar"
+        ));
+        assert!(matches!(
+            &document.blocks[1],
+            MarkdownBlock::Paragraph(text) if text.plain_text() == "foo \n baz"
+        ));
+        assert!(matches!(
+            &document.blocks[2],
+            MarkdownBlock::Paragraph(text) if text.plain_text() == "not  tag"
+        ));
+
+        assert!(inline_html_is_line_break("<br>"));
+        assert!(inline_html_is_line_break("<br/>"));
+        assert!(inline_html_is_line_break("<BR class=\"line\">"));
+        assert!(!inline_html_is_line_break("</br>"));
+        assert!(!inline_html_is_line_break("<bracket>"));
+    }
+
+    #[test]
     fn html_block_display_preserves_raw_text() {
         assert_eq!(
             visible_html_text("<section>\nraw\n</section>\n").as_ref(),
