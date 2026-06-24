@@ -603,6 +603,7 @@ struct MarkdownParser {
     list_stack: Vec<ListContext>,
     current_task_marker: Option<bool>,
     link_stack: Vec<LinkContext>,
+    html_link_stack: Vec<Option<LinkContext>>,
     image_depth: usize,
     table_alignments: Vec<TableAlignment>,
     table_rows: Vec<Vec<RichText>>,
@@ -647,6 +648,7 @@ impl MarkdownParser {
             list_stack: Vec::new(),
             current_task_marker: None,
             link_stack: Vec::new(),
+            html_link_stack: Vec::new(),
             image_depth: 0,
             table_alignments: Vec::new(),
             table_rows: Vec::new(),
@@ -713,6 +715,16 @@ impl MarkdownParser {
         self.current_block_has_inline_content = true;
         if inline_html_is_line_break(html) {
             self.current_text.push("\n", self.active_style.clone());
+        } else if let Some(tag) = inline_html_link_tag(html) {
+            match tag {
+                InlineHtmlLinkTag::Open(link) => {
+                    self.html_link_stack.push(link);
+                }
+                InlineHtmlLinkTag::Close => {
+                    self.html_link_stack.pop();
+                }
+            }
+            self.refresh_link_style();
         } else if let Some((tag, closing)) = inline_html_style_tag(html) {
             if closing {
                 self.decrement_inline_html_style(tag);
@@ -838,15 +850,18 @@ impl MarkdownParser {
             } => {
                 self.current_block_has_inline_content = true;
                 let nesting_depth = self.image_depth;
-                let link = self.link_stack.last();
+                let (link_url, link_title) = self
+                    .active_link_context()
+                    .map(|link| (Some(link.url.clone()), link.title.clone()))
+                    .unwrap_or((None, None));
                 self.image_depth += 1;
                 self.image_stack.push(ImageContext {
                     dest_url: commonmark_url(&dest_url),
                     title: nonempty_shared_string(&title),
                     start_text_len: self.current_text.text_len(),
                     nesting_depth,
-                    link_url: link.map(|link| link.url.clone()),
-                    link_title: link.and_then(|link| link.title.clone()),
+                    link_url,
+                    link_title,
                 });
                 self.refresh_inline_style_flags();
                 self.refresh_link_style();
@@ -1145,11 +1160,21 @@ impl MarkdownParser {
         self.strong_depth = 0;
         self.strikethrough_depth = 0;
         self.code_depth = 0;
+        self.html_link_stack.clear();
         self.refresh_inline_style_flags();
+        self.refresh_link_style();
+    }
+
+    fn active_link_context(&self) -> Option<&LinkContext> {
+        self.html_link_stack
+            .iter()
+            .rev()
+            .find_map(Option::as_ref)
+            .or_else(|| self.link_stack.last())
     }
 
     fn refresh_link_style(&mut self) {
-        let link = self.link_stack.last();
+        let link = self.active_link_context();
         let link_url = link
             .map(|link| link.url.clone())
             .or_else(|| self.image_stack.last().map(|image| image.dest_url.clone()));
@@ -1876,6 +1901,12 @@ fn push_visible_html_text(text: &mut String, content: &str) {
     }
 }
 
+fn decode_visible_html_entities(content: &str) -> String {
+    let mut text = String::new();
+    push_visible_html_text(&mut text, content);
+    text
+}
+
 fn html_entity_candidate_len(content: &str) -> Option<usize> {
     let content = content.strip_prefix('&')?;
     let mut chars = content.char_indices();
@@ -2173,6 +2204,93 @@ fn inline_html_is_line_break(html: &str) -> bool {
         .next()
         .unwrap_or_default();
     tag_name.eq_ignore_ascii_case("br")
+}
+
+#[derive(Clone)]
+enum InlineHtmlLinkTag {
+    Open(Option<LinkContext>),
+    Close,
+}
+
+fn inline_html_link_tag(html: &str) -> Option<InlineHtmlLinkTag> {
+    let body = html.trim().strip_prefix('<')?.strip_suffix('>')?.trim();
+    if body.trim_end().ends_with('/') {
+        return None;
+    }
+
+    let (closing, body) = if let Some(body) = body.strip_prefix('/') {
+        (true, body.trim_start())
+    } else {
+        (false, body)
+    };
+    let tag_name_len = body
+        .find(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '-'))
+        .unwrap_or(body.len());
+    if tag_name_len == 0 || !body[..tag_name_len].eq_ignore_ascii_case("a") {
+        return None;
+    }
+
+    let rest = trim_html_whitespace(&body[tag_name_len..]);
+    if closing {
+        return rest.is_empty().then_some(InlineHtmlLinkTag::Close);
+    }
+
+    let (href, title) = html_link_attributes(rest)?;
+    Some(InlineHtmlLinkTag::Open(href.map(|url| LinkContext {
+        url: SharedString::from(url),
+        title: title.map(SharedString::from),
+    })))
+}
+
+fn html_link_attributes(mut rest: &str) -> Option<(Option<String>, Option<String>)> {
+    let mut href = None;
+    let mut title = None;
+
+    loop {
+        rest = trim_html_whitespace(rest);
+        if rest.is_empty() {
+            return Some((href, title));
+        }
+        if rest == "/" {
+            return None;
+        }
+        if rest.starts_with('/') {
+            return None;
+        }
+
+        let name_len = html_attribute_name_len(rest)?;
+        let name = &rest[..name_len];
+        rest = &rest[name_len..];
+        let after_name = trim_html_whitespace(rest);
+        if let Some(after_equals) = after_name.strip_prefix('=') {
+            let after_equals = trim_html_whitespace(after_equals);
+            let value_len = html_attribute_value_len(after_equals)?;
+            let value = html_attribute_decoded_value(&after_equals[..value_len]);
+            if name.eq_ignore_ascii_case("href") {
+                href = Some(value);
+            } else if name.eq_ignore_ascii_case("title") {
+                title = Some(value);
+            }
+            rest = &after_equals[value_len..];
+        }
+
+        if !html_tag_attribute_separator_is_next(rest) {
+            return None;
+        }
+    }
+}
+
+fn html_attribute_decoded_value(value: &str) -> String {
+    let value = value
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'))
+        .or_else(|| {
+            value
+                .strip_prefix('\'')
+                .and_then(|value| value.strip_suffix('\''))
+        })
+        .unwrap_or(value);
+    decode_visible_html_entities(value)
 }
 
 #[derive(Clone, Copy)]
@@ -3207,6 +3325,47 @@ mod tests {
                 .iter()
                 .any(|span| span.text == "key" && span.style.code)
         );
+    }
+
+    #[test]
+    fn inline_html_anchors_expose_clickable_links() {
+        let document = MarkdownDocument::parse(
+            r#"<a href="/target?x=1&amp;y=2" title="A &lt; B">label</a> plain"#,
+        );
+
+        let [MarkdownBlock::Paragraph(text)] = document.blocks.as_slice() else {
+            panic!("expected one paragraph");
+        };
+
+        assert_eq!(text.plain_text(), "label plain");
+        assert_eq!(text.spans()[0].text, "label");
+        assert_eq!(
+            text.spans()[0].style.link_url.as_deref(),
+            Some("/target?x=1&y=2")
+        );
+        assert_eq!(text.spans()[0].style.link_title.as_deref(), Some("A < B"));
+        assert_eq!(text.spans()[1].text, " plain");
+        assert!(text.spans()[1].style.link_url.is_none());
+    }
+
+    #[test]
+    fn inline_html_anchor_links_do_not_leak_between_blocks() {
+        let document = MarkdownDocument::parse(
+            r#"<a href="/one">one
+
+two"#,
+        );
+
+        assert!(matches!(
+            document.blocks.as_slice(),
+            [
+                MarkdownBlock::Paragraph(one),
+                MarkdownBlock::Paragraph(two),
+            ] if one.plain_text() == "one"
+                && one.spans().iter().all(|span| span.style.link_url.as_deref() == Some("/one"))
+                && two.plain_text() == "two"
+                && two.spans().iter().all(|span| span.style.link_url.is_none())
+        ));
     }
 
     #[test]
