@@ -1783,8 +1783,12 @@ fn strip_html_markup(content: &str) -> String {
 
     while cursor < content.len() {
         let rest = &content[cursor..];
-        if let Some(end) = rest.strip_prefix("<!--").and_then(|rest| rest.find("-->")) {
-            cursor += "<!--".len() + end + "-->".len();
+        if let Some(comment) = rest.strip_prefix("<!--") {
+            if let Some(end) = comment.find("-->") {
+                cursor += "<!--".len() + end + "-->".len();
+            } else {
+                break;
+            }
         } else if let Some(rest) = rest.strip_prefix("<![CDATA[") {
             if let Some(end) = rest.find("]]>") {
                 text.push_str(&rest[..end]);
@@ -1793,10 +1797,18 @@ fn strip_html_markup(content: &str) -> String {
                 text.push_str(rest);
                 break;
             }
-        } else if let Some(end) = rest.strip_prefix("<?").and_then(|rest| rest.find("?>")) {
-            cursor += "<?".len() + end + "?>".len();
-        } else if let Some(end) = rest.strip_prefix("<!").and_then(|rest| rest.find('>')) {
-            cursor += "<!".len() + end + ">".len();
+        } else if let Some(instruction) = rest.strip_prefix("<?") {
+            if let Some(end) = instruction.find("?>") {
+                cursor += "<?".len() + end + "?>".len();
+            } else {
+                break;
+            }
+        } else if let Some(declaration) = html_declaration(rest) {
+            if let Some(end) = declaration.find('>') {
+                cursor += "<!".len() + end + ">".len();
+            } else {
+                break;
+            }
         } else if let Some(tag_name) = hidden_html_raw_text_element_name(rest) {
             if let Some(skip_len) = html_raw_text_element_len(rest, tag_name) {
                 cursor += skip_len;
@@ -1820,6 +1832,15 @@ fn strip_html_markup(content: &str) -> String {
     }
 
     text
+}
+
+fn html_declaration(markup: &str) -> Option<&str> {
+    let declaration = markup.strip_prefix("<!")?;
+    declaration
+        .chars()
+        .next()
+        .is_some_and(|ch| ch.is_ascii_alphabetic())
+        .then_some(declaration)
 }
 
 fn hidden_html_raw_text_element_name(markup: &str) -> Option<&'static str> {
@@ -3083,6 +3104,17 @@ mod tests {
         );
         assert_eq!(visible_html_text("<![CDATA[a < b]]>").as_ref(), "a < b");
         assert_eq!(visible_html_text("").as_ref(), "");
+    }
+
+    #[test]
+    fn html_block_display_hides_unclosed_nontext_markup() {
+        assert_eq!(visible_html_text("<!-- hidden\nstill hidden").as_ref(), "");
+        assert_eq!(visible_html_text("<?php\necho 'hidden';").as_ref(), "");
+        assert_eq!(visible_html_text("<!DOCTYPE html").as_ref(), "");
+        assert_eq!(
+            visible_html_text("<![CDATA[visible raw text").as_ref(),
+            "visible raw text"
+        );
     }
 
     #[test]
