@@ -2597,9 +2597,9 @@ mod tests {
     }
 
     #[test]
-    fn inline_html_br_tags_render_as_commonmark_line_breaks() {
+    fn inline_html_tags_do_not_render_as_literal_text() {
         let document = MarkdownDocument::parse(
-            "foo<br />bar\n\nfoo <BR class=\"line\"> baz\n\nnot <bracket> tag",
+            "foo<br />bar\n\nfoo <BR class=\"line\"> baz\n\nnot <bracket> tag\n\n<del>*foo*</del>",
         );
 
         assert!(matches!(
@@ -2613,6 +2613,11 @@ mod tests {
         assert!(matches!(
             &document.blocks[2],
             MarkdownBlock::Paragraph(text) if text.plain_text() == "not  tag"
+        ));
+        assert!(matches!(
+            &document.blocks[3],
+            MarkdownBlock::Paragraph(text)
+                if text.plain_text() == "foo" && text.spans().iter().any(|span| span.style.italic)
         ));
 
         assert!(inline_html_is_line_break("<br>"));
