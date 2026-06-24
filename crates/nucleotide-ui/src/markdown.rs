@@ -296,6 +296,7 @@ impl From<Alignment> for TableAlignment {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RichText {
     spans: Vec<TextSpan>,
+    inline_images: Vec<InlineImage>,
 }
 
 impl RichText {
@@ -326,6 +327,38 @@ impl RichText {
 
     fn text_len(&self) -> usize {
         self.spans.iter().map(|span| span.text.len()).sum()
+    }
+
+    fn push_inline_image(&mut self, image: InlineImage) {
+        self.inline_images.push(image);
+    }
+
+    fn inline_images(&self) -> &[InlineImage] {
+        &self.inline_images
+    }
+
+    fn slice(&self, range: Range<usize>) -> Self {
+        let mut text = Self::default();
+        let mut cursor = 0;
+
+        for span in &self.spans {
+            let span_start = cursor;
+            let span_end = span_start + span.text.len();
+            cursor = span_end;
+
+            let start = range.start.max(span_start);
+            let end = range.end.min(span_end);
+            if start >= end {
+                continue;
+            }
+
+            text.push(
+                &span.text[start - span_start..end - span_start],
+                span.style.clone(),
+            );
+        }
+
+        text
     }
 
     fn is_empty(&self) -> bool {
@@ -376,6 +409,14 @@ impl RichText {
 pub struct TextSpan {
     pub text: String,
     pub style: InlineStyle,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct InlineImage {
+    range: Range<usize>,
+    url: SharedString,
+    alt: RichText,
+    link_url: Option<SharedString>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -909,14 +950,33 @@ impl MarkdownParser {
             TagEnd::Image => {
                 if let Some(context) = self.image_stack.pop() {
                     let fallback_inserted = self.current_text.text_len() == context.start_text_len;
+                    let dest_url = context.dest_url.clone();
                     if fallback_inserted {
                         self.current_text
-                            .push(context.dest_url.as_ref(), self.active_style.clone());
+                            .push(dest_url.as_ref(), self.active_style.clone());
+                    }
+                    let end_text_len = self.current_text.text_len();
+                    let alt = if fallback_inserted {
+                        RichText::default()
+                    } else {
+                        rich_text_from_plain(
+                            self.current_text
+                                .slice(context.start_text_len..end_text_len)
+                                .plain_text(),
+                        )
+                    };
+                    if context.nesting_depth == 0 {
+                        self.current_text.push_inline_image(InlineImage {
+                            range: context.start_text_len..end_text_len,
+                            url: dest_url.clone(),
+                            alt,
+                            link_url: context.link_url.clone(),
+                        });
                     }
                     self.current_inline_images.push(ParsedImage {
-                        dest_url: context.dest_url,
+                        dest_url,
                         start_text_len: context.start_text_len,
-                        end_text_len: self.current_text.text_len(),
+                        end_text_len,
                         fallback_inserted,
                         nesting_depth: context.nesting_depth,
                         link_url: context.link_url,
@@ -1283,6 +1343,20 @@ fn render_rich_text(
     color: Hsla,
     element_id: impl Into<gpui::ElementId>,
 ) -> gpui::Div {
+    let element_id = element_id.into();
+    if !text.inline_images().is_empty() {
+        return render_rich_text_with_inline_images(text, style, color, element_id);
+    }
+
+    render_rich_text_fragment(text, style, color, element_id).w_full()
+}
+
+fn render_rich_text_fragment(
+    text: RichText,
+    style: &MarkdownStyle,
+    color: Hsla,
+    element_id: impl Into<gpui::ElementId>,
+) -> gpui::Div {
     let parts = text.into_render_parts(style);
     let text = StyledText::new(visible_rich_text(&parts.text)).with_highlights(parts.highlights);
     let text = if parts.links.is_empty() {
@@ -1292,10 +1366,68 @@ fn render_rich_text(
     };
 
     div()
-        .w_full()
         .text_size(style.body_font_size)
         .text_color(color)
         .child(text)
+}
+
+fn render_rich_text_with_inline_images(
+    text: RichText,
+    style: &MarkdownStyle,
+    color: Hsla,
+    element_id: ElementId,
+) -> gpui::Div {
+    let id_base = element_id.to_string();
+    let mut children = Vec::new();
+    let mut cursor = 0;
+
+    for (image_index, image) in text.inline_images().iter().cloned().enumerate() {
+        if cursor < image.range.start {
+            let segment = text.slice(cursor..image.range.start);
+            if !segment.is_empty() {
+                children.push(
+                    render_rich_text_fragment(
+                        segment,
+                        style,
+                        color,
+                        format!("{id_base}-text-{image_index}"),
+                    )
+                    .into_any_element(),
+                );
+            }
+        }
+
+        cursor = image.range.end;
+        children.push(
+            render_inline_image(
+                image,
+                style,
+                &format!("{id_base}-inline-image-{image_index}"),
+            )
+            .into_any_element(),
+        );
+    }
+
+    if cursor < text.text_len() {
+        let segment = text.slice(cursor..text.text_len());
+        if !segment.is_empty() {
+            children.push(
+                render_rich_text_fragment(segment, style, color, format!("{id_base}-text-tail"))
+                    .into_any_element(),
+            );
+        }
+    }
+
+    div()
+        .w_full()
+        .flex()
+        .flex_row()
+        .flex_wrap()
+        .items_center()
+        .gap(px(4.0))
+        .text_size(style.body_font_size)
+        .text_color(color)
+        .children(children)
 }
 
 fn visible_rich_text(content: &SharedString) -> SharedString {
@@ -1570,6 +1702,38 @@ fn render_image_block(
                 .rounded(px(4.0))
                 .with_fallback(move || {
                     render_rich_text(
+                        fallback_text.clone(),
+                        &fallback_style,
+                        fallback_style.body_color,
+                        fallback_id.clone(),
+                    )
+                    .into_any_element()
+                }),
+        )
+}
+
+fn render_inline_image(image: InlineImage, style: &MarkdownStyle, image_id: &str) -> gpui::Div {
+    let fallback_style = style.clone();
+    let fallback_id = format!("{image_id}-fallback");
+    let fallback_text = image_fallback_text(&image.url, image.alt);
+
+    div()
+        .flex()
+        .items_center()
+        .when_some(image.link_url, |this, link_url| {
+            let link_url = link_url.to_string();
+            this.cursor_pointer()
+                .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
+                    cx.stop_propagation();
+                    cx.open_url(&link_url);
+                })
+        })
+        .child(
+            img(image.url)
+                .max_w_full()
+                .rounded(px(4.0))
+                .with_fallback(move || {
+                    render_rich_text_fragment(
                         fallback_text.clone(),
                         &fallback_style,
                         fallback_style.body_color,
@@ -2273,43 +2437,56 @@ mod tests {
     }
 
     #[test]
-    fn inline_image_alt_text_preserves_source_link_without_emphasis() {
+    fn inline_image_alt_text_is_retained_as_image_span() {
         let document = MarkdownDocument::parse("See ![logo](https://example.com/logo.png).");
 
         let MarkdownBlock::Paragraph(text) = &document.blocks[0] else {
-            panic!("expected inline image fallback paragraph");
+            panic!("expected inline image paragraph");
         };
 
         assert_eq!(text.plain_text(), "See logo.");
-        let logo_span = text
-            .spans()
-            .iter()
-            .find(|span| span.text == "logo")
-            .expect("logo alt text span");
-        assert!(!logo_span.style.italic);
-        assert!(logo_span.style.link);
-        assert_eq!(
-            logo_span.style.link_url.as_deref(),
-            Some("https://example.com/logo.png")
-        );
+        assert_eq!(text.inline_images().len(), 1);
+        let image = &text.inline_images()[0];
+        assert_eq!(image.range, 4..8);
+        assert_eq!(image.url.as_ref(), "https://example.com/logo.png");
+        assert!(image.link_url.is_none());
+        assert_eq!(image.alt.plain_text(), "logo");
+        let alt_span = &image.alt.spans()[0];
+        assert!(!alt_span.style.italic);
+        assert!(!alt_span.style.link);
+        assert_eq!(alt_span.style.link_url.as_deref(), None);
     }
 
     #[test]
-    fn inline_empty_image_alt_text_keeps_source_visible() {
+    fn inline_empty_image_alt_text_uses_source_as_fallback_span() {
         let document = MarkdownDocument::parse("See ![](image.png)");
 
         let MarkdownBlock::Paragraph(text) = &document.blocks[0] else {
-            panic!("expected inline image fallback paragraph");
+            panic!("expected inline image paragraph");
         };
 
         assert_eq!(text.plain_text(), "See image.png");
-        let span = text
-            .spans()
-            .iter()
-            .find(|span| span.text == "image.png")
-            .expect("image source fallback span");
-        assert!(span.style.link);
-        assert_eq!(span.style.link_url.as_deref(), Some("image.png"));
+        assert_eq!(text.inline_images().len(), 1);
+        let image = &text.inline_images()[0];
+        assert_eq!(image.range, 4..13);
+        assert_eq!(image.url.as_ref(), "image.png");
+        assert!(image.alt.is_empty());
+        assert!(image.link_url.is_none());
+    }
+
+    #[test]
+    fn inline_nested_image_uses_outer_destination() {
+        let document = MarkdownDocument::parse("See ![foo ![bar](/bar.png)](/outer.png).");
+
+        let MarkdownBlock::Paragraph(text) = &document.blocks[0] else {
+            panic!("expected inline image paragraph");
+        };
+
+        assert_eq!(text.plain_text(), "See foo bar.");
+        assert_eq!(text.inline_images().len(), 1);
+        let image = &text.inline_images()[0];
+        assert_eq!(image.url.as_ref(), "/outer.png");
+        assert_eq!(image.alt.plain_text(), "foo bar");
     }
 
     #[test]
@@ -2334,16 +2511,11 @@ mod tests {
         };
 
         assert_eq!(text.plain_text(), "logo now");
-        let logo_span = text
-            .spans()
-            .iter()
-            .find(|span| span.text == "logo")
-            .expect("logo alt text span");
-        assert!(logo_span.style.link);
-        assert_eq!(
-            logo_span.style.link_url.as_deref(),
-            Some("https://example.com")
-        );
+        assert_eq!(text.inline_images().len(), 1);
+        let image = &text.inline_images()[0];
+        assert_eq!(image.url.as_ref(), "logo.png");
+        assert_eq!(image.alt.plain_text(), "logo");
+        assert_eq!(image.link_url.as_deref(), Some("https://example.com"));
     }
 
     #[test]
