@@ -93,7 +93,6 @@ pub(crate) fn resolve_direct_write_rendering_params(
         let defaults: IDWriteRenderingParams1 = factory.CreateRenderingParams()?.cast()?;
         let gamma = params
             .and_then(|params| params.gamma)
-            .or(system_smoothing.gamma)
             .unwrap_or_else(|| defaults.GetGamma());
         let enhanced_contrast = params
             .and_then(|params| params.enhanced_contrast)
@@ -2069,7 +2068,6 @@ fn get_name(string: IDWriteLocalizedStrings, locale: &HSTRING) -> Result<String>
 struct WindowsFontSmoothing {
     enabled: bool,
     smoothing_type: u32,
-    gamma: Option<f32>,
     pixel_geometry: Option<DirectWritePixelGeometry>,
 }
 
@@ -2084,9 +2082,6 @@ fn get_system_font_smoothing() -> WindowsFontSmoothing {
         enabled: system_parameters_info_bool(SPI_GETFONTSMOOTHING).unwrap_or(true),
         smoothing_type: system_parameters_info_uint(SPI_GETFONTSMOOTHINGTYPE)
             .unwrap_or(FE_FONTSMOOTHINGCLEARTYPE),
-        gamma: system_parameters_info_uint(SPI_GETFONTSMOOTHINGCONTRAST)
-            .map(|contrast| contrast as f32 / 1000.0)
-            .filter(|gamma| *gamma > 0.0),
         pixel_geometry: system_parameters_info_uint(SPI_GETFONTSMOOTHINGORIENTATION)
             .and_then(system_pixel_geometry),
     }
