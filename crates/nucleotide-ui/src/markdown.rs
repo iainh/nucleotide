@@ -2032,7 +2032,7 @@ fn render_list_item(
         .flex_row()
         .items_start()
         .gap(px(8.0))
-        .pl(px((depth as f32) * 16.0))
+        .pl(list_item_padding(depth))
         .when(style.preview, |this| this.mb(px(6.0)))
         .child(div().flex_none().w(marker_width).child(marker))
         .child(content)
@@ -2040,6 +2040,10 @@ fn render_list_item(
 
 fn list_item_needs_empty_placeholder(text: &RichText, has_child_blocks: bool) -> bool {
     text.is_empty() && !has_child_blocks
+}
+
+fn list_item_padding(depth: usize) -> Pixels {
+    if depth == 0 { px(0.0) } else { px(16.0) }
 }
 
 fn bullet_for_depth(depth: usize) -> &'static str {
@@ -2429,6 +2433,25 @@ mod tests {
             MarkdownBlock::ListItem { text, depth: 2, children, .. }
                 if text.plain_text() == "grandchild" && children.is_empty()
         ));
+    }
+
+    #[test]
+    fn nested_unordered_list_render_indent_is_relative() {
+        let document = MarkdownDocument::parse(" - foo\n   - bar\n\t - baz\n");
+
+        assert!(matches!(
+            document.blocks.as_slice(),
+            [MarkdownBlock::ListItem { children, .. }]
+                if matches!(
+                    children.as_slice(),
+                    [MarkdownBlock::ListItem { children, .. }]
+                        if matches!(children.as_slice(), [MarkdownBlock::ListItem { .. }])
+                )
+        ));
+        assert_eq!(list_item_padding(0), px(0.0));
+        assert_eq!(list_item_padding(1), px(16.0));
+        assert_eq!(list_item_padding(2), px(16.0));
+        assert_eq!(list_item_padding(4), px(16.0));
     }
 
     #[test]
