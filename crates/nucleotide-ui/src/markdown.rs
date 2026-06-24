@@ -1712,23 +1712,24 @@ fn visible_code_text(content: &str) -> SharedString {
 }
 
 fn render_html_block(text: String, style: &MarkdownStyle, block_id: &str) -> impl IntoElement {
+    let text = visible_html_text(&text);
+
     div()
         .id(block_id.to_string())
         .w_full()
-        .text_size(style.body_font_size)
-        .text_color(style.body_color)
-        .line_height(relative(if style.preview { 1.55 } else { 1.45 }))
-        .when(style.preview, |this| this.mb(px(10.0)))
-        .child(StyledText::new(visible_html_text(&text)))
+        .when(text.is_empty(), |this| this.hidden())
+        .when(!text.is_empty(), |this| {
+            this.text_size(style.body_font_size)
+                .text_color(style.body_color)
+                .line_height(relative(if style.preview { 1.55 } else { 1.45 }))
+                .when(style.preview, |this| this.mb(px(10.0)))
+                .child(StyledText::new(text))
+        })
 }
 
 fn visible_html_text(content: &str) -> SharedString {
     let text = html_display_text(content);
-    if text.is_empty() {
-        SharedString::from(" ")
-    } else {
-        SharedString::from(text)
-    }
+    SharedString::from(text)
 }
 
 fn html_display_text(content: &str) -> String {
@@ -2645,6 +2646,23 @@ mod tests {
     }
 
     #[test]
+    fn html_block_wrappers_do_not_add_visible_placeholders() {
+        let document = MarkdownDocument::parse("<div>\n\n*Emphasized* text.\n\n</div>");
+
+        assert!(matches!(
+            document.blocks.as_slice(),
+            [
+                MarkdownBlock::HtmlBlock { text: opening },
+                MarkdownBlock::Paragraph(paragraph),
+                MarkdownBlock::HtmlBlock { text: closing },
+            ] if visible_html_text(opening).is_empty()
+                && paragraph.plain_text() == "Emphasized text."
+                && paragraph.spans().iter().any(|span| span.style.italic)
+                && visible_html_text(closing).is_empty()
+        ));
+    }
+
+    #[test]
     fn inline_html_tags_do_not_render_as_literal_text() {
         let document = MarkdownDocument::parse(
             "foo<br />bar\n\nfoo <BR class=\"line\"> baz\n\nnot <bracket> tag\n\n<del>*foo*</del>",
@@ -2685,13 +2703,13 @@ mod tests {
             visible_html_text("<div id=\"foo\"\n  class=\"bar\">\ntext\n</div>").as_ref(),
             "text"
         );
-        assert_eq!(visible_html_text("<!-- hidden -->").as_ref(), " ");
+        assert_eq!(visible_html_text("<!-- hidden -->").as_ref(), "");
         assert_eq!(
             visible_html_text("<!-- hidden -->\nvisible").as_ref(),
             "visible"
         );
         assert_eq!(visible_html_text("<![CDATA[a < b]]>").as_ref(), "a < b");
-        assert_eq!(visible_html_text("").as_ref(), " ");
+        assert_eq!(visible_html_text("").as_ref(), "");
     }
 
     #[test]
