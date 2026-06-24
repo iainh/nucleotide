@@ -2,7 +2,7 @@
 name = "nucleotide"
 version.workspace = true
 edition.workspace = true
-authors = ["Iain H. <iain@spiralpoint.org>", "Alexander Polakov <alex@plhk.dev>", "Blaž Hrastnik <blaz@mxxn.io>"]
+authors.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true

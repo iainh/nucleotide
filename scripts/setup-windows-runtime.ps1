@@ -125,6 +125,50 @@ function Copy-NucleotideThemes {
     }
 }
 
+function Rename-WixUnsafeQueryDirs {
+    $queryRoot = Join-Path $RuntimeDest "queries"
+    if (-not (Test-Path $queryRoot)) {
+        return
+    }
+
+    $renames = [ordered]@{
+        "_gjs" = "underscore-gjs"
+        "_javascript" = "underscore-javascript"
+        "_jsx" = "underscore-jsx"
+        "_typescript" = "underscore-typescript"
+    }
+
+    foreach ($entry in $renames.GetEnumerator()) {
+        $source = Join-Path $queryRoot $entry.Key
+        $dest = Join-Path $queryRoot $entry.Value
+
+        if (Test-Path $source) {
+            if (Test-Path $dest) {
+                Remove-Item -LiteralPath $dest -Recurse -Force
+            }
+
+            Rename-Item -LiteralPath $source -NewName $entry.Value
+            Write-Host "Renamed WiX-unsafe query directory: $($entry.Key) -> $($entry.Value)"
+        }
+    }
+
+    $textFiles = Get-ChildItem -LiteralPath $queryRoot -Recurse -File |
+        Where-Object { $_.Extension -in @(".scm", ".md") }
+
+    foreach ($file in $textFiles) {
+        $content = [System.IO.File]::ReadAllText($file.FullName)
+        $updated = $content
+        foreach ($entry in $renames.GetEnumerator()) {
+            $updated = $updated.Replace($entry.Key, $entry.Value)
+        }
+
+        if ($updated -ne $content) {
+            $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+            [System.IO.File]::WriteAllText($file.FullName, $updated, $utf8NoBom)
+        }
+    }
+}
+
 function Format-TomlStringList {
     param([string[]]$Values)
 
@@ -219,6 +263,12 @@ function Remove-PackagedGrammarSources {
         Remove-Item -LiteralPath $grammarSources -Recurse -Force
         Write-Host "Removed grammar sources from bundled runtime: $grammarSources"
     }
+
+    $grammarPlaceholder = Join-Path $GrammarDest ".gitkeep"
+    if (Test-Path $grammarPlaceholder) {
+        Remove-Item -LiteralPath $grammarPlaceholder -Force
+        Write-Host "Removed grammar placeholder from bundled runtime: $grammarPlaceholder"
+    }
 }
 
 $runtimeSource = Find-HelixRuntime
@@ -228,6 +278,7 @@ Write-Host "Preparing cargo-bundle runtime: $RuntimeDest"
 
 Copy-Runtime -Source $runtimeSource
 Copy-NucleotideThemes
+Rename-WixUnsafeQueryDirs
 Update-GrammarExclusions -GrammarIds $ExcludeGrammars
 
 if (-not (Test-Path $GrammarDest)) {

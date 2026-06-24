@@ -172,6 +172,11 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
       - name: Cache cargo dependencies
         uses: actions/cache@v4
         with:
@@ -207,7 +212,7 @@ jobs:
             Pop-Location
           }
 
-          $installer = "target\release\bundle\wxsmsi\bin\Release\Nucleotide.msi"
+          $installer = "target\release\bundle\wxsmsi\bin\Release\nucleotide.msi"
           if (-not (Test-Path $installer)) {
             throw "Windows installer not found: $installer"
           }
