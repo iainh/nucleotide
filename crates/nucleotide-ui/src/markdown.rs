@@ -593,6 +593,7 @@ struct MarkdownParser {
     emphasis_depth: usize,
     strong_depth: usize,
     strikethrough_depth: usize,
+    code_depth: usize,
     heading: Option<u8>,
     in_code_block: bool,
     code_block_language: Option<String>,
@@ -636,6 +637,7 @@ impl MarkdownParser {
             emphasis_depth: 0,
             strong_depth: 0,
             strikethrough_depth: 0,
+            code_depth: 0,
             heading: None,
             in_code_block: false,
             code_block_language: None,
@@ -711,6 +713,39 @@ impl MarkdownParser {
         self.current_block_has_inline_content = true;
         if inline_html_is_line_break(html) {
             self.current_text.push("\n", self.active_style.clone());
+        } else if let Some((tag, closing)) = inline_html_style_tag(html) {
+            if closing {
+                self.decrement_inline_html_style(tag);
+            } else {
+                self.increment_inline_html_style(tag);
+            }
+            self.refresh_inline_style_flags();
+        }
+    }
+
+    fn increment_inline_html_style(&mut self, tag: InlineHtmlStyleTag) {
+        match tag {
+            InlineHtmlStyleTag::Emphasis => self.emphasis_depth += 1,
+            InlineHtmlStyleTag::Strong => self.strong_depth += 1,
+            InlineHtmlStyleTag::Strikethrough => self.strikethrough_depth += 1,
+            InlineHtmlStyleTag::Code => self.code_depth += 1,
+        }
+    }
+
+    fn decrement_inline_html_style(&mut self, tag: InlineHtmlStyleTag) {
+        match tag {
+            InlineHtmlStyleTag::Emphasis => {
+                self.emphasis_depth = self.emphasis_depth.saturating_sub(1);
+            }
+            InlineHtmlStyleTag::Strong => {
+                self.strong_depth = self.strong_depth.saturating_sub(1);
+            }
+            InlineHtmlStyleTag::Strikethrough => {
+                self.strikethrough_depth = self.strikethrough_depth.saturating_sub(1);
+            }
+            InlineHtmlStyleTag::Code => {
+                self.code_depth = self.code_depth.saturating_sub(1);
+            }
         }
     }
 
@@ -1097,6 +1132,7 @@ impl MarkdownParser {
         self.active_style.italic = self.emphasis_depth > 0;
         self.active_style.bold = self.strong_depth > 0;
         self.active_style.strikethrough = self.strikethrough_depth > 0;
+        self.active_style.code = self.code_depth > 0;
     }
 
     fn refresh_link_style(&mut self) {
@@ -1886,6 +1922,51 @@ fn inline_html_is_line_break(html: &str) -> bool {
         .next()
         .unwrap_or_default();
     tag_name.eq_ignore_ascii_case("br")
+}
+
+#[derive(Clone, Copy)]
+enum InlineHtmlStyleTag {
+    Emphasis,
+    Strong,
+    Strikethrough,
+    Code,
+}
+
+fn inline_html_style_tag(html: &str) -> Option<(InlineHtmlStyleTag, bool)> {
+    let body = html.trim().strip_prefix('<')?.strip_suffix('>')?.trim();
+    if body.trim_end().ends_with('/') {
+        return None;
+    }
+
+    let (closing, body) = if let Some(body) = body.strip_prefix('/') {
+        (true, body.trim_start())
+    } else {
+        (false, body)
+    };
+    let tag_name_len = body
+        .find(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '-'))
+        .unwrap_or(body.len());
+    if tag_name_len == 0 {
+        return None;
+    }
+
+    let tag_name = &body[..tag_name_len];
+    let tag = if tag_name.eq_ignore_ascii_case("em") || tag_name.eq_ignore_ascii_case("i") {
+        InlineHtmlStyleTag::Emphasis
+    } else if tag_name.eq_ignore_ascii_case("strong") || tag_name.eq_ignore_ascii_case("b") {
+        InlineHtmlStyleTag::Strong
+    } else if tag_name.eq_ignore_ascii_case("del")
+        || tag_name.eq_ignore_ascii_case("s")
+        || tag_name.eq_ignore_ascii_case("strike")
+    {
+        InlineHtmlStyleTag::Strikethrough
+    } else if tag_name.eq_ignore_ascii_case("code") || tag_name.eq_ignore_ascii_case("kbd") {
+        InlineHtmlStyleTag::Code
+    } else {
+        return None;
+    };
+
+    Some((tag, closing))
 }
 
 fn render_image_block(
@@ -2803,6 +2884,52 @@ mod tests {
         assert!(inline_html_is_line_break("<BR class=\"line\">"));
         assert!(!inline_html_is_line_break("</br>"));
         assert!(!inline_html_is_line_break("<bracket>"));
+    }
+
+    #[test]
+    fn commonmark_inline_del_preserves_nested_markdown_style() {
+        let document = MarkdownDocument::parse("<del>*foo*</del>");
+
+        assert!(matches!(
+            document.blocks.as_slice(),
+            [MarkdownBlock::Paragraph(text)]
+                if text.plain_text() == "foo"
+                    && text
+                        .spans()
+                        .iter()
+                        .any(|span| span.style.italic && span.style.strikethrough)
+        ));
+    }
+
+    #[test]
+    fn inline_html_semantic_tags_update_text_style() {
+        let document = MarkdownDocument::parse(
+            "<strong>bold</strong> <em>em</em> <code>code</code> <kbd>key</kbd>",
+        );
+        let [MarkdownBlock::Paragraph(text)] = document.blocks.as_slice() else {
+            panic!("expected one paragraph");
+        };
+
+        assert!(
+            text.spans()
+                .iter()
+                .any(|span| span.text == "bold" && span.style.bold)
+        );
+        assert!(
+            text.spans()
+                .iter()
+                .any(|span| span.text == "em" && span.style.italic)
+        );
+        assert!(
+            text.spans()
+                .iter()
+                .any(|span| span.text == "code" && span.style.code)
+        );
+        assert!(
+            text.spans()
+                .iter()
+                .any(|span| span.text == "key" && span.style.code)
+        );
     }
 
     #[test]
