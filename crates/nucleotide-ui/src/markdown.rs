@@ -353,10 +353,13 @@ impl RichText {
                 continue;
             }
 
-            text.push(
-                &span.text[start - span_start..end - span_start],
-                span.style.clone(),
-            );
+            let local_start = next_char_boundary(&span.text, start - span_start);
+            let local_end = previous_char_boundary(&span.text, end - span_start);
+            if local_start >= local_end {
+                continue;
+            }
+
+            text.push(&span.text[local_start..local_end], span.style.clone());
         }
 
         text
@@ -405,6 +408,14 @@ impl RichText {
             links,
         }
     }
+}
+
+fn previous_char_boundary(text: &str, index: usize) -> usize {
+    let mut index = index.min(text.len());
+    while index > 0 && !text.is_char_boundary(index) {
+        index -= 1;
+    }
+    index
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2133,6 +2144,16 @@ mod tests {
             visible_rich_text(&SharedString::from("heading")),
             SharedString::from("heading")
         );
+    }
+
+    #[test]
+    fn rich_text_slice_clamps_to_utf8_boundaries() {
+        let mut text = RichText::default();
+        text.push("éx", InlineStyle::default());
+
+        assert_eq!(text.slice(2..3).plain_text(), "x");
+        assert_eq!(text.slice(1..3).plain_text(), "x");
+        assert_eq!(text.slice(0..1).plain_text(), "");
     }
 
     #[test]
