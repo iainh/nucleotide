@@ -181,7 +181,20 @@ function Invoke-NuclGrammarCommand {
 
         Push-Location $RepoRoot
         try {
-            cargo run -p nucleotide -- --grammar $Command
+            cargo build -p nucleotide
+            if ($LASTEXITCODE -ne 0) {
+                throw "cargo build -p nucleotide failed with exit code $LASTEXITCODE"
+            }
+
+            $nuclExe = Join-Path $RepoRoot "target\debug\nucl.exe"
+            if (-not (Test-Path $nuclExe)) {
+                $nuclExe = Join-Path $RepoRoot "target\debug\nucl"
+            }
+            if (-not (Test-Path $nuclExe)) {
+                throw "Could not find built nucl executable under target\debug"
+            }
+
+            & $nuclExe --grammar $Command
             if ($LASTEXITCODE -ne 0) {
                 $message = "nucl --grammar $Command failed with exit code $LASTEXITCODE"
                 if ($AllowGrammarFailures) {
