@@ -1040,7 +1040,7 @@ impl DirectWriteState {
                 .GetAlphaTextureBounds(glyph_analysis.texture_type)?
         };
 
-        if bounds.right < bounds.left {
+        if bounds.right <= bounds.left || bounds.bottom <= bounds.top {
             Ok(Bounds {
                 origin: point(0.into(), 0.into()),
                 size: size(0.into(), 0.into()),
