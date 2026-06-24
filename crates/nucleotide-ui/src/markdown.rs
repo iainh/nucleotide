@@ -1711,6 +1711,73 @@ fn visible_code_text(content: &str) -> SharedString {
     }
 }
 
+fn render_html_block(text: String, style: &MarkdownStyle, block_id: &str) -> impl IntoElement {
+    div()
+        .id(block_id.to_string())
+        .w_full()
+        .text_size(style.body_font_size)
+        .text_color(style.body_color)
+        .line_height(relative(if style.preview { 1.55 } else { 1.45 }))
+        .when(style.preview, |this| this.mb(px(10.0)))
+        .child(StyledText::new(visible_html_text(&text)))
+}
+
+fn visible_html_text(content: &str) -> SharedString {
+    let text = html_display_text(content);
+    if text.is_empty() {
+        SharedString::from(" ")
+    } else {
+        SharedString::from(text)
+    }
+}
+
+fn html_display_text(content: &str) -> String {
+    let mut text = strip_html_markup(content);
+    let trimmed_len = text.trim_matches(['\n', '\r']).len();
+    if trimmed_len != text.len() {
+        text = text.trim_matches(['\n', '\r']).to_string();
+    }
+    text
+}
+
+fn strip_html_markup(content: &str) -> String {
+    let mut text = String::new();
+    let mut cursor = 0;
+
+    while cursor < content.len() {
+        let rest = &content[cursor..];
+        if let Some(end) = rest.strip_prefix("<!--").and_then(|rest| rest.find("-->")) {
+            cursor += "<!--".len() + end + "-->".len();
+        } else if let Some(rest) = rest.strip_prefix("<![CDATA[") {
+            if let Some(end) = rest.find("]]>") {
+                text.push_str(&rest[..end]);
+                cursor += "<![CDATA[".len() + end + "]]>".len();
+            } else {
+                text.push_str(rest);
+                break;
+            }
+        } else if let Some(end) = rest.strip_prefix("<?").and_then(|rest| rest.find("?>")) {
+            cursor += "<?".len() + end + "?>".len();
+        } else if let Some(end) = rest.strip_prefix("<!").and_then(|rest| rest.find('>')) {
+            cursor += "<!".len() + end + ">".len();
+        } else if rest.starts_with('<') {
+            if let Some(end) = rest.find('>') {
+                cursor += end + ">".len();
+            } else {
+                text.push_str(rest);
+                break;
+            }
+        } else if let Some(ch) = rest.chars().next() {
+            text.push(ch);
+            cursor += ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+
+    text
+}
+
 fn inline_html_is_line_break(html: &str) -> bool {
     let html = html.trim();
     let Some(body) = html
@@ -1729,25 +1796,6 @@ fn inline_html_is_line_break(html: &str) -> bool {
         .next()
         .unwrap_or_default();
     tag_name.eq_ignore_ascii_case("br")
-}
-
-fn render_html_block(text: String, style: &MarkdownStyle, block_id: &str) -> impl IntoElement {
-    div()
-        .id(block_id.to_string())
-        .w_full()
-        .text_size(style.body_font_size)
-        .text_color(style.body_color)
-        .line_height(relative(if style.preview { 1.55 } else { 1.45 }))
-        .when(style.preview, |this| this.mb(px(10.0)))
-        .child(StyledText::new(visible_html_text(&text)))
-}
-
-fn visible_html_text(content: &str) -> SharedString {
-    if content.is_empty() {
-        SharedString::from(" ")
-    } else {
-        SharedString::from(content.to_string())
-    }
 }
 
 fn render_image_block(
@@ -2628,11 +2676,21 @@ mod tests {
     }
 
     #[test]
-    fn html_block_display_preserves_raw_text() {
+    fn html_block_display_hides_markup() {
         assert_eq!(
             visible_html_text("<section>\nraw\n</section>\n").as_ref(),
-            "<section>\nraw\n</section>\n"
+            "raw"
         );
+        assert_eq!(
+            visible_html_text("<div id=\"foo\"\n  class=\"bar\">\ntext\n</div>").as_ref(),
+            "text"
+        );
+        assert_eq!(visible_html_text("<!-- hidden -->").as_ref(), " ");
+        assert_eq!(
+            visible_html_text("<!-- hidden -->\nvisible").as_ref(),
+            "visible"
+        );
+        assert_eq!(visible_html_text("<![CDATA[a < b]]>").as_ref(), "a < b");
         assert_eq!(visible_html_text("").as_ref(), " ");
     }
 
