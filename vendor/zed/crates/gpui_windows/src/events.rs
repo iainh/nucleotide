@@ -1150,7 +1150,7 @@ impl WindowsWindowInner {
     }
 
     fn invalidate_text_rendering_settings(&self) {
-        DirectXRenderer::invalidate_font_info();
+        refresh_direct_write_system_settings();
         self.state
             .text_rendering_generation
             .set(self.state.text_rendering_generation.get().wrapping_add(1));
