@@ -1791,6 +1791,9 @@ fn image_fallback_text(
     link_title: Option<SharedString>,
 ) -> RichText {
     if !alt.is_empty() {
+        if let Some(link_url) = link_url {
+            return linked_rich_text(alt, link_url, link_title);
+        }
         return alt;
     }
 
@@ -1804,6 +1807,19 @@ fn image_fallback_text(
             ..InlineStyle::default()
         },
     );
+    text
+}
+
+fn linked_rich_text(
+    mut text: RichText,
+    link_url: SharedString,
+    link_title: Option<SharedString>,
+) -> RichText {
+    for span in &mut text.spans {
+        span.style.link = true;
+        span.style.link_url = Some(link_url.clone());
+        span.style.link_title = link_title.clone();
+    }
     text
 }
 
@@ -2708,6 +2724,27 @@ mod tests {
         );
 
         assert_eq!(fallback.plain_text(), "logo.png");
+        assert_eq!(fallback.spans().len(), 1);
+        assert_eq!(
+            fallback.spans()[0].style.link_url.as_deref(),
+            Some("https://example.com")
+        );
+        assert_eq!(
+            fallback.spans()[0].style.link_title.as_deref(),
+            Some("Example title")
+        );
+    }
+
+    #[test]
+    fn nonempty_linked_image_fallback_uses_outer_link_metadata() {
+        let fallback = image_fallback_text(
+            &SharedString::from("logo.png"),
+            rich_text_from_plain("logo"),
+            Some(SharedString::from("https://example.com")),
+            Some(SharedString::from("Example title")),
+        );
+
+        assert_eq!(fallback.plain_text(), "logo");
         assert_eq!(fallback.spans().len(), 1);
         assert_eq!(
             fallback.spans()[0].style.link_url.as_deref(),
