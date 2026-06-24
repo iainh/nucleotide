@@ -5,7 +5,7 @@ use gpui::prelude::FluentBuilder;
 use gpui::{
     Anchor, AnchoredPositionMode, Context, DismissEvent, ElementId, Entity, FocusHandle, Focusable,
     InteractiveElement, IntoElement, MouseButton, MouseDownEvent, OwnedMenu, ParentElement, Pixels,
-    Render, SharedString, Styled, Subscription, Window, anchored, deferred, div, px,
+    Render, SharedString, Styled, Subscription, Window, anchored, deferred, div, point, px,
 };
 
 use crate::actions::menu::{Cancel, SelectLeft, SelectRight};
@@ -273,25 +273,21 @@ impl Render for ApplicationMenu {
                         };
                         this.set_open_index(new_index, window, cx);
                     }),
-                )
-                .child(name);
+                );
 
             if is_open {
                 let popup_menu = self.build_popup_menu(index, window, cx);
                 let popup = anchored()
                     .position_mode(AnchoredPositionMode::Local)
+                    .position(point(-metrics.trigger_padding_x, metrics.trigger_height))
                     .snap_to_window_with_margin(px(8.0))
                     .anchor(Anchor::TopLeft)
-                    .child(
-                        div()
-                            .occlude()
-                            .top(metrics.trigger_height)
-                            .child(popup_menu),
-                    );
+                    .child(div().occlude().child(popup_menu));
 
                 trigger = trigger.child(deferred(popup).with_priority(500));
             }
 
+            trigger = trigger.child(name);
             container = container.child(trigger);
         }
 

@@ -685,6 +685,7 @@ impl PopupMenu {
             .id(index)
             .relative()
             .w_full()
+            .self_stretch()
             .rounded(tokens.sizes.radius_sm)
             .text_size(tokens.sizes.text_sm)
             .text_color(if disabled {
@@ -766,6 +767,7 @@ impl Render for PopupMenu {
                     .id("popup-menu-items")
                     .flex()
                     .flex_col()
+                    .items_stretch()
                     .py(tokens.sizes.space_1)
                     .min_w(self.min_width.unwrap_or(px(180.0)))
                     .max_w(self.max_width())
