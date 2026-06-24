@@ -16,8 +16,8 @@ use helix_view::graphics::{
     Modifier as HelixModifier, Style as HelixStyle, UnderlineStyle as HelixUnderlineStyle,
 };
 use pulldown_cmark::{
-    Alignment, BlockQuoteKind, CodeBlockKind, CowStr, Event, HeadingLevel, Options, Parser, Tag,
-    TagEnd,
+    Alignment, BlockQuoteKind, CodeBlockKind, CowStr, Event, HeadingLevel, LinkType, Options,
+    Parser, Tag, TagEnd,
 };
 use std::{
     borrow::Cow,
@@ -784,11 +784,14 @@ impl MarkdownParser {
                 self.refresh_inline_style_flags();
             }
             Tag::Link {
-                dest_url, title, ..
+                link_type,
+                dest_url,
+                title,
+                ..
             } => {
                 self.current_block_has_inline_content = true;
                 let context = LinkContext {
-                    url: SharedString::from(dest_url.to_string()),
+                    url: link_url(link_type, &dest_url),
                     title: nonempty_shared_string(&title),
                 };
                 self.link_stack.push(context);
@@ -1119,6 +1122,13 @@ fn normalize_commonmark_source(source: &str) -> Cow<'_, str> {
 
 fn nonempty_shared_string(text: &CowStr<'_>) -> Option<SharedString> {
     (!text.is_empty()).then(|| SharedString::from(text.to_string()))
+}
+
+fn link_url(link_type: LinkType, dest_url: &CowStr<'_>) -> SharedString {
+    match link_type {
+        LinkType::Email => SharedString::from(format!("mailto:{dest_url}")),
+        _ => SharedString::from(dest_url.to_string()),
+    }
 }
 
 fn heading_level(level: HeadingLevel) -> u8 {
@@ -2975,6 +2985,29 @@ mod tests {
         assert_eq!(&plain[parts.links[0].range.clone()], "docs");
         assert_eq!(parts.links[0].url.as_ref(), "https://example.com");
         assert_eq!(parts.links[0].title.as_deref(), Some("Docs title"));
+    }
+
+    #[test]
+    fn autolinks_expose_commonmark_link_destinations() {
+        let document = MarkdownDocument::parse("<https://example.com>\n\n<foo@bar.example.com>");
+
+        let MarkdownBlock::Paragraph(text) = document.blocks[0].clone() else {
+            panic!("expected URL autolink paragraph");
+        };
+        assert_eq!(text.plain_text(), "https://example.com");
+        assert_eq!(
+            text.spans()[0].style.link_url.as_deref(),
+            Some("https://example.com")
+        );
+
+        let MarkdownBlock::Paragraph(text) = document.blocks[1].clone() else {
+            panic!("expected email autolink paragraph");
+        };
+        assert_eq!(text.plain_text(), "foo@bar.example.com");
+        assert_eq!(
+            text.spans()[0].style.link_url.as_deref(),
+            Some("mailto:foo@bar.example.com")
+        );
     }
 
     #[gpui::test]
