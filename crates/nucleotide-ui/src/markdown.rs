@@ -604,6 +604,7 @@ struct MarkdownParser {
     current_task_marker: Option<bool>,
     link_stack: Vec<LinkContext>,
     html_link_stack: Vec<Option<LinkContext>>,
+    html_block_link_stack: Vec<Option<LinkContext>>,
     image_depth: usize,
     table_alignments: Vec<TableAlignment>,
     table_rows: Vec<Vec<RichText>>,
@@ -649,6 +650,7 @@ impl MarkdownParser {
             current_task_marker: None,
             link_stack: Vec::new(),
             html_link_stack: Vec::new(),
+            html_block_link_stack: Vec::new(),
             image_depth: 0,
             table_alignments: Vec::new(),
             table_rows: Vec::new(),
@@ -1068,6 +1070,7 @@ impl MarkdownParser {
         self.in_html_block = false;
         if !self.html_text.is_empty() {
             let text = std::mem::take(&mut self.html_text);
+            self.update_html_block_link_context(&text);
             self.push_block(MarkdownBlock::HtmlBlock { text });
         }
     }
@@ -1170,6 +1173,12 @@ impl MarkdownParser {
             .iter()
             .rev()
             .find_map(Option::as_ref)
+            .or_else(|| {
+                self.html_block_link_stack
+                    .iter()
+                    .rev()
+                    .find_map(Option::as_ref)
+            })
             .or_else(|| self.link_stack.last())
     }
 
@@ -1183,6 +1192,20 @@ impl MarkdownParser {
         self.active_style.link = link_url.is_some();
         self.active_style.link_url = link_url;
         self.active_style.link_title = link_title;
+    }
+
+    fn update_html_block_link_context(&mut self, html: &str) {
+        let Some(tag) = inline_html_link_tag(html) else {
+            return;
+        };
+
+        match tag {
+            InlineHtmlLinkTag::Open(link) => self.html_block_link_stack.push(link),
+            InlineHtmlLinkTag::Close => {
+                self.html_block_link_stack.pop();
+            }
+        }
+        self.refresh_link_style();
     }
 }
 
@@ -3365,6 +3388,39 @@ two"#,
                 && one.spans().iter().all(|span| span.style.link_url.as_deref() == Some("/one"))
                 && two.plain_text() == "two"
                 && two.spans().iter().all(|span| span.style.link_url.is_none())
+        ));
+    }
+
+    #[test]
+    fn html_block_anchors_link_wrapped_markdown_blocks() {
+        let document = MarkdownDocument::parse(
+            r#"<a href="/target?x=1&amp;y=2" title="A &lt; B">
+
+*label*
+
+</a>
+
+plain"#,
+        );
+
+        assert!(matches!(
+            document.blocks.as_slice(),
+            [
+                MarkdownBlock::HtmlBlock { text: opening },
+                MarkdownBlock::Paragraph(label),
+                MarkdownBlock::HtmlBlock { text: closing },
+                MarkdownBlock::Paragraph(plain),
+            ] if visible_html_text(opening).is_empty()
+                && label.plain_text() == "label"
+                && label
+                    .spans()
+                    .iter()
+                    .all(|span| span.style.italic
+                        && span.style.link_url.as_deref() == Some("/target?x=1&y=2")
+                        && span.style.link_title.as_deref() == Some("A < B"))
+                && visible_html_text(closing).is_empty()
+                && plain.plain_text() == "plain"
+                && plain.spans().iter().all(|span| span.style.link_url.is_none())
         ));
     }
 
