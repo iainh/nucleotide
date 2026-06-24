@@ -43,18 +43,26 @@ when you need to update packaged runtime grammars.
 open Nucleotide.app
 ```
 
-### Windows Package
+### Windows Installer
 
-Nucleotide publishes a Windows zip package from CI. Extract it to a stable
-directory such as `%LOCALAPPDATA%\Programs\Nucleotide`, then run `nucl.exe`.
-The package includes an optional per-user shell integration script:
+Nucleotide publishes a Windows MSI installer from CI. Download
+`Nucleotide-windows-x86_64.msi`, run it, then launch Nucleotide from the Start
+Menu or desktop shortcut.
 
 ```powershell
-.\install-windows-context-menu.cmd
+cargo install cargo-bundle --version 0.11.0 --locked
+git clone --depth 1 --branch 25.07.1 https://github.com/helix-editor/helix.git helix-temp
+try {
+  .\scripts\setup-windows-runtime.cmd -RuntimeSource helix-temp\runtime
+} finally {
+  Remove-Item -LiteralPath helix-temp -Recurse -Force
+}
+Push-Location crates\nucleotide
+cargo bundle --release --format wxsmsi
+Pop-Location
 ```
 
-See `docs/windows_install.md` for Explorer, Open With, Start Menu, App Paths,
-`nucleotide://`, Windows Installed apps, and terminal `PATH` options.
+See `docs/windows_install.md` for local cargo-bundle build and install notes.
 
 ## Development Setup
 

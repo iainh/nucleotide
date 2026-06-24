@@ -7,7 +7,7 @@ on:
 
 jobs:
   build:
-    name: Build Windows package
+    name: Build Windows installer
     runs-on: windows-latest
 
     steps:
@@ -27,46 +27,94 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Build Windows package
+      - name: Install cargo-bundle
+        shell: pwsh
+        run: cargo install cargo-bundle --version 0.11.0 --locked
+
+      - name: Prepare bundled runtime
         shell: pwsh
         run: |
-          .\scripts\package-windows-test.ps1 `
-            -Release `
-            -Clean `
-            -OutputDir dist\nucleotide-windows-x86_64
+          git clone --depth 1 --branch 25.07.1 https://github.com/helix-editor/helix.git helix-temp
+          try {
+            .\scripts\setup-windows-runtime.ps1 -RuntimeSource helix-temp\runtime
+          } finally {
+            Remove-Item -LiteralPath helix-temp -Recurse -Force
+          }
 
       - name: Verify grammar DLLs
         shell: pwsh
         run: |
           $grammarDlls = Get-ChildItem `
-            -Path dist\nucleotide-windows-x86_64\runtime\grammars `
+            -Path crates\nucleotide\runtime\grammars `
             -Filter *.dll `
             -File
 
           if ($grammarDlls.Count -eq 0) {
-            throw "Windows package does not contain any grammar DLLs."
+            throw "Windows installer runtime does not contain any grammar DLLs."
           }
 
-          Write-Host "Windows package contains $($grammarDlls.Count) grammar DLL(s)."
+          Write-Host "Windows installer runtime contains $($grammarDlls.Count) grammar DLL(s)."
 
-          $grammarSources = "dist\nucleotide-windows-x86_64\runtime\grammars\sources"
+          $grammarSources = "crates\nucleotide\runtime\grammars\sources"
           if (Test-Path $grammarSources) {
-            throw "Windows package must not contain grammar sources: $grammarSources"
+            throw "Windows installer runtime must not contain grammar sources: $grammarSources"
           }
 
-      - name: Create Windows zip
+      - name: Build Windows MSI
         shell: pwsh
         run: |
-          Compress-Archive `
-            -Path dist\nucleotide-windows-x86_64\* `
-            -DestinationPath nucleotide-windows-x86_64.zip `
-            -Force
+          Push-Location crates\nucleotide
+          try {
+            cargo bundle --release --format wxsmsi
+          } finally {
+            Pop-Location
+          }
 
-          Get-Item nucleotide-windows-x86_64.zip
+          $installer = "target\release\bundle\wxsmsi\bin\Release\Nucleotide.msi"
+          if (-not (Test-Path $installer)) {
+            throw "Windows installer not found: $installer"
+          }
 
-      - name: Upload Windows package
+          Copy-Item -LiteralPath $installer -Destination Nucleotide-windows-x86_64.msi -Force
+          Get-Item Nucleotide-windows-x86_64.msi
+
+      - name: Verify MSI payload
+        shell: pwsh
+        run: |
+          $extractDir = Join-Path $PWD "dist\windows-msi"
+          New-Item -ItemType Directory -Path $extractDir -Force | Out-Null
+
+          $installer = (Resolve-Path "Nucleotide-windows-x86_64.msi").Path
+          $process = Start-Process `
+            -FilePath msiexec.exe `
+            -ArgumentList @("/a", $installer, "/qn", "TARGETDIR=$extractDir") `
+            -Wait `
+            -PassThru
+
+          if ($process.ExitCode -ne 0) {
+            throw "Administrative MSI extraction failed with exit code $($process.ExitCode)."
+          }
+
+          $runtime = Get-ChildItem -Path $extractDir -Recurse -Directory -Filter runtime |
+            Select-Object -First 1
+          if (-not $runtime) {
+            throw "Extracted MSI does not contain a runtime directory."
+          }
+
+          $grammarDlls = Get-ChildItem -Path (Join-Path $runtime.FullName "grammars") -Filter *.dll -File
+          if ($grammarDlls.Count -eq 0) {
+            throw "Extracted MSI runtime does not contain any grammar DLLs."
+          }
+
+          $exe = Get-ChildItem -Path $extractDir -Recurse -Filter nucl.exe -File |
+            Select-Object -First 1
+          if (-not $exe) {
+            throw "Extracted MSI does not contain nucl.exe."
+          }
+
+      - name: Upload Windows installer
         uses: actions/upload-artifact@v4
         with:
           name: nucleotide-windows-x86_64
-          path: nucleotide-windows-x86_64.zip
+          path: Nucleotide-windows-x86_64.msi
           retention-days: 7

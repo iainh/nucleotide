@@ -122,11 +122,12 @@ embed-resource = "3.0"
 [package.metadata.bundle]
 name = "Nucleotide"
 identifier = "org.spiralpoint.nucleotide"
-icon = ["assets/nucleotide.icns"]
+icon = ["assets/nucleotide.ico", "assets/nucleotide.icns"]
 version = "0.1.0"
 copyright = "Copyright © 2025 Iain H. All rights reserved."
 category = "public.app-category.developer-tools"
 short_description = "A native GUI for the Helix editor"
+resources = ["runtime"]
 long_description = """
 Nucleotide is a native GUI implementation of the Helix text editor,
 built with GPUI (the UI framework from Zed editor). It brings modal
