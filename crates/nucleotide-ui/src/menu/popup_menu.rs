@@ -3,10 +3,11 @@
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    Action, Anchor, App, AppContext as _, Context, DismissEvent, Edges, Entity, EventEmitter,
-    FocusHandle, Focusable, InteractiveElement, IntoElement, MouseButton, MouseDownEvent,
-    OwnedMenuItem, ParentElement, Pixels, Render, ScrollHandle, SharedString, Stateful,
-    StatefulInteractiveElement, Styled, Subscription, WeakEntity, Window, anchored, div, px, svg,
+    Action, Anchor, App, AppContext as _, Axis, Bounds, Context, DismissEvent, Edges, Entity,
+    EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement, MouseButton,
+    MouseDownEvent, OwnedMenuItem, ParentElement, Pixels, Point, Render, ScrollHandle,
+    SharedString, Stateful, StatefulInteractiveElement, Styled, Subscription, WeakEntity, Window,
+    anchored, div, px, svg,
 };
 
 use crate::ThemedContext;
@@ -140,6 +141,7 @@ pub struct PopupMenu {
     min_width: Option<Pixels>,
     max_width: Option<Pixels>,
     max_height: Option<Pixels>,
+    bounds: Bounds<Pixels>,
     check_side: MenuCheckSide,
     parent_menu: Option<WeakEntity<Self>>,
     scrollable: bool,
@@ -158,6 +160,7 @@ impl PopupMenu {
             min_width: None,
             max_width: None,
             max_height: None,
+            bounds: Bounds::default(),
             check_side: MenuCheckSide::Left,
             parent_menu: None,
             scrollable: false,
@@ -381,12 +384,17 @@ impl PopupMenu {
     }
 
     fn select_left(&mut self, _: &SelectLeft, window: &mut Window, cx: &mut Context<Self>) {
-        if self.parent_side(cx).is_right() {
+        let handled = if matches!(self.submenu_anchor.0, Anchor::TopLeft | Anchor::BottomLeft) {
+            self.unselect_submenu(cx)
+        } else {
+            self.select_submenu(window, cx)
+        };
+
+        if self.parent_side(cx).is_left() {
             self.focus_parent_menu(window, cx);
-            return;
         }
 
-        if self.unselect_submenu(cx) {
+        if handled {
             return;
         }
 
@@ -396,12 +404,17 @@ impl PopupMenu {
     }
 
     fn select_right(&mut self, _: &SelectRight, window: &mut Window, cx: &mut Context<Self>) {
-        if self.select_submenu(window, cx) {
-            return;
+        let handled = if matches!(self.submenu_anchor.0, Anchor::TopLeft | Anchor::BottomLeft) {
+            self.select_submenu(window, cx)
+        } else {
+            self.unselect_submenu(cx)
+        };
+
+        if self.parent_side(cx).is_right() {
+            self.focus_parent_menu(window, cx);
         }
 
-        if self.parent_side(cx).is_left() && self.parent_menu.is_some() {
-            self.focus_parent_menu(window, cx);
+        if handled {
             return;
         }
 
@@ -505,6 +518,10 @@ impl PopupMenu {
     }
 
     fn dismiss(&mut self, _: &Cancel, window: &mut Window, cx: &mut Context<Self>) {
+        if self.active_submenu().is_some() {
+            return;
+        }
+
         cx.emit(DismissEvent);
 
         if let Some(action_context) = self.action_context.as_ref() {
@@ -519,23 +536,52 @@ impl PopupMenu {
         }
     }
 
-    fn on_mouse_down_out(
+    fn handle_dismiss(
         &mut self,
-        _: &MouseDownEvent,
+        position: &Point<Pixels>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let Some(parent) = self
+            .parent_menu
+            .as_ref()
+            .and_then(|parent| parent.upgrade())
+            && parent.read(cx).bounds.contains(position)
+        {
+            return;
+        }
+
         self.dismiss(&Cancel, window, cx);
-        cx.stop_propagation();
+    }
+
+    fn on_mouse_down_out(
+        &mut self,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.handle_dismiss(&event.position, window, cx);
     }
 
     fn max_width(&self) -> Pixels {
         self.max_width.unwrap_or(px(420.0))
     }
 
-    fn update_submenu_anchor(&mut self) {
-        let left = self.min_width.unwrap_or(px(180.0)) - px(4.0);
-        self.submenu_anchor = (Anchor::TopLeft, left);
+    fn update_submenu_anchor(&mut self, window: &Window) {
+        let bounds = self.bounds;
+        let max_width = self.max_width();
+        let (anchor, left) = if max_width + bounds.origin.x > window.bounds().size.width {
+            (Anchor::TopRight, -px(16.0))
+        } else {
+            (Anchor::TopLeft, bounds.size.width - px(8.0))
+        };
+
+        let opens_past_bottom = bounds.origin.y + bounds.size.height > window.bounds().size.height;
+        self.submenu_anchor = if opens_past_bottom {
+            (anchor.other_side_along(Axis::Vertical), left)
+        } else {
+            (anchor, left)
+        };
     }
 
     fn render_indicator(
@@ -660,7 +706,7 @@ impl PopupMenu {
                                     div()
                                         .occlude()
                                         .when(opens_up, |this| this.bottom_0())
-                                        .when(!opens_up, |this| this.top_0())
+                                        .when(!opens_up, |this| this.top(px(-4.0)))
                                         .left(left)
                                         .child(menu.clone()),
                                 ),
@@ -727,8 +773,9 @@ impl Focusable for PopupMenu {
 
 impl Render for PopupMenu {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.update_submenu_anchor();
+        self.update_submenu_anchor(window);
 
+        let menu_view = cx.entity().clone();
         let tokens = cx.theme().tokens;
         let dropdown = tokens.dropdown_tokens();
         let items_count = self.menu_items.len();
@@ -742,6 +789,13 @@ impl Render for PopupMenu {
         });
 
         div()
+            .on_children_prepainted(move |bounds, _, cx| {
+                if let Some(bounds) = bounds.iter().cloned().reduce(|a, b| a.union(&b)) {
+                    menu_view.update(cx, |menu, _| {
+                        menu.bounds = bounds;
+                    });
+                }
+            })
             .id("popup-menu")
             .key_context(POPUP_MENU_CONTEXT)
             .track_focus(&self.focus_handle)
@@ -788,5 +842,105 @@ impl Render for PopupMenu {
                             }),
                     ),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use gpui::{TestAppContext, point, size};
+
+    use crate::{DesignTokens, Theme};
+
+    struct TestRoot {
+        menu: Entity<PopupMenu>,
+        first_focus: FocusHandle,
+        second_focus: FocusHandle,
+    }
+
+    impl Render for TestRoot {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .child(div().id("first").track_focus(&self.first_focus))
+                .child(div().id("second").track_focus(&self.second_focus))
+                .child(self.menu.clone())
+        }
+    }
+
+    #[gpui::test]
+    fn dismiss_ignores_menu_with_active_submenu(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            cx.set_global(Theme::from_tokens(DesignTokens::dark()));
+        });
+
+        let (root, cx) = cx.add_window_view(|window, cx| {
+            let first_focus = cx.focus_handle();
+            let second_focus = cx.focus_handle();
+            let action_context = first_focus.clone();
+            second_focus.focus(window, cx);
+
+            let menu = PopupMenu::build(window, cx, move |menu, window, cx| {
+                menu.action_context(action_context.clone()).submenu(
+                    "Recent",
+                    window,
+                    cx,
+                    |submenu, _, _| submenu.item(PopupMenuItem::new("Project")),
+                )
+            });
+
+            TestRoot {
+                menu,
+                first_focus,
+                second_focus,
+            }
+        });
+
+        let (menu, second_focus) =
+            root.read_with(cx, |root, _| (root.menu.clone(), root.second_focus.clone()));
+
+        menu.update_in(cx, |menu, window, cx| {
+            menu.selected_index = Some(0);
+            menu.dismiss(&Cancel, window, cx);
+
+            assert_eq!(menu.selected_index, Some(0));
+            assert_eq!(window.focused(cx).as_ref(), Some(&second_focus));
+        });
+    }
+
+    #[gpui::test]
+    fn child_dismiss_ignores_clicks_inside_parent_bounds(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            cx.set_global(Theme::from_tokens(DesignTokens::dark()));
+        });
+
+        let (root, cx) = cx.add_window_view(|window, cx| {
+            let first_focus = cx.focus_handle();
+            let second_focus = cx.focus_handle();
+            let menu = PopupMenu::build(window, cx, |menu, window, cx| {
+                menu.submenu("Recent", window, cx, |submenu, _, _| {
+                    submenu.item(PopupMenuItem::new("Project"))
+                })
+            });
+
+            TestRoot {
+                menu,
+                first_focus,
+                second_focus,
+            }
+        });
+
+        let menu = root.read_with(cx, |root, _| root.menu.clone());
+        let submenu = menu.update(cx, |menu, _| {
+            menu.selected_index = Some(0);
+            menu.bounds = Bounds::new(point(px(10.0), px(10.0)), size(px(100.0), px(100.0)));
+            menu.active_submenu().expect("submenu should be active")
+        });
+
+        submenu.update_in(cx, |submenu, window, cx| {
+            submenu.handle_dismiss(&point(px(20.0), px(20.0)), window, cx);
+        });
+
+        assert_eq!(menu.read_with(cx, |menu, _| menu.selected_index), Some(0));
     }
 }
