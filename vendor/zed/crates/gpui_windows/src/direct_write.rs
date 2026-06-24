@@ -57,6 +57,8 @@ static DIRECT_WRITE_TEXT_RENDERING_PARAMS: LazyLock<
     RwLock<Option<DirectWriteTextRenderingParams>>,
 > = LazyLock::new(|| RwLock::new(None));
 static SYSTEM_SUBPIXEL_RENDERING: AtomicBool = AtomicBool::new(true);
+static CACHED_FORCE_GRAYSCALE_TEXT_RENDERING: LazyLock<RwLock<HashMap<Option<u64>, bool>>> =
+    LazyLock::new(|| RwLock::new(HashMap::default()));
 
 const SUPPORTED_COLOR_GLYPH_IMAGE_FORMATS: DWRITE_GLYPH_IMAGE_FORMATS =
     DWRITE_GLYPH_IMAGE_FORMATS_COLR;
@@ -86,11 +88,13 @@ pub(crate) fn set_direct_write_text_rendering_params(
     params: Option<DirectWriteTextRenderingParams>,
 ) {
     *DIRECT_WRITE_TEXT_RENDERING_PARAMS.write() = params;
+    CACHED_FORCE_GRAYSCALE_TEXT_RENDERING.write().clear();
     DirectXRenderer::invalidate_font_info();
 }
 
 pub(crate) fn refresh_direct_write_system_settings() {
     SYSTEM_SUBPIXEL_RENDERING.store(get_system_subpixel_rendering(), Ordering::Relaxed);
+    CACHED_FORCE_GRAYSCALE_TEXT_RENDERING.write().clear();
     DirectXRenderer::invalidate_font_info();
 }
 
@@ -98,6 +102,12 @@ pub(crate) fn monitor_from_display_id(display_id: Option<DisplayId>) -> Option<H
     display_id
         .map(|display_id| HMONITOR(u64::from(display_id) as _))
         .filter(|monitor| !monitor.is_invalid())
+}
+
+fn monitor_cache_key(monitor: Option<HMONITOR>) -> Option<u64> {
+    monitor
+        .filter(|monitor| !monitor.is_invalid())
+        .map(|monitor| monitor.0 as u64)
 }
 
 fn create_default_rendering_params(
@@ -255,6 +265,39 @@ fn direct_write_params_require_grayscale_text_rendering() -> bool {
     }
 
     false
+}
+
+fn resolved_rendering_params_require_grayscale_text_rendering(
+    factory: &IDWriteFactory5,
+    display_id: Option<DisplayId>,
+) -> bool {
+    if direct_write_params_require_grayscale_text_rendering() {
+        return true;
+    }
+
+    let monitor = monitor_from_display_id(display_id);
+    let cache_key = monitor_cache_key(monitor);
+    if let Some(force_grayscale) = CACHED_FORCE_GRAYSCALE_TEXT_RENDERING
+        .read()
+        .get(&cache_key)
+        .copied()
+    {
+        return force_grayscale;
+    }
+
+    let mut cached = CACHED_FORCE_GRAYSCALE_TEXT_RENDERING.write();
+    if let Some(force_grayscale) = cached.get(&cache_key).copied() {
+        return force_grayscale;
+    }
+
+    let force_grayscale = resolve_direct_write_rendering_params(factory, monitor)
+        .map(|params| unsafe {
+            params.rendering_params.GetPixelGeometry() == DWRITE_PIXEL_GEOMETRY_FLAT
+                || params.rendering_params.GetClearTypeLevel() <= 0.0
+        })
+        .unwrap_or(false);
+    cached.insert(cache_key, force_grayscale);
+    force_grayscale
 }
 
 fn effective_subpixel_rendering(requested_subpixel_rendering: bool) -> bool {
@@ -558,12 +601,16 @@ impl PlatformTextSystem for DirectWriteTextSystem {
         &self,
         _font_id: FontId,
         _font_size: Pixels,
+        display_id: Option<DisplayId>,
     ) -> TextRenderingMode {
         // Some DirectWrite parameters force grayscale coverage, while GPUI
         // selects atlas format and shader path from
         // RenderGlyphParams::subpixel_rendering. Keep platform-default glyphs
         // on the monochrome path when those parameters are configured.
-        if direct_write_params_require_grayscale_text_rendering() {
+        if resolved_rendering_params_require_grayscale_text_rendering(
+            &self.components.factory,
+            display_id,
+        ) {
             return TextRenderingMode::Grayscale;
         }
 
@@ -574,8 +621,11 @@ impl PlatformTextSystem for DirectWriteTextSystem {
         }
     }
 
-    fn should_force_grayscale_text_rendering(&self) -> bool {
-        direct_write_params_require_grayscale_text_rendering()
+    fn should_force_grayscale_text_rendering(&self, display_id: Option<DisplayId>) -> bool {
+        resolved_rendering_params_require_grayscale_text_rendering(
+            &self.components.factory,
+            display_id,
+        )
     }
 }
 

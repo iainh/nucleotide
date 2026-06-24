@@ -3928,14 +3928,18 @@ impl Window {
             return false;
         }
 
-        if self.text_system().should_force_grayscale_text_rendering() {
+        if self
+            .text_system()
+            .should_force_grayscale_text_rendering(self.display_id)
+        {
             return false;
         }
 
         let mode = match self.text_rendering_mode.get() {
-            TextRenderingMode::PlatformDefault => self
-                .text_system()
-                .recommended_rendering_mode(font_id, font_size),
+            TextRenderingMode::PlatformDefault => {
+                self.text_system()
+                    .recommended_rendering_mode(font_id, font_size, self.display_id)
+            }
             mode => mode,
         };
 

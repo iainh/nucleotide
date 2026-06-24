@@ -34,8 +34,8 @@ use font_kit::{
     sources::mem::MemSource,
 };
 use gpui::{
-    Bounds, DevicePixels, Font, FontFallbacks, FontFeatures, FontId, FontMetrics, FontRun,
-    FontStyle, FontWeight, GlyphId, Hsla, LineLayout, Pixels, PlatformTextSystem,
+    Bounds, DevicePixels, DisplayId, Font, FontFallbacks, FontFeatures, FontId, FontMetrics,
+    FontRun, FontStyle, FontWeight, GlyphId, Hsla, LineLayout, Pixels, PlatformTextSystem,
     RenderGlyphParams, Result, Rgba, SUBPIXEL_VARIANTS_X, ShapedGlyph, ShapedRun, SharedString,
     Size, TextRenderingMode, point, px, size, swap_rgba_pa_to_bgra,
 };
@@ -211,6 +211,7 @@ impl PlatformTextSystem for MacTextSystem {
         &self,
         _font_id: FontId,
         _font_size: Pixels,
+        _display_id: Option<DisplayId>,
     ) -> TextRenderingMode {
         TextRenderingMode::Grayscale
     }
