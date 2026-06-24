@@ -1801,15 +1801,15 @@ fn strip_html_markup(content: &str) -> String {
             if let Some(skip_len) = html_raw_text_element_len(rest, tag_name) {
                 cursor += skip_len;
             } else {
-                text.push_str(rest);
-                break;
+                text.push('<');
+                cursor += '<'.len_utf8();
             }
         } else if rest.starts_with('<') {
-            if let Some(tag_len) = html_tag_len(rest) {
+            if let Some(tag_len) = html_normal_tag_len(rest) {
                 cursor += tag_len;
             } else {
-                text.push_str(rest);
-                break;
+                text.push('<');
+                cursor += '<'.len_utf8();
             }
         } else if let Some(ch) = rest.chars().next() {
             text.push(ch);
@@ -1851,14 +1851,24 @@ fn html_open_tag_name(markup: &str) -> Option<&str> {
 }
 
 fn html_raw_text_element_len(markup: &str, tag_name: &str) -> Option<usize> {
-    let after_opening_start = html_tag_len(markup)?;
+    let after_opening_start = html_normal_tag_len(markup)?;
     let after_opening = &markup[after_opening_start..];
     let Some(closing_start) = find_closing_html_tag(after_opening, tag_name) else {
         return Some(markup.len());
     };
     let closing = &after_opening[closing_start..];
-    let closing_len = html_tag_len(closing)?;
+    let closing_len = html_normal_tag_len(closing)?;
     Some(after_opening_start + closing_start + closing_len)
+}
+
+fn html_normal_tag_len(markup: &str) -> Option<usize> {
+    let tag_len = html_tag_len(markup)?;
+    let tag = &markup[..tag_len];
+    if html_open_tag_is_valid(tag) || html_closing_tag_is_valid(tag) {
+        Some(tag_len)
+    } else {
+        None
+    }
 }
 
 fn html_tag_len(markup: &str) -> Option<usize> {
@@ -1878,6 +1888,130 @@ fn html_tag_len(markup: &str) -> Option<usize> {
     }
 
     None
+}
+
+fn html_open_tag_is_valid(tag: &str) -> bool {
+    let Some(mut rest) = tag.strip_prefix('<').and_then(|tag| tag.strip_suffix('>')) else {
+        return false;
+    };
+    if rest.starts_with(['/', '!', '?']) {
+        return false;
+    }
+
+    let Some(tag_name_len) = html_tag_name_len(rest) else {
+        return false;
+    };
+    rest = &rest[tag_name_len..];
+
+    loop {
+        rest = trim_html_whitespace(rest);
+        if rest.is_empty() {
+            return true;
+        }
+        if rest == "/" {
+            return true;
+        }
+        if rest.starts_with('/') {
+            return false;
+        }
+
+        let Some(attribute_name_len) = html_attribute_name_len(rest) else {
+            return false;
+        };
+        rest = &rest[attribute_name_len..];
+        let after_name = trim_html_whitespace(rest);
+        if let Some(after_equals) = after_name.strip_prefix('=') {
+            let after_equals = trim_html_whitespace(after_equals);
+            let Some(value_len) = html_attribute_value_len(after_equals) else {
+                return false;
+            };
+            rest = &after_equals[value_len..];
+        }
+
+        if !html_tag_attribute_separator_is_next(rest) {
+            return false;
+        }
+    }
+}
+
+fn html_closing_tag_is_valid(tag: &str) -> bool {
+    let Some(body) = tag.strip_prefix("</").and_then(|tag| tag.strip_suffix('>')) else {
+        return false;
+    };
+    let body = trim_html_whitespace(body);
+    let Some(tag_name_len) = html_tag_name_len(body) else {
+        return false;
+    };
+
+    trim_html_whitespace(&body[tag_name_len..]).is_empty()
+}
+
+fn html_tag_name_len(text: &str) -> Option<usize> {
+    let mut chars = text.char_indices();
+    let (_, first) = chars.next()?;
+    if !first.is_ascii_alphabetic() {
+        return None;
+    }
+
+    for (index, ch) in chars {
+        if !(ch.is_ascii_alphanumeric() || ch == '-') {
+            return Some(index);
+        }
+    }
+
+    Some(text.len())
+}
+
+fn html_attribute_name_len(text: &str) -> Option<usize> {
+    let mut chars = text.char_indices();
+    let (_, first) = chars.next()?;
+    if !(first.is_ascii_alphabetic() || first == '_' || first == ':') {
+        return None;
+    }
+
+    for (index, ch) in chars {
+        if !(ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | ':' | '-')) {
+            return Some(index);
+        }
+    }
+
+    Some(text.len())
+}
+
+fn html_attribute_value_len(text: &str) -> Option<usize> {
+    if let Some(value) = text.strip_prefix('"') {
+        return value
+            .find('"')
+            .map(|index| '"'.len_utf8() + index + '"'.len_utf8());
+    }
+    if let Some(value) = text.strip_prefix('\'') {
+        return value
+            .find('\'')
+            .map(|index| '\''.len_utf8() + index + '\''.len_utf8());
+    }
+
+    let mut len = 0;
+    for (index, ch) in text.char_indices() {
+        if ch.is_ascii_whitespace() || matches!(ch, '"' | '\'' | '=' | '<' | '>' | '`') {
+            break;
+        }
+        len = index + ch.len_utf8();
+    }
+
+    (len > 0).then_some(len)
+}
+
+fn html_tag_attribute_separator_is_next(text: &str) -> bool {
+    text.is_empty()
+        || text.starts_with('/')
+        || text
+            .chars()
+            .next()
+            .is_some_and(|ch| ch.is_ascii_whitespace())
+}
+
+fn trim_html_whitespace(text: &str) -> &str {
+    text.trim_matches(|ch: char| ch.is_ascii_whitespace())
 }
 
 fn find_closing_html_tag(content: &str, tag_name: &str) -> Option<usize> {
@@ -2979,6 +3113,17 @@ mod tests {
             )
             .as_ref(),
             ""
+        );
+    }
+
+    #[test]
+    fn html_block_display_preserves_invalid_tag_text() {
+        assert_eq!(
+            visible_html_text(
+                "<div>\n<33> <__>\n<a h*#ref=\"hi\">\n<a href=\"hi'> <a href=hi'>\n</div>"
+            )
+            .as_ref(),
+            "<33> <__>\n<a h*#ref=\"hi\">\n<a href=\"hi'> <a href=hi'>"
         );
     }
 
