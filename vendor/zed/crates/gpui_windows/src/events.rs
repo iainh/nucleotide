@@ -1139,11 +1139,29 @@ impl WindowsWindowInner {
             // system settings may emit a window message which wants to take the refcell self.state, so drop it
 
             self.system_settings().update(wparam.0);
+            if text_rendering_setting_changed(wparam) {
+                self.invalidate_text_rendering_settings();
+            }
         } else {
             self.handle_system_theme_changed(handle, lparam)?;
         };
 
         Some(0)
+    }
+
+    fn invalidate_text_rendering_settings(&self) {
+        DirectXRenderer::invalidate_font_info();
+        self.state
+            .text_rendering_generation
+            .set(self.state.text_rendering_generation.get().wrapping_add(1));
+
+        if let Some(mut request_frame) = self.state.callbacks.request_frame.take() {
+            request_frame(RequestFrameOptions {
+                require_presentation: false,
+                force_render: true,
+            });
+            self.state.callbacks.request_frame.set(Some(request_frame));
+        }
     }
 
     fn handle_system_theme_changed(&self, handle: HWND, lparam: LPARAM) -> Option<isize> {
@@ -1624,6 +1642,20 @@ fn should_use_ime_cursor_position(ctx: HIMC, cursor_pos: usize) -> bool {
 #[inline]
 fn is_virtual_key_pressed(vkey: VIRTUAL_KEY) -> bool {
     unsafe { GetKeyState(vkey.0 as i32) < 0 }
+}
+
+fn text_rendering_setting_changed(wparam: WPARAM) -> bool {
+    matches!(
+        SYSTEM_PARAMETERS_INFO_ACTION(wparam.0 as u32),
+        SPI_GETFONTSMOOTHING
+            | SPI_SETFONTSMOOTHING
+            | SPI_GETFONTSMOOTHINGCONTRAST
+            | SPI_SETFONTSMOOTHINGCONTRAST
+            | SPI_GETFONTSMOOTHINGORIENTATION
+            | SPI_SETFONTSMOOTHINGORIENTATION
+            | SPI_GETFONTSMOOTHINGTYPE
+            | SPI_SETFONTSMOOTHINGTYPE
+    )
 }
 
 #[inline]

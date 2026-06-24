@@ -63,6 +63,7 @@ pub struct WindowsWindowState {
     pub direct_manipulation: DirectManipulationHandler,
 
     pub renderer: RefCell<DirectXRenderer>,
+    pub text_rendering_generation: Cell<u64>,
     /// Set after a GPU device-lost recovery so the next `draw_window` call is
     /// treated as a forced render. This guarantees the next frame both
     /// re-enables drawing (via `mark_drawable`) and bypasses the GPUI view
@@ -166,6 +167,7 @@ impl WindowsWindowState {
             last_reported_capslock: Cell::new(last_reported_capslock),
             hovered: Cell::new(hovered),
             renderer: RefCell::new(renderer),
+            text_rendering_generation: Cell::new(0),
             force_render_after_recovery: Cell::new(false),
             click_state,
             current_cursor: Cell::new(current_cursor),
@@ -820,6 +822,10 @@ impl PlatformWindow for WindowsWindow {
 
     fn is_subpixel_rendering_supported(&self) -> bool {
         true
+    }
+
+    fn text_rendering_generation(&self) -> u64 {
+        self.state.text_rendering_generation.get()
     }
 
     fn set_title(&mut self, title: &str) {
