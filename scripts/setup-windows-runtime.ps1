@@ -33,6 +33,7 @@ $BundleCrateRoot = Join-Path $RepoRoot "crates\nucleotide"
 $RuntimeDest = Join-Path $BundleCrateRoot "runtime"
 $GrammarDest = Join-Path $RuntimeDest "grammars"
 $ManifestDir = Join-Path $BundleCrateRoot "nucleotide"
+$ExcludedGrammarIds = @($ExcludeGrammars | ForEach-Object { $_ -split ',' } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_.Trim() } | Sort-Object -Unique)
 
 function Find-HelixRuntime {
     if (-not [string]::IsNullOrWhiteSpace($RuntimeSource)) {
@@ -182,8 +183,7 @@ function Format-TomlStringList {
 function Update-GrammarExclusions {
     param([string[]]$GrammarIds)
 
-    $ids = @($GrammarIds | ForEach-Object { $_ -split ',' } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_.Trim() } | Sort-Object -Unique)
-    if ($ids.Count -eq 0) {
+    if ($GrammarIds.Count -eq 0) {
         return
     }
 
@@ -198,19 +198,94 @@ function Update-GrammarExclusions {
 
     if ($match.Success) {
         $existing = @([regex]::Matches($match.Groups["items"].Value, '"([^"]+)"') | ForEach-Object { $_.Groups[1].Value })
-        $merged = @($existing + $ids | Sort-Object -Unique)
+        $merged = @($existing + $GrammarIds | Sort-Object -Unique)
         $grammarList = [string](Format-TomlStringList -Values $merged)
         $replacement = "use-grammars = { except = [ $grammarList ] }"
         $content = [regex]::Replace($content, $pattern, $replacement, 1)
     } else {
-        $grammarList = [string](Format-TomlStringList -Values $ids)
+        $grammarList = [string](Format-TomlStringList -Values $GrammarIds)
         $replacement = "use-grammars = { except = [ $grammarList ] }"
         $content = $replacement + [Environment]::NewLine + [Environment]::NewLine + $content
     }
 
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::WriteAllText($languagesFile, $content, $utf8NoBom)
-    Write-Host "Excluded grammar IDs from bundled runtime: $($ids -join ', ')"
+    Write-Host "Excluded grammar IDs from bundled runtime: $($GrammarIds -join ', ')"
+}
+
+function Write-WorkspaceGrammarExclusions {
+    param([string[]]$GrammarIds)
+
+    if ($GrammarIds.Count -eq 0) {
+        return $null
+    }
+
+    $helixDir = Join-Path $RepoRoot ".helix"
+    $languagesFile = Join-Path $helixDir "languages.toml"
+    $hadHelixDir = Test-Path -LiteralPath $helixDir
+    $hadLanguagesFile = Test-Path -LiteralPath $languagesFile
+    $previousContent = $null
+
+    if ($hadLanguagesFile) {
+        $previousContent = [System.IO.File]::ReadAllText($languagesFile)
+        $content = $previousContent
+    } else {
+        $content = ""
+    }
+
+    $pattern = '(?m)^use-grammars\s*=\s*\{\s*except\s*=\s*\[(?<items>[^\]]*)\]\s*\}'
+    $match = [regex]::Match($content, $pattern)
+
+    if ($match.Success) {
+        $existing = @([regex]::Matches($match.Groups["items"].Value, '"([^"]+)"') | ForEach-Object { $_.Groups[1].Value })
+        $merged = @($existing + $GrammarIds | Sort-Object -Unique)
+        $grammarList = [string](Format-TomlStringList -Values $merged)
+        $replacement = "use-grammars = { except = [ $grammarList ] }"
+        $content = [regex]::Replace($content, $pattern, $replacement, 1)
+    } else {
+        $grammarList = [string](Format-TomlStringList -Values $GrammarIds)
+        $replacement = "use-grammars = { except = [ $grammarList ] }"
+        $content = $replacement + [Environment]::NewLine + [Environment]::NewLine + $content
+    }
+
+    if (-not $hadHelixDir) {
+        New-Item -ItemType Directory -Path $helixDir | Out-Null
+    }
+
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($languagesFile, $content, $utf8NoBom)
+    Write-Host "Excluded grammar IDs from grammar commands: $($GrammarIds -join ', ')"
+
+    [pscustomobject]@{
+        HelixDir = $helixDir
+        LanguagesFile = $languagesFile
+        HadHelixDir = $hadHelixDir
+        HadLanguagesFile = $hadLanguagesFile
+        PreviousContent = $previousContent
+    }
+}
+
+function Restore-WorkspaceGrammarExclusions {
+    param($State)
+
+    if ($null -eq $State) {
+        return
+    }
+
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+
+    if ($State.HadLanguagesFile) {
+        [System.IO.File]::WriteAllText($State.LanguagesFile, $State.PreviousContent, $utf8NoBom)
+    } elseif (Test-Path -LiteralPath $State.LanguagesFile) {
+        Remove-Item -LiteralPath $State.LanguagesFile -Force
+    }
+
+    if (-not $State.HadHelixDir -and (Test-Path -LiteralPath $State.HelixDir)) {
+        $remaining = @(Get-ChildItem -LiteralPath $State.HelixDir -Force)
+        if ($remaining.Count -eq 0) {
+            Remove-Item -LiteralPath $State.HelixDir -Force
+        }
+    }
 }
 
 function Invoke-NuclGrammarCommand {
@@ -218,10 +293,12 @@ function Invoke-NuclGrammarCommand {
 
     $oldHelixRuntime = $env:HELIX_RUNTIME
     $oldManifestDir = $env:CARGO_MANIFEST_DIR
+    $grammarConfigState = $null
 
     try {
         $env:HELIX_RUNTIME = $RuntimeDest
         $env:CARGO_MANIFEST_DIR = $ManifestDir
+        $grammarConfigState = Write-WorkspaceGrammarExclusions -GrammarIds $ExcludedGrammarIds
 
         Push-Location $RepoRoot
         try {
@@ -243,6 +320,7 @@ function Invoke-NuclGrammarCommand {
                 $message = "nucl --grammar $Command failed with exit code $LASTEXITCODE"
                 if ($AllowGrammarFailures) {
                     Write-Warning "$message; continuing because -AllowGrammarFailures was specified."
+                    $global:LASTEXITCODE = 0
                     return
                 }
 
@@ -252,6 +330,7 @@ function Invoke-NuclGrammarCommand {
             Pop-Location
         }
     } finally {
+        Restore-WorkspaceGrammarExclusions -State $grammarConfigState
         $env:HELIX_RUNTIME = $oldHelixRuntime
         $env:CARGO_MANIFEST_DIR = $oldManifestDir
     }
@@ -279,7 +358,7 @@ Write-Host "Preparing cargo-bundle runtime: $RuntimeDest"
 Copy-Runtime -Source $runtimeSource
 Copy-NucleotideThemes
 Rename-WixUnsafeQueryDirs
-Update-GrammarExclusions -GrammarIds $ExcludeGrammars
+Update-GrammarExclusions -GrammarIds $ExcludedGrammarIds
 
 if (-not (Test-Path $GrammarDest)) {
     New-Item -ItemType Directory -Path $GrammarDest | Out-Null
