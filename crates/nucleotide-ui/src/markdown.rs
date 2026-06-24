@@ -1,13 +1,13 @@
 // ABOUTME: GPUI-native Markdown rendering for documentation popups and panels
 // ABOUTME: Parses common LSP Markdown into token-aware GPUI elements
 
-use gpui::prelude::FluentBuilder;
+use gpui::prelude::{FluentBuilder, StyledImage};
 use gpui::{
     App, Bounds, CursorStyle, Element, ElementId, FontStyle, FontWeight, GlobalElementId,
     HighlightStyle, Hitbox, HitboxBehavior, Hsla, InspectorElementId, InteractiveElement,
     IntoElement, LayoutId, MouseDownEvent, ParentElement, Pixels, Point, RenderOnce, SharedString,
     StatefulInteractiveElement, StrikethroughStyle, Styled, StyledText, TextLayout, UnderlineStyle,
-    Window, div, px, relative, rems,
+    Window, div, img, px, relative, rems,
 };
 use helix_core::{
     RopeSlice, Syntax,
@@ -208,6 +208,10 @@ pub enum MarkdownBlock {
     },
     HtmlBlock {
         text: String,
+    },
+    Image {
+        url: SharedString,
+        alt: RichText,
     },
     ListItem {
         ordered: bool,
@@ -550,6 +554,18 @@ struct ListContext {
 struct ImageContext {
     dest_url: SharedString,
     start_text_len: usize,
+    nesting_depth: usize,
+    in_link: bool,
+}
+
+#[derive(Clone, Debug)]
+struct ParsedImage {
+    dest_url: SharedString,
+    start_text_len: usize,
+    end_text_len: usize,
+    fallback_inserted: bool,
+    nesting_depth: usize,
+    in_link: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -620,6 +636,7 @@ struct MarkdownParser {
     current_table_row: Vec<RichText>,
     in_table: bool,
     image_stack: Vec<ImageContext>,
+    current_inline_images: Vec<ParsedImage>,
     current_block_has_inline_content: bool,
 }
 
@@ -662,6 +679,7 @@ impl MarkdownParser {
             current_table_row: Vec::new(),
             in_table: false,
             image_stack: Vec::new(),
+            current_inline_images: Vec::new(),
             current_block_has_inline_content: false,
         }
     }
@@ -724,9 +742,11 @@ impl MarkdownParser {
     fn handle_start(&mut self, tag: Tag<'static>) {
         match tag {
             Tag::Paragraph => {
+                self.current_inline_images.clear();
                 self.current_block_has_inline_content = false;
             }
             Tag::Heading { level, .. } => {
+                self.current_inline_images.clear();
                 self.heading = Some(heading_level(level));
                 self.current_block_has_inline_content = false;
             }
@@ -773,6 +793,7 @@ impl MarkdownParser {
                         children: Vec::new(),
                     }));
                 self.current_text = RichText::default();
+                self.current_inline_images.clear();
                 self.current_task_marker = None;
             }
             Tag::Emphasis => {
@@ -796,10 +817,13 @@ impl MarkdownParser {
             }
             Tag::Image { dest_url, .. } => {
                 self.current_block_has_inline_content = true;
+                let nesting_depth = self.image_depth;
                 self.image_depth += 1;
                 self.image_stack.push(ImageContext {
                     dest_url: SharedString::from(dest_url.to_string()),
                     start_text_len: self.current_text.text_len(),
+                    nesting_depth,
+                    in_link: !self.link_stack.is_empty(),
                 });
                 self.refresh_inline_style_flags();
                 self.refresh_link_style();
@@ -815,6 +839,7 @@ impl MarkdownParser {
             }
             Tag::TableCell => {
                 self.current_text = RichText::default();
+                self.current_inline_images.clear();
                 self.current_block_has_inline_content = false;
             }
             Tag::FootnoteDefinition(_)
@@ -881,11 +906,20 @@ impl MarkdownParser {
                 self.refresh_link_style();
             }
             TagEnd::Image => {
-                if let Some(context) = self.image_stack.pop()
-                    && self.current_text.text_len() == context.start_text_len
-                {
-                    self.current_text
-                        .push(context.dest_url.as_ref(), self.active_style.clone());
+                if let Some(context) = self.image_stack.pop() {
+                    let fallback_inserted = self.current_text.text_len() == context.start_text_len;
+                    if fallback_inserted {
+                        self.current_text
+                            .push(context.dest_url.as_ref(), self.active_style.clone());
+                    }
+                    self.current_inline_images.push(ParsedImage {
+                        dest_url: context.dest_url,
+                        start_text_len: context.start_text_len,
+                        end_text_len: self.current_text.text_len(),
+                        fallback_inserted,
+                        nesting_depth: context.nesting_depth,
+                        in_link: context.in_link,
+                    });
                 }
                 self.image_depth = self.image_depth.saturating_sub(1);
                 self.refresh_inline_style_flags();
@@ -904,6 +938,7 @@ impl MarkdownParser {
             TagEnd::TableCell => {
                 self.current_table_row
                     .push(std::mem::take(&mut self.current_text));
+                self.current_inline_images.clear();
                 self.current_block_has_inline_content = false;
             }
             TagEnd::FootnoteDefinition
@@ -933,6 +968,7 @@ impl MarkdownParser {
 
     fn flush_heading(&mut self, level: u8) {
         let text = std::mem::take(&mut self.current_text);
+        self.current_inline_images.clear();
         self.current_block_has_inline_content = false;
         self.push_block(MarkdownBlock::Heading { level, text });
     }
@@ -975,6 +1011,7 @@ impl MarkdownParser {
 
     fn flush_current_text_into_open_list_item(&mut self) {
         if self.current_text.is_empty() && !self.current_block_has_inline_content {
+            self.current_inline_images.clear();
             return;
         }
 
@@ -986,11 +1023,18 @@ impl MarkdownParser {
     fn flush_current_text_as_paragraph(&mut self) {
         let text_is_empty = self.current_text.is_empty();
         if text_is_empty && !self.current_block_has_inline_content {
+            self.current_inline_images.clear();
             return;
         }
 
         let text = std::mem::take(&mut self.current_text);
         self.current_block_has_inline_content = false;
+        if let Some(image) = self.take_standalone_image_block(&text) {
+            self.push_block(image);
+            return;
+        }
+
+        self.current_inline_images.clear();
         if let Some(MarkdownContainer::ListItem(item)) = self.containers.last_mut()
             && item.text.is_empty()
             && item.children.is_empty()
@@ -1001,6 +1045,31 @@ impl MarkdownParser {
         }
 
         self.push_block(MarkdownBlock::Paragraph(text));
+    }
+
+    fn take_standalone_image_block(&mut self, text: &RichText) -> Option<MarkdownBlock> {
+        let image = self
+            .current_inline_images
+            .iter()
+            .find(|image| {
+                image.nesting_depth == 0
+                    && !image.in_link
+                    && image.start_text_len == 0
+                    && image.end_text_len == text.text_len()
+            })?
+            .clone();
+        self.current_inline_images.clear();
+
+        let alt = if image.fallback_inserted {
+            RichText::default()
+        } else {
+            rich_text_from_plain(text.plain_text())
+        };
+
+        Some(MarkdownBlock::Image {
+            url: image.dest_url,
+            alt,
+        })
     }
 
     fn push_block(&mut self, block: MarkdownBlock) {
@@ -1160,6 +1229,10 @@ fn render_blocks(
                 &format!("{id_prefix}-html-block-{block_index}"),
             )
             .into_any_element(),
+            MarkdownBlock::Image { url, alt } => {
+                render_image_block(url, alt, style, &format!("{id_prefix}-image-{block_index}"))
+                    .into_any_element()
+            }
             MarkdownBlock::ListItem { .. } => render_list_item(
                 block,
                 style,
@@ -1462,6 +1535,58 @@ fn render_html_block(
         syntax_loader,
         block_id,
     )
+}
+
+fn render_image_block(
+    url: SharedString,
+    alt: RichText,
+    style: &MarkdownStyle,
+    block_id: &str,
+) -> gpui::Div {
+    let fallback_style = style.clone();
+    let fallback_id = format!("{block_id}-fallback");
+    let fallback_text = image_fallback_text(&url, alt);
+
+    div()
+        .w_full()
+        .when(style.preview, |this| this.my(px(10.0)))
+        .child(
+            img(url)
+                .max_w_full()
+                .rounded(px(4.0))
+                .with_fallback(move || {
+                    render_rich_text(
+                        fallback_text.clone(),
+                        &fallback_style,
+                        fallback_style.body_color,
+                        fallback_id.clone(),
+                    )
+                    .into_any_element()
+                }),
+        )
+}
+
+fn image_fallback_text(url: &SharedString, alt: RichText) -> RichText {
+    if !alt.is_empty() {
+        return alt;
+    }
+
+    let mut text = RichText::default();
+    text.push(
+        url.as_ref(),
+        InlineStyle {
+            link: true,
+            link_url: Some(url.clone()),
+            ..InlineStyle::default()
+        },
+    );
+    text
+}
+
+fn rich_text_from_plain(text: impl AsRef<str>) -> RichText {
+    let mut rich_text = RichText::default();
+    rich_text.push(text.as_ref(), InlineStyle::default());
+    rich_text
 }
 
 fn render_list_item(
@@ -2074,35 +2199,98 @@ mod tests {
     }
 
     #[test]
-    fn image_alt_text_preserves_source_link_without_emphasis() {
-        let document = MarkdownDocument::parse("![logo](https://example.com/logo.png)");
+    fn standalone_image_preserves_destination_and_plain_alt_text() {
+        let document = MarkdownDocument::parse("![*logo*](https://example.com/logo.png)");
 
-        let MarkdownBlock::Paragraph(text) = &document.blocks[0] else {
-            panic!("expected image fallback paragraph");
+        let MarkdownBlock::Image { url, alt } = &document.blocks[0] else {
+            panic!("expected standalone image block");
         };
 
-        assert_eq!(text.plain_text(), "logo");
-        assert_eq!(text.spans().len(), 1);
-        let span = &text.spans()[0];
+        assert_eq!(url.as_ref(), "https://example.com/logo.png");
+        assert_eq!(alt.plain_text(), "logo");
+        assert_eq!(alt.spans().len(), 1);
+        let span = &alt.spans()[0];
         assert!(!span.style.italic);
-        assert!(span.style.link);
+        assert!(!span.style.link);
+        assert_eq!(span.style.link_url.as_deref(), None);
+    }
+
+    #[test]
+    fn standalone_image_keeps_empty_alt_text_empty() {
+        let document = MarkdownDocument::parse("![](image.png)");
+
+        let MarkdownBlock::Image { url, alt } = &document.blocks[0] else {
+            panic!("expected standalone image block");
+        };
+
+        assert_eq!(url.as_ref(), "image.png");
+        assert!(alt.is_empty());
+    }
+
+    #[test]
+    fn standalone_nested_image_uses_outer_destination() {
+        let document = MarkdownDocument::parse("![foo ![bar](/bar.png)](/outer.png)");
+
+        let MarkdownBlock::Image { url, alt } = &document.blocks[0] else {
+            panic!("expected standalone image block");
+        };
+
+        assert_eq!(url.as_ref(), "/outer.png");
+        assert_eq!(alt.plain_text(), "foo bar");
+    }
+
+    #[test]
+    fn list_item_standalone_image_becomes_child_block() {
+        let document = MarkdownDocument::parse("- ![logo](logo.png)");
+
+        let MarkdownBlock::ListItem { text, children, .. } = &document.blocks[0] else {
+            panic!("expected list item");
+        };
+
+        assert!(text.is_empty());
+        assert!(matches!(
+            children.as_slice(),
+            [MarkdownBlock::Image { url, alt }]
+                if url.as_ref() == "logo.png" && alt.plain_text() == "logo"
+        ));
+    }
+
+    #[test]
+    fn inline_image_alt_text_preserves_source_link_without_emphasis() {
+        let document = MarkdownDocument::parse("See ![logo](https://example.com/logo.png).");
+
+        let MarkdownBlock::Paragraph(text) = &document.blocks[0] else {
+            panic!("expected inline image fallback paragraph");
+        };
+
+        assert_eq!(text.plain_text(), "See logo.");
+        let logo_span = text
+            .spans()
+            .iter()
+            .find(|span| span.text == "logo")
+            .expect("logo alt text span");
+        assert!(!logo_span.style.italic);
+        assert!(logo_span.style.link);
         assert_eq!(
-            span.style.link_url.as_deref(),
+            logo_span.style.link_url.as_deref(),
             Some("https://example.com/logo.png")
         );
     }
 
     #[test]
-    fn empty_image_alt_text_keeps_source_visible() {
-        let document = MarkdownDocument::parse("![](image.png)");
+    fn inline_empty_image_alt_text_keeps_source_visible() {
+        let document = MarkdownDocument::parse("See ![](image.png)");
 
         let MarkdownBlock::Paragraph(text) = &document.blocks[0] else {
-            panic!("expected image fallback paragraph");
+            panic!("expected inline image fallback paragraph");
         };
 
-        assert_eq!(text.plain_text(), "image.png");
-        assert_eq!(text.spans().len(), 1);
-        let span = &text.spans()[0];
+        assert_eq!(text.plain_text(), "See image.png");
+        let span = text
+            .spans()
+            .iter()
+            .find(|span| span.text == "image.png")
+            .expect("image source fallback span");
         assert!(span.style.link);
         assert_eq!(span.style.link_url.as_deref(), Some("image.png"));
     }
