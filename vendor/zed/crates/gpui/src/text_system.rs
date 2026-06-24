@@ -1044,6 +1044,7 @@ pub struct RenderGlyphParams {
     pub glyph_id: GlyphId,
     pub font_size: Pixels,
     pub display_id: Option<DisplayId>,
+    pub text_rendering_generation: u64,
     pub subpixel_variant: Point<u8>,
     pub scale_factor: f32,
     pub is_emoji: bool,
@@ -1059,6 +1060,7 @@ impl Hash for RenderGlyphParams {
         self.glyph_id.0.hash(state);
         self.font_size.0.to_bits().hash(state);
         self.display_id.hash(state);
+        self.text_rendering_generation.hash(state);
         self.subpixel_variant.hash(state);
         self.scale_factor.to_bits().hash(state);
         self.is_emoji.hash(state);

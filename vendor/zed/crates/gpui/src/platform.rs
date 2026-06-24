@@ -663,6 +663,9 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn completed_frame(&self) {}
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas>;
     fn is_subpixel_rendering_supported(&self) -> bool;
+    fn text_rendering_generation(&self) -> u64 {
+        0
+    }
 
     // macOS specific methods
     fn get_title(&self) -> String {
