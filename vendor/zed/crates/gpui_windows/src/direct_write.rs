@@ -18,7 +18,8 @@ use windows::{
         Globalization::GetUserDefaultLocaleName,
         Graphics::{
             Direct3D::D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP, Direct3D11::*, DirectWrite::*,
-            Dxgi::Common::*, Gdi::LOGFONTW,
+            Dxgi::Common::*,
+            Gdi::{HMONITOR, LOGFONTW},
         },
         System::SystemServices::LOCALE_NAME_MAX_LENGTH,
         UI::WindowsAndMessaging::*,

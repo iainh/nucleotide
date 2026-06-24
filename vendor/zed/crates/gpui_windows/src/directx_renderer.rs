@@ -9,15 +9,15 @@ use gpui_util::ResultExt;
 use parking_lot::RwLock;
 use windows::{
     Win32::{
-        Foundation::{HMONITOR, HWND},
+        Foundation::HWND,
         Graphics::{
             Direct3D::*,
             Direct3D11::*,
             DirectComposition::*,
             DirectWrite::*,
             Dxgi::{Common::*, *},
+            Gdi::{HMONITOR, MONITOR_DEFAULTTONEAREST, MonitorFromWindow},
         },
-        UI::WindowsAndMessaging::{MONITOR_DEFAULTTONEAREST, MonitorFromWindow},
     },
     core::Interface,
 };
