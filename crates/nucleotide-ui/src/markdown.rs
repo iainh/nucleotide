@@ -3,11 +3,10 @@
 
 use gpui::prelude::{FluentBuilder, StyledImage};
 use gpui::{
-    App, AppContext, Bounds, CursorStyle, Element, ElementId, FontStyle, FontWeight,
-    GlobalElementId, HighlightStyle, Hitbox, HitboxBehavior, Hsla, InspectorElementId,
-    InteractiveElement, IntoElement, LayoutId, MouseButton, MouseDownEvent, ParentElement, Pixels,
-    Point, Render, RenderOnce, SharedString, StatefulInteractiveElement, StrikethroughStyle,
-    Styled, StyledText, TextLayout, UnderlineStyle, Window, div, img, px, relative, rems,
+    AppContext, ElementId, FontStyle, FontWeight, HighlightStyle, Hsla, InteractiveElement,
+    InteractiveText, IntoElement, MouseButton, ParentElement, Pixels, Render, RenderOnce,
+    SharedString, StatefulInteractiveElement, StrikethroughStyle, Styled, StyledText,
+    UnderlineStyle, Window, div, img, px, relative, rems,
 };
 use helix_core::{
     RopeSlice, Syntax,
@@ -394,6 +393,7 @@ impl RichText {
                 links.push(LinkRange {
                     range: start..end,
                     url,
+                    title: span.style.link_title,
                 });
             }
         }
@@ -425,6 +425,7 @@ struct InlineImage {
 struct LinkRange {
     range: Range<usize>,
     url: SharedString,
+    title: Option<SharedString>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -432,125 +433,6 @@ struct RichTextRenderParts {
     text: SharedString,
     highlights: Vec<(Range<usize>, HighlightStyle)>,
     links: Vec<LinkRange>,
-}
-
-struct LinkText {
-    element_id: ElementId,
-    text: StyledText,
-    links: Vec<LinkRange>,
-}
-
-impl LinkText {
-    fn new(element_id: impl Into<ElementId>, text: StyledText, links: Vec<LinkRange>) -> Self {
-        Self {
-            element_id: element_id.into(),
-            text,
-            links,
-        }
-    }
-
-    fn url_for_position(
-        text_layout: &TextLayout,
-        links: &[LinkRange],
-        position: Point<Pixels>,
-    ) -> Option<SharedString> {
-        let index = text_layout.index_for_position(position).ok()?;
-        links
-            .iter()
-            .find(|link| link.range.contains(&index))
-            .map(|link| link.url.clone())
-    }
-}
-
-impl Element for LinkText {
-    type RequestLayoutState = ();
-    type PrepaintState = Hitbox;
-
-    fn id(&self) -> Option<ElementId> {
-        Some(self.element_id.clone())
-    }
-
-    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
-        None
-    }
-
-    fn request_layout(
-        &mut self,
-        _id: Option<&GlobalElementId>,
-        inspector_id: Option<&InspectorElementId>,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> (LayoutId, Self::RequestLayoutState) {
-        self.text.request_layout(None, inspector_id, window, cx)
-    }
-
-    fn prepaint(
-        &mut self,
-        _global_id: Option<&GlobalElementId>,
-        inspector_id: Option<&InspectorElementId>,
-        bounds: Bounds<Pixels>,
-        state: &mut Self::RequestLayoutState,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Hitbox {
-        self.text
-            .prepaint(None, inspector_id, bounds, state, window, cx);
-        window.insert_hitbox(bounds, HitboxBehavior::Normal)
-    }
-
-    fn paint(
-        &mut self,
-        _global_id: Option<&GlobalElementId>,
-        inspector_id: Option<&InspectorElementId>,
-        bounds: Bounds<Pixels>,
-        _state: &mut Self::RequestLayoutState,
-        hitbox: &mut Hitbox,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        let text_layout = self.text.layout().clone();
-
-        if Self::url_for_position(&text_layout, &self.links, window.mouse_position()).is_some() {
-            window.set_cursor_style(CursorStyle::PointingHand, hitbox);
-        }
-
-        window.on_mouse_event({
-            let text_layout = text_layout.clone();
-            let links = self.links.clone();
-            move |event: &MouseDownEvent, phase, _window, cx| {
-                if !phase.capture() || !bounds.contains(&event.position) {
-                    return;
-                }
-
-                if let Some(url) = Self::url_for_position(&text_layout, &links, event.position) {
-                    let url = url.to_string();
-                    nucleotide_logging::info!(
-                        url = %url,
-                        position = ?event.position,
-                        "Markdown documentation link click received"
-                    );
-                    cx.stop_propagation();
-                    cx.open_url(&url);
-                } else {
-                    nucleotide_logging::info!(
-                        position = ?event.position,
-                        "Markdown documentation mouse down missed link range"
-                    );
-                }
-            }
-        });
-
-        self.text
-            .paint(None, inspector_id, bounds, &mut (), &mut (), window, cx);
-    }
-}
-
-impl IntoElement for LinkText {
-    type Element = Self;
-
-    fn into_element(self) -> Self::Element {
-        self
-    }
 }
 
 #[derive(Clone)]
@@ -583,6 +465,7 @@ pub struct InlineStyle {
     pub code: bool,
     pub link: bool,
     pub link_url: Option<SharedString>,
+    pub link_title: Option<SharedString>,
 }
 
 impl InlineStyle {
@@ -623,6 +506,12 @@ struct ImageContext {
     start_text_len: usize,
     nesting_depth: usize,
     link_url: Option<SharedString>,
+}
+
+#[derive(Clone, Debug)]
+struct LinkContext {
+    url: SharedString,
+    title: Option<SharedString>,
 }
 
 #[derive(Clone, Debug)]
@@ -697,7 +586,7 @@ struct MarkdownParser {
     html_text: String,
     list_stack: Vec<ListContext>,
     current_task_marker: Option<bool>,
-    link_stack: Vec<SharedString>,
+    link_stack: Vec<LinkContext>,
     image_depth: usize,
     table_alignments: Vec<TableAlignment>,
     table_rows: Vec<Vec<RichText>>,
@@ -879,12 +768,17 @@ impl MarkdownParser {
                 self.strikethrough_depth += 1;
                 self.refresh_inline_style_flags();
             }
-            Tag::Link { dest_url, .. } => {
+            Tag::Link {
+                dest_url, title, ..
+            } => {
                 self.current_block_has_inline_content = true;
-                let url = SharedString::from(dest_url.to_string());
-                self.link_stack.push(url.clone());
+                let context = LinkContext {
+                    url: SharedString::from(dest_url.to_string()),
+                    title: nonempty_shared_string(&title),
+                };
+                self.link_stack.push(context);
                 self.active_style.link = true;
-                self.active_style.link_url = Some(url);
+                self.refresh_link_style();
             }
             Tag::Image {
                 dest_url, title, ..
@@ -897,7 +791,7 @@ impl MarkdownParser {
                     title: nonempty_shared_string(&title),
                     start_text_len: self.current_text.text_len(),
                     nesting_depth,
-                    link_url: self.link_stack.last().cloned(),
+                    link_url: self.link_stack.last().map(|link| link.url.clone()),
                 });
                 self.refresh_inline_style_flags();
                 self.refresh_link_style();
@@ -1183,14 +1077,15 @@ impl MarkdownParser {
     }
 
     fn refresh_link_style(&mut self) {
-        let link_url = self
-            .link_stack
-            .last()
-            .cloned()
+        let link = self.link_stack.last();
+        let link_url = link
+            .map(|link| link.url.clone())
             .or_else(|| self.image_stack.last().map(|image| image.dest_url.clone()));
+        let link_title = link.and_then(|link| link.title.clone());
 
         self.active_style.link = link_url.is_some();
         self.active_style.link_url = link_url;
+        self.active_style.link_title = link_title;
     }
 }
 
@@ -1409,7 +1304,42 @@ fn render_rich_text_fragment(
     let text = if parts.links.is_empty() {
         text.into_any_element()
     } else {
-        LinkText::new(element_id, text, parts.links).into_any_element()
+        let click_ranges = parts
+            .links
+            .iter()
+            .map(|link| link.range.clone())
+            .collect::<Vec<_>>();
+        let click_links = parts.links.clone();
+        let tooltip_links = parts.links;
+        let tooltip_style = style.clone();
+
+        InteractiveText::new(element_id, text)
+            .on_click(click_ranges, move |range_ix, _window, cx| {
+                let Some(link) = click_links.get(range_ix) else {
+                    return;
+                };
+
+                let url = link.url.to_string();
+                nucleotide_logging::info!(
+                    url = %url,
+                    "Markdown documentation link click received"
+                );
+                cx.open_url(&url);
+            })
+            .tooltip(move |index, _window, cx| {
+                tooltip_links
+                    .iter()
+                    .find(|link| link.range.contains(&index))
+                    .and_then(|link| link.title.clone())
+                    .map(|title| {
+                        cx.new(|_| MarkdownTooltip {
+                            text: title,
+                            style: tooltip_style.clone(),
+                        })
+                        .into()
+                    })
+            })
+            .into_any_element()
     };
 
     div().child(text)
@@ -2808,6 +2738,36 @@ mod tests {
         assert_eq!(parts.links.len(), 1);
         assert_eq!(&plain[parts.links[0].range.clone()], "docs");
         assert_eq!(parts.links[0].url.as_ref(), "https://example.com");
+        assert!(parts.links[0].title.is_none());
+    }
+
+    #[test]
+    fn rich_text_exposes_link_titles() {
+        let document = MarkdownDocument::parse("See [docs](https://example.com \"Docs title\").");
+        let MarkdownBlock::Paragraph(text) = document.blocks[0].clone() else {
+            panic!("expected paragraph");
+        };
+        let tokens = DesignTokens::dark();
+        let style = MarkdownStyle::from_tokens(&tokens);
+
+        assert_eq!(text.spans().len(), 3);
+        assert_eq!(text.spans()[1].text, "docs");
+        assert_eq!(
+            text.spans()[1].style.link_url.as_deref(),
+            Some("https://example.com")
+        );
+        assert_eq!(
+            text.spans()[1].style.link_title.as_deref(),
+            Some("Docs title")
+        );
+
+        let parts = text.into_render_parts(&style);
+        let plain = parts.text.to_string();
+
+        assert_eq!(parts.links.len(), 1);
+        assert_eq!(&plain[parts.links[0].range.clone()], "docs");
+        assert_eq!(parts.links[0].url.as_ref(), "https://example.com");
+        assert_eq!(parts.links[0].title.as_deref(), Some("Docs title"));
     }
 
     #[gpui::test]
