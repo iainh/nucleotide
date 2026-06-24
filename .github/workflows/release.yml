@@ -190,7 +190,22 @@ jobs:
 
       - name: Install cargo-bundle
         shell: pwsh
-        run: cargo install cargo-bundle --version 0.11.0 --locked
+        run: |
+          $attempts = 3
+          for ($attempt = 1; $attempt -le $attempts; $attempt++) {
+            cargo install cargo-bundle --version 0.11.0 --locked
+            if ($LASTEXITCODE -eq 0) {
+              exit 0
+            }
+
+            if ($attempt -eq $attempts) {
+              exit $LASTEXITCODE
+            }
+
+            $delay = 15 * $attempt
+            Write-Warning "cargo-bundle install failed on attempt $attempt/$attempts. Retrying in $delay seconds..."
+            Start-Sleep -Seconds $delay
+          }
 
       - name: Prepare bundled runtime
         shell: pwsh
