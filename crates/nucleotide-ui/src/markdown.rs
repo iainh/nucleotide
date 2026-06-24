@@ -589,7 +589,6 @@ struct MarkdownParser {
 impl MarkdownParser {
     fn new(source: &str) -> Self {
         let options = Options::ENABLE_TABLES
-            | Options::ENABLE_FOOTNOTES
             | Options::ENABLE_STRIKETHROUGH
             | Options::ENABLE_TASKLISTS
             | Options::ENABLE_GFM;
@@ -1776,6 +1775,16 @@ mod tests {
         assert!(matches!(
             &document.blocks[1],
             MarkdownBlock::Paragraph(text) if text.plain_text() == "Text <kbd>Esc</kbd>"
+        ));
+    }
+
+    #[test]
+    fn footnote_looking_text_is_not_dropped_as_an_extension() {
+        let document = MarkdownDocument::parse("Footnote [^1].");
+
+        assert!(matches!(
+            &document.blocks[0],
+            MarkdownBlock::Paragraph(text) if text.plain_text() == "Footnote [^1]."
         ));
     }
 
