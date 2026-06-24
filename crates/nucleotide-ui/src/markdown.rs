@@ -1351,13 +1351,15 @@ fn render_rich_text(
         return render_rich_text_with_inline_images(text, style, color, element_id);
     }
 
-    render_rich_text_fragment(text, style, color, element_id).w_full()
+    render_rich_text_fragment(text, style, element_id)
+        .w_full()
+        .text_size(style.body_font_size)
+        .text_color(color)
 }
 
 fn render_rich_text_fragment(
     text: RichText,
     style: &MarkdownStyle,
-    color: Hsla,
     element_id: impl Into<gpui::ElementId>,
 ) -> gpui::Div {
     let parts = text.into_render_parts(style);
@@ -1368,10 +1370,7 @@ fn render_rich_text_fragment(
         LinkText::new(element_id, text, parts.links).into_any_element()
     };
 
-    div()
-        .text_size(style.body_font_size)
-        .text_color(color)
-        .child(text)
+    div().child(text)
 }
 
 fn render_rich_text_with_inline_images(
@@ -1392,7 +1391,6 @@ fn render_rich_text_with_inline_images(
                     render_rich_text_fragment(
                         segment,
                         style,
-                        color,
                         format!("{id_base}-text-{image_index}"),
                     )
                     .into_any_element(),
@@ -1415,7 +1413,7 @@ fn render_rich_text_with_inline_images(
         let segment = text.slice(cursor..text.text_len());
         if !segment.is_empty() {
             children.push(
-                render_rich_text_fragment(segment, style, color, format!("{id_base}-text-tail"))
+                render_rich_text_fragment(segment, style, format!("{id_base}-text-tail"))
                     .into_any_element(),
             );
         }
@@ -1761,9 +1759,10 @@ fn render_inline_image(image: InlineImage, style: &MarkdownStyle, image_id: &str
                     render_rich_text_fragment(
                         fallback_text.clone(),
                         &fallback_style,
-                        fallback_style.body_color,
                         fallback_id.clone(),
                     )
+                    .text_size(fallback_style.body_font_size)
+                    .text_color(fallback_style.body_color)
                     .into_any_element()
                 }),
         )
