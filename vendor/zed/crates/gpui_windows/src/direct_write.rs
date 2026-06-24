@@ -1394,6 +1394,14 @@ impl DirectWriteState {
         unsafe {
             device_context.OMSetRenderTargets(Some(std::slice::from_ref(&render_target_view)), None)
         };
+        unsafe {
+            device_context.ClearRenderTargetView(
+                render_target_view
+                    .as_ref()
+                    .context("missing color glyph render target view")?,
+                &[0.0; 4],
+            )
+        };
         unsafe { device_context.PSSetSamplers(0, Some(std::slice::from_ref(&gpu_state.sampler))) };
         unsafe { device_context.OMSetBlendState(&gpu_state.blend_state, None, 0xffffffff) };
 
