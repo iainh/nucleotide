@@ -978,6 +978,50 @@ impl Frame {
     }
 }
 
+fn window_control_area_for_hit_test(
+    window_control_hitboxes: &[(WindowControlArea, Hitbox)],
+    hit_test: &HitTest,
+) -> Option<WindowControlArea> {
+    window_control_hitboxes
+        .iter()
+        .rev()
+        .find_map(|(area, hitbox)| hit_test.ids.contains(&hitbox.id).then_some(*area))
+}
+
+#[cfg(test)]
+mod window_control_tests {
+    use super::*;
+
+    fn hitbox(id: u64) -> Hitbox {
+        Hitbox {
+            id: HitboxId(id),
+            bounds: Bounds::default(),
+            content_mask: ContentMask::default(),
+            behavior: HitboxBehavior::Normal,
+        }
+    }
+
+    #[test]
+    fn topmost_window_control_hitbox_wins_over_parent_drag_area() {
+        let drag_hitbox = hitbox(1);
+        let close_hitbox = hitbox(2);
+        let hit_test = HitTest {
+            ids: SmallVec::from_slice(&[close_hitbox.id, drag_hitbox.id]),
+            hover_hitbox_count: 2,
+        };
+
+        let area = window_control_area_for_hit_test(
+            &[
+                (WindowControlArea::Drag, drag_hitbox),
+                (WindowControlArea::Close, close_hitbox),
+            ],
+            &hit_test,
+        );
+
+        assert_eq!(area, Some(WindowControlArea::Close));
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
 enum InputModality {
     Mouse,
@@ -1625,15 +1669,14 @@ impl Window {
         });
         platform_window.on_hit_test_window_control({
             let mut cx = cx.to_async();
-            Box::new(move || {
+            Box::new(move |position| {
                 handle
                     .update(&mut cx, |_, window, _cx| {
-                        for (area, hitbox) in &window.rendered_frame.window_control_hitboxes {
-                            if window.mouse_hit_test.ids.contains(&hitbox.id) {
-                                return Some(*area);
-                            }
-                        }
-                        None
+                        let hit_test = window.rendered_frame.hit_test(position);
+                        window_control_area_for_hit_test(
+                            &window.rendered_frame.window_control_hitboxes,
+                            &hit_test,
+                        )
                     })
                     .log_err()
                     .unwrap_or(None)

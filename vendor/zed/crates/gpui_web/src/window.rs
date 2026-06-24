@@ -24,7 +24,8 @@ pub(crate) struct WebWindowCallbacks {
     pub(crate) should_close: Option<Box<dyn FnMut() -> bool>>,
     pub(crate) close: Option<Box<dyn FnOnce()>>,
     pub(crate) appearance_changed: Option<Box<dyn FnMut()>>,
-    pub(crate) hit_test_window_control: Option<Box<dyn FnMut() -> Option<WindowControlArea>>>,
+    pub(crate) hit_test_window_control:
+        Option<Box<dyn FnMut(Point<Pixels>) -> Option<WindowControlArea>>>,
 }
 
 pub(crate) struct WebWindowMutableState {
@@ -656,7 +657,10 @@ impl PlatformWindow for WebWindow {
         self.inner.callbacks.borrow_mut().close = Some(callback);
     }
 
-    fn on_hit_test_window_control(&self, callback: Box<dyn FnMut() -> Option<WindowControlArea>>) {
+    fn on_hit_test_window_control(
+        &self,
+        callback: Box<dyn FnMut(Point<Pixels>) -> Option<WindowControlArea>>,
+    ) {
         self.inner.callbacks.borrow_mut().hit_test_window_control = Some(callback);
     }
 

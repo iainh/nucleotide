@@ -1392,7 +1392,10 @@ impl PlatformWindow for WaylandWindow {
         self.0.callbacks.borrow_mut().close = Some(callback);
     }
 
-    fn on_hit_test_window_control(&self, _callback: Box<dyn FnMut() -> Option<WindowControlArea>>) {
+    fn on_hit_test_window_control(
+        &self,
+        _callback: Box<dyn FnMut(Point<Pixels>) -> Option<WindowControlArea>>,
+    ) {
     }
 
     fn on_appearance_changed(&self, callback: Box<dyn FnMut()>) {
