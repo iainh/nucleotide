@@ -17,7 +17,9 @@ use windows::{
         Foundation::*,
         Globalization::GetUserDefaultLocaleName,
         Graphics::{
-            Direct3D::D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP, Direct3D11::*, DirectWrite::*,
+            Direct3D::D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP,
+            Direct3D11::*,
+            DirectWrite::*,
             Dxgi::Common::*,
             Gdi::{HMONITOR, LOGFONTW},
         },
