@@ -318,6 +318,10 @@ impl RichText {
         }
     }
 
+    fn text_len(&self) -> usize {
+        self.spans.iter().map(|span| span.text.len()).sum()
+    }
+
     fn is_empty(&self) -> bool {
         self.spans.iter().all(|span| span.text.is_empty())
     }
@@ -542,6 +546,12 @@ struct ListContext {
 }
 
 #[derive(Clone, Debug)]
+struct ImageContext {
+    dest_url: SharedString,
+    start_text_len: usize,
+}
+
+#[derive(Clone, Debug)]
 struct ListItemBuilder {
     ordered: bool,
     index: u64,
@@ -608,6 +618,7 @@ struct MarkdownParser {
     table_rows: Vec<Vec<RichText>>,
     current_table_row: Vec<RichText>,
     in_table: bool,
+    image_stack: Vec<ImageContext>,
 }
 
 impl MarkdownParser {
@@ -647,6 +658,7 @@ impl MarkdownParser {
             table_rows: Vec::new(),
             current_table_row: Vec::new(),
             in_table: false,
+            image_stack: Vec::new(),
         }
     }
 
@@ -764,9 +776,14 @@ impl MarkdownParser {
                 self.active_style.link = true;
                 self.active_style.link_url = Some(url);
             }
-            Tag::Image { .. } => {
+            Tag::Image { dest_url, .. } => {
                 self.image_depth += 1;
+                self.image_stack.push(ImageContext {
+                    dest_url: SharedString::from(dest_url.to_string()),
+                    start_text_len: self.current_text.text_len(),
+                });
                 self.refresh_inline_style_flags();
+                self.refresh_link_style();
             }
             Tag::Table(alignments) => {
                 self.flush_current_text_into_open_list_item();
@@ -841,12 +858,18 @@ impl MarkdownParser {
             }
             TagEnd::Link => {
                 self.link_stack.pop();
-                self.active_style.link = !self.link_stack.is_empty();
-                self.active_style.link_url = self.link_stack.last().cloned();
+                self.refresh_link_style();
             }
             TagEnd::Image => {
+                if let Some(context) = self.image_stack.pop()
+                    && self.current_text.text_len() == context.start_text_len
+                {
+                    self.current_text
+                        .push(context.dest_url.as_ref(), self.active_style.clone());
+                }
                 self.image_depth = self.image_depth.saturating_sub(1);
                 self.refresh_inline_style_flags();
+                self.refresh_link_style();
             }
             TagEnd::Table => {
                 self.in_table = false;
@@ -964,9 +987,20 @@ impl MarkdownParser {
     }
 
     fn refresh_inline_style_flags(&mut self) {
-        self.active_style.italic = self.emphasis_depth > 0 || self.image_depth > 0;
+        self.active_style.italic = self.emphasis_depth > 0;
         self.active_style.bold = self.strong_depth > 0;
         self.active_style.strikethrough = self.strikethrough_depth > 0;
+    }
+
+    fn refresh_link_style(&mut self) {
+        let link_url = self
+            .link_stack
+            .last()
+            .cloned()
+            .or_else(|| self.image_stack.last().map(|image| image.dest_url.clone()));
+
+        self.active_style.link = link_url.is_some();
+        self.active_style.link_url = link_url;
     }
 }
 
@@ -1887,6 +1921,55 @@ mod tests {
             &document.blocks[0],
             MarkdownBlock::Paragraph(text) if text.plain_text() == "Footnote [^1]."
         ));
+    }
+
+    #[test]
+    fn image_alt_text_preserves_source_link_without_emphasis() {
+        let document = MarkdownDocument::parse("![logo](https://example.com/logo.png)");
+
+        let MarkdownBlock::Paragraph(text) = &document.blocks[0] else {
+            panic!("expected image fallback paragraph");
+        };
+
+        assert_eq!(text.plain_text(), "logo");
+        assert_eq!(text.spans().len(), 1);
+        let span = &text.spans()[0];
+        assert!(!span.style.italic);
+        assert!(span.style.link);
+        assert_eq!(
+            span.style.link_url.as_deref(),
+            Some("https://example.com/logo.png")
+        );
+    }
+
+    #[test]
+    fn empty_image_alt_text_keeps_source_visible() {
+        let document = MarkdownDocument::parse("![](image.png)");
+
+        let MarkdownBlock::Paragraph(text) = &document.blocks[0] else {
+            panic!("expected image fallback paragraph");
+        };
+
+        assert_eq!(text.plain_text(), "image.png");
+        assert_eq!(text.spans().len(), 1);
+        let span = &text.spans()[0];
+        assert!(span.style.link);
+        assert_eq!(span.style.link_url.as_deref(), Some("image.png"));
+    }
+
+    #[test]
+    fn image_inside_link_uses_outer_link_destination() {
+        let document = MarkdownDocument::parse("[![logo](logo.png)](https://example.com)");
+
+        let MarkdownBlock::Paragraph(text) = &document.blocks[0] else {
+            panic!("expected linked image fallback paragraph");
+        };
+
+        assert_eq!(text.plain_text(), "logo");
+        assert_eq!(text.spans().len(), 1);
+        let span = &text.spans()[0];
+        assert!(span.style.link);
+        assert_eq!(span.style.link_url.as_deref(), Some("https://example.com"));
     }
 
     #[test]
