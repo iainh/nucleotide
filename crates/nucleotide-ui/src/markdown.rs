@@ -2893,6 +2893,32 @@ mod tests {
     }
 
     #[test]
+    fn unmatched_two_backticks_stay_literal_text() {
+        let document = MarkdownDocument::parse("``");
+
+        assert!(matches!(
+            document.blocks.as_slice(),
+            [MarkdownBlock::Paragraph(text)]
+                if text.plain_text() == "``"
+                    && text.spans().iter().all(|span| !span.style.code)
+        ));
+    }
+
+    #[test]
+    fn empty_two_backtick_code_span_keeps_visible_space() {
+        for source in ["`` ``", "``\n``"] {
+            let document = MarkdownDocument::parse(source);
+
+            assert!(matches!(
+                document.blocks.as_slice(),
+                [MarkdownBlock::Paragraph(text)]
+                    if text.plain_text() == " "
+                        && text.spans().iter().any(|span| span.style.code)
+            ));
+        }
+    }
+
+    #[test]
     fn thematic_breaks_inside_list_items_remain_nested() {
         let document = MarkdownDocument::parse("- item\n  * * *");
 
