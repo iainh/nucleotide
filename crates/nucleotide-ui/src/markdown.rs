@@ -1493,6 +1493,7 @@ fn render_block_quote(
         syntax_loader,
         &format!("{block_id}-content"),
     );
+    let is_empty = content.is_empty();
 
     div()
         .flex()
@@ -1518,6 +1519,7 @@ fn render_block_quote(
                     .child(kind.label()),
             )
         })
+        .when(is_empty, |this| this.child(div().h(style.body_font_size)))
         .children(content)
 }
 
@@ -1821,6 +1823,28 @@ mod tests {
             MarkdownBlock::ListItem { text, children, .. }
                 if text.plain_text() == "item"
                     && matches!(children.as_slice(), [MarkdownBlock::Rule])
+        ));
+    }
+
+    #[test]
+    fn empty_list_items_are_preserved() {
+        let document = MarkdownDocument::parse("* a\n*\n* b");
+
+        assert_eq!(document.blocks.len(), 3);
+        assert!(matches!(
+            &document.blocks[1],
+            MarkdownBlock::ListItem { text, children, .. }
+                if text.is_empty() && children.is_empty()
+        ));
+    }
+
+    #[test]
+    fn empty_block_quotes_are_preserved() {
+        let document = MarkdownDocument::parse(">");
+
+        assert!(matches!(
+            &document.blocks[0],
+            MarkdownBlock::BlockQuote { blocks, .. } if blocks.is_empty()
         ));
     }
 
