@@ -21,6 +21,7 @@ use pulldown_cmark::{
     TagEnd,
 };
 use std::{
+    borrow::Cow,
     ops::Range,
     panic::{AssertUnwindSafe, catch_unwind},
     sync::Arc,
@@ -624,6 +625,7 @@ struct MarkdownParser {
 
 impl MarkdownParser {
     fn new(source: &str, mode: MarkdownParseMode) -> Self {
+        let source = normalize_commonmark_source(source);
         let options = match mode {
             MarkdownParseMode::CommonMark => Options::empty(),
             MarkdownParseMode::Extended => {
@@ -635,7 +637,7 @@ impl MarkdownParser {
         };
 
         Self {
-            events: Parser::new_ext(source, options)
+            events: Parser::new_ext(source.as_ref(), options)
                 .map(Event::into_static)
                 .collect(),
             blocks: Vec::new(),
@@ -1024,6 +1026,14 @@ impl MarkdownParser {
 
         self.active_style.link = link_url.is_some();
         self.active_style.link_url = link_url;
+    }
+}
+
+fn normalize_commonmark_source(source: &str) -> Cow<'_, str> {
+    if source.contains('\0') {
+        Cow::Owned(source.replace('\0', "\u{fffd}"))
+    } else {
+        Cow::Borrowed(source)
     }
 }
 
@@ -1773,6 +1783,32 @@ mod tests {
             &document.blocks[1],
             MarkdownBlock::Paragraph(text) if text.is_empty()
         ));
+    }
+
+    #[test]
+    fn null_characters_are_replaced_before_parsing() {
+        let document = MarkdownDocument::parse("a\0b\n\n```\n\0\n```");
+
+        assert!(matches!(
+            &document.blocks[0],
+            MarkdownBlock::Paragraph(text) if text.plain_text() == "a\u{fffd}b"
+        ));
+        assert!(matches!(
+            &document.blocks[1],
+            MarkdownBlock::CodeBlock { text, .. } if text == "\u{fffd}\n"
+        ));
+    }
+
+    #[test]
+    fn source_without_nulls_is_borrowed_unchanged() {
+        assert!(matches!(
+            normalize_commonmark_source("plain markdown"),
+            Cow::Borrowed("plain markdown")
+        ));
+        assert_eq!(
+            normalize_commonmark_source("has\0null").as_ref(),
+            "has\u{fffd}null"
+        );
     }
 
     #[test]
