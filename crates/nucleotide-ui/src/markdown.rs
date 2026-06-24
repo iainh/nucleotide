@@ -181,16 +181,20 @@ pub enum MarkdownBlock {
         language: Option<String>,
         text: String,
     },
+    HtmlBlock {
+        text: String,
+    },
     ListItem {
         ordered: bool,
         index: u64,
         depth: usize,
         checked: Option<bool>,
         text: RichText,
+        children: Vec<MarkdownBlock>,
     },
     BlockQuote {
         kind: Option<MarkdownAlertKind>,
-        text: RichText,
+        blocks: Vec<MarkdownBlock>,
     },
     Rule,
     Table {
@@ -513,20 +517,68 @@ struct ListContext {
     next_index: u64,
 }
 
+#[derive(Clone, Debug)]
+struct ListItemBuilder {
+    ordered: bool,
+    index: u64,
+    depth: usize,
+    checked: Option<bool>,
+    text: RichText,
+    children: Vec<MarkdownBlock>,
+}
+
+impl ListItemBuilder {
+    fn into_block(self) -> MarkdownBlock {
+        MarkdownBlock::ListItem {
+            ordered: self.ordered,
+            index: self.index,
+            depth: self.depth,
+            checked: self.checked,
+            text: self.text,
+            children: self.children,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct BlockQuoteBuilder {
+    kind: Option<MarkdownAlertKind>,
+    blocks: Vec<MarkdownBlock>,
+}
+
+#[derive(Clone, Debug)]
+enum MarkdownContainer {
+    ListItem(ListItemBuilder),
+    BlockQuote(BlockQuoteBuilder),
+}
+
+impl MarkdownContainer {
+    fn children_mut(&mut self) -> &mut Vec<MarkdownBlock> {
+        match self {
+            Self::ListItem(item) => &mut item.children,
+            Self::BlockQuote(quote) => &mut quote.blocks,
+        }
+    }
+}
+
 struct MarkdownParser {
     events: Vec<Event<'static>>,
     blocks: Vec<MarkdownBlock>,
+    containers: Vec<MarkdownContainer>,
     current_text: RichText,
     active_style: InlineStyle,
+    emphasis_depth: usize,
+    strong_depth: usize,
+    strikethrough_depth: usize,
     heading: Option<u8>,
     in_code_block: bool,
     code_block_language: Option<String>,
     code_text: String,
-    block_quote_depth: usize,
-    block_quote_kinds: Vec<Option<MarkdownAlertKind>>,
+    in_html_block: bool,
+    html_text: String,
     list_stack: Vec<ListContext>,
     current_task_marker: Option<bool>,
-    link_depth: usize,
+    link_stack: Vec<SharedString>,
     image_depth: usize,
     table_alignments: Vec<TableAlignment>,
     table_rows: Vec<Vec<RichText>>,
@@ -547,17 +599,21 @@ impl MarkdownParser {
                 .map(Event::into_static)
                 .collect(),
             blocks: Vec::new(),
+            containers: Vec::new(),
             current_text: RichText::default(),
             active_style: InlineStyle::default(),
+            emphasis_depth: 0,
+            strong_depth: 0,
+            strikethrough_depth: 0,
             heading: None,
             in_code_block: false,
             code_block_language: None,
             code_text: String::new(),
-            block_quote_depth: 0,
-            block_quote_kinds: Vec::new(),
+            in_html_block: false,
+            html_text: String::new(),
             list_stack: Vec::new(),
             current_task_marker: None,
-            link_depth: 0,
+            link_stack: Vec::new(),
             image_depth: 0,
             table_alignments: Vec::new(),
             table_rows: Vec::new(),
@@ -588,11 +644,25 @@ impl MarkdownParser {
             }
             Event::SoftBreak => self.current_text.push_space(self.active_style.clone()),
             Event::HardBreak => self.current_text.push("\n", self.active_style.clone()),
-            Event::Rule => self.blocks.push(MarkdownBlock::Rule),
+            Event::Rule => self.push_block(MarkdownBlock::Rule),
             Event::TaskListMarker(checked) => {
-                self.current_task_marker = Some(checked);
+                if let Some(MarkdownContainer::ListItem(item)) = self.containers.last_mut() {
+                    item.checked = Some(checked);
+                } else {
+                    self.current_task_marker = Some(checked);
+                }
             }
-            Event::Html(_) | Event::InlineHtml(_) => {}
+            Event::Html(html) => {
+                if self.in_html_block {
+                    self.html_text.push_str(html.as_ref());
+                } else {
+                    self.current_text
+                        .push(html.as_ref(), self.active_style.clone());
+                }
+            }
+            Event::InlineHtml(html) => self
+                .current_text
+                .push(html.as_ref(), self.active_style.clone()),
             Event::FootnoteReference(_) | Event::InlineMath(_) | Event::DisplayMath(_) => {}
         }
     }
@@ -604,38 +674,74 @@ impl MarkdownParser {
                 self.heading = Some(heading_level(level));
             }
             Tag::BlockQuote(kind) => {
-                self.block_quote_depth += 1;
-                self.block_quote_kinds
-                    .push(kind.map(MarkdownAlertKind::from_block_quote_kind));
+                self.flush_current_text_into_open_list_item();
+                self.containers
+                    .push(MarkdownContainer::BlockQuote(BlockQuoteBuilder {
+                        kind: kind.map(MarkdownAlertKind::from_block_quote_kind),
+                        blocks: Vec::new(),
+                    }));
             }
             Tag::CodeBlock(kind) => {
+                self.flush_current_text_into_open_list_item();
                 self.in_code_block = true;
                 self.code_block_language = code_block_language(&kind);
                 self.code_text.clear();
             }
             Tag::List(start) => {
+                self.flush_current_text_into_open_list_item();
                 self.list_stack.push(ListContext {
                     ordered: start.is_some(),
                     next_index: start.unwrap_or(1),
                 });
             }
             Tag::Item => {
+                let depth = self.list_stack.len().saturating_sub(1);
+                let (ordered, index) = if let Some(context) = self.list_stack.last_mut() {
+                    let index = context.next_index;
+                    if context.ordered {
+                        context.next_index += 1;
+                    }
+                    (context.ordered, index)
+                } else {
+                    (false, 1)
+                };
+
+                self.containers
+                    .push(MarkdownContainer::ListItem(ListItemBuilder {
+                        ordered,
+                        index,
+                        depth,
+                        checked: None,
+                        text: RichText::default(),
+                        children: Vec::new(),
+                    }));
                 self.current_text = RichText::default();
                 self.current_task_marker = None;
             }
-            Tag::Emphasis => self.active_style.italic = true,
-            Tag::Strong => self.active_style.bold = true,
-            Tag::Strikethrough => self.active_style.strikethrough = true,
+            Tag::Emphasis => {
+                self.emphasis_depth += 1;
+                self.refresh_inline_style_flags();
+            }
+            Tag::Strong => {
+                self.strong_depth += 1;
+                self.refresh_inline_style_flags();
+            }
+            Tag::Strikethrough => {
+                self.strikethrough_depth += 1;
+                self.refresh_inline_style_flags();
+            }
             Tag::Link { dest_url, .. } => {
-                self.link_depth += 1;
+                let url = SharedString::from(dest_url.to_string());
+                self.link_stack.push(url.clone());
                 self.active_style.link = true;
-                self.active_style.link_url = Some(SharedString::from(dest_url.to_string()));
+                self.active_style.link_url = Some(url);
             }
             Tag::Image { .. } => {
                 self.image_depth += 1;
-                self.active_style.italic = true;
+                self.refresh_inline_style_flags();
             }
             Tag::Table(alignments) => {
+                self.flush_current_text_into_open_list_item();
                 self.table_alignments = alignments.into_iter().map(TableAlignment::from).collect();
                 self.table_rows.clear();
                 self.in_table = true;
@@ -651,9 +757,13 @@ impl MarkdownParser {
             | Tag::DefinitionListTitle
             | Tag::DefinitionListDefinition
             | Tag::MetadataBlock(_)
-            | Tag::HtmlBlock
             | Tag::Superscript
             | Tag::Subscript => {}
+            Tag::HtmlBlock => {
+                self.flush_current_text_into_open_list_item();
+                self.in_html_block = true;
+                self.html_text.clear();
+            }
         }
     }
 
@@ -666,8 +776,6 @@ impl MarkdownParser {
 
                 if let Some(level) = self.heading.take() {
                     self.flush_heading(level);
-                } else if self.block_quote_depth > 0 {
-                    self.flush_block_quote();
                 } else {
                     self.flush_paragraph();
                 }
@@ -677,29 +785,40 @@ impl MarkdownParser {
                 self.flush_heading(heading_level(level));
             }
             TagEnd::BlockQuote(_) => {
-                self.block_quote_depth = self.block_quote_depth.saturating_sub(1);
-                self.block_quote_kinds.pop();
+                self.flush_paragraph();
+                let Some(MarkdownContainer::BlockQuote(quote)) = self.containers.pop() else {
+                    return;
+                };
+                self.push_block(MarkdownBlock::BlockQuote {
+                    kind: quote.kind,
+                    blocks: quote.blocks,
+                });
             }
             TagEnd::CodeBlock => self.flush_code_block(),
             TagEnd::List(_) => {
                 self.list_stack.pop();
             }
             TagEnd::Item => self.flush_list_item(),
-            TagEnd::Emphasis => self.active_style.italic = false,
-            TagEnd::Strong => self.active_style.bold = false,
-            TagEnd::Strikethrough => self.active_style.strikethrough = false,
+            TagEnd::Emphasis => {
+                self.emphasis_depth = self.emphasis_depth.saturating_sub(1);
+                self.refresh_inline_style_flags();
+            }
+            TagEnd::Strong => {
+                self.strong_depth = self.strong_depth.saturating_sub(1);
+                self.refresh_inline_style_flags();
+            }
+            TagEnd::Strikethrough => {
+                self.strikethrough_depth = self.strikethrough_depth.saturating_sub(1);
+                self.refresh_inline_style_flags();
+            }
             TagEnd::Link => {
-                self.link_depth = self.link_depth.saturating_sub(1);
-                if self.link_depth == 0 {
-                    self.active_style.link = false;
-                    self.active_style.link_url = None;
-                }
+                self.link_stack.pop();
+                self.active_style.link = !self.link_stack.is_empty();
+                self.active_style.link_url = self.link_stack.last().cloned();
             }
             TagEnd::Image => {
                 self.image_depth = self.image_depth.saturating_sub(1);
-                if self.image_depth == 0 {
-                    self.active_style.italic = false;
-                }
+                self.refresh_inline_style_flags();
             }
             TagEnd::Table => {
                 self.in_table = false;
@@ -720,9 +839,9 @@ impl MarkdownParser {
             | TagEnd::DefinitionListTitle
             | TagEnd::DefinitionListDefinition
             | TagEnd::MetadataBlock(_)
-            | TagEnd::HtmlBlock
             | TagEnd::Superscript
             | TagEnd::Subscript => {}
+            TagEnd::HtmlBlock => self.flush_html_block(),
         }
     }
 
@@ -736,71 +855,90 @@ impl MarkdownParser {
     }
 
     fn flush_paragraph(&mut self) {
-        if !self.current_text.is_empty() {
-            self.blocks.push(MarkdownBlock::Paragraph(std::mem::take(
-                &mut self.current_text,
-            )));
-        }
+        self.flush_current_text_as_paragraph();
     }
 
     fn flush_heading(&mut self, level: u8) {
         if !self.current_text.is_empty() {
-            self.blocks.push(MarkdownBlock::Heading {
-                level,
-                text: std::mem::take(&mut self.current_text),
-            });
+            let text = std::mem::take(&mut self.current_text);
+            self.push_block(MarkdownBlock::Heading { level, text });
         }
     }
 
     fn flush_code_block(&mut self) {
         self.in_code_block = false;
-        self.blocks.push(MarkdownBlock::CodeBlock {
-            language: self.code_block_language.take(),
-            text: std::mem::take(&mut self.code_text),
-        });
-    }
-
-    fn flush_block_quote(&mut self) {
-        if !self.current_text.is_empty() {
-            self.blocks.push(MarkdownBlock::BlockQuote {
-                kind: self.block_quote_kinds.last().copied().flatten(),
-                text: std::mem::take(&mut self.current_text),
-            });
-        }
+        let language = self.code_block_language.take();
+        let text = std::mem::take(&mut self.code_text);
+        self.push_block(MarkdownBlock::CodeBlock { language, text });
     }
 
     fn flush_list_item(&mut self) {
-        if self.current_text.is_empty() {
+        self.flush_current_text_into_open_list_item();
+        let Some(MarkdownContainer::ListItem(mut item)) = self.containers.pop() else {
             return;
-        }
-
-        let depth = self.list_stack.len().saturating_sub(1);
-        let (ordered, index) = if let Some(context) = self.list_stack.last_mut() {
-            let index = context.next_index;
-            if context.ordered {
-                context.next_index += 1;
-            }
-            (context.ordered, index)
-        } else {
-            (false, 1)
         };
 
-        self.blocks.push(MarkdownBlock::ListItem {
-            ordered,
-            index,
-            depth,
-            checked: self.current_task_marker.take(),
-            text: std::mem::take(&mut self.current_text),
-        });
+        if item.checked.is_none() {
+            item.checked = self.current_task_marker.take();
+        }
+
+        self.push_block(item.into_block());
     }
 
     fn flush_table(&mut self) {
         if !self.table_rows.is_empty() {
-            self.blocks.push(MarkdownBlock::Table {
-                alignments: std::mem::take(&mut self.table_alignments),
-                rows: std::mem::take(&mut self.table_rows),
-            });
+            let alignments = std::mem::take(&mut self.table_alignments);
+            let rows = std::mem::take(&mut self.table_rows);
+            self.push_block(MarkdownBlock::Table { alignments, rows });
         }
+    }
+
+    fn flush_html_block(&mut self) {
+        self.in_html_block = false;
+        if !self.html_text.is_empty() {
+            let text = std::mem::take(&mut self.html_text);
+            self.push_block(MarkdownBlock::HtmlBlock { text });
+        }
+    }
+
+    fn flush_current_text_into_open_list_item(&mut self) {
+        if self.current_text.is_empty() {
+            return;
+        }
+
+        if matches!(self.containers.last(), Some(MarkdownContainer::ListItem(_))) {
+            self.flush_current_text_as_paragraph();
+        }
+    }
+
+    fn flush_current_text_as_paragraph(&mut self) {
+        if self.current_text.is_empty() {
+            return;
+        }
+
+        let text = std::mem::take(&mut self.current_text);
+        if let Some(MarkdownContainer::ListItem(item)) = self.containers.last_mut()
+            && item.text.is_empty()
+        {
+            item.text = text;
+            return;
+        }
+
+        self.push_block(MarkdownBlock::Paragraph(text));
+    }
+
+    fn push_block(&mut self, block: MarkdownBlock) {
+        if let Some(container) = self.containers.last_mut() {
+            container.children_mut().push(block);
+        } else {
+            self.blocks.push(block);
+        }
+    }
+
+    fn refresh_inline_style_flags(&mut self) {
+        self.active_style.italic = self.emphasis_depth > 0 || self.image_depth > 0;
+        self.active_style.bold = self.strong_depth > 0;
+        self.active_style.strikethrough = self.strikethrough_depth > 0;
     }
 }
 
@@ -832,23 +970,50 @@ fn render_document(
     helix_theme: Option<&helix_view::Theme>,
     syntax_loader: Option<&syntax::Loader>,
 ) -> gpui::Div {
-    let gap = if style.preview {
+    let gap = block_gap(&style);
+    let elements = render_blocks(
+        document.blocks,
+        &style,
+        helix_theme,
+        syntax_loader,
+        "markdown",
+    );
+
+    div()
+        .flex()
+        .flex_col()
+        .flex_none()
+        .w_full()
+        .gap(gap)
+        .children(elements)
+}
+
+fn block_gap(style: &MarkdownStyle) -> Pixels {
+    if style.preview {
         px(0.0)
     } else if style.compact {
         px(6.0)
     } else {
         px(10.0)
-    };
-    let elements: Vec<gpui::AnyElement> = document
-        .blocks
+    }
+}
+
+fn render_blocks(
+    blocks: Vec<MarkdownBlock>,
+    style: &MarkdownStyle,
+    helix_theme: Option<&helix_view::Theme>,
+    syntax_loader: Option<&syntax::Loader>,
+    id_prefix: &str,
+) -> Vec<gpui::AnyElement> {
+    blocks
         .into_iter()
         .enumerate()
         .map(|(block_index, block)| match block {
             MarkdownBlock::Paragraph(text) => render_rich_text(
                 text,
-                &style,
+                style,
                 style.body_color,
-                format!("markdown-paragraph-{block_index}"),
+                format!("{id_prefix}-paragraph-{block_index}"),
             )
             .line_height(relative(if style.preview { 1.55 } else { 1.45 }))
             .when(style.preview, |this| this.mb(px(10.0)))
@@ -856,16 +1021,16 @@ fn render_document(
             MarkdownBlock::Heading { level, text } => {
                 let heading = render_rich_text(
                     text,
-                    &style,
+                    style,
                     style.heading_color,
-                    format!("markdown-heading-{block_index}"),
+                    format!("{id_prefix}-heading-{block_index}"),
                 )
                 .font_weight(FontWeight::BOLD)
                 .line_height(relative(1.2));
 
                 if style.preview {
                     heading
-                        .text_size(preview_heading_size(&style, level))
+                        .text_size(preview_heading_size(style, level))
                         .when(block_index > 0, |this| this.mt(px(22.0)))
                         .mb(px(10.0))
                         .when(level <= 3, |this| {
@@ -886,42 +1051,52 @@ fn render_document(
             MarkdownBlock::CodeBlock { language, text } => render_code_block(
                 text,
                 language,
-                &style,
+                style,
                 helix_theme,
                 syntax_loader,
-                block_index,
+                &format!("{id_prefix}-code-block-{block_index}"),
             )
             .into_any_element(),
-            MarkdownBlock::ListItem {
-                ordered,
-                index,
-                depth,
-                checked,
+            MarkdownBlock::HtmlBlock { text } => render_html_block(
                 text,
-            } => render_list_item(ordered, index, depth, checked, text, &style, block_index)
-                .into_any_element(),
-            MarkdownBlock::BlockQuote { kind, text } => {
-                render_block_quote(kind, text, &style, block_index).into_any_element()
-            }
+                style,
+                helix_theme,
+                syntax_loader,
+                &format!("{id_prefix}-html-block-{block_index}"),
+            )
+            .into_any_element(),
+            MarkdownBlock::ListItem { .. } => render_list_item(
+                block,
+                style,
+                helix_theme,
+                syntax_loader,
+                &format!("{id_prefix}-list-item-{block_index}"),
+            )
+            .into_any_element(),
+            MarkdownBlock::BlockQuote { kind, blocks } => render_block_quote(
+                kind,
+                blocks,
+                style,
+                helix_theme,
+                syntax_loader,
+                &format!("{id_prefix}-block-quote-{block_index}"),
+            )
+            .into_any_element(),
             MarkdownBlock::Rule => div()
                 .h(px(1.0))
                 .w_full()
                 .bg(style.rule_color)
                 .when(style.preview, |this| this.my(px(14.0)))
                 .into_any_element(),
-            MarkdownBlock::Table { alignments, rows } => {
-                render_table(alignments, rows, &style, block_index).into_any_element()
-            }
+            MarkdownBlock::Table { alignments, rows } => render_table(
+                alignments,
+                rows,
+                style,
+                &format!("{id_prefix}-table-{block_index}"),
+            )
+            .into_any_element(),
         })
-        .collect();
-
-    div()
-        .flex()
-        .flex_col()
-        .flex_none()
-        .w_full()
-        .gap(gap)
-        .children(elements)
+        .collect()
 }
 
 fn preview_heading_size(style: &MarkdownStyle, level: u8) -> Pixels {
@@ -1113,13 +1288,13 @@ fn render_code_block(
     style: &MarkdownStyle,
     helix_theme: Option<&helix_view::Theme>,
     syntax_loader: Option<&syntax::Loader>,
-    block_index: usize,
+    block_id: &str,
 ) -> gpui::Div {
-    let content = text.trim_end_matches('\n').to_string();
+    let content = code_block_display_text(&text);
     let highlights =
         code_syntax_highlights(&content, language.as_deref(), helix_theme, syntax_loader);
     let code = div()
-        .id(format!("markdown-code-block-{block_index}"))
+        .id(block_id.to_string())
         .w_full()
         .px(px(10.0))
         .py(px(8.0))
@@ -1136,7 +1311,7 @@ fn render_code_block(
             |this| this.overflow_x_scroll(),
             |this| this.overflow_hidden(),
         )
-        .child(StyledText::new(content).with_highlights(highlights));
+        .child(StyledText::new(visible_code_text(&content)).with_highlights(highlights));
 
     let block = if let Some(language) = language {
         div()
@@ -1157,15 +1332,54 @@ fn render_code_block(
     block.when(style.preview, |this| this.mt(px(8.0)).mb(px(14.0)))
 }
 
-fn render_list_item(
-    ordered: bool,
-    index: u64,
-    depth: usize,
-    checked: Option<bool>,
-    text: RichText,
+fn code_block_display_text(text: &str) -> String {
+    text.strip_suffix('\n').unwrap_or(text).to_string()
+}
+
+fn visible_code_text(content: &str) -> SharedString {
+    if content.is_empty() {
+        SharedString::from(" ")
+    } else {
+        SharedString::from(content.to_string())
+    }
+}
+
+fn render_html_block(
+    text: String,
     style: &MarkdownStyle,
-    block_index: usize,
-) -> impl IntoElement {
+    helix_theme: Option<&helix_view::Theme>,
+    syntax_loader: Option<&syntax::Loader>,
+    block_id: &str,
+) -> gpui::Div {
+    render_code_block(
+        text,
+        Some("html".to_string()),
+        style,
+        helix_theme,
+        syntax_loader,
+        block_id,
+    )
+}
+
+fn render_list_item(
+    block: MarkdownBlock,
+    style: &MarkdownStyle,
+    helix_theme: Option<&helix_view::Theme>,
+    syntax_loader: Option<&syntax::Loader>,
+    block_id: &str,
+) -> gpui::Div {
+    let MarkdownBlock::ListItem {
+        ordered,
+        index,
+        depth,
+        checked,
+        text,
+        children,
+    } = block
+    else {
+        unreachable!("render_list_item only accepts list item blocks");
+    };
+
     let marker_width = if checked.is_some() || !ordered {
         px(24.0)
     } else {
@@ -1190,6 +1404,35 @@ fn render_list_item(
             .child(bullet_for_depth(depth))
             .into_any_element()
     };
+    let child_blocks = render_blocks(
+        children,
+        style,
+        helix_theme,
+        syntax_loader,
+        &format!("{block_id}-child"),
+    );
+    let content = if text.is_empty() {
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .gap(block_gap(style))
+            .child(div().h(style.body_font_size))
+            .children(child_blocks)
+    } else {
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .gap(block_gap(style))
+            .child(render_rich_text(
+                text,
+                style,
+                style.body_color,
+                block_id.to_string(),
+            ))
+            .children(child_blocks)
+    };
 
     div()
         .flex()
@@ -1199,15 +1442,7 @@ fn render_list_item(
         .pl(px((depth as f32) * 16.0))
         .when(style.preview, |this| this.mb(px(6.0)))
         .child(div().flex_none().w(marker_width).child(marker))
-        .child(
-            render_rich_text(
-                text,
-                style,
-                style.body_color,
-                format!("markdown-list-item-{block_index}"),
-            )
-            .flex_1(),
-        )
+        .child(content)
 }
 
 fn bullet_for_depth(depth: usize) -> &'static str {
@@ -1242,28 +1477,27 @@ fn render_task_checkbox(checked: bool, style: &MarkdownStyle) -> gpui::Div {
 
 fn render_block_quote(
     kind: Option<MarkdownAlertKind>,
-    text: RichText,
+    blocks: Vec<MarkdownBlock>,
     style: &MarkdownStyle,
-    block_index: usize,
+    helix_theme: Option<&helix_view::Theme>,
+    syntax_loader: Option<&syntax::Loader>,
+    block_id: &str,
 ) -> impl IntoElement {
     let border_color = kind
         .map(|kind| kind.color(style))
         .unwrap_or(style.quote_border);
-    let text_color = if kind.is_some() {
-        style.body_color
-    } else {
-        style.secondary_color
-    };
-
-    let content = render_rich_text(
-        text,
+    let content = render_blocks(
+        blocks,
         style,
-        text_color,
-        format!("markdown-block-quote-{block_index}"),
-    )
-    .when(kind.is_none(), |this| this.italic());
+        helix_theme,
+        syntax_loader,
+        &format!("{block_id}-content"),
+    );
 
     div()
+        .flex()
+        .flex_col()
+        .gap(block_gap(style))
         .pl(px(if kind.is_some() { 14.0 } else { 10.0 }))
         .py(px(if style.preview { 6.0 } else { 0.0 }))
         .when(style.preview, |this| this.mb(px(10.0)))
@@ -1284,14 +1518,14 @@ fn render_block_quote(
                     .child(kind.label()),
             )
         })
-        .child(content)
+        .children(content)
 }
 
 fn render_table(
     alignments: Vec<TableAlignment>,
     rows: Vec<Vec<RichText>>,
     style: &MarkdownStyle,
-    block_index: usize,
+    block_id: &str,
 ) -> impl IntoElement {
     let column_count = rows
         .iter()
@@ -1317,7 +1551,7 @@ fn render_table(
                 cell,
                 style,
                 style.body_color,
-                format!("markdown-table-{block_index}-{row_index}-{column_index}"),
+                format!("{block_id}-{row_index}-{column_index}"),
             )
             .px(px(8.0))
             .py(px(6.0))
@@ -1386,8 +1620,9 @@ mod tests {
         ));
         assert!(matches!(
             &document.blocks[3],
-            MarkdownBlock::ListItem { ordered: false, index: 1, text, .. }
+            MarkdownBlock::ListItem { ordered: false, index: 1, text, children, .. }
                 if text.plain_text() == "fast"
+                    && children.is_empty()
         ));
     }
 
@@ -1399,9 +1634,13 @@ mod tests {
 
         assert!(matches!(
             &document.blocks[0],
-            MarkdownBlock::BlockQuote { kind: None, text }
-                if text.spans().iter().any(|span| span.style.link
-                    && span.style.link_url.as_ref().is_some_and(|url| url == "https://example.com"))
+            MarkdownBlock::BlockQuote { kind: None, blocks }
+                if matches!(
+                    &blocks[0],
+                    MarkdownBlock::Paragraph(text)
+                        if text.spans().iter().any(|span| span.style.link
+                            && span.style.link_url.as_ref().is_some_and(|url| url == "https://example.com"))
+                )
         ));
         assert!(matches!(
             &document.blocks[1],
@@ -1431,8 +1670,157 @@ mod tests {
             &document.blocks[0],
             MarkdownBlock::BlockQuote {
                 kind: Some(MarkdownAlertKind::Warning),
-                text,
-            } if text.plain_text() == "Check this carefully."
+                blocks,
+            } if matches!(
+                &blocks[0],
+                MarkdownBlock::Paragraph(text) if text.plain_text() == "Check this carefully."
+            )
+        ));
+    }
+
+    #[test]
+    fn nested_unordered_lists_keep_parent_and_child_items() {
+        let document = MarkdownDocument::parse("- parent\n  - child\n    - grandchild");
+
+        let MarkdownBlock::ListItem {
+            text,
+            children,
+            depth,
+            ..
+        } = &document.blocks[0]
+        else {
+            panic!("expected parent list item");
+        };
+
+        assert_eq!(*depth, 0);
+        assert_eq!(text.plain_text(), "parent");
+        assert_eq!(children.len(), 1);
+
+        let MarkdownBlock::ListItem {
+            text,
+            children,
+            depth,
+            ..
+        } = &children[0]
+        else {
+            panic!("expected child list item");
+        };
+
+        assert_eq!(*depth, 1);
+        assert_eq!(text.plain_text(), "child");
+        assert_eq!(children.len(), 1);
+
+        assert!(matches!(
+            &children[0],
+            MarkdownBlock::ListItem { text, depth: 2, children, .. }
+                if text.plain_text() == "grandchild" && children.is_empty()
+        ));
+    }
+
+    #[test]
+    fn loose_list_items_keep_continuation_blocks() {
+        let document = MarkdownDocument::parse(
+            "- first paragraph\n\n  second paragraph\n\n  ```\n  code\n  ```",
+        );
+
+        let MarkdownBlock::ListItem { text, children, .. } = &document.blocks[0] else {
+            panic!("expected list item");
+        };
+
+        assert_eq!(text.plain_text(), "first paragraph");
+        assert_eq!(children.len(), 2);
+        assert!(matches!(
+            &children[0],
+            MarkdownBlock::Paragraph(text) if text.plain_text() == "second paragraph"
+        ));
+        assert!(matches!(
+            &children[1],
+            MarkdownBlock::CodeBlock { language: None, text } if text == "code\n"
+        ));
+    }
+
+    #[test]
+    fn block_quotes_keep_nested_blocks() {
+        let document = MarkdownDocument::parse("> # Heading\n>\n> - quoted\n>   - nested");
+
+        let MarkdownBlock::BlockQuote { blocks, .. } = &document.blocks[0] else {
+            panic!("expected block quote");
+        };
+
+        assert_eq!(blocks.len(), 2);
+        assert!(matches!(
+            &blocks[0],
+            MarkdownBlock::Heading { level: 1, text } if text.plain_text() == "Heading"
+        ));
+        assert!(matches!(
+            &blocks[1],
+            MarkdownBlock::ListItem { text, children, .. }
+                if text.plain_text() == "quoted"
+                    && matches!(
+                        &children[0],
+                        MarkdownBlock::ListItem { text, .. } if text.plain_text() == "nested"
+                    )
+        ));
+    }
+
+    #[test]
+    fn html_blocks_and_inline_html_are_preserved_as_visible_text() {
+        let document = MarkdownDocument::parse("<section>\nraw\n</section>\n\nText <kbd>Esc</kbd>");
+
+        assert!(matches!(
+            &document.blocks[0],
+            MarkdownBlock::HtmlBlock { text } if text.contains("<section>") && text.contains("</section>")
+        ));
+        assert!(matches!(
+            &document.blocks[1],
+            MarkdownBlock::Paragraph(text) if text.plain_text() == "Text <kbd>Esc</kbd>"
+        ));
+    }
+
+    #[test]
+    fn empty_fenced_code_blocks_are_kept_renderable() {
+        let document = MarkdownDocument::parse("```\n```");
+
+        assert!(matches!(
+            &document.blocks[0],
+            MarkdownBlock::CodeBlock { language: None, text } if text.is_empty()
+        ));
+        assert_eq!(visible_code_text(""), SharedString::from(" "));
+    }
+
+    #[test]
+    fn code_block_display_text_preserves_meaningful_blank_lines() {
+        assert_eq!(code_block_display_text("code\n"), "code");
+        assert_eq!(code_block_display_text("code\n\n"), "code\n");
+        assert_eq!(code_block_display_text("\n"), "");
+        assert_eq!(
+            visible_code_text(&code_block_display_text("\n")),
+            SharedString::from(" ")
+        );
+    }
+
+    #[test]
+    fn two_backtick_lines_parse_as_an_inline_code_span() {
+        let document = MarkdownDocument::parse("``\nfoo\n``");
+
+        assert_eq!(document.blocks.len(), 1);
+        assert!(matches!(
+            &document.blocks[0],
+            MarkdownBlock::Paragraph(text)
+                if text.plain_text() == "foo"
+                    && text.spans().iter().any(|span| span.style.code)
+        ));
+    }
+
+    #[test]
+    fn thematic_breaks_inside_list_items_remain_nested() {
+        let document = MarkdownDocument::parse("- item\n  * * *");
+
+        assert!(matches!(
+            &document.blocks[0],
+            MarkdownBlock::ListItem { text, children, .. }
+                if text.plain_text() == "item"
+                    && matches!(children.as_slice(), [MarkdownBlock::Rule])
         ));
     }
 
