@@ -37,14 +37,6 @@ impl WindowControlType {
             WindowControlType::Close => "\u{e8bb}",
         }
     }
-
-    pub fn window_control_area(&self) -> WindowControlArea {
-        match self {
-            WindowControlType::Minimize => WindowControlArea::Min,
-            WindowControlType::Restore | WindowControlType::Maximize => WindowControlArea::Max,
-            WindowControlType::Close => WindowControlArea::Close,
-        }
-    }
 }
 
 const WINDOWS_CAPTION_BUTTON_WIDTH: f32 = 46.0;
@@ -251,6 +243,33 @@ impl WindowControl {
     }
 }
 
+fn activate_window_control(control_type: WindowControlType, window: &mut Window, cx: &mut App) {
+    match control_type {
+        WindowControlType::Minimize => {
+            window.minimize_window();
+        }
+        WindowControlType::Restore => {
+            #[cfg(target_os = "windows")]
+            if restore_window(window) {
+                return;
+            }
+
+            window.zoom_window();
+        }
+        WindowControlType::Maximize => {
+            #[cfg(target_os = "windows")]
+            if maximize_window(window) {
+                return;
+            }
+
+            window.zoom_window();
+        }
+        WindowControlType::Close => {
+            cx.quit();
+        }
+    }
+}
+
 impl RenderOnce for WindowControl {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         debug!(
@@ -280,31 +299,9 @@ impl RenderOnce for WindowControl {
             .child(icon)
             .on_mouse_move(|_, _, cx| cx.stop_propagation())
             .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                window.prevent_default();
                 cx.stop_propagation();
-                match self.control_type {
-                    WindowControlType::Minimize => {
-                        window.minimize_window();
-                    }
-                    WindowControlType::Restore => {
-                        #[cfg(target_os = "windows")]
-                        if restore_window(window) {
-                            return;
-                        }
-
-                        window.zoom_window();
-                    }
-                    WindowControlType::Maximize => {
-                        #[cfg(target_os = "windows")]
-                        if maximize_window(window) {
-                            return;
-                        }
-
-                        window.zoom_window();
-                    }
-                    WindowControlType::Close => {
-                        cx.quit();
-                    }
-                }
+                activate_window_control(self.control_type, window, cx);
             })
     }
 }
@@ -335,6 +332,7 @@ impl WindowsCaptionButton {
 
 impl RenderOnce for WindowsCaptionButton {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+        let control_type = self.control_type;
         let (hover_bg, hover_fg, active_bg, active_fg) = match self.control_type {
             WindowControlType::Close => {
                 let close_bg = windows_close_hover_background();
@@ -368,8 +366,12 @@ impl RenderOnce for WindowsCaptionButton {
             .text_color(self.titlebar_tokens.foreground)
             .hover(|button| button.bg(hover_bg).text_color(hover_fg))
             .active(|button| button.bg(active_bg).text_color(active_fg))
-            .window_control_area(self.control_type.window_control_area())
-            .child(self.control_type.windows_caption_icon())
+            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                window.prevent_default();
+                cx.stop_propagation();
+                activate_window_control(control_type, window, cx);
+            })
+            .child(control_type.windows_caption_icon())
     }
 }
 

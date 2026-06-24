@@ -1657,10 +1657,7 @@ impl PlatformWindow for MacWindow {
         self.0.as_ref().lock().close_callback = Some(callback);
     }
 
-    fn on_hit_test_window_control(
-        &self,
-        _callback: Box<dyn FnMut(Point<Pixels>) -> Option<WindowControlArea>>,
-    ) {
+    fn on_hit_test_window_control(&self, _callback: Box<dyn FnMut() -> Option<WindowControlArea>>) {
     }
 
     fn on_appearance_changed(&self, callback: Box<dyn FnMut()>) {

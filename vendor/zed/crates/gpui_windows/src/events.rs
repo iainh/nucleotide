@@ -892,19 +892,9 @@ impl WindowsWindowInner {
             return None;
         }
 
-        let dpi = unsafe { GetDpiForWindow(handle) };
-        let scale_factor = self.state.scale_factor.get();
-        let mut cursor_point = POINT {
-            x: lparam.signed_loword().into(),
-            y: lparam.signed_hiword().into(),
-        };
-        unsafe { ScreenToClient(handle, &mut cursor_point).ok().log_err() };
-        let cursor_position =
-            logical_point(cursor_point.x as f32, cursor_point.y as f32, scale_factor);
-
         let callback = self.state.callbacks.hit_test_window_control.take();
         let drag_area = if let Some(mut callback) = callback {
-            let area = callback(cursor_position);
+            let area = callback();
             self.state
                 .callbacks
                 .hit_test_window_control
@@ -928,10 +918,17 @@ impl WindowsWindowInner {
             return drag_area;
         }
 
+        let dpi = unsafe { GetDpiForWindow(handle) };
         // We do not use the OS title bar, so the default `DefWindowProcW` will only register a 1px edge for resizes
         // We need to calculate the frame thickness ourselves and do the hit test manually.
         let frame_y = get_frame_thicknessx(dpi);
         let frame_x = get_frame_thicknessy(dpi);
+        let mut cursor_point = POINT {
+            x: lparam.signed_loword().into(),
+            y: lparam.signed_hiword().into(),
+        };
+
+        unsafe { ScreenToClient(handle, &mut cursor_point).ok().log_err() };
         if !self.state.is_maximized() && 0 <= cursor_point.y && cursor_point.y <= frame_y {
             // x-axis actually goes from -frame_x to 0
             return Some(if cursor_point.x <= 0 {
