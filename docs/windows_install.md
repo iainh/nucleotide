@@ -28,7 +28,8 @@ tasks when the app starts.
 
 ## Build Locally
 
-Install cargo-bundle and prepare the runtime resources that the MSI will embed:
+Install the .NET 8 SDK and cargo-bundle, then prepare the runtime resources
+that the MSI will embed:
 
 ```powershell
 cargo install cargo-bundle --version 0.11.0 --locked
@@ -51,7 +52,7 @@ Pop-Location
 The installer is written to:
 
 ```text
-target\release\bundle\wxsmsi\bin\Release\Nucleotide.msi
+target\release\bundle\wxsmsi\bin\Release\nucleotide.msi
 ```
 
 `setup-windows-runtime.cmd` copies the Helix runtime into
