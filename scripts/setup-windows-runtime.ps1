@@ -3,6 +3,7 @@ param(
     [switch]$Help,
     [switch]$SkipFetch,
     [switch]$SkipBuild,
+    [switch]$AllowGrammarFailures,
     [string[]]$ExcludeGrammars = @("gotmpl"),
     [string]$RuntimeSource
 )
@@ -19,6 +20,7 @@ Windows MSI build.
 Options:
   -SkipFetch              Do not fetch tree-sitter grammar sources.
   -SkipBuild              Do not build tree-sitter grammar DLLs.
+  -AllowGrammarFailures   Continue when some grammar fetch/build jobs fail.
   -ExcludeGrammars <ids>  Grammar IDs to exclude from fetch/build. Comma-separated is OK. Defaults to gotmpl.
   -RuntimeSource <path>   Runtime source directory. Defaults to Cargo's Helix checkout, then .\runtime.
   -Help                   Show this help text.
@@ -181,7 +183,13 @@ function Invoke-NuclGrammarCommand {
         try {
             cargo run -p nucleotide -- --grammar $Command
             if ($LASTEXITCODE -ne 0) {
-                throw "nucl --grammar $Command failed with exit code $LASTEXITCODE"
+                $message = "nucl --grammar $Command failed with exit code $LASTEXITCODE"
+                if ($AllowGrammarFailures) {
+                    Write-Warning "$message; continuing because -AllowGrammarFailures was specified."
+                    return
+                }
+
+                throw $message
             }
         } finally {
             Pop-Location
