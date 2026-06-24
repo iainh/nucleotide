@@ -3,11 +3,11 @@
 
 use gpui::prelude::{FluentBuilder, StyledImage};
 use gpui::{
-    App, Bounds, CursorStyle, Element, ElementId, FontStyle, FontWeight, GlobalElementId,
-    HighlightStyle, Hitbox, HitboxBehavior, Hsla, InspectorElementId, InteractiveElement,
-    IntoElement, LayoutId, MouseButton, MouseDownEvent, ParentElement, Pixels, Point, RenderOnce,
-    SharedString, StatefulInteractiveElement, StrikethroughStyle, Styled, StyledText, TextLayout,
-    UnderlineStyle, Window, div, img, px, relative, rems,
+    App, AppContext, Bounds, CursorStyle, Element, ElementId, FontStyle, FontWeight,
+    GlobalElementId, HighlightStyle, Hitbox, HitboxBehavior, Hsla, InspectorElementId,
+    InteractiveElement, IntoElement, LayoutId, MouseButton, MouseDownEvent, ParentElement, Pixels,
+    Point, Render, RenderOnce, SharedString, StatefulInteractiveElement, StrikethroughStyle,
+    Styled, StyledText, TextLayout, UnderlineStyle, Window, div, img, px, relative, rems,
 };
 use helix_core::{
     RopeSlice, Syntax,
@@ -212,6 +212,7 @@ pub enum MarkdownBlock {
     Image {
         url: SharedString,
         alt: RichText,
+        title: Option<SharedString>,
         link_url: Option<SharedString>,
     },
     ListItem {
@@ -416,6 +417,7 @@ struct InlineImage {
     range: Range<usize>,
     url: SharedString,
     alt: RichText,
+    title: Option<SharedString>,
     link_url: Option<SharedString>,
 }
 
@@ -551,6 +553,28 @@ impl IntoElement for LinkText {
     }
 }
 
+#[derive(Clone)]
+struct MarkdownTooltip {
+    text: SharedString,
+    style: MarkdownStyle,
+}
+
+impl Render for MarkdownTooltip {
+    fn render(&mut self, _window: &mut Window, _cx: &mut gpui::Context<Self>) -> impl IntoElement {
+        div()
+            .max_w(px(420.0))
+            .px(px(8.0))
+            .py(px(6.0))
+            .rounded(px(4.0))
+            .border_1()
+            .border_color(self.style.code_border)
+            .bg(self.style.code_background)
+            .text_size(self.style.body_font_size)
+            .text_color(self.style.body_color)
+            .child(self.text.clone())
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct InlineStyle {
     pub bold: bool,
@@ -595,6 +619,7 @@ struct ListContext {
 #[derive(Clone, Debug)]
 struct ImageContext {
     dest_url: SharedString,
+    title: Option<SharedString>,
     start_text_len: usize,
     nesting_depth: usize,
     link_url: Option<SharedString>,
@@ -603,6 +628,7 @@ struct ImageContext {
 #[derive(Clone, Debug)]
 struct ParsedImage {
     dest_url: SharedString,
+    title: Option<SharedString>,
     start_text_len: usize,
     end_text_len: usize,
     fallback_inserted: bool,
@@ -860,12 +886,15 @@ impl MarkdownParser {
                 self.active_style.link = true;
                 self.active_style.link_url = Some(url);
             }
-            Tag::Image { dest_url, .. } => {
+            Tag::Image {
+                dest_url, title, ..
+            } => {
                 self.current_block_has_inline_content = true;
                 let nesting_depth = self.image_depth;
                 self.image_depth += 1;
                 self.image_stack.push(ImageContext {
                     dest_url: SharedString::from(dest_url.to_string()),
+                    title: nonempty_shared_string(&title),
                     start_text_len: self.current_text.text_len(),
                     nesting_depth,
                     link_url: self.link_stack.last().cloned(),
@@ -973,11 +1002,13 @@ impl MarkdownParser {
                             range: context.start_text_len..end_text_len,
                             url: dest_url.clone(),
                             alt,
+                            title: context.title.clone(),
                             link_url: context.link_url.clone(),
                         });
                     }
                     self.current_inline_images.push(ParsedImage {
                         dest_url,
+                        title: context.title,
                         start_text_len: context.start_text_len,
                         end_text_len,
                         fallback_inserted,
@@ -1132,6 +1163,7 @@ impl MarkdownParser {
         Some(MarkdownBlock::Image {
             url: image.dest_url,
             alt,
+            title: image.title,
             link_url: image.link_url,
         })
     }
@@ -1168,6 +1200,10 @@ fn normalize_commonmark_source(source: &str) -> Cow<'_, str> {
     } else {
         Cow::Borrowed(source)
     }
+}
+
+fn nonempty_shared_string(text: &CowStr<'_>) -> Option<SharedString> {
+    (!text.is_empty()).then(|| SharedString::from(text.to_string()))
 }
 
 fn heading_level(level: HeadingLevel) -> u8 {
@@ -1293,9 +1329,15 @@ fn render_blocks(
                 &format!("{id_prefix}-html-block-{block_index}"),
             )
             .into_any_element(),
-            MarkdownBlock::Image { url, alt, link_url } => render_image_block(
+            MarkdownBlock::Image {
                 url,
                 alt,
+                title,
+                link_url,
+            } => render_image_block(
+                url,
+                alt,
+                title,
                 link_url,
                 style,
                 &format!("{id_prefix}-image-{block_index}"),
@@ -1698,18 +1740,30 @@ fn render_html_block(
 fn render_image_block(
     url: SharedString,
     alt: RichText,
+    title: Option<SharedString>,
     link_url: Option<SharedString>,
     style: &MarkdownStyle,
     block_id: &str,
-) -> gpui::Div {
+) -> impl IntoElement {
     let fallback_style = style.clone();
     let fallback_id = format!("{block_id}-fallback");
     let fallback_link_url = link_url.clone();
     let fallback_text = image_fallback_text(&url, alt, fallback_link_url);
 
     div()
+        .id(block_id.to_string())
         .w_full()
         .when(style.preview, |this| this.my(px(10.0)))
+        .when_some(title, |this, title| {
+            let tooltip_style = style.clone();
+            this.tooltip(move |_window, cx| {
+                cx.new(|_| MarkdownTooltip {
+                    text: title.clone(),
+                    style: tooltip_style.clone(),
+                })
+                .into()
+            })
+        })
         .when_some(link_url, |this, link_url| {
             let link_url = link_url.to_string();
             this.cursor_pointer()
@@ -1734,15 +1788,32 @@ fn render_image_block(
         )
 }
 
-fn render_inline_image(image: InlineImage, style: &MarkdownStyle, image_id: &str) -> gpui::Div {
+fn render_inline_image(
+    image: InlineImage,
+    style: &MarkdownStyle,
+    image_id: &str,
+) -> impl IntoElement {
     let fallback_style = style.clone();
     let fallback_id = format!("{image_id}-fallback");
     let link_url = image.link_url.clone();
-    let fallback_text = image_fallback_text(&image.url, image.alt, link_url.clone());
+    let title = image.title.clone();
+    let url = image.url.clone();
+    let fallback_text = image_fallback_text(&url, image.alt, link_url.clone());
 
     div()
+        .id(image_id.to_string())
         .flex()
         .items_center()
+        .when_some(title, |this, title| {
+            let tooltip_style = style.clone();
+            this.tooltip(move |_window, cx| {
+                cx.new(|_| MarkdownTooltip {
+                    text: title.clone(),
+                    style: tooltip_style.clone(),
+                })
+                .into()
+            })
+        })
         .when_some(link_url, |this, link_url| {
             let link_url = link_url.to_string();
             this.cursor_pointer()
@@ -1752,7 +1823,7 @@ fn render_inline_image(image: InlineImage, style: &MarkdownStyle, image_id: &str
                 })
         })
         .child(
-            img(image.url)
+            img(url)
                 .max_w_full()
                 .rounded(px(4.0))
                 .with_fallback(move || {
@@ -2424,11 +2495,18 @@ mod tests {
     fn standalone_image_preserves_destination_and_plain_alt_text() {
         let document = MarkdownDocument::parse("![*logo*](https://example.com/logo.png)");
 
-        let MarkdownBlock::Image { url, alt, link_url } = &document.blocks[0] else {
+        let MarkdownBlock::Image {
+            url,
+            alt,
+            title,
+            link_url,
+        } = &document.blocks[0]
+        else {
             panic!("expected standalone image block");
         };
 
         assert_eq!(url.as_ref(), "https://example.com/logo.png");
+        assert!(title.is_none());
         assert!(link_url.is_none());
         assert_eq!(alt.plain_text(), "logo");
         assert_eq!(alt.spans().len(), 1);
@@ -2442,11 +2520,18 @@ mod tests {
     fn standalone_image_keeps_empty_alt_text_empty() {
         let document = MarkdownDocument::parse("![](image.png)");
 
-        let MarkdownBlock::Image { url, alt, link_url } = &document.blocks[0] else {
+        let MarkdownBlock::Image {
+            url,
+            alt,
+            title,
+            link_url,
+        } = &document.blocks[0]
+        else {
             panic!("expected standalone image block");
         };
 
         assert_eq!(url.as_ref(), "image.png");
+        assert!(title.is_none());
         assert!(link_url.is_none());
         assert!(alt.is_empty());
     }
@@ -2455,11 +2540,18 @@ mod tests {
     fn standalone_nested_image_uses_outer_destination() {
         let document = MarkdownDocument::parse("![foo ![bar](/bar.png)](/outer.png)");
 
-        let MarkdownBlock::Image { url, alt, link_url } = &document.blocks[0] else {
+        let MarkdownBlock::Image {
+            url,
+            alt,
+            title,
+            link_url,
+        } = &document.blocks[0]
+        else {
             panic!("expected standalone image block");
         };
 
         assert_eq!(url.as_ref(), "/outer.png");
+        assert!(title.is_none());
         assert!(link_url.is_none());
         assert_eq!(alt.plain_text(), "foo bar");
     }
@@ -2475,9 +2567,24 @@ mod tests {
         assert!(text.is_empty());
         assert!(matches!(
             children.as_slice(),
-            [MarkdownBlock::Image { url, alt, link_url }]
-                if url.as_ref() == "logo.png" && alt.plain_text() == "logo" && link_url.is_none()
+            [MarkdownBlock::Image { url, alt, title, link_url }]
+                if url.as_ref() == "logo.png"
+                    && alt.plain_text() == "logo"
+                    && title.is_none()
+                    && link_url.is_none()
         ));
+    }
+
+    #[test]
+    fn standalone_image_preserves_title() {
+        let document = MarkdownDocument::parse("![logo](logo.png \"Logo title\")");
+
+        let MarkdownBlock::Image { url, title, .. } = &document.blocks[0] else {
+            panic!("expected standalone image block");
+        };
+
+        assert_eq!(url.as_ref(), "logo.png");
+        assert_eq!(title.as_deref(), Some("Logo title"));
     }
 
     #[test]
@@ -2493,6 +2600,7 @@ mod tests {
         let image = &text.inline_images()[0];
         assert_eq!(image.range, 4..8);
         assert_eq!(image.url.as_ref(), "https://example.com/logo.png");
+        assert!(image.title.is_none());
         assert!(image.link_url.is_none());
         assert_eq!(image.alt.plain_text(), "logo");
         let alt_span = &image.alt.spans()[0];
@@ -2514,6 +2622,7 @@ mod tests {
         let image = &text.inline_images()[0];
         assert_eq!(image.range, 4..13);
         assert_eq!(image.url.as_ref(), "image.png");
+        assert!(image.title.is_none());
         assert!(image.alt.is_empty());
         assert!(image.link_url.is_none());
     }
@@ -2530,18 +2639,40 @@ mod tests {
         assert_eq!(text.inline_images().len(), 1);
         let image = &text.inline_images()[0];
         assert_eq!(image.url.as_ref(), "/outer.png");
+        assert!(image.title.is_none());
         assert_eq!(image.alt.plain_text(), "foo bar");
+    }
+
+    #[test]
+    fn inline_image_preserves_title() {
+        let document = MarkdownDocument::parse("See ![logo](logo.png \"Logo title\").");
+
+        let MarkdownBlock::Paragraph(text) = &document.blocks[0] else {
+            panic!("expected inline image paragraph");
+        };
+
+        assert_eq!(text.inline_images().len(), 1);
+        let image = &text.inline_images()[0];
+        assert_eq!(image.url.as_ref(), "logo.png");
+        assert_eq!(image.title.as_deref(), Some("Logo title"));
     }
 
     #[test]
     fn standalone_image_inside_link_preserves_outer_link_destination() {
         let document = MarkdownDocument::parse("[![logo](logo.png)](https://example.com)");
 
-        let MarkdownBlock::Image { url, alt, link_url } = &document.blocks[0] else {
+        let MarkdownBlock::Image {
+            url,
+            alt,
+            title,
+            link_url,
+        } = &document.blocks[0]
+        else {
             panic!("expected linked image block");
         };
 
         assert_eq!(url.as_ref(), "logo.png");
+        assert!(title.is_none());
         assert_eq!(alt.plain_text(), "logo");
         assert_eq!(link_url.as_deref(), Some("https://example.com"));
     }
@@ -2558,6 +2689,7 @@ mod tests {
         assert_eq!(text.inline_images().len(), 1);
         let image = &text.inline_images()[0];
         assert_eq!(image.url.as_ref(), "logo.png");
+        assert!(image.title.is_none());
         assert_eq!(image.alt.plain_text(), "logo");
         assert_eq!(image.link_url.as_deref(), Some("https://example.com"));
     }
