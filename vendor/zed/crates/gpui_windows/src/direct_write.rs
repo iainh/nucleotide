@@ -1284,6 +1284,11 @@ impl DirectWriteState {
         let mut glyph_layers = Vec::new();
         let mut alpha_data = Vec::new();
         loop {
+            let has_next = unsafe { color_enumerator.MoveNext()? }.as_bool();
+            if !has_next {
+                break;
+            }
+
             let color_run = unsafe { color_enumerator.GetCurrentRun() }?;
             let color_run = unsafe { &*color_run };
             let image_format = color_run.glyphImageFormat & !DWRITE_GLYPH_IMAGE_FORMATS_TRUETYPE;
@@ -1339,13 +1344,6 @@ impl DirectWriteState {
                         &alpha_data,
                     )?);
                 }
-            }
-
-            let has_next = unsafe { color_enumerator.MoveNext() }
-                .map(|e| e.as_bool())
-                .unwrap_or(false);
-            if !has_next {
-                break;
             }
         }
 
