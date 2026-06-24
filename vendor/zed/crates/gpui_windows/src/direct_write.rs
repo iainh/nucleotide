@@ -1695,7 +1695,10 @@ impl IDWritePixelSnapping_Impl for TextRenderer_Impl {
         &self,
         _clientdrawingcontext: *const ::core::ffi::c_void,
     ) -> windows::core::Result<BOOL> {
-        Ok(BOOL(0))
+        // This renderer is used to extract shaped glyph runs from DirectWrite,
+        // not to draw them. GPUI handles device-pixel snapping when rasterizing
+        // and placing glyph atlas sprites with the current window scale factor.
+        Ok(BOOL(1))
     }
 
     fn GetCurrentTransform(
