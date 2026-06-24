@@ -1439,13 +1439,17 @@ fn render_list_item(
         syntax_loader,
         &format!("{block_id}-child"),
     );
+    let needs_empty_placeholder =
+        list_item_needs_empty_placeholder(&text, !child_blocks.is_empty());
     let content = if text.is_empty() {
         div()
             .flex()
             .flex_col()
             .flex_1()
             .gap(block_gap(style))
-            .child(div().h(style.body_font_size))
+            .when(needs_empty_placeholder, |this| {
+                this.child(div().h(style.body_font_size))
+            })
             .children(child_blocks)
     } else {
         div()
@@ -1471,6 +1475,10 @@ fn render_list_item(
         .when(style.preview, |this| this.mb(px(6.0)))
         .child(div().flex_none().w(marker_width).child(marker))
         .child(content)
+}
+
+fn list_item_needs_empty_placeholder(text: &RichText, has_child_blocks: bool) -> bool {
+    text.is_empty() && !has_child_blocks
 }
 
 fn bullet_for_depth(depth: usize) -> &'static str {
@@ -1824,6 +1832,37 @@ mod tests {
                         MarkdownBlock::ListItem { text, .. } if text.plain_text() == "nested"
                     )
         ));
+    }
+
+    #[test]
+    fn list_items_can_start_with_block_children() {
+        let document = MarkdownDocument::parse("- # Heading");
+
+        assert!(matches!(
+            &document.blocks[0],
+            MarkdownBlock::ListItem { text, children, .. }
+                if text.is_empty()
+                    && matches!(
+                        children.as_slice(),
+                        [MarkdownBlock::Heading { level: 1, text }] if text.plain_text() == "Heading"
+                    )
+        ));
+    }
+
+    #[test]
+    fn list_item_placeholder_is_only_for_truly_empty_items() {
+        let mut text = RichText::default();
+        text.push("content", InlineStyle::default());
+
+        assert!(list_item_needs_empty_placeholder(
+            &RichText::default(),
+            false
+        ));
+        assert!(!list_item_needs_empty_placeholder(
+            &RichText::default(),
+            true
+        ));
+        assert!(!list_item_needs_empty_placeholder(&text, false));
     }
 
     #[test]
