@@ -946,6 +946,12 @@ impl DirectWriteState {
         let mut grid_fit_mode = DWRITE_GRID_FIT_MODE_DEFAULT;
         let measuring_mode = rendering_params.measuring_mode;
 
+        // GetRecommendedRenderingMode separates target DPI from any additional
+        // world transform. The transform below is how the atlas rasterizer maps
+        // DIPs to device pixels, so account for scale as DPI here instead of
+        // also passing that transform into the recommendation step.
+        let target_dpi = 96.0 * params.scale_factor;
+
         unsafe {
             // IDWriteFontFace2/3::GetRecommendedRenderingMode is the documented
             // way to resolve a rendering params object that may override the
@@ -953,10 +959,9 @@ impl DirectWriteState {
             // https://learn.microsoft.com/windows/win32/api/dwrite_2/nf-dwrite_2-idwritefontface2-getrecommendedrenderingmode
             font.font_face.GetRecommendedRenderingMode(
                 params.font_size.as_f32(),
-                // Using 96 as scale is applied by the transform
-                96.0,
-                96.0,
-                Some(&transform),
+                target_dpi,
+                target_dpi,
+                None,
                 false,
                 DWRITE_OUTLINE_THRESHOLD_ANTIALIASED,
                 measuring_mode,
