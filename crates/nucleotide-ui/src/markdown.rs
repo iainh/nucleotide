@@ -1761,6 +1761,13 @@ fn strip_html_markup(content: &str) -> String {
             cursor += "<?".len() + end + "?>".len();
         } else if let Some(end) = rest.strip_prefix("<!").and_then(|rest| rest.find('>')) {
             cursor += "<!".len() + end + ">".len();
+        } else if let Some(tag_name) = hidden_html_raw_text_element_name(rest) {
+            if let Some(skip_len) = html_raw_text_element_len(rest, tag_name) {
+                cursor += skip_len;
+            } else {
+                text.push_str(rest);
+                break;
+            }
         } else if rest.starts_with('<') {
             if let Some(end) = rest.find('>') {
                 cursor += end + ">".len();
@@ -1777,6 +1784,70 @@ fn strip_html_markup(content: &str) -> String {
     }
 
     text
+}
+
+fn hidden_html_raw_text_element_name(markup: &str) -> Option<&'static str> {
+    let tag_name = html_open_tag_name(markup)?;
+    if tag_name.eq_ignore_ascii_case("script") {
+        Some("script")
+    } else if tag_name.eq_ignore_ascii_case("style") {
+        Some("style")
+    } else {
+        None
+    }
+}
+
+fn html_open_tag_name(markup: &str) -> Option<&str> {
+    let body = markup.strip_prefix('<')?;
+    let mut chars = body.char_indices();
+    let (_, first) = chars.next()?;
+    if !first.is_ascii_alphabetic() {
+        return None;
+    }
+
+    for (index, ch) in chars {
+        if !(ch.is_ascii_alphanumeric() || ch == '-') {
+            return Some(&body[..index]);
+        }
+    }
+
+    Some(body)
+}
+
+fn html_raw_text_element_len(markup: &str, tag_name: &str) -> Option<usize> {
+    let opening_end = markup.find('>')?;
+    let after_opening_start = opening_end + ">".len();
+    let after_opening = &markup[after_opening_start..];
+    let Some(closing_start) = find_closing_html_tag(after_opening, tag_name) else {
+        return Some(markup.len());
+    };
+    let closing = &after_opening[closing_start..];
+    let closing_end = closing.find('>')?;
+    Some(after_opening_start + closing_start + closing_end + ">".len())
+}
+
+fn find_closing_html_tag(content: &str, tag_name: &str) -> Option<usize> {
+    let mut cursor = 0;
+
+    while let Some(relative_start) = content[cursor..].find("</") {
+        let start = cursor + relative_start;
+        let after_slash = &content[start + "</".len()..];
+        let Some(candidate) = after_slash.get(..tag_name.len()) else {
+            cursor = start + "</".len();
+            continue;
+        };
+        if candidate.eq_ignore_ascii_case(tag_name)
+            && after_slash[tag_name.len()..]
+                .chars()
+                .next()
+                .is_some_and(|ch| ch.is_ascii_whitespace() || ch == '>')
+        {
+            return Some(start);
+        }
+        cursor = start + "</".len();
+    }
+
+    None
 }
 
 fn inline_html_is_line_break(html: &str) -> bool {
@@ -2733,6 +2804,37 @@ mod tests {
         );
         assert_eq!(visible_html_text("<![CDATA[a < b]]>").as_ref(), "a < b");
         assert_eq!(visible_html_text("").as_ref(), "");
+    }
+
+    #[test]
+    fn html_block_display_hides_script_and_style_contents() {
+        assert_eq!(
+            visible_html_text("<script>\nalert('visible');\n</script>").as_ref(),
+            ""
+        );
+        assert_eq!(
+            visible_html_text("<style type=\"text/css\">\np { color: red; }\n</style>").as_ref(),
+            ""
+        );
+        assert_eq!(
+            visible_html_text("<pre><code>visible</code></pre>").as_ref(),
+            "visible"
+        );
+    }
+
+    #[test]
+    fn commonmark_style_block_does_not_render_css_as_text() {
+        let document = MarkdownDocument::parse("<style>p{color:red;}</style>\n*foo*");
+
+        assert!(matches!(
+            document.blocks.as_slice(),
+            [
+                MarkdownBlock::HtmlBlock { text },
+                MarkdownBlock::Paragraph(paragraph),
+            ] if visible_html_text(text).is_empty()
+                && paragraph.plain_text() == "foo"
+                && paragraph.spans().iter().any(|span| span.style.italic)
+        ));
     }
 
     #[test]
