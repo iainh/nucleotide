@@ -1683,7 +1683,8 @@ fn render_image_block(
 ) -> gpui::Div {
     let fallback_style = style.clone();
     let fallback_id = format!("{block_id}-fallback");
-    let fallback_text = image_fallback_text(&url, alt);
+    let fallback_link_url = link_url.clone();
+    let fallback_text = image_fallback_text(&url, alt, fallback_link_url);
 
     div()
         .w_full()
@@ -1715,12 +1716,13 @@ fn render_image_block(
 fn render_inline_image(image: InlineImage, style: &MarkdownStyle, image_id: &str) -> gpui::Div {
     let fallback_style = style.clone();
     let fallback_id = format!("{image_id}-fallback");
-    let fallback_text = image_fallback_text(&image.url, image.alt);
+    let link_url = image.link_url.clone();
+    let fallback_text = image_fallback_text(&image.url, image.alt, link_url.clone());
 
     div()
         .flex()
         .items_center()
-        .when_some(image.link_url, |this, link_url| {
+        .when_some(link_url, |this, link_url| {
             let link_url = link_url.to_string();
             this.cursor_pointer()
                 .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
@@ -1744,7 +1746,11 @@ fn render_inline_image(image: InlineImage, style: &MarkdownStyle, image_id: &str
         )
 }
 
-fn image_fallback_text(url: &SharedString, alt: RichText) -> RichText {
+fn image_fallback_text(
+    url: &SharedString,
+    alt: RichText,
+    link_url: Option<SharedString>,
+) -> RichText {
     if !alt.is_empty() {
         return alt;
     }
@@ -1754,7 +1760,7 @@ fn image_fallback_text(url: &SharedString, alt: RichText) -> RichText {
         url.as_ref(),
         InlineStyle {
             link: true,
-            link_url: Some(url.clone()),
+            link_url: Some(link_url.unwrap_or_else(|| url.clone())),
             ..InlineStyle::default()
         },
     );
@@ -2516,6 +2522,22 @@ mod tests {
         assert_eq!(image.url.as_ref(), "logo.png");
         assert_eq!(image.alt.plain_text(), "logo");
         assert_eq!(image.link_url.as_deref(), Some("https://example.com"));
+    }
+
+    #[test]
+    fn empty_linked_image_fallback_uses_outer_link_destination() {
+        let fallback = image_fallback_text(
+            &SharedString::from("logo.png"),
+            RichText::default(),
+            Some(SharedString::from("https://example.com")),
+        );
+
+        assert_eq!(fallback.plain_text(), "logo.png");
+        assert_eq!(fallback.spans().len(), 1);
+        assert_eq!(
+            fallback.spans()[0].style.link_url.as_deref(),
+            Some("https://example.com")
+        );
     }
 
     #[test]
