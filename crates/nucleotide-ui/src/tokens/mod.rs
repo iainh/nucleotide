@@ -961,6 +961,12 @@ pub struct FileTreeTokens {
     pub item_background_selected: Hsla,
     pub item_text: Hsla,
     pub item_text_secondary: Hsla,
+    pub item_text_selected: Hsla,
+    pub item_text_hidden: Hsla,
+    pub icon_color: Hsla,
+    pub icon_color_secondary: Hsla,
+    pub icon_color_selected: Hsla,
+    pub icon_color_hidden: Hsla,
     pub border: Hsla,
     pub separator: Hsla,
 }
@@ -974,6 +980,12 @@ impl FileTreeTokens {
         let item_selected = editor.selection_primary;
         let item_text = chrome.text_on_chrome;
         let item_text_secondary = chrome.text_chrome_secondary;
+        let item_text_selected = editor.text_on_primary;
+        let item_text_hidden = chrome.text_chrome_disabled;
+        let icon_color = chrome.text_chrome_secondary;
+        let icon_color_secondary = chrome.text_chrome_disabled;
+        let icon_color_selected = editor.text_on_primary;
+        let icon_color_hidden = chrome.text_chrome_disabled;
         let border = chrome.border_shadow;
         let separator = chrome.separator_color;
 
@@ -982,6 +994,8 @@ impl FileTreeTokens {
             item_hover = ?item_hover,
             item_selected = ?item_selected,
             item_text = ?item_text,
+            item_text_selected = ?item_text_selected,
+            icon_color = ?icon_color,
             "Creating file tree tokens from chrome and editor colors"
         );
 
@@ -991,6 +1005,12 @@ impl FileTreeTokens {
             item_background_selected: item_selected,
             item_text,
             item_text_secondary,
+            item_text_selected,
+            item_text_hidden,
+            icon_color,
+            icon_color_secondary,
+            icon_color_selected,
+            icon_color_hidden,
             border,
             separator,
         }
