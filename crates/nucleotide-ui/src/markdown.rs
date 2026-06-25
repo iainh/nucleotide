@@ -584,6 +584,12 @@ impl MarkdownContainer {
     }
 }
 
+#[derive(Clone, Debug)]
+struct HtmlBlockLinkContext {
+    link: Option<LinkContext>,
+    scope_depth: usize,
+}
+
 struct MarkdownParser {
     events: Vec<Event<'static>>,
     blocks: Vec<MarkdownBlock>,
@@ -594,10 +600,10 @@ struct MarkdownParser {
     strong_depth: usize,
     strikethrough_depth: usize,
     code_depth: usize,
-    html_block_emphasis_depth: usize,
-    html_block_strong_depth: usize,
-    html_block_strikethrough_depth: usize,
-    html_block_code_depth: usize,
+    html_block_emphasis_scopes: Vec<usize>,
+    html_block_strong_scopes: Vec<usize>,
+    html_block_strikethrough_scopes: Vec<usize>,
+    html_block_code_scopes: Vec<usize>,
     heading: Option<u8>,
     in_code_block: bool,
     code_block_language: Option<String>,
@@ -608,7 +614,7 @@ struct MarkdownParser {
     current_task_marker: Option<bool>,
     link_stack: Vec<LinkContext>,
     html_link_stack: Vec<Option<LinkContext>>,
-    html_block_link_stack: Vec<Option<LinkContext>>,
+    html_block_link_stack: Vec<HtmlBlockLinkContext>,
     image_depth: usize,
     table_alignments: Vec<TableAlignment>,
     table_rows: Vec<Vec<RichText>>,
@@ -644,10 +650,10 @@ impl MarkdownParser {
             strong_depth: 0,
             strikethrough_depth: 0,
             code_depth: 0,
-            html_block_emphasis_depth: 0,
-            html_block_strong_depth: 0,
-            html_block_strikethrough_depth: 0,
-            html_block_code_depth: 0,
+            html_block_emphasis_scopes: Vec::new(),
+            html_block_strong_scopes: Vec::new(),
+            html_block_strikethrough_scopes: Vec::new(),
+            html_block_code_scopes: Vec::new(),
             heading: None,
             in_code_block: false,
             code_block_language: None,
@@ -927,6 +933,7 @@ impl MarkdownParser {
                 let Some(MarkdownContainer::BlockQuote(quote)) = self.containers.pop() else {
                     return;
                 };
+                self.discard_html_block_context_from_closed_containers();
                 self.push_block(MarkdownBlock::BlockQuote {
                     kind: quote.kind,
                     blocks: quote.blocks,
@@ -1063,6 +1070,7 @@ impl MarkdownParser {
             item.checked = self.current_task_marker.take();
         }
 
+        self.discard_html_block_context_from_closed_containers();
         self.push_block(item.into_block());
     }
 
@@ -1160,11 +1168,28 @@ impl MarkdownParser {
     }
 
     fn refresh_inline_style_flags(&mut self) {
-        self.active_style.italic = self.emphasis_depth + self.html_block_emphasis_depth > 0;
-        self.active_style.bold = self.strong_depth + self.html_block_strong_depth > 0;
+        self.active_style.italic =
+            self.emphasis_depth > 0 || !self.html_block_emphasis_scopes.is_empty();
+        self.active_style.bold = self.strong_depth > 0 || !self.html_block_strong_scopes.is_empty();
         self.active_style.strikethrough =
-            self.strikethrough_depth + self.html_block_strikethrough_depth > 0;
-        self.active_style.code = self.code_depth + self.html_block_code_depth > 0;
+            self.strikethrough_depth > 0 || !self.html_block_strikethrough_scopes.is_empty();
+        self.active_style.code = self.code_depth > 0 || !self.html_block_code_scopes.is_empty();
+    }
+
+    fn discard_html_block_context_from_closed_containers(&mut self) {
+        let scope_depth = self.containers.len();
+        self.html_block_link_stack
+            .retain(|context| context.scope_depth <= scope_depth);
+        self.html_block_emphasis_scopes
+            .retain(|scope| *scope <= scope_depth);
+        self.html_block_strong_scopes
+            .retain(|scope| *scope <= scope_depth);
+        self.html_block_strikethrough_scopes
+            .retain(|scope| *scope <= scope_depth);
+        self.html_block_code_scopes
+            .retain(|scope| *scope <= scope_depth);
+        self.refresh_inline_style_flags();
+        self.refresh_link_style();
     }
 
     fn reset_inline_style_state(&mut self) {
@@ -1186,7 +1211,7 @@ impl MarkdownParser {
                 self.html_block_link_stack
                     .iter()
                     .rev()
-                    .find_map(Option::as_ref)
+                    .find_map(|context| context.link.as_ref())
             })
             .or_else(|| self.link_stack.last())
     }
@@ -1206,7 +1231,11 @@ impl MarkdownParser {
     fn update_html_block_context(&mut self, html: &str) {
         if let Some(tag) = inline_html_link_tag(html) {
             match tag {
-                InlineHtmlLinkTag::Open(link) => self.html_block_link_stack.push(link),
+                InlineHtmlLinkTag::Open(link) => {
+                    let scope_depth = self.containers.len();
+                    self.html_block_link_stack
+                        .push(HtmlBlockLinkContext { link, scope_depth });
+                }
                 InlineHtmlLinkTag::Close => {
                     self.html_block_link_stack.pop();
                 }
@@ -1225,28 +1254,30 @@ impl MarkdownParser {
     }
 
     fn increment_html_block_style(&mut self, tag: InlineHtmlStyleTag) {
+        let scope_depth = self.containers.len();
         match tag {
-            InlineHtmlStyleTag::Emphasis => self.html_block_emphasis_depth += 1,
-            InlineHtmlStyleTag::Strong => self.html_block_strong_depth += 1,
-            InlineHtmlStyleTag::Strikethrough => self.html_block_strikethrough_depth += 1,
-            InlineHtmlStyleTag::Code => self.html_block_code_depth += 1,
+            InlineHtmlStyleTag::Emphasis => self.html_block_emphasis_scopes.push(scope_depth),
+            InlineHtmlStyleTag::Strong => self.html_block_strong_scopes.push(scope_depth),
+            InlineHtmlStyleTag::Strikethrough => {
+                self.html_block_strikethrough_scopes.push(scope_depth);
+            }
+            InlineHtmlStyleTag::Code => self.html_block_code_scopes.push(scope_depth),
         }
     }
 
     fn decrement_html_block_style(&mut self, tag: InlineHtmlStyleTag) {
         match tag {
             InlineHtmlStyleTag::Emphasis => {
-                self.html_block_emphasis_depth = self.html_block_emphasis_depth.saturating_sub(1);
+                self.html_block_emphasis_scopes.pop();
             }
             InlineHtmlStyleTag::Strong => {
-                self.html_block_strong_depth = self.html_block_strong_depth.saturating_sub(1);
+                self.html_block_strong_scopes.pop();
             }
             InlineHtmlStyleTag::Strikethrough => {
-                self.html_block_strikethrough_depth =
-                    self.html_block_strikethrough_depth.saturating_sub(1);
+                self.html_block_strikethrough_scopes.pop();
             }
             InlineHtmlStyleTag::Code => {
-                self.html_block_code_depth = self.html_block_code_depth.saturating_sub(1);
+                self.html_block_code_scopes.pop();
             }
         }
     }
@@ -3499,6 +3530,98 @@ plain"#,
                     .spans()
                     .iter()
                     .all(|span| !span.style.bold && !span.style.strikethrough)
+        ));
+    }
+
+    #[test]
+    fn unclosed_html_block_styles_stop_at_list_item_boundary() {
+        let document = MarkdownDocument::parse("- <del>\n\n  inside\n- outside");
+
+        assert!(matches!(
+            document.blocks.as_slice(),
+            [
+                MarkdownBlock::ListItem { children: first_children, .. },
+                MarkdownBlock::ListItem { text: outside, .. },
+            ] if matches!(
+                first_children.as_slice(),
+                [
+                    MarkdownBlock::HtmlBlock { text: opening },
+                    MarkdownBlock::Paragraph(inside),
+                ] if visible_html_text(opening).is_empty()
+                    && inside.plain_text() == "inside"
+                    && inside.spans().iter().all(|span| span.style.strikethrough)
+            ) && outside.plain_text() == "outside"
+                && outside.spans().iter().all(|span| !span.style.strikethrough)
+        ));
+    }
+
+    #[test]
+    fn unclosed_html_block_styles_stop_at_block_quote_boundary() {
+        let document = MarkdownDocument::parse("> <strong>\n>\n> inside\n\noutside");
+
+        assert!(matches!(
+            document.blocks.as_slice(),
+            [
+                MarkdownBlock::BlockQuote { blocks, .. },
+                MarkdownBlock::Paragraph(outside),
+            ] if matches!(
+                blocks.as_slice(),
+                [
+                    MarkdownBlock::HtmlBlock { text: opening },
+                    MarkdownBlock::Paragraph(inside),
+                ] if visible_html_text(opening).is_empty()
+                    && inside.plain_text() == "inside"
+                    && inside.spans().iter().all(|span| span.style.bold)
+            ) && outside.plain_text() == "outside"
+                && outside.spans().iter().all(|span| !span.style.bold)
+        ));
+    }
+
+    #[test]
+    fn unclosed_html_block_anchors_stop_at_list_item_boundary() {
+        let document = MarkdownDocument::parse("- <a href=\"/inside\">\n\n  inside\n- outside");
+
+        assert!(matches!(
+            document.blocks.as_slice(),
+            [
+                MarkdownBlock::ListItem { children: first_children, .. },
+                MarkdownBlock::ListItem { text: outside, .. },
+            ] if matches!(
+                first_children.as_slice(),
+                [
+                    MarkdownBlock::HtmlBlock { text: opening },
+                    MarkdownBlock::Paragraph(inside),
+                ] if visible_html_text(opening).is_empty()
+                    && inside.plain_text() == "inside"
+                    && inside
+                        .spans()
+                        .iter()
+                        .all(|span| span.style.link_url.as_deref() == Some("/inside"))
+            ) && outside.plain_text() == "outside"
+                && outside.spans().iter().all(|span| span.style.link_url.is_none())
+        ));
+    }
+
+    #[test]
+    fn html_block_closing_tag_inside_list_item_closes_outer_context() {
+        let document = MarkdownDocument::parse("<strong>\n\n- inside\n\n  </strong>\n\noutside");
+
+        assert!(matches!(
+            document.blocks.as_slice(),
+            [
+                MarkdownBlock::HtmlBlock { text: opening },
+                MarkdownBlock::ListItem { text: inside, children, .. },
+                MarkdownBlock::Paragraph(outside),
+            ] if visible_html_text(opening).is_empty()
+                && inside.plain_text() == "inside"
+                && inside.spans().iter().all(|span| span.style.bold)
+                && matches!(
+                    children.as_slice(),
+                    [MarkdownBlock::HtmlBlock { text: closing }]
+                        if visible_html_text(closing).is_empty()
+                )
+                && outside.plain_text() == "outside"
+                && outside.spans().iter().all(|span| !span.style.bold)
         ));
     }
 
