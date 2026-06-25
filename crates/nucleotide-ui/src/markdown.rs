@@ -1110,8 +1110,12 @@ impl MarkdownParser {
         self.in_html_block = false;
         if !self.html_text.is_empty() {
             let text = std::mem::take(&mut self.html_text);
-            self.update_html_block_context(&text);
-            self.push_block(MarkdownBlock::HtmlBlock { text });
+            if html_block_is_standalone_rule(&text) {
+                self.push_block(MarkdownBlock::Rule);
+            } else {
+                self.update_html_block_context(&text);
+                self.push_block(MarkdownBlock::HtmlBlock { text });
+            }
         }
     }
 
@@ -2526,6 +2530,31 @@ fn inline_html_is_line_break(html: &str) -> bool {
         .next()
         .unwrap_or_default();
     tag_name.eq_ignore_ascii_case("br")
+}
+
+fn html_block_is_standalone_rule(html: &str) -> bool {
+    let html = trim_html_whitespace(html);
+    let Some(tag_len) = html_normal_tag_len(html) else {
+        return false;
+    };
+    if tag_len != html.len() {
+        return false;
+    }
+
+    let Some(body) = html
+        .strip_prefix('<')
+        .and_then(|html| html.strip_suffix('>'))
+    else {
+        return false;
+    };
+    if body.starts_with('/') {
+        return false;
+    }
+
+    let Some(tag_name_len) = html_tag_name_len(body) else {
+        return false;
+    };
+    body[..tag_name_len].eq_ignore_ascii_case("hr")
 }
 
 fn html_image_tag(html: &str) -> Option<HtmlImageTag> {
@@ -4119,6 +4148,19 @@ plain"#,
         assert_eq!(image.range, 0..4);
         assert_eq!(image.url.as_ref(), "logo.png");
         assert_eq!(image.alt.plain_text(), "Logo");
+    }
+
+    #[test]
+    fn standalone_html_hr_blocks_render_as_rules() {
+        for source in ["<hr>", "<HR class=\"section\" />", "  <hr>\n"] {
+            let document = MarkdownDocument::parse(source);
+
+            assert!(
+                matches!(document.blocks.as_slice(), [MarkdownBlock::Rule]),
+                "expected standalone HTML hr block to render as a rule for {source:?}, got {:?}",
+                document.blocks
+            );
+        }
     }
 
     #[test]
