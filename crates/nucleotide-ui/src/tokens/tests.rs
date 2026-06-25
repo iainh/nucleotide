@@ -238,6 +238,8 @@ mod component_token_tests {
         // Verify that editor content colors are preserved from Helix where appropriate
         assert_eq!(file_tree.item_background_selected, helix_colors.selection);
         assert_eq!(file_tree.item_text_selected, tokens.editor.text_on_primary);
+        assert_eq!(tab_bar.tab_active_background, tokens.editor.background);
+        assert_eq!(tab_bar.tab_text_active, tokens.chrome.text_on_chrome);
         assert_eq!(tab_bar.tab_modified_indicator, helix_colors.warning);
         assert_eq!(tokens.editor.vcs_added, helix_colors.vcs_added);
         assert_eq!(tokens.editor.vcs_modified, helix_colors.vcs_modified);
@@ -381,6 +383,8 @@ mod component_token_tests {
             tab_bar.tab_active_background,
             tab_bar.tab_inactive_background
         );
+        assert_eq!(tab_bar.tab_active_background, tokens.editor.background);
+        assert_eq!(tab_bar.tab_text_active, tokens.chrome.text_on_chrome);
         assert_ne!(tab_bar.tab_active_background, tab_bar.container_background);
         assert_ne!(tab_bar.tab_text_active, tab_bar.tab_text_inactive);
 
@@ -465,6 +469,9 @@ mod component_token_tests {
                 tab_bar.container_background,
                 tokens.chrome.tab_empty_background
             );
+            assert_eq!(tokens.chrome.bufferline_active, tokens.editor.background);
+            assert_eq!(tab_bar.tab_active_background, tokens.editor.background);
+            assert_eq!(tab_bar.tab_text_active, tokens.chrome.text_on_chrome);
 
             // Verify titlebar and status bar have matching backgrounds (USER FIX)
             assert_eq!(

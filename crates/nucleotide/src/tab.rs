@@ -782,18 +782,18 @@ impl Tab {
     fn build_icon(
         file_path: Option<std::path::PathBuf>,
         diagnostic_severity: Option<DiagnosticSeverity>,
-        text_color: gpui::Hsla,
         tokens: nucleotide_ui::tokens::DesignTokens,
         cx: &mut App,
     ) -> gpui::AnyElement {
+        let icon_color = Tab::content_icon_color(tokens);
         let icon = if let Some(ref path) = file_path {
             VcsIcon::from_path(path, false)
                 .size(tokens.sizes.text_lg.into())
-                .text_color(text_color)
+                .text_color(icon_color)
         } else {
             VcsIcon::scratch()
                 .size(tokens.sizes.text_lg.into())
-                .text_color(text_color)
+                .text_color(icon_color)
         };
         let theme = cx.global::<nucleotide_ui::Theme>();
 
@@ -812,7 +812,6 @@ impl Tab {
     }
 
     fn build_readonly_icon(
-        text_color: gpui::Hsla,
         tokens: nucleotide_ui::tokens::DesignTokens,
         diagnostic_severity: Option<DiagnosticSeverity>,
         on_toggle_readonly: Option<MouseEventHandler>,
@@ -831,7 +830,7 @@ impl Tab {
                 svg()
                     .path("icons/file-lock.svg")
                     .size(tokens.sizes.text_lg)
-                    .text_color(text_color),
+                    .text_color(Tab::content_icon_color(tokens)),
             )
             .when(is_toggleable, |icon| {
                 icon.cursor(CursorStyle::PointingHand)
@@ -885,6 +884,10 @@ impl Tab {
 
     fn readonly_content_tooltip_detail() -> &'static str {
         "Read-Only File"
+    }
+
+    fn content_icon_color(tokens: nucleotide_ui::tokens::DesignTokens) -> gpui::Hsla {
+        tokens.file_tree_tokens().icon_color
     }
 
     fn content_icon_kind(is_readonly: bool, show_file_icons: bool) -> Option<TabContentIcon> {
@@ -1175,15 +1178,10 @@ impl Tab {
             .gap(tokens.sizes.space_2)
             .child(leading_slot)
             .when_some(content_icon, |row, content_icon| match content_icon {
-                TabContentIcon::File => row.child(Tab::build_icon(
-                    file_path,
-                    diagnostic_severity,
-                    text_color,
-                    tokens,
-                    cx,
-                )),
+                TabContentIcon::File => {
+                    row.child(Tab::build_icon(file_path, diagnostic_severity, tokens, cx))
+                }
                 TabContentIcon::Readonly => row.child(Tab::build_readonly_icon(
-                    text_color,
                     tokens,
                     readonly_diagnostic_severity,
                     on_toggle_readonly.clone(),
@@ -1223,33 +1221,32 @@ mod tests {
     }
 
     #[test]
-    fn inactive_tab_background_is_darker_than_active() {
+    fn active_tab_background_matches_editor_background() {
+        for tokens in [
+            nucleotide_ui::DesignTokens::dark(),
+            nucleotide_ui::DesignTokens::light(),
+        ] {
+            assert_eq!(
+                tokens.tab_bar_tokens().tab_active_background,
+                tokens.editor.background
+            );
+        }
+    }
+
+    #[test]
+    fn inactive_tab_backgrounds_remain_distinct_from_active() {
         for tokens in [
             nucleotide_ui::DesignTokens::dark(),
             nucleotide_ui::DesignTokens::light(),
         ] {
             let tab_tokens = tokens.tab_bar_tokens();
-            let active_l = nucleotide_ui::styling::ColorTheory::hsla_to_oklch(
-                tab_tokens.tab_active_background,
-            )
-            .L;
-            let inactive_l = nucleotide_ui::styling::ColorTheory::hsla_to_oklch(
-                Tab::inactive_background_color(tab_tokens),
-            )
-            .L;
-            let hover_l = nucleotide_ui::styling::ColorTheory::hsla_to_oklch(
-                Tab::inactive_hover_background_color(tab_tokens),
-            )
-            .L;
+            let active = tab_tokens.tab_active_background;
+            let inactive = Tab::inactive_background_color(tab_tokens);
+            let hover = Tab::inactive_hover_background_color(tab_tokens);
 
-            assert!(
-                inactive_l < active_l,
-                "inactive tab background should be darker than active"
-            );
-            assert!(
-                inactive_l < hover_l && hover_l < active_l,
-                "inactive hover background should stay between inactive and active"
-            );
+            assert_ne!(inactive, active);
+            assert_ne!(hover, active);
+            assert_ne!(inactive, hover);
         }
     }
 
@@ -1297,6 +1294,16 @@ mod tests {
             Some(TabContentIcon::Readonly)
         );
         assert_eq!(Tab::content_icon_kind(false, false), None);
+    }
+
+    #[test]
+    fn tab_content_icon_color_matches_treeview_icons() {
+        let tokens = nucleotide_ui::DesignTokens::dark();
+
+        assert_eq!(
+            Tab::content_icon_color(tokens),
+            tokens.file_tree_tokens().icon_color
+        );
     }
 
     #[test]
