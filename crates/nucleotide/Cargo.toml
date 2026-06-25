@@ -25,6 +25,10 @@ git = ["helix-vcs/git"]
 name = "nucl"
 path = "src/main.rs"
 
+[[bin]]
+name = "nucl-grammar"
+path = "src/grammar_tool.rs"
+
 [dependencies]
 # Internal crates
 nucleotide-types = { workspace = true, features = ["gpui-bridge", "helix-bridge"] }
