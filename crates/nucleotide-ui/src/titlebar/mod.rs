@@ -110,6 +110,13 @@ impl Render for TitleBar {
                     + WINDOWS_CONTROL_RIGHT_INSET;
                 let menu_width =
                     px((f32::from(window.viewport_size().width) - control_width).max(0.0));
+                let titlebar_tokens = if let Some(provider) =
+                    crate::providers::use_provider::<crate::providers::ThemeProvider>()
+                {
+                    provider.titlebar_tokens(crate::tokens::ColorContext::OnSurface)
+                } else {
+                    cx.global::<crate::Theme>().tokens.titlebar_tokens()
+                };
 
                 return div()
                     .relative()
@@ -122,6 +129,15 @@ impl Render for TitleBar {
                             .top_0()
                             .w(menu_width)
                             .child(menu.clone()),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .right_0()
+                            .bottom_0()
+                            .h(px(1.0))
+                            .bg(titlebar_tokens.border),
                     )
                     .into_any_element();
             }
