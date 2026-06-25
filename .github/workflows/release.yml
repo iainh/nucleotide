@@ -188,12 +188,15 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@main
+
       - name: Install cargo-bundle
         shell: pwsh
         run: |
           $attempts = 3
           for ($attempt = 1; $attempt -le $attempts; $attempt++) {
-            cargo install cargo-bundle --version 0.11.0 --locked
+            cargo binstall cargo-bundle@0.11.0 --no-confirm
             if ($LASTEXITCODE -eq 0) {
               exit 0
             }
