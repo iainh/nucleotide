@@ -1257,9 +1257,17 @@ impl MarkdownParser {
                 } else {
                     break;
                 }
-            } else if let Some(tag_name) = hidden_html_raw_text_element_name(rest) {
+            } else if let Some(tag_name) = hidden_html_content_element_name(rest) {
                 if let Some(skip_len) = html_raw_text_element_len(rest, tag_name) {
                     cursor += skip_len;
+                } else {
+                    cursor += '<'.len_utf8();
+                }
+            } else if let Some(tag_name) = text_html_content_element_name(rest) {
+                if let Some((_textarea_content, element_len)) =
+                    html_raw_text_element_content(rest, tag_name)
+                {
+                    cursor += element_len;
                 } else {
                     cursor += '<'.len_utf8();
                 }
@@ -1991,9 +1999,19 @@ fn html_block_rich_text(content: &str) -> RichText {
             } else {
                 break;
             }
-        } else if let Some(tag_name) = hidden_html_raw_text_element_name(rest) {
+        } else if let Some(tag_name) = hidden_html_content_element_name(rest) {
             if let Some(skip_len) = html_raw_text_element_len(rest, tag_name) {
                 cursor += skip_len;
+            } else {
+                push_visible_html_rich_text(&mut text, "<", &style.active_style);
+                cursor += '<'.len_utf8();
+            }
+        } else if let Some(tag_name) = text_html_content_element_name(rest) {
+            if let Some((textarea_content, element_len)) =
+                html_raw_text_element_content(rest, tag_name)
+            {
+                push_visible_html_rich_text(&mut text, textarea_content, &style.active_style);
+                cursor += element_len;
             } else {
                 push_visible_html_rich_text(&mut text, "<", &style.active_style);
                 cursor += '<'.len_utf8();
@@ -2216,15 +2234,28 @@ fn html_declaration(markup: &str) -> Option<&str> {
         .then_some(declaration)
 }
 
-fn hidden_html_raw_text_element_name(markup: &str) -> Option<&'static str> {
+fn hidden_html_content_element_name(markup: &str) -> Option<&'static str> {
     let tag_name = html_open_tag_name(markup)?;
     if tag_name.eq_ignore_ascii_case("script") {
         Some("script")
     } else if tag_name.eq_ignore_ascii_case("style") {
         Some("style")
+    } else if tag_name.eq_ignore_ascii_case("title") {
+        Some("title")
+    } else if tag_name.eq_ignore_ascii_case("head") {
+        Some("head")
+    } else if tag_name.eq_ignore_ascii_case("template") {
+        Some("template")
     } else {
         None
     }
+}
+
+fn text_html_content_element_name(markup: &str) -> Option<&'static str> {
+    let tag_name = html_open_tag_name(markup)?;
+    tag_name
+        .eq_ignore_ascii_case("textarea")
+        .then_some("textarea")
 }
 
 fn html_open_tag_name(markup: &str) -> Option<&str> {
@@ -2245,14 +2276,21 @@ fn html_open_tag_name(markup: &str) -> Option<&str> {
 }
 
 fn html_raw_text_element_len(markup: &str, tag_name: &str) -> Option<usize> {
+    html_raw_text_element_content(markup, tag_name).map(|(_, element_len)| element_len)
+}
+
+fn html_raw_text_element_content<'a>(markup: &'a str, tag_name: &str) -> Option<(&'a str, usize)> {
     let after_opening_start = html_normal_tag_len(markup)?;
     let after_opening = &markup[after_opening_start..];
     let Some(closing_start) = find_closing_html_tag(after_opening, tag_name) else {
-        return Some(markup.len());
+        return Some((after_opening, markup.len()));
     };
     let closing = &after_opening[closing_start..];
     let closing_len = html_normal_tag_len(closing)?;
-    Some(after_opening_start + closing_start + closing_len)
+    Some((
+        &after_opening[..closing_start],
+        after_opening_start + closing_start + closing_len,
+    ))
 }
 
 fn html_normal_tag_len(markup: &str) -> Option<usize> {
@@ -3922,6 +3960,33 @@ plain"#,
             visible_html_text("<pre><code>visible</code></pre>").as_ref(),
             "visible"
         );
+    }
+
+    #[test]
+    fn html_block_display_hides_metadata_contents() {
+        assert_eq!(visible_html_text("<title>hidden</title>").as_ref(), "");
+        assert_eq!(
+            visible_html_text("<head>\n<title>hidden</title>\n</head>").as_ref(),
+            ""
+        );
+        assert_eq!(
+            visible_html_text("<template><p>hidden</p></template>").as_ref(),
+            ""
+        );
+    }
+
+    #[test]
+    fn html_block_display_preserves_textarea_contents_as_text() {
+        let text = html_block_rich_text("<textarea><strong>literal</strong> &amp;</textarea>");
+
+        assert_eq!(text.plain_text(), "<strong>literal</strong> &");
+        assert!(text.spans().iter().all(|span| {
+            !span.style.bold
+                && !span.style.italic
+                && !span.style.strikethrough
+                && !span.style.code
+                && span.style.link_url.is_none()
+        }));
     }
 
     #[test]
