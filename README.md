@@ -50,7 +50,6 @@ Nucleotide publishes a Windows MSI installer from CI. Download
 Menu or desktop shortcut.
 
 ```powershell
-cargo install cargo-bundle --version 0.11.0 --locked
 cargo build --release -p nucleotide
 git clone --depth 1 --branch 25.07.1 https://github.com/helix-editor/helix.git helix-temp
 try {
@@ -58,12 +57,10 @@ try {
 } finally {
   Remove-Item -LiteralPath helix-temp -Recurse -Force
 }
-Push-Location crates\nucleotide
-cargo bundle --release --format wxsmsi
-Pop-Location
+.\scripts\build-windows-msi.ps1
 ```
 
-See `docs/windows_install.md` for local cargo-bundle build and install notes.
+See `docs/windows_install.md` for local Windows MSI build and install notes.
 
 ## Development Setup
 

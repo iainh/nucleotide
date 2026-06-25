@@ -9,10 +9,16 @@ Nucleotide publishes a Windows MSI installer named
 2. Run the installer.
 3. Launch Nucleotide from the Start Menu or desktop shortcut.
 
-The installer is built with `cargo-bundle`'s WiX-backed MSI format. It installs
-`nucl.exe` and the bundled Helix runtime together under the application install
-directory. Nucleotide detects that bundled runtime automatically when launched
-from the installer shortcuts or directly from the install directory.
+The installer is built from the checked-in WiX template in `build/windows`. It
+installs `nucl.exe` and the bundled Helix runtime together under:
+
+```text
+%LOCALAPPDATA%\Spiralpoint\nucleotide
+```
+
+The MSI is scoped per-user and does not require elevated permissions.
+Nucleotide detects that bundled runtime automatically when launched from the
+installer shortcuts or directly from the install directory.
 
 Nucleotide sets a stable Windows AppUserModelID (`org.spiralpoint.nucleotide`)
 at startup so taskbar grouping and Jump Lists use the same identity across
@@ -28,11 +34,10 @@ tasks when the app starts.
 
 ## Build Locally
 
-Install the .NET 8 SDK and cargo-bundle, then prepare the runtime resources
-that the MSI will embed:
+Install the .NET 8 SDK, then prepare the runtime resources that the MSI will
+embed:
 
 ```powershell
-cargo install cargo-bundle --version 0.11.0 --locked
 cargo build --release -p nucleotide
 git clone --depth 1 --branch 25.07.1 https://github.com/helix-editor/helix.git helix-temp
 try {
@@ -42,12 +47,10 @@ try {
 }
 ```
 
-Then run cargo-bundle from the application crate:
+Then build the MSI:
 
 ```powershell
-Push-Location crates\nucleotide
-cargo bundle --release --format wxsmsi
-Pop-Location
+.\scripts\build-windows-msi.ps1
 ```
 
 The installer is written to:

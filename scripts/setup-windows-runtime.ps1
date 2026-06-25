@@ -15,8 +15,8 @@ if ($Help) {
     Write-Host @"
 Usage: .\scripts\setup-windows-runtime.cmd [options]
 
-Prepares the Helix runtime under crates\nucleotide\runtime for cargo-bundle's
-Windows MSI build.
+Prepares the Helix runtime under crates\nucleotide\runtime for the Windows MSI
+build.
 
 Options:
   -SkipFetch              Do not fetch tree-sitter grammar sources.
@@ -386,7 +386,7 @@ function Remove-PackagedGrammarSources {
 $runtimeSource = Find-HelixRuntime
 
 Write-Host "Using Helix runtime source: $runtimeSource"
-Write-Host "Preparing cargo-bundle runtime: $RuntimeDest"
+Write-Host "Preparing Windows MSI runtime: $RuntimeDest"
 
 Copy-Runtime -Source $runtimeSource
 Copy-NucleotideThemes
@@ -413,7 +413,7 @@ $dllCount = @(Get-ChildItem $GrammarDest -Filter "*.dll" -ErrorAction SilentlyCo
 $queryCount = @(Get-ChildItem (Join-Path $RuntimeDest "queries") -Directory -ErrorAction SilentlyContinue).Count
 $themeCount = @(Get-ChildItem (Join-Path $RuntimeDest "themes") -Filter "*.toml" -ErrorAction SilentlyContinue).Count
 
-Write-Host "Cargo-bundle runtime ready at: $RuntimeDest"
+Write-Host "Windows MSI runtime ready at: $RuntimeDest"
 Write-Host "  Grammar DLLs: $dllCount"
 Write-Host "  Query dirs:   $queryCount"
 Write-Host "  Themes:       $themeCount"
