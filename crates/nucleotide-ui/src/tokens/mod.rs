@@ -687,7 +687,7 @@ impl ChromeTokens {
             statusline_active: chrome_colors.footer_background,
             statusline_inactive: utils::with_alpha(chrome_colors.footer_background, 0.8),
             bufferline_background: chrome_colors.tab_empty_background,
-            bufferline_active: surface_color, // Active tab matches editor background
+            bufferline_active: editor_background,
             bufferline_inactive: utils::with_alpha(chrome_colors.tab_empty_background, 0.9),
 
             // Chrome text colors (computed for contrast)
@@ -1106,14 +1106,14 @@ pub struct TabBarTokens {
 }
 
 impl TabBarTokens {
-    /// Create tab bar tokens using computed chrome colors for container
-    /// and editor colors for tab content
+    /// Create tab bar tokens using computed chrome colors for UI text
+    /// and editor colors for editor-adjacent backgrounds.
     pub fn from_tokens(chrome: &ChromeTokens, editor: &EditorTokens) -> Self {
         let container_bg = chrome.tab_empty_background;
-        let tab_active_bg = chrome.surface; // Active tab matches editor surface
+        let tab_active_bg = editor.background;
         let tab_inactive_bg = chrome.bufferline_inactive;
         let tab_hover_bg = chrome.surface_hover;
-        let tab_text_active = editor.text_primary;
+        let tab_text_active = chrome.text_on_chrome;
         let tab_text_inactive = chrome.text_chrome_secondary;
         let tab_border = chrome.border_shadow;
         let tab_separator = chrome.separator_color;
