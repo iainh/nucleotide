@@ -9,6 +9,8 @@ APP_NAME="Nucleotide"
 BUNDLE_NAME="${APP_NAME}.app"
 EXECUTABLE_NAME="nucl"
 BUNDLE_ID="org.spiralpoint.nucleotide"
+BINARY_PATH="${NUCL_BINARY:-target/release/${EXECUTABLE_NAME}}"
+BINARY_PATH_EXPLICIT="${NUCL_BINARY:+1}"
 
 # Colors for output
 RED='\033[0;31m'
@@ -25,17 +27,22 @@ if [ -d "${BUNDLE_NAME}" ]; then
 fi
 
 # Check if binary exists, build if not
-if [ ! -f "target/release/${EXECUTABLE_NAME}" ]; then
+if [ ! -f "${BINARY_PATH}" ]; then
+    if [ -n "${BINARY_PATH_EXPLICIT}" ]; then
+        echo -e "${RED}Error: NUCL_BINARY does not exist: ${BINARY_PATH}${NC}"
+        exit 1
+    fi
+
     echo -e "${GREEN}Building release binary...${NC}"
     cargo build --release
     
     # Check again after build
-    if [ ! -f "target/release/${EXECUTABLE_NAME}" ]; then
-        echo -e "${RED}Error: Binary target/release/${EXECUTABLE_NAME} not found${NC}"
+    if [ ! -f "${BINARY_PATH}" ]; then
+        echo -e "${RED}Error: Binary ${BINARY_PATH} not found${NC}"
         exit 1
     fi
 else
-    echo -e "${GREEN}Using existing binary at target/release/${EXECUTABLE_NAME}${NC}"
+    echo -e "${GREEN}Using existing binary at ${BINARY_PATH}${NC}"
 fi
 
 # Create bundle directory structure
@@ -45,7 +52,7 @@ mkdir -p "${BUNDLE_NAME}/Contents/Resources"
 
 # Copy the executable
 echo -e "${GREEN}Copying executable...${NC}"
-cp "target/release/${EXECUTABLE_NAME}" "${BUNDLE_NAME}/Contents/MacOS/${APP_NAME}"
+cp "${BINARY_PATH}" "${BUNDLE_NAME}/Contents/MacOS/${APP_NAME}"
 chmod +x "${BUNDLE_NAME}/Contents/MacOS/${APP_NAME}"
 
 # Copy the icon file

@@ -26,6 +26,13 @@ The bundle script:
 - Copies Nucleotide theme files into the bundled runtime
 - Writes `Nucleotide.app/Contents/Info.plist`
 
+Set `NUCL_BINARY` to bundle an existing executable from another Cargo target
+directory:
+
+```bash
+NUCL_BINARY=target/aarch64-apple-darwin/release/nucl ./scripts/bundle-mac.sh
+```
+
 ## Runtime source
 
 The script looks for Helix runtime files in this order:

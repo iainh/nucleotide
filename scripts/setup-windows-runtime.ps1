@@ -5,7 +5,8 @@ param(
     [switch]$SkipBuild,
     [switch]$AllowGrammarFailures,
     [string[]]$ExcludeGrammars = @("gotmpl"),
-    [string]$RuntimeSource
+    [string]$RuntimeSource,
+    [string]$NuclExe
 )
 
 $ErrorActionPreference = "Stop"
@@ -23,6 +24,7 @@ Options:
   -AllowGrammarFailures   Continue when some grammar fetch/build jobs fail.
   -ExcludeGrammars <ids>  Grammar IDs to exclude from fetch/build. Comma-separated is OK. Defaults to gotmpl.
   -RuntimeSource <path>   Runtime source directory. Defaults to Cargo's Helix checkout, then .\runtime.
+  -NuclExe <path>          Existing nucl executable to use for grammar commands. Defaults to building target\debug\nucl.exe.
   -Help                   Show this help text.
 "@
     exit 0
@@ -34,6 +36,7 @@ $RuntimeDest = Join-Path $BundleCrateRoot "runtime"
 $GrammarDest = Join-Path $RuntimeDest "grammars"
 $ManifestDir = Join-Path $BundleCrateRoot "nucleotide"
 $ExcludedGrammarIds = @($ExcludeGrammars | ForEach-Object { $_ -split ',' } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_.Trim() } | Sort-Object -Unique)
+$ResolvedNuclExe = $null
 
 function Find-HelixRuntime {
     if (-not [string]::IsNullOrWhiteSpace($RuntimeSource)) {
@@ -288,6 +291,48 @@ function Restore-WorkspaceGrammarExclusions {
     }
 }
 
+function Resolve-NuclExecutable {
+    if (-not [string]::IsNullOrWhiteSpace($script:ResolvedNuclExe)) {
+        return $script:ResolvedNuclExe
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($NuclExe)) {
+        $candidate = $NuclExe
+        if ((-not (Test-Path -LiteralPath $candidate -PathType Leaf)) -and (-not [System.IO.Path]::IsPathRooted($candidate))) {
+            $candidate = Join-Path $RepoRoot $candidate
+        }
+
+        if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+            throw "NuclExe does not exist: $NuclExe"
+        }
+
+        $script:ResolvedNuclExe = (Resolve-Path -LiteralPath $candidate).Path
+        Write-Host "Using prebuilt Nucleotide executable: $script:ResolvedNuclExe"
+        return $script:ResolvedNuclExe
+    }
+
+    Push-Location $RepoRoot
+    try {
+        cargo build -p nucleotide
+        if ($LASTEXITCODE -ne 0) {
+            throw "cargo build -p nucleotide failed with exit code $LASTEXITCODE"
+        }
+
+        $candidate = Join-Path $RepoRoot "target\debug\nucl.exe"
+        if (-not (Test-Path $candidate)) {
+            $candidate = Join-Path $RepoRoot "target\debug\nucl"
+        }
+        if (-not (Test-Path $candidate)) {
+            throw "Could not find built nucl executable under target\debug"
+        }
+
+        $script:ResolvedNuclExe = (Resolve-Path -LiteralPath $candidate).Path
+        return $script:ResolvedNuclExe
+    } finally {
+        Pop-Location
+    }
+}
+
 function Invoke-NuclGrammarCommand {
     param([string]$Command)
 
@@ -302,19 +347,7 @@ function Invoke-NuclGrammarCommand {
 
         Push-Location $RepoRoot
         try {
-            cargo build -p nucleotide
-            if ($LASTEXITCODE -ne 0) {
-                throw "cargo build -p nucleotide failed with exit code $LASTEXITCODE"
-            }
-
-            $nuclExe = Join-Path $RepoRoot "target\debug\nucl.exe"
-            if (-not (Test-Path $nuclExe)) {
-                $nuclExe = Join-Path $RepoRoot "target\debug\nucl"
-            }
-            if (-not (Test-Path $nuclExe)) {
-                throw "Could not find built nucl executable under target\debug"
-            }
-
+            $nuclExe = Resolve-NuclExecutable
             & $nuclExe --grammar $Command
             if ($LASTEXITCODE -ne 0) {
                 $message = "nucl --grammar $Command failed with exit code $LASTEXITCODE"

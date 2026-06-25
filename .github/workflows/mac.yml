@@ -36,9 +36,6 @@ jobs:
         run: |
           TARGET=${{ matrix.arch == 'x86_64' && 'x86_64-apple-darwin' || 'aarch64-apple-darwin' }}
           cargo build --release --target $TARGET
-          
-          # Copy to expected location for bundling
-          cp target/$TARGET/release/nucl target/release/nucl
       
       - name: Prepare runtime files
         run: |
@@ -59,7 +56,8 @@ jobs:
         run: |
           # Use the bundle script
           chmod +x scripts/bundle-mac.sh
-          ./scripts/bundle-mac.sh
+          TARGET=${{ matrix.arch == 'x86_64' && 'x86_64-apple-darwin' || 'aarch64-apple-darwin' }}
+          NUCL_BINARY="target/$TARGET/release/nucl" ./scripts/bundle-mac.sh
           
           # Verify the app bundle
           if [ -d "Nucleotide.app" ]; then
