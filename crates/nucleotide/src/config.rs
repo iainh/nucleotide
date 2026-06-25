@@ -23,6 +23,9 @@ const FALLBACK_PLATFORM_UI_FONT_SIZE: f32 = 12.0;
 #[cfg(not(target_os = "windows"))]
 const FALLBACK_PLATFORM_UI_FONT_SIZE: f32 = 13.0;
 
+#[cfg(any(target_os = "windows", test))]
+const WINDOWS_DEFAULT_DPI: f32 = 96.0;
+
 /// Complete example configuration used for new `nucleotide.toml` files.
 pub const NUCLEOTIDE_EXAMPLE_CONFIG: &str = include_str!("../nucleotide.example.toml");
 
@@ -49,6 +52,20 @@ fn default_ui_font_size() -> f32 {
     platform_ui_font_size().unwrap_or(FALLBACK_PLATFORM_UI_FONT_SIZE)
 }
 
+#[cfg(any(target_os = "windows", test))]
+fn logical_font_size_from_windows_logfont_height(lf_height: i32, dpi: u32) -> Option<f32> {
+    let dpi = dpi as f32;
+    if dpi <= 0.0 {
+        return None;
+    }
+
+    let physical_size = lf_height.checked_abs()? as f32;
+    physical_size
+        .is_finite()
+        .then_some(physical_size * WINDOWS_DEFAULT_DPI / dpi)
+        .filter(|size| *size > 0.0)
+}
+
 #[cfg(target_os = "macos")]
 fn platform_ui_font_size() -> Option<f32> {
     use objc2_app_kit::NSFont;
@@ -62,20 +79,28 @@ fn platform_ui_font_size() -> Option<f32> {
     use std::ffi::c_void;
     use windows_sys::Win32::{
         Graphics::Gdi::LOGFONTW,
-        UI::WindowsAndMessaging::{
-            NONCLIENTMETRICSW, SPI_GETICONTITLELOGFONT, SPI_GETNONCLIENTMETRICS,
-            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW,
+        UI::{
+            HiDpi::GetDpiForSystem,
+            WindowsAndMessaging::{
+                NONCLIENTMETRICSW, SPI_GETICONTITLELOGFONT, SPI_GETNONCLIENTMETRICS,
+                SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW,
+                USER_DEFAULT_SCREEN_DPI,
+            },
         },
     };
 
-    fn logfont_size(font: &LOGFONTW) -> Option<f32> {
-        let size = font.lfHeight.checked_abs()? as f32;
-        size.is_finite().then_some(size).filter(|size| *size > 0.0)
+    fn logfont_size(font: &LOGFONTW, dpi: u32) -> Option<f32> {
+        logical_font_size_from_windows_logfont_height(font.lfHeight, dpi)
     }
 
     // SAFETY: SystemParametersInfoW writes into stack-allocated Windows structs
     // whose sizes are passed explicitly. The pointers remain valid for each call.
     unsafe {
+        let dpi = match GetDpiForSystem() {
+            0 => USER_DEFAULT_SCREEN_DPI,
+            dpi => dpi,
+        };
+
         let mut metrics = NONCLIENTMETRICSW {
             cbSize: std::mem::size_of::<NONCLIENTMETRICSW>() as u32,
             ..Default::default()
@@ -87,7 +112,7 @@ fn platform_ui_font_size() -> Option<f32> {
             SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS::default(),
         );
         if metrics_result != 0 {
-            if let Some(size) = logfont_size(&metrics.lfMessageFont) {
+            if let Some(size) = logfont_size(&metrics.lfMessageFont, dpi) {
                 return Some(size);
             }
         }
@@ -100,7 +125,7 @@ fn platform_ui_font_size() -> Option<f32> {
             SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS::default(),
         );
         if icon_result != 0 {
-            return logfont_size(&icon_title_font);
+            return logfont_size(&icon_title_font, dpi);
         }
     }
 
@@ -2078,6 +2103,32 @@ priority = 70
 
         assert_eq!(ui_font.size, 16.0);
         assert_eq!(ui_font.line_height, 1.4);
+    }
+
+    #[test]
+    fn windows_logfont_height_is_normalized_to_logical_pixels() {
+        assert_eq!(
+            logical_font_size_from_windows_logfont_height(-12, 96),
+            Some(12.0)
+        );
+        assert_eq!(
+            logical_font_size_from_windows_logfont_height(-18, 144),
+            Some(12.0)
+        );
+        assert_eq!(
+            logical_font_size_from_windows_logfont_height(-24, 192),
+            Some(12.0)
+        );
+    }
+
+    #[test]
+    fn windows_logfont_height_rejects_invalid_values() {
+        assert_eq!(logical_font_size_from_windows_logfont_height(0, 96), None);
+        assert_eq!(logical_font_size_from_windows_logfont_height(-12, 0), None);
+        assert_eq!(
+            logical_font_size_from_windows_logfont_height(i32::MIN, 96),
+            None
+        );
     }
 
     #[test]
