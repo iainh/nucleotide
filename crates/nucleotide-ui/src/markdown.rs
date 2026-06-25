@@ -1229,6 +1229,59 @@ impl MarkdownParser {
     }
 
     fn update_html_block_context(&mut self, html: &str) {
+        let mut cursor = 0;
+
+        while cursor < html.len() {
+            let rest = &html[cursor..];
+            if let Some(comment) = rest.strip_prefix("<!--") {
+                if let Some(end) = comment.find("-->") {
+                    cursor += "<!--".len() + end + "-->".len();
+                } else {
+                    break;
+                }
+            } else if let Some(rest) = rest.strip_prefix("<![CDATA[") {
+                if let Some(end) = rest.find("]]>") {
+                    cursor += "<![CDATA[".len() + end + "]]>".len();
+                } else {
+                    break;
+                }
+            } else if let Some(instruction) = rest.strip_prefix("<?") {
+                if let Some(end) = instruction.find("?>") {
+                    cursor += "<?".len() + end + "?>".len();
+                } else {
+                    break;
+                }
+            } else if let Some(declaration) = html_declaration(rest) {
+                if let Some(end) = declaration.find('>') {
+                    cursor += "<!".len() + end + ">".len();
+                } else {
+                    break;
+                }
+            } else if let Some(tag_name) = hidden_html_raw_text_element_name(rest) {
+                if let Some(skip_len) = html_raw_text_element_len(rest, tag_name) {
+                    cursor += skip_len;
+                } else {
+                    cursor += '<'.len_utf8();
+                }
+            } else if rest.starts_with('<') {
+                if let Some(tag_len) = html_normal_tag_len(rest) {
+                    self.update_html_block_tag_context(&rest[..tag_len]);
+                    cursor += tag_len;
+                } else {
+                    cursor += '<'.len_utf8();
+                }
+            } else if let Some(next_tag_start) = rest.find('<') {
+                cursor += next_tag_start;
+            } else {
+                break;
+            }
+        }
+
+        self.refresh_inline_style_flags();
+        self.refresh_link_style();
+    }
+
+    fn update_html_block_tag_context(&mut self, html: &str) {
         if let Some(tag) = inline_html_link_tag(html) {
             match tag {
                 InlineHtmlLinkTag::Open(link) => {
@@ -1248,9 +1301,7 @@ impl MarkdownParser {
             } else {
                 self.increment_html_block_style(tag);
             }
-            self.refresh_inline_style_flags();
         }
-        self.refresh_link_style();
     }
 
     fn increment_html_block_style(&mut self, tag: InlineHtmlStyleTag) {
@@ -3622,6 +3673,43 @@ plain"#,
                 )
                 && outside.plain_text() == "outside"
                 && outside.spans().iter().all(|span| !span.style.bold)
+        ));
+    }
+
+    #[test]
+    fn html_block_multiple_wrapper_tags_style_wrapped_markdown_blocks() {
+        let document = MarkdownDocument::parse(
+            r#"<a href="/target">
+<strong>
+
+label
+
+</strong>
+</a>
+
+plain"#,
+        );
+
+        assert!(matches!(
+            document.blocks.as_slice(),
+            [
+                MarkdownBlock::HtmlBlock { text: opening },
+                MarkdownBlock::Paragraph(label),
+                MarkdownBlock::HtmlBlock { text: closing },
+                MarkdownBlock::Paragraph(plain),
+            ] if visible_html_text(opening).is_empty()
+                && label.plain_text() == "label"
+                && label
+                    .spans()
+                    .iter()
+                    .all(|span| span.style.bold
+                        && span.style.link_url.as_deref() == Some("/target"))
+                && visible_html_text(closing).is_empty()
+                && plain.plain_text() == "plain"
+                && plain
+                    .spans()
+                    .iter()
+                    .all(|span| !span.style.bold && span.style.link_url.is_none())
         ));
     }
 
