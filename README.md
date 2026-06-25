@@ -51,9 +51,10 @@ Menu or desktop shortcut.
 
 ```powershell
 cargo install cargo-bundle --version 0.11.0 --locked
+cargo build --release -p nucleotide
 git clone --depth 1 --branch 25.07.1 https://github.com/helix-editor/helix.git helix-temp
 try {
-  .\scripts\setup-windows-runtime.cmd -RuntimeSource helix-temp\runtime
+  .\scripts\setup-windows-runtime.cmd -RuntimeSource helix-temp\runtime -NuclExe target\release\nucl.exe
 } finally {
   Remove-Item -LiteralPath helix-temp -Recurse -Force
 }
