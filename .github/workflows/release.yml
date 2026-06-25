@@ -187,28 +187,6 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Install cargo-binstall
-        uses: cargo-bins/cargo-binstall@main
-
-      - name: Install cargo-bundle
-        shell: pwsh
-        run: |
-          $attempts = 3
-          for ($attempt = 1; $attempt -le $attempts; $attempt++) {
-            cargo binstall cargo-bundle@0.11.0 --no-confirm
-            if ($LASTEXITCODE -eq 0) {
-              exit 0
-            }
-
-            if ($attempt -eq $attempts) {
-              exit $LASTEXITCODE
-            }
-
-            $delay = 15 * $attempt
-            Write-Warning "cargo-bundle install failed on attempt $attempt/$attempts. Retrying in $delay seconds..."
-            Start-Sleep -Seconds $delay
-          }
-
       - name: Build release binary
         run: cargo build --release -p nucleotide
 
@@ -225,12 +203,7 @@ jobs:
       - name: Build Windows MSI
         shell: pwsh
         run: |
-          Push-Location crates\nucleotide
-          try {
-            cargo bundle --release --format wxsmsi
-          } finally {
-            Pop-Location
-          }
+          .\scripts\build-windows-msi.ps1
 
           $installer = "target\release\bundle\wxsmsi\bin\Release\nucleotide.msi"
           if (-not (Test-Path $installer)) {

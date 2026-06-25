@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs" xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+  <Package
+    Id="Nucleotide"
+    Name="Nucleotide"
+    Manufacturer="The Nucleotide Contributors"
+    Version="{{PRODUCT_VERSION}}"
+    UpgradeCode="D70F1CD5-B0B3-5252-AA9E-CF8EF10392E6"
+    Scope="perUser">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Nucleotide is already installed."/>
+    <MediaTemplate EmbedCab="yes"/>
+    <Feature Id="ProductFeature" Title="Nucleotide" Level="1">
+      <ComponentGroupRef Id="ProductComponents"/>
+      <ComponentRef Id="RegistryComponent"/>
+      <ComponentRef Id="DesktopFolderShortcut"/>
+    </Feature>
+    <ui:WixUI Id="WixUI_InstallDir"/>
+    <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER"/>
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="Launch Nucleotide"/>
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1"/>
+    <CustomAction Id="LaunchApplication" Directory="INSTALLFOLDER" ExeCommand="[#nucl_exe]" Execute="immediate" Return="asyncNoWait"/>
+    <UI Id="UI">
+      <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="LaunchApplication" Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 and NOT Installed"/>
+    </UI>
+    <WixVariable Id="WixUILicenseRtf" Value="{{LICENSE_RTF}}"/>
+    <Icon Id="main_ico_id" SourceFile="{{ICON_PATH}}"/>
+  </Package>
+
+  <Fragment>
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="VENDORFOLDER" Name="Spiralpoint">
+        <Directory Id="INSTALLFOLDER" Name="nucleotide">
+          <Component Id="MainExecutableComponent" Guid="{{MAIN_EXECUTABLE_GUID}}">
+            <File Id="nucl_exe" Source="{{NUCL_EXE}}"/>
+            <RegistryValue Root="HKCU" Key="Software\the nucleotide contributors\Nucleotide\Components" Name="MainExecutableComponent" Type="integer" Value="1" KeyPath="yes"/>
+          </Component>
+{{RUNTIME_DIRECTORY}}
+        </Directory>
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ApplicationProgramsFolder" Name="Nucleotide">
+        <Component Id="RegistryComponent" Guid="dfb31b92-ae4a-57bf-a56b-ed32cddf02fc">
+          <RegistryValue Root="HKCU" Key="Software\the nucleotide contributors\Nucleotide" Name="installed" Type="integer" Value="1" KeyPath="yes"/>
+          <Shortcut Id="ApplicationStartMenuShortcut" Name="Nucleotide" Description="Nucleotide" Target="[INSTALLFOLDER]nucl.exe" Icon="main_ico_id" WorkingDirectory="INSTALLFOLDER"/>
+          <RemoveFolder Id="RemoveAppProgramsFolder" Directory="ApplicationProgramsFolder" On="uninstall"/>
+          <RemoveFolder Id="RemoveInstallFolder" Directory="INSTALLFOLDER" On="uninstall"/>
+          <RemoveFolder Id="RemoveVendorFolder" Directory="VENDORFOLDER" On="uninstall"/>
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="DesktopFolder">
+      <Component Id="DesktopFolderShortcut" Guid="ca06691e-f26c-5bf1-9470-ab0a2dd1e361">
+        <RegistryValue Root="HKCU" Key="Software\the nucleotide contributors\Nucleotide" Name="installed" Type="integer" Value="1" KeyPath="yes"/>
+        <Shortcut Id="DesktopShortcut" Name="Nucleotide" Target="[INSTALLFOLDER]nucl.exe" Icon="main_ico_id" WorkingDirectory="INSTALLFOLDER"/>
+      </Component>
+    </StandardDirectory>
+
+    <ComponentGroup Id="ProductComponents">
+      <ComponentRef Id="MainExecutableComponent"/>
+{{COMPONENT_REFS}}
+    </ComponentGroup>
+  </Fragment>
+</Wix>
