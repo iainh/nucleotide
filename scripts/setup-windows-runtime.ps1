@@ -24,7 +24,7 @@ Options:
   -AllowGrammarFailures   Continue when some grammar fetch/build jobs fail.
   -ExcludeGrammars <ids>  Grammar IDs to exclude from fetch/build. Comma-separated is OK. Defaults to gotmpl.
   -RuntimeSource <path>   Runtime source directory. Defaults to Cargo's Helix checkout, then .\runtime.
-  -NuclExe <path>          Existing nucl executable to use for grammar commands. Defaults to building target\debug\nucl.exe.
+  -NuclExe <path>          Existing grammar-capable executable to use. Defaults to building target\debug\nucl.exe.
   -Help                   Show this help text.
 "@
     exit 0
@@ -333,6 +333,20 @@ function Resolve-NuclExecutable {
     }
 }
 
+function Invoke-GrammarExecutable {
+    param(
+        [string]$Exe,
+        [string]$Command
+    )
+
+    $name = [System.IO.Path]::GetFileNameWithoutExtension($Exe)
+    if ($name -eq "nucl-grammar") {
+        & $Exe $Command
+    } else {
+        & $Exe --grammar $Command
+    }
+}
+
 function Invoke-NuclGrammarCommand {
     param([string]$Command)
 
@@ -348,9 +362,9 @@ function Invoke-NuclGrammarCommand {
         Push-Location $RepoRoot
         try {
             $nuclExe = Resolve-NuclExecutable
-            & $nuclExe --grammar $Command
+            Invoke-GrammarExecutable -Exe $nuclExe -Command $Command
             if ($LASTEXITCODE -ne 0) {
-                $message = "nucl --grammar $Command failed with exit code $LASTEXITCODE"
+                $message = "$([System.IO.Path]::GetFileName($nuclExe)) grammar command '$Command' failed with exit code $LASTEXITCODE"
                 if ($AllowGrammarFailures) {
                     Write-Warning "$message; continuing because -AllowGrammarFailures was specified."
                     $global:LASTEXITCODE = 0

@@ -38,10 +38,10 @@ Install the .NET 8 SDK, then prepare the runtime resources that the MSI will
 embed:
 
 ```powershell
-cargo build --release -p nucleotide
+cargo build --release -p nucleotide --bins
 git clone --depth 1 --branch 25.07.1 https://github.com/helix-editor/helix.git helix-temp
 try {
-  .\scripts\setup-windows-runtime.cmd -RuntimeSource helix-temp\runtime -NuclExe target\release\nucl.exe
+  .\scripts\setup-windows-runtime.cmd -RuntimeSource helix-temp\runtime -NuclExe target\release\nucl-grammar.exe
 } finally {
   Remove-Item -LiteralPath helix-temp -Recurse -Force
 }
@@ -60,9 +60,9 @@ target\release\bundle\wxsmsi\bin\Release\nucleotide.msi
 ```
 
 `setup-windows-runtime.cmd` copies the Helix runtime into
-`crates\nucleotide\runtime`, uses the supplied `nucl.exe` to build Windows
-tree-sitter grammar DLLs there, copies Nucleotide themes, and removes grammar
-source checkouts before bundling.
+`crates\nucleotide\runtime`, uses the supplied grammar-capable executable to
+build Windows tree-sitter grammar DLLs there, copies Nucleotide themes, and
+removes grammar source checkouts before bundling.
 
 ## Configuration
 
