@@ -10,7 +10,9 @@ use gpui::{
 // Import helix's syntax highlighting system
 use helix_view::{DocumentId, ViewId};
 use nucleotide_events::v2::run::ResolvedTask;
+use nucleotide_types::scrollbar::SCROLLBAR_THICKNESS;
 use nucleotide_ui::ThemedContext as UIThemedContext;
+use nucleotide_ui::scrollbar::{Scrollbar, ScrollbarState};
 use nucleotide_ui::theme_manager::HelixThemedContext;
 use nucleotide_ui::{Button, ButtonSize, ButtonVariant, MarkdownStyle, Tooltipped, markdown};
 
@@ -92,6 +94,7 @@ pub struct DocumentView {
     editor_state: EditorViewState,
     markdown_modes: BTreeMap<DocumentId, MarkdownDisplayMode>,
     markdown_scroll_handle: gpui::ScrollHandle,
+    markdown_scrollbar_state: ScrollbarState,
 }
 
 impl DocumentView {
@@ -106,6 +109,8 @@ impl DocumentView {
         // Create viewport with placeholder document metrics (updated during render/paint).
         let line_height = px(20.0); // Default, will be updated
         let editor_state = EditorViewState::new(line_height, px(8.0));
+        let markdown_scroll_handle = gpui::ScrollHandle::new();
+        let markdown_scrollbar_state = ScrollbarState::new(markdown_scroll_handle.clone());
 
         Self {
             core,
@@ -116,7 +121,8 @@ impl DocumentView {
             is_focused,
             editor_state,
             markdown_modes: BTreeMap::new(),
-            markdown_scroll_handle: gpui::ScrollHandle::new(),
+            markdown_scroll_handle,
+            markdown_scrollbar_state,
         }
     }
 
@@ -415,12 +421,13 @@ impl DocumentView {
         let click_focus = focus.clone();
         let core = self.core.clone();
         let view_id = self.view_id;
-        div()
+        let scroll_content = div()
             .id(SharedString::from(format!(
-                "markdown-rendered-{:?}",
+                "markdown-rendered-content-{:?}",
                 snapshot.doc_id
             )))
             .size_full()
+            .min_h(px(0.0))
             .focusable()
             .track_focus(&focus)
             .overflow_y_scroll()
@@ -431,7 +438,36 @@ impl DocumentView {
             })
             .px(tokens.sizes.space_8)
             .py(tokens.sizes.space_8)
-            .child(markdown(snapshot.source.clone(), markdown_style))
+            .child(markdown(snapshot.source.clone(), markdown_style));
+
+        div()
+            .id(SharedString::from(format!(
+                "markdown-rendered-{:?}",
+                snapshot.doc_id
+            )))
+            .relative()
+            .size_full()
+            .min_h(px(0.0))
+            .overflow_hidden()
+            .child(scroll_content)
+            .when_some(
+                Scrollbar::vertical(self.markdown_scrollbar_state.clone()),
+                |container, scrollbar| {
+                    container.child(
+                        div()
+                            .id(SharedString::from(format!(
+                                "markdown-rendered-scrollbar-{:?}",
+                                snapshot.doc_id
+                            )))
+                            .absolute()
+                            .top_0()
+                            .right_0()
+                            .bottom_0()
+                            .w(SCROLLBAR_THICKNESS)
+                            .child(scrollbar),
+                    )
+                },
+            )
             .into_any_element()
     }
 
