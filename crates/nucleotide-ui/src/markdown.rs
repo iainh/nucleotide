@@ -594,6 +594,10 @@ struct MarkdownParser {
     strong_depth: usize,
     strikethrough_depth: usize,
     code_depth: usize,
+    html_block_emphasis_depth: usize,
+    html_block_strong_depth: usize,
+    html_block_strikethrough_depth: usize,
+    html_block_code_depth: usize,
     heading: Option<u8>,
     in_code_block: bool,
     code_block_language: Option<String>,
@@ -640,6 +644,10 @@ impl MarkdownParser {
             strong_depth: 0,
             strikethrough_depth: 0,
             code_depth: 0,
+            html_block_emphasis_depth: 0,
+            html_block_strong_depth: 0,
+            html_block_strikethrough_depth: 0,
+            html_block_code_depth: 0,
             heading: None,
             in_code_block: false,
             code_block_language: None,
@@ -1070,7 +1078,7 @@ impl MarkdownParser {
         self.in_html_block = false;
         if !self.html_text.is_empty() {
             let text = std::mem::take(&mut self.html_text);
-            self.update_html_block_link_context(&text);
+            self.update_html_block_context(&text);
             self.push_block(MarkdownBlock::HtmlBlock { text });
         }
     }
@@ -1152,10 +1160,11 @@ impl MarkdownParser {
     }
 
     fn refresh_inline_style_flags(&mut self) {
-        self.active_style.italic = self.emphasis_depth > 0;
-        self.active_style.bold = self.strong_depth > 0;
-        self.active_style.strikethrough = self.strikethrough_depth > 0;
-        self.active_style.code = self.code_depth > 0;
+        self.active_style.italic = self.emphasis_depth + self.html_block_emphasis_depth > 0;
+        self.active_style.bold = self.strong_depth + self.html_block_strong_depth > 0;
+        self.active_style.strikethrough =
+            self.strikethrough_depth + self.html_block_strikethrough_depth > 0;
+        self.active_style.code = self.code_depth + self.html_block_code_depth > 0;
     }
 
     fn reset_inline_style_state(&mut self) {
@@ -1194,18 +1203,52 @@ impl MarkdownParser {
         self.active_style.link_title = link_title;
     }
 
-    fn update_html_block_link_context(&mut self, html: &str) {
-        let Some(tag) = inline_html_link_tag(html) else {
-            return;
-        };
-
-        match tag {
-            InlineHtmlLinkTag::Open(link) => self.html_block_link_stack.push(link),
-            InlineHtmlLinkTag::Close => {
-                self.html_block_link_stack.pop();
+    fn update_html_block_context(&mut self, html: &str) {
+        if let Some(tag) = inline_html_link_tag(html) {
+            match tag {
+                InlineHtmlLinkTag::Open(link) => self.html_block_link_stack.push(link),
+                InlineHtmlLinkTag::Close => {
+                    self.html_block_link_stack.pop();
+                }
             }
         }
+
+        if let Some((tag, closing)) = inline_html_style_tag(html) {
+            if closing {
+                self.decrement_html_block_style(tag);
+            } else {
+                self.increment_html_block_style(tag);
+            }
+            self.refresh_inline_style_flags();
+        }
         self.refresh_link_style();
+    }
+
+    fn increment_html_block_style(&mut self, tag: InlineHtmlStyleTag) {
+        match tag {
+            InlineHtmlStyleTag::Emphasis => self.html_block_emphasis_depth += 1,
+            InlineHtmlStyleTag::Strong => self.html_block_strong_depth += 1,
+            InlineHtmlStyleTag::Strikethrough => self.html_block_strikethrough_depth += 1,
+            InlineHtmlStyleTag::Code => self.html_block_code_depth += 1,
+        }
+    }
+
+    fn decrement_html_block_style(&mut self, tag: InlineHtmlStyleTag) {
+        match tag {
+            InlineHtmlStyleTag::Emphasis => {
+                self.html_block_emphasis_depth = self.html_block_emphasis_depth.saturating_sub(1);
+            }
+            InlineHtmlStyleTag::Strong => {
+                self.html_block_strong_depth = self.html_block_strong_depth.saturating_sub(1);
+            }
+            InlineHtmlStyleTag::Strikethrough => {
+                self.html_block_strikethrough_depth =
+                    self.html_block_strikethrough_depth.saturating_sub(1);
+            }
+            InlineHtmlStyleTag::Code => {
+                self.html_block_code_depth = self.html_block_code_depth.saturating_sub(1);
+            }
+        }
     }
 }
 
@@ -3421,6 +3464,41 @@ plain"#,
                 && visible_html_text(closing).is_empty()
                 && plain.plain_text() == "plain"
                 && plain.spans().iter().all(|span| span.style.link_url.is_none())
+        ));
+    }
+
+    #[test]
+    fn html_block_style_tags_style_wrapped_markdown_blocks() {
+        let document = MarkdownDocument::parse(
+            "<del>\n\n*gone*\n\n</del>\n\n<strong>\n\nbold\n\n</strong>\n\nplain",
+        );
+
+        assert!(matches!(
+            document.blocks.as_slice(),
+            [
+                MarkdownBlock::HtmlBlock { text: del_open },
+                MarkdownBlock::Paragraph(gone),
+                MarkdownBlock::HtmlBlock { text: del_close },
+                MarkdownBlock::HtmlBlock { text: strong_open },
+                MarkdownBlock::Paragraph(bold),
+                MarkdownBlock::HtmlBlock { text: strong_close },
+                MarkdownBlock::Paragraph(plain),
+            ] if visible_html_text(del_open).is_empty()
+                && gone.plain_text() == "gone"
+                && gone
+                    .spans()
+                    .iter()
+                    .all(|span| span.style.italic && span.style.strikethrough)
+                && visible_html_text(del_close).is_empty()
+                && visible_html_text(strong_open).is_empty()
+                && bold.plain_text() == "bold"
+                && bold.spans().iter().all(|span| span.style.bold)
+                && visible_html_text(strong_close).is_empty()
+                && plain.plain_text() == "plain"
+                && plain
+                    .spans()
+                    .iter()
+                    .all(|span| !span.style.bold && !span.style.strikethrough)
         ));
     }
 
