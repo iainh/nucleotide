@@ -125,6 +125,21 @@ fn titlebar_filename(filename: Option<&str>) -> String {
         .to_string()
 }
 
+fn native_window_title(filename: Option<&str>) -> String {
+    if let Some(filename) = filename.filter(|name| !name.is_empty()) {
+        format!("{filename} — Nucleotide")
+    } else {
+        "Nucleotide".to_string()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct NativeWindowMetadata {
+    title: String,
+    document_path: Option<PathBuf>,
+    edited: bool,
+}
+
 #[cfg(target_os = "macos")]
 fn add_recent_project(path: &Path, cx: &mut App) {
     if path.is_dir() {
@@ -955,6 +970,7 @@ pub struct Workspace {
     cached_char_width: Option<f32>,
     cached_line_height: Option<f32>,
     active_completion_session: Option<ActiveCompletionSession>,
+    last_native_window_metadata: Option<NativeWindowMetadata>,
 }
 
 #[derive(Clone, Debug)]
@@ -3955,6 +3971,7 @@ impl Workspace {
             cached_char_width: None,
             cached_line_height: None,
             active_completion_session: None,
+            last_native_window_metadata: None,
         };
 
         // Compute initial theme-derived colors once
@@ -5604,6 +5621,62 @@ impl Workspace {
                 cx.notify();
             }
         });
+    }
+
+    fn focused_native_window_metadata(
+        &self,
+        cx: &Context<Self>,
+    ) -> (Option<String>, NativeWindowMetadata) {
+        let core = self.core.read(cx);
+        let editor = &core.editor;
+        let mut focused_file_name = None;
+        let mut focused_doc_path = None;
+
+        if let Some(view) = editor.tree.try_get(editor.tree.focus)
+            && let Some(doc) = editor.document(view.doc)
+        {
+            focused_doc_path = doc.path().cloned();
+            focused_file_name = doc.path().map(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| path.display().to_string())
+            });
+        }
+
+        let edited = editor.documents.values().any(|doc| doc.is_modified());
+        let title = native_window_title(focused_file_name.as_deref());
+
+        (
+            focused_file_name,
+            NativeWindowMetadata {
+                title,
+                document_path: focused_doc_path,
+                edited,
+            },
+        )
+    }
+
+    fn update_native_window_metadata(
+        &mut self,
+        window: &mut Window,
+        metadata: NativeWindowMetadata,
+    ) {
+        let previous = self.last_native_window_metadata.as_ref();
+
+        if previous.is_none_or(|previous| previous.title != metadata.title) {
+            window.set_window_title(&metadata.title);
+        }
+
+        if previous.is_none_or(|previous| previous.document_path != metadata.document_path) {
+            window.set_document_path(metadata.document_path.as_deref());
+        }
+
+        if previous.is_none_or(|previous| previous.edited != metadata.edited) {
+            window.set_window_edited(metadata.edited);
+        }
+
+        self.last_native_window_metadata = Some(metadata);
     }
 
     #[instrument(skip(self, cx))]
@@ -11926,37 +11999,10 @@ impl Render for Workspace {
             window.focus(&self.terminal_focus, cx);
             self.terminal_focus_pending = false;
         }
-        // Don't create views during render - just use existing ones
-        // Fast-path: get currently focused view directly instead of scanning all views
-        let editor = &self.core.read(cx).editor;
-        let focused_file_name = (|| {
-            let view = editor.tree.get(editor.tree.focus);
-            if editor.tree.contains(view.id)
-                && let Some(doc) = editor.document(view.doc)
-            {
-                return doc.path().map(|p| {
-                    p.file_name()
-                        .and_then(|name| name.to_str())
-                        .map(std::string::ToString::to_string)
-                        .unwrap_or_else(|| p.display().to_string())
-                });
-            }
-            None
-        })();
+        let (focused_file_name, native_metadata) = self.focused_native_window_metadata(cx);
 
         self.update_titlebar_filename(focused_file_name.as_deref(), false, cx);
-
-        // For native titlebar - we still set the window title
-        let window_title = if let Some(ref path) = focused_file_name {
-            format!("{path} — Helix") // Using em dash like macOS
-        } else {
-            "Helix".to_string()
-        };
-
-        // Only set window title if using native decorations
-        if window.window_decorations() == gpui::Decorations::Server {
-            window.set_window_title(&window_title);
-        }
+        self.update_native_window_metadata(window, native_metadata);
 
         // Recompute theme-derived colors only when marked dirty
         if self.colors_dirty {
@@ -14558,6 +14604,13 @@ mod tests {
         assert_eq!(titlebar_filename(Some("main.rs")), "main.rs");
         assert_eq!(titlebar_filename(Some("")), "Nucleotide");
         assert_eq!(titlebar_filename(None), "Nucleotide");
+    }
+
+    #[test]
+    fn native_window_title_uses_nucleotide_app_name() {
+        assert_eq!(native_window_title(Some("main.rs")), "main.rs — Nucleotide");
+        assert_eq!(native_window_title(Some("")), "Nucleotide");
+        assert_eq!(native_window_title(None), "Nucleotide");
     }
 
     #[cfg(target_os = "windows")]
