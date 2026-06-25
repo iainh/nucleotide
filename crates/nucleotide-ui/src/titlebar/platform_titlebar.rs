@@ -167,8 +167,9 @@ impl Render for PlatformTitleBar {
             .min_h(height)
             .flex_shrink_0() // prevent vertical compression when layout is tight
             .bg(titlebar_tokens.background)
-            .border_b_1()
-            .border_color(titlebar_tokens.border)
+            .when(self.platform_style != PlatformStyle::Windows, |titlebar| {
+                titlebar.border_b_1().border_color(titlebar_tokens.border)
+            })
             .map(|this| {
                 if window.is_fullscreen() {
                     this.pl_2()
