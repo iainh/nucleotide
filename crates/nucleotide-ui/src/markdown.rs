@@ -1934,37 +1934,33 @@ fn visible_code_text(content: &str) -> SharedString {
 }
 
 fn render_html_block(text: String, style: &MarkdownStyle, block_id: &str) -> impl IntoElement {
-    let text = visible_html_text(&text);
+    let text = html_block_rich_text(&text);
 
     div()
         .id(block_id.to_string())
         .w_full()
         .when(text.is_empty(), |this| this.hidden())
         .when(!text.is_empty(), |this| {
-            this.text_size(style.body_font_size)
-                .text_color(style.body_color)
-                .line_height(relative(if style.preview { 1.55 } else { 1.45 }))
-                .when(style.preview, |this| this.mb(px(10.0)))
-                .child(StyledText::new(text))
+            this.child(
+                render_rich_text_fragment(text, style, format!("{block_id}-text"))
+                    .w_full()
+                    .text_size(style.body_font_size)
+                    .text_color(style.body_color),
+            )
+            .text_color(style.body_color)
+            .line_height(relative(if style.preview { 1.55 } else { 1.45 }))
+            .when(style.preview, |this| this.mb(px(10.0)))
         })
 }
 
+#[cfg(test)]
 fn visible_html_text(content: &str) -> SharedString {
-    let text = html_display_text(content);
-    SharedString::from(text)
+    SharedString::from(html_block_rich_text(content).plain_text())
 }
 
-fn html_display_text(content: &str) -> String {
-    let mut text = strip_html_markup(content);
-    let trimmed_len = text.trim_matches(['\n', '\r']).len();
-    if trimmed_len != text.len() {
-        text = text.trim_matches(['\n', '\r']).to_string();
-    }
-    text
-}
-
-fn strip_html_markup(content: &str) -> String {
-    let mut text = String::new();
+fn html_block_rich_text(content: &str) -> RichText {
+    let mut text = RichText::default();
+    let mut style = HtmlBlockTextStyle::default();
     let mut cursor = 0;
 
     while cursor < content.len() {
@@ -1977,10 +1973,10 @@ fn strip_html_markup(content: &str) -> String {
             }
         } else if let Some(rest) = rest.strip_prefix("<![CDATA[") {
             if let Some(end) = rest.find("]]>") {
-                text.push_str(&rest[..end]);
+                text.push(&rest[..end], style.active_style.clone());
                 cursor += "<![CDATA[".len() + end + "]]>".len();
             } else {
-                text.push_str(rest);
+                text.push(rest, style.active_style.clone());
                 break;
             }
         } else if let Some(instruction) = rest.strip_prefix("<?") {
@@ -1999,26 +1995,128 @@ fn strip_html_markup(content: &str) -> String {
             if let Some(skip_len) = html_raw_text_element_len(rest, tag_name) {
                 cursor += skip_len;
             } else {
-                text.push('<');
+                push_visible_html_rich_text(&mut text, "<", &style.active_style);
                 cursor += '<'.len_utf8();
             }
         } else if rest.starts_with('<') {
             if let Some(tag_len) = html_normal_tag_len(rest) {
+                let tag = &rest[..tag_len];
+                if inline_html_is_line_break(tag) {
+                    text.push("\n", style.active_style.clone());
+                } else {
+                    style.update_tag(tag);
+                }
                 cursor += tag_len;
             } else {
-                text.push('<');
+                push_visible_html_rich_text(&mut text, "<", &style.active_style);
                 cursor += '<'.len_utf8();
             }
         } else if let Some(next_tag_start) = rest.find('<') {
-            push_visible_html_text(&mut text, &rest[..next_tag_start]);
+            push_visible_html_rich_text(&mut text, &rest[..next_tag_start], &style.active_style);
             cursor += next_tag_start;
         } else {
-            push_visible_html_text(&mut text, rest);
+            push_visible_html_rich_text(&mut text, rest, &style.active_style);
             break;
         }
     }
 
-    text
+    trim_rich_text_line_endings(text)
+}
+
+fn push_visible_html_rich_text(text: &mut RichText, content: &str, style: &InlineStyle) {
+    let content = decode_visible_html_entities(content);
+    text.push(content, style.clone());
+}
+
+fn trim_rich_text_line_endings(text: RichText) -> RichText {
+    let plain = text.plain_text();
+    let Some(start) = plain.find(|ch| !matches!(ch, '\n' | '\r')) else {
+        return RichText::default();
+    };
+    let end = plain
+        .char_indices()
+        .rev()
+        .find_map(|(index, ch)| (!matches!(ch, '\n' | '\r')).then_some(index + ch.len_utf8()))
+        .unwrap_or(start);
+
+    if start == 0 && end == plain.len() {
+        text
+    } else {
+        text.slice(start..end)
+    }
+}
+
+#[derive(Default)]
+struct HtmlBlockTextStyle {
+    active_style: InlineStyle,
+    emphasis_depth: usize,
+    strong_depth: usize,
+    strikethrough_depth: usize,
+    code_depth: usize,
+    link_stack: Vec<Option<LinkContext>>,
+}
+
+impl HtmlBlockTextStyle {
+    fn update_tag(&mut self, html: &str) {
+        if let Some(tag) = inline_html_link_tag(html) {
+            match tag {
+                InlineHtmlLinkTag::Open(link) => self.link_stack.push(link),
+                InlineHtmlLinkTag::Close => {
+                    self.link_stack.pop();
+                }
+            }
+            self.refresh_link_style();
+        }
+
+        if let Some((tag, closing)) = inline_html_style_tag(html) {
+            if closing {
+                self.decrement_style(tag);
+            } else {
+                self.increment_style(tag);
+            }
+            self.refresh_style_flags();
+        }
+    }
+
+    fn increment_style(&mut self, tag: InlineHtmlStyleTag) {
+        match tag {
+            InlineHtmlStyleTag::Emphasis => self.emphasis_depth += 1,
+            InlineHtmlStyleTag::Strong => self.strong_depth += 1,
+            InlineHtmlStyleTag::Strikethrough => self.strikethrough_depth += 1,
+            InlineHtmlStyleTag::Code => self.code_depth += 1,
+        }
+    }
+
+    fn decrement_style(&mut self, tag: InlineHtmlStyleTag) {
+        match tag {
+            InlineHtmlStyleTag::Emphasis => {
+                self.emphasis_depth = self.emphasis_depth.saturating_sub(1);
+            }
+            InlineHtmlStyleTag::Strong => {
+                self.strong_depth = self.strong_depth.saturating_sub(1);
+            }
+            InlineHtmlStyleTag::Strikethrough => {
+                self.strikethrough_depth = self.strikethrough_depth.saturating_sub(1);
+            }
+            InlineHtmlStyleTag::Code => {
+                self.code_depth = self.code_depth.saturating_sub(1);
+            }
+        }
+    }
+
+    fn refresh_style_flags(&mut self) {
+        self.active_style.italic = self.emphasis_depth > 0;
+        self.active_style.bold = self.strong_depth > 0;
+        self.active_style.strikethrough = self.strikethrough_depth > 0;
+        self.active_style.code = self.code_depth > 0;
+    }
+
+    fn refresh_link_style(&mut self) {
+        let link = self.link_stack.iter().rev().find_map(Option::as_ref);
+        self.active_style.link = link.is_some();
+        self.active_style.link_url = link.map(|link| link.url.clone());
+        self.active_style.link_title = link.and_then(|link| link.title.clone());
+    }
 }
 
 fn push_visible_html_text(text: &mut String, content: &str) {
@@ -3730,6 +3828,57 @@ plain"#,
         );
         assert_eq!(visible_html_text("<![CDATA[a < b]]>").as_ref(), "a < b");
         assert_eq!(visible_html_text("").as_ref(), "");
+    }
+
+    #[test]
+    fn html_block_display_applies_semantic_tags_to_visible_text() {
+        let text = html_block_rich_text(
+            r#"<strong>bold</strong> <em>em</em> <del>gone</del> <code>code</code>"#,
+        );
+
+        assert_eq!(text.plain_text(), "bold em gone code");
+        assert!(
+            text.spans()
+                .iter()
+                .any(|span| span.text == "bold" && span.style.bold)
+        );
+        assert!(
+            text.spans()
+                .iter()
+                .any(|span| span.text == "em" && span.style.italic)
+        );
+        assert!(
+            text.spans()
+                .iter()
+                .any(|span| span.text == "gone" && span.style.strikethrough)
+        );
+        assert!(
+            text.spans()
+                .iter()
+                .any(|span| span.text == "code" && span.style.code)
+        );
+    }
+
+    #[test]
+    fn html_block_display_applies_anchor_links_to_visible_text() {
+        let text =
+            html_block_rich_text(r#"<a href="/target?x=1&amp;y=2" title="A &lt; B">label</a>"#);
+
+        assert_eq!(text.plain_text(), "label");
+        assert_eq!(text.spans().len(), 1);
+        assert_eq!(
+            text.spans()[0].style.link_url.as_deref(),
+            Some("/target?x=1&y=2")
+        );
+        assert_eq!(text.spans()[0].style.link_title.as_deref(), Some("A < B"));
+    }
+
+    #[test]
+    fn html_block_display_treats_br_as_visible_line_break() {
+        assert_eq!(
+            visible_html_text("<div>foo<br />bar</div>").as_ref(),
+            "foo\nbar"
+        );
     }
 
     #[test]
