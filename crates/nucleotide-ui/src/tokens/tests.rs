@@ -237,6 +237,7 @@ mod component_token_tests {
 
         // Verify that editor content colors are preserved from Helix where appropriate
         assert_eq!(file_tree.item_background_selected, helix_colors.selection);
+        assert_eq!(file_tree.item_text_selected, tokens.editor.text_on_primary);
         assert_eq!(tab_bar.tab_modified_indicator, helix_colors.warning);
         assert_eq!(tokens.editor.vcs_added, helix_colors.vcs_added);
         assert_eq!(tokens.editor.vcs_modified, helix_colors.vcs_modified);
@@ -304,9 +305,19 @@ mod component_token_tests {
             hover_contrast
         );
 
+        let selected_contrast = ColorTheory::contrast_ratio(
+            file_tree.item_background_selected,
+            file_tree.item_text_selected,
+        );
+        assert!(
+            selected_contrast >= 4.5,
+            "File tree selected contrast {:.2} below WCAG AA (4.5:1)",
+            selected_contrast
+        );
+
         println!(
-            "File tree contrast ratios: bg/text={:.2}, hover={:.2} ✓",
-            bg_text_contrast, hover_contrast
+            "File tree contrast ratios: bg/text={:.2}, hover={:.2}, selected={:.2} ✓",
+            bg_text_contrast, hover_contrast, selected_contrast
         );
     }
 
@@ -420,6 +431,28 @@ mod component_token_tests {
             // Verify internal separators remain consistent.
             assert_eq!(file_tree.separator, tokens.chrome.separator_color);
             assert_eq!(tab_bar.tab_separator, tokens.chrome.separator_color);
+
+            // Verify row content states are represented by file-tree tokens.
+            assert_eq!(file_tree.item_text, tokens.chrome.text_on_chrome);
+            assert_eq!(
+                file_tree.item_text_secondary,
+                tokens.chrome.text_chrome_secondary
+            );
+            assert_eq!(
+                file_tree.item_text_hidden,
+                tokens.chrome.text_chrome_disabled
+            );
+            assert_eq!(file_tree.item_text_selected, tokens.editor.text_on_primary);
+            assert_eq!(file_tree.icon_color, tokens.chrome.text_chrome_secondary);
+            assert_eq!(
+                file_tree.icon_color_secondary,
+                tokens.chrome.text_chrome_disabled
+            );
+            assert_eq!(file_tree.icon_color_selected, tokens.editor.text_on_primary);
+            assert_eq!(
+                file_tree.icon_color_hidden,
+                tokens.chrome.text_chrome_disabled
+            );
 
             // Verify chrome backgrounds are computed correctly
             assert_eq!(titlebar.background, tokens.chrome.titlebar_background);

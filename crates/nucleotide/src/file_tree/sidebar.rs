@@ -306,11 +306,7 @@ pub fn render_project_tree_row(
     on_drop: impl Fn(&ProjectTreeDraggedEntry, &mut Window, &mut App) + 'static,
 ) -> gpui::AnyElement {
     let file_tree_tokens = theme.tokens.file_tree_tokens();
-    let row_foreground = if row.is_selected {
-        theme.tokens.editor.text_on_primary
-    } else {
-        file_tree_tokens.item_text
-    };
+    let row_foreground = row_text_color(&row, theme);
     let metrics = ProjectTreeDensityMetrics::new(density);
     let indentation = px(row.depth as f32 * metrics.indent_px);
     let min_row_width = project_tree_row_min_width(&row, density);
@@ -397,25 +393,13 @@ fn render_chevron_slot(row: &ProjectTreeRow, theme: &Theme) -> gpui::AnyElement 
 }
 
 fn render_chevron(row: &ProjectTreeRow, theme: &Theme) -> impl IntoElement {
-    let file_tree_tokens = theme.tokens.file_tree_tokens();
-    let chevron_color = if row.is_selected {
-        theme.tokens.editor.text_on_primary
-    } else {
-        file_tree_tokens.item_text_secondary
-    };
-
     chevron_icon(if row.is_expanded { "down" } else { "right" })
         .size_3()
-        .text_color(chevron_color)
+        .text_color(chevron_color(row, theme))
 }
 
 fn render_icon(row: &ProjectTreeRow, theme: &Theme) -> impl IntoElement {
-    let file_tree_tokens = theme.tokens.file_tree_tokens();
-    let icon_color = if row.is_selected {
-        theme.tokens.editor.text_on_primary
-    } else {
-        file_tree_tokens.item_text
-    };
+    let icon_color = tree_icon_color(row, theme);
 
     let vcs_icon = match &row.kind {
         ProjectTreeRowKind::Directory { .. } => VcsIcon::directory(row.is_expanded)
@@ -440,7 +424,7 @@ fn render_filename(row: &ProjectTreeRow, theme: &Theme) -> impl IntoElement {
     let file_tree_tokens = theme.tokens.file_tree_tokens();
     let is_root_directory = row.depth == 0 && row.is_directory();
     let display_status = git_status_for_display(row);
-    let text_color = filename_color(row, theme);
+    let text_color = row_text_color(row, theme);
 
     let mut node = div()
         .flex_shrink_0()
@@ -468,6 +452,42 @@ fn render_filename(row: &ProjectTreeRow, theme: &Theme) -> impl IntoElement {
     }
 
     node
+}
+
+fn row_text_color(row: &ProjectTreeRow, theme: &Theme) -> gpui::Hsla {
+    let file_tree_tokens = theme.tokens.file_tree_tokens();
+
+    if row.is_selected {
+        file_tree_tokens.item_text_selected
+    } else if let Some(status) = git_status_for_display(row) {
+        git_status_color(status, theme)
+    } else if row.is_hidden {
+        file_tree_tokens.item_text_hidden
+    } else {
+        file_tree_tokens.item_text
+    }
+}
+
+fn tree_icon_color(row: &ProjectTreeRow, theme: &Theme) -> gpui::Hsla {
+    let file_tree_tokens = theme.tokens.file_tree_tokens();
+
+    if row.is_selected {
+        file_tree_tokens.icon_color_selected
+    } else if row.is_hidden {
+        file_tree_tokens.icon_color_hidden
+    } else {
+        file_tree_tokens.icon_color
+    }
+}
+
+fn chevron_color(row: &ProjectTreeRow, theme: &Theme) -> gpui::Hsla {
+    let file_tree_tokens = theme.tokens.file_tree_tokens();
+
+    if row.is_selected {
+        file_tree_tokens.icon_color_selected
+    } else {
+        file_tree_tokens.icon_color_secondary
+    }
 }
 
 fn render_git_status_lane(row: &ProjectTreeRow, theme: &Theme) -> Option<gpui::AnyElement> {
@@ -502,20 +522,6 @@ fn render_git_status_lane(row: &ProjectTreeRow, theme: &Theme) -> Option<gpui::A
 fn git_status_for_display(row: &ProjectTreeRow) -> Option<VcsStatus> {
     row.vcs_status
         .filter(|status| should_render_git_status(*status))
-}
-
-fn filename_color(row: &ProjectTreeRow, theme: &Theme) -> gpui::Hsla {
-    if let Some(status) = git_status_for_display(row) {
-        return git_status_color(status, theme);
-    }
-
-    if row.is_selected {
-        theme.tokens.editor.text_on_primary
-    } else if row.is_hidden {
-        theme.tokens.file_tree_tokens().item_text_secondary
-    } else {
-        theme.tokens.file_tree_tokens().item_text
-    }
 }
 
 fn should_render_git_status(status: VcsStatus) -> bool {
@@ -803,7 +809,7 @@ mod tests {
     }
 
     #[test]
-    fn filename_color_uses_displayable_git_status_color() {
+    fn row_text_color_prioritizes_selection_over_git_status() {
         let theme = Theme::from_tokens(nucleotide_ui::DesignTokens::dark());
         let mut entry = FileTreeEntry::new_file(
             FileTreeEntryId(3),
@@ -816,8 +822,51 @@ mod tests {
         let row = ProjectTreeRow::from_entry(&entry, true, None);
 
         assert_eq!(
-            filename_color(&row, &theme),
+            row_text_color(&row, &theme),
+            theme.tokens.file_tree_tokens().item_text_selected
+        );
+
+        let row = ProjectTreeRow::from_entry(&entry, false, None);
+
+        assert_eq!(
+            row_text_color(&row, &theme),
             theme.tokens.editor.vcs_modified
+        );
+    }
+
+    #[test]
+    fn tree_row_icon_colors_use_file_tree_tokens() {
+        let theme = Theme::from_tokens(nucleotide_ui::DesignTokens::dark());
+        let mut entry = FileTreeEntry::new_file(
+            FileTreeEntryId(3),
+            PathBuf::from("/workspace/main.rs"),
+            1,
+            None,
+        );
+        entry.is_hidden = true;
+
+        let hidden = ProjectTreeRow::from_entry(&entry, false, None);
+        assert_eq!(
+            row_text_color(&hidden, &theme),
+            theme.tokens.file_tree_tokens().item_text_hidden
+        );
+        assert_eq!(
+            tree_icon_color(&hidden, &theme),
+            theme.tokens.file_tree_tokens().icon_color_hidden
+        );
+        assert_eq!(
+            chevron_color(&hidden, &theme),
+            theme.tokens.file_tree_tokens().icon_color_secondary
+        );
+
+        let selected = ProjectTreeRow::from_entry(&entry, true, None);
+        assert_eq!(
+            tree_icon_color(&selected, &theme),
+            theme.tokens.file_tree_tokens().icon_color_selected
+        );
+        assert_eq!(
+            chevron_color(&selected, &theme),
+            theme.tokens.file_tree_tokens().icon_color_selected
         );
     }
 

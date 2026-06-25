@@ -450,6 +450,30 @@ impl Render for ThemeDebugView {
             color: file_tree.item_text_secondary,
         });
         items.push(DebugItem::Row {
+            label: SharedString::from("item_text_selected"),
+            color: file_tree.item_text_selected,
+        });
+        items.push(DebugItem::Row {
+            label: SharedString::from("item_text_hidden"),
+            color: file_tree.item_text_hidden,
+        });
+        items.push(DebugItem::Row {
+            label: SharedString::from("icon_color"),
+            color: file_tree.icon_color,
+        });
+        items.push(DebugItem::Row {
+            label: SharedString::from("icon_color_secondary"),
+            color: file_tree.icon_color_secondary,
+        });
+        items.push(DebugItem::Row {
+            label: SharedString::from("icon_color_selected"),
+            color: file_tree.icon_color_selected,
+        });
+        items.push(DebugItem::Row {
+            label: SharedString::from("icon_color_hidden"),
+            color: file_tree.icon_color_hidden,
+        });
+        items.push(DebugItem::Row {
             label: SharedString::from("border"),
             color: file_tree.border,
         });
