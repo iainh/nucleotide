@@ -55,7 +55,9 @@ appearance_follows_theme = true
 # rendering_mode = "default"
 
 # Font used for menus, prompts, pickers and other UI chrome.
-# Default: unset, which resolves to ".SystemUIFont", "normal", 13.0 and 1.5.
+# Default: unset, which resolves to ".SystemUIFont", "normal", the platform UI
+# font size and 1.5. Platform size is queried dynamically on macOS and Windows,
+# with fallbacks of 13.0 on macOS/Linux and 12.0 on Windows.
 # [ui.font]
 # family = ".SystemUIFont"
 
@@ -63,7 +65,7 @@ appearance_follows_theme = true
 # "bold", "extrabold", "black". Default: "normal".
 # weight = "normal"
 
-# Font size in pixels. Default: 13.0.
+# Font size in pixels. Default: platform UI font size.
 # size = 13.0
 
 # Line-height multiplier. Default: 1.5.

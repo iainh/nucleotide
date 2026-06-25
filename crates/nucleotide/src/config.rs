@@ -15,6 +15,13 @@ pub const DEFAULT_LIGHT_THEME: &str = "nucleotide-cyan-light";
 pub const DEFAULT_DARK_THEME: &str = "nucleotide-teal";
 
 const GPUI_SYSTEM_UI_FONT: &str = ".SystemUIFont";
+const DEFAULT_UI_FONT_LINE_HEIGHT: f32 = 1.5;
+
+#[cfg(target_os = "windows")]
+const FALLBACK_PLATFORM_UI_FONT_SIZE: f32 = 12.0;
+
+#[cfg(not(target_os = "windows"))]
+const FALLBACK_PLATFORM_UI_FONT_SIZE: f32 = 13.0;
 
 /// Complete example configuration used for new `nucleotide.toml` files.
 pub const NUCLEOTIDE_EXAMPLE_CONFIG: &str = include_str!("../nucleotide.example.toml");
@@ -27,6 +34,82 @@ fn normalize_ui_font(mut font: FontConfig) -> FontConfig {
         font.family = GPUI_SYSTEM_UI_FONT.to_string();
     }
     font
+}
+
+fn default_ui_font() -> FontConfig {
+    FontConfig {
+        family: GPUI_SYSTEM_UI_FONT.to_string(),
+        weight: FontWeight::Normal,
+        size: default_ui_font_size(),
+        line_height: DEFAULT_UI_FONT_LINE_HEIGHT,
+    }
+}
+
+fn default_ui_font_size() -> f32 {
+    platform_ui_font_size().unwrap_or(FALLBACK_PLATFORM_UI_FONT_SIZE)
+}
+
+#[cfg(target_os = "macos")]
+fn platform_ui_font_size() -> Option<f32> {
+    use objc2_app_kit::NSFont;
+
+    let size = NSFont::systemFontSize() as f32;
+    size.is_finite().then_some(size).filter(|size| *size > 0.0)
+}
+
+#[cfg(target_os = "windows")]
+fn platform_ui_font_size() -> Option<f32> {
+    use std::ffi::c_void;
+    use windows_sys::Win32::{
+        Graphics::Gdi::LOGFONTW,
+        UI::WindowsAndMessaging::{
+            NONCLIENTMETRICSW, SPI_GETICONTITLELOGFONT, SPI_GETNONCLIENTMETRICS,
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW,
+        },
+    };
+
+    fn logfont_size(font: &LOGFONTW) -> Option<f32> {
+        let size = font.lfHeight.checked_abs()? as f32;
+        size.is_finite().then_some(size).filter(|size| *size > 0.0)
+    }
+
+    // SAFETY: SystemParametersInfoW writes into stack-allocated Windows structs
+    // whose sizes are passed explicitly. The pointers remain valid for each call.
+    unsafe {
+        let mut metrics = NONCLIENTMETRICSW {
+            cbSize: std::mem::size_of::<NONCLIENTMETRICSW>() as u32,
+            ..Default::default()
+        };
+        let metrics_result = SystemParametersInfoW(
+            SPI_GETNONCLIENTMETRICS,
+            metrics.cbSize,
+            (&mut metrics as *mut NONCLIENTMETRICSW).cast::<c_void>(),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS::default(),
+        );
+        if metrics_result != 0 {
+            if let Some(size) = logfont_size(&metrics.lfMessageFont) {
+                return Some(size);
+            }
+        }
+
+        let mut icon_title_font = LOGFONTW::default();
+        let icon_result = SystemParametersInfoW(
+            SPI_GETICONTITLELOGFONT,
+            std::mem::size_of::<LOGFONTW>() as u32,
+            (&mut icon_title_font as *mut LOGFONTW).cast::<c_void>(),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS::default(),
+        );
+        if icon_result != 0 {
+            return logfont_size(&icon_title_font);
+        }
+    }
+
+    None
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn platform_ui_font_size() -> Option<f32> {
+    None
 }
 
 /// UI-specific configuration
@@ -746,15 +829,7 @@ impl Config {
 
     /// Get the UI font configuration
     pub fn ui_font(&self) -> FontConfig {
-        normalize_ui_font(self.gui.ui.font.clone().unwrap_or_else(|| {
-            // Default UI font
-            FontConfig {
-                family: GPUI_SYSTEM_UI_FONT.to_string(),
-                weight: FontWeight::Normal,
-                size: 13.0,
-                line_height: 1.5,
-            }
-        }))
+        normalize_ui_font(self.gui.ui.font.clone().unwrap_or_else(default_ui_font))
     }
 
     /// Check if project-based LSP startup is enabled
@@ -1966,6 +2041,43 @@ priority = 70
         let ui_font = config.ui_font();
         assert_eq!(ui_font.family, GPUI_SYSTEM_UI_FONT);
         assert_eq!(ui_font.size, 13.0);
+    }
+
+    #[test]
+    fn default_ui_font_uses_platform_ui_font_defaults() {
+        let config = Config {
+            helix: HelixConfig::default(),
+            gui: GuiConfig::default(),
+        };
+
+        let ui_font = config.ui_font();
+
+        assert_eq!(ui_font.family, GPUI_SYSTEM_UI_FONT);
+        assert_eq!(ui_font.weight, FontWeight::Normal);
+        assert_eq!(ui_font.size, default_ui_font_size());
+        assert_eq!(ui_font.line_height, DEFAULT_UI_FONT_LINE_HEIGHT);
+        assert!(ui_font.size.is_finite());
+        assert!(ui_font.size > 0.0);
+    }
+
+    #[test]
+    fn explicit_ui_font_size_overrides_platform_default() {
+        let mut gui_config = GuiConfig::default();
+        gui_config.ui.font = Some(FontConfig {
+            family: GPUI_SYSTEM_UI_FONT.to_string(),
+            weight: FontWeight::Normal,
+            size: 16.0,
+            line_height: 1.4,
+        });
+        let config = Config {
+            helix: HelixConfig::default(),
+            gui: gui_config,
+        };
+
+        let ui_font = config.ui_font();
+
+        assert_eq!(ui_font.size, 16.0);
+        assert_eq!(ui_font.line_height, 1.4);
     }
 
     #[test]
