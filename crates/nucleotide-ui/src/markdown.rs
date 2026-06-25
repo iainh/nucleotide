@@ -529,6 +529,13 @@ struct LinkContext {
 }
 
 #[derive(Clone, Debug)]
+struct HtmlImageTag {
+    url: SharedString,
+    alt: RichText,
+    title: Option<SharedString>,
+}
+
+#[derive(Clone, Debug)]
 struct ParsedImage {
     dest_url: SharedString,
     title: Option<SharedString>,
@@ -731,6 +738,8 @@ impl MarkdownParser {
         self.current_block_has_inline_content = true;
         if inline_html_is_line_break(html) {
             self.current_text.push("\n", self.active_style.clone());
+        } else if let Some(image) = html_image_tag(html) {
+            self.push_html_image(image);
         } else if let Some(tag) = inline_html_link_tag(html) {
             match tag {
                 InlineHtmlLinkTag::Open(link) => {
@@ -1058,6 +1067,21 @@ impl MarkdownParser {
         let language = self.code_block_language.take();
         let text = std::mem::take(&mut self.code_text);
         self.push_block(MarkdownBlock::CodeBlock { language, text });
+    }
+
+    fn push_html_image(&mut self, image: HtmlImageTag) {
+        let (link_url, link_title) = self
+            .active_link_context()
+            .map(|link| (Some(link.url.clone()), link.title.clone()))
+            .unwrap_or((None, None));
+        let parsed_image = push_html_image_into_rich_text(
+            &mut self.current_text,
+            image,
+            link_url,
+            link_title,
+            self.active_style.clone(),
+        );
+        self.current_inline_images.push(parsed_image);
     }
 
     fn flush_list_item(&mut self) {
@@ -1950,13 +1974,9 @@ fn render_html_block(text: String, style: &MarkdownStyle, block_id: &str) -> imp
         .when(text.is_empty(), |this| this.hidden())
         .when(!text.is_empty(), |this| {
             this.child(
-                render_rich_text_fragment(text, style, format!("{block_id}-text"))
-                    .w_full()
-                    .text_size(style.body_font_size)
-                    .text_color(style.body_color),
+                render_rich_text(text, style, style.body_color, format!("{block_id}-text"))
+                    .line_height(relative(if style.preview { 1.55 } else { 1.45 })),
             )
-            .text_color(style.body_color)
-            .line_height(relative(if style.preview { 1.55 } else { 1.45 }))
             .when(style.preview, |this| this.mb(px(10.0)))
         })
 }
@@ -2019,7 +2039,16 @@ fn html_block_rich_text(content: &str) -> RichText {
         } else if rest.starts_with('<') {
             if let Some(tag_len) = html_normal_tag_len(rest) {
                 let tag = &rest[..tag_len];
-                if inline_html_is_line_break(tag) {
+                if let Some(image) = html_image_tag(tag) {
+                    let (link_url, link_title) = style.active_link_metadata();
+                    push_html_image_into_rich_text(
+                        &mut text,
+                        image,
+                        link_url,
+                        link_title,
+                        style.active_style.clone(),
+                    );
+                } else if inline_html_is_line_break(tag) {
                     text.push("\n", style.active_style.clone());
                 } else {
                     style.update_tag(tag);
@@ -2134,6 +2163,15 @@ impl HtmlBlockTextStyle {
         self.active_style.link = link.is_some();
         self.active_style.link_url = link.map(|link| link.url.clone());
         self.active_style.link_title = link.and_then(|link| link.title.clone());
+    }
+
+    fn active_link_metadata(&self) -> (Option<SharedString>, Option<SharedString>) {
+        self.link_stack
+            .iter()
+            .rev()
+            .find_map(Option::as_ref)
+            .map(|link| (Some(link.url.clone()), link.title.clone()))
+            .unwrap_or((None, None))
     }
 }
 
@@ -2490,6 +2528,67 @@ fn inline_html_is_line_break(html: &str) -> bool {
     tag_name.eq_ignore_ascii_case("br")
 }
 
+fn html_image_tag(html: &str) -> Option<HtmlImageTag> {
+    let body = html.trim().strip_prefix('<')?.strip_suffix('>')?.trim();
+    if body.starts_with(['/', '!', '?']) {
+        return None;
+    }
+
+    let tag_name_len = body
+        .find(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '-'))
+        .unwrap_or(body.len());
+    if tag_name_len == 0 || !body[..tag_name_len].eq_ignore_ascii_case("img") {
+        return None;
+    }
+
+    let (src, alt, title) = html_image_attributes(trim_html_whitespace(&body[tag_name_len..]))?;
+    Some(HtmlImageTag {
+        url: SharedString::from(src?),
+        alt: rich_text_from_plain(alt.unwrap_or_default()),
+        title: title.map(SharedString::from),
+    })
+}
+
+fn html_image_attributes(
+    mut rest: &str,
+) -> Option<(Option<String>, Option<String>, Option<String>)> {
+    let mut src = None;
+    let mut alt = None;
+    let mut title = None;
+
+    loop {
+        rest = trim_html_whitespace(rest);
+        if rest.is_empty() || rest == "/" {
+            return Some((src, alt, title));
+        }
+        if rest.starts_with('/') {
+            return None;
+        }
+
+        let name_len = html_attribute_name_len(rest)?;
+        let name = &rest[..name_len];
+        rest = &rest[name_len..];
+        let after_name = trim_html_whitespace(rest);
+        if let Some(after_equals) = after_name.strip_prefix('=') {
+            let after_equals = trim_html_whitespace(after_equals);
+            let value_len = html_attribute_value_len(after_equals)?;
+            let value = html_attribute_decoded_value(&after_equals[..value_len]);
+            if name.eq_ignore_ascii_case("src") {
+                src = Some(value);
+            } else if name.eq_ignore_ascii_case("alt") {
+                alt = Some(value);
+            } else if name.eq_ignore_ascii_case("title") {
+                title = Some(value);
+            }
+            rest = &after_equals[value_len..];
+        }
+
+        if !html_tag_attribute_separator_is_next(rest) {
+            return None;
+        }
+    }
+}
+
 #[derive(Clone)]
 enum InlineHtmlLinkTag {
     Open(Option<LinkContext>),
@@ -2765,6 +2864,44 @@ fn linked_rich_text(
         span.style.link_title = link_title.clone();
     }
     text
+}
+
+fn push_html_image_into_rich_text(
+    text: &mut RichText,
+    image: HtmlImageTag,
+    link_url: Option<SharedString>,
+    link_title: Option<SharedString>,
+    style: InlineStyle,
+) -> ParsedImage {
+    let fallback_inserted = image.alt.is_empty();
+    let fallback_text = if fallback_inserted {
+        image.url.to_string()
+    } else {
+        image.alt.plain_text()
+    };
+
+    let start_text_len = text.text_len();
+    text.push(fallback_text, style);
+    let end_text_len = text.text_len();
+    text.push_inline_image(InlineImage {
+        range: start_text_len..end_text_len,
+        url: image.url.clone(),
+        alt: image.alt.clone(),
+        title: image.title.clone(),
+        link_url: link_url.clone(),
+        link_title: link_title.clone(),
+    });
+
+    ParsedImage {
+        dest_url: image.url,
+        title: image.title,
+        start_text_len,
+        end_text_len,
+        fallback_inserted,
+        nesting_depth: 0,
+        link_url,
+        link_title,
+    }
 }
 
 fn rich_text_from_plain(text: impl AsRef<str>) -> RichText {
@@ -3633,6 +3770,59 @@ mod tests {
     }
 
     #[test]
+    fn inline_html_images_are_retained_as_image_spans() {
+        let document = MarkdownDocument::parse(
+            r#"See <img src="logo.png" alt="Logo &amp; mark" title="Logo title">."#,
+        );
+
+        let MarkdownBlock::Paragraph(text) = &document.blocks[0] else {
+            panic!("expected inline image paragraph");
+        };
+
+        assert_eq!(text.plain_text(), "See Logo & mark.");
+        assert_eq!(text.inline_images().len(), 1);
+        let image = &text.inline_images()[0];
+        assert_eq!(image.range, 4..15);
+        assert_eq!(image.url.as_ref(), "logo.png");
+        assert_eq!(image.alt.plain_text(), "Logo & mark");
+        assert_eq!(image.title.as_deref(), Some("Logo title"));
+        assert!(image.link_url.is_none());
+    }
+
+    #[test]
+    fn linked_inline_html_images_use_outer_anchor_metadata() {
+        let document = MarkdownDocument::parse(
+            r#"<a href="/target" title="Target"><img src="logo.png" alt="Logo"></a> now"#,
+        );
+
+        let MarkdownBlock::Paragraph(text) = &document.blocks[0] else {
+            panic!("expected linked image paragraph");
+        };
+
+        assert_eq!(text.plain_text(), "Logo now");
+        assert_eq!(text.inline_images().len(), 1);
+        let image = &text.inline_images()[0];
+        assert_eq!(image.url.as_ref(), "logo.png");
+        assert_eq!(image.link_url.as_deref(), Some("/target"));
+        assert_eq!(image.link_title.as_deref(), Some("Target"));
+    }
+
+    #[test]
+    fn inline_html_image_unquoted_src_keeps_trailing_slash() {
+        let document = MarkdownDocument::parse(r#"See <img src=https://example.com/assets/>."#);
+
+        let MarkdownBlock::Paragraph(text) = &document.blocks[0] else {
+            panic!("expected inline image paragraph");
+        };
+
+        assert_eq!(text.inline_images().len(), 1);
+        assert_eq!(
+            text.inline_images()[0].url.as_ref(),
+            "https://example.com/assets/"
+        );
+    }
+
+    #[test]
     fn inline_html_anchor_links_do_not_leak_between_blocks() {
         let document = MarkdownDocument::parse(
             r#"<a href="/one">one
@@ -3917,6 +4107,18 @@ plain"#,
             visible_html_text("<div>foo<br />bar</div>").as_ref(),
             "foo\nbar"
         );
+    }
+
+    #[test]
+    fn html_block_display_retains_image_tags() {
+        let text = html_block_rich_text(r#"<div><img src="logo.png" alt="Logo"></div>"#);
+
+        assert_eq!(text.plain_text(), "Logo");
+        assert_eq!(text.inline_images().len(), 1);
+        let image = &text.inline_images()[0];
+        assert_eq!(image.range, 0..4);
+        assert_eq!(image.url.as_ref(), "logo.png");
+        assert_eq!(image.alt.plain_text(), "Logo");
     }
 
     #[test]
