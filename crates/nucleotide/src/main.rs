@@ -939,24 +939,16 @@ fn gui_main(
             // Set up theme manager with Helix theme
             let helix_theme = app.editor.theme.clone();
             #[allow(unused_mut)]
-            let mut theme_manager = crate::ThemeManager::new(helix_theme);
+            let mut theme_manager =
+                crate::ThemeManager::new_with_chrome_style(helix_theme, config.ui_chrome_style());
             theme_manager.set_ui_font_size(px(ui_font_config.size));
 
-            // Detect initial system appearance
-            #[cfg(target_os = "macos")]
-            {
-                // Get current system appearance from window
-                // This will be properly detected when we create the window
-                // For now, we'll use a default based on theme darkness
-                if theme_manager.is_dark_theme() {
-                    theme_manager
-                        .set_system_appearance(nucleotide_ui::theme_manager::SystemAppearance::Dark);
-                }
-            }
+            theme_manager
+                .set_system_appearance(nucleotide_ui::theme_manager::SystemAppearance::global(cx));
 
             // Derive and install the UI theme from the ThemeManager (Helix → tokens bridge)
             let ui_theme_derived = theme_manager.ui_theme().clone();
-            let is_dark_theme = theme_manager.is_dark_theme(); // Store before moving
+            let is_dark_chrome = theme_manager.is_dark_chrome(); // Store before moving
             cx.set_global(theme_manager);
             cx.set_global(ui_theme_derived.clone());
             cx.set_global(nucleotide_ui::markdown::MarkdownSyntaxLoader::new(
@@ -1029,7 +1021,7 @@ fn gui_main(
                 warn!(error = %error, "Failed to apply DirectWrite text rendering settings");
             }
 
-            let options = window_options(cx, &config, is_dark_theme);
+            let options = window_options(cx, &config, is_dark_chrome);
 
             let _ = cx.open_window(options, |#[allow(unused)] window, cx| {
                 // Set up window event handlers to send events to Helix

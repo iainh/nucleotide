@@ -148,6 +148,15 @@ pub enum UiLook {
     System,
 }
 
+impl UiLook {
+    pub fn to_ui_chrome_style(self) -> nucleotide_ui::theme_manager::UiChromeStyle {
+        match self {
+            Self::Theme => nucleotide_ui::theme_manager::UiChromeStyle::Theme,
+            Self::System => nucleotide_ui::theme_manager::UiChromeStyle::System,
+        }
+    }
+}
+
 /// UI-specific configuration
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UiConfig {
@@ -875,6 +884,11 @@ impl Config {
     /// Get the UI look configuration.
     pub fn ui_look(&self) -> UiLook {
         self.gui.ui.look
+    }
+
+    /// Get the UI chrome style used by nucleotide-ui.
+    pub fn ui_chrome_style(&self) -> nucleotide_ui::theme_manager::UiChromeStyle {
+        self.ui_look().to_ui_chrome_style()
     }
 
     /// Check if project-based LSP startup is enabled
