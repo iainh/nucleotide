@@ -9,8 +9,7 @@ use helix_term::args::Args;
 use nucleotide_logging::{error, info, instrument, warn};
 
 use gpui::{
-    AppContext, Menu, MenuItem, TitlebarOptions, WindowBackgroundAppearance, WindowBounds,
-    WindowKind, WindowOptions, px,
+    AppContext, Menu, MenuItem, TitlebarOptions, WindowBounds, WindowKind, WindowOptions, px,
 };
 
 // Import from the library crate instead of re-declaring modules
@@ -641,7 +640,7 @@ fn open_request_workspace_dir(path: &Path) -> Option<PathBuf> {
 fn window_options(
     _cx: &mut impl gpui::AppContext,
     config: &nucleotide::config::Config,
-    is_dark: bool,
+    is_dark_chrome: bool,
 ) -> gpui::WindowOptions {
     let window_decorations = match std::env::var("HELIX_WINDOW_DECORATIONS") {
         Ok(val) if val == "server" => gpui::WindowDecorations::Server,
@@ -649,11 +648,7 @@ fn window_options(
         _ => gpui::WindowDecorations::Client, // Default to client decorations
     };
 
-    let window_background = if is_dark && config.gui.window.blur_dark_themes {
-        WindowBackgroundAppearance::Blurred
-    } else {
-        WindowBackgroundAppearance::Opaque
-    };
+    let window_background = config.window_background_appearance(is_dark_chrome);
 
     WindowOptions {
         app_id: Some("nucleotide".to_string()),
@@ -927,7 +922,7 @@ fn gui_main(
             }
 
             // Initialize SystemAppearance global state from current window appearance
-            nucleotide_ui::theme_manager::SystemAppearance::init(cx);
+            nucleotide_appearance::SystemAppearance::init(cx);
 
             // Initialize the provider system
             init_provider_system();
@@ -939,24 +934,16 @@ fn gui_main(
             // Set up theme manager with Helix theme
             let helix_theme = app.editor.theme.clone();
             #[allow(unused_mut)]
-            let mut theme_manager = crate::ThemeManager::new(helix_theme);
+            let mut theme_manager =
+                crate::ThemeManager::new_with_chrome_style(helix_theme, config.ui_chrome_style());
             theme_manager.set_ui_font_size(px(ui_font_config.size));
 
-            // Detect initial system appearance
-            #[cfg(target_os = "macos")]
-            {
-                // Get current system appearance from window
-                // This will be properly detected when we create the window
-                // For now, we'll use a default based on theme darkness
-                if theme_manager.is_dark_theme() {
-                    theme_manager
-                        .set_system_appearance(nucleotide_ui::theme_manager::SystemAppearance::Dark);
-                }
-            }
+            theme_manager
+                .set_system_appearance(nucleotide_appearance::SystemAppearance::global(cx));
 
             // Derive and install the UI theme from the ThemeManager (Helix → tokens bridge)
             let ui_theme_derived = theme_manager.ui_theme().clone();
-            let is_dark_theme = theme_manager.is_dark_theme(); // Store before moving
+            let is_dark_chrome = theme_manager.is_dark_chrome(); // Store before moving
             cx.set_global(theme_manager);
             cx.set_global(ui_theme_derived.clone());
             cx.set_global(nucleotide_ui::markdown::MarkdownSyntaxLoader::new(
@@ -1029,7 +1016,7 @@ fn gui_main(
                 warn!(error = %error, "Failed to apply DirectWrite text rendering settings");
             }
 
-            let options = window_options(cx, &config, is_dark_theme);
+            let options = window_options(cx, &config, is_dark_chrome);
 
             let _ = cx.open_window(options, |#[allow(unused)] window, cx| {
                 // Set up window event handlers to send events to Helix

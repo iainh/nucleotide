@@ -884,7 +884,7 @@ impl TabBar {
     }
 
     fn empty_tab_bar_background(tokens: nucleotide_ui::tokens::DesignTokens) -> gpui::Hsla {
-        nucleotide_ui::tokens::utils::darken(tokens.tab_bar_tokens().container_background, 0.018)
+        tokens.tab_bar_tokens().container_background
     }
 
     fn empty_tab_bar_inset_shadows(
@@ -1064,24 +1064,17 @@ mod tests {
     }
 
     #[test]
-    fn empty_tab_bar_area_uses_inset_depth() {
+    fn empty_tab_bar_area_uses_tabbar_background_and_inset_depth() {
         for tokens in [
             nucleotide_ui::DesignTokens::dark(),
             nucleotide_ui::DesignTokens::light(),
         ] {
-            let container_l = nucleotide_ui::styling::ColorTheory::hsla_to_oklch(
-                tokens.tab_bar_tokens().container_background,
-            )
-            .L;
-            let empty_l = nucleotide_ui::styling::ColorTheory::hsla_to_oklch(
-                TabBar::empty_tab_bar_background(tokens),
-            )
-            .L;
             let shadows = TabBar::empty_tab_bar_inset_shadows(tokens);
 
-            assert!(
-                empty_l < container_l,
-                "empty tabbar area should sit visually below the surrounding tabbar"
+            assert_eq!(
+                TabBar::empty_tab_bar_background(tokens),
+                tokens.tab_bar_tokens().container_background,
+                "empty tabbar area should use the same background as the surrounding tabbar"
             );
             assert_eq!(shadows.len(), 2);
             assert!(

@@ -9,6 +9,7 @@ rust-version = "1.95"
 [dependencies]
 nucleotide-types = { workspace = true, features = ["gpui-bridge"] }
 nucleotide-events.workspace = true
+nucleotide-appearance.workspace = true
 nucleotide-core = { path = "../nucleotide-core" }
 nucleotide-process.workspace = true
 gpui.workspace = true

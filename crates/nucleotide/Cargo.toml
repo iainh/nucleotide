@@ -34,6 +34,7 @@ path = "src/grammar_tool.rs"
 nucleotide-types = { workspace = true, features = ["gpui-bridge", "helix-bridge"] }
 nucleotide-events.workspace = true
 nucleotide-logging.workspace = true
+nucleotide-appearance.workspace = true
 nucleotide-ui.workspace = true
 nucleotide-core.workspace = true
 nucleotide-lsp.workspace = true

@@ -3,65 +3,11 @@
 
 use crate::Theme as UITheme;
 use crate::theme_utils::color_to_hsla;
-use gpui::{App, Global, Hsla, Pixels, WindowAppearance, hsla};
+use gpui::{Hsla, Pixels, hsla};
 use helix_view::Theme as HelixTheme;
-
-/// Extracted colors from Helix theme for comprehensive design token creation
-#[derive(Debug, Clone, Copy)]
-pub struct HelixThemeColors {
-    // Core selection and cursor colors
-    pub selection: Hsla,
-    pub cursor_normal: Hsla,
-    pub cursor_insert: Hsla,
-    pub cursor_select: Hsla,
-    pub cursor_match: Hsla,
-
-    // Semantic feedback colors
-    pub error: Hsla,
-    pub warning: Hsla,
-    pub success: Hsla,
-
-    // VCS colors from Helix diff scopes
-    pub vcs_added: Hsla,
-    pub vcs_modified: Hsla,
-    pub vcs_deleted: Hsla,
-
-    // UI component backgrounds
-    pub statusline: Hsla,
-    pub statusline_inactive: Hsla,
-    pub popup: Hsla,
-
-    // Buffer and tab system
-    pub bufferline_background: Hsla,
-    pub bufferline_active: Hsla,
-    pub bufferline_inactive: Hsla,
-
-    // Gutter and line number system
-    pub gutter_background: Hsla,
-    pub gutter_selected: Hsla,
-    pub line_number: Hsla,
-    pub line_number_active: Hsla,
-
-    // Menu and popup system
-    pub menu_background: Hsla,
-    pub menu_selected: Hsla,
-    pub menu_separator: Hsla,
-
-    // Separator and focus system
-    pub separator: Hsla,
-    pub focus: Hsla,
-
-    // Text colors
-    pub text_primary: Hsla,
-}
-
-/// System appearance state
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub enum SystemAppearance {
-    #[default]
-    Light,
-    Dark,
-}
+use nucleotide_appearance::{
+    HelixThemeColors, NativeChromePalette, SystemAppearance, UiChromeStyle,
+};
 
 /// Source of surface color extraction for debugging and validation
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -76,39 +22,6 @@ pub enum SurfaceColorSource {
     SystemFallback,
 }
 
-impl From<WindowAppearance> for SystemAppearance {
-    fn from(appearance: WindowAppearance) -> Self {
-        match appearance {
-            WindowAppearance::Light | WindowAppearance::VibrantLight => SystemAppearance::Light,
-            WindowAppearance::Dark | WindowAppearance::VibrantDark => SystemAppearance::Dark,
-        }
-    }
-}
-
-/// Global SystemAppearance state for GPUI integration
-#[derive(Default)]
-struct GlobalSystemAppearance(SystemAppearance);
-
-impl Global for GlobalSystemAppearance {}
-
-impl SystemAppearance {
-    /// Initializes the global SystemAppearance based on the current window appearance
-    pub fn init(cx: &mut App) {
-        *cx.default_global::<GlobalSystemAppearance>() =
-            GlobalSystemAppearance(SystemAppearance::from(cx.window_appearance()));
-    }
-
-    /// Returns the global SystemAppearance
-    pub fn global(cx: &App) -> Self {
-        cx.global::<GlobalSystemAppearance>().0
-    }
-
-    /// Returns a mutable reference to the global SystemAppearance
-    pub fn global_mut(cx: &mut App) -> &mut Self {
-        &mut cx.global_mut::<GlobalSystemAppearance>().0
-    }
-}
-
 /// Manages theme state and provides consistent access to theme colors
 #[derive(Clone)]
 pub struct ThemeManager {
@@ -118,6 +31,8 @@ pub struct ThemeManager {
     ui_theme: UITheme,
     /// Current system appearance
     system_appearance: SystemAppearance,
+    /// Source used to derive non-editor UI chrome.
+    ui_chrome_style: UiChromeStyle,
     /// Configured UI font size used as the medium typography token.
     ui_font_size: Option<Pixels>,
 }
@@ -125,19 +40,33 @@ pub struct ThemeManager {
 impl ThemeManager {
     /// Create a new ThemeManager from a Helix theme
     pub fn new(helix_theme: HelixTheme) -> Self {
+        Self::new_with_chrome_style(helix_theme, UiChromeStyle::Theme)
+    }
+
+    /// Create a new ThemeManager from a Helix theme and chrome style source.
+    pub fn new_with_chrome_style(helix_theme: HelixTheme, ui_chrome_style: UiChromeStyle) -> Self {
         let system_appearance = SystemAppearance::default();
-        let ui_theme = Self::derive_ui_theme_with_appearance(&helix_theme, system_appearance);
+        let ui_theme = Self::derive_ui_theme_with_appearance_and_chrome_style(
+            &helix_theme,
+            system_appearance,
+            ui_chrome_style,
+        );
         Self {
             helix_theme,
             ui_theme,
             system_appearance,
+            ui_chrome_style,
             ui_font_size: None,
         }
     }
 
     /// Update the theme
     pub fn set_theme(&mut self, helix_theme: HelixTheme) {
-        self.ui_theme = Self::derive_ui_theme_with_appearance(&helix_theme, self.system_appearance);
+        self.ui_theme = Self::derive_ui_theme_with_appearance_and_chrome_style(
+            &helix_theme,
+            self.system_appearance,
+            self.ui_chrome_style,
+        );
         self.apply_ui_font_size();
         self.helix_theme = helix_theme;
     }
@@ -457,6 +386,26 @@ impl ThemeManager {
         self.ui_font_size
     }
 
+    /// Get the configured chrome style source.
+    pub fn ui_chrome_style(&self) -> UiChromeStyle {
+        self.ui_chrome_style
+    }
+
+    /// Set the configured chrome style source.
+    pub fn set_ui_chrome_style(&mut self, ui_chrome_style: UiChromeStyle) {
+        if self.ui_chrome_style == ui_chrome_style {
+            return;
+        }
+
+        self.ui_chrome_style = ui_chrome_style;
+        self.ui_theme = Self::derive_ui_theme_with_appearance_and_chrome_style(
+            &self.helix_theme,
+            self.system_appearance,
+            self.ui_chrome_style,
+        );
+        self.apply_ui_font_size();
+    }
+
     fn apply_ui_font_size(&mut self) {
         if let Some(ui_font_size) = self.ui_font_size {
             self.ui_theme.tokens.set_ui_font_size(ui_font_size);
@@ -472,8 +421,11 @@ impl ThemeManager {
     pub fn set_system_appearance(&mut self, appearance: SystemAppearance) {
         self.system_appearance = appearance;
         // Re-derive the UI theme with the new system appearance for proper fallback colors
-        self.ui_theme =
-            Self::derive_ui_theme_with_appearance(&self.helix_theme, self.system_appearance);
+        self.ui_theme = Self::derive_ui_theme_with_appearance_and_chrome_style(
+            &self.helix_theme,
+            self.system_appearance,
+            self.ui_chrome_style,
+        );
         self.apply_ui_font_size();
     }
 
@@ -483,6 +435,11 @@ impl ThemeManager {
         // A theme is considered dark if its background lightness is below 0.5
         let bg = self.ui_theme.tokens.editor.background;
         bg.l < 0.5
+    }
+
+    /// Check if the current UI chrome is dark.
+    pub fn is_dark_chrome(&self) -> bool {
+        self.ui_theme.tokens.chrome.surface.l < 0.5
     }
 
     /// Extract surface color from Helix theme with priority fallback system
@@ -565,10 +522,11 @@ impl ThemeManager {
         (fallback_color, SurfaceColorSource::SystemFallback)
     }
 
-    /// Derive a UI theme from a Helix theme with system appearance for fallback colors
-    fn derive_ui_theme_with_appearance(
+    /// Derive a UI theme from a Helix theme and configured chrome style.
+    fn derive_ui_theme_with_appearance_and_chrome_style(
         helix_theme: &HelixTheme,
         system_appearance: SystemAppearance,
+        ui_chrome_style: UiChromeStyle,
     ) -> UITheme {
         // Check if theme fallback testing is enabled
         let test_fallback = std::env::var("NUCLEOTIDE_DISABLE_THEME_LOADING")
@@ -982,18 +940,26 @@ impl ThemeManager {
             text_primary: text,
         };
 
-        // Use the new hybrid token system that computes chrome colors from surface
         let is_dark_theme = background.l < 0.5;
-        let tokens = crate::DesignTokens::from_helix_and_surface(
-            theme_colors,
-            surface,    // computed chrome surface
-            background, // editor background (ui.background)
-            is_dark_theme,
-        );
+        let tokens = match ui_chrome_style {
+            UiChromeStyle::Theme => crate::DesignTokens::from_helix_and_surface(
+                theme_colors,
+                surface,    // computed chrome surface
+                background, // editor background (ui.background)
+                is_dark_theme,
+            ),
+            UiChromeStyle::System => crate::DesignTokens::from_helix_and_native_chrome(
+                theme_colors,
+                background,
+                NativeChromePalette::current(system_appearance),
+            ),
+        };
 
         nucleotide_logging::info!(
             surface_color = ?surface,
             is_dark = is_dark_theme,
+            ui_chrome_style = ?ui_chrome_style,
+            system_appearance = ?system_appearance,
             "Creating hybrid design tokens with computed chrome colors"
         );
 
@@ -1150,5 +1116,22 @@ mod surface_extraction_tests {
                     && (bg2.l - 0.5).abs() < 1e-6
             );
         });
+    }
+
+    #[test]
+    fn system_chrome_style_follows_system_appearance() {
+        let helix_theme = helix_view::Theme::default();
+        let mut tm = ThemeManager::new_with_chrome_style(helix_theme, UiChromeStyle::System);
+
+        tm.set_system_appearance(SystemAppearance::Light);
+        let light_surface = tm.ui_theme().tokens.chrome.surface;
+        assert_eq!(tm.ui_chrome_style(), UiChromeStyle::System);
+        assert!(!tm.is_dark_chrome());
+
+        tm.set_system_appearance(SystemAppearance::Dark);
+        let dark_surface = tm.ui_theme().tokens.chrome.surface;
+
+        assert!(tm.is_dark_chrome());
+        assert!(light_surface.l > dark_surface.l);
     }
 }

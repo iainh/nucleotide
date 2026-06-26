@@ -103,7 +103,7 @@ impl KeyHintView {
     ) -> AnyElement {
         let tokens = &theme.tokens;
         let tooltip = tokens.tooltip_tokens();
-        let key_bg = ColorTheory::with_alpha(tokens.chrome.surface_hover, 0.65);
+        let key_bg = Self::keycap_background(theme);
         let is_modifier = matches!(label.as_str(), "ctrl" | "alt" | "shift" | "cmd");
         let min_width = if is_modifier { 34.0 } else { 18.0 };
 
@@ -126,6 +126,18 @@ impl KeyHintView {
             .bg(key_bg)
             .child(label)
             .into_any_element()
+    }
+
+    fn keycap_background(theme: &Theme) -> gpui::Hsla {
+        let tooltip = theme.tokens.tooltip_tokens();
+        let background = ColorTheory::surface_variant(tooltip.background, 0.06);
+        let minimum_alpha = if tooltip.background.l > 0.5 {
+            0.92
+        } else {
+            0.88
+        };
+
+        ColorTheory::with_alpha(background, tooltip.background.a.max(minimum_alpha))
     }
 
     fn render_key_badges(
@@ -319,6 +331,24 @@ fn key_label(key: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tokens::{ChromeTokens, DesignTokens, EditorTokens, SizeTokens};
+    use gpui::hsla;
+    use nucleotide_appearance::{NativeChromePalette, SystemAppearance};
+
+    fn system_theme(is_dark: bool) -> Theme {
+        Theme::from_tokens(DesignTokens {
+            editor: EditorTokens::fallback(is_dark),
+            chrome: ChromeTokens::from_native_chrome_palette(NativeChromePalette::with_accent(
+                if is_dark {
+                    SystemAppearance::Dark
+                } else {
+                    SystemAppearance::Light
+                },
+                hsla(0.0, 0.70, 0.45, 1.0),
+            )),
+            sizes: SizeTokens::default(),
+        })
+    }
 
     #[test]
     fn parses_padded_hint_lines() {
@@ -380,5 +410,19 @@ mod tests {
         );
         assert_eq!(pairs[1].0.key.as_deref(), Some("i"));
         assert!(pairs[1].1.is_none());
+    }
+
+    #[test]
+    fn keycap_background_tracks_system_light_and_dark_surfaces() {
+        let light = KeyHintView::keycap_background(&system_theme(false));
+        let dark = KeyHintView::keycap_background(&system_theme(true));
+
+        assert!(
+            light.l > 0.85,
+            "light keycap should remain light: {light:?}"
+        );
+        assert!(dark.l < 0.35, "dark keycap should remain dark: {dark:?}");
+        assert!(light.a >= 0.92);
+        assert!(dark.a >= 0.88);
     }
 }

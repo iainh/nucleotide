@@ -4,6 +4,7 @@
 use crate::ContrastRatios;
 use crate::styling::ColorTheory;
 use gpui::{Hsla, Pixels, hsla, px};
+use nucleotide_appearance::{HelixThemeColors, NativeChromePalette, hsla_from_rgb_u8};
 use nucleotide_logging::debug;
 
 /// Base color palette - raw color definitions
@@ -39,6 +40,22 @@ pub struct BaseColors {
     pub warning_500: Hsla,
     pub error_500: Hsla,
     pub info_500: Hsla,
+}
+
+fn system_accent_colors(base_accent: Hsla, is_dark: bool) -> (Hsla, Hsla, Hsla) {
+    let accent = if is_dark {
+        ColorTheory::adjust_oklab_lightness(base_accent, 0.24)
+    } else {
+        ColorTheory::adjust_oklab_lightness(base_accent, -0.06)
+    };
+    let hover = ColorTheory::adjust_oklab_lightness(accent, if is_dark { 0.04 } else { -0.04 });
+    let active = ColorTheory::adjust_oklab_lightness(accent, if is_dark { -0.04 } else { -0.08 });
+
+    (
+        utils::with_alpha(accent, 1.0),
+        utils::with_alpha(hover, 1.0),
+        utils::with_alpha(active, 1.0),
+    )
 }
 
 impl BaseColors {
@@ -360,7 +377,7 @@ pub struct DesignTokens {
 
 impl EditorTokens {
     /// Create editor tokens from Helix theme colors
-    pub fn from_helix_colors(helix_colors: crate::theme_manager::HelixThemeColors) -> Self {
+    pub fn from_helix_colors(helix_colors: HelixThemeColors) -> Self {
         // Prefer explicit text from theme; fallback computed below if required
         let text_primary = helix_colors.text_primary;
         let text_secondary = utils::with_alpha(text_primary, 0.7);
@@ -697,6 +714,122 @@ impl ChromeTokens {
         }
     }
 
+    /// Create chrome tokens from a resolved native/system palette.
+    pub fn from_native_chrome_palette(palette: NativeChromePalette) -> Self {
+        let is_dark = palette.appearance.is_dark();
+
+        let mica = utils::with_alpha(palette.mica_base, palette.mica_alpha);
+        let layer = utils::with_alpha(palette.layer_base, palette.layer_alpha);
+        let dense_text_layer =
+            utils::with_alpha(palette.layer_alt_base, palette.dense_text_layer_alpha);
+        let elevated = utils::with_alpha(palette.elevated_base, palette.elevated_alpha);
+
+        let text_on_chrome = ColorTheory::ensure_contrast(
+            palette.layer_alt_base,
+            palette.text,
+            ContrastRatios::AA_NORMAL,
+        );
+        let (accent, accent_hover, accent_active) = system_accent_colors(palette.accent, is_dark);
+        let selected = utils::with_alpha(accent, if is_dark { 0.24 } else { 0.14 });
+        let hover = if is_dark {
+            hsla_from_rgb_u8(255, 255, 255, 0.08)
+        } else {
+            hsla_from_rgb_u8(0, 0, 0, 0.04)
+        };
+        let active = if is_dark {
+            hsla_from_rgb_u8(255, 255, 255, 0.12)
+        } else {
+            hsla_from_rgb_u8(0, 0, 0, 0.08)
+        };
+        let border_highlight = if is_dark {
+            hsla_from_rgb_u8(255, 255, 255, 0.08)
+        } else {
+            hsla_from_rgb_u8(255, 255, 255, 0.70)
+        };
+        let smoke = hsla(0.0, 0.0, 0.0, 1.0);
+        let shadow_color = hsla(0.0, 0.0, 0.0, palette.shadow_alpha);
+        let shadow_color_strong = hsla(0.0, 0.0, 0.0, palette.strong_shadow_alpha);
+
+        Self {
+            titlebar_background: mica,
+            footer_background: mica,
+            file_tree_background: dense_text_layer,
+            tab_empty_background: mica,
+            separator_color: palette.stroke,
+
+            surface: layer,
+            surface_elevated: elevated,
+            surface_overlay: smoke,
+            surface_hover: hover,
+            surface_active: active,
+            surface_selected: selected,
+            surface_disabled: utils::with_alpha(layer, 0.48),
+
+            border_default: palette.stroke,
+            border_muted: utils::with_alpha(palette.stroke, 0.56),
+            border_strong: palette.stroke_subtle,
+            border_focus: accent,
+            border_highlight,
+            border_shadow: palette.stroke_subtle,
+
+            shadow_sm: ShadowToken {
+                offset_x: px(0.0),
+                offset_y: px(1.0),
+                blur_radius: px(2.0),
+                spread_radius: px(0.0),
+                color: shadow_color,
+            },
+            shadow_md: ShadowToken {
+                offset_x: px(0.0),
+                offset_y: px(4.0),
+                blur_radius: px(12.0),
+                spread_radius: px(0.0),
+                color: shadow_color,
+            },
+            shadow_lg: ShadowToken {
+                offset_x: px(0.0),
+                offset_y: px(8.0),
+                blur_radius: px(24.0),
+                spread_radius: px(0.0),
+                color: shadow_color_strong,
+            },
+            inset_highlight: ShadowToken {
+                offset_x: px(0.0),
+                offset_y: px(1.0),
+                blur_radius: px(0.0),
+                spread_radius: px(0.0),
+                color: border_highlight,
+            },
+            inset_shadow: ShadowToken {
+                offset_x: px(0.0),
+                offset_y: px(-1.0),
+                blur_radius: px(0.0),
+                spread_radius: px(0.0),
+                color: palette.stroke_subtle,
+            },
+
+            primary: accent,
+            primary_hover: accent_hover,
+            primary_active: accent_active,
+
+            popup_background: palette.acrylic,
+            popup_border: palette.stroke_subtle,
+            menu_background: palette.acrylic,
+            menu_selected: selected,
+            menu_separator: palette.stroke,
+
+            statusline_active: mica,
+            statusline_inactive: utils::with_alpha(palette.mica_base, palette.mica_alpha * 0.86),
+            bufferline_background: mica,
+            bufferline_active: elevated,
+            bufferline_inactive: mica,
+
+            text_on_chrome,
+            text_chrome_secondary: utils::with_alpha(text_on_chrome, palette.secondary_text_alpha),
+            text_chrome_disabled: utils::with_alpha(text_on_chrome, palette.disabled_text_alpha),
+        }
+    }
+
     /// Create fallback chrome tokens for testing
     pub fn fallback(is_dark: bool) -> Self {
         let base_colors = if is_dark {
@@ -746,13 +879,13 @@ impl DesignTokens {
     }
 
     /// Create design tokens for light theme with comprehensive Helix-derived colors
-    pub fn light_with_helix_colors(_helix_colors: crate::theme_manager::HelixThemeColors) -> Self {
+    pub fn light_with_helix_colors(_helix_colors: HelixThemeColors) -> Self {
         // Deprecated API path; keep a minimal implementation for tests that may still call this.
         Self::light()
     }
 
     /// Create design tokens for dark theme with comprehensive Helix-derived colors
-    pub fn dark_with_helix_colors(_helix_colors: crate::theme_manager::HelixThemeColors) -> Self {
+    pub fn dark_with_helix_colors(_helix_colors: HelixThemeColors) -> Self {
         // Deprecated API path; keep a minimal implementation for tests that may still call this.
         Self::dark()
     }
@@ -760,7 +893,7 @@ impl DesignTokens {
     /// Create design tokens from Helix theme and surface color (hybrid approach)
     /// This is the main factory method for the hybrid color system
     pub fn from_helix_and_surface(
-        helix_colors: crate::theme_manager::HelixThemeColors,
+        helix_colors: HelixThemeColors,
         surface_color: Hsla,
         editor_background: Hsla,
         is_dark_theme: bool,
@@ -780,6 +913,24 @@ impl DesignTokens {
         // The sidebar/file-tree layer uses both to sit between content and titlebar chrome.
         let chrome =
             ChromeTokens::from_surface_and_editor(surface_color, editor_background, is_dark_theme);
+
+        Self {
+            editor,
+            chrome,
+            sizes: SizeTokens::default(),
+        }
+    }
+
+    /// Create design tokens from Helix editor colors and resolved native chrome.
+    pub fn from_helix_and_native_chrome(
+        helix_colors: HelixThemeColors,
+        editor_background: Hsla,
+        native_palette: NativeChromePalette,
+    ) -> Self {
+        let mut editor = EditorTokens::from_helix_colors(helix_colors);
+        editor.background = editor_background;
+
+        let chrome = ChromeTokens::from_native_chrome_palette(native_palette);
 
         Self {
             editor,
@@ -974,17 +1125,17 @@ pub struct FileTreeTokens {
 impl FileTreeTokens {
     /// Create file tree tokens using computed chrome colors for backgrounds
     /// and editor colors for content
-    pub fn from_tokens(chrome: &ChromeTokens, editor: &EditorTokens) -> Self {
+    pub fn from_tokens(chrome: &ChromeTokens, _editor: &EditorTokens) -> Self {
         let bg = chrome.file_tree_background;
         let item_hover = chrome.surface_hover;
-        let item_selected = editor.selection_primary;
+        let item_selected = chrome.surface_selected;
         let item_text = chrome.text_on_chrome;
         let item_text_secondary = chrome.text_chrome_secondary;
-        let item_text_selected = editor.text_on_primary;
+        let item_text_selected = chrome.text_on_chrome;
         let item_text_hidden = chrome.text_chrome_disabled;
         let icon_color = chrome.text_chrome_secondary;
         let icon_color_secondary = chrome.text_chrome_disabled;
-        let icon_color_selected = editor.text_on_primary;
+        let icon_color_selected = chrome.text_on_chrome;
         let icon_color_hidden = chrome.text_chrome_disabled;
         let border = chrome.border_shadow;
         let separator = chrome.separator_color;
@@ -1037,8 +1188,7 @@ pub struct StatusBarTokens {
 }
 
 impl StatusBarTokens {
-    /// Create status bar tokens using computed chrome colors for backgrounds
-    /// and editor colors for status content
+    /// Create status bar tokens using computed chrome colors.
     pub fn from_tokens(chrome: &ChromeTokens, _editor: &EditorTokens) -> Self {
         let bg_active = chrome.footer_background;
         let bg_inactive = chrome.footer_background; // Use same chrome color for consistency
@@ -1106,11 +1256,11 @@ pub struct TabBarTokens {
 }
 
 impl TabBarTokens {
-    /// Create tab bar tokens using computed chrome colors for UI text
-    /// and editor colors for editor-adjacent backgrounds.
+    /// Create tab bar tokens using computed chrome colors for UI text and
+    /// bufferline backgrounds.
     pub fn from_tokens(chrome: &ChromeTokens, editor: &EditorTokens) -> Self {
-        let container_bg = chrome.tab_empty_background;
-        let tab_active_bg = editor.background;
+        let container_bg = chrome.bufferline_background;
+        let tab_active_bg = chrome.bufferline_active;
         let tab_inactive_bg = chrome.bufferline_inactive;
         let tab_hover_bg = chrome.surface_hover;
         let tab_text_active = chrome.text_on_chrome;
@@ -1195,7 +1345,7 @@ pub struct ButtonTokens {
     pub disabled_text: Hsla,
     pub disabled_border: Hsla,
 
-    // Focus states (use Helix focus colors)
+    // Focus states
     pub focus_ring: Hsla,
     pub focus_ring_danger: Hsla,
 
@@ -1258,9 +1408,9 @@ impl ButtonTokens {
         let disabled_text = ColorTheory::with_alpha(chrome.text_on_chrome, 0.5);
         let disabled_border = ColorTheory::with_alpha(chrome.border_shadow, 0.45);
 
-        // Focus rings use Helix focus colors
-        let focus_ring = editor.focus_ring;
-        let focus_ring_danger = editor.focus_ring_error;
+        // Focus rings follow the platform/chrome accent in system look.
+        let focus_ring = chrome.border_focus;
+        let focus_ring_danger = chrome.border_focus;
 
         // Shadow properties for raised controls.
         let shadow_color = chrome.shadow_sm.color;
@@ -1330,10 +1480,10 @@ pub struct PickerTokens {
     pub header_text: Hsla,
     pub header_border: Hsla,
 
-    // Item states (use editor colors for content familiarity)
+    // Item states
     pub item_background: Hsla,
     pub item_background_hover: Hsla,
-    pub item_background_selected: Hsla, // Use Helix selection
+    pub item_background_selected: Hsla,
     pub item_text: Hsla,
     pub item_text_secondary: Hsla,
     pub item_text_selected: Hsla,
@@ -1342,7 +1492,7 @@ pub struct PickerTokens {
     pub input_background: Hsla,
     pub input_text: Hsla,
     pub input_border: Hsla,
-    pub input_border_focus: Hsla, // Use Helix focus color
+    pub input_border_focus: Hsla,
     pub input_placeholder: Hsla,
 
     // Chrome elements
@@ -1358,11 +1508,12 @@ pub struct PickerTokens {
 
 impl PickerTokens {
     /// Create picker tokens using hybrid color approach
-    pub fn from_tokens(chrome: &ChromeTokens, editor: &EditorTokens) -> Self {
+    pub fn from_tokens(chrome: &ChromeTokens, _editor: &EditorTokens) -> Self {
         use crate::styling::color_theory::ColorTheory;
 
-        // Container uses chrome colors for UI consistency
-        let container_bg = chrome.surface_elevated; // Elevated surface for modals
+        // Floating command surfaces need stronger acrylic opacity than passive
+        // Mica-facing chrome so menu rows remain readable over busy content.
+        let container_bg = chrome.popup_background;
         let overlay_bg = ColorTheory::with_alpha(chrome.surface, 0.7); // Semi-transparent backdrop
 
         // Header uses chrome colors for consistency with titlebar
@@ -1370,11 +1521,10 @@ impl PickerTokens {
         let header_text = chrome.text_on_chrome;
         let header_border = chrome.border_shadow;
 
-        // Items use transparent backgrounds with Helix selection colors
+        // Items use transparent backgrounds with chrome/system selection colors.
         let item_bg = ColorTheory::transparent();
         let item_bg_hover = ColorTheory::with_alpha(chrome.surface_hover, 0.3);
-        // Use Helix selection color for familiarity across components
-        let item_bg_selected = editor.selection_primary;
+        let item_bg_selected = chrome.menu_selected;
         // Ensure item text contrasts against the container background (popup surface)
         let item_text = ColorTheory::ensure_contrast(
             container_bg,
@@ -1382,9 +1532,9 @@ impl PickerTokens {
             ContrastRatios::AA_NORMAL,
         );
         let item_text_secondary = ColorTheory::with_alpha(item_text, 0.7);
-        let item_text_selected = editor.text_on_primary;
+        let item_text_selected = chrome.text_on_chrome;
 
-        // Input fields use chrome backgrounds with Helix focus
+        // Input fields use chrome backgrounds with system/chrome focus.
         let input_bg = chrome.surface_hover;
         let input_text = ColorTheory::ensure_contrast(
             input_bg,
@@ -1392,7 +1542,7 @@ impl PickerTokens {
             ContrastRatios::AA_NORMAL,
         );
         let input_border = chrome.border_shadow;
-        let input_border_focus = editor.focus_ring; // Use Helix focus color
+        let input_border_focus = chrome.border_focus;
         let input_placeholder = chrome.text_chrome_secondary;
 
         // Chrome elements
@@ -1441,7 +1591,7 @@ pub struct DropdownTokens {
     pub border: Hsla,
     pub shadow: Hsla,
 
-    // Items (editor colors for content familiarity)
+    // Items
     pub item_background: Hsla,
     pub item_background_hover: Hsla,
     pub item_background_selected: Hsla,
@@ -1466,21 +1616,22 @@ pub struct DropdownTokens {
 
 impl DropdownTokens {
     /// Create dropdown tokens using hybrid color approach
-    pub fn from_tokens(chrome: &ChromeTokens, editor: &EditorTokens) -> Self {
+    pub fn from_tokens(chrome: &ChromeTokens, _editor: &EditorTokens) -> Self {
         use crate::styling::color_theory::ColorTheory;
 
-        // Container uses elevated chrome surface
-        let container_bg = chrome.surface_elevated;
+        // Menus use acrylic chrome rather than passive elevated chrome; their
+        // items are dense text controls and need a steadier backing surface.
+        let container_bg = chrome.menu_background;
         let border = chrome.border_shadow;
         let shadow = chrome.shadow_md.color;
 
-        // Items use transparent backgrounds with Helix selection
+        // Items use transparent backgrounds with chrome/system selection.
         let item_bg = ColorTheory::transparent();
         let item_bg_hover = ColorTheory::with_alpha(chrome.surface_hover, 0.3);
-        let item_bg_selected = editor.selection_primary;
+        let item_bg_selected = chrome.menu_selected;
         let item_text = chrome.text_on_chrome;
         let item_text_secondary = chrome.text_chrome_secondary;
-        let item_text_selected = editor.text_on_primary;
+        let item_text_selected = chrome.text_on_chrome;
         let item_text_disabled = ColorTheory::with_alpha(chrome.text_on_chrome, 0.5);
 
         // Trigger button uses chrome colors for consistency
@@ -1687,8 +1838,8 @@ impl ChromeTokens {
         let input_bg_hover = ColorTheory::surface_variant(self.surface, 0.05);
         let input_bg_focus = ColorTheory::surface_variant(self.surface, 0.08);
 
-        // Focus and error states use Helix colors for consistency
-        let focus_ring = editor.focus_ring;
+        // Focus follows the platform/chrome accent in system look.
+        let focus_ring = self.border_focus;
         let error_color = editor.error;
 
         InputTokens {

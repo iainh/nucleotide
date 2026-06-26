@@ -99,8 +99,6 @@ const END_TAB_SLOT_SIZE: f32 = 14.0;
 const TAB_SLOT_ICON_SIZE: f32 = 12.0;
 const TAB_MIN_WIDTH: f32 = 112.0;
 const TAB_MAX_WIDTH: f32 = 280.0;
-const INACTIVE_TAB_DARKEN_AMOUNT: f32 = 0.045;
-const INACTIVE_TAB_HOVER_DARKEN_AMOUNT: f32 = 0.025;
 
 pub(crate) fn tab_container_height(tokens: nucleotide_ui::tokens::DesignTokens) -> gpui::Pixels {
     // Zed tabs use DynamicSpacing::Base32 for the tab container height.
@@ -725,19 +723,13 @@ impl RenderOnce for Tab {
 // Internal layout helpers to centralize tab content composition
 impl Tab {
     fn inactive_background_color(tab_tokens: nucleotide_ui::tokens::TabBarTokens) -> gpui::Hsla {
-        nucleotide_ui::tokens::utils::darken(
-            tab_tokens.tab_active_background,
-            INACTIVE_TAB_DARKEN_AMOUNT,
-        )
+        tab_tokens.tab_inactive_background
     }
 
     fn inactive_hover_background_color(
         tab_tokens: nucleotide_ui::tokens::TabBarTokens,
     ) -> gpui::Hsla {
-        nucleotide_ui::tokens::utils::darken(
-            tab_tokens.tab_active_background,
-            INACTIVE_TAB_HOVER_DARKEN_AMOUNT,
-        )
+        tab_tokens.tab_hover_background
     }
 
     fn deemphasized_text_color(

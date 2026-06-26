@@ -4,6 +4,7 @@
 use crate::file_tree::FileTreeDisplayDensity;
 use helix_loader::config_dir;
 use helix_term::config::Config as HelixConfig;
+use nucleotide_appearance::UiChromeStyle;
 use nucleotide_types::{FontConfig, FontWeight, ProjectMarkersConfig};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -18,10 +19,13 @@ const GPUI_SYSTEM_UI_FONT: &str = ".SystemUIFont";
 const DEFAULT_UI_FONT_LINE_HEIGHT: f32 = 1.5;
 
 #[cfg(target_os = "windows")]
-const FALLBACK_PLATFORM_UI_FONT_SIZE: f32 = 12.0;
+const FALLBACK_PLATFORM_UI_FONT_SIZE: f32 = 13.0;
 
 #[cfg(not(target_os = "windows"))]
 const FALLBACK_PLATFORM_UI_FONT_SIZE: f32 = 13.0;
+
+#[cfg(any(target_os = "windows", test))]
+const WINDOWS_MINIMUM_DEFAULT_UI_FONT_SIZE: f32 = 14.0;
 
 #[cfg(any(target_os = "windows", test))]
 const WINDOWS_DEFAULT_DPI: f32 = 96.0;
@@ -49,7 +53,26 @@ fn default_ui_font() -> FontConfig {
 }
 
 fn default_ui_font_size() -> f32 {
-    platform_ui_font_size().unwrap_or(FALLBACK_PLATFORM_UI_FONT_SIZE)
+    default_ui_font_size_from_platform_size(platform_ui_font_size())
+}
+
+fn default_ui_font_size_from_platform_size(platform_size: Option<f32>) -> f32 {
+    let size = platform_size.unwrap_or(FALLBACK_PLATFORM_UI_FONT_SIZE);
+
+    #[cfg(target_os = "windows")]
+    {
+        windows_default_ui_font_size(size)
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        size
+    }
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn windows_default_ui_font_size(size: f32) -> f32 {
+    size.max(WINDOWS_MINIMUM_DEFAULT_UI_FONT_SIZE)
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -137,9 +160,33 @@ fn platform_ui_font_size() -> Option<f32> {
     None
 }
 
+/// Controls where Nucleotide derives non-editor UI chrome styling from.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum UiLook {
+    /// Derive UI chrome from the active Helix theme.
+    #[default]
+    Theme,
+    /// Use platform-specific UI chrome while preserving editor theme colors.
+    System,
+}
+
+impl UiLook {
+    pub fn to_ui_chrome_style(self) -> UiChromeStyle {
+        match self {
+            Self::Theme => UiChromeStyle::Theme,
+            Self::System => UiChromeStyle::System,
+        }
+    }
+}
+
 /// UI-specific configuration
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UiConfig {
+    /// Source for UI chrome styling.
+    #[serde(default)]
+    pub look: UiLook,
+
     /// Font used for UI elements (menus, dialogs, etc.)
     #[serde(default)]
     pub font: Option<FontConfig>,
@@ -210,7 +257,7 @@ pub struct WindowConfig {
     pub appearance_follows_theme: bool,
 
     /// Windows DirectWrite text rendering overrides.
-    #[serde(default)]
+    #[serde(default = "default_window_directwrite_config")]
     pub directwrite: Option<DirectWriteConfig>,
 }
 
@@ -219,9 +266,19 @@ impl Default for WindowConfig {
         Self {
             blur_dark_themes: false,
             appearance_follows_theme: true,
-            directwrite: None,
+            directwrite: default_window_directwrite_config(),
         }
     }
+}
+
+#[cfg(target_os = "windows")]
+fn default_window_directwrite_config() -> Option<DirectWriteConfig> {
+    Some(DirectWriteConfig::windows_fluent_default())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn default_window_directwrite_config() -> Option<DirectWriteConfig> {
+    None
 }
 
 /// Windows DirectWrite text rendering configuration.
@@ -249,6 +306,17 @@ pub struct DirectWriteConfig {
 }
 
 impl DirectWriteConfig {
+    /// DirectWrite defaults tuned for crisp Windows UI text.
+    pub fn windows_fluent_default() -> Self {
+        Self {
+            gamma: Some(1.8),
+            enhanced_contrast: Some(0.75),
+            clear_type_level: Some(1.0),
+            pixel_geometry: Some(DirectWritePixelGeometry::Rgb),
+            rendering_mode: Some(DirectWriteRenderingMode::NaturalSymmetric),
+        }
+    }
+
     /// Convert this configuration into GPUI's DirectWrite rendering parameters.
     pub fn to_gpui_params(&self) -> gpui::DirectWriteTextRenderingParams {
         gpui::DirectWriteTextRenderingParams {
@@ -857,6 +925,28 @@ impl Config {
         normalize_ui_font(self.gui.ui.font.clone().unwrap_or_else(default_ui_font))
     }
 
+    /// Get the UI look configuration.
+    pub fn ui_look(&self) -> UiLook {
+        self.gui.ui.look
+    }
+
+    /// Get the UI chrome style used by nucleotide-ui.
+    pub fn ui_chrome_style(&self) -> UiChromeStyle {
+        self.ui_look().to_ui_chrome_style()
+    }
+
+    /// Get the native window background material for the current UI look.
+    pub fn window_background_appearance(
+        &self,
+        is_dark_chrome: bool,
+    ) -> gpui::WindowBackgroundAppearance {
+        nucleotide_appearance::window_background_appearance(
+            self.ui_chrome_style(),
+            is_dark_chrome,
+            self.gui.window.blur_dark_themes,
+        )
+    }
+
     /// Check if project-based LSP startup is enabled
     pub fn is_project_lsp_startup_enabled(&self) -> bool {
         self.gui.lsp.project_lsp_startup
@@ -1092,6 +1182,9 @@ mod tests {
         let config_str = r#"
 max_tabs = 5
 
+[ui]
+look = "system"
+
 [ui.font]
 family = "Inter"
 weight = "medium"
@@ -1138,6 +1231,8 @@ flatten_empty_directories = false
 "#;
 
         let config: GuiConfig = toml::from_str(config_str).expect("Failed to parse GuiConfig");
+
+        assert_eq!(config.ui.look, UiLook::System);
 
         let ui_font = config.ui.font.as_ref().expect("UI font should be set");
         assert_eq!(ui_font.family, "Inter");
@@ -1260,6 +1355,31 @@ flatten_empty_directories = false
     }
 
     #[test]
+    fn window_config_uses_tuned_windows_directwrite_defaults() {
+        let window = WindowConfig::default();
+
+        if cfg!(target_os = "windows") {
+            let directwrite = window
+                .directwrite
+                .expect("Windows should use tuned DirectWrite defaults");
+
+            assert_eq!(directwrite.gamma, Some(1.8));
+            assert_eq!(directwrite.enhanced_contrast, Some(0.75));
+            assert_eq!(directwrite.clear_type_level, Some(1.0));
+            assert_eq!(
+                directwrite.pixel_geometry,
+                Some(DirectWritePixelGeometry::Rgb)
+            );
+            assert_eq!(
+                directwrite.rendering_mode,
+                Some(DirectWriteRenderingMode::NaturalSymmetric)
+            );
+        } else {
+            assert_eq!(window.directwrite, None);
+        }
+    }
+
+    #[test]
     fn nucleotide_example_config_parses_and_documents_supported_fields() {
         let config: GuiConfig =
             toml::from_str(NUCLEOTIDE_EXAMPLE_CONFIG).expect("example config should parse");
@@ -1267,6 +1387,7 @@ flatten_empty_directories = false
         assert_eq!(config.theme.mode, ThemeMode::System);
         assert_eq!(config.theme.get_light_theme(), DEFAULT_LIGHT_THEME);
         assert_eq!(config.theme.get_dark_theme(), DEFAULT_DARK_THEME);
+        assert_eq!(config.ui.look, UiLook::Theme);
         assert!(config.ui.font.is_none());
         assert!(config.editor.font.is_none());
         assert!(config.window.appearance_follows_theme);
@@ -1296,6 +1417,8 @@ flatten_empty_directories = false
             "clear_type_level",
             "pixel_geometry",
             "rendering_mode",
+            "[ui]",
+            "look",
             "[ui.font]",
             "[editor.font]",
             "family",
@@ -1344,6 +1467,56 @@ flatten_empty_directories = false
                 "example config should document `{setting}`"
             );
         }
+    }
+
+    #[test]
+    fn ui_look_defaults_to_theme() {
+        let config: GuiConfig = toml::from_str("").expect("empty config should parse");
+
+        assert_eq!(config.ui.look, UiLook::Theme);
+    }
+
+    #[test]
+    fn ui_look_parses_theme_and_system_values() {
+        let themed: UiConfig = toml::from_str(r#"look = "theme""#).expect("theme look parses");
+        let system: UiConfig = toml::from_str(r#"look = "system""#).expect("system look parses");
+
+        assert_eq!(themed.look, UiLook::Theme);
+        assert_eq!(system.look, UiLook::System);
+    }
+
+    #[test]
+    fn window_background_appearance_uses_system_material_when_requested() {
+        let mut config = Config {
+            helix: HelixConfig::default(),
+            gui: GuiConfig::default(),
+        };
+        config.gui.window.blur_dark_themes = true;
+
+        assert_eq!(
+            config.window_background_appearance(true),
+            gpui::WindowBackgroundAppearance::Blurred
+        );
+
+        config.gui.ui.look = UiLook::System;
+
+        #[cfg(target_os = "windows")]
+        assert_eq!(
+            config.window_background_appearance(true),
+            gpui::WindowBackgroundAppearance::MicaBackdrop
+        );
+
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            config.window_background_appearance(true),
+            gpui::WindowBackgroundAppearance::Blurred
+        );
+
+        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+        assert_eq!(
+            config.window_background_appearance(true),
+            gpui::WindowBackgroundAppearance::Opaque
+        );
     }
 
     #[test]
@@ -2103,6 +2276,14 @@ priority = 70
 
         assert_eq!(ui_font.size, 16.0);
         assert_eq!(ui_font.line_height, 1.4);
+    }
+
+    #[test]
+    fn windows_default_ui_font_size_has_comfortable_floor() {
+        assert_eq!(windows_default_ui_font_size(11.0), 14.0);
+        assert_eq!(windows_default_ui_font_size(12.0), 14.0);
+        assert_eq!(windows_default_ui_font_size(13.0), 14.0);
+        assert_eq!(windows_default_ui_font_size(14.0), 14.0);
     }
 
     #[test]
