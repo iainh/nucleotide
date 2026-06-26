@@ -407,6 +407,9 @@ family = "Fira Code"
 size = 14.0
 weight = "normal"
 
+[ui]
+look = "system"
+
 [theme]
 mode = "dark"
 dark_theme = "tokyo_night"
@@ -440,6 +443,7 @@ appearance_follows_theme = true
 
         assert!(config.gui.window.blur_dark_themes);
         assert!(config.gui.window.appearance_follows_theme);
+        assert_eq!(config.gui.ui.look, crate::config::UiLook::System);
     }
 
     #[test]

@@ -59,6 +59,7 @@ appearance_follows_theme = true
 # Select how Nucleotide styles non-editor UI chrome.
 # Options: "theme", "system". Default: "theme".
 # On Windows, "system" uses a Fluent palette and the Mica window backdrop.
+# On macOS, "system" uses native vibrancy for chrome and the project sidebar.
 look = "theme"
 
 # Font used for menus, prompts, pickers and other UI chrome.

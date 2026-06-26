@@ -1199,6 +1199,7 @@ mod tests {
             flatten_empty_directories: true,
             search_mode: FileTreeSearchMode::ExpandMatches,
             density: crate::file_tree::FileTreeDisplayDensity::Default,
+            translucent_background: false,
         }
     }
 

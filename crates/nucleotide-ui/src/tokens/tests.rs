@@ -409,6 +409,32 @@ mod component_token_tests {
         );
     }
 
+    #[test]
+    fn translucent_sidebar_tokens_reduce_chrome_opacity() {
+        let tokens = DesignTokens::dark();
+        let file_tree = tokens.file_tree_tokens();
+        let translucent = file_tree.translucent_sidebar();
+
+        assert!(translucent.background.a < file_tree.background.a);
+        assert!(translucent.item_background_hover.a < file_tree.item_background_hover.a);
+        assert!(translucent.item_background_selected.a <= file_tree.item_background_selected.a);
+        assert!(translucent.border.a <= file_tree.border.a);
+        assert!(translucent.separator.a <= file_tree.separator.a);
+        assert!(translucent.background.a < 1.0);
+
+        assert_eq!(translucent.item_text, file_tree.item_text);
+        assert_eq!(
+            translucent.item_text_secondary,
+            file_tree.item_text_secondary
+        );
+        assert_eq!(translucent.item_text_selected, file_tree.item_text_selected);
+        assert_eq!(translucent.icon_color, file_tree.icon_color);
+        assert_eq!(
+            translucent.icon_color_selected,
+            file_tree.icon_color_selected
+        );
+    }
+
     /// Test status bar token functionality
     #[test]
     fn test_status_bar_modes() {
