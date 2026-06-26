@@ -33,9 +33,10 @@ blur_dark_themes = false
 # Update the native window appearance when the theme changes. Default: true.
 appearance_follows_theme = true
 
-# Windows DirectWrite text rendering overrides. Defaults: unset, which uses
-# the Windows text smoothing and DirectWrite defaults. Reload configuration or
-# restart after changing these values.
+# Windows DirectWrite text rendering overrides. On Windows, Nucleotide defaults
+# to the values below for crisper UI text over Fluent chrome. Use an empty
+# [window.directwrite] table to fall back to GPUI/Windows defaults. Reload
+# configuration or restart after changing these values.
 # [window.directwrite]
 # Range: 1.0 to 2.2. DirectWrite accepts a wider range, but GPUI's gamma
 # correction table is defined for this range.
@@ -52,7 +53,7 @@ appearance_follows_theme = true
 #
 # Options: "default", "aliased", "gdi_classic", "gdi_natural", "natural",
 # "natural_symmetric". "aliased" uses grayscale text.
-# rendering_mode = "default"
+# rendering_mode = "natural_symmetric"
 
 [ui]
 # Select how Nucleotide styles non-editor UI chrome.

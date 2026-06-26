@@ -61,8 +61,10 @@ mod system_chrome_token_tests {
             assert_eq!(dark.titlebar_background.a, 0.0);
             assert_eq!(light.footer_background.a, 0.0);
             assert_eq!(dark.footer_background.a, 0.0);
-            assert!(light.file_tree_background.a <= 0.5);
-            assert!(dark.file_tree_background.a <= 0.55);
+            assert!(light.file_tree_background.a >= 0.56);
+            assert!(light.file_tree_background.a <= 0.62);
+            assert!(dark.file_tree_background.a >= 0.60);
+            assert!(dark.file_tree_background.a <= 0.66);
             assert!(light.surface.a <= 0.6);
             assert!(dark.surface.a <= 0.65);
         } else {
