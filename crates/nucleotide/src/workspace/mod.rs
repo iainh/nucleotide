@@ -1128,7 +1128,7 @@ fn file_tree_config_from_gui(config: &crate::config::GuiConfig) -> FileTreeConfi
 }
 
 fn macos_system_sidebar_enabled(config: &crate::config::GuiConfig) -> bool {
-    cfg!(target_os = "macos") && config.ui.look == crate::config::UiLook::System
+    nucleotide_appearance::macos_native_chrome_enabled(config.ui.look.to_ui_chrome_style())
 }
 
 fn file_tree_tokens_for_gui_config(
@@ -6261,12 +6261,12 @@ impl Workspace {
         self.colors_dirty = false;
     }
 
-    /// Schedule window appearance update to be applied in the next render cycle
+    /// Schedule window appearance update to be applied in the next render cycle.
     fn schedule_window_appearance_update(&mut self, cx: &mut Context<Self>) {
         let theme_name = self.core.read(cx).editor.theme.name();
         info!(
             theme_name = %theme_name,
-            "Scheduling window appearance update for next render cycle due to theme change"
+            "Scheduling window appearance update for next render cycle"
         );
         self.needs_window_appearance_update = true;
         cx.notify(); // Trigger re-render
@@ -7891,6 +7891,8 @@ impl Workspace {
         let editor_font = config.editor_font();
         let ui_font = config.ui_font();
         let ui_chrome_style = config.ui_chrome_style();
+        let previous_ui_chrome_style = cx.global::<crate::ThemeManager>().ui_chrome_style();
+        let ui_chrome_style_changed = previous_ui_chrome_style != ui_chrome_style;
 
         let editor_font_config = cx.global_mut::<crate::types::EditorFontConfig>();
         editor_font_config.family = editor_font.family.clone();
@@ -7946,6 +7948,16 @@ impl Workspace {
 
         if !preview_tabs_enabled {
             self.clear_preview_documents(cx);
+        }
+
+        if ui_chrome_style_changed {
+            info!(
+                old_ui_chrome_style = ?previous_ui_chrome_style,
+                new_ui_chrome_style = ?ui_chrome_style,
+                "Applying reloaded UI chrome style"
+            );
+            self.colors_dirty = true;
+            self.schedule_window_appearance_update(cx);
         }
 
         let configured_theme = self.configured_theme_name(config, cx);
