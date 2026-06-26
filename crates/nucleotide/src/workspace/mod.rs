@@ -22,9 +22,9 @@ use gpui::MenuItem;
 use gpui::prelude::FluentBuilder;
 use gpui::{
     Anchor, App, AppContext, BorrowAppContext, Bounds, Context, DismissEvent, DragMoveEvent, Empty,
-    Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyDownEvent,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point,
-    Render, ScrollHandle, Size, StatefulInteractiveElement, Styled, TextStyle, Window,
+    Entity, EventEmitter, FocusHandle, Focusable, Hsla, InteractiveElement, IntoElement,
+    KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels,
+    Point, Render, ScrollHandle, Size, StatefulInteractiveElement, Styled, TextStyle, Window,
     WindowAppearance, canvas, div, px, svg,
 };
 use gpui::{FontFeatures, FontWeight};
@@ -1091,7 +1091,24 @@ fn file_tree_config_from_gui(config: &crate::config::GuiConfig) -> FileTreeConfi
     FileTreeConfig {
         density: config.file_tree.density,
         flatten_empty_directories: config.file_tree.flatten_empty_directories,
+        translucent_background: macos_system_sidebar_enabled(config),
         ..FileTreeConfig::default()
+    }
+}
+
+fn macos_system_sidebar_enabled(config: &crate::config::GuiConfig) -> bool {
+    cfg!(target_os = "macos") && config.ui.look == crate::config::UiLook::System
+}
+
+fn file_tree_tokens_for_gui_config(
+    tokens: &nucleotide_ui::DesignTokens,
+    config: &crate::config::GuiConfig,
+) -> nucleotide_ui::tokens::FileTreeTokens {
+    let file_tree_tokens = tokens.file_tree_tokens();
+    if macos_system_sidebar_enabled(config) {
+        file_tree_tokens.translucent_sidebar()
+    } else {
+        file_tree_tokens
     }
 }
 
@@ -4164,7 +4181,8 @@ impl Workspace {
 
     fn render_documentation_sidebar(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let tokens = &cx.theme().tokens;
-        let file_tree_tokens = tokens.file_tree_tokens();
+        let gui_config = &self.core.read(cx).config.gui;
+        let file_tree_tokens = file_tree_tokens_for_gui_config(tokens, gui_config);
         let markdown_style = MarkdownStyle::from_tokens(tokens).compact();
 
         let mut body = div()
@@ -5637,6 +5655,24 @@ impl Workspace {
         });
     }
 
+    fn update_titlebar_leading_sidebar_background(
+        &mut self,
+        background: Option<(Pixels, Hsla, Hsla)>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(titlebar) = &self.titlebar else {
+            return;
+        };
+
+        titlebar.update(cx, |titlebar, _cx| {
+            if let Some((width, background, separator)) = background {
+                titlebar.set_leading_sidebar_background(width, background, separator);
+            } else {
+                titlebar.clear_leading_sidebar_background();
+            }
+        });
+    }
+
     fn focused_native_window_metadata(
         &self,
         cx: &Context<Self>,
@@ -6141,7 +6177,6 @@ impl Workspace {
     fn update_window_appearance(&self, window: &mut Window, cx: &Context<Self>) {
         let config = self.core.read(cx).config.clone();
 
-        // Only update appearance if configured to follow theme
         if !config.gui.window.appearance_follows_theme {
             debug!("Window appearance does not follow theme - skipping update");
             return;
@@ -6156,6 +6191,8 @@ impl Workspace {
         info!(
             is_dark = is_dark,
             appearance = ?appearance,
+            blur_dark_themes = config.gui.window.blur_dark_themes,
+            ui_chrome_style = ?config.ui_chrome_style(),
             theme_name = %theme_name,
             "Updating window background appearance based on UI chrome"
         );
@@ -12054,6 +12091,19 @@ impl Render for Workspace {
             self.recompute_theme_colors(cx);
         }
         let bg_color = self.cached_bg_color;
+        let native_sidebar_enabled = macos_system_sidebar_enabled(&self.core.read(cx).config.gui);
+        let titlebar_sidebar_background =
+            if native_sidebar_enabled && self.show_file_tree && self.file_tree_width > 0.0 {
+                let file_tree_tokens = cx.theme().tokens.file_tree_tokens().translucent_sidebar();
+                Some((
+                    px(self.file_tree_width),
+                    file_tree_tokens.background,
+                    file_tree_tokens.separator,
+                ))
+            } else {
+                None
+            };
+        self.update_titlebar_leading_sidebar_background(titlebar_sidebar_background, cx);
 
         // Compute the editor content dimensions before reading Helix view areas,
         // so split panes use the current tree layout in this render pass.
@@ -12351,12 +12401,12 @@ impl Render for Workspace {
         let mut workspace_div = div()
             .key_context("Workspace")
             .id("workspace")
-            .bg(bg_color)
             .flex()
             .flex_col() // Vertical layout to include titlebar
             .w_full()
             .h_full()
             .relative() // Anchor for absolute-positioned resize hitboxes
+            .when(!native_sidebar_enabled, |root| root.bg(bg_color))
             .focusable();
 
         // Always add global key handling - the workspace should always capture key events
@@ -12920,7 +12970,12 @@ impl Render for Workspace {
                 let panel_max = (available_h * 0.85).max(120.0).min(max_term);
 
                 // Container with editor area + bottom panel
-                let mut root = div().relative().w_full().h(content_max_h).min_h(px(0.0));
+                let mut root = div()
+                    .relative()
+                    .w_full()
+                    .h(content_max_h)
+                    .min_h(px(0.0))
+                    .bg(bg_color);
 
                 // Editor area above the bottom panel: use existing editor content (tabs, overlays)
                 root = root.child(
@@ -16163,6 +16218,7 @@ mod tests {
         let mut gui_config = crate::config::GuiConfig::default();
         gui_config.file_tree.density = crate::file_tree::FileTreeDisplayDensity::Relaxed;
         gui_config.file_tree.flatten_empty_directories = false;
+        gui_config.ui.look = crate::config::UiLook::System;
 
         let file_tree_config = file_tree_config_from_gui(&gui_config);
 
@@ -16171,6 +16227,10 @@ mod tests {
             crate::file_tree::FileTreeDisplayDensity::Relaxed
         );
         assert!(!file_tree_config.flatten_empty_directories);
+        assert_eq!(
+            file_tree_config.translucent_background,
+            cfg!(target_os = "macos")
+        );
     }
 
     #[test]

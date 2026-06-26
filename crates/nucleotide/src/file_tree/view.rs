@@ -7,7 +7,7 @@ use crate::file_tree::{
     FileTreeDisplayDensity, FileTreeEntry, FileTreeEvent,
     sidebar::{
         ProjectTreeDraggedEntry, ProjectTreeRow, ProjectTreeRowAction, ProjectTreeRowEvent,
-        project_tree_entry_min_width, project_tree_entry_min_width_with_vcs,
+        ProjectTreeRowStyle, project_tree_entry_min_width, project_tree_entry_min_width_with_vcs,
         render_project_tree_row,
     },
 };
@@ -1902,6 +1902,11 @@ impl FileTreeView {
         let vcs_status = self.get_vcs_status_for_entry(&entry.path, cx);
         let row = ProjectTreeRow::from_entry(entry, is_selected, vcs_status);
         let theme = cx.theme().clone();
+        let file_tree_tokens = if self.tree.config().translucent_background {
+            theme.tokens.file_tree_tokens().translucent_sidebar()
+        } else {
+            theme.tokens.file_tree_tokens()
+        };
         let context_menu_event = row.context_menu_event();
         let left_click_row = row.clone();
         let drop_target_path = row.path.clone();
@@ -1909,7 +1914,7 @@ impl FileTreeView {
 
         render_project_tree_row(
             row,
-            &theme,
+            ProjectTreeRowStyle::new(&theme, file_tree_tokens),
             density,
             {
                 let left_click_row = left_click_row.clone();
@@ -1976,6 +1981,7 @@ mod tests {
             flatten_empty_directories: true,
             search_mode: crate::file_tree::FileTreeSearchMode::ExpandMatches,
             density: FileTreeDisplayDensity::Default,
+            translucent_background: false,
         }
     }
 
@@ -2593,7 +2599,11 @@ impl Render for FileTreeView {
         // (debug logging removed)
 
         // Use FileTreeTokens from hybrid color system for chrome background
-        let file_tree_tokens = theme.tokens.file_tree_tokens();
+        let file_tree_tokens = if self.tree.config().translucent_background {
+            theme.tokens.file_tree_tokens().translucent_sidebar()
+        } else {
+            theme.tokens.file_tree_tokens()
+        };
         let bg_color = file_tree_tokens.background;
 
         // Create semantic file tree container with nucleotide-ui design tokens

@@ -3,7 +3,7 @@
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    Context, Decorations, ElementId, InteractiveElement, IntoElement, ParentElement, Pixels,
+    Context, Decorations, ElementId, Hsla, InteractiveElement, IntoElement, ParentElement, Pixels,
     Render, Styled, Window, WindowControlArea, div, px,
 };
 
@@ -32,12 +32,20 @@ impl PlatformStyle {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TitleBarLeadingSidebarBackground {
+    pub width: Pixels,
+    pub background: Hsla,
+    pub separator: Hsla,
+}
+
 pub struct PlatformTitleBar {
     id: ElementId,
     platform_style: PlatformStyle,
     title: String,
     show_title: bool,
     inset_applied: bool,
+    leading_sidebar_background: Option<TitleBarLeadingSidebarBackground>,
 }
 
 impl PlatformTitleBar {
@@ -49,6 +57,7 @@ impl PlatformTitleBar {
             title: String::new(),
             show_title: true,
             inset_applied: false,
+            leading_sidebar_background: None,
         }
     }
 
@@ -58,6 +67,18 @@ impl PlatformTitleBar {
 
     pub fn set_show_title(&mut self, show_title: bool) {
         self.show_title = show_title;
+    }
+
+    pub fn set_leading_sidebar_background(
+        &mut self,
+        background: Option<TitleBarLeadingSidebarBackground>,
+    ) -> bool {
+        if self.leading_sidebar_background == background {
+            return false;
+        }
+
+        self.leading_sidebar_background = background;
+        true
     }
 
     pub fn height(_window: &Window) -> Pixels {
@@ -156,17 +177,28 @@ impl Render for PlatformTitleBar {
             titlebar_tokens.background, titlebar_tokens.border
         );
 
+        let leading_sidebar_background = (self.platform_style == PlatformStyle::Mac)
+            .then_some(self.leading_sidebar_background)
+            .flatten()
+            .filter(|background| f32::from(background.width) > 0.0);
+
         // Build the titlebar
-        div()
+        let title_bar = div()
             .flex()
             .flex_row()
             .id(self.id.clone())
+            .relative()
             .window_control_area(WindowControlArea::Drag)
             .w_full()
             .h(height)
             .min_h(height)
             .flex_shrink_0() // prevent vertical compression when layout is tight
-            .bg(titlebar_tokens.background)
+            .when(leading_sidebar_background.is_none(), |titlebar| {
+                titlebar.bg(titlebar_tokens.background)
+            })
+            .when(leading_sidebar_background.is_some(), |titlebar| {
+                titlebar.overflow_hidden()
+            })
             .when(self.platform_style != PlatformStyle::Windows, |titlebar| {
                 titlebar.border_b_1().border_color(titlebar_tokens.border)
             })
@@ -194,6 +226,38 @@ impl Render for PlatformTitleBar {
                 }
             })
             .content_stretch()
+            .when_some(leading_sidebar_background, |titlebar, sidebar| {
+                titlebar
+                    .child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .bottom_0()
+                            .w(sidebar.width)
+                            .bg(sidebar.background),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .left(sidebar.width)
+                            .right_0()
+                            .bottom_0()
+                            .bg(titlebar_tokens.background),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .bottom_0()
+                            .left(sidebar.width)
+                            .w(px(1.0))
+                            .bg(sidebar.separator),
+                    )
+            });
+
+        title_bar
             .child(
                 // Main content area
                 div()
@@ -233,5 +297,27 @@ impl Render for PlatformTitleBar {
                     WindowControls::new(self.platform_style).with_titlebar_tokens(titlebar_tokens),
                 ),
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::{hsla, px};
+
+    use super::{PlatformTitleBar, TitleBarLeadingSidebarBackground};
+
+    #[test]
+    fn leading_sidebar_background_reports_state_changes() {
+        let mut titlebar = PlatformTitleBar::new("titlebar");
+        let background = TitleBarLeadingSidebarBackground {
+            width: px(240.0),
+            background: hsla(0.7, 0.1, 0.4, 0.7),
+            separator: hsla(0.7, 0.1, 0.2, 0.5),
+        };
+
+        assert!(titlebar.set_leading_sidebar_background(Some(background)));
+        assert!(!titlebar.set_leading_sidebar_background(Some(background)));
+        assert!(titlebar.set_leading_sidebar_background(None));
+        assert!(!titlebar.set_leading_sidebar_background(None));
     }
 }

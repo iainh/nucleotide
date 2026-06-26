@@ -287,7 +287,7 @@ impl ThemeConfig {
 }
 
 /// Window appearance configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WindowConfig {
     /// Enable blur for dark themes
     #[serde(default)]

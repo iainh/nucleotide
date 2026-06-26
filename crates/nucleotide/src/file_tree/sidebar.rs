@@ -10,8 +10,8 @@ use gpui::{
     Window, div, px,
 };
 use nucleotide_types::VcsStatus;
-use nucleotide_ui::VcsIcon;
-use nucleotide_ui::{Theme, ThemedContext as _};
+use nucleotide_ui::tokens::FileTreeTokens;
+use nucleotide_ui::{Theme, ThemedContext as _, VcsIcon};
 
 use crate::file_tree::{
     FileKind, FileTreeDisplayDensity, FileTreeEntry, entry::FileTreeFlattenedSegment,
@@ -28,6 +28,21 @@ const PROJECT_TREE_ROW_PADDING_RIGHT_PX: f32 = 8.0;
 const PROJECT_TREE_GIT_STATUS_BADGE_PX: f32 = 22.0;
 const PROJECT_TREE_GIT_STATUS_LANE_PX: f32 = PROJECT_TREE_GIT_STATUS_BADGE_PX;
 const PROJECT_TREE_FILENAME_CHAR_WIDTH_PX: f32 = 8.0;
+
+#[derive(Clone, Copy)]
+pub struct ProjectTreeRowStyle<'a> {
+    theme: &'a Theme,
+    file_tree_tokens: FileTreeTokens,
+}
+
+impl<'a> ProjectTreeRowStyle<'a> {
+    pub fn new(theme: &'a Theme, file_tree_tokens: FileTreeTokens) -> Self {
+        Self {
+            theme,
+            file_tree_tokens,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct ProjectTreeDensityMetrics {
@@ -298,15 +313,16 @@ impl From<&FileKind> for ProjectTreeRowKind {
 
 pub fn render_project_tree_row(
     row: ProjectTreeRow,
-    theme: &Theme,
+    style: ProjectTreeRowStyle<'_>,
     density: FileTreeDisplayDensity,
     on_left_mouse_down: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
     on_right_mouse_down: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     on_drop: impl Fn(&ProjectTreeDraggedEntry, &mut Window, &mut App) + 'static,
 ) -> gpui::AnyElement {
-    let file_tree_tokens = theme.tokens.file_tree_tokens();
-    let row_foreground = row_text_color(&row, theme);
+    let theme = style.theme;
+    let file_tree_tokens = style.file_tree_tokens;
+    let row_foreground = row_text_color(&row, theme, file_tree_tokens);
     let metrics = ProjectTreeDensityMetrics::new(density);
     let indentation = px(row.depth as f32 * metrics.indent_px);
     let min_row_width = project_tree_row_min_width(&row, density);
@@ -369,9 +385,9 @@ pub fn render_project_tree_row(
                             .text_color(file_tree_tokens.item_text)
                     })
                 })
-                .child(render_chevron_slot(&row, theme))
-                .child(render_icon(&row, theme))
-                .child(render_filename(&row, theme))
+                .child(render_chevron_slot(&row, file_tree_tokens))
+                .child(render_icon(&row, theme, file_tree_tokens))
+                .child(render_filename(&row, theme, file_tree_tokens))
                 .when_some(render_git_status_lane(&row, theme), |row, lane| {
                     row.child(lane)
                 }),
@@ -379,7 +395,7 @@ pub fn render_project_tree_row(
         .into_any_element()
 }
 
-fn render_chevron_slot(row: &ProjectTreeRow, theme: &Theme) -> gpui::AnyElement {
+fn render_chevron_slot(row: &ProjectTreeRow, file_tree_tokens: FileTreeTokens) -> gpui::AnyElement {
     div()
         .w(px(PROJECT_TREE_CHEVRON_SLOT_PX))
         .h(px(PROJECT_TREE_CHEVRON_SLOT_PX))
@@ -387,19 +403,23 @@ fn render_chevron_slot(row: &ProjectTreeRow, theme: &Theme) -> gpui::AnyElement 
         .items_center()
         .justify_center()
         .when(row.is_directory(), |div| {
-            div.child(render_chevron(row, theme))
+            div.child(render_chevron(row, file_tree_tokens))
         })
         .into_any_element()
 }
 
-fn render_chevron(row: &ProjectTreeRow, theme: &Theme) -> impl IntoElement {
+fn render_chevron(row: &ProjectTreeRow, file_tree_tokens: FileTreeTokens) -> impl IntoElement {
     chevron_icon(if row.is_expanded { "down" } else { "right" })
         .size_3()
-        .text_color(chevron_color(row, theme))
+        .text_color(chevron_color(row, file_tree_tokens))
 }
 
-fn render_icon(row: &ProjectTreeRow, theme: &Theme) -> impl IntoElement {
-    let icon_color = tree_icon_color(row, theme);
+fn render_icon(
+    row: &ProjectTreeRow,
+    theme: &Theme,
+    file_tree_tokens: FileTreeTokens,
+) -> impl IntoElement {
+    let icon_color = tree_icon_color(row, file_tree_tokens);
 
     let vcs_icon = match &row.kind {
         ProjectTreeRowKind::Directory { .. } => VcsIcon::directory(row.is_expanded)
@@ -420,11 +440,14 @@ fn render_icon(row: &ProjectTreeRow, theme: &Theme) -> impl IntoElement {
     vcs_icon.render_with_theme(theme)
 }
 
-fn render_filename(row: &ProjectTreeRow, theme: &Theme) -> impl IntoElement {
-    let file_tree_tokens = theme.tokens.file_tree_tokens();
+fn render_filename(
+    row: &ProjectTreeRow,
+    theme: &Theme,
+    file_tree_tokens: FileTreeTokens,
+) -> impl IntoElement {
     let is_root_directory = row.depth == 0 && row.is_directory();
     let display_status = git_status_for_display(row);
-    let text_color = row_text_color(row, theme);
+    let text_color = row_text_color(row, theme, file_tree_tokens);
 
     let mut node = div()
         .flex_shrink_0()
@@ -454,9 +477,11 @@ fn render_filename(row: &ProjectTreeRow, theme: &Theme) -> impl IntoElement {
     node
 }
 
-fn row_text_color(row: &ProjectTreeRow, theme: &Theme) -> gpui::Hsla {
-    let file_tree_tokens = theme.tokens.file_tree_tokens();
-
+fn row_text_color(
+    row: &ProjectTreeRow,
+    theme: &Theme,
+    file_tree_tokens: FileTreeTokens,
+) -> gpui::Hsla {
     if row.is_selected {
         file_tree_tokens.item_text_selected
     } else if let Some(status) = git_status_for_display(row) {
@@ -468,9 +493,7 @@ fn row_text_color(row: &ProjectTreeRow, theme: &Theme) -> gpui::Hsla {
     }
 }
 
-fn tree_icon_color(row: &ProjectTreeRow, theme: &Theme) -> gpui::Hsla {
-    let file_tree_tokens = theme.tokens.file_tree_tokens();
-
+fn tree_icon_color(row: &ProjectTreeRow, file_tree_tokens: FileTreeTokens) -> gpui::Hsla {
     if row.is_selected {
         file_tree_tokens.icon_color_selected
     } else if row.is_hidden {
@@ -480,9 +503,7 @@ fn tree_icon_color(row: &ProjectTreeRow, theme: &Theme) -> gpui::Hsla {
     }
 }
 
-fn chevron_color(row: &ProjectTreeRow, theme: &Theme) -> gpui::Hsla {
-    let file_tree_tokens = theme.tokens.file_tree_tokens();
-
+fn chevron_color(row: &ProjectTreeRow, file_tree_tokens: FileTreeTokens) -> gpui::Hsla {
     if row.is_selected {
         file_tree_tokens.icon_color_selected
     } else {
@@ -811,6 +832,7 @@ mod tests {
     #[test]
     fn row_text_color_prioritizes_selection_over_git_status() {
         let theme = Theme::from_tokens(nucleotide_ui::DesignTokens::dark());
+        let file_tree_tokens = theme.tokens.file_tree_tokens();
         let mut entry = FileTreeEntry::new_file(
             FileTreeEntryId(3),
             PathBuf::from("/workspace/main.rs"),
@@ -822,14 +844,14 @@ mod tests {
         let row = ProjectTreeRow::from_entry(&entry, true, None);
 
         assert_eq!(
-            row_text_color(&row, &theme),
+            row_text_color(&row, &theme, file_tree_tokens),
             theme.tokens.file_tree_tokens().item_text_selected
         );
 
         let row = ProjectTreeRow::from_entry(&entry, false, None);
 
         assert_eq!(
-            row_text_color(&row, &theme),
+            row_text_color(&row, &theme, file_tree_tokens),
             theme.tokens.editor.vcs_modified
         );
     }
@@ -837,6 +859,7 @@ mod tests {
     #[test]
     fn tree_row_icon_colors_use_file_tree_tokens() {
         let theme = Theme::from_tokens(nucleotide_ui::DesignTokens::dark());
+        let file_tree_tokens = theme.tokens.file_tree_tokens();
         let mut entry = FileTreeEntry::new_file(
             FileTreeEntryId(3),
             PathBuf::from("/workspace/main.rs"),
@@ -847,25 +870,25 @@ mod tests {
 
         let hidden = ProjectTreeRow::from_entry(&entry, false, None);
         assert_eq!(
-            row_text_color(&hidden, &theme),
+            row_text_color(&hidden, &theme, file_tree_tokens),
             theme.tokens.file_tree_tokens().item_text_hidden
         );
         assert_eq!(
-            tree_icon_color(&hidden, &theme),
+            tree_icon_color(&hidden, file_tree_tokens),
             theme.tokens.file_tree_tokens().icon_color_hidden
         );
         assert_eq!(
-            chevron_color(&hidden, &theme),
+            chevron_color(&hidden, file_tree_tokens),
             theme.tokens.file_tree_tokens().icon_color_secondary
         );
 
         let selected = ProjectTreeRow::from_entry(&entry, true, None);
         assert_eq!(
-            tree_icon_color(&selected, &theme),
+            tree_icon_color(&selected, file_tree_tokens),
             theme.tokens.file_tree_tokens().icon_color_selected
         );
         assert_eq!(
-            chevron_color(&selected, &theme),
+            chevron_color(&selected, file_tree_tokens),
             theme.tokens.file_tree_tokens().icon_color_selected
         );
     }

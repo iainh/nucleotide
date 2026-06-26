@@ -137,6 +137,8 @@ pub struct FileTreeConfig {
     pub search_mode: FileTreeSearchMode,
     /// Project-tree display density.
     pub density: FileTreeDisplayDensity,
+    /// Render the file tree over a translucent native window backdrop.
+    pub translucent_background: bool,
 }
 
 impl Default for FileTreeConfig {
@@ -149,6 +151,7 @@ impl Default for FileTreeConfig {
             flatten_empty_directories: true,
             search_mode: FileTreeSearchMode::ExpandMatches,
             density: FileTreeDisplayDensity::Default,
+            translucent_background: false,
         }
     }
 }

@@ -1171,6 +1171,30 @@ impl FileTreeTokens {
     pub fn from_design_tokens(dt: &DesignTokens) -> Self {
         Self::from_tokens(&dt.chrome, &dt.editor)
     }
+
+    /// Return tokens tuned for a translucent native sidebar backdrop.
+    pub fn translucent_sidebar(self) -> Self {
+        const BACKGROUND_ALPHA: f32 = 0.72;
+        const HOVER_ALPHA: f32 = 0.42;
+        const SELECTED_ALPHA: f32 = 0.82;
+        const BORDER_ALPHA: f32 = 0.64;
+        const SEPARATOR_ALPHA: f32 = 0.58;
+
+        let with_alpha_at_most =
+            |color: Hsla, alpha: f32| utils::with_alpha(color, color.a.min(alpha));
+
+        Self {
+            background: with_alpha_at_most(self.background, BACKGROUND_ALPHA),
+            item_background_hover: with_alpha_at_most(self.item_background_hover, HOVER_ALPHA),
+            item_background_selected: with_alpha_at_most(
+                self.item_background_selected,
+                SELECTED_ALPHA,
+            ),
+            border: with_alpha_at_most(self.border, BORDER_ALPHA),
+            separator: with_alpha_at_most(self.separator, SEPARATOR_ALPHA),
+            ..self
+        }
+    }
 }
 
 /// Status bar component tokens for background and status content
