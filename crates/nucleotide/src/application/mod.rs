@@ -2968,46 +2968,28 @@ impl Application {
         progressed
     }
 
-    fn handle_config_event(
+    pub(crate) fn apply_reloaded_config(
         &mut self,
-        config_event: helix_view::editor::ConfigEvent,
-        cx: &mut gpui::Context<crate::Core>,
+        new_config: crate::config::Config,
+        cx: &mut gpui::Context<Self>,
     ) {
-        info!("Application received ConfigEvent: {:?}", config_event);
         let old_config = self.editor.config();
         info!("Old bufferline config: {:?}", old_config.bufferline);
 
-        match &config_event {
-            helix_view::editor::ConfigEvent::Update(new_editor_config) => {
-                info!(
-                    "New bufferline config in Update event: {:?}",
-                    new_editor_config.bufferline
-                );
-                self.config.apply_helix_config_update(new_editor_config);
+        self.config = new_config;
+        let mut updated_helix_config = self.config.to_helix_config();
+        // Nucleotide always runs Helix in GUI true-colour mode. Preserve the
+        // startup invariant when replacing the runtime config arc.
+        updated_helix_config.editor.true_color = true;
+        self.config.helix.editor.true_color = true;
 
-                let updated_helix_config = self.config.to_helix_config();
-                info!(
-                    "Updated helix config bufferline: {:?}",
-                    updated_helix_config.editor.bufferline
-                );
-                self.helix_config_arc.store(Arc::new(updated_helix_config));
+        info!(
+            "Updated helix config bufferline: {:?}",
+            updated_helix_config.editor.bufferline
+        );
+        self.helix_config_arc.store(Arc::new(updated_helix_config));
 
-                self.update_lsp_manager_config();
-
-                info!("Config updated via generic patching system");
-            }
-            helix_view::editor::ConfigEvent::Refresh => {
-                info!("Config refresh requested - reloading from files");
-                if let Ok(fresh_config) = crate::config::Config::load() {
-                    self.config = fresh_config;
-                    let updated_helix_config = self.config.to_helix_config();
-                    self.helix_config_arc.store(Arc::new(updated_helix_config));
-
-                    self.update_lsp_manager_config();
-                }
-            }
-        }
-
+        self.update_lsp_manager_config();
         self.editor.refresh_config(&old_config);
         info!(
             "After refresh_config, editor bufferline: {:?}",
@@ -3022,14 +3004,47 @@ impl Application {
             }
         }
 
-        info!("Forwarding ConfigEvent to workspace");
-        cx.emit(crate::Update::EditorEvent(
-            helix_view::editor::EditorEvent::ConfigEvent(config_event),
-        ));
         cx.emit(crate::Update::Redraw);
         cx.emit(crate::Update::Event(AppEvent::Core(
             CoreEvent::RedrawRequested,
         )));
+    }
+
+    fn handle_config_event(
+        &mut self,
+        config_event: helix_view::editor::ConfigEvent,
+        cx: &mut gpui::Context<crate::Core>,
+    ) {
+        info!("Application received ConfigEvent: {:?}", config_event);
+
+        match &config_event {
+            helix_view::editor::ConfigEvent::Update(new_editor_config) => {
+                info!(
+                    "New bufferline config in Update event: {:?}",
+                    new_editor_config.bufferline
+                );
+                let mut new_config = self.config.clone();
+                new_config.apply_helix_config_update(new_editor_config);
+                self.apply_reloaded_config(new_config, cx);
+
+                info!("Config updated via generic patching system");
+            }
+            helix_view::editor::ConfigEvent::Refresh => {
+                info!("Config refresh requested - reloading from files");
+                match crate::config::Config::load() {
+                    Ok(fresh_config) => self.apply_reloaded_config(fresh_config, cx),
+                    Err(error) => {
+                        error!(%error, "Failed to refresh config from files");
+                        self.editor.set_error(error.to_string());
+                    }
+                }
+            }
+        }
+
+        info!("Forwarding ConfigEvent to workspace");
+        cx.emit(crate::Update::EditorEvent(
+            helix_view::editor::EditorEvent::ConfigEvent(config_event),
+        ));
     }
 
     pub async fn step(&mut self, cx: &mut gpui::Context<'_, crate::Core>) {
@@ -7094,7 +7109,7 @@ mod tests {
     use helix_term::{
         compositor::Compositor, config::Config as HelixConfig, job::Jobs, keymap::Keymaps,
     };
-    use helix_view::{editor::Config as EditorConfig, graphics::Rect, handlers::Handlers, theme};
+    use helix_view::{graphics::Rect, handlers::Handlers, theme};
     use nucleotide_core::event_bridge;
     use nucleotide_events::completion::{CompletionItem, CompletionItemKind};
     use std::cell::RefCell;
@@ -7196,7 +7211,6 @@ mod tests {
         cx.new(|cx| {
             let _runtime = TEST_RUNTIME.enter();
             let helix_config = Arc::new(ArcSwap::from_pointee(HelixConfig::default()));
-            let editor_config = Arc::new(ArcSwap::from_pointee(EditorConfig::default()));
             let syntax_loader = Arc::new(ArcSwap::from_pointee(syntax::Loader::default()));
             let theme_loader = Arc::new(theme::Loader::new(&[]));
             let editor = helix_view::Editor::new(
@@ -7204,8 +7218,8 @@ mod tests {
                 theme_loader,
                 syntax_loader,
                 Arc::new(Map::new(
-                    Arc::clone(&editor_config),
-                    |config: &EditorConfig| config,
+                    Arc::clone(&helix_config),
+                    |config: &HelixConfig| &config.editor,
                 )),
                 test_handlers(),
             );
@@ -7311,6 +7325,25 @@ mod tests {
         let (wake, _wake_rx) = MaintenanceWake::channel();
         app.update(cx, |app, cx| {
             app.drive_event_driven_maintenance(cx, handle, &wake);
+        });
+    }
+
+    #[gpui::test]
+    async fn apply_reloaded_config_updates_live_editor_config(cx: &mut gpui::TestAppContext) {
+        let app = new_test_application(cx);
+
+        app.update(cx, |app, cx| {
+            let mut reloaded = app.config.clone();
+            reloaded.helix.editor.scrolloff = 17;
+            reloaded.helix.editor.idle_timeout = Duration::from_millis(750);
+
+            app.apply_reloaded_config(reloaded, cx);
+
+            assert_eq!(app.config.helix.editor.scrolloff, 17);
+            assert_eq!(app.helix_config_arc.load().editor.scrolloff, 17);
+            assert_eq!(app.editor.config().scrolloff, 17);
+            assert_eq!(app.editor.config().idle_timeout, Duration::from_millis(750));
+            assert!(app.editor.config().true_color);
         });
     }
 
