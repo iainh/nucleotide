@@ -6,7 +6,7 @@ use helix_loader::config_dir;
 use helix_term::config::Config as HelixConfig;
 use nucleotide_appearance::UiChromeStyle;
 use nucleotide_types::{FontConfig, FontWeight, ProjectMarkersConfig};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::path::Path;
 
 /// Default theme for light mode
@@ -73,6 +73,47 @@ fn default_ui_font_size_from_platform_size(platform_size: Option<f32>) -> f32 {
 #[cfg(any(target_os = "windows", test))]
 fn windows_default_ui_font_size(size: f32) -> f32 {
     size.max(WINDOWS_MINIMUM_DEFAULT_UI_FONT_SIZE)
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct PartialFontConfig {
+    family: Option<String>,
+    weight: Option<FontWeight>,
+    size: Option<f32>,
+    line_height: Option<f32>,
+}
+
+fn merge_font_config(mut base: FontConfig, partial: PartialFontConfig) -> FontConfig {
+    if let Some(family) = partial.family {
+        base.family = family;
+    }
+    if let Some(weight) = partial.weight {
+        base.weight = weight;
+    }
+    if let Some(size) = partial.size {
+        base.size = size;
+    }
+    if let Some(line_height) = partial.line_height {
+        base.line_height = line_height;
+    }
+    base
+}
+
+fn deserialize_ui_font<'de, D>(deserializer: D) -> Result<Option<FontConfig>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<PartialFontConfig>::deserialize(deserializer)
+        .map(|font| font.map(|font| merge_font_config(default_ui_font(), font)))
+}
+
+fn deserialize_editor_font<'de, D>(deserializer: D) -> Result<Option<FontConfig>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<PartialFontConfig>::deserialize(deserializer)
+        .map(|font| font.map(|font| merge_font_config(FontConfig::default(), font)))
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -188,7 +229,7 @@ pub struct UiConfig {
     pub look: UiLook,
 
     /// Font used for UI elements (menus, dialogs, etc.)
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_ui_font")]
     pub font: Option<FontConfig>,
 }
 
@@ -196,7 +237,7 @@ pub struct UiConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EditorGuiConfig {
     /// Font used in the editor
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_editor_font")]
     pub font: Option<FontConfig>,
 }
 
@@ -2284,6 +2325,53 @@ priority = 70
         assert_eq!(windows_default_ui_font_size(12.0), 14.0);
         assert_eq!(windows_default_ui_font_size(13.0), 14.0);
         assert_eq!(windows_default_ui_font_size(14.0), 14.0);
+    }
+
+    #[test]
+    fn partial_ui_font_table_uses_ui_defaults() {
+        let gui_config: GuiConfig = toml::from_str(
+            r#"
+[ui.font]
+size = 20.0
+"#,
+        )
+        .expect("size-only UI font config should parse");
+        let config = Config {
+            helix: HelixConfig::default(),
+            gui: gui_config,
+        };
+
+        let ui_font = config.ui_font();
+        assert_eq!(ui_font.family, GPUI_SYSTEM_UI_FONT);
+        assert_eq!(ui_font.weight, FontWeight::Normal);
+        assert_eq!(ui_font.size, 20.0);
+        assert_eq!(ui_font.line_height, DEFAULT_UI_FONT_LINE_HEIGHT);
+
+        let editor_font = config.editor_font();
+        assert_eq!(editor_font.family, GPUI_SYSTEM_UI_FONT);
+        assert_eq!(editor_font.size, 20.0);
+    }
+
+    #[test]
+    fn partial_editor_font_table_uses_editor_defaults() {
+        let gui_config: GuiConfig = toml::from_str(
+            r#"
+[editor.font]
+size = 18.0
+"#,
+        )
+        .expect("size-only editor font config should parse");
+        let config = Config {
+            helix: HelixConfig::default(),
+            gui: gui_config,
+        };
+
+        let default_editor_font = FontConfig::default();
+        let editor_font = config.editor_font();
+        assert_eq!(editor_font.family, default_editor_font.family);
+        assert_eq!(editor_font.weight, default_editor_font.weight);
+        assert_eq!(editor_font.size, 18.0);
+        assert_eq!(editor_font.line_height, default_editor_font.line_height);
     }
 
     #[test]

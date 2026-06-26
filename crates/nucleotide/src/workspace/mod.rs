@@ -133,6 +133,20 @@ fn native_window_title(filename: Option<&str>) -> String {
     }
 }
 
+fn configured_theme_name_for_appearance(
+    theme: &crate::config::ThemeConfig,
+    system_appearance: nucleotide_appearance::SystemAppearance,
+) -> String {
+    match theme.mode {
+        crate::config::ThemeMode::Light => theme.get_light_theme(),
+        crate::config::ThemeMode::Dark => theme.get_dark_theme(),
+        crate::config::ThemeMode::System => match system_appearance {
+            nucleotide_appearance::SystemAppearance::Light => theme.get_light_theme(),
+            nucleotide_appearance::SystemAppearance::Dark => theme.get_dark_theme(),
+        },
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct NativeWindowMetadata {
     title: String,
@@ -6626,7 +6640,12 @@ impl Workspace {
                 info!(bufferline_config = ?current_bufferline, "Current bufferline config during ConfigEvent");
 
                 match config_event {
-                    ConfigEvent::Refresh | ConfigEvent::Update(_) => {
+                    ConfigEvent::Refresh => {
+                        self.refresh_after_editor_config_change(cx);
+                        let config = self.core.read(cx).config.clone();
+                        self.apply_workspace_config(&config, cx);
+                    }
+                    ConfigEvent::Update(_) => {
                         self.refresh_after_editor_config_change(cx);
                     }
                 }
@@ -7798,7 +7817,104 @@ impl Workspace {
         self.open_file_internal(&settings_path, true, false, None, cx);
     }
 
-    /// Reload the nucleotide.toml configuration without restarting
+    fn apply_workspace_config(&mut self, config: &crate::config::Config, cx: &mut Context<Self>) {
+        let preview_tabs_enabled = config.gui.preview_tabs.enabled;
+        let file_tree_config = file_tree_config_from_gui(&config.gui);
+        let editor_font = config.editor_font();
+        let ui_font = config.ui_font();
+        let ui_chrome_style = config.ui_chrome_style();
+
+        let editor_font_config = cx.global_mut::<crate::types::EditorFontConfig>();
+        editor_font_config.family = editor_font.family.clone();
+        editor_font_config.size = editor_font.size;
+        editor_font_config.weight = editor_font.weight;
+        editor_font_config.line_height = editor_font.line_height;
+
+        let ui_font_config = cx.global_mut::<crate::types::UiFontConfig>();
+        ui_font_config.family = ui_font.family.clone();
+        ui_font_config.size = ui_font.size;
+        ui_font_config.weight = ui_font.weight;
+
+        let font_settings = cx.global_mut::<crate::types::FontSettings>();
+        font_settings.fixed_font.family = editor_font.family.clone();
+        font_settings.fixed_font.weight = editor_font.weight;
+        font_settings.var_font.family = ui_font.family.clone();
+        font_settings.var_font.weight = ui_font.weight;
+
+        cx.update_global(|theme_manager: &mut crate::ThemeManager, _cx| {
+            theme_manager.set_ui_chrome_style(ui_chrome_style);
+            theme_manager.set_ui_font_size(gpui::px(ui_font.size));
+        });
+        Self::sync_ui_theme_from_theme_manager(cx);
+
+        info!(
+            ui_font_family = %ui_font.family,
+            ui_font_size = ui_font.size,
+            ui_chrome_style = ?ui_chrome_style,
+            "UI configuration updated"
+        );
+        info!(
+            "Editor font configuration updated: {} {}pt",
+            editor_font.family, editor_font.size
+        );
+
+        let directwrite_params = config
+            .gui
+            .window
+            .directwrite
+            .as_ref()
+            .map(|config| config.to_gpui_params());
+        if let Err(error) = cx.set_direct_write_text_rendering_params(directwrite_params) {
+            warn!(error = %error, "Failed to apply DirectWrite text rendering settings");
+        } else {
+            info!("DirectWrite text rendering settings reloaded");
+        }
+
+        if let Some(file_tree) = &self.file_tree {
+            file_tree.update(cx, |tree, tree_cx| {
+                tree.set_config(file_tree_config, tree_cx);
+            });
+        }
+
+        if !preview_tabs_enabled {
+            self.clear_preview_documents(cx);
+        }
+
+        let configured_theme = self.configured_theme_name(config, cx);
+        let current_theme = self.core.read(cx).editor.theme.name().to_string();
+        if current_theme != configured_theme {
+            info!(
+                old_theme = %current_theme,
+                new_theme = %configured_theme,
+                "Applying reloaded theme configuration"
+            );
+            self.switch_theme_by_name_no_window(&configured_theme, cx);
+            self.schedule_window_appearance_update(cx);
+        }
+
+        self.update_document_views(cx);
+
+        if let Some(max_tabs) = config.gui.max_tabs {
+            let protected_doc_id = self
+                .active_document_and_view(cx)
+                .map(|(doc_id, _view_id)| doc_id);
+            let settings_change_target = Some(max_tabs.get().saturating_add(1));
+            self.enforce_max_tabs_to_target(settings_change_target, protected_doc_id, cx);
+        }
+
+        cx.notify();
+    }
+
+    fn configured_theme_name(
+        &self,
+        config: &crate::config::Config,
+        cx: &mut Context<Self>,
+    ) -> String {
+        let system_appearance = cx.global::<crate::ThemeManager>().system_appearance();
+        configured_theme_name_for_appearance(&config.gui.theme, system_appearance)
+    }
+
+    /// Reload the Nucleotide and Helix configuration without restarting
     pub fn reload_configuration(&mut self, cx: &mut Context<Self>) {
         info!("Reloading Nucleotide configuration...");
 
@@ -7807,15 +7923,10 @@ impl Workspace {
         let settings_path = config_dir.join("nucleotide.toml");
 
         if !settings_path.exists() {
-            nucleotide_logging::warn!("Configuration file not found: {}", settings_path.display());
-            self.push_editor_status_notification(
-                EditorStatus {
-                    status: format!("Configuration file not found: {}", settings_path.display()),
-                    severity: Severity::Warning,
-                },
-                cx,
+            info!(
+                config_path = %settings_path.display(),
+                "No nucleotide.toml found; reloading Helix config with default Nucleotide settings"
             );
-            return;
         }
 
         // Attempt to reload configuration
@@ -7826,84 +7937,13 @@ impl Workspace {
                     settings_path.display()
                 );
 
-                let (old_max_tabs, old_directwrite) = {
-                    let core = self.core.read(cx);
-                    (
-                        core.config.gui.max_tabs,
-                        core.config.gui.window.directwrite.clone(),
-                    )
-                };
-                let new_max_tabs = new_config.gui.max_tabs;
-                let new_directwrite = new_config.gui.window.directwrite.clone();
-                let preview_tabs_enabled = new_config.gui.preview_tabs.enabled;
-                let file_tree_config = file_tree_config_from_gui(&new_config.gui);
-                let ui_font = new_config.ui_font();
-                let ui_chrome_style = new_config.ui_chrome_style();
-
-                let ui_font_config = cx.global_mut::<crate::types::UiFontConfig>();
-                ui_font_config.family = ui_font.family.clone();
-                ui_font_config.size = ui_font.size;
-                ui_font_config.weight = ui_font.weight;
-
-                let font_settings = cx.global_mut::<crate::types::FontSettings>();
-                font_settings.var_font.family = ui_font.family.clone();
-                font_settings.var_font.weight = ui_font.weight;
-
-                cx.update_global(|theme_manager: &mut crate::ThemeManager, _cx| {
-                    theme_manager.set_ui_chrome_style(ui_chrome_style);
-                    theme_manager.set_ui_font_size(gpui::px(ui_font.size));
-                });
-                Self::sync_ui_theme_from_theme_manager(cx);
-
-                info!(
-                    ui_font_family = %ui_font.family,
-                    ui_font_size = ui_font.size,
-                    ui_chrome_style = ?ui_chrome_style,
-                    "UI configuration updated"
-                );
-
-                if old_directwrite != new_directwrite {
-                    let directwrite_params = new_directwrite
-                        .as_ref()
-                        .map(|config| config.to_gpui_params());
-                    if let Err(error) =
-                        cx.set_direct_write_text_rendering_params(directwrite_params)
-                    {
-                        warn!(error = %error, "Failed to apply DirectWrite text rendering settings");
-                    } else {
-                        info!("DirectWrite text rendering settings reloaded");
-                    }
-                }
-
+                let workspace_config = new_config.clone();
                 self.core.update(cx, move |core, cx| {
-                    core.config = new_config;
-                    cx.notify();
+                    core.apply_reloaded_config(new_config, cx);
                 });
-
-                if let Some(file_tree) = &self.file_tree {
-                    file_tree.update(cx, |tree, tree_cx| {
-                        tree.set_config(file_tree_config, tree_cx);
-                    });
-                }
-
-                if !preview_tabs_enabled {
-                    self.clear_preview_documents(cx);
-                }
-
-                if old_max_tabs != new_max_tabs {
-                    let protected_doc_id = self
-                        .active_document_and_view(cx)
-                        .map(|(doc_id, _view_id)| doc_id);
-                    let settings_change_target =
-                        new_max_tabs.map(|max_tabs| max_tabs.get().saturating_add(1));
-                    self.enforce_max_tabs_to_target(settings_change_target, protected_doc_id, cx);
-                }
-
-                // Trigger a full redraw to apply changes
-                cx.notify();
+                self.apply_workspace_config(&workspace_config, cx);
 
                 info!("Configuration reloaded successfully");
-                info!("Note: Theme changes require restarting Nucleotide to take effect");
             }
             Err(e) => {
                 nucleotide_logging::error!("Failed to reload configuration: {}", e);
@@ -14616,6 +14656,59 @@ mod tests {
         assert_eq!(native_window_title(Some("main.rs")), "main.rs — Nucleotide");
         assert_eq!(native_window_title(Some("")), "Nucleotide");
         assert_eq!(native_window_title(None), "Nucleotide");
+    }
+
+    #[test]
+    fn configured_theme_name_uses_explicit_theme_modes() {
+        let theme = crate::config::ThemeConfig {
+            mode: crate::config::ThemeMode::Light,
+            light_theme: Some("light-test".to_string()),
+            dark_theme: Some("dark-test".to_string()),
+        };
+        assert_eq!(
+            configured_theme_name_for_appearance(
+                &theme,
+                nucleotide_appearance::SystemAppearance::Dark
+            ),
+            "light-test"
+        );
+
+        let theme = crate::config::ThemeConfig {
+            mode: crate::config::ThemeMode::Dark,
+            light_theme: Some("light-test".to_string()),
+            dark_theme: Some("dark-test".to_string()),
+        };
+        assert_eq!(
+            configured_theme_name_for_appearance(
+                &theme,
+                nucleotide_appearance::SystemAppearance::Light
+            ),
+            "dark-test"
+        );
+    }
+
+    #[test]
+    fn configured_theme_name_follows_system_appearance_in_system_mode() {
+        let theme = crate::config::ThemeConfig {
+            mode: crate::config::ThemeMode::System,
+            light_theme: Some("light-test".to_string()),
+            dark_theme: Some("dark-test".to_string()),
+        };
+
+        assert_eq!(
+            configured_theme_name_for_appearance(
+                &theme,
+                nucleotide_appearance::SystemAppearance::Light
+            ),
+            "light-test"
+        );
+        assert_eq!(
+            configured_theme_name_for_appearance(
+                &theme,
+                nucleotide_appearance::SystemAppearance::Dark
+            ),
+            "dark-test"
+        );
     }
 
     #[cfg(target_os = "windows")]
