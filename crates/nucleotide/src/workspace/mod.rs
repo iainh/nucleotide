@@ -125,6 +125,18 @@ fn titlebar_filename(filename: Option<&str>) -> String {
         .to_string()
 }
 
+fn should_render_app_titlebar(has_titlebar: bool, translucent_sidebar_enabled: bool) -> bool {
+    has_titlebar && !translucent_sidebar_enabled
+}
+
+fn file_tree_content_top_inset(translucent_sidebar_enabled: bool) -> Pixels {
+    if translucent_sidebar_enabled {
+        px(MACOS_TRAFFIC_LIGHT_TREE_TOP_INSET_PX)
+    } else {
+        px(0.0)
+    }
+}
+
 fn native_window_title(filename: Option<&str>) -> String {
     if let Some(filename) = filename.filter(|name| !name.is_empty()) {
         format!("{filename} — Nucleotide")
@@ -1082,6 +1094,7 @@ const GLOBAL_SEARCH_RESULT_LIMIT: usize = 5000;
 const FILE_TREE_MIN_WIDTH: f32 = 96.0;
 const FILE_TREE_DEFAULT_WIDTH: f32 = 240.0;
 const FILE_TREE_MIN_EDITOR_WIDTH: f32 = 200.0;
+const MACOS_TRAFFIC_LIGHT_TREE_TOP_INSET_PX: f32 = 36.0;
 const DOC_SIDEBAR_MIN_WIDTH: f32 = 240.0;
 const DOC_SIDEBAR_DEFAULT_WIDTH: f32 = 360.0;
 const DOC_SIDEBAR_MAX_WIDTH: f32 = 640.0;
@@ -11678,11 +11691,19 @@ impl Workspace {
         focused_file_name
     }
 
-    fn rendered_titlebar_height(&self, window: &Window) -> Pixels {
-        self.titlebar
-            .as_ref()
-            .map(|_| nucleotide_ui::titlebar::TitleBar::height(window))
-            .unwrap_or_else(|| px(0.0))
+    fn renders_app_titlebar(&self, cx: &Context<Self>) -> bool {
+        should_render_app_titlebar(
+            self.titlebar.is_some(),
+            macos_system_sidebar_enabled(&self.core.read(cx).config.gui),
+        )
+    }
+
+    fn rendered_titlebar_height(&self, window: &Window, cx: &Context<Self>) -> Pixels {
+        if self.renders_app_titlebar(cx) {
+            nucleotide_ui::titlebar::TitleBar::height(window)
+        } else {
+            px(0.0)
+        }
     }
 
     fn visible_tab_bar_height(&self, cx: &Context<Self>) -> Pixels {
@@ -11712,7 +11733,7 @@ impl Workspace {
         use crate::overlay::WorkspaceLayoutInfo;
 
         let tab_bar_height = self.visible_tab_bar_height(cx);
-        let title_bar_height = self.rendered_titlebar_height(window);
+        let title_bar_height = self.rendered_titlebar_height(window, cx);
 
         // Get actual file tree width (user may have resized it)
         let file_tree_width = if self.show_file_tree {
@@ -12092,6 +12113,10 @@ impl Render for Workspace {
         }
         let bg_color = self.cached_bg_color;
         let native_sidebar_enabled = macos_system_sidebar_enabled(&self.core.read(cx).config.gui);
+        let rendered_titlebar =
+            should_render_app_titlebar(self.titlebar.is_some(), native_sidebar_enabled)
+                .then(|| self.titlebar.clone())
+                .flatten();
         let titlebar_sidebar_background =
             if native_sidebar_enabled && self.show_file_tree && self.file_tree_width > 0.0 {
                 let file_tree_tokens = cx.theme().tokens.file_tree_tokens().translucent_sidebar();
@@ -12109,7 +12134,7 @@ impl Render for Workspace {
         // so split panes use the current tree layout in this render pass.
         let ui_theme = cx.global::<nucleotide_ui::Theme>();
         let status_bar_height = ui_theme.tokens.sizes.statusbar_height;
-        let titlebar_height = self.rendered_titlebar_height(window);
+        let titlebar_height = self.rendered_titlebar_height(window, cx);
         let tab_bar_height = self.visible_tab_bar_height(cx);
         let viewport_h = window.viewport_size().height;
         let available_h =
@@ -13243,6 +13268,14 @@ impl Render for Workspace {
                     );
 
                 // Left file tree content
+                let file_tree_top_inset = file_tree_content_top_inset(native_sidebar_enabled);
+                let file_tree_top_inset_background = native_sidebar_enabled.then(|| {
+                    cx.theme()
+                        .tokens
+                        .file_tree_tokens()
+                        .translucent_sidebar()
+                        .background
+                });
                 let mut file_tree_container = div()
                     .absolute()
                     .top_0()
@@ -13251,8 +13284,24 @@ impl Render for Workspace {
                     .h(content_max_h)
                     .min_h(px(0.0));
                 if let Some(file_tree) = &self.file_tree {
-                    file_tree_container = file_tree_container
-                        .child(div().size_full().overflow_hidden().child(file_tree.clone()));
+                    file_tree_container = file_tree_container.child(
+                        div()
+                            .size_full()
+                            .overflow_hidden()
+                            .flex()
+                            .flex_col()
+                            .child(div().w_full().h(file_tree_top_inset).flex_none().when_some(
+                                file_tree_top_inset_background,
+                                |container, background| container.bg(background),
+                            ))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_h(px(0.0))
+                                    .overflow_hidden()
+                                    .child(file_tree.clone()),
+                            ),
+                    );
                 } else {
                     // No directory open: show a centered button to open a directory
                     let core = self.core.clone();
@@ -13269,10 +13318,21 @@ impl Render for Workspace {
                     file_tree_container = file_tree_container.child(
                         div()
                             .flex()
-                            .items_center()
-                            .justify_center()
+                            .flex_col()
                             .size_full()
-                            .child(open_btn),
+                            .child(div().w_full().h(file_tree_top_inset).flex_none().when_some(
+                                file_tree_top_inset_background,
+                                |container, background| container.bg(background),
+                            ))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .w_full()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(open_btn),
+                            ),
                     );
                 }
                 container = container.child(file_tree_container);
@@ -13401,7 +13461,7 @@ impl Render for Workspace {
 
         // Build final workspace with unified bottom status bar
         workspace_div
-            .children(self.titlebar.clone()) // Render titlebar if present
+            .children(rendered_titlebar)
             .child(
                 div()
                     .flex()
@@ -14704,6 +14764,22 @@ mod tests {
         assert_eq!(titlebar_filename(Some("main.rs")), "main.rs");
         assert_eq!(titlebar_filename(Some("")), "Nucleotide");
         assert_eq!(titlebar_filename(None), "Nucleotide");
+    }
+
+    #[test]
+    fn app_titlebar_is_hidden_for_translucent_sidebar_mode() {
+        assert!(should_render_app_titlebar(true, false));
+        assert!(!should_render_app_titlebar(true, true));
+        assert!(!should_render_app_titlebar(false, false));
+    }
+
+    #[test]
+    fn file_tree_content_inset_clears_macos_traffic_lights() {
+        assert_eq!(f32::from(file_tree_content_top_inset(false)), 0.0);
+        assert_eq!(
+            f32::from(file_tree_content_top_inset(true)),
+            MACOS_TRAFFIC_LIGHT_TREE_TOP_INSET_PX
+        );
     }
 
     #[test]
