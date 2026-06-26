@@ -6080,7 +6080,20 @@ impl Workspace {
     fn recompute_theme_colors(&mut self, cx: &mut Context<Self>) {
         let tokens = cx.theme().tokens;
 
-        self.cached_bg_color = tokens.editor.background;
+        let uses_windows_material_backdrop = cfg!(target_os = "windows")
+            && cx
+                .try_global::<crate::ThemeManager>()
+                .map(|theme_manager| {
+                    theme_manager.ui_chrome_style()
+                        == nucleotide_ui::theme_manager::UiChromeStyle::System
+                })
+                .unwrap_or(false);
+
+        self.cached_bg_color = if uses_windows_material_backdrop {
+            gpui::hsla(0.0, 0.0, 0.0, 0.0)
+        } else {
+            tokens.editor.background
+        };
         self.cached_text_color = tokens.chrome.text_on_chrome;
         self.cached_border_color = tokens.chrome.border_default;
 

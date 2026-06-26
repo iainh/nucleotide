@@ -18,10 +18,13 @@ const GPUI_SYSTEM_UI_FONT: &str = ".SystemUIFont";
 const DEFAULT_UI_FONT_LINE_HEIGHT: f32 = 1.5;
 
 #[cfg(target_os = "windows")]
-const FALLBACK_PLATFORM_UI_FONT_SIZE: f32 = 12.0;
+const FALLBACK_PLATFORM_UI_FONT_SIZE: f32 = 13.0;
 
 #[cfg(not(target_os = "windows"))]
 const FALLBACK_PLATFORM_UI_FONT_SIZE: f32 = 13.0;
+
+#[cfg(any(target_os = "windows", test))]
+const WINDOWS_MINIMUM_DEFAULT_UI_FONT_SIZE: f32 = 13.0;
 
 #[cfg(any(target_os = "windows", test))]
 const WINDOWS_DEFAULT_DPI: f32 = 96.0;
@@ -49,7 +52,26 @@ fn default_ui_font() -> FontConfig {
 }
 
 fn default_ui_font_size() -> f32 {
-    platform_ui_font_size().unwrap_or(FALLBACK_PLATFORM_UI_FONT_SIZE)
+    default_ui_font_size_from_platform_size(platform_ui_font_size())
+}
+
+fn default_ui_font_size_from_platform_size(platform_size: Option<f32>) -> f32 {
+    let size = platform_size.unwrap_or(FALLBACK_PLATFORM_UI_FONT_SIZE);
+
+    #[cfg(target_os = "windows")]
+    {
+        windows_default_ui_font_size(size)
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        size
+    }
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn windows_default_ui_font_size(size: f32) -> f32 {
+    size.max(WINDOWS_MINIMUM_DEFAULT_UI_FONT_SIZE)
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -2206,6 +2228,14 @@ priority = 70
 
         assert_eq!(ui_font.size, 16.0);
         assert_eq!(ui_font.line_height, 1.4);
+    }
+
+    #[test]
+    fn windows_default_ui_font_size_has_comfortable_floor() {
+        assert_eq!(windows_default_ui_font_size(11.0), 13.0);
+        assert_eq!(windows_default_ui_font_size(12.0), 13.0);
+        assert_eq!(windows_default_ui_font_size(13.0), 13.0);
+        assert_eq!(windows_default_ui_font_size(14.0), 14.0);
     }
 
     #[test]
