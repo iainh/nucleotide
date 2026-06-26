@@ -14,7 +14,7 @@ use nucleotide_events::{
 use nucleotide_logging::{debug, error, info, warn};
 use nucleotide_types::{DiffChangeType, DiffHunkInfo, VcsStatus};
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -223,6 +223,8 @@ pub struct VcsService {
     diff_handles: HashMap<PathBuf, DiffHandle>,
     /// Cached diff hunks for files
     diff_hunks_cache: HashMap<PathBuf, Vec<DiffHunkInfo>>,
+    /// Access order for bounded diff metadata caches
+    diff_access_order: VecDeque<PathBuf>,
     /// Event bus for forwarding VCS events
     event_bus: Option<Box<dyn EventBus + Send + Sync>>,
     /// Configuration
@@ -245,6 +247,8 @@ pub struct VcsService {
     max_cache_size: usize,
 }
 
+const DIFF_CACHE_CAPACITY: usize = 128;
+
 impl VcsService {
     /// Create a new VCS service
     pub fn new(config: VcsConfig) -> Self {
@@ -255,6 +259,7 @@ impl VcsService {
             diff_provider: DiffProviderRegistry::default(),
             diff_handles: HashMap::new(),
             diff_hunks_cache: HashMap::new(),
+            diff_access_order: VecDeque::new(),
             event_bus: None,
             config,
             last_check: None,
@@ -332,6 +337,7 @@ impl VcsService {
         self.status_cache.clear();
         self.diff_handles.clear();
         self.diff_hunks_cache.clear();
+        self.diff_access_order.clear();
         self.last_check = None;
         self.status_refresh_in_flight = false;
     }
@@ -405,9 +411,7 @@ impl VcsService {
             };
 
             // Cache the hunks and emit event
-            self.diff_hunks_cache
-                .insert(abs_path.clone(), hunks.clone());
-            self.diff_handles.insert(abs_path.clone(), diff_handle);
+            self.insert_file_diff(abs_path.clone(), diff_handle, hunks.clone());
 
             debug!(
                 file_path = %abs_path.display(),
@@ -505,6 +509,7 @@ impl VcsService {
 
     fn clear_file_diff(&mut self, abs_path: &Path, cx: &mut Context<Self>) {
         self.diff_handles.remove(abs_path);
+        self.diff_access_order.retain(|path| path != abs_path);
         if self.diff_hunks_cache.remove(abs_path).is_some() {
             self.emit_vcs_event(
                 VcsEvent::DiffHunksUpdated {
@@ -513,6 +518,35 @@ impl VcsService {
                 },
                 cx,
             );
+        }
+    }
+
+    fn insert_file_diff(
+        &mut self,
+        abs_path: PathBuf,
+        diff_handle: DiffHandle,
+        hunks: Vec<DiffHunkInfo>,
+    ) {
+        self.diff_handles.insert(abs_path.clone(), diff_handle);
+        self.diff_hunks_cache.insert(abs_path.clone(), hunks);
+        self.touch_diff_cache_entry(&abs_path);
+        self.evict_diff_cache_to_capacity();
+    }
+
+    fn touch_diff_cache_entry(&mut self, abs_path: &Path) {
+        self.diff_access_order.retain(|path| path != abs_path);
+        self.diff_access_order.push_back(abs_path.to_path_buf());
+    }
+
+    fn evict_diff_cache_to_capacity(&mut self) {
+        while self.diff_handles.len() > DIFF_CACHE_CAPACITY
+            || self.diff_hunks_cache.len() > DIFF_CACHE_CAPACITY
+        {
+            let Some(evicted) = self.diff_access_order.pop_front() else {
+                break;
+            };
+            self.diff_handles.remove(&evicted);
+            self.diff_hunks_cache.remove(&evicted);
         }
     }
 
@@ -1101,6 +1135,13 @@ impl gpui::Global for VcsServiceHandle {}
 mod tests {
     use super::*;
 
+    fn insert_test_diff(service: &mut VcsService, index: usize) -> PathBuf {
+        let path = PathBuf::from(format!("/repo/file-{index}.rs"));
+        let diff_handle = DiffHandle::new(Rope::from_str("base\n"), Rope::from_str("current\n"));
+        service.insert_file_diff(path.clone(), diff_handle, Vec::new());
+        path
+    }
+
     #[test]
     fn parse_git_head_output_trims_sha() {
         assert_eq!(
@@ -1181,6 +1222,50 @@ mod tests {
                 working_status: None,
             } if event_path == &path
         ));
+    }
+
+    #[tokio::test]
+    async fn diff_cache_stays_within_capacity() {
+        let mut service = VcsService::new(VcsConfig::default());
+
+        for index in 0..(DIFF_CACHE_CAPACITY + 10) {
+            insert_test_diff(&mut service, index);
+        }
+
+        assert_eq!(service.diff_handles.len(), DIFF_CACHE_CAPACITY);
+        assert_eq!(service.diff_hunks_cache.len(), DIFF_CACHE_CAPACITY);
+        assert!(
+            !service
+                .diff_handles
+                .contains_key(&PathBuf::from("/repo/file-0.rs"))
+        );
+        assert!(service.diff_handles.contains_key(&PathBuf::from(format!(
+            "/repo/file-{}.rs",
+            DIFF_CACHE_CAPACITY + 9
+        ))));
+    }
+
+    #[tokio::test]
+    async fn diff_cache_keeps_refreshed_entries() {
+        let mut service = VcsService::new(VcsConfig::default());
+
+        for index in 0..DIFF_CACHE_CAPACITY {
+            insert_test_diff(&mut service, index);
+        }
+        insert_test_diff(&mut service, 0);
+        insert_test_diff(&mut service, DIFF_CACHE_CAPACITY);
+
+        assert!(
+            service
+                .diff_handles
+                .contains_key(&PathBuf::from("/repo/file-0.rs"))
+        );
+        assert!(
+            !service
+                .diff_handles
+                .contains_key(&PathBuf::from("/repo/file-1.rs"))
+        );
+        assert_eq!(service.diff_handles.len(), DIFF_CACHE_CAPACITY);
     }
 
     #[test]
