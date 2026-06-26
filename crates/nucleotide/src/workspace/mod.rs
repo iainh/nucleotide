@@ -1384,30 +1384,14 @@ fn reveal_in_file_manager_label(is_remote: bool) -> &'static str {
     }
 }
 
-fn tab_bar_zoom_icon_path(is_zoomed: bool) -> &'static str {
-    if is_zoomed {
-        "icons/minimize.svg"
-    } else {
-        "icons/maximize.svg"
-    }
-}
-
-fn tab_bar_zoom_tooltip(is_zoomed: bool) -> &'static str {
-    if is_zoomed { "Zoom Out" } else { "Zoom In" }
+#[cfg(test)]
+fn tab_bar_end_button_icon_paths() -> [&'static str; 2] {
+    ["icons/plus.svg", "icons/columns-2.svg"]
 }
 
 #[cfg(test)]
-fn tab_bar_end_button_icon_paths(is_zoomed: bool) -> [&'static str; 3] {
-    [
-        "icons/plus.svg",
-        "icons/columns-2.svg",
-        tab_bar_zoom_icon_path(is_zoomed),
-    ]
-}
-
-#[cfg(test)]
-fn tab_bar_end_button_tooltips(is_zoomed: bool) -> [&'static str; 3] {
-    ["New File", "Split Pane", tab_bar_zoom_tooltip(is_zoomed)]
+fn tab_bar_end_button_tooltips() -> [&'static str; 2] {
+    ["New File", "Split Pane"]
 }
 
 #[derive(Clone, Copy)]
@@ -8718,7 +8702,6 @@ impl Workspace {
         let show_diagnostics = core.config.gui.tabs.show_diagnostics;
         let activate_on_close = core.config.gui.tabs.activate_on_close;
         let show_preview_tabs = core.config.gui.preview_tabs.enabled;
-        let tab_bar_zoom_icon_path = tab_bar_zoom_icon_path(window.is_maximized());
 
         // Collect all current document IDs
         let current_doc_ids: std::collections::HashSet<_> =
@@ -9053,17 +9036,6 @@ impl Workspace {
                             .absolute()
                             .size_full(),
                         ),
-                )
-                .end_child(
-                    Button::icon_only("tab-toggle-zoom", tab_bar_zoom_icon_path)
-                        .variant(ButtonVariant::Ghost)
-                        .size(ButtonSize::Small)
-                        .tooltip(tab_bar_zoom_tooltip(window.is_maximized()))
-                        .activate_on_mouse_down()
-                        .on_click(move |_event, window, cx| {
-                            window.zoom_window();
-                            cx.stop_propagation();
-                        }),
                 )
         })
         .with_pin_toggle_handler({
@@ -16306,35 +16278,16 @@ mod tests {
     }
 
     #[test]
-    fn tab_bar_end_buttons_follow_zed_new_split_zoom_order() {
+    fn tab_bar_end_buttons_follow_zed_new_split_order() {
         assert_eq!(
-            tab_bar_end_button_icon_paths(false),
-            [
-                "icons/plus.svg",
-                "icons/columns-2.svg",
-                "icons/maximize.svg"
-            ]
-        );
-        assert_eq!(
-            tab_bar_end_button_icon_paths(true),
-            [
-                "icons/plus.svg",
-                "icons/columns-2.svg",
-                "icons/minimize.svg"
-            ]
+            tab_bar_end_button_icon_paths(),
+            ["icons/plus.svg", "icons/columns-2.svg"]
         );
     }
 
     #[test]
     fn tab_bar_end_button_tooltips_describe_actions() {
-        assert_eq!(
-            tab_bar_end_button_tooltips(false),
-            ["New File", "Split Pane", "Zoom In"]
-        );
-        assert_eq!(
-            tab_bar_end_button_tooltips(true),
-            ["New File", "Split Pane", "Zoom Out"]
-        );
+        assert_eq!(tab_bar_end_button_tooltips(), ["New File", "Split Pane"]);
     }
 
     #[test]
