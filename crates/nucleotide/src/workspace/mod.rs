@@ -125,8 +125,18 @@ fn titlebar_filename(filename: Option<&str>) -> String {
         .to_string()
 }
 
-fn should_render_app_titlebar(has_titlebar: bool, translucent_sidebar_enabled: bool) -> bool {
-    has_titlebar && !translucent_sidebar_enabled
+fn should_render_app_titlebar(
+    has_titlebar: bool,
+    show_file_tree: bool,
+    file_tree_width: f32,
+    translucent_sidebar_enabled: bool,
+) -> bool {
+    has_titlebar
+        && !should_extend_translucent_sidebar_into_status_bar(
+            show_file_tree,
+            file_tree_width,
+            translucent_sidebar_enabled,
+        )
 }
 
 fn file_tree_content_top_inset(translucent_sidebar_enabled: bool) -> Pixels {
@@ -135,6 +145,14 @@ fn file_tree_content_top_inset(translucent_sidebar_enabled: bool) -> Pixels {
     } else {
         px(0.0)
     }
+}
+
+fn should_extend_translucent_sidebar_into_status_bar(
+    show_file_tree: bool,
+    file_tree_width: f32,
+    translucent_sidebar_enabled: bool,
+) -> bool {
+    translucent_sidebar_enabled && show_file_tree && file_tree_width > 0.0
 }
 
 fn native_window_title(filename: Option<&str>) -> String {
@@ -9106,18 +9124,19 @@ impl Workspace {
     /// Render unified status bar with file tree toggle and status information
     fn render_unified_status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         // Use hybrid color system with StatusBarTokens
-        let ui_theme = cx.global::<nucleotide_ui::Theme>();
-        let status_bar_tokens = ui_theme.tokens.status_bar_tokens();
-        let status_bar_height = ui_theme.tokens.sizes.statusbar_height; // capture before mutable borrows
+        let (status_bar_tokens, status_bar_height, text_size, translucent_file_tree_tokens) = {
+            let ui_theme = cx.global::<nucleotide_ui::Theme>();
+            (
+                ui_theme.tokens.status_bar_tokens(),
+                ui_theme.tokens.sizes.statusbar_height,
+                ui_theme.tokens.sizes.text_sm,
+                ui_theme.tokens.file_tree_tokens().translucent_sidebar(),
+            )
+        };
 
         // Use the hybrid chrome background colors for consistent visual hierarchy
         let bg_color = status_bar_tokens.background_active; // Always use active for unified bar
         let fg_color = status_bar_tokens.text_primary;
-
-        // Extract design token values before any mutable borrows (none needed here)
-
-        // Keep status bar chrome compact and visually subordinate to editor content.
-        let text_size = ui_theme.tokens.sizes.text_sm;
 
         // Get current document info first (without LSP indicator to avoid borrow conflicts)
         let (mode, mode_name, file_name, position_text, has_lsp_state, preferred_server_id) =
@@ -9132,20 +9151,59 @@ impl Workspace {
         // Status bar border color
         let border_color = status_bar_tokens.border;
         let divider_color = status_bar_tokens.border;
-        div()
+        let native_sidebar_enabled = macos_system_sidebar_enabled(&self.core.read(cx).config.gui);
+        let extend_translucent_sidebar = should_extend_translucent_sidebar_into_status_bar(
+            self.show_file_tree,
+            self.file_tree_width,
+            native_sidebar_enabled,
+        );
+        let status_bar_sidebar_tokens =
+            extend_translucent_sidebar.then_some(translucent_file_tree_tokens);
+
+        let mut status_bar = div()
             // Use tokenized height to match titlebar sizing
             .h(status_bar_height)
             .min_h(status_bar_height)
             .flex_shrink_0() // never compress the status bar vertically
             .w_full()
-            .bg(bg_color)
-            .border_t_1()
-            .border_color(border_color)
+            .relative()
+            .when(!extend_translucent_sidebar, |status_bar| {
+                status_bar
+                    .bg(bg_color)
+                    .border_t_1()
+                    .border_color(border_color)
+            })
             .flex()
             .flex_row()
             .items_center()
             .text_size(text_size)
-            .text_color(fg_color)
+            .text_color(fg_color);
+
+        if let Some(file_tree_tokens) = status_bar_sidebar_tokens {
+            status_bar = status_bar
+                .child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .bottom_0()
+                        .w(px(self.file_tree_width))
+                        .bg(file_tree_tokens.background),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left(px(self.file_tree_width))
+                        .right_0()
+                        .bottom_0()
+                        .bg(bg_color)
+                        .border_t_1()
+                        .border_color(border_color),
+                );
+        }
+
+        status_bar
             .child(
                 // Toggle button container - fixed width regardless of file tree state
                 div()
@@ -11692,9 +11750,12 @@ impl Workspace {
     }
 
     fn renders_app_titlebar(&self, cx: &Context<Self>) -> bool {
+        let gui_config = &self.core.read(cx).config.gui;
         should_render_app_titlebar(
             self.titlebar.is_some(),
-            macos_system_sidebar_enabled(&self.core.read(cx).config.gui),
+            self.show_file_tree,
+            self.file_tree_width,
+            macos_system_sidebar_enabled(gui_config),
         )
     }
 
@@ -12113,10 +12174,14 @@ impl Render for Workspace {
         }
         let bg_color = self.cached_bg_color;
         let native_sidebar_enabled = macos_system_sidebar_enabled(&self.core.read(cx).config.gui);
-        let rendered_titlebar =
-            should_render_app_titlebar(self.titlebar.is_some(), native_sidebar_enabled)
-                .then(|| self.titlebar.clone())
-                .flatten();
+        let rendered_titlebar = should_render_app_titlebar(
+            self.titlebar.is_some(),
+            self.show_file_tree,
+            self.file_tree_width,
+            native_sidebar_enabled,
+        )
+        .then(|| self.titlebar.clone())
+        .flatten();
         let titlebar_sidebar_background =
             if native_sidebar_enabled && self.show_file_tree && self.file_tree_width > 0.0 {
                 let file_tree_tokens = cx.theme().tokens.file_tree_tokens().translucent_sidebar();
@@ -13269,13 +13334,17 @@ impl Render for Workspace {
 
                 // Left file tree content
                 let file_tree_top_inset = file_tree_content_top_inset(native_sidebar_enabled);
-                let file_tree_top_inset_background = native_sidebar_enabled.then(|| {
-                    cx.theme()
-                        .tokens
-                        .file_tree_tokens()
-                        .translucent_sidebar()
-                        .background
-                });
+                let file_tree_tokens = {
+                    let tokens = cx.theme().tokens.file_tree_tokens();
+                    if native_sidebar_enabled {
+                        tokens.translucent_sidebar()
+                    } else {
+                        tokens
+                    }
+                };
+                let file_tree_background = file_tree_tokens.background;
+                let file_tree_top_inset_background =
+                    native_sidebar_enabled.then_some(file_tree_background);
                 let mut file_tree_container = div()
                     .absolute()
                     .top_0()
@@ -13320,10 +13389,8 @@ impl Render for Workspace {
                             .flex()
                             .flex_col()
                             .size_full()
-                            .child(div().w_full().h(file_tree_top_inset).flex_none().when_some(
-                                file_tree_top_inset_background,
-                                |container, background| container.bg(background),
-                            ))
+                            .bg(file_tree_background)
+                            .child(div().w_full().h(file_tree_top_inset).flex_none())
                             .child(
                                 div()
                                     .flex_1()
@@ -14767,10 +14834,12 @@ mod tests {
     }
 
     #[test]
-    fn app_titlebar_is_hidden_for_translucent_sidebar_mode() {
-        assert!(should_render_app_titlebar(true, false));
-        assert!(!should_render_app_titlebar(true, true));
-        assert!(!should_render_app_titlebar(false, false));
+    fn app_titlebar_is_hidden_only_for_visible_translucent_sidebar() {
+        assert!(should_render_app_titlebar(true, false, 240.0, true));
+        assert!(should_render_app_titlebar(true, true, 240.0, false));
+        assert!(should_render_app_titlebar(true, true, 0.0, true));
+        assert!(!should_render_app_titlebar(true, true, 240.0, true));
+        assert!(!should_render_app_titlebar(false, true, 240.0, true));
     }
 
     #[test]
@@ -14780,6 +14849,22 @@ mod tests {
             f32::from(file_tree_content_top_inset(true)),
             MACOS_TRAFFIC_LIGHT_TREE_TOP_INSET_PX
         );
+    }
+
+    #[test]
+    fn translucent_sidebar_extends_into_status_bar_only_when_visible() {
+        assert!(should_extend_translucent_sidebar_into_status_bar(
+            true, 240.0, true
+        ));
+        assert!(!should_extend_translucent_sidebar_into_status_bar(
+            false, 240.0, true
+        ));
+        assert!(!should_extend_translucent_sidebar_into_status_bar(
+            true, 0.0, true
+        ));
+        assert!(!should_extend_translucent_sidebar_into_status_bar(
+            true, 240.0, false
+        ));
     }
 
     #[test]
