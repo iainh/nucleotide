@@ -472,7 +472,7 @@ dark_theme = "custom_dark"
             window: WindowConfig {
                 blur_dark_themes: true,
                 appearance_follows_theme: false,
-                directwrite: None,
+                ..WindowConfig::default()
             },
             max_tabs: None,
             tab_bar: TabBarConfig::default(),

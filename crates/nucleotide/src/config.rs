@@ -24,7 +24,7 @@ const FALLBACK_PLATFORM_UI_FONT_SIZE: f32 = 13.0;
 const FALLBACK_PLATFORM_UI_FONT_SIZE: f32 = 13.0;
 
 #[cfg(any(target_os = "windows", test))]
-const WINDOWS_MINIMUM_DEFAULT_UI_FONT_SIZE: f32 = 13.0;
+const WINDOWS_MINIMUM_DEFAULT_UI_FONT_SIZE: f32 = 14.0;
 
 #[cfg(any(target_os = "windows", test))]
 const WINDOWS_DEFAULT_DPI: f32 = 96.0;
@@ -256,7 +256,7 @@ pub struct WindowConfig {
     pub appearance_follows_theme: bool,
 
     /// Windows DirectWrite text rendering overrides.
-    #[serde(default)]
+    #[serde(default = "default_window_directwrite_config")]
     pub directwrite: Option<DirectWriteConfig>,
 }
 
@@ -265,9 +265,19 @@ impl Default for WindowConfig {
         Self {
             blur_dark_themes: false,
             appearance_follows_theme: true,
-            directwrite: None,
+            directwrite: default_window_directwrite_config(),
         }
     }
+}
+
+#[cfg(target_os = "windows")]
+fn default_window_directwrite_config() -> Option<DirectWriteConfig> {
+    Some(DirectWriteConfig::windows_fluent_default())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn default_window_directwrite_config() -> Option<DirectWriteConfig> {
+    None
 }
 
 /// Windows DirectWrite text rendering configuration.
@@ -295,6 +305,17 @@ pub struct DirectWriteConfig {
 }
 
 impl DirectWriteConfig {
+    /// DirectWrite defaults tuned for crisp Windows UI text.
+    pub fn windows_fluent_default() -> Self {
+        Self {
+            gamma: Some(1.8),
+            enhanced_contrast: Some(0.75),
+            clear_type_level: Some(1.0),
+            pixel_geometry: Some(DirectWritePixelGeometry::Rgb),
+            rendering_mode: Some(DirectWriteRenderingMode::NaturalSymmetric),
+        }
+    }
+
     /// Convert this configuration into GPUI's DirectWrite rendering parameters.
     pub fn to_gpui_params(&self) -> gpui::DirectWriteTextRenderingParams {
         gpui::DirectWriteTextRenderingParams {
@@ -1338,6 +1359,31 @@ flatten_empty_directories = false
     }
 
     #[test]
+    fn window_config_uses_tuned_windows_directwrite_defaults() {
+        let window = WindowConfig::default();
+
+        if cfg!(target_os = "windows") {
+            let directwrite = window
+                .directwrite
+                .expect("Windows should use tuned DirectWrite defaults");
+
+            assert_eq!(directwrite.gamma, Some(1.8));
+            assert_eq!(directwrite.enhanced_contrast, Some(0.75));
+            assert_eq!(directwrite.clear_type_level, Some(1.0));
+            assert_eq!(
+                directwrite.pixel_geometry,
+                Some(DirectWritePixelGeometry::Rgb)
+            );
+            assert_eq!(
+                directwrite.rendering_mode,
+                Some(DirectWriteRenderingMode::NaturalSymmetric)
+            );
+        } else {
+            assert_eq!(window.directwrite, None);
+        }
+    }
+
+    #[test]
     fn nucleotide_example_config_parses_and_documents_supported_fields() {
         let config: GuiConfig =
             toml::from_str(NUCLEOTIDE_EXAMPLE_CONFIG).expect("example config should parse");
@@ -2232,9 +2278,9 @@ priority = 70
 
     #[test]
     fn windows_default_ui_font_size_has_comfortable_floor() {
-        assert_eq!(windows_default_ui_font_size(11.0), 13.0);
-        assert_eq!(windows_default_ui_font_size(12.0), 13.0);
-        assert_eq!(windows_default_ui_font_size(13.0), 13.0);
+        assert_eq!(windows_default_ui_font_size(11.0), 14.0);
+        assert_eq!(windows_default_ui_font_size(12.0), 14.0);
+        assert_eq!(windows_default_ui_font_size(13.0), 14.0);
         assert_eq!(windows_default_ui_font_size(14.0), 14.0);
     }
 

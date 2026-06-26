@@ -821,15 +821,15 @@ impl ChromeTokens {
             )
         };
 
-        // Windows Mica is a native backdrop behind the GPUI scene. Keep shell
-        // fills translucent there so the material remains visible through
-        // titlebars, sidebars, tab gutters, and status chrome.
-        let (mica_alpha, layer_alpha, layer_alt_alpha, elevated_alpha) =
+        // Windows Mica is a native backdrop behind the GPUI scene. Keep passive
+        // shell fills translucent, and give dense sidebar text only enough
+        // backing to steady glyph edges without hiding the material.
+        let (mica_alpha, layer_alpha, dense_text_layer_alpha, elevated_alpha) =
             if cfg!(target_os = "windows") {
                 if is_dark {
-                    (0.0, 0.62, 0.52, 0.78)
+                    (0.0, 0.62, 0.62, 0.78)
                 } else {
-                    (0.0, 0.58, 0.48, 0.76)
+                    (0.0, 0.58, 0.58, 0.76)
                 }
             } else {
                 (1.0, 1.0, 1.0, 1.0)
@@ -837,7 +837,7 @@ impl ChromeTokens {
 
         let mica = utils::with_alpha(mica_base, mica_alpha);
         let layer = utils::with_alpha(layer_base, layer_alpha);
-        let layer_alt = utils::with_alpha(layer_alt_base, layer_alt_alpha);
+        let dense_text_layer = utils::with_alpha(layer_alt_base, dense_text_layer_alpha);
         let elevated = utils::with_alpha(elevated_base, elevated_alpha);
 
         let text_on_chrome =
@@ -866,7 +866,7 @@ impl ChromeTokens {
         Self {
             titlebar_background: mica,
             footer_background: mica,
-            file_tree_background: layer_alt,
+            file_tree_background: dense_text_layer,
             tab_empty_background: mica,
             separator_color: stroke,
 
