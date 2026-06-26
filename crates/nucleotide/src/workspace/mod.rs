@@ -25,7 +25,7 @@ use gpui::{
     Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyDownEvent,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point,
     Render, ScrollHandle, Size, StatefulInteractiveElement, Styled, TextStyle, Window,
-    WindowAppearance, WindowBackgroundAppearance, canvas, div, px, svg,
+    WindowAppearance, canvas, div, px, svg,
 };
 use gpui::{FontFeatures, FontWeight};
 use helix_core::syntax::config::LanguageServerFeature;
@@ -6031,6 +6031,15 @@ impl Workspace {
         editor.read(cx).editor.theme.clone()
     }
 
+    fn sync_ui_theme_from_theme_manager<V: 'static>(cx: &mut Context<V>) {
+        let ui_theme = cx.global::<crate::ThemeManager>().ui_theme().clone();
+        *cx.global_mut::<nucleotide_ui::Theme>() = ui_theme.clone();
+        nucleotide_ui::providers::update_provider_context(|context| {
+            let theme_provider = nucleotide_ui::providers::ThemeProvider::new(ui_theme);
+            context.register_global_provider(theme_provider);
+        });
+    }
+
     fn handle_appearance_change(
         &mut self,
         appearance: WindowAppearance,
@@ -6038,7 +6047,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         use crate::types::{AppEvent, UiEvent, Update};
-        use nucleotide_ui::theme_manager::SystemAppearance;
+        use nucleotide_appearance::SystemAppearance;
 
         // Update system appearance in theme manager
         let system_appearance = match appearance {
@@ -6056,7 +6065,8 @@ impl Workspace {
         cx.update_global(|theme_manager: &mut crate::ThemeManager, _cx| {
             theme_manager.set_system_appearance(system_appearance);
         });
-        *nucleotide_ui::theme_manager::SystemAppearance::global_mut(cx) = system_appearance;
+        Self::sync_ui_theme_from_theme_manager(cx);
+        *nucleotide_appearance::SystemAppearance::global_mut(cx) = system_appearance;
 
         // Mark theme colors as dirty so they get recomputed on next render
         self.colors_dirty = true;
@@ -6101,16 +6111,7 @@ impl Workspace {
                 theme_manager.set_theme(core.editor.theme.clone());
             });
 
-            // Update nucleotide-ui theme global from theme manager
-            let ui_theme = cx.global::<crate::ThemeManager>().ui_theme().clone();
-            *cx.global_mut::<nucleotide_ui::Theme>() = ui_theme.clone();
-
-            // Update theme provider with the new theme
-            nucleotide_ui::providers::update_provider_context(|context| {
-                // Create a new theme provider with the updated theme
-                let theme_provider = nucleotide_ui::providers::ThemeProvider::new(ui_theme);
-                context.register_global_provider(theme_provider);
-            });
+            Self::sync_ui_theme_from_theme_manager(cx);
         });
 
         // Clear caches and redraw
@@ -6133,23 +6134,16 @@ impl Workspace {
         }
 
         let theme_manager = cx.global::<crate::ThemeManager>();
-        let is_dark = theme_manager.is_dark_theme();
+        let is_dark = theme_manager.is_dark_chrome();
 
-        // Set window background appearance based on theme
-        let appearance = if is_dark {
-            // Dark themes should use Blurred to get the proper macOS dark window border
-            WindowBackgroundAppearance::Blurred
-        } else {
-            // Light themes always use opaque
-            WindowBackgroundAppearance::Opaque
-        };
+        let appearance = config.window_background_appearance(is_dark);
 
         let theme_name = self.core.read(cx).editor.theme.name();
         info!(
             is_dark = is_dark,
             appearance = ?appearance,
             theme_name = %theme_name,
-            "Updating window background appearance based on theme"
+            "Updating window background appearance based on UI chrome"
         );
 
         window.set_background_appearance(appearance);
@@ -6159,7 +6153,19 @@ impl Workspace {
     fn recompute_theme_colors(&mut self, cx: &mut Context<Self>) {
         let tokens = cx.theme().tokens;
 
-        self.cached_bg_color = tokens.editor.background;
+        let uses_windows_material_backdrop = cfg!(target_os = "windows")
+            && cx
+                .try_global::<crate::ThemeManager>()
+                .map(|theme_manager| {
+                    theme_manager.ui_chrome_style() == nucleotide_appearance::UiChromeStyle::System
+                })
+                .unwrap_or(false);
+
+        self.cached_bg_color = if uses_windows_material_backdrop {
+            gpui::hsla(0.0, 0.0, 0.0, 0.0)
+        } else {
+            tokens.editor.background
+        };
         self.cached_text_color = tokens.chrome.text_on_chrome;
         self.cached_border_color = tokens.chrome.border_default;
 
@@ -6190,9 +6196,9 @@ impl Workspace {
 
     #[cfg(any())]
     unsafe fn update_titlebar_appearance_native(
-        system_appearance: nucleotide_ui::theme_manager::SystemAppearance,
+        system_appearance: nucleotide_appearance::SystemAppearance,
     ) {
-        use nucleotide_ui::theme_manager::SystemAppearance;
+        use nucleotide_appearance::SystemAppearance;
         use objc2::runtime::AnyObject;
         use objc2::{class, msg_send};
         use objc2_app_kit::{NSApplication, NSWindow};
@@ -6437,10 +6443,10 @@ impl Workspace {
 
     #[cfg(any())]
     unsafe fn update_titlebar_appearance_native_with_retry(
-        system_appearance: nucleotide_ui::theme_manager::SystemAppearance,
+        system_appearance: nucleotide_appearance::SystemAppearance,
         attempt: u32,
     ) -> bool {
-        use nucleotide_ui::theme_manager::SystemAppearance;
+        use nucleotide_appearance::SystemAppearance;
         use objc2::runtime::AnyObject;
         use objc2::{class, msg_send};
         use objc2_app_kit::{NSApplication, NSWindow};
@@ -7832,6 +7838,7 @@ impl Workspace {
                 let preview_tabs_enabled = new_config.gui.preview_tabs.enabled;
                 let file_tree_config = file_tree_config_from_gui(&new_config.gui);
                 let ui_font = new_config.ui_font();
+                let ui_chrome_style = new_config.ui_chrome_style();
 
                 let ui_font_config = cx.global_mut::<crate::types::UiFontConfig>();
                 ui_font_config.family = ui_font.family.clone();
@@ -7843,18 +7850,16 @@ impl Workspace {
                 font_settings.var_font.weight = ui_font.weight;
 
                 cx.update_global(|theme_manager: &mut crate::ThemeManager, _cx| {
+                    theme_manager.set_ui_chrome_style(ui_chrome_style);
                     theme_manager.set_ui_font_size(gpui::px(ui_font.size));
                 });
-                let ui_theme = cx.global::<crate::ThemeManager>().ui_theme().clone();
-                *cx.global_mut::<nucleotide_ui::Theme>() = ui_theme.clone();
-                nucleotide_ui::providers::update_provider_context(|context| {
-                    let theme_provider = nucleotide_ui::providers::ThemeProvider::new(ui_theme);
-                    context.register_global_provider(theme_provider);
-                });
+                Self::sync_ui_theme_from_theme_manager(cx);
 
                 info!(
-                    "UI font configuration updated: {} {}pt",
-                    ui_font.family, ui_font.size
+                    ui_font_family = %ui_font.family,
+                    ui_font_size = ui_font.size,
+                    ui_chrome_style = ?ui_chrome_style,
+                    "UI configuration updated"
                 );
 
                 if old_directwrite != new_directwrite {

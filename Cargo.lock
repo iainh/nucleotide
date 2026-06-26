@@ -5007,6 +5007,7 @@ dependencies = [
  "helix-view",
  "ignore",
  "notify",
+ "nucleotide-appearance",
  "nucleotide-core",
  "nucleotide-editor",
  "nucleotide-env",
@@ -5037,6 +5038,14 @@ dependencies = [
  "tracing",
  "unicode-segmentation",
  "url",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "nucleotide-appearance"
+version = "0.1.0"
+dependencies = [
+ "gpui",
  "windows-sys 0.61.2",
 ]
 
@@ -5235,6 +5244,7 @@ dependencies = [
  "helix-lsp",
  "helix-view",
  "nucleo",
+ "nucleotide-appearance",
  "nucleotide-core",
  "nucleotide-events",
  "nucleotide-logging",
