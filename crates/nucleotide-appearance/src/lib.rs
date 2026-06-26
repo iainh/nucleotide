@@ -332,6 +332,11 @@ pub fn window_background_appearance(
     }
 }
 
+/// Whether system chrome should use the macOS native sidebar/vibrancy treatment.
+pub fn macos_native_chrome_enabled(ui_chrome_style: UiChromeStyle) -> bool {
+    cfg!(target_os = "macos") && ui_chrome_style == UiChromeStyle::System
+}
+
 #[cfg(target_os = "windows")]
 fn system_window_background_appearance() -> WindowBackgroundAppearance {
     WindowBackgroundAppearance::MicaBackdrop
@@ -465,5 +470,28 @@ mod tests {
 
         #[cfg(not(any(target_os = "windows", target_os = "macos")))]
         assert_eq!(material, WindowBackgroundAppearance::Opaque);
+    }
+
+    #[test]
+    fn macos_native_chrome_requires_system_look_on_macos() {
+        assert!(!macos_native_chrome_enabled(UiChromeStyle::Theme));
+        assert_eq!(
+            macos_native_chrome_enabled(UiChromeStyle::System),
+            cfg!(target_os = "macos")
+        );
+    }
+
+    #[test]
+    fn windows_and_macos_native_palettes_are_distinct() {
+        let accent = default_system_accent_color();
+        let windows = NativeChromePalette::windows_fluent(SystemAppearance::Light, accent);
+        let macos = NativeChromePalette::macos_native(SystemAppearance::Light, accent);
+
+        assert_eq!(windows.accent, accent);
+        assert_eq!(macos.accent, accent);
+        assert_ne!(windows.stroke, macos.stroke);
+        assert_ne!(windows.layer_alpha, macos.layer_alpha);
+        assert!(windows.layer_alpha < 1.0);
+        assert!(macos.layer_alpha < 1.0);
     }
 }
