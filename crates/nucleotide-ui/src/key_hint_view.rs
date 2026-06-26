@@ -343,7 +343,11 @@ mod tests {
 
         Theme::from_tokens(DesignTokens {
             editor: EditorTokens::fallback(is_dark),
-            chrome: ChromeTokens::from_system_appearance(editor_background, is_dark),
+            chrome: ChromeTokens::from_system_appearance_with_accent(
+                editor_background,
+                is_dark,
+                hsla(0.0, 0.70, 0.45, 1.0),
+            ),
             sizes: SizeTokens::default(),
         })
     }

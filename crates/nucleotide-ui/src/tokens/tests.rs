@@ -3,6 +3,7 @@
 
 use crate::DesignTokens;
 use crate::styling::{ColorTheory, ContrastRatios};
+use crate::tokens::default_windows_accent_color;
 use crate::tokens::{ChromeTokens, ColorContext, SizeTokens, TitleBarTokens};
 
 #[cfg(test)]
@@ -30,8 +31,17 @@ mod system_chrome_token_tests {
     #[test]
     fn system_chrome_uses_fluent_neutral_surfaces() {
         let editor_background = hsla(0.0, 0.0, 0.08, 1.0);
-        let light = ChromeTokens::from_system_appearance(editor_background, false);
-        let dark = ChromeTokens::from_system_appearance(editor_background, true);
+        let system_accent = default_windows_accent_color();
+        let light = ChromeTokens::from_system_appearance_with_accent(
+            editor_background,
+            false,
+            system_accent,
+        );
+        let dark = ChromeTokens::from_system_appearance_with_accent(
+            editor_background,
+            true,
+            system_accent,
+        );
 
         assert!(light.surface.l > dark.surface.l);
         assert!(light.titlebar_background.l > dark.titlebar_background.l);
@@ -65,6 +75,21 @@ mod system_chrome_token_tests {
             assert_eq!(light.surface.a, 1.0);
             assert_eq!(dark.surface.a, 1.0);
         }
+    }
+
+    #[test]
+    fn system_chrome_accent_can_follow_platform_color() {
+        let editor_background = hsla(0.0, 0.0, 0.08, 1.0);
+        let platform_accent = hsla(300.0 / 360.0, 0.70, 0.45, 1.0);
+        let system = ChromeTokens::from_system_appearance_with_accent(
+            editor_background,
+            false,
+            platform_accent,
+        );
+
+        assert!((system.primary.h - platform_accent.h).abs() < 0.08);
+        assert_eq!(system.border_focus, system.primary);
+        assert_eq!(system.surface_selected.h, system.primary.h);
     }
 }
 
@@ -281,9 +306,12 @@ mod component_token_tests {
             helix_colors.bufferline_background
         );
 
-        // Verify that editor content colors are preserved from Helix where appropriate
-        assert_eq!(file_tree.item_background_selected, helix_colors.selection);
-        assert_eq!(file_tree.item_text_selected, tokens.editor.text_on_primary);
+        // Verify UI state colors use chrome/system tokens while editor content stays Helix-derived.
+        assert_eq!(
+            file_tree.item_background_selected,
+            tokens.chrome.surface_selected
+        );
+        assert_eq!(file_tree.item_text_selected, tokens.chrome.text_on_chrome);
         assert_eq!(tab_bar.tab_active_background, tokens.editor.background);
         assert_eq!(tab_bar.tab_text_active, tokens.chrome.text_on_chrome);
         assert_eq!(tab_bar.tab_modified_indicator, helix_colors.warning);
@@ -353,15 +381,15 @@ mod component_token_tests {
             hover_contrast
         );
 
-        let selected_contrast = ColorTheory::contrast_ratio(
-            file_tree.item_background_selected,
-            file_tree.item_text_selected,
-        );
+        let selected_contrast =
+            ColorTheory::contrast_ratio(file_tree.background, file_tree.item_text_selected);
         assert!(
             selected_contrast >= 4.5,
             "File tree selected contrast {:.2} below WCAG AA (4.5:1)",
             selected_contrast
         );
+        assert!(file_tree.item_background_selected.a > 0.0);
+        assert!(file_tree.item_background_selected.a < 1.0);
 
         println!(
             "File tree contrast ratios: bg/text={:.2}, hover={:.2}, selected={:.2} ✓",
@@ -492,13 +520,13 @@ mod component_token_tests {
                 file_tree.item_text_hidden,
                 tokens.chrome.text_chrome_disabled
             );
-            assert_eq!(file_tree.item_text_selected, tokens.editor.text_on_primary);
+            assert_eq!(file_tree.item_text_selected, tokens.chrome.text_on_chrome);
             assert_eq!(file_tree.icon_color, tokens.chrome.text_chrome_secondary);
             assert_eq!(
                 file_tree.icon_color_secondary,
                 tokens.chrome.text_chrome_disabled
             );
-            assert_eq!(file_tree.icon_color_selected, tokens.editor.text_on_primary);
+            assert_eq!(file_tree.icon_color_selected, tokens.chrome.text_on_chrome);
             assert_eq!(
                 file_tree.icon_color_hidden,
                 tokens.chrome.text_chrome_disabled
@@ -622,12 +650,9 @@ mod component_token_tests {
         assert_eq!(button_tokens.warning_background, tokens.editor.warning);
         assert_eq!(button_tokens.info_background, tokens.editor.info);
 
-        // Test that focus rings use Helix focus colors
-        assert_eq!(button_tokens.focus_ring, tokens.editor.focus_ring);
-        assert_eq!(
-            button_tokens.focus_ring_danger,
-            tokens.editor.focus_ring_error
-        );
+        // Test that focus rings use chrome/system focus colors
+        assert_eq!(button_tokens.focus_ring, tokens.chrome.border_focus);
+        assert_eq!(button_tokens.focus_ring_danger, tokens.chrome.border_focus);
 
         // Test contrast ratios for primary button
         let primary_contrast = ColorTheory::contrast_ratio(
@@ -699,18 +724,18 @@ mod component_token_tests {
             tokens.chrome.titlebar_background
         );
 
-        // Test that items use Helix selection colors for familiarity
+        // Test that items use chrome/system selection colors
         assert_eq!(
             picker_tokens.item_background_selected,
-            tokens.editor.selection_primary
+            tokens.chrome.menu_selected
         );
         assert_eq!(
             picker_tokens.item_text_selected,
-            tokens.editor.text_on_primary
+            tokens.chrome.text_on_chrome
         );
 
-        // Test that input focus uses Helix focus colors
-        assert_eq!(picker_tokens.input_border_focus, tokens.editor.focus_ring);
+        // Test that input focus uses chrome/system focus colors
+        assert_eq!(picker_tokens.input_border_focus, tokens.chrome.border_focus);
 
         // Test contrast ratios
         let container_contrast = ColorTheory::contrast_ratio(
@@ -743,14 +768,14 @@ mod component_token_tests {
         );
         assert_eq!(dropdown_tokens.border, tokens.chrome.border_shadow);
 
-        // Test that items use Helix selection colors
+        // Test that items use chrome/system selection colors
         assert_eq!(
             dropdown_tokens.item_background_selected,
-            tokens.editor.selection_primary
+            tokens.chrome.menu_selected
         );
         assert_eq!(
             dropdown_tokens.item_text_selected,
-            tokens.editor.text_on_primary
+            tokens.chrome.text_on_chrome
         );
 
         // Test that trigger uses chrome colors
@@ -806,30 +831,30 @@ mod component_token_tests {
 
             // Test that all components use consistent chrome colors for containers
             assert_eq!(
-                picker_tokens.container_background, tokens.chrome.surface_elevated,
-                "{} theme: picker container should use chrome surface_raised",
+                picker_tokens.container_background, tokens.chrome.popup_background,
+                "{} theme: picker container should use chrome popup background",
                 theme_name
             );
             assert_eq!(
-                dropdown_tokens.container_background, tokens.chrome.surface_elevated,
-                "{} theme: dropdown container should use chrome surface_raised",
+                dropdown_tokens.container_background, tokens.chrome.menu_background,
+                "{} theme: dropdown container should use chrome menu background",
                 theme_name
             );
 
-            // Test that all components use consistent Helix selection colors
+            // Test that all components use consistent chrome/system selection colors
             assert_eq!(
                 button_tokens.danger_background, tokens.editor.error,
                 "{} theme: button danger should use Helix error color",
                 theme_name
             );
             assert_eq!(
-                picker_tokens.item_background_selected, tokens.editor.selection_primary,
-                "{} theme: picker selection should use Helix selection",
+                picker_tokens.item_background_selected, tokens.chrome.menu_selected,
+                "{} theme: picker selection should use chrome selection",
                 theme_name
             );
             assert_eq!(
-                dropdown_tokens.item_background_selected, tokens.editor.selection_primary,
-                "{} theme: dropdown selection should use Helix selection",
+                dropdown_tokens.item_background_selected, tokens.chrome.menu_selected,
+                "{} theme: dropdown selection should use chrome selection",
                 theme_name
             );
 
@@ -860,9 +885,9 @@ mod component_token_tests {
         assert_ne!(input_tokens.background, input_tokens.background_focus);
         assert_ne!(input_tokens.text, input_tokens.placeholder);
 
-        // Test focus uses Helix colors
-        assert_eq!(input_tokens.focus_ring, tokens.editor.focus_ring);
-        assert_eq!(input_tokens.border_focus, tokens.editor.focus_ring);
+        // Test focus uses chrome/system colors
+        assert_eq!(input_tokens.focus_ring, tokens.chrome.border_focus);
+        assert_eq!(input_tokens.border_focus, tokens.chrome.border_focus);
 
         // Test error uses Helix colors
         assert_eq!(input_tokens.border_error, tokens.editor.error);
@@ -932,8 +957,8 @@ mod component_token_tests {
         let notification_tokens = tokens.notification_tokens();
 
         // Test focus consistency across components
-        assert_eq!(input_tokens.focus_ring, tokens.editor.focus_ring);
-        assert_eq!(input_tokens.border_focus, tokens.editor.focus_ring);
+        assert_eq!(input_tokens.focus_ring, tokens.chrome.border_focus);
+        assert_eq!(input_tokens.border_focus, tokens.chrome.border_focus);
 
         // Test error consistency across components
         assert_eq!(input_tokens.error_text, tokens.editor.error);

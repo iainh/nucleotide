@@ -67,6 +67,45 @@ fn hsla_from_rgb_u8(red: u8, green: u8, blue: u8, alpha: f32) -> Hsla {
     hsla(hue, saturation, lightness, alpha)
 }
 
+fn default_windows_accent_color() -> Hsla {
+    hsla_from_rgb_u8(0, 120, 212, 1.0)
+}
+
+#[cfg(target_os = "windows")]
+fn platform_system_accent_color() -> Option<Hsla> {
+    use windows_sys::Win32::Graphics::Gdi::{COLOR_HIGHLIGHT, GetSysColor};
+
+    // SAFETY: GetSysColor reads a process-global system color for the supplied
+    // COLOR_* index and has no pointer or lifetime requirements.
+    let color = unsafe { GetSysColor(COLOR_HIGHLIGHT) };
+    let red = (color & 0xFF) as u8;
+    let green = ((color >> 8) & 0xFF) as u8;
+    let blue = ((color >> 16) & 0xFF) as u8;
+
+    Some(hsla_from_rgb_u8(red, green, blue, 1.0))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn platform_system_accent_color() -> Option<Hsla> {
+    None
+}
+
+fn system_accent_colors(base_accent: Hsla, is_dark: bool) -> (Hsla, Hsla, Hsla) {
+    let accent = if is_dark {
+        ColorTheory::adjust_oklab_lightness(base_accent, 0.24)
+    } else {
+        ColorTheory::adjust_oklab_lightness(base_accent, -0.06)
+    };
+    let hover = ColorTheory::adjust_oklab_lightness(accent, if is_dark { 0.04 } else { -0.04 });
+    let active = ColorTheory::adjust_oklab_lightness(accent, if is_dark { -0.04 } else { -0.08 });
+
+    (
+        utils::with_alpha(accent, 1.0),
+        utils::with_alpha(hover, 1.0),
+        utils::with_alpha(active, 1.0),
+    )
+}
+
 impl BaseColors {
     /// Light theme base colors
     pub fn light() -> Self {
@@ -725,6 +764,18 @@ impl ChromeTokens {
 
     /// Create platform-system chrome tokens using a Fluent-inspired Windows palette.
     pub fn from_system_appearance(editor_background: Hsla, is_dark: bool) -> Self {
+        let system_accent =
+            platform_system_accent_color().unwrap_or_else(default_windows_accent_color);
+        Self::from_system_appearance_with_accent(editor_background, is_dark, system_accent)
+    }
+
+    /// Create platform-system chrome tokens using a Fluent-inspired Windows palette
+    /// and a caller-provided platform accent color.
+    pub fn from_system_appearance_with_accent(
+        editor_background: Hsla,
+        is_dark: bool,
+        system_accent: Hsla,
+    ) -> Self {
         let (
             mica_base,
             layer_base,
@@ -736,9 +787,6 @@ impl ChromeTokens {
             text,
             secondary_text_alpha,
             disabled_text_alpha,
-            accent,
-            accent_hover,
-            accent_active,
             shadow_alpha,
             strong_shadow_alpha,
         ) = if is_dark {
@@ -753,9 +801,6 @@ impl ChromeTokens {
                 hsla_from_rgb_u8(243, 243, 243, 1.0),
                 0.78,
                 0.42,
-                hsla_from_rgb_u8(96, 205, 255, 1.0),
-                hsla_from_rgb_u8(117, 214, 255, 1.0),
-                hsla_from_rgb_u8(76, 194, 235, 1.0),
                 0.36,
                 0.52,
             )
@@ -771,9 +816,6 @@ impl ChromeTokens {
                 hsla_from_rgb_u8(26, 26, 26, 1.0),
                 0.72,
                 0.36,
-                hsla_from_rgb_u8(0, 103, 192, 1.0),
-                hsla_from_rgb_u8(0, 95, 184, 1.0),
-                hsla_from_rgb_u8(0, 84, 163, 1.0),
                 0.14,
                 0.22,
             )
@@ -800,6 +842,7 @@ impl ChromeTokens {
 
         let text_on_chrome =
             ColorTheory::ensure_contrast(layer_alt_base, text, ContrastRatios::AA_NORMAL);
+        let (accent, accent_hover, accent_active) = system_accent_colors(system_accent, is_dark);
         let selected = utils::with_alpha(accent, if is_dark { 0.24 } else { 0.14 });
         let hover = if is_dark {
             hsla_from_rgb_u8(255, 255, 255, 0.08)
@@ -1195,17 +1238,17 @@ pub struct FileTreeTokens {
 impl FileTreeTokens {
     /// Create file tree tokens using computed chrome colors for backgrounds
     /// and editor colors for content
-    pub fn from_tokens(chrome: &ChromeTokens, editor: &EditorTokens) -> Self {
+    pub fn from_tokens(chrome: &ChromeTokens, _editor: &EditorTokens) -> Self {
         let bg = chrome.file_tree_background;
         let item_hover = chrome.surface_hover;
-        let item_selected = editor.selection_primary;
+        let item_selected = chrome.surface_selected;
         let item_text = chrome.text_on_chrome;
         let item_text_secondary = chrome.text_chrome_secondary;
-        let item_text_selected = editor.text_on_primary;
+        let item_text_selected = chrome.text_on_chrome;
         let item_text_hidden = chrome.text_chrome_disabled;
         let icon_color = chrome.text_chrome_secondary;
         let icon_color_secondary = chrome.text_chrome_disabled;
-        let icon_color_selected = editor.text_on_primary;
+        let icon_color_selected = chrome.text_on_chrome;
         let icon_color_hidden = chrome.text_chrome_disabled;
         let border = chrome.border_shadow;
         let separator = chrome.separator_color;
@@ -1416,7 +1459,7 @@ pub struct ButtonTokens {
     pub disabled_text: Hsla,
     pub disabled_border: Hsla,
 
-    // Focus states (use Helix focus colors)
+    // Focus states
     pub focus_ring: Hsla,
     pub focus_ring_danger: Hsla,
 
@@ -1479,9 +1522,9 @@ impl ButtonTokens {
         let disabled_text = ColorTheory::with_alpha(chrome.text_on_chrome, 0.5);
         let disabled_border = ColorTheory::with_alpha(chrome.border_shadow, 0.45);
 
-        // Focus rings use Helix focus colors
-        let focus_ring = editor.focus_ring;
-        let focus_ring_danger = editor.focus_ring_error;
+        // Focus rings follow the platform/chrome accent in system look.
+        let focus_ring = chrome.border_focus;
+        let focus_ring_danger = chrome.border_focus;
 
         // Shadow properties for raised controls.
         let shadow_color = chrome.shadow_sm.color;
@@ -1551,10 +1594,10 @@ pub struct PickerTokens {
     pub header_text: Hsla,
     pub header_border: Hsla,
 
-    // Item states (use editor colors for content familiarity)
+    // Item states
     pub item_background: Hsla,
     pub item_background_hover: Hsla,
-    pub item_background_selected: Hsla, // Use Helix selection
+    pub item_background_selected: Hsla,
     pub item_text: Hsla,
     pub item_text_secondary: Hsla,
     pub item_text_selected: Hsla,
@@ -1563,7 +1606,7 @@ pub struct PickerTokens {
     pub input_background: Hsla,
     pub input_text: Hsla,
     pub input_border: Hsla,
-    pub input_border_focus: Hsla, // Use Helix focus color
+    pub input_border_focus: Hsla,
     pub input_placeholder: Hsla,
 
     // Chrome elements
@@ -1579,7 +1622,7 @@ pub struct PickerTokens {
 
 impl PickerTokens {
     /// Create picker tokens using hybrid color approach
-    pub fn from_tokens(chrome: &ChromeTokens, editor: &EditorTokens) -> Self {
+    pub fn from_tokens(chrome: &ChromeTokens, _editor: &EditorTokens) -> Self {
         use crate::styling::color_theory::ColorTheory;
 
         // Floating command surfaces need stronger acrylic opacity than passive
@@ -1592,11 +1635,10 @@ impl PickerTokens {
         let header_text = chrome.text_on_chrome;
         let header_border = chrome.border_shadow;
 
-        // Items use transparent backgrounds with Helix selection colors
+        // Items use transparent backgrounds with chrome/system selection colors.
         let item_bg = ColorTheory::transparent();
         let item_bg_hover = ColorTheory::with_alpha(chrome.surface_hover, 0.3);
-        // Use Helix selection color for familiarity across components
-        let item_bg_selected = editor.selection_primary;
+        let item_bg_selected = chrome.menu_selected;
         // Ensure item text contrasts against the container background (popup surface)
         let item_text = ColorTheory::ensure_contrast(
             container_bg,
@@ -1604,9 +1646,9 @@ impl PickerTokens {
             ContrastRatios::AA_NORMAL,
         );
         let item_text_secondary = ColorTheory::with_alpha(item_text, 0.7);
-        let item_text_selected = editor.text_on_primary;
+        let item_text_selected = chrome.text_on_chrome;
 
-        // Input fields use chrome backgrounds with Helix focus
+        // Input fields use chrome backgrounds with system/chrome focus.
         let input_bg = chrome.surface_hover;
         let input_text = ColorTheory::ensure_contrast(
             input_bg,
@@ -1614,7 +1656,7 @@ impl PickerTokens {
             ContrastRatios::AA_NORMAL,
         );
         let input_border = chrome.border_shadow;
-        let input_border_focus = editor.focus_ring; // Use Helix focus color
+        let input_border_focus = chrome.border_focus;
         let input_placeholder = chrome.text_chrome_secondary;
 
         // Chrome elements
@@ -1663,7 +1705,7 @@ pub struct DropdownTokens {
     pub border: Hsla,
     pub shadow: Hsla,
 
-    // Items (editor colors for content familiarity)
+    // Items
     pub item_background: Hsla,
     pub item_background_hover: Hsla,
     pub item_background_selected: Hsla,
@@ -1688,7 +1730,7 @@ pub struct DropdownTokens {
 
 impl DropdownTokens {
     /// Create dropdown tokens using hybrid color approach
-    pub fn from_tokens(chrome: &ChromeTokens, editor: &EditorTokens) -> Self {
+    pub fn from_tokens(chrome: &ChromeTokens, _editor: &EditorTokens) -> Self {
         use crate::styling::color_theory::ColorTheory;
 
         // Menus use acrylic chrome rather than passive elevated chrome; their
@@ -1697,13 +1739,13 @@ impl DropdownTokens {
         let border = chrome.border_shadow;
         let shadow = chrome.shadow_md.color;
 
-        // Items use transparent backgrounds with Helix selection
+        // Items use transparent backgrounds with chrome/system selection.
         let item_bg = ColorTheory::transparent();
         let item_bg_hover = ColorTheory::with_alpha(chrome.surface_hover, 0.3);
-        let item_bg_selected = editor.selection_primary;
+        let item_bg_selected = chrome.menu_selected;
         let item_text = chrome.text_on_chrome;
         let item_text_secondary = chrome.text_chrome_secondary;
-        let item_text_selected = editor.text_on_primary;
+        let item_text_selected = chrome.text_on_chrome;
         let item_text_disabled = ColorTheory::with_alpha(chrome.text_on_chrome, 0.5);
 
         // Trigger button uses chrome colors for consistency
@@ -1910,8 +1952,8 @@ impl ChromeTokens {
         let input_bg_hover = ColorTheory::surface_variant(self.surface, 0.05);
         let input_bg_focus = ColorTheory::surface_variant(self.surface, 0.08);
 
-        // Focus and error states use Helix colors for consistency
-        let focus_ring = editor.focus_ring;
+        // Focus follows the platform/chrome accent in system look.
+        let focus_ring = self.border_focus;
         let error_color = editor.error;
 
         InputTokens {
