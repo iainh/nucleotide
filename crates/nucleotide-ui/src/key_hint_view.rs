@@ -333,21 +333,19 @@ mod tests {
     use super::*;
     use crate::tokens::{ChromeTokens, DesignTokens, EditorTokens, SizeTokens};
     use gpui::hsla;
+    use nucleotide_appearance::{NativeChromePalette, SystemAppearance};
 
     fn system_theme(is_dark: bool) -> Theme {
-        let editor_background = if is_dark {
-            hsla(0.0, 0.0, 0.08, 1.0)
-        } else {
-            hsla(0.0, 0.0, 0.98, 1.0)
-        };
-
         Theme::from_tokens(DesignTokens {
             editor: EditorTokens::fallback(is_dark),
-            chrome: ChromeTokens::from_system_appearance_with_accent(
-                editor_background,
-                is_dark,
+            chrome: ChromeTokens::from_native_chrome_palette(NativeChromePalette::with_accent(
+                if is_dark {
+                    SystemAppearance::Dark
+                } else {
+                    SystemAppearance::Light
+                },
                 hsla(0.0, 0.70, 0.45, 1.0),
-            ),
+            )),
             sizes: SizeTokens::default(),
         })
     }

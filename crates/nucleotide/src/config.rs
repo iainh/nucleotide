@@ -4,6 +4,7 @@
 use crate::file_tree::FileTreeDisplayDensity;
 use helix_loader::config_dir;
 use helix_term::config::Config as HelixConfig;
+use nucleotide_appearance::UiChromeStyle;
 use nucleotide_types::{FontConfig, FontWeight, ProjectMarkersConfig};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -171,10 +172,10 @@ pub enum UiLook {
 }
 
 impl UiLook {
-    pub fn to_ui_chrome_style(self) -> nucleotide_ui::theme_manager::UiChromeStyle {
+    pub fn to_ui_chrome_style(self) -> UiChromeStyle {
         match self {
-            Self::Theme => nucleotide_ui::theme_manager::UiChromeStyle::Theme,
-            Self::System => nucleotide_ui::theme_manager::UiChromeStyle::System,
+            Self::Theme => UiChromeStyle::Theme,
+            Self::System => UiChromeStyle::System,
         }
     }
 }
@@ -930,7 +931,7 @@ impl Config {
     }
 
     /// Get the UI chrome style used by nucleotide-ui.
-    pub fn ui_chrome_style(&self) -> nucleotide_ui::theme_manager::UiChromeStyle {
+    pub fn ui_chrome_style(&self) -> UiChromeStyle {
         self.ui_look().to_ui_chrome_style()
     }
 
@@ -939,16 +940,11 @@ impl Config {
         &self,
         is_dark_chrome: bool,
     ) -> gpui::WindowBackgroundAppearance {
-        #[cfg(target_os = "windows")]
-        if self.ui_look() == UiLook::System {
-            return gpui::WindowBackgroundAppearance::MicaBackdrop;
-        }
-
-        if is_dark_chrome && self.gui.window.blur_dark_themes {
-            gpui::WindowBackgroundAppearance::Blurred
-        } else {
-            gpui::WindowBackgroundAppearance::Opaque
-        }
+        nucleotide_appearance::window_background_appearance(
+            self.ui_chrome_style(),
+            is_dark_chrome,
+            self.gui.window.blur_dark_themes,
+        )
     }
 
     /// Check if project-based LSP startup is enabled
@@ -1510,10 +1506,16 @@ flatten_empty_directories = false
             gpui::WindowBackgroundAppearance::MicaBackdrop
         );
 
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(target_os = "macos")]
         assert_eq!(
             config.window_background_appearance(true),
             gpui::WindowBackgroundAppearance::Blurred
+        );
+
+        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+        assert_eq!(
+            config.window_background_appearance(true),
+            gpui::WindowBackgroundAppearance::Opaque
         );
     }
 

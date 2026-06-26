@@ -922,7 +922,7 @@ fn gui_main(
             }
 
             // Initialize SystemAppearance global state from current window appearance
-            nucleotide_ui::theme_manager::SystemAppearance::init(cx);
+            nucleotide_appearance::SystemAppearance::init(cx);
 
             // Initialize the provider system
             init_provider_system();
@@ -939,7 +939,7 @@ fn gui_main(
             theme_manager.set_ui_font_size(px(ui_font_config.size));
 
             theme_manager
-                .set_system_appearance(nucleotide_ui::theme_manager::SystemAppearance::global(cx));
+                .set_system_appearance(nucleotide_appearance::SystemAppearance::global(cx));
 
             // Derive and install the UI theme from the ThemeManager (Helix → tokens bridge)
             let ui_theme_derived = theme_manager.ui_theme().clone();

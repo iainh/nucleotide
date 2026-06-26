@@ -3,6 +3,7 @@ members = [
     "crates/nucleotide-types",
     "crates/nucleotide-events",
     "crates/nucleotide-logging",
+    "crates/nucleotide-appearance",
     "crates/nucleotide-core",
     "crates/nucleotide-editor",
     "crates/nucleotide-ui",
@@ -102,6 +103,7 @@ objc2-app-kit = "0.3"
 nucleotide-types = { path = "crates/nucleotide-types" }
 nucleotide-events = { path = "crates/nucleotide-events" }
 nucleotide-logging = { path = "crates/nucleotide-logging" }
+nucleotide-appearance = { path = "crates/nucleotide-appearance" }
 nucleotide-core = { path = "crates/nucleotide-core" }
 nucleotide-editor = { path = "crates/nucleotide-editor" }
 nucleotide-ui = { path = "crates/nucleotide-ui" }

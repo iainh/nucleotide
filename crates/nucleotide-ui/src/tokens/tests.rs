@@ -3,8 +3,10 @@
 
 use crate::DesignTokens;
 use crate::styling::{ColorTheory, ContrastRatios};
-use crate::tokens::default_windows_accent_color;
 use crate::tokens::{ChromeTokens, ColorContext, EditorTokens, SizeTokens, TitleBarTokens};
+use nucleotide_appearance::{
+    HelixThemeColors, NativeChromePalette, SystemAppearance, default_windows_accent_color,
+};
 
 #[cfg(test)]
 mod typography_token_tests {
@@ -32,16 +34,14 @@ mod system_chrome_token_tests {
     fn system_chrome_uses_fluent_neutral_surfaces() {
         let editor_background = hsla(0.0, 0.0, 0.08, 1.0);
         let system_accent = default_windows_accent_color();
-        let light = ChromeTokens::from_system_appearance_with_accent(
-            editor_background,
-            false,
+        let light = ChromeTokens::from_native_chrome_palette(NativeChromePalette::windows_fluent(
+            SystemAppearance::Light,
             system_accent,
-        );
-        let dark = ChromeTokens::from_system_appearance_with_accent(
-            editor_background,
-            true,
+        ));
+        let dark = ChromeTokens::from_native_chrome_palette(NativeChromePalette::windows_fluent(
+            SystemAppearance::Dark,
             system_accent,
-        );
+        ));
 
         assert!(light.surface.l > dark.surface.l);
         assert!(light.titlebar_background.l > dark.titlebar_background.l);
@@ -75,46 +75,29 @@ mod system_chrome_token_tests {
         assert!(light.menu_background.a >= 0.94);
         assert!(dark.menu_background.a >= 0.94);
 
-        if cfg!(target_os = "windows") {
-            assert_eq!(light.titlebar_background.a, 0.0);
-            assert_eq!(dark.titlebar_background.a, 0.0);
-            assert_eq!(light.footer_background.a, 0.0);
-            assert_eq!(dark.footer_background.a, 0.0);
-            assert_eq!(light.bufferline_background.a, 0.0);
-            assert_eq!(dark.bufferline_background.a, 0.0);
-            assert_eq!(light.bufferline_inactive.a, 0.0);
-            assert_eq!(dark.bufferline_inactive.a, 0.0);
-            assert!(light.file_tree_background.a >= 0.56);
-            assert!(light.file_tree_background.a <= 0.62);
-            assert!(dark.file_tree_background.a >= 0.60);
-            assert!(dark.file_tree_background.a <= 0.66);
-            assert!(light.surface.a <= 0.6);
-            assert!(dark.surface.a <= 0.65);
-        } else {
-            assert_eq!(light.titlebar_background.a, 1.0);
-            assert_eq!(dark.titlebar_background.a, 1.0);
-            assert_eq!(light.footer_background.a, 1.0);
-            assert_eq!(dark.footer_background.a, 1.0);
-            assert_eq!(light.bufferline_background.a, 1.0);
-            assert_eq!(dark.bufferline_background.a, 1.0);
-            assert_eq!(light.bufferline_inactive.a, 1.0);
-            assert_eq!(dark.bufferline_inactive.a, 1.0);
-            assert_eq!(light.file_tree_background.a, 1.0);
-            assert_eq!(dark.file_tree_background.a, 1.0);
-            assert_eq!(light.surface.a, 1.0);
-            assert_eq!(dark.surface.a, 1.0);
-        }
+        assert_eq!(light.titlebar_background.a, 0.0);
+        assert_eq!(dark.titlebar_background.a, 0.0);
+        assert_eq!(light.footer_background.a, 0.0);
+        assert_eq!(dark.footer_background.a, 0.0);
+        assert_eq!(light.bufferline_background.a, 0.0);
+        assert_eq!(dark.bufferline_background.a, 0.0);
+        assert_eq!(light.bufferline_inactive.a, 0.0);
+        assert_eq!(dark.bufferline_inactive.a, 0.0);
+        assert!(light.file_tree_background.a >= 0.56);
+        assert!(light.file_tree_background.a <= 0.62);
+        assert!(dark.file_tree_background.a >= 0.60);
+        assert!(dark.file_tree_background.a <= 0.66);
+        assert!(light.surface.a <= 0.6);
+        assert!(dark.surface.a <= 0.65);
     }
 
     #[test]
     fn system_chrome_accent_can_follow_platform_color() {
-        let editor_background = hsla(0.0, 0.0, 0.08, 1.0);
         let platform_accent = hsla(300.0 / 360.0, 0.70, 0.45, 1.0);
-        let system = ChromeTokens::from_system_appearance_with_accent(
-            editor_background,
-            false,
+        let system = ChromeTokens::from_native_chrome_palette(NativeChromePalette::windows_fluent(
+            SystemAppearance::Light,
             platform_accent,
-        );
+        ));
 
         assert!((system.primary.h - platform_accent.h).abs() < 0.08);
         assert_eq!(system.border_focus, system.primary);
@@ -191,7 +174,7 @@ mod titlebar_contrast_tests {
     #[test]
     fn test_titlebar_tokens_with_helix_colors() {
         // Create a mock Helix theme colors struct for testing
-        let helix_colors = crate::theme_manager::HelixThemeColors {
+        let helix_colors = HelixThemeColors {
             selection: gpui::hsla(220.0 / 360.0, 0.7, 0.6, 1.0), // Blue selection
             cursor_normal: gpui::hsla(220.0 / 360.0, 0.8, 0.5, 1.0),
             cursor_insert: gpui::hsla(120.0 / 360.0, 0.6, 0.5, 1.0),
@@ -285,7 +268,7 @@ mod component_token_tests {
     /// Test hybrid color system integration for component tokens
     #[test]
     fn test_hybrid_component_tokens() {
-        let helix_colors = crate::theme_manager::HelixThemeColors {
+        let helix_colors = HelixThemeColors {
             selection: hsla(220.0 / 360.0, 0.7, 0.8, 0.3),
             cursor_normal: hsla(220.0 / 360.0, 0.7, 0.6, 1.0),
             cursor_insert: hsla(120.0 / 360.0, 0.7, 0.6, 1.0),

@@ -4,6 +4,7 @@
 use crate::ContrastRatios;
 use crate::styling::ColorTheory;
 use gpui::{Hsla, Pixels, hsla, px};
+use nucleotide_appearance::{HelixThemeColors, NativeChromePalette, hsla_from_rgb_u8};
 use nucleotide_logging::debug;
 
 /// Base color palette - raw color definitions
@@ -39,55 +40,6 @@ pub struct BaseColors {
     pub warning_500: Hsla,
     pub error_500: Hsla,
     pub info_500: Hsla,
-}
-
-fn hsla_from_rgb_u8(red: u8, green: u8, blue: u8, alpha: f32) -> Hsla {
-    let r = red as f32 / 255.0;
-    let g = green as f32 / 255.0;
-    let b = blue as f32 / 255.0;
-
-    let max = r.max(g).max(b);
-    let min = r.min(g).min(b);
-    let chroma = max - min;
-    let lightness = (max + min) / 2.0;
-
-    if chroma == 0.0 {
-        return hsla(0.0, 0.0, lightness, alpha);
-    }
-
-    let saturation = chroma / (1.0 - (2.0 * lightness - 1.0).abs());
-    let hue = if max == r {
-        ((g - b) / chroma).rem_euclid(6.0)
-    } else if max == g {
-        ((b - r) / chroma) + 2.0
-    } else {
-        ((r - g) / chroma) + 4.0
-    } / 6.0;
-
-    hsla(hue, saturation, lightness, alpha)
-}
-
-fn default_windows_accent_color() -> Hsla {
-    hsla_from_rgb_u8(0, 120, 212, 1.0)
-}
-
-#[cfg(target_os = "windows")]
-fn platform_system_accent_color() -> Option<Hsla> {
-    use windows_sys::Win32::Graphics::Gdi::{COLOR_HIGHLIGHT, GetSysColor};
-
-    // SAFETY: GetSysColor reads a process-global system color for the supplied
-    // COLOR_* index and has no pointer or lifetime requirements.
-    let color = unsafe { GetSysColor(COLOR_HIGHLIGHT) };
-    let red = (color & 0xFF) as u8;
-    let green = ((color >> 8) & 0xFF) as u8;
-    let blue = ((color >> 16) & 0xFF) as u8;
-
-    Some(hsla_from_rgb_u8(red, green, blue, 1.0))
-}
-
-#[cfg(not(target_os = "windows"))]
-fn platform_system_accent_color() -> Option<Hsla> {
-    None
 }
 
 fn system_accent_colors(base_accent: Hsla, is_dark: bool) -> (Hsla, Hsla, Hsla) {
@@ -425,7 +377,7 @@ pub struct DesignTokens {
 
 impl EditorTokens {
     /// Create editor tokens from Helix theme colors
-    pub fn from_helix_colors(helix_colors: crate::theme_manager::HelixThemeColors) -> Self {
+    pub fn from_helix_colors(helix_colors: HelixThemeColors) -> Self {
         // Prefer explicit text from theme; fallback computed below if required
         let text_primary = helix_colors.text_primary;
         let text_secondary = utils::with_alpha(text_primary, 0.7);
@@ -762,87 +714,22 @@ impl ChromeTokens {
         }
     }
 
-    /// Create platform-system chrome tokens using a Fluent-inspired Windows palette.
-    pub fn from_system_appearance(editor_background: Hsla, is_dark: bool) -> Self {
-        let system_accent =
-            platform_system_accent_color().unwrap_or_else(default_windows_accent_color);
-        Self::from_system_appearance_with_accent(editor_background, is_dark, system_accent)
-    }
+    /// Create chrome tokens from a resolved native/system palette.
+    pub fn from_native_chrome_palette(palette: NativeChromePalette) -> Self {
+        let is_dark = palette.appearance.is_dark();
 
-    /// Create platform-system chrome tokens using a Fluent-inspired Windows palette
-    /// and a caller-provided platform accent color.
-    pub fn from_system_appearance_with_accent(
-        _editor_background: Hsla,
-        is_dark: bool,
-        system_accent: Hsla,
-    ) -> Self {
-        let (
-            mica_base,
-            layer_base,
-            layer_alt_base,
-            elevated_base,
-            acrylic,
-            stroke,
-            stroke_subtle,
-            text,
-            secondary_text_alpha,
-            disabled_text_alpha,
-            shadow_alpha,
-            strong_shadow_alpha,
-        ) = if is_dark {
-            (
-                hsla_from_rgb_u8(32, 32, 32, 1.0),
-                hsla_from_rgb_u8(43, 43, 43, 1.0),
-                hsla_from_rgb_u8(38, 38, 38, 1.0),
-                hsla_from_rgb_u8(48, 48, 48, 1.0),
-                hsla_from_rgb_u8(44, 44, 44, 0.96),
-                hsla_from_rgb_u8(65, 65, 65, 1.0),
-                hsla_from_rgb_u8(78, 78, 78, 0.74),
-                hsla_from_rgb_u8(243, 243, 243, 1.0),
-                0.78,
-                0.42,
-                0.36,
-                0.52,
-            )
-        } else {
-            (
-                hsla_from_rgb_u8(243, 243, 243, 1.0),
-                hsla_from_rgb_u8(255, 255, 255, 1.0),
-                hsla_from_rgb_u8(249, 249, 249, 1.0),
-                hsla_from_rgb_u8(255, 255, 255, 1.0),
-                hsla_from_rgb_u8(252, 252, 252, 0.96),
-                hsla_from_rgb_u8(225, 225, 225, 1.0),
-                hsla_from_rgb_u8(199, 199, 199, 0.82),
-                hsla_from_rgb_u8(26, 26, 26, 1.0),
-                0.72,
-                0.36,
-                0.14,
-                0.22,
-            )
-        };
+        let mica = utils::with_alpha(palette.mica_base, palette.mica_alpha);
+        let layer = utils::with_alpha(palette.layer_base, palette.layer_alpha);
+        let dense_text_layer =
+            utils::with_alpha(palette.layer_alt_base, palette.dense_text_layer_alpha);
+        let elevated = utils::with_alpha(palette.elevated_base, palette.elevated_alpha);
 
-        // Windows Mica is a native backdrop behind the GPUI scene. Keep passive
-        // shell fills translucent, and give dense sidebar text only enough
-        // backing to steady glyph edges without hiding the material.
-        let (mica_alpha, layer_alpha, dense_text_layer_alpha, elevated_alpha) =
-            if cfg!(target_os = "windows") {
-                if is_dark {
-                    (0.0, 0.62, 0.62, 0.78)
-                } else {
-                    (0.0, 0.58, 0.58, 0.76)
-                }
-            } else {
-                (1.0, 1.0, 1.0, 1.0)
-            };
-
-        let mica = utils::with_alpha(mica_base, mica_alpha);
-        let layer = utils::with_alpha(layer_base, layer_alpha);
-        let dense_text_layer = utils::with_alpha(layer_alt_base, dense_text_layer_alpha);
-        let elevated = utils::with_alpha(elevated_base, elevated_alpha);
-
-        let text_on_chrome =
-            ColorTheory::ensure_contrast(layer_alt_base, text, ContrastRatios::AA_NORMAL);
-        let (accent, accent_hover, accent_active) = system_accent_colors(system_accent, is_dark);
+        let text_on_chrome = ColorTheory::ensure_contrast(
+            palette.layer_alt_base,
+            palette.text,
+            ContrastRatios::AA_NORMAL,
+        );
+        let (accent, accent_hover, accent_active) = system_accent_colors(palette.accent, is_dark);
         let selected = utils::with_alpha(accent, if is_dark { 0.24 } else { 0.14 });
         let hover = if is_dark {
             hsla_from_rgb_u8(255, 255, 255, 0.08)
@@ -860,15 +747,15 @@ impl ChromeTokens {
             hsla_from_rgb_u8(255, 255, 255, 0.70)
         };
         let smoke = hsla(0.0, 0.0, 0.0, 1.0);
-        let shadow_color = hsla(0.0, 0.0, 0.0, shadow_alpha);
-        let shadow_color_strong = hsla(0.0, 0.0, 0.0, strong_shadow_alpha);
+        let shadow_color = hsla(0.0, 0.0, 0.0, palette.shadow_alpha);
+        let shadow_color_strong = hsla(0.0, 0.0, 0.0, palette.strong_shadow_alpha);
 
         Self {
             titlebar_background: mica,
             footer_background: mica,
             file_tree_background: dense_text_layer,
             tab_empty_background: mica,
-            separator_color: stroke,
+            separator_color: palette.stroke,
 
             surface: layer,
             surface_elevated: elevated,
@@ -878,12 +765,12 @@ impl ChromeTokens {
             surface_selected: selected,
             surface_disabled: utils::with_alpha(layer, 0.48),
 
-            border_default: stroke,
-            border_muted: utils::with_alpha(stroke, 0.56),
-            border_strong: stroke_subtle,
+            border_default: palette.stroke,
+            border_muted: utils::with_alpha(palette.stroke, 0.56),
+            border_strong: palette.stroke_subtle,
             border_focus: accent,
             border_highlight,
-            border_shadow: stroke_subtle,
+            border_shadow: palette.stroke_subtle,
 
             shadow_sm: ShadowToken {
                 offset_x: px(0.0),
@@ -918,28 +805,28 @@ impl ChromeTokens {
                 offset_y: px(-1.0),
                 blur_radius: px(0.0),
                 spread_radius: px(0.0),
-                color: stroke_subtle,
+                color: palette.stroke_subtle,
             },
 
             primary: accent,
             primary_hover: accent_hover,
             primary_active: accent_active,
 
-            popup_background: acrylic,
-            popup_border: stroke_subtle,
-            menu_background: acrylic,
+            popup_background: palette.acrylic,
+            popup_border: palette.stroke_subtle,
+            menu_background: palette.acrylic,
             menu_selected: selected,
-            menu_separator: stroke,
+            menu_separator: palette.stroke,
 
             statusline_active: mica,
-            statusline_inactive: utils::with_alpha(mica_base, mica_alpha * 0.86),
+            statusline_inactive: utils::with_alpha(palette.mica_base, palette.mica_alpha * 0.86),
             bufferline_background: mica,
             bufferline_active: elevated,
             bufferline_inactive: mica,
 
             text_on_chrome,
-            text_chrome_secondary: utils::with_alpha(text_on_chrome, secondary_text_alpha),
-            text_chrome_disabled: utils::with_alpha(text_on_chrome, disabled_text_alpha),
+            text_chrome_secondary: utils::with_alpha(text_on_chrome, palette.secondary_text_alpha),
+            text_chrome_disabled: utils::with_alpha(text_on_chrome, palette.disabled_text_alpha),
         }
     }
 
@@ -992,13 +879,13 @@ impl DesignTokens {
     }
 
     /// Create design tokens for light theme with comprehensive Helix-derived colors
-    pub fn light_with_helix_colors(_helix_colors: crate::theme_manager::HelixThemeColors) -> Self {
+    pub fn light_with_helix_colors(_helix_colors: HelixThemeColors) -> Self {
         // Deprecated API path; keep a minimal implementation for tests that may still call this.
         Self::light()
     }
 
     /// Create design tokens for dark theme with comprehensive Helix-derived colors
-    pub fn dark_with_helix_colors(_helix_colors: crate::theme_manager::HelixThemeColors) -> Self {
+    pub fn dark_with_helix_colors(_helix_colors: HelixThemeColors) -> Self {
         // Deprecated API path; keep a minimal implementation for tests that may still call this.
         Self::dark()
     }
@@ -1006,7 +893,7 @@ impl DesignTokens {
     /// Create design tokens from Helix theme and surface color (hybrid approach)
     /// This is the main factory method for the hybrid color system
     pub fn from_helix_and_surface(
-        helix_colors: crate::theme_manager::HelixThemeColors,
+        helix_colors: HelixThemeColors,
         surface_color: Hsla,
         editor_background: Hsla,
         is_dark_theme: bool,
@@ -1034,16 +921,16 @@ impl DesignTokens {
         }
     }
 
-    /// Create design tokens from Helix editor colors and platform-system chrome.
-    pub fn from_helix_and_system_chrome(
-        helix_colors: crate::theme_manager::HelixThemeColors,
+    /// Create design tokens from Helix editor colors and resolved native chrome.
+    pub fn from_helix_and_native_chrome(
+        helix_colors: HelixThemeColors,
         editor_background: Hsla,
-        is_dark_system: bool,
+        native_palette: NativeChromePalette,
     ) -> Self {
         let mut editor = EditorTokens::from_helix_colors(helix_colors);
         editor.background = editor_background;
 
-        let chrome = ChromeTokens::from_system_appearance(editor_background, is_dark_system);
+        let chrome = ChromeTokens::from_native_chrome_palette(native_palette);
 
         Self {
             editor,
