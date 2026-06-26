@@ -41,6 +41,32 @@ pub struct BaseColors {
     pub info_500: Hsla,
 }
 
+fn hsla_from_rgb_u8(red: u8, green: u8, blue: u8, alpha: f32) -> Hsla {
+    let r = red as f32 / 255.0;
+    let g = green as f32 / 255.0;
+    let b = blue as f32 / 255.0;
+
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let chroma = max - min;
+    let lightness = (max + min) / 2.0;
+
+    if chroma == 0.0 {
+        return hsla(0.0, 0.0, lightness, alpha);
+    }
+
+    let saturation = chroma / (1.0 - (2.0 * lightness - 1.0).abs());
+    let hue = if max == r {
+        ((g - b) / chroma).rem_euclid(6.0)
+    } else if max == g {
+        ((b - r) / chroma) + 2.0
+    } else {
+        ((r - g) / chroma) + 4.0
+    } / 6.0;
+
+    hsla(hue, saturation, lightness, alpha)
+}
+
 impl BaseColors {
     /// Light theme base colors
     pub fn light() -> Self {
@@ -697,6 +723,164 @@ impl ChromeTokens {
         }
     }
 
+    /// Create platform-system chrome tokens using a Fluent-inspired Windows palette.
+    pub fn from_system_appearance(editor_background: Hsla, is_dark: bool) -> Self {
+        let (
+            mica,
+            layer,
+            layer_alt,
+            elevated,
+            acrylic,
+            stroke,
+            stroke_subtle,
+            text,
+            secondary_text_alpha,
+            disabled_text_alpha,
+            accent,
+            accent_hover,
+            accent_active,
+            shadow_alpha,
+            strong_shadow_alpha,
+        ) = if is_dark {
+            (
+                hsla_from_rgb_u8(32, 32, 32, 1.0),
+                hsla_from_rgb_u8(43, 43, 43, 1.0),
+                hsla_from_rgb_u8(38, 38, 38, 1.0),
+                hsla_from_rgb_u8(48, 48, 48, 1.0),
+                hsla_from_rgb_u8(44, 44, 44, 0.96),
+                hsla_from_rgb_u8(65, 65, 65, 1.0),
+                hsla_from_rgb_u8(78, 78, 78, 0.74),
+                hsla_from_rgb_u8(243, 243, 243, 1.0),
+                0.78,
+                0.42,
+                hsla_from_rgb_u8(96, 205, 255, 1.0),
+                hsla_from_rgb_u8(117, 214, 255, 1.0),
+                hsla_from_rgb_u8(76, 194, 235, 1.0),
+                0.36,
+                0.52,
+            )
+        } else {
+            (
+                hsla_from_rgb_u8(243, 243, 243, 1.0),
+                hsla_from_rgb_u8(255, 255, 255, 1.0),
+                hsla_from_rgb_u8(249, 249, 249, 1.0),
+                hsla_from_rgb_u8(255, 255, 255, 1.0),
+                hsla_from_rgb_u8(252, 252, 252, 0.96),
+                hsla_from_rgb_u8(225, 225, 225, 1.0),
+                hsla_from_rgb_u8(199, 199, 199, 0.82),
+                hsla_from_rgb_u8(26, 26, 26, 1.0),
+                0.72,
+                0.36,
+                hsla_from_rgb_u8(0, 103, 192, 1.0),
+                hsla_from_rgb_u8(0, 95, 184, 1.0),
+                hsla_from_rgb_u8(0, 84, 163, 1.0),
+                0.14,
+                0.22,
+            )
+        };
+
+        let text_on_chrome =
+            ColorTheory::ensure_contrast(layer_alt, text, ContrastRatios::AA_NORMAL);
+        let selected = utils::with_alpha(accent, if is_dark { 0.24 } else { 0.14 });
+        let hover = if is_dark {
+            hsla_from_rgb_u8(255, 255, 255, 0.08)
+        } else {
+            hsla_from_rgb_u8(0, 0, 0, 0.04)
+        };
+        let active = if is_dark {
+            hsla_from_rgb_u8(255, 255, 255, 0.12)
+        } else {
+            hsla_from_rgb_u8(0, 0, 0, 0.08)
+        };
+        let border_highlight = if is_dark {
+            hsla_from_rgb_u8(255, 255, 255, 0.08)
+        } else {
+            hsla_from_rgb_u8(255, 255, 255, 0.70)
+        };
+        let smoke = hsla(0.0, 0.0, 0.0, 1.0);
+        let shadow_color = hsla(0.0, 0.0, 0.0, shadow_alpha);
+        let shadow_color_strong = hsla(0.0, 0.0, 0.0, strong_shadow_alpha);
+
+        Self {
+            titlebar_background: mica,
+            footer_background: mica,
+            file_tree_background: layer_alt,
+            tab_empty_background: mica,
+            separator_color: stroke,
+
+            surface: layer,
+            surface_elevated: elevated,
+            surface_overlay: smoke,
+            surface_hover: hover,
+            surface_active: active,
+            surface_selected: selected,
+            surface_disabled: utils::with_alpha(layer, 0.48),
+
+            border_default: stroke,
+            border_muted: utils::with_alpha(stroke, 0.56),
+            border_strong: stroke_subtle,
+            border_focus: accent,
+            border_highlight,
+            border_shadow: stroke_subtle,
+
+            shadow_sm: ShadowToken {
+                offset_x: px(0.0),
+                offset_y: px(1.0),
+                blur_radius: px(2.0),
+                spread_radius: px(0.0),
+                color: shadow_color,
+            },
+            shadow_md: ShadowToken {
+                offset_x: px(0.0),
+                offset_y: px(4.0),
+                blur_radius: px(12.0),
+                spread_radius: px(0.0),
+                color: shadow_color,
+            },
+            shadow_lg: ShadowToken {
+                offset_x: px(0.0),
+                offset_y: px(8.0),
+                blur_radius: px(24.0),
+                spread_radius: px(0.0),
+                color: shadow_color_strong,
+            },
+            inset_highlight: ShadowToken {
+                offset_x: px(0.0),
+                offset_y: px(1.0),
+                blur_radius: px(0.0),
+                spread_radius: px(0.0),
+                color: border_highlight,
+            },
+            inset_shadow: ShadowToken {
+                offset_x: px(0.0),
+                offset_y: px(-1.0),
+                blur_radius: px(0.0),
+                spread_radius: px(0.0),
+                color: stroke_subtle,
+            },
+
+            primary: accent,
+            primary_hover: accent_hover,
+            primary_active: accent_active,
+
+            popup_background: acrylic,
+            popup_border: stroke_subtle,
+            menu_background: acrylic,
+            menu_selected: selected,
+            menu_separator: stroke,
+
+            statusline_active: mica,
+            statusline_inactive: utils::with_alpha(mica, 0.86),
+            bufferline_background: mica,
+            bufferline_active: editor_background,
+            bufferline_inactive: utils::with_alpha(mica, 0.88),
+
+            text_on_chrome,
+            text_chrome_secondary: utils::with_alpha(text_on_chrome, secondary_text_alpha),
+            text_chrome_disabled: utils::with_alpha(text_on_chrome, disabled_text_alpha),
+        }
+    }
+
     /// Create fallback chrome tokens for testing
     pub fn fallback(is_dark: bool) -> Self {
         let base_colors = if is_dark {
@@ -780,6 +964,24 @@ impl DesignTokens {
         // The sidebar/file-tree layer uses both to sit between content and titlebar chrome.
         let chrome =
             ChromeTokens::from_surface_and_editor(surface_color, editor_background, is_dark_theme);
+
+        Self {
+            editor,
+            chrome,
+            sizes: SizeTokens::default(),
+        }
+    }
+
+    /// Create design tokens from Helix editor colors and platform-system chrome.
+    pub fn from_helix_and_system_chrome(
+        helix_colors: crate::theme_manager::HelixThemeColors,
+        editor_background: Hsla,
+        is_dark_system: bool,
+    ) -> Self {
+        let mut editor = EditorTokens::from_helix_colors(helix_colors);
+        editor.background = editor_background;
+
+        let chrome = ChromeTokens::from_system_appearance(editor_background, is_dark_system);
 
         Self {
             editor,

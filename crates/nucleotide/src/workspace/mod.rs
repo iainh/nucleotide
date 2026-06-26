@@ -5958,6 +5958,15 @@ impl Workspace {
         editor.read(cx).editor.theme.clone()
     }
 
+    fn sync_ui_theme_from_theme_manager<V: 'static>(cx: &mut Context<V>) {
+        let ui_theme = cx.global::<crate::ThemeManager>().ui_theme().clone();
+        *cx.global_mut::<nucleotide_ui::Theme>() = ui_theme.clone();
+        nucleotide_ui::providers::update_provider_context(|context| {
+            let theme_provider = nucleotide_ui::providers::ThemeProvider::new(ui_theme);
+            context.register_global_provider(theme_provider);
+        });
+    }
+
     fn handle_appearance_change(
         &mut self,
         appearance: WindowAppearance,
@@ -5983,6 +5992,7 @@ impl Workspace {
         cx.update_global(|theme_manager: &mut crate::ThemeManager, _cx| {
             theme_manager.set_system_appearance(system_appearance);
         });
+        Self::sync_ui_theme_from_theme_manager(cx);
         *nucleotide_ui::theme_manager::SystemAppearance::global_mut(cx) = system_appearance;
 
         // Mark theme colors as dirty so they get recomputed on next render
@@ -6028,16 +6038,7 @@ impl Workspace {
                 theme_manager.set_theme(core.editor.theme.clone());
             });
 
-            // Update nucleotide-ui theme global from theme manager
-            let ui_theme = cx.global::<crate::ThemeManager>().ui_theme().clone();
-            *cx.global_mut::<nucleotide_ui::Theme>() = ui_theme.clone();
-
-            // Update theme provider with the new theme
-            nucleotide_ui::providers::update_provider_context(|context| {
-                // Create a new theme provider with the updated theme
-                let theme_provider = nucleotide_ui::providers::ThemeProvider::new(ui_theme);
-                context.register_global_provider(theme_provider);
-            });
+            Self::sync_ui_theme_from_theme_manager(cx);
         });
 
         // Clear caches and redraw
@@ -6060,7 +6061,7 @@ impl Workspace {
         }
 
         let theme_manager = cx.global::<crate::ThemeManager>();
-        let is_dark = theme_manager.is_dark_theme();
+        let is_dark = theme_manager.is_dark_chrome();
 
         // Set window background appearance based on theme
         let appearance = if is_dark {
@@ -6076,7 +6077,7 @@ impl Workspace {
             is_dark = is_dark,
             appearance = ?appearance,
             theme_name = %theme_name,
-            "Updating window background appearance based on theme"
+            "Updating window background appearance based on UI chrome"
         );
 
         window.set_background_appearance(appearance);
@@ -7759,6 +7760,7 @@ impl Workspace {
                 let preview_tabs_enabled = new_config.gui.preview_tabs.enabled;
                 let file_tree_config = file_tree_config_from_gui(&new_config.gui);
                 let ui_font = new_config.ui_font();
+                let ui_chrome_style = new_config.ui_chrome_style();
 
                 let ui_font_config = cx.global_mut::<crate::types::UiFontConfig>();
                 ui_font_config.family = ui_font.family.clone();
@@ -7770,18 +7772,16 @@ impl Workspace {
                 font_settings.var_font.weight = ui_font.weight;
 
                 cx.update_global(|theme_manager: &mut crate::ThemeManager, _cx| {
+                    theme_manager.set_ui_chrome_style(ui_chrome_style);
                     theme_manager.set_ui_font_size(gpui::px(ui_font.size));
                 });
-                let ui_theme = cx.global::<crate::ThemeManager>().ui_theme().clone();
-                *cx.global_mut::<nucleotide_ui::Theme>() = ui_theme.clone();
-                nucleotide_ui::providers::update_provider_context(|context| {
-                    let theme_provider = nucleotide_ui::providers::ThemeProvider::new(ui_theme);
-                    context.register_global_provider(theme_provider);
-                });
+                Self::sync_ui_theme_from_theme_manager(cx);
 
                 info!(
-                    "UI font configuration updated: {} {}pt",
-                    ui_font.family, ui_font.size
+                    ui_font_family = %ui_font.family,
+                    ui_font_size = ui_font.size,
+                    ui_chrome_style = ?ui_chrome_style,
+                    "UI configuration updated"
                 );
 
                 if old_directwrite != new_directwrite {

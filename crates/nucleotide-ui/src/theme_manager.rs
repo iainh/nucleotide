@@ -63,6 +63,16 @@ pub enum SystemAppearance {
     Dark,
 }
 
+/// Source for non-editor UI chrome styling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum UiChromeStyle {
+    /// Derive chrome surfaces from the active Helix theme.
+    #[default]
+    Theme,
+    /// Derive chrome surfaces from the current platform appearance.
+    System,
+}
+
 /// Source of surface color extraction for debugging and validation
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SurfaceColorSource {
@@ -118,6 +128,8 @@ pub struct ThemeManager {
     ui_theme: UITheme,
     /// Current system appearance
     system_appearance: SystemAppearance,
+    /// Source used to derive non-editor UI chrome.
+    ui_chrome_style: UiChromeStyle,
     /// Configured UI font size used as the medium typography token.
     ui_font_size: Option<Pixels>,
 }
@@ -125,19 +137,33 @@ pub struct ThemeManager {
 impl ThemeManager {
     /// Create a new ThemeManager from a Helix theme
     pub fn new(helix_theme: HelixTheme) -> Self {
+        Self::new_with_chrome_style(helix_theme, UiChromeStyle::Theme)
+    }
+
+    /// Create a new ThemeManager from a Helix theme and chrome style source.
+    pub fn new_with_chrome_style(helix_theme: HelixTheme, ui_chrome_style: UiChromeStyle) -> Self {
         let system_appearance = SystemAppearance::default();
-        let ui_theme = Self::derive_ui_theme_with_appearance(&helix_theme, system_appearance);
+        let ui_theme = Self::derive_ui_theme_with_appearance_and_chrome_style(
+            &helix_theme,
+            system_appearance,
+            ui_chrome_style,
+        );
         Self {
             helix_theme,
             ui_theme,
             system_appearance,
+            ui_chrome_style,
             ui_font_size: None,
         }
     }
 
     /// Update the theme
     pub fn set_theme(&mut self, helix_theme: HelixTheme) {
-        self.ui_theme = Self::derive_ui_theme_with_appearance(&helix_theme, self.system_appearance);
+        self.ui_theme = Self::derive_ui_theme_with_appearance_and_chrome_style(
+            &helix_theme,
+            self.system_appearance,
+            self.ui_chrome_style,
+        );
         self.apply_ui_font_size();
         self.helix_theme = helix_theme;
     }
@@ -457,6 +483,26 @@ impl ThemeManager {
         self.ui_font_size
     }
 
+    /// Get the configured chrome style source.
+    pub fn ui_chrome_style(&self) -> UiChromeStyle {
+        self.ui_chrome_style
+    }
+
+    /// Set the configured chrome style source.
+    pub fn set_ui_chrome_style(&mut self, ui_chrome_style: UiChromeStyle) {
+        if self.ui_chrome_style == ui_chrome_style {
+            return;
+        }
+
+        self.ui_chrome_style = ui_chrome_style;
+        self.ui_theme = Self::derive_ui_theme_with_appearance_and_chrome_style(
+            &self.helix_theme,
+            self.system_appearance,
+            self.ui_chrome_style,
+        );
+        self.apply_ui_font_size();
+    }
+
     fn apply_ui_font_size(&mut self) {
         if let Some(ui_font_size) = self.ui_font_size {
             self.ui_theme.tokens.set_ui_font_size(ui_font_size);
@@ -472,8 +518,11 @@ impl ThemeManager {
     pub fn set_system_appearance(&mut self, appearance: SystemAppearance) {
         self.system_appearance = appearance;
         // Re-derive the UI theme with the new system appearance for proper fallback colors
-        self.ui_theme =
-            Self::derive_ui_theme_with_appearance(&self.helix_theme, self.system_appearance);
+        self.ui_theme = Self::derive_ui_theme_with_appearance_and_chrome_style(
+            &self.helix_theme,
+            self.system_appearance,
+            self.ui_chrome_style,
+        );
         self.apply_ui_font_size();
     }
 
@@ -483,6 +532,11 @@ impl ThemeManager {
         // A theme is considered dark if its background lightness is below 0.5
         let bg = self.ui_theme.tokens.editor.background;
         bg.l < 0.5
+    }
+
+    /// Check if the current UI chrome is dark.
+    pub fn is_dark_chrome(&self) -> bool {
+        self.ui_theme.tokens.chrome.surface.l < 0.5
     }
 
     /// Extract surface color from Helix theme with priority fallback system
@@ -565,10 +619,11 @@ impl ThemeManager {
         (fallback_color, SurfaceColorSource::SystemFallback)
     }
 
-    /// Derive a UI theme from a Helix theme with system appearance for fallback colors
-    fn derive_ui_theme_with_appearance(
+    /// Derive a UI theme from a Helix theme and configured chrome style.
+    fn derive_ui_theme_with_appearance_and_chrome_style(
         helix_theme: &HelixTheme,
         system_appearance: SystemAppearance,
+        ui_chrome_style: UiChromeStyle,
     ) -> UITheme {
         // Check if theme fallback testing is enabled
         let test_fallback = std::env::var("NUCLEOTIDE_DISABLE_THEME_LOADING")
@@ -982,18 +1037,26 @@ impl ThemeManager {
             text_primary: text,
         };
 
-        // Use the new hybrid token system that computes chrome colors from surface
         let is_dark_theme = background.l < 0.5;
-        let tokens = crate::DesignTokens::from_helix_and_surface(
-            theme_colors,
-            surface,    // computed chrome surface
-            background, // editor background (ui.background)
-            is_dark_theme,
-        );
+        let tokens = match ui_chrome_style {
+            UiChromeStyle::Theme => crate::DesignTokens::from_helix_and_surface(
+                theme_colors,
+                surface,    // computed chrome surface
+                background, // editor background (ui.background)
+                is_dark_theme,
+            ),
+            UiChromeStyle::System => crate::DesignTokens::from_helix_and_system_chrome(
+                theme_colors,
+                background,
+                system_appearance == SystemAppearance::Dark,
+            ),
+        };
 
         nucleotide_logging::info!(
             surface_color = ?surface,
             is_dark = is_dark_theme,
+            ui_chrome_style = ?ui_chrome_style,
+            system_appearance = ?system_appearance,
             "Creating hybrid design tokens with computed chrome colors"
         );
 
@@ -1150,5 +1213,22 @@ mod surface_extraction_tests {
                     && (bg2.l - 0.5).abs() < 1e-6
             );
         });
+    }
+
+    #[test]
+    fn system_chrome_style_follows_system_appearance() {
+        let helix_theme = helix_view::Theme::default();
+        let mut tm = ThemeManager::new_with_chrome_style(helix_theme, UiChromeStyle::System);
+
+        tm.set_system_appearance(SystemAppearance::Light);
+        let light_surface = tm.ui_theme().tokens.chrome.surface;
+        assert_eq!(tm.ui_chrome_style(), UiChromeStyle::System);
+        assert!(!tm.is_dark_chrome());
+
+        tm.set_system_appearance(SystemAppearance::Dark);
+        let dark_surface = tm.ui_theme().tokens.chrome.surface;
+
+        assert!(tm.is_dark_chrome());
+        assert!(light_surface.l > dark_surface.l);
     }
 }

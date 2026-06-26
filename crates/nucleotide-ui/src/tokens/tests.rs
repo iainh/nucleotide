@@ -3,7 +3,7 @@
 
 use crate::DesignTokens;
 use crate::styling::{ColorTheory, ContrastRatios};
-use crate::tokens::{ColorContext, SizeTokens, TitleBarTokens};
+use crate::tokens::{ChromeTokens, ColorContext, SizeTokens, TitleBarTokens};
 
 #[cfg(test)]
 mod typography_token_tests {
@@ -19,6 +19,28 @@ mod typography_token_tests {
         assert_eq!(tokens.text_md, gpui::px(13.0));
         assert_eq!(tokens.text_lg, gpui::px(14.0));
         assert_eq!(tokens.text_xl, gpui::px(15.0));
+    }
+}
+
+#[cfg(test)]
+mod system_chrome_token_tests {
+    use super::*;
+    use gpui::hsla;
+
+    #[test]
+    fn system_chrome_uses_fluent_neutral_surfaces() {
+        let editor_background = hsla(0.0, 0.0, 0.08, 1.0);
+        let light = ChromeTokens::from_system_appearance(editor_background, false);
+        let dark = ChromeTokens::from_system_appearance(editor_background, true);
+
+        assert!(light.surface.l > dark.surface.l);
+        assert!(light.titlebar_background.l > dark.titlebar_background.l);
+        assert!(light.primary.s > 0.8);
+        assert!(dark.primary.l > light.primary.l);
+        assert_eq!(light.bufferline_active, editor_background);
+        assert_eq!(dark.bufferline_active, editor_background);
+        assert!(light.popup_background.a < 1.0);
+        assert!(dark.popup_background.a < 1.0);
     }
 }
 
