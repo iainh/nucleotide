@@ -6,7 +6,7 @@
 mod tests {
     use crate::config::{
         Config, EditorGuiConfig, FileOpsConfig, FileTreeUiConfig, GuiConfig, LspConfig,
-        PreviewTabsConfig, TabBarConfig, TabsConfig, ThemeConfig, ThemeMode, UiConfig,
+        PreviewTabsConfig, TabBarConfig, TabsConfig, ThemeConfig, ThemeMode, UiConfig, UiLook,
         WindowConfig,
     };
     use crate::file_tree::FileTreeDisplayDensity;
@@ -448,6 +448,7 @@ dark_theme = "custom_dark"
     fn test_config_serialization_roundtrip() {
         let original_config = GuiConfig {
             ui: UiConfig {
+                look: UiLook::System,
                 font: Some(FontConfig {
                     family: "Test Font".to_string(),
                     weight: FontWeight::Bold,

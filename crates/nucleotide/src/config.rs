@@ -137,9 +137,24 @@ fn platform_ui_font_size() -> Option<f32> {
     None
 }
 
+/// Controls where Nucleotide derives non-editor UI chrome styling from.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum UiLook {
+    /// Derive UI chrome from the active Helix theme.
+    #[default]
+    Theme,
+    /// Use platform-specific UI chrome while preserving editor theme colors.
+    System,
+}
+
 /// UI-specific configuration
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UiConfig {
+    /// Source for UI chrome styling.
+    #[serde(default)]
+    pub look: UiLook,
+
     /// Font used for UI elements (menus, dialogs, etc.)
     #[serde(default)]
     pub font: Option<FontConfig>,
@@ -857,6 +872,11 @@ impl Config {
         normalize_ui_font(self.gui.ui.font.clone().unwrap_or_else(default_ui_font))
     }
 
+    /// Get the UI look configuration.
+    pub fn ui_look(&self) -> UiLook {
+        self.gui.ui.look
+    }
+
     /// Check if project-based LSP startup is enabled
     pub fn is_project_lsp_startup_enabled(&self) -> bool {
         self.gui.lsp.project_lsp_startup
@@ -1092,6 +1112,9 @@ mod tests {
         let config_str = r#"
 max_tabs = 5
 
+[ui]
+look = "system"
+
 [ui.font]
 family = "Inter"
 weight = "medium"
@@ -1138,6 +1161,8 @@ flatten_empty_directories = false
 "#;
 
         let config: GuiConfig = toml::from_str(config_str).expect("Failed to parse GuiConfig");
+
+        assert_eq!(config.ui.look, UiLook::System);
 
         let ui_font = config.ui.font.as_ref().expect("UI font should be set");
         assert_eq!(ui_font.family, "Inter");
@@ -1267,6 +1292,7 @@ flatten_empty_directories = false
         assert_eq!(config.theme.mode, ThemeMode::System);
         assert_eq!(config.theme.get_light_theme(), DEFAULT_LIGHT_THEME);
         assert_eq!(config.theme.get_dark_theme(), DEFAULT_DARK_THEME);
+        assert_eq!(config.ui.look, UiLook::Theme);
         assert!(config.ui.font.is_none());
         assert!(config.editor.font.is_none());
         assert!(config.window.appearance_follows_theme);
@@ -1296,6 +1322,8 @@ flatten_empty_directories = false
             "clear_type_level",
             "pixel_geometry",
             "rendering_mode",
+            "[ui]",
+            "look",
             "[ui.font]",
             "[editor.font]",
             "family",
@@ -1344,6 +1372,22 @@ flatten_empty_directories = false
                 "example config should document `{setting}`"
             );
         }
+    }
+
+    #[test]
+    fn ui_look_defaults_to_theme() {
+        let config: GuiConfig = toml::from_str("").expect("empty config should parse");
+
+        assert_eq!(config.ui.look, UiLook::Theme);
+    }
+
+    #[test]
+    fn ui_look_parses_theme_and_system_values() {
+        let themed: UiConfig = toml::from_str(r#"look = "theme""#).expect("theme look parses");
+        let system: UiConfig = toml::from_str(r#"look = "system""#).expect("system look parses");
+
+        assert_eq!(themed.look, UiLook::Theme);
+        assert_eq!(system.look, UiLook::System);
     }
 
     #[test]
