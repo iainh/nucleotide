@@ -54,6 +54,11 @@ appearance_follows_theme = true
 # "natural_symmetric". "aliased" uses grayscale text.
 # rendering_mode = "default"
 
+[ui]
+# Select how Nucleotide styles non-editor UI chrome.
+# Options: "theme", "system". Default: "theme".
+look = "theme"
+
 # Font used for menus, prompts, pickers and other UI chrome.
 # Default: unset, which resolves to ".SystemUIFont", "normal", the platform UI
 # font size and 1.5. Platform size is queried dynamically on macOS and Windows,
