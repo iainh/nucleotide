@@ -4,7 +4,7 @@
 use crate::DesignTokens;
 use crate::styling::{ColorTheory, ContrastRatios};
 use crate::tokens::default_windows_accent_color;
-use crate::tokens::{ChromeTokens, ColorContext, SizeTokens, TitleBarTokens};
+use crate::tokens::{ChromeTokens, ColorContext, EditorTokens, SizeTokens, TitleBarTokens};
 
 #[cfg(test)]
 mod typography_token_tests {
@@ -47,8 +47,27 @@ mod system_chrome_token_tests {
         assert!(light.titlebar_background.l > dark.titlebar_background.l);
         assert!(light.primary.s > 0.8);
         assert!(dark.primary.l > light.primary.l);
-        assert_eq!(light.bufferline_active, editor_background);
-        assert_eq!(dark.bufferline_active, editor_background);
+        assert_eq!(light.tab_empty_background, light.titlebar_background);
+        assert_eq!(dark.tab_empty_background, dark.titlebar_background);
+        assert_eq!(light.bufferline_background, light.titlebar_background);
+        assert_eq!(dark.bufferline_background, dark.titlebar_background);
+        assert_eq!(light.bufferline_active, light.surface_elevated);
+        assert_eq!(dark.bufferline_active, dark.surface_elevated);
+        assert_eq!(light.bufferline_inactive, light.titlebar_background);
+        assert_eq!(dark.bufferline_inactive, dark.titlebar_background);
+        assert_ne!(light.bufferline_active, editor_background);
+        assert_ne!(dark.bufferline_active, editor_background);
+        let light_tabs = light.tab_bar_tokens(&EditorTokens::fallback(false));
+        let dark_tabs = dark.tab_bar_tokens(&EditorTokens::fallback(true));
+        assert_eq!(light_tabs.container_background, light.bufferline_background);
+        assert_eq!(dark_tabs.container_background, dark.bufferline_background);
+        assert_eq!(light_tabs.tab_active_background, light.bufferline_active);
+        assert_eq!(dark_tabs.tab_active_background, dark.bufferline_active);
+        assert_eq!(
+            light_tabs.tab_inactive_background,
+            light.bufferline_inactive
+        );
+        assert_eq!(dark_tabs.tab_inactive_background, dark.bufferline_inactive);
         assert!(light.popup_background.a < 1.0);
         assert!(dark.popup_background.a < 1.0);
         assert!(light.popup_background.a >= 0.94);
@@ -61,6 +80,10 @@ mod system_chrome_token_tests {
             assert_eq!(dark.titlebar_background.a, 0.0);
             assert_eq!(light.footer_background.a, 0.0);
             assert_eq!(dark.footer_background.a, 0.0);
+            assert_eq!(light.bufferline_background.a, 0.0);
+            assert_eq!(dark.bufferline_background.a, 0.0);
+            assert_eq!(light.bufferline_inactive.a, 0.0);
+            assert_eq!(dark.bufferline_inactive.a, 0.0);
             assert!(light.file_tree_background.a >= 0.56);
             assert!(light.file_tree_background.a <= 0.62);
             assert!(dark.file_tree_background.a >= 0.60);
@@ -72,6 +95,10 @@ mod system_chrome_token_tests {
             assert_eq!(dark.titlebar_background.a, 1.0);
             assert_eq!(light.footer_background.a, 1.0);
             assert_eq!(dark.footer_background.a, 1.0);
+            assert_eq!(light.bufferline_background.a, 1.0);
+            assert_eq!(dark.bufferline_background.a, 1.0);
+            assert_eq!(light.bufferline_inactive.a, 1.0);
+            assert_eq!(dark.bufferline_inactive.a, 1.0);
             assert_eq!(light.file_tree_background.a, 1.0);
             assert_eq!(dark.file_tree_background.a, 1.0);
             assert_eq!(light.surface.a, 1.0);
@@ -543,7 +570,7 @@ mod component_token_tests {
             );
             assert_eq!(
                 tab_bar.container_background,
-                tokens.chrome.tab_empty_background
+                tokens.chrome.bufferline_background
             );
             assert_eq!(tokens.chrome.bufferline_active, tokens.editor.background);
             assert_eq!(tab_bar.tab_active_background, tokens.editor.background);

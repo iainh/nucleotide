@@ -772,7 +772,7 @@ impl ChromeTokens {
     /// Create platform-system chrome tokens using a Fluent-inspired Windows palette
     /// and a caller-provided platform accent color.
     pub fn from_system_appearance_with_accent(
-        editor_background: Hsla,
+        _editor_background: Hsla,
         is_dark: bool,
         system_accent: Hsla,
     ) -> Self {
@@ -934,8 +934,8 @@ impl ChromeTokens {
             statusline_active: mica,
             statusline_inactive: utils::with_alpha(mica_base, mica_alpha * 0.86),
             bufferline_background: mica,
-            bufferline_active: editor_background,
-            bufferline_inactive: utils::with_alpha(mica_base, mica_alpha * 0.88),
+            bufferline_active: elevated,
+            bufferline_inactive: mica,
 
             text_on_chrome,
             text_chrome_secondary: utils::with_alpha(text_on_chrome, secondary_text_alpha),
@@ -1301,8 +1301,7 @@ pub struct StatusBarTokens {
 }
 
 impl StatusBarTokens {
-    /// Create status bar tokens using computed chrome colors for backgrounds
-    /// and editor colors for status content
+    /// Create status bar tokens using computed chrome colors.
     pub fn from_tokens(chrome: &ChromeTokens, _editor: &EditorTokens) -> Self {
         let bg_active = chrome.footer_background;
         let bg_inactive = chrome.footer_background; // Use same chrome color for consistency
@@ -1370,11 +1369,11 @@ pub struct TabBarTokens {
 }
 
 impl TabBarTokens {
-    /// Create tab bar tokens using computed chrome colors for UI text
-    /// and editor colors for editor-adjacent backgrounds.
+    /// Create tab bar tokens using computed chrome colors for UI text and
+    /// bufferline backgrounds.
     pub fn from_tokens(chrome: &ChromeTokens, editor: &EditorTokens) -> Self {
-        let container_bg = chrome.tab_empty_background;
-        let tab_active_bg = editor.background;
+        let container_bg = chrome.bufferline_background;
+        let tab_active_bg = chrome.bufferline_active;
         let tab_inactive_bg = chrome.bufferline_inactive;
         let tab_hover_bg = chrome.surface_hover;
         let tab_text_active = chrome.text_on_chrome;
