@@ -2080,6 +2080,9 @@ impl Workspace {
         self.embedded_terminal_panel = None;
         self.terminal_id = None;
         self.terminal_cwd = None;
+        if let Some(id) = cleared_id {
+            nucleotide_terminal_view::unregister_view_model(id);
+        }
         if self.run_output_terminal == cleared_id {
             self.run_output_terminal = None;
         }

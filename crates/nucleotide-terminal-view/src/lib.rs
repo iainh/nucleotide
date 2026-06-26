@@ -1142,3 +1142,25 @@ pub fn get_view_model(id: TerminalId) -> Option<Arc<Mutex<TerminalViewModel>>> {
     let map = TERMINAL_VIEW_REGISTRY.lock().unwrap();
     map.get(&id).cloned()
 }
+
+pub fn unregister_view_model(id: TerminalId) {
+    let mut map = TERMINAL_VIEW_REGISTRY.lock().unwrap();
+    map.remove(&id);
+}
+
+#[cfg(test)]
+mod registry_tests {
+    use super::*;
+
+    #[test]
+    fn unregister_view_model_removes_global_entry() {
+        let id = TerminalId(u64::MAX);
+        let model = Arc::new(Mutex::new(TerminalViewModel::new(id)));
+
+        register_view_model(id, model);
+        assert!(get_view_model(id).is_some());
+
+        unregister_view_model(id);
+        assert!(get_view_model(id).is_none());
+    }
+}

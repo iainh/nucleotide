@@ -5271,6 +5271,7 @@ dependencies = [
  "nucleotide-process",
  "nucleotide-types",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]

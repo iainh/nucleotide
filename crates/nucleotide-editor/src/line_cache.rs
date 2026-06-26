@@ -2,7 +2,7 @@
 // ABOUTME: Stores line layouts in element-local coordinates (text-area relative) for fast mouse hit testing
 
 use gpui::{Bounds, Pixels, ShapedLine, SharedString, TextRun, WindowTextSystem, point, px, size};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
 
@@ -145,18 +145,71 @@ struct LayoutStore {
     line_to_first_layout: HashMap<usize, usize>,
 }
 
+const SHAPED_LINE_CACHE_CAPACITY: usize = 512;
+
+#[derive(Default)]
+struct ShapedLineStore {
+    lines: HashMap<ShapedLineKey, ShapedLine>,
+    lru: VecDeque<ShapedLineKey>,
+}
+
+impl ShapedLineStore {
+    fn clear(&mut self) {
+        self.lines.clear();
+        self.lru.clear();
+    }
+
+    fn get(&mut self, key: &ShapedLineKey) -> Option<ShapedLine> {
+        let shaped_line = self.lines.get(key).cloned()?;
+        self.touch(key);
+        Some(shaped_line)
+    }
+
+    fn insert(&mut self, key: ShapedLineKey, shaped_line: ShapedLine) {
+        if self.lines.contains_key(&key) {
+            self.lines.insert(key.clone(), shaped_line);
+            self.touch(&key);
+            return;
+        }
+
+        while self.lines.len() >= SHAPED_LINE_CACHE_CAPACITY {
+            if let Some(evicted) = self.lru.pop_front() {
+                self.lines.remove(&evicted);
+            } else {
+                break;
+            }
+        }
+
+        self.lru.push_back(key.clone());
+        self.lines.insert(key, shaped_line);
+    }
+
+    fn touch(&mut self, key: &ShapedLineKey) {
+        if let Some(index) = self.lru.iter().position(|candidate| candidate == key)
+            && let Some(existing) = self.lru.remove(index)
+        {
+            self.lru.push_back(existing);
+        }
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.lines.len()
+    }
+}
+
 /// Thread-safe cache for line layouts
 #[derive(Clone, Default)]
 pub struct LineLayoutCache {
     layouts: Arc<Mutex<LayoutStore>>,
-    shaped_lines: Arc<Mutex<HashMap<ShapedLineKey, ShapedLine>>>,
+    shaped_lines: Arc<Mutex<ShapedLineStore>>,
 }
 
 impl LineLayoutCache {
     pub fn new() -> Self {
         Self {
             layouts: Arc::new(Mutex::new(LayoutStore::default())),
-            shaped_lines: Arc::new(Mutex::new(HashMap::new())),
+            shaped_lines: Arc::new(Mutex::new(ShapedLineStore::default())),
         }
     }
 
@@ -294,8 +347,8 @@ impl LineLayoutCache {
     }
 
     fn get_shaped_line(&self, key: &ShapedLineKey) -> Option<ShapedLine> {
-        if let Ok(shaped) = self.shaped_lines.lock() {
-            shaped.get(key).cloned()
+        if let Ok(mut shaped) = self.shaped_lines.lock() {
+            shaped.get(key)
         } else {
             None
         }
@@ -303,12 +356,16 @@ impl LineLayoutCache {
 
     fn store_shaped_line(&self, key: ShapedLineKey, shaped_line: ShapedLine) {
         if let Ok(mut shaped) = self.shaped_lines.lock() {
-            // Limit cache size to prevent unbounded growth
-            if shaped.len() > 1000 {
-                shaped.clear();
-            }
             shaped.insert(key, shaped_line);
         }
+    }
+
+    #[cfg(test)]
+    fn shaped_line_cache_len(&self) -> usize {
+        self.shaped_lines
+            .lock()
+            .map(|shaped| shaped.len())
+            .unwrap_or_default()
     }
 }
 
@@ -332,6 +389,15 @@ mod tests {
             background_color: None,
             underline: None,
             strikethrough: None,
+        }
+    }
+
+    fn create_test_shaped_line_key(index: usize) -> ShapedLineKey {
+        ShapedLineKey {
+            line_text: format!("line {index}").into(),
+            font_size: 16,
+            viewport_width: 800,
+            runs_hash: 1,
         }
     }
 
@@ -367,6 +433,66 @@ mod tests {
         highlighted.background_color = Some(gpui::white());
 
         assert_ne!(text_runs_hash(&[normal]), text_runs_hash(&[highlighted]));
+    }
+
+    #[test]
+    fn shaped_line_cache_stays_within_capacity() {
+        let cache = LineLayoutCache::new();
+
+        for index in 0..(SHAPED_LINE_CACHE_CAPACITY + 50) {
+            cache.store_shaped_line(
+                create_test_shaped_line_key(index),
+                create_test_shaped_line(),
+            );
+        }
+
+        assert_eq!(cache.shaped_line_cache_len(), SHAPED_LINE_CACHE_CAPACITY);
+        assert!(
+            cache
+                .get_shaped_line(&create_test_shaped_line_key(0))
+                .is_none()
+        );
+        assert!(
+            cache
+                .get_shaped_line(&create_test_shaped_line_key(
+                    SHAPED_LINE_CACHE_CAPACITY + 49
+                ))
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn shaped_line_cache_keeps_recently_used_entries() {
+        let cache = LineLayoutCache::new();
+
+        for index in 0..SHAPED_LINE_CACHE_CAPACITY {
+            cache.store_shaped_line(
+                create_test_shaped_line_key(index),
+                create_test_shaped_line(),
+            );
+        }
+        assert!(
+            cache
+                .get_shaped_line(&create_test_shaped_line_key(0))
+                .is_some()
+        );
+
+        cache.store_shaped_line(
+            create_test_shaped_line_key(SHAPED_LINE_CACHE_CAPACITY),
+            create_test_shaped_line(),
+        );
+
+        assert!(
+            cache
+                .get_shaped_line(&create_test_shaped_line_key(0))
+                .is_some()
+        );
+        assert!(
+            cache
+                .get_shaped_line(&create_test_shaped_line_key(1))
+                .is_none()
+        );
+        assert_eq!(cache.shaped_line_cache_len(), SHAPED_LINE_CACHE_CAPACITY);
     }
 
     #[test]
