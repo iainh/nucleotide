@@ -1,0 +1,17 @@
+[package]
+name = "nucleotide-appearance"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+description = "Platform appearance and native chrome resolution for Nucleotide"
+rust-version = "1.95"
+
+[dependencies]
+gpui.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Graphics_Gdi"] }

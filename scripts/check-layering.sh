@@ -38,11 +38,11 @@ else
 fi
 
 # Check that lower layers don't depend on higher layers
-# Layer order: types < events < core < editor/lsp/ui < nucleotide
+# Layer order: types < events/logging < core/appearance < editor/lsp/ui < nucleotide
 LAYERS=(
     "nucleotide-types"
-    "nucleotide-events" 
-    "nucleotide-core"
+    "nucleotide-events nucleotide-logging"
+    "nucleotide-core nucleotide-appearance"
     "nucleotide-editor nucleotide-lsp nucleotide-ui"
     "nucleotide"
 )

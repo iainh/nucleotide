@@ -5974,7 +5974,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         use crate::types::{AppEvent, UiEvent, Update};
-        use nucleotide_ui::theme_manager::SystemAppearance;
+        use nucleotide_appearance::SystemAppearance;
 
         // Update system appearance in theme manager
         let system_appearance = match appearance {
@@ -5993,7 +5993,7 @@ impl Workspace {
             theme_manager.set_system_appearance(system_appearance);
         });
         Self::sync_ui_theme_from_theme_manager(cx);
-        *nucleotide_ui::theme_manager::SystemAppearance::global_mut(cx) = system_appearance;
+        *nucleotide_appearance::SystemAppearance::global_mut(cx) = system_appearance;
 
         // Mark theme colors as dirty so they get recomputed on next render
         self.colors_dirty = true;
@@ -6084,8 +6084,7 @@ impl Workspace {
             && cx
                 .try_global::<crate::ThemeManager>()
                 .map(|theme_manager| {
-                    theme_manager.ui_chrome_style()
-                        == nucleotide_ui::theme_manager::UiChromeStyle::System
+                    theme_manager.ui_chrome_style() == nucleotide_appearance::UiChromeStyle::System
                 })
                 .unwrap_or(false);
 
@@ -6124,9 +6123,9 @@ impl Workspace {
 
     #[cfg(any())]
     unsafe fn update_titlebar_appearance_native(
-        system_appearance: nucleotide_ui::theme_manager::SystemAppearance,
+        system_appearance: nucleotide_appearance::SystemAppearance,
     ) {
-        use nucleotide_ui::theme_manager::SystemAppearance;
+        use nucleotide_appearance::SystemAppearance;
         use objc2::runtime::AnyObject;
         use objc2::{class, msg_send};
         use objc2_app_kit::{NSApplication, NSWindow};
@@ -6371,10 +6370,10 @@ impl Workspace {
 
     #[cfg(any())]
     unsafe fn update_titlebar_appearance_native_with_retry(
-        system_appearance: nucleotide_ui::theme_manager::SystemAppearance,
+        system_appearance: nucleotide_appearance::SystemAppearance,
         attempt: u32,
     ) -> bool {
-        use nucleotide_ui::theme_manager::SystemAppearance;
+        use nucleotide_appearance::SystemAppearance;
         use objc2::runtime::AnyObject;
         use objc2::{class, msg_send};
         use objc2_app_kit::{NSApplication, NSWindow};

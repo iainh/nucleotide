@@ -3,75 +3,11 @@
 
 use crate::Theme as UITheme;
 use crate::theme_utils::color_to_hsla;
-use gpui::{App, Global, Hsla, Pixels, WindowAppearance, hsla};
+use gpui::{Hsla, Pixels, hsla};
 use helix_view::Theme as HelixTheme;
-
-/// Extracted colors from Helix theme for comprehensive design token creation
-#[derive(Debug, Clone, Copy)]
-pub struct HelixThemeColors {
-    // Core selection and cursor colors
-    pub selection: Hsla,
-    pub cursor_normal: Hsla,
-    pub cursor_insert: Hsla,
-    pub cursor_select: Hsla,
-    pub cursor_match: Hsla,
-
-    // Semantic feedback colors
-    pub error: Hsla,
-    pub warning: Hsla,
-    pub success: Hsla,
-
-    // VCS colors from Helix diff scopes
-    pub vcs_added: Hsla,
-    pub vcs_modified: Hsla,
-    pub vcs_deleted: Hsla,
-
-    // UI component backgrounds
-    pub statusline: Hsla,
-    pub statusline_inactive: Hsla,
-    pub popup: Hsla,
-
-    // Buffer and tab system
-    pub bufferline_background: Hsla,
-    pub bufferline_active: Hsla,
-    pub bufferline_inactive: Hsla,
-
-    // Gutter and line number system
-    pub gutter_background: Hsla,
-    pub gutter_selected: Hsla,
-    pub line_number: Hsla,
-    pub line_number_active: Hsla,
-
-    // Menu and popup system
-    pub menu_background: Hsla,
-    pub menu_selected: Hsla,
-    pub menu_separator: Hsla,
-
-    // Separator and focus system
-    pub separator: Hsla,
-    pub focus: Hsla,
-
-    // Text colors
-    pub text_primary: Hsla,
-}
-
-/// System appearance state
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub enum SystemAppearance {
-    #[default]
-    Light,
-    Dark,
-}
-
-/// Source for non-editor UI chrome styling.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum UiChromeStyle {
-    /// Derive chrome surfaces from the active Helix theme.
-    #[default]
-    Theme,
-    /// Derive chrome surfaces from the current platform appearance.
-    System,
-}
+use nucleotide_appearance::{
+    HelixThemeColors, NativeChromePalette, SystemAppearance, UiChromeStyle,
+};
 
 /// Source of surface color extraction for debugging and validation
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -84,39 +20,6 @@ pub enum SurfaceColorSource {
     UiMenu,
     /// Using system appearance fallback
     SystemFallback,
-}
-
-impl From<WindowAppearance> for SystemAppearance {
-    fn from(appearance: WindowAppearance) -> Self {
-        match appearance {
-            WindowAppearance::Light | WindowAppearance::VibrantLight => SystemAppearance::Light,
-            WindowAppearance::Dark | WindowAppearance::VibrantDark => SystemAppearance::Dark,
-        }
-    }
-}
-
-/// Global SystemAppearance state for GPUI integration
-#[derive(Default)]
-struct GlobalSystemAppearance(SystemAppearance);
-
-impl Global for GlobalSystemAppearance {}
-
-impl SystemAppearance {
-    /// Initializes the global SystemAppearance based on the current window appearance
-    pub fn init(cx: &mut App) {
-        *cx.default_global::<GlobalSystemAppearance>() =
-            GlobalSystemAppearance(SystemAppearance::from(cx.window_appearance()));
-    }
-
-    /// Returns the global SystemAppearance
-    pub fn global(cx: &App) -> Self {
-        cx.global::<GlobalSystemAppearance>().0
-    }
-
-    /// Returns a mutable reference to the global SystemAppearance
-    pub fn global_mut(cx: &mut App) -> &mut Self {
-        &mut cx.global_mut::<GlobalSystemAppearance>().0
-    }
 }
 
 /// Manages theme state and provides consistent access to theme colors
@@ -1045,10 +948,10 @@ impl ThemeManager {
                 background, // editor background (ui.background)
                 is_dark_theme,
             ),
-            UiChromeStyle::System => crate::DesignTokens::from_helix_and_system_chrome(
+            UiChromeStyle::System => crate::DesignTokens::from_helix_and_native_chrome(
                 theme_colors,
                 background,
-                system_appearance == SystemAppearance::Dark,
+                NativeChromePalette::current(system_appearance),
             ),
         };
 
