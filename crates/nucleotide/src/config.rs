@@ -891,6 +891,23 @@ impl Config {
         self.ui_look().to_ui_chrome_style()
     }
 
+    /// Get the native window background material for the current UI look.
+    pub fn window_background_appearance(
+        &self,
+        is_dark_chrome: bool,
+    ) -> gpui::WindowBackgroundAppearance {
+        #[cfg(target_os = "windows")]
+        if self.ui_look() == UiLook::System {
+            return gpui::WindowBackgroundAppearance::MicaBackdrop;
+        }
+
+        if is_dark_chrome && self.gui.window.blur_dark_themes {
+            gpui::WindowBackgroundAppearance::Blurred
+        } else {
+            gpui::WindowBackgroundAppearance::Opaque
+        }
+    }
+
     /// Check if project-based LSP startup is enabled
     pub fn is_project_lsp_startup_enabled(&self) -> bool {
         self.gui.lsp.project_lsp_startup
@@ -1402,6 +1419,34 @@ flatten_empty_directories = false
 
         assert_eq!(themed.look, UiLook::Theme);
         assert_eq!(system.look, UiLook::System);
+    }
+
+    #[test]
+    fn window_background_appearance_uses_system_material_when_requested() {
+        let mut config = Config {
+            helix: HelixConfig::default(),
+            gui: GuiConfig::default(),
+        };
+        config.gui.window.blur_dark_themes = true;
+
+        assert_eq!(
+            config.window_background_appearance(true),
+            gpui::WindowBackgroundAppearance::Blurred
+        );
+
+        config.gui.ui.look = UiLook::System;
+
+        #[cfg(target_os = "windows")]
+        assert_eq!(
+            config.window_background_appearance(true),
+            gpui::WindowBackgroundAppearance::MicaBackdrop
+        );
+
+        #[cfg(not(target_os = "windows"))]
+        assert_eq!(
+            config.window_background_appearance(true),
+            gpui::WindowBackgroundAppearance::Blurred
+        );
     }
 
     #[test]

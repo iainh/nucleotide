@@ -9,8 +9,7 @@ use helix_term::args::Args;
 use nucleotide_logging::{error, info, instrument, warn};
 
 use gpui::{
-    AppContext, Menu, MenuItem, TitlebarOptions, WindowBackgroundAppearance, WindowBounds,
-    WindowKind, WindowOptions, px,
+    AppContext, Menu, MenuItem, TitlebarOptions, WindowBounds, WindowKind, WindowOptions, px,
 };
 
 // Import from the library crate instead of re-declaring modules
@@ -641,7 +640,7 @@ fn open_request_workspace_dir(path: &Path) -> Option<PathBuf> {
 fn window_options(
     _cx: &mut impl gpui::AppContext,
     config: &nucleotide::config::Config,
-    is_dark: bool,
+    is_dark_chrome: bool,
 ) -> gpui::WindowOptions {
     let window_decorations = match std::env::var("HELIX_WINDOW_DECORATIONS") {
         Ok(val) if val == "server" => gpui::WindowDecorations::Server,
@@ -649,11 +648,7 @@ fn window_options(
         _ => gpui::WindowDecorations::Client, // Default to client decorations
     };
 
-    let window_background = if is_dark && config.gui.window.blur_dark_themes {
-        WindowBackgroundAppearance::Blurred
-    } else {
-        WindowBackgroundAppearance::Opaque
-    };
+    let window_background = config.window_background_appearance(is_dark_chrome);
 
     WindowOptions {
         app_id: Some("nucleotide".to_string()),

@@ -25,7 +25,7 @@ use gpui::{
     Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyDownEvent,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point,
     Render, ScrollHandle, Size, StatefulInteractiveElement, Styled, TextStyle, Window,
-    WindowAppearance, WindowBackgroundAppearance, canvas, div, px, svg,
+    WindowAppearance, canvas, div, px, svg,
 };
 use gpui::{FontFeatures, FontWeight};
 use helix_core::syntax::config::LanguageServerFeature;
@@ -6063,14 +6063,7 @@ impl Workspace {
         let theme_manager = cx.global::<crate::ThemeManager>();
         let is_dark = theme_manager.is_dark_chrome();
 
-        // Set window background appearance based on theme
-        let appearance = if is_dark {
-            // Dark themes should use Blurred to get the proper macOS dark window border
-            WindowBackgroundAppearance::Blurred
-        } else {
-            // Light themes always use opaque
-            WindowBackgroundAppearance::Opaque
-        };
+        let appearance = config.window_background_appearance(is_dark);
 
         let theme_name = self.core.read(cx).editor.theme.name();
         info!(
