@@ -6,130 +6,129 @@
 # Based on the default purple theme but with teal as the dominant color
 # Features WCAG AA compliant contrast ratios for accessibility
 
-attribute = "aqua"
-keyword = "almond"
+attribute = "link"
+keyword = "amber"
 "keyword.directive" = "aqua" # -- preprocessor comments (#if in C)
-namespace = "aqua"
-punctuation = "seafoam"
-"punctuation.delimiter" = "seafoam"
-operator = "aqua"
-special = "honey"
+namespace = "link"
+punctuation = "muted_mid"
+"punctuation.delimiter" = "muted_mid"
+operator = "ink"
+special = "gold"
 "variable.other.member" = "white"
-variable = "seafoam"
-# "variable.parameter" = { fg = "seafoam", modifiers = ["underlined"] }
-"variable.parameter" = { fg = "seafoam" }
-"variable.builtin" = "mint"
+variable = "ink"
+# "variable.parameter" = { fg = "ink", modifiers = ["underlined"] }
+"variable.parameter" = { fg = "ink" }
+"variable.builtin" = "aqua"
 type = "white"
-"type.builtin" = "mint"
+"type.builtin" = "aqua"
 constructor = "aqua"
 function = "white"
-"function.macro" = "aqua"
+"function.macro" = "link"
 "function.builtin" = "white"
-tag = "almond"
-comment = "sirocco"
-constant = "white"
-"constant.builtin" = "white"
-string = "silver"
-"constant.numeric" = "chamois"
-"constant.character.escape" = "honey"
+tag = "amber"
+comment = "comment"
+constant = "aqua"
+"constant.builtin" = "aqua"
+string = "sage"
+"constant.numeric" = "link"
+"constant.character.escape" = "coral"
 # used for lifetimes
-label = "honey"
-tabstop = { modifiers = ["italic"], bg = "forest" }
+label = "link"
+tabstop = { modifiers = ["italic"], bg = "panel" }
 
-"markup.heading" = "aqua"
+"markup.heading" = "link"
 "markup.bold" = { modifiers = ["bold"] }
 "markup.italic" = { modifiers = ["italic"] }
 "markup.strikethrough" = { modifiers = ["crossed_out"] }
-"markup.link.url" = { fg = "silver", modifiers = ["underlined"] }
-"markup.link.text" = "almond"
-"markup.raw" = "almond"
+"markup.link.url" = { fg = "link", modifiers = ["underlined"] }
+"markup.link.text" = "amber"
+"markup.raw" = "amber"
 
-"diff.plus" = "#35bf86"
-"diff.minus" = "#f22c86"
-"diff.delta" = "#14b8a6"
+"diff.plus" = "sage"
+"diff.minus" = "coral"
+"diff.delta" = "link"
 
-"comment.block.documentation" = { fg = "silver", modifiers = ["italic"] }
-"comment.line.documentation" = { fg = "silver", modifiers = ["italic"] }
+"comment.block.documentation" = { fg = "muted_mid", modifiers = ["italic"] }
+"comment.line.documentation" = { fg = "muted_mid", modifiers = ["italic"] }
 # concat (ERROR) @error.syntax and "MISSING ;" selectors for errors
 
-"ui.background" = { bg = "ocean" }
-"ui.background.separator" = { fg = "mist" }
-"ui.linenr" = { fg = "mist" }
-"ui.linenr.selected" = { fg = "aqua" }
-"ui.statusline" = { fg = "aqua", bg = "abyss" }
-"ui.statusline.inactive" = { fg = "seafoam", bg = "abyss" }
-"ui.popup" = { bg = "abyss" }
-"ui.window" = { fg = "forest" }
-"ui.help" = { bg = "#14b8a6", fg = "#0a1918" }
-"ui.text" = { fg = "seafoam" }
+"ui.background" = { bg = "base" }
+"ui.background.separator" = { fg = "separator" }
+"ui.linenr" = { fg = "gutter_fg" }
+"ui.linenr.selected" = { fg = "link" }
+"ui.statusline" = { fg = "ink", bg = "base" }
+"ui.statusline.inactive" = { fg = "muted_mid", bg = "base" }
+"ui.popup" = { bg = "panel" }
+"ui.window" = { fg = "separator" }
+"ui.help" = { bg = "link", fg = "base" }
+"ui.text" = { fg = "ink" }
 "ui.text.focus" = { fg = "white" }
-"ui.text.inactive" = "sirocco"
-"ui.text.directory" = { fg = "aqua" }
-"ui.virtual" = { fg = "mist" }
-"ui.virtual.ruler" = { bg = "forest" }
-"ui.virtual.jump-label" = { fg = "apricot", modifiers = ["bold"] }
+"ui.text.inactive" = "comment"
+"ui.text.directory" = { fg = "link" }
+"ui.virtual" = { fg = "gutter_fg" }
+"ui.virtual.ruler" = { bg = "panel" }
+"ui.virtual.jump-label" = { fg = "coral", modifiers = ["bold"] }
 
-"ui.virtual.indent-guide" = { fg = "mist" }
+"ui.virtual.indent-guide" = { fg = "indent" }
 
-"ui.selection" = { bg = "#0e7490" }
-"ui.selection.primary" = { bg = "#0e7490" }
-"ui.cursor.select" = { bg = "teal-bright" }
+"ui.selection" = { bg = "selection" }
+"ui.selection.primary" = { bg = "selection" }
+"ui.cursor.select" = { bg = "matched" }
 "ui.cursor.insert" = { bg = "white" }
-"ui.cursor.primary.select" = { bg = "teal-bright" }
+"ui.cursor.primary.select" = { bg = "matched" }
 "ui.cursor.primary.insert" = { bg = "white" }
-"ui.cursor.match" = { fg = "#0a1918", bg = "#5eaaa8" }
+"ui.cursor.match" = { fg = "base", bg = "matched" }
 "ui.cursor" = { modifiers = ["reversed"] }
-"ui.cursorline.primary" = { bg = "forest" }
-"ui.highlight" = { bg = "forest" }
-"ui.highlight.frameline" = { bg = "#2d5951" }
-"ui.debug" = { fg = "#2d5951" }
-"ui.debug.breakpoint" = { fg = "apricot" }
-"ui.menu" = { fg = "seafoam", bg = "abyss" }
-"ui.menu.selected" = { fg = "abyss", bg = "white" }
-"ui.menu.scroll" = { fg = "seafoam", bg = "mist" }
+"ui.cursorline.primary" = { bg = "caret_row" }
+"ui.highlight" = { bg = "caret_row" }
+"ui.highlight.frameline" = { bg = "folded_bg" }
+"ui.debug" = { fg = "link" }
+"ui.debug.breakpoint" = { fg = "coral" }
+"ui.menu" = { fg = "ink", bg = "panel" }
+"ui.menu.selected" = { fg = "base", bg = "link" }
+"ui.menu.scroll" = { fg = "ink", bg = "gutter_fg" }
 
-"diagnostic.hint" = { underline = { color = "silver", style = "curl" } }
-"diagnostic.info" = { underline = { color = "teal-bright", style = "curl" } }
-"diagnostic.warning" = { underline = { color = "lightning", style = "curl" } }
-"diagnostic.error" = { underline = { color = "apricot", style = "curl" } }
+"diagnostic.hint" = { underline = { color = "muted_mid", style = "curl" } }
+"diagnostic.info" = { underline = { color = "gold", style = "curl" } }
+"diagnostic.warning" = { underline = { color = "warn", style = "curl" } }
+"diagnostic.error" = { underline = { color = "error", style = "curl" } }
 "diagnostic.unnecessary" = { modifiers = ["dim"] }
 "diagnostic.deprecated" = { modifiers = ["crossed_out"] }
 
-warning = "lightning"
-error = "apricot"
-info = "teal-bright"
-hint = "silver"
+warning = "warn"
+error = "error"
+info = "gold"
+hint = "muted_mid"
 
 [palette]
-# Core colors (unchanged)
+# Teal palette with dark-purple-style role separation.
+
+# Backgrounds and surfaces
+base = "#102423"
+gutter_bg = "#132927"
+caret_row = "#112726"
+panel = "#183432"
+separator = "#2f5854"
+separator_selected = "#47736f"
+indent = "#274743"
+indent_selected = "#315650"
+folded_bg = "#1d4b52"
+selection = "#21423f"
+matched = "#3b6864"
+
+# Text
 white = "#ffffff"
-silver = "#cccccc"
-sirocco = "#697C81"
-mint = "#9ff28f"
-almond = "#eccdba"
-chamois = "#E8DCA0"
-honey = "#efba5d"
-apricot = "#f47868"
-lightning = "#ffcd1c"
+ink = "#c8d2d5"
+comment = "#6f8584"
+muted_mid = "#95a7a8"
+gutter_fg = "#5f7473"
 
-# Teal color palette with improved readability
-# Bright teal for highlights and accents (replacing lilac #dbbfef)
-aqua = "#5eead4"
-
-# Light grey for main text (WCAG AA compliant on dark bg)
-seafoam = "#c1c9d2"
-
-# Medium grey (replacing comet #5a5977)
-mist = "#7a8491"
-
-# Dark teal (replacing bossanova #452859)
-forest = "#134e4a"
-
-# Very dark teal (replacing midnight #3b224c)
-ocean = "#0f2e2c"
-
-# Darkest teal (replacing revolver #281733)
-abyss = "#0a1918"
-
-# Bright teal (replacing delta #6F44F0)
-teal-bright = "#14b8a6"
+# Accents
+aqua = "#67e8d1"
+link = "#4fc3c7"
+sage = "#93d6ac"
+amber = "#d6ad63"
+gold = "#c6a95f"
+coral = "#f07868"
+error = "#dd5f59"
+warn = "#c89424"
