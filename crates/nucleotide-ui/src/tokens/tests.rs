@@ -41,6 +41,30 @@ mod system_chrome_token_tests {
         assert_eq!(dark.bufferline_active, editor_background);
         assert!(light.popup_background.a < 1.0);
         assert!(dark.popup_background.a < 1.0);
+        assert!(light.popup_background.a >= 0.94);
+        assert!(dark.popup_background.a >= 0.94);
+        assert!(light.menu_background.a >= 0.94);
+        assert!(dark.menu_background.a >= 0.94);
+
+        if cfg!(target_os = "windows") {
+            assert_eq!(light.titlebar_background.a, 0.0);
+            assert_eq!(dark.titlebar_background.a, 0.0);
+            assert_eq!(light.footer_background.a, 0.0);
+            assert_eq!(dark.footer_background.a, 0.0);
+            assert!(light.file_tree_background.a <= 0.5);
+            assert!(dark.file_tree_background.a <= 0.55);
+            assert!(light.surface.a <= 0.6);
+            assert!(dark.surface.a <= 0.65);
+        } else {
+            assert_eq!(light.titlebar_background.a, 1.0);
+            assert_eq!(dark.titlebar_background.a, 1.0);
+            assert_eq!(light.footer_background.a, 1.0);
+            assert_eq!(dark.footer_background.a, 1.0);
+            assert_eq!(light.file_tree_background.a, 1.0);
+            assert_eq!(dark.file_tree_background.a, 1.0);
+            assert_eq!(light.surface.a, 1.0);
+            assert_eq!(dark.surface.a, 1.0);
+        }
     }
 }
 
@@ -668,7 +692,7 @@ mod component_token_tests {
         // Test that container uses chrome colors
         assert_eq!(
             picker_tokens.container_background,
-            tokens.chrome.surface_elevated
+            tokens.chrome.popup_background
         );
         assert_eq!(
             picker_tokens.header_background,
@@ -715,7 +739,7 @@ mod component_token_tests {
         // Test that container uses chrome colors for UI consistency
         assert_eq!(
             dropdown_tokens.container_background,
-            tokens.chrome.surface_elevated
+            tokens.chrome.menu_background
         );
         assert_eq!(dropdown_tokens.border, tokens.chrome.border_shadow);
 
