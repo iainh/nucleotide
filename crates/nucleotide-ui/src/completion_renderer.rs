@@ -4,7 +4,7 @@
 use gpui::prelude::FluentBuilder;
 use gpui::{
     AnyElement, Context, Hsla, InteractiveElement, IntoElement, ParentElement,
-    StatefulInteractiveElement, Styled, Svg, UniformListScrollHandle, div, px,
+    StatefulInteractiveElement, Styled, Svg, UniformListScrollHandle, div, px, relative,
 };
 
 use crate::completion_icons::{create_themed_completion_icon, get_completion_icon_color};
@@ -114,10 +114,8 @@ impl CompletionItemElement {
         &self,
         text: &str,
         positions: &[usize],
-        theme: &crate::Theme,
+        base_color: Hsla,
     ) -> impl IntoElement {
-        let tokens = &theme.tokens;
-
         if positions.is_empty() {
             // No highlighting needed
             return div().child(text.to_string());
@@ -138,7 +136,7 @@ impl CompletionItemElement {
                 if !before.is_empty() {
                     elements.push(
                         div()
-                            .text_color(tokens.chrome.text_on_chrome)
+                            .text_color(base_color)
                             .child(before)
                             .into_any_element(),
                     );
@@ -149,7 +147,7 @@ impl CompletionItemElement {
             let highlighted_char = chars[pos];
             elements.push(
                 div()
-                    .text_color(tokens.chrome.primary)
+                    .text_color(base_color)
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .child(highlighted_char.to_string())
                     .into_any_element(),
@@ -164,7 +162,7 @@ impl CompletionItemElement {
             if !remaining.is_empty() {
                 elements.push(
                     div()
-                        .text_color(tokens.chrome.text_on_chrome)
+                        .text_color(base_color)
                         .child(remaining)
                         .into_any_element(),
                 );
@@ -181,6 +179,106 @@ impl CompletionItemElement {
         let tokens = &theme.tokens;
 
         let display_text = self.item.display_text.as_ref().unwrap_or(&self.item.text);
+        let detail_text = self
+            .item
+            .detail
+            .as_ref()
+            .or(self.item.description.as_ref())
+            .map(ToString::to_string)
+            .map(|text| text.trim().to_string())
+            .filter(|text| !text.is_empty());
+        let signature_text = self
+            .item
+            .signature_info
+            .as_ref()
+            .map(ToString::to_string)
+            .map(|text| text.trim().to_string())
+            .filter(|text| !text.is_empty());
+        let type_text = self
+            .item
+            .type_info
+            .as_ref()
+            .map(ToString::to_string)
+            .map(|text| text.trim().to_string())
+            .filter(|text| !text.is_empty());
+
+        if self.compact {
+            let label_color = tokens.chrome.text_on_chrome;
+
+            return div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .w_full()
+                .h(px(26.0))
+                .px(tokens.sizes.space_2)
+                .gap(tokens.sizes.space_2)
+                .rounded(tokens.sizes.radius_sm)
+                .line_height(relative(1.0))
+                .when(self.is_selected, |div| div.bg(tokens.chrome.surface_active))
+                .when(!self.is_selected, |div| {
+                    div.hover(|style| style.bg(tokens.chrome.surface_hover))
+                })
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .min_w(px(0.0))
+                        .flex_1()
+                        .gap(tokens.sizes.space_2)
+                        .child(
+                            div()
+                                .text_size(tokens.sizes.text_base)
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .text_color(label_color)
+                                .min_w(px(0.0))
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis()
+                                .child(self.render_highlighted_text(
+                                    display_text,
+                                    &self.string_match.positions,
+                                    label_color,
+                                )),
+                        )
+                        .when_some(signature_text, |row, signature| {
+                            row.child(
+                                div()
+                                    .text_size(tokens.sizes.text_base)
+                                    .text_color(tokens.chrome.text_chrome_secondary)
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .child(signature),
+                            )
+                        })
+                        .when_some(detail_text, |row, detail| {
+                            row.child(
+                                div()
+                                    .text_size(tokens.sizes.text_base)
+                                    .text_color(tokens.chrome.text_chrome_secondary)
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .child(detail),
+                            )
+                        })
+                        .when_some(type_text, |row, type_info| {
+                            row.child(
+                                div()
+                                    .ml_auto()
+                                    .text_size(tokens.sizes.text_sm)
+                                    .text_color(tokens.chrome.text_chrome_secondary)
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .child(type_info),
+                            )
+                        }),
+                )
+                .into_any_element();
+        }
 
         let base_container = div()
             .flex()
@@ -287,12 +385,11 @@ impl CompletionItemElement {
                                 .child(self.render_highlighted_text(
                                     display_text,
                                     &self.string_match.positions,
-                                    theme,
+                                    tokens.chrome.text_on_chrome,
                                 )),
                         )
                         // Show signature info (parameters) directly after function name
-                        .when(self.item.signature_info.is_some(), |div_el| {
-                            let signature = self.item.signature_info.as_ref().unwrap().to_string();
+                        .when_some(signature_text, |div_el, signature| {
                             div_el.child(
                                 div()
                                     .text_sm()
@@ -302,8 +399,7 @@ impl CompletionItemElement {
                             )
                         })
                         // Show type info (return type) at the end
-                        .when(self.item.type_info.is_some(), |div_el| {
-                            let type_info = self.item.type_info.as_ref().unwrap().to_string();
+                        .when_some(type_text, |div_el, type_info| {
                             div_el.child(
                                 div()
                                     .text_sm()
@@ -314,29 +410,19 @@ impl CompletionItemElement {
                         }),
                 )
                 // Bottom row: Detail or description (less prominent)
-                .when(
-                    self.item.detail.is_some() || self.item.description.is_some(),
-                    |div_el| {
-                        let detail_text = self
-                            .item
-                            .detail
-                            .as_ref()
-                            .or(self.item.description.as_ref())
-                            .unwrap()
-                            .to_string();
-                        div_el.child(
-                            div()
-                                .text_xs()
-                                .text_color(tokens.chrome.text_chrome_secondary)
-                                .w_full()
-                                .max_w_full()
-                                .overflow_hidden()
-                                .text_ellipsis()
-                                .whitespace_nowrap()
-                                .child(detail_text),
-                        )
-                    },
-                ),
+                .when_some(detail_text, |div_el, detail_text| {
+                    div_el.child(
+                        div()
+                            .text_xs()
+                            .text_color(tokens.chrome.text_chrome_secondary)
+                            .w_full()
+                            .max_w_full()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_nowrap()
+                            .child(detail_text),
+                    )
+                }),
         );
 
         // Score indicator (for debugging/development)
