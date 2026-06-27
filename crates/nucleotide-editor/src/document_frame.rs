@@ -16,11 +16,12 @@ use crate::{
     DiagnosticOverlaySpans, DiagnosticSeverityByLine, DocumentRulerPaintParams,
     DocumentSoftWrapRenderPlanParams, EditorCursorPresentation, EditorCursorPresentationParams,
     EditorLineHighlightContext, EditorRenderSnapshot, EditorSurfaceGeometry, GutterLinePlan,
-    RulerPaintPlan, SoftWrapHighlightedLineRunsBatchParams, SoftWrapRenderPlan,
-    UnwrappedHighlightedLine, UnwrappedHighlightedLinesParams, UnwrappedRenderPlan,
-    UnwrappedRenderPlanParams, diagnostic_overlay_spans, diagnostic_severity_by_line,
-    document_render_snapshot, document_ruler_paint_plans, document_soft_wrap_render_plan,
-    document_text_format_for_surface, editor_cursor_presentation,
+    InlineDiagnosticFramePlan, InlineDiagnosticFramePlanParams, RulerPaintPlan,
+    SoftWrapHighlightedLineRunsBatchParams, SoftWrapRenderPlan, UnwrappedHighlightedLine,
+    UnwrappedHighlightedLinesParams, UnwrappedRenderPlan, UnwrappedRenderPlanParams,
+    diagnostic_overlay_spans, diagnostic_severity_by_line, document_render_snapshot,
+    document_ruler_paint_plans, document_soft_wrap_render_plan, document_text_format_for_surface,
+    editor_cursor_presentation, inline_diagnostic_frame_plan,
     soft_wrap_highlighted_line_runs_batch, unwrapped_highlighted_lines, unwrapped_render_plan,
 };
 use nucleotide_logging::PerfTimer;
@@ -72,6 +73,7 @@ pub struct EditorDocumentFrame {
     pub cursor_presentation: EditorCursorPresentation,
     pub diagnostic_overlay_spans: Option<DiagnosticOverlaySpans>,
     pub diagnostic_severity_by_line: DiagnosticSeverityByLine,
+    pub inline_diagnostic_plan: InlineDiagnosticFramePlan,
     pub soft_wrap_render_plan: Option<SoftWrapRenderPlan>,
     pub unwrapped_render_plan: Option<UnwrappedRenderPlan>,
     pub soft_wrap_line_runs: Vec<Vec<TextRun>>,
@@ -114,6 +116,17 @@ pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDoc
     let primary_cursor_line = text.char_to_line(primary_cursor_idx);
     let line_start = text.line_to_char(primary_cursor_line);
     let primary_cursor_col = primary_cursor_idx - line_start;
+    let inline_diagnostic_plan = inline_diagnostic_frame_plan(InlineDiagnosticFramePlanParams {
+        document: params.document,
+        view: params.view,
+        view_id: params.view_id,
+        theme: params.theme,
+        editor_mode: params.editor_mode,
+        viewport_columns: text_format.viewport_width,
+        horizontal_offset: params.view_position.horizontal_offset,
+        tab_width: text_format.tab_width,
+    });
+    let inline_diagnostic_virtual_rows = inline_diagnostic_plan.virtual_rows_by_line();
     let ruler_geometry = EditorSurfaceGeometry::new(params.bounds, gutter_width, params.cell_width);
     let ruler_paint_plans = document_ruler_paint_plans(DocumentRulerPaintParams {
         document: params.document,
@@ -125,6 +138,7 @@ pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDoc
     let soft_wrap_render_plan = params.soft_wrap_enabled.then(|| {
         document_soft_wrap_render_plan(DocumentSoftWrapRenderPlanParams {
             document: params.document,
+            view: params.view,
             theme: Some(params.theme),
             view_position: params.view_position,
             bounds: params.bounds,
@@ -133,6 +147,7 @@ pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDoc
             line_height: params.line_height,
             scroll_line_offset: params.scroll_line_offset,
             minimum_columns: params.soft_wrap_minimum_columns,
+            inline_diagnostic_virtual_rows: Some(&inline_diagnostic_virtual_rows),
         })
     });
     let unwrapped_render_plan = (!params.soft_wrap_enabled).then(|| {
@@ -146,6 +161,7 @@ pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDoc
             scroll_line_offset: params.scroll_line_offset,
             horizontal_offset: params.view_position.horizontal_offset,
             cursor_line: render_snapshot.cursor_line,
+            inline_diagnostic_virtual_rows: Some(&inline_diagnostic_virtual_rows),
         })
     });
     let diagnostic_overlay_spans = diagnostic_overlay_spans(params.document, params.theme);
@@ -211,6 +227,7 @@ pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDoc
         cursor_presentation,
         diagnostic_overlay_spans,
         diagnostic_severity_by_line: diagnostic_severity_by_line(params.document),
+        inline_diagnostic_plan,
         soft_wrap_render_plan,
         unwrapped_render_plan,
         soft_wrap_line_runs,

@@ -18,6 +18,7 @@ pub mod geometry;
 pub mod gutter;
 pub mod highlight;
 pub mod hit_test;
+pub mod inline_diagnostics;
 pub mod line_cache;
 pub mod line_painter;
 pub mod line_plan;
@@ -70,8 +71,8 @@ pub use document_frame_painter::{
     prepare_native_editor_frame, render_native_editor_frame,
 };
 pub use document_metrics::{
-    EditorDocumentMetrics, EditorDocumentMetricsCache, document_text_format_for_surface,
-    visual_rows_for_text,
+    EditorDocumentMetrics, EditorDocumentMetricsCache, EditorDocumentMetricsCacheResolveParams,
+    document_text_format_for_surface, visual_rows_for_text,
 };
 pub use geometry::{EditorLayout, EditorSurfaceGeometry};
 pub use gutter::{
@@ -91,6 +92,11 @@ pub use highlight::{
     unwrapped_highlighted_line, unwrapped_highlighted_lines,
 };
 pub use hit_test::{EditorHitTestResult, hit_test_document_position};
+pub use inline_diagnostics::{
+    InlineDiagnosticColors, InlineDiagnosticFramePlan, InlineDiagnosticFramePlanParams,
+    InlineDiagnosticLinePlan, InlineDiagnosticPaintParams, InlineDiagnosticTextLine,
+    inline_diagnostic_frame_plan, paint_inline_diagnostic_plan,
+};
 pub use line_cache::{LineLayout, LineLayoutCache};
 pub use line_painter::{
     EditorLineBackgroundStyle, SoftWrapEditorLinePaintParams, UnwrappedEditorLinePaintParams,

@@ -168,7 +168,7 @@ impl FrameFixture {
         let text = self.document.text().slice(..);
         let viewport = line_viewport_plan(text, first_row, first_row + VISIBLE_ROWS, 0);
 
-        unwrapped_visible_line_plans(text, viewport, self.line_height, px(0.0))
+        unwrapped_visible_line_plans(text, viewport, self.line_height, px(0.0), None)
     }
 
     fn visible_soft_wrap_lines(&self, first_row: usize) -> Vec<SoftWrapVisualLine> {
@@ -176,6 +176,7 @@ impl FrameFixture {
         let plan =
             document_soft_wrap_render_plan(nucleotide_editor::DocumentSoftWrapRenderPlanParams {
                 document: &self.document,
+                view: &self.view,
                 theme: Some(&self.theme),
                 view_position,
                 bounds: self.bounds,
@@ -184,6 +185,7 @@ impl FrameFixture {
                 line_height: self.line_height,
                 scroll_line_offset: px(0.0),
                 minimum_columns: EDITOR_MINIMUM_VIEWPORT_COLUMNS,
+                inline_diagnostic_virtual_rows: None,
             });
 
         plan.visual_lines

@@ -1,6 +1,8 @@
 // ABOUTME: Soft-wrap viewport collection for native editor rendering
 // ABOUTME: Converts Helix formatter graphemes into owned visual-line records
 
+use std::collections::BTreeMap;
+
 use gpui::{Bounds, Font, Hsla, Pixels, Point, SharedString, TextRun, point, px, size};
 use helix_core::{
     RopeSlice,
@@ -56,16 +58,19 @@ pub struct SoftWrapLinePaintPlan<'a> {
 pub struct SoftWrapRenderPlanParams<'a> {
     pub text: RopeSlice<'a>,
     pub text_format: TextFormat,
+    pub text_annotations: Option<&'a TextAnnotations<'a>>,
     pub view_offset: ViewPosition,
     pub bounds: Bounds<Pixels>,
     pub gutter_columns: u16,
     pub cell_width: Pixels,
     pub line_height: Pixels,
     pub scroll_line_offset: Pixels,
+    pub inline_diagnostic_virtual_rows: Option<&'a BTreeMap<usize, usize>>,
 }
 
 pub struct DocumentSoftWrapRenderPlanParams<'a> {
     pub document: &'a Document,
+    pub view: &'a helix_view::View,
     pub theme: Option<&'a Theme>,
     pub view_position: ViewPosition,
     pub bounds: Bounds<Pixels>,
@@ -74,6 +79,7 @@ pub struct DocumentSoftWrapRenderPlanParams<'a> {
     pub line_height: Pixels,
     pub scroll_line_offset: Pixels,
     pub minimum_columns: u16,
+    pub inline_diagnostic_virtual_rows: Option<&'a BTreeMap<usize, usize>>,
 }
 
 #[derive(Debug, Clone)]
@@ -84,6 +90,7 @@ pub struct SoftWrapRenderPlan {
     pub geometry: EditorSurfaceGeometry,
     pub viewport_height: usize,
     pub visual_lines: Vec<SoftWrapVisualLine>,
+    pub inline_diagnostic_virtual_rows: BTreeMap<usize, usize>,
 }
 
 impl SoftWrapRenderPlan {
@@ -95,6 +102,7 @@ impl SoftWrapRenderPlan {
     ) -> Vec<SoftWrapLinePaintPlan<'_>> {
         soft_wrap_line_paint_plans(
             &self.visual_lines,
+            &self.inline_diagnostic_virtual_rows,
             self.geometry,
             line_height,
             scroll_line_offset,
@@ -119,12 +127,14 @@ pub fn document_soft_wrap_render_plan(
     soft_wrap_render_plan(SoftWrapRenderPlanParams {
         text: params.document.text().slice(..),
         text_format,
+        text_annotations: None,
         view_offset: params.view_position,
         bounds: params.bounds,
         gutter_columns: params.gutter_columns,
         cell_width: params.cell_width,
         line_height: params.line_height,
         scroll_line_offset: params.scroll_line_offset,
+        inline_diagnostic_virtual_rows: params.inline_diagnostic_virtual_rows,
     })
 }
 
@@ -136,6 +146,7 @@ pub fn soft_wrap_render_plan(params: SoftWrapRenderPlanParams<'_>) -> SoftWrapRe
     let visual_lines = soft_wrap_visual_lines(
         params.text,
         &params.text_format,
+        params.text_annotations,
         params.view_offset.anchor,
         params.view_offset.vertical_offset,
         viewport_height,
@@ -148,23 +159,29 @@ pub fn soft_wrap_render_plan(params: SoftWrapRenderPlanParams<'_>) -> SoftWrapRe
         geometry,
         viewport_height,
         visual_lines,
+        inline_diagnostic_virtual_rows: params
+            .inline_diagnostic_virtual_rows
+            .cloned()
+            .unwrap_or_default(),
     }
 }
 
 pub fn soft_wrap_visual_lines(
     text: RopeSlice<'_>,
     text_format: &TextFormat,
+    text_annotations: Option<&TextAnnotations<'_>>,
     anchor: usize,
     vertical_offset: usize,
     viewport_height: usize,
 ) -> Vec<SoftWrapVisualLine> {
-    let annotations = TextAnnotations::default();
+    let default_annotations = TextAnnotations::default();
+    let annotations = text_annotations.unwrap_or(&default_annotations);
     let anchor_visual_row =
-        visual_offset_from_block(text, anchor, anchor, text_format, &annotations)
+        visual_offset_from_block(text, anchor, anchor, text_format, annotations)
             .0
             .row;
     let mut formatter =
-        DocumentFormatter::new_at_prev_checkpoint(text, text_format, &annotations, anchor);
+        DocumentFormatter::new_at_prev_checkpoint(text, text_format, annotations, anchor);
     let mut visual_line = 0;
     let start_visual_line = anchor_visual_row.saturating_add(vertical_offset);
     let mut current_doc_line = text.char_to_line(anchor);
@@ -312,6 +329,7 @@ pub fn soft_wrap_viewport_height(
 
 pub fn soft_wrap_line_paint_plans<'a>(
     visual_lines: &'a [SoftWrapVisualLine],
+    inline_diagnostic_virtual_rows: &BTreeMap<usize, usize>,
     geometry: EditorSurfaceGeometry,
     line_height: Pixels,
     scroll_line_offset: Pixels,
@@ -319,13 +337,27 @@ pub fn soft_wrap_line_paint_plans<'a>(
     cursor_line: usize,
 ) -> Vec<SoftWrapLinePaintPlan<'a>> {
     let text_origin_x = geometry.text_origin_x();
+    let mut extra_rows_before = 0usize;
 
     visual_lines
         .iter()
-        .map(|visual| {
-            let y_offset =
-                -scroll_line_offset + line_height * visual.relative_row(vertical_offset) as f32;
+        .enumerate()
+        .map(|(index, visual)| {
+            let y_offset = -scroll_line_offset
+                + line_height * (visual.relative_row(vertical_offset) + extra_rows_before) as f32;
             let line_y = geometry.bounds.origin.y + geometry.top_padding() + y_offset;
+            let is_last_visual_for_doc_line = visual_lines
+                .get(index + 1)
+                .is_none_or(|next| next.doc_line != visual.doc_line);
+            let diagnostic_rows_after = is_last_visual_for_doc_line
+                .then(|| {
+                    inline_diagnostic_virtual_rows
+                        .get(&visual.doc_line)
+                        .copied()
+                })
+                .flatten()
+                .unwrap_or(0);
+            extra_rows_before += diagnostic_rows_after;
 
             SoftWrapLinePaintPlan {
                 visual,
@@ -498,7 +530,7 @@ mod tests {
     #[test]
     fn collects_wrapped_visual_lines_with_metadata() {
         let text = "foo ".repeat(10);
-        let lines = soft_wrap_visual_lines(text.as_str().into(), &text_format(), 0, 0, 3);
+        let lines = soft_wrap_visual_lines(text.as_str().into(), &text_format(), None, 0, 0, 3);
 
         assert_eq!(lines.len(), 3);
         assert_eq!(lines[0].visual_line, 0);
@@ -529,7 +561,7 @@ mod tests {
     #[test]
     fn starts_at_viewport_vertical_offset() {
         let text = "foo ".repeat(10);
-        let lines = soft_wrap_visual_lines(text.as_str().into(), &text_format(), 0, 1, 1);
+        let lines = soft_wrap_visual_lines(text.as_str().into(), &text_format(), None, 0, 1, 1);
 
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].visual_line, 1);
@@ -540,7 +572,7 @@ mod tests {
     #[test]
     fn starts_at_anchor_visual_row() {
         let text = "foo ".repeat(10);
-        let lines = soft_wrap_visual_lines(text.as_str().into(), &text_format(), 16, 0, 1);
+        let lines = soft_wrap_visual_lines(text.as_str().into(), &text_format(), None, 16, 0, 1);
 
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].visual_line, 0);
@@ -559,6 +591,7 @@ mod tests {
                 viewport_width: 20,
                 ..TextFormat::default()
             },
+            None,
             0,
             0,
             1,
@@ -721,7 +754,9 @@ mod tests {
             },
         ];
 
-        let plans = soft_wrap_line_paint_plans(&lines, geometry(), px(20.0), px(5.0), 1, 4);
+        let virtual_rows = std::collections::BTreeMap::new();
+        let plans =
+            soft_wrap_line_paint_plans(&lines, &virtual_rows, geometry(), px(20.0), px(5.0), 1, 4);
 
         assert_eq!(plans.len(), 2);
         assert_eq!(plans[0].y_offset, px(-5.0));
@@ -740,6 +775,60 @@ mod tests {
     }
 
     #[test]
+    fn line_paint_plans_reserve_diagnostics_after_last_visual_line_for_document_line() {
+        let lines = vec![
+            SoftWrapVisualLine {
+                visual_line: 0,
+                doc_line: 0,
+                text: "first".into(),
+                line_start_col: 0,
+                wrap_indicator_len: 0,
+                line_start_char: Some(0),
+                line_end_char: Some(5),
+                segment_char_offset: 0,
+                text_start_byte_offset: 0,
+                is_phantom_line: false,
+                display_map: DisplayTextMap::identity("first".len()),
+            },
+            SoftWrapVisualLine {
+                visual_line: 1,
+                doc_line: 0,
+                text: ".wrap".into(),
+                line_start_col: 0,
+                wrap_indicator_len: 1,
+                line_start_char: Some(5),
+                line_end_char: Some(9),
+                segment_char_offset: 5,
+                text_start_byte_offset: 1,
+                is_phantom_line: false,
+                display_map: DisplayTextMap::identity(".wrap".len()),
+            },
+            SoftWrapVisualLine {
+                visual_line: 2,
+                doc_line: 1,
+                text: "next".into(),
+                line_start_col: 0,
+                wrap_indicator_len: 0,
+                line_start_char: Some(10),
+                line_end_char: Some(14),
+                segment_char_offset: 0,
+                text_start_byte_offset: 0,
+                is_phantom_line: false,
+                display_map: DisplayTextMap::identity("next".len()),
+            },
+        ];
+        let mut virtual_rows = std::collections::BTreeMap::new();
+        virtual_rows.insert(0, 2);
+
+        let plans =
+            soft_wrap_line_paint_plans(&lines, &virtual_rows, geometry(), px(20.0), px(0.0), 0, 0);
+
+        assert_eq!(plans[0].y_offset, px(0.0));
+        assert_eq!(plans[1].y_offset, px(20.0));
+        assert_eq!(plans[2].y_offset, px(80.0));
+    }
+
+    #[test]
     fn render_plan_collects_viewport_geometry_and_lines() {
         let text = "foo ".repeat(10);
         let bounds = Bounds::new(point(px(100.0), px(40.0)), size(px(500.0), px(102.0)));
@@ -752,12 +841,14 @@ mod tests {
         let plan = soft_wrap_render_plan(SoftWrapRenderPlanParams {
             text: text.as_str().into(),
             text_format: text_format(),
+            text_annotations: None,
             view_offset,
             bounds,
             gutter_columns: 4,
             cell_width: px(8.0),
             line_height: px(20.0),
             scroll_line_offset: px(5.0),
+            inline_diagnostic_virtual_rows: None,
         });
 
         assert_eq!(plan.view_offset, view_offset);

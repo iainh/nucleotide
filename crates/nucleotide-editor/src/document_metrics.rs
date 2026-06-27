@@ -1,14 +1,20 @@
 // ABOUTME: Native editor document viewport metrics
 // ABOUTME: Computes visual row counts and text formatting for GPUI editor surfaces
 
-use std::time::Duration;
+use std::{
+    collections::hash_map::DefaultHasher,
+    hash::{Hash, Hasher},
+    time::Duration,
+};
 
 use gpui::{Bounds, Pixels};
 use helix_core::{
     RopeSlice,
+    diagnostic::Severity,
     doc_formatter::TextFormat,
     graphemes::{grapheme_width, tab_width_at},
-    softwrapped_dimensions,
+    text_annotations::TextAnnotations,
+    visual_offset_from_block,
 };
 use helix_stdx::rope::RopeSliceExt;
 use helix_view::{Document, DocumentId, Theme};
@@ -59,6 +65,7 @@ struct EditorDocumentMetricsCacheKey {
     document_id: DocumentId,
     document_version: i32,
     text_len: usize,
+    diagnostics_hash: u64,
     gutter_columns: u16,
     viewport_columns: u16,
     minimum_columns: u16,
@@ -74,6 +81,16 @@ struct CachedEditorDocumentMetrics {
 #[derive(Clone, Debug, Default)]
 pub struct EditorDocumentMetricsCache {
     entries: Vec<CachedEditorDocumentMetrics>,
+}
+
+pub struct EditorDocumentMetricsCacheResolveParams<'a> {
+    pub document: &'a Document,
+    pub view: &'a helix_view::View,
+    pub theme: Option<&'a Theme>,
+    pub bounds: Bounds<Pixels>,
+    pub gutter_columns: u16,
+    pub cell_width: Pixels,
+    pub minimum_columns: u16,
 }
 
 const DOCUMENT_METRICS_CACHE_CAPACITY: usize = 4;
@@ -100,12 +117,59 @@ impl EditorDocumentMetrics {
         Self::from_text_format(document, viewport_columns, text_format)
     }
 
+    pub fn resolve_for_view(
+        document: &Document,
+        view: &helix_view::View,
+        theme: Option<&Theme>,
+        bounds: Bounds<Pixels>,
+        gutter_columns: u16,
+        cell_width: Pixels,
+        minimum_columns: u16,
+    ) -> Self {
+        let _timer = PerfTimer::new("EditorDocumentMetrics::resolve_for_view")
+            .with_warn_threshold(Duration::from_millis(4));
+        let (viewport_columns, text_format) = document_text_format_for_surface(
+            document,
+            theme,
+            bounds,
+            gutter_columns,
+            cell_width,
+            minimum_columns,
+        );
+        let annotations = view.text_annotations(document, theme);
+        Self::from_text_format_with_annotations(
+            document,
+            viewport_columns,
+            text_format,
+            &annotations,
+        )
+    }
+
     fn from_text_format(
         document: &Document,
         viewport_columns: u16,
         text_format: TextFormat,
     ) -> Self {
-        let visual_rows = visual_rows_for_text(document.text().slice(..), &text_format);
+        let annotations = TextAnnotations::default();
+        Self::from_text_format_with_annotations(
+            document,
+            viewport_columns,
+            text_format,
+            &annotations,
+        )
+    }
+
+    fn from_text_format_with_annotations(
+        document: &Document,
+        viewport_columns: u16,
+        text_format: TextFormat,
+        annotations: &TextAnnotations<'_>,
+    ) -> Self {
+        let visual_rows = visual_rows_for_text_with_annotations(
+            document.text().slice(..),
+            &text_format,
+            annotations,
+        );
         let content_columns =
             content_columns_for_text(document.text().slice(..), &text_format, viewport_columns);
         Self {
@@ -121,28 +185,24 @@ impl EditorDocumentMetrics {
 impl EditorDocumentMetricsCache {
     pub fn resolve(
         &mut self,
-        document: &Document,
-        theme: Option<&Theme>,
-        bounds: Bounds<Pixels>,
-        gutter_columns: u16,
-        cell_width: Pixels,
-        minimum_columns: u16,
+        params: EditorDocumentMetricsCacheResolveParams<'_>,
     ) -> EditorDocumentMetrics {
         let (viewport_columns, text_format) = document_text_format_for_surface(
-            document,
-            theme,
-            bounds,
-            gutter_columns,
-            cell_width,
-            minimum_columns,
+            params.document,
+            params.theme,
+            params.bounds,
+            params.gutter_columns,
+            params.cell_width,
+            params.minimum_columns,
         );
         let key = EditorDocumentMetricsCacheKey {
-            document_id: document.id(),
-            document_version: document.version(),
-            text_len: document.text().len_chars(),
-            gutter_columns,
+            document_id: params.document.id(),
+            document_version: params.document.version(),
+            text_len: params.document.text().len_chars(),
+            diagnostics_hash: diagnostics_hash(params.document),
+            gutter_columns: params.gutter_columns,
             viewport_columns,
-            minimum_columns,
+            minimum_columns: params.minimum_columns,
             text_format: EditorTextFormatCacheKey::from(&text_format),
         };
 
@@ -153,8 +213,13 @@ impl EditorDocumentMetricsCache {
             return metrics;
         }
 
-        let metrics =
-            EditorDocumentMetrics::from_text_format(document, viewport_columns, text_format);
+        let annotations = params.view.text_annotations(params.document, params.theme);
+        let metrics = EditorDocumentMetrics::from_text_format_with_annotations(
+            params.document,
+            viewport_columns,
+            text_format,
+            &annotations,
+        );
         self.entries.insert(
             0,
             CachedEditorDocumentMetrics {
@@ -200,10 +265,40 @@ pub fn document_text_format_for_surface(
 }
 
 pub fn visual_rows_for_text(text: RopeSlice<'_>, text_format: &TextFormat) -> usize {
-    if text_format.soft_wrap {
-        softwrapped_dimensions(text, text_format).0.max(1)
-    } else {
-        text.len_lines().max(1)
+    let annotations = TextAnnotations::default();
+    visual_rows_for_text_with_annotations(text, text_format, &annotations)
+}
+
+pub fn visual_rows_for_text_with_annotations(
+    text: RopeSlice<'_>,
+    text_format: &TextFormat,
+    annotations: &TextAnnotations<'_>,
+) -> usize {
+    visual_offset_from_block(text, 0, text.len_chars(), text_format, annotations)
+        .0
+        .row
+        .saturating_add(1)
+        .max(1)
+}
+
+fn diagnostics_hash(document: &Document) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    document.diagnostics().len().hash(&mut hasher);
+    for diagnostic in document.diagnostics() {
+        diagnostic.range.start.hash(&mut hasher);
+        diagnostic.range.end.hash(&mut hasher);
+        diagnostic.severity.map(severity_rank).hash(&mut hasher);
+        diagnostic.message.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+fn severity_rank(severity: Severity) -> u8 {
+    match severity {
+        Severity::Hint => 0,
+        Severity::Info => 1,
+        Severity::Warning => 2,
+        Severity::Error => 3,
     }
 }
 
@@ -339,8 +434,24 @@ mod tests {
         let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(160.0), px(80.0)));
         let gutter_columns = view.gutter_offset(&document);
 
-        let first = cache.resolve(&document, None, bounds, gutter_columns, px(8.0), 1);
-        let second = cache.resolve(&document, None, bounds, gutter_columns, px(8.0), 1);
+        let first = cache.resolve(EditorDocumentMetricsCacheResolveParams {
+            document: &document,
+            view: &view,
+            theme: None,
+            bounds,
+            gutter_columns,
+            cell_width: px(8.0),
+            minimum_columns: 1,
+        });
+        let second = cache.resolve(EditorDocumentMetricsCacheResolveParams {
+            document: &document,
+            view: &view,
+            theme: None,
+            bounds,
+            gutter_columns,
+            cell_width: px(8.0),
+            minimum_columns: 1,
+        });
 
         assert!(first.soft_wrap);
         assert_eq!(second.visual_rows, first.visual_rows);
@@ -357,15 +468,38 @@ mod tests {
         let wide_bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(240.0), px(80.0)));
         let gutter_columns = view.gutter_offset(&document);
 
-        let narrow = cache.resolve(&document, None, narrow_bounds, gutter_columns, px(8.0), 1);
-        let wide = cache.resolve(&document, None, wide_bounds, gutter_columns, px(8.0), 1);
+        let narrow = cache.resolve(EditorDocumentMetricsCacheResolveParams {
+            document: &document,
+            view: &view,
+            theme: None,
+            bounds: narrow_bounds,
+            gutter_columns,
+            cell_width: px(8.0),
+            minimum_columns: 1,
+        });
+        let wide = cache.resolve(EditorDocumentMetricsCacheResolveParams {
+            document: &document,
+            view: &view,
+            theme: None,
+            bounds: wide_bounds,
+            gutter_columns,
+            cell_width: px(8.0),
+            minimum_columns: 1,
+        });
 
         assert_ne!(narrow.viewport_columns, wide.viewport_columns);
         assert_eq!(cache.len(), 2);
         assert_eq!(cache.front_viewport_columns(), Some(wide.viewport_columns));
 
-        let narrow_again =
-            cache.resolve(&document, None, narrow_bounds, gutter_columns, px(8.0), 1);
+        let narrow_again = cache.resolve(EditorDocumentMetricsCacheResolveParams {
+            document: &document,
+            view: &view,
+            theme: None,
+            bounds: narrow_bounds,
+            gutter_columns,
+            cell_width: px(8.0),
+            minimum_columns: 1,
+        });
 
         assert_eq!(narrow_again.viewport_columns, narrow.viewport_columns);
         assert_eq!(cache.len(), 2);
@@ -384,7 +518,15 @@ mod tests {
         let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(160.0), px(80.0)));
         let gutter_columns = view.gutter_offset(&document);
 
-        let first = cache.resolve(&document, None, bounds, gutter_columns, px(8.0), 1);
+        let first = cache.resolve(EditorDocumentMetricsCacheResolveParams {
+            document: &document,
+            view: &view,
+            theme: None,
+            bounds,
+            gutter_columns,
+            cell_width: px(8.0),
+            minimum_columns: 1,
+        });
         let insert_at = document.text().len_chars();
         let inserted_text = "abcdefghijklmnopqrstuvwxyz".repeat(20);
         let transaction = Transaction::change(
@@ -392,7 +534,15 @@ mod tests {
             [(insert_at, insert_at, Some(inserted_text.into()))].into_iter(),
         );
         document.apply(&transaction, view.id);
-        let second = cache.resolve(&document, None, bounds, gutter_columns, px(8.0), 1);
+        let second = cache.resolve(EditorDocumentMetricsCacheResolveParams {
+            document: &document,
+            view: &view,
+            theme: None,
+            bounds,
+            gutter_columns,
+            cell_width: px(8.0),
+            minimum_columns: 1,
+        });
 
         assert!(second.visual_rows > first.visual_rows);
     }

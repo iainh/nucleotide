@@ -17,7 +17,7 @@ use nucleotide_logging::{PerfTimer, trace};
 
 use crate::{
     EDITOR_MINIMUM_VIEWPORT_COLUMNS, EditorDocumentMetrics, EditorDocumentMetricsCache,
-    ScrollManager, soft_wrap_visual_position,
+    EditorDocumentMetricsCacheResolveParams, ScrollManager, soft_wrap_visual_position,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1062,14 +1062,15 @@ fn editor_viewport_content_metrics(
     let gutter_columns = view
         .gutter_offset(document)
         .saturating_add(layout.extra_gutter_columns);
-    let metrics = metrics_cache.resolve(
+    let metrics = metrics_cache.resolve(EditorDocumentMetricsCacheResolveParams {
         document,
-        layout.theme,
-        layout.bounds,
+        view,
+        theme: layout.theme,
+        bounds: layout.bounds,
         gutter_columns,
-        layout.cell_width,
-        layout.minimum_columns,
-    );
+        cell_width: layout.cell_width,
+        minimum_columns: layout.minimum_columns,
+    });
 
     (gutter_columns, metrics)
 }
@@ -1094,14 +1095,15 @@ fn editor_viewport_surface_metrics(
         return (current_gutter_columns, current_metrics);
     }
 
-    let metrics = metrics_cache.resolve(
+    let metrics = metrics_cache.resolve(EditorDocumentMetricsCacheResolveParams {
         document,
-        layout.theme,
-        layout.bounds,
-        surface_gutter_columns,
-        layout.cell_width,
-        layout.minimum_columns,
-    );
+        view: &surface_view,
+        theme: layout.theme,
+        bounds: layout.bounds,
+        gutter_columns: surface_gutter_columns,
+        cell_width: layout.cell_width,
+        minimum_columns: layout.minimum_columns,
+    });
 
     (surface_gutter_columns, metrics)
 }
@@ -1778,8 +1780,9 @@ mod tests {
             },
         );
 
-        let expected = EditorDocumentMetrics::resolve(
+        let expected = EditorDocumentMetrics::resolve_for_view(
             &document,
+            &view,
             None,
             bounds,
             update.gutter_columns,
@@ -1866,15 +1869,16 @@ mod tests {
             .unwrap();
 
         let document = editor.document(doc_id).unwrap();
-        let expected = EditorDocumentMetrics::resolve(
+        let view = editor.tree.get(view_id);
+        let expected = EditorDocumentMetrics::resolve_for_view(
             document,
+            view,
             None,
             bounds,
             update.gutter_columns,
             px(8.0),
             1,
         );
-        let view = editor.tree.get(view_id);
 
         assert_eq!(view.area, original_area);
         assert_eq!(
