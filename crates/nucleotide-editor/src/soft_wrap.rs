@@ -260,17 +260,19 @@ pub fn soft_wrap_visual_lines(
 pub fn soft_wrap_visual_position(
     text: RopeSlice<'_>,
     text_format: &TextFormat,
+    text_annotations: Option<&TextAnnotations<'_>>,
     anchor: usize,
     char_idx: usize,
 ) -> Option<SoftWrapVisualPosition> {
-    let annotations = TextAnnotations::default();
+    let default_annotations = TextAnnotations::default();
+    let annotations = text_annotations.unwrap_or(&default_annotations);
     let (anchor_position, block_start) =
-        visual_offset_from_block(text, anchor, anchor, text_format, &annotations);
+        visual_offset_from_block(text, anchor, anchor, text_format, annotations);
     if char_idx < block_start {
         return None;
     }
 
-    let (position, _) = visual_offset_from_block(text, anchor, char_idx, text_format, &annotations);
+    let (position, _) = visual_offset_from_block(text, anchor, char_idx, text_format, annotations);
     if position.row < anchor_position.row {
         return None;
     }
@@ -668,7 +670,7 @@ mod tests {
     #[test]
     fn finds_visual_position_after_wrap_indicator() {
         let text = "foo ".repeat(10);
-        let position = soft_wrap_visual_position(text.as_str().into(), &text_format(), 0, 16)
+        let position = soft_wrap_visual_position(text.as_str().into(), &text_format(), None, 0, 16)
             .expect("cursor position");
 
         assert_eq!(position.visual_line, 1);
@@ -678,8 +680,9 @@ mod tests {
     #[test]
     fn visual_position_is_relative_to_anchor_row() {
         let text = "foo ".repeat(10);
-        let position = soft_wrap_visual_position(text.as_str().into(), &text_format(), 16, 16)
-            .expect("cursor position");
+        let position =
+            soft_wrap_visual_position(text.as_str().into(), &text_format(), None, 16, 16)
+                .expect("cursor position");
 
         assert_eq!(position.visual_line, 0);
         assert_eq!(position.visual_col, 1);
@@ -689,7 +692,29 @@ mod tests {
     fn visual_position_rejects_position_before_anchor_row() {
         let text = "foo ".repeat(10);
 
-        assert!(soft_wrap_visual_position(text.as_str().into(), &text_format(), 16, 0).is_none());
+        assert!(
+            soft_wrap_visual_position(text.as_str().into(), &text_format(), None, 16, 0).is_none()
+        );
+    }
+
+    #[test]
+    fn visual_position_counts_inline_annotations_before_cursor() {
+        let text = "ab";
+        let annotations = [InlineAnnotation::new(1, ": hint")];
+        let mut text_annotations = TextAnnotations::default();
+        text_annotations.add_inline_annotations(&annotations, None);
+
+        let position =
+            soft_wrap_visual_position(text.into(), &text_format(), Some(&text_annotations), 0, 2)
+                .expect("cursor position");
+
+        assert_eq!(
+            position,
+            SoftWrapVisualPosition {
+                visual_line: 0,
+                visual_col: "a: hintb".len(),
+            }
+        );
     }
 
     #[test]
@@ -702,6 +727,7 @@ mod tests {
                 viewport_width: 20,
                 ..TextFormat::default()
             },
+            None,
             0,
             text.chars().count(),
         )
@@ -726,6 +752,7 @@ mod tests {
                 viewport_width: 20,
                 ..TextFormat::default()
             },
+            None,
             0,
             text.chars().count(),
         )

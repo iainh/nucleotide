@@ -103,6 +103,7 @@ pub struct NativeEditorFrameThemeStyles {
     pub cursor_primary_normal: Style,
     pub cursor_primary_select: Style,
     pub virtual_wrap: Style,
+    pub virtual_base: Style,
     pub virtual_ruler: Style,
     pub virtual_whitespace: Style,
     pub virtual_indent_guide: Style,
@@ -126,6 +127,7 @@ impl NativeEditorFrameThemeStyles {
             cursor_primary_normal: style_for_key("ui.cursor.primary.normal"),
             cursor_primary_select: style_for_key("ui.cursor.primary.select"),
             virtual_wrap: style_for_key("ui.virtual.wrap"),
+            virtual_base: style_for_key("ui.virtual"),
             virtual_ruler: style_for_key("ui.virtual.ruler"),
             virtual_whitespace: style_for_key("ui.virtual.whitespace"),
             virtual_indent_guide: style_for_key("ui.virtual.indent-guide"),
@@ -149,6 +151,7 @@ impl NativeEditorFrameThemeStyles {
             "ui.cursor.primary.normal" => self.cursor_primary_normal,
             "ui.cursor.primary.select" => self.cursor_primary_select,
             "ui.virtual.wrap" => self.virtual_wrap,
+            "ui.virtual" => self.virtual_base,
             "ui.virtual.ruler" => self.virtual_ruler,
             "ui.virtual.whitespace" => self.virtual_whitespace,
             "ui.virtual.indent-guide" => self.virtual_indent_guide,
@@ -199,6 +202,7 @@ pub fn native_editor_frame_paint_style(
         .virtual_indent_guide
         .fg
         .or(params.theme_styles.virtual_whitespace.fg)
+        .or(params.theme_styles.virtual_base.fg)
         .and_then(helix_color_to_hsla);
     let cursorline_color = params
         .theme_styles
@@ -980,25 +984,15 @@ fn paint_soft_wrap_document_frame(
     {
         let (index, line_plan) = line_plan;
         let mut source_line_width = Pixels::ZERO;
-        if line_plan.visual.segment_char_offset == 0
-            && let Some(config) = frame.indent_guide_config
-        {
-            let source =
+        let indent_guide_source =
+            (line_plan.visual.segment_char_offset == 0).then(|| {
                 line_text_without_trailing_newline(params.text.slice(
                     params.text.line_to_char(line_plan.visual.doc_line)
                         ..params.text.line_to_char(
                             (line_plan.visual.doc_line + 1).min(params.text.len_lines()),
                         ),
-                ));
-            paint_indent_guides(
-                window,
-                line_plan.text_origin,
-                params.layout.line_height,
-                params.layout.cell_width,
-                &source,
-                config,
-            );
-        }
+                ))
+            });
         if !line_plan.is_cursor_visual_line
             && frame
                 .secondary_cursor_lines
@@ -1034,6 +1028,16 @@ fn paint_soft_wrap_document_frame(
             Err(e) => {
                 error!(error = ?e, "Failed to paint text");
             }
+        }
+        if let (Some(config), Some(source)) = (frame.indent_guide_config, indent_guide_source) {
+            paint_indent_guides(
+                window,
+                line_plan.text_origin,
+                params.layout.line_height,
+                params.layout.cell_width,
+                &source,
+                config,
+            );
         }
 
         let is_last_visual_for_doc_line = soft_wrap_render_plan
@@ -1115,6 +1119,7 @@ fn paint_unwrapped_document_frame(
         let line_idx = line_plan.line_idx;
         let y_offset = line_plan.y_offset;
         let line_text = highlighted_line.line_text.clone();
+        let indent_guide_source = line_text.source.clone();
         let line_runs = &highlighted_line.line_runs;
 
         if unwrapped_plan.is_cursor_line && params.cursorline_color.is_some() {
@@ -1124,16 +1129,6 @@ fn paint_unwrapped_document_frame(
             );
         }
 
-        if let Some(config) = frame.indent_guide_config {
-            paint_indent_guides(
-                window,
-                unwrapped_plan.text_origin,
-                params.layout.line_height,
-                params.layout.cell_width,
-                &line_text.source,
-                config,
-            );
-        }
         if !unwrapped_plan.is_cursor_line
             && frame
                 .secondary_cursor_lines
@@ -1169,6 +1164,16 @@ fn paint_unwrapped_document_frame(
                 continue;
             }
         };
+        if let Some(config) = frame.indent_guide_config {
+            paint_indent_guides(
+                window,
+                unwrapped_plan.text_origin,
+                params.layout.line_height,
+                params.layout.cell_width,
+                &indent_guide_source,
+                config,
+            );
+        }
 
         trace!(
             "LINE LAYOUT CACHED: line_idx={}, y_offset={:?}, is_phantom={}",
@@ -1307,6 +1312,8 @@ fn paint_soft_wrap_cursor(
     let cursor_paint_plan = soft_wrap_cursor_paint_plan(SoftWrapCursorPaintPlanParams {
         text: params.text,
         text_format: &soft_wrap_render_plan.text_format,
+        text_annotations: None,
+        precomputed_visual_position: frame.soft_wrap_cursor_position.clone(),
         anchor: soft_wrap_render_plan.view_offset.anchor,
         cursor_char_idx: frame.cursor_presentation.cursor_char_idx,
         geometry: EditorSurfaceGeometry::new(
@@ -1523,6 +1530,7 @@ mod tests {
                 "ui.cursor.primary" => Style::default().bg(Color::Rgb(1, 2, 3)),
                 "ui.virtual.wrap" => Style::default().fg(Color::Rgb(4, 5, 6)),
                 "ui.virtual.ruler" => Style::default().bg(Color::Rgb(7, 8, 9)),
+                "ui.virtual" => Style::default().fg(Color::Rgb(30, 31, 32)),
                 "ui.cursorline.primary" => Style::default().bg(Color::Rgb(10, 11, 12)),
                 "ui.cursorline.secondary" => Style::default().bg(Color::Rgb(20, 21, 22)),
                 "ui.linenr" => Style::default().fg(Color::Rgb(13, 14, 15)),
@@ -1561,6 +1569,10 @@ mod tests {
         assert_eq!(
             style.ruler_color,
             helix_color_to_hsla(Color::Rgb(7, 8, 9)).unwrap()
+        );
+        assert_eq!(
+            style.indent_guide_color,
+            helix_color_to_hsla(Color::Rgb(30, 31, 32))
         );
         assert_eq!(
             style.cursorline_color,

@@ -70,6 +70,9 @@ tabstop = { modifiers = ["italic"], bg = "mist" }
 "ui.virtual.jump-label" = { fg = "#991b1b", modifiers = ["bold"] }
 
 "ui.virtual.indent-guide" = { fg = "smoke" }
+"ui.virtual.inlay-hint" = { fg = "steel" }
+"ui.virtual.inlay-hint.parameter" = { fg = "steel" }
+"ui.virtual.inlay-hint.type" = { fg = "steel" }
 
 "ui.selection" = { fg = "white", bg = "#00709066" }
 "ui.selection.primary" = { fg = "white", bg = "#00709066" }

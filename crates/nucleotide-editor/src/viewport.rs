@@ -1306,10 +1306,11 @@ fn document_cursor_visual_row_for_cursor(
     let cursor_at_trailing_newline = cursor_char_idx == text.len_chars()
         && text.len_chars() > 0
         && text.char(text.len_chars() - 1) == '\n';
+    let annotations = view.text_annotations(document, None);
 
     if cursor_at_trailing_newline {
         return if text_format.soft_wrap {
-            soft_wrap_visual_position(text, text_format, 0, cursor_char_idx)
+            soft_wrap_visual_position(text, text_format, Some(&annotations), 0, cursor_char_idx)
                 .map(|position| position.visual_line)
                 .unwrap_or_else(|| text.len_lines().saturating_sub(1))
         } else {
@@ -1317,7 +1318,6 @@ fn document_cursor_visual_row_for_cursor(
         };
     }
 
-    let annotations = view.text_annotations(document, None);
     visual_offset_from_block(text, 0, cursor_char_idx, text_format, &annotations)
         .0
         .row

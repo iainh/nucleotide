@@ -63,6 +63,9 @@ tabstop = { modifiers = ["italic"], bg = "panel" }
 "ui.virtual.ruler" = { bg = "panel" }
 "ui.virtual.jump-label" = { fg = "#ff0d25", modifiers = ["bold"] }
 "ui.virtual.indent-guide" = { fg = "indent" }
+"ui.virtual.inlay-hint" = { fg = "comment" }
+"ui.virtual.inlay-hint.parameter" = { fg = "comment" }
+"ui.virtual.inlay-hint.type" = { fg = "comment" }
 
 "ui.selection" = { bg = "selection" }
 "ui.selection.primary" = { bg = "selection" }

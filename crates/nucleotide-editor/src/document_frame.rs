@@ -19,12 +19,13 @@ use crate::{
     FallbackDiagnosticFramePlan, FallbackDiagnosticFramePlanParams, GutterLinePlan,
     IndentGuidePaintConfig, InlineDiagnosticFramePlan, InlineDiagnosticFramePlanParams,
     RulerPaintPlan, SoftWrapHighlightedLineRunsBatchParams, SoftWrapRenderPlan,
-    UnwrappedHighlightedLine, UnwrappedHighlightedLinesParams, UnwrappedRenderPlan,
-    UnwrappedRenderPlanParams, diagnostic_overlay_spans, diagnostic_severity_by_line,
-    document_render_snapshot, document_ruler_paint_plans, document_soft_wrap_render_plan,
-    document_text_format_for_surface, editor_cursor_presentation, fallback_diagnostic_frame_plan,
-    highlight::display_whitespace_for_document, inline_diagnostic_frame_plan,
-    soft_wrap_highlighted_line_runs_batch, unwrapped_highlighted_lines, unwrapped_render_plan,
+    SoftWrapVisualPosition, UnwrappedHighlightedLine, UnwrappedHighlightedLinesParams,
+    UnwrappedRenderPlan, UnwrappedRenderPlanParams, diagnostic_overlay_spans,
+    diagnostic_severity_by_line, document_render_snapshot, document_ruler_paint_plans,
+    document_soft_wrap_render_plan, document_text_format_for_surface, editor_cursor_presentation,
+    fallback_diagnostic_frame_plan, highlight::display_whitespace_for_document,
+    inline_diagnostic_frame_plan, soft_wrap_highlighted_line_runs_batch, soft_wrap_visual_position,
+    unwrapped_highlighted_lines, unwrapped_render_plan,
 };
 use nucleotide_logging::PerfTimer;
 
@@ -79,6 +80,7 @@ pub struct EditorDocumentFrame {
     pub inline_diagnostic_plan: InlineDiagnosticFramePlan,
     pub fallback_diagnostic_plan: FallbackDiagnosticFramePlan,
     pub soft_wrap_render_plan: Option<SoftWrapRenderPlan>,
+    pub soft_wrap_cursor_position: Option<SoftWrapVisualPosition>,
     pub unwrapped_render_plan: Option<UnwrappedRenderPlan>,
     pub soft_wrap_line_runs: Vec<Vec<TextRun>>,
     pub unwrapped_highlighted_lines: Vec<UnwrappedHighlightedLine>,
@@ -173,6 +175,18 @@ pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDoc
             inline_diagnostic_virtual_rows: Some(&inline_diagnostic_virtual_rows),
         })
     });
+    let soft_wrap_cursor_position = soft_wrap_render_plan.as_ref().and_then(|plan| {
+        let text_annotations = params
+            .view
+            .text_annotations(params.document, Some(params.theme));
+        soft_wrap_visual_position(
+            text.slice(..),
+            &plan.text_format,
+            Some(&text_annotations),
+            plan.view_offset.anchor,
+            cursor_presentation.cursor_char_idx,
+        )
+    });
     let unwrapped_render_plan = (!params.soft_wrap_enabled).then(|| {
         unwrapped_render_plan(UnwrappedRenderPlanParams {
             text: text.slice(..),
@@ -256,6 +270,7 @@ pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDoc
         inline_diagnostic_plan,
         fallback_diagnostic_plan,
         soft_wrap_render_plan,
+        soft_wrap_cursor_position,
         unwrapped_render_plan,
         soft_wrap_line_runs,
         unwrapped_highlighted_lines,

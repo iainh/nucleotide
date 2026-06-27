@@ -79,6 +79,9 @@ tabstop = { modifiers = ["italic"], bg = "template_language_bg" }
 "ui.virtual.ruler" = { bg = "right_margin" }
 "ui.virtual.jump-label" = { fg = "error", modifiers = ["bold"] }
 "ui.virtual.indent-guide" = { fg = "indent_guide" }
+"ui.virtual.inlay-hint" = { fg = "inline_hint", bg = "inline_hint_bg" }
+"ui.virtual.inlay-hint.parameter" = { fg = "inline_hint", bg = "inline_hint_bg" }
+"ui.virtual.inlay-hint.type" = { fg = "inline_hint", bg = "inline_hint_bg" }
 
 "ui.selection" = { fg = "selection_fg", bg = "selection_bg" }
 "ui.selection.primary" = { fg = "selection_fg", bg = "selection_bg" }
