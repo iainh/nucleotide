@@ -12001,7 +12001,9 @@ impl Render for Workspace {
         }
 
         // Drive V2 event processing so FsOpHandler can execute intents
-        if let Some(aggregator) = self.core.read(cx).event_aggregator.as_ref() {
+        if let Some(aggregator) = self.core.read(cx).event_aggregator.clone()
+            && aggregator.has_queued_events()
+        {
             aggregator.process_events();
         }
 
