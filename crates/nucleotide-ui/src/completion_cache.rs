@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::completion_v2::{Position, StringMatch};
@@ -40,7 +41,7 @@ impl CacheKey {
 #[derive(Debug, Clone)]
 pub struct CacheEntry {
     /// The cached completion results
-    pub matches: Vec<StringMatch>,
+    pub matches: Arc<[StringMatch]>,
     /// When this entry was created
     pub created_at: Instant,
     /// How many times this entry has been accessed
@@ -53,7 +54,7 @@ impl CacheEntry {
     pub fn new(matches: Vec<StringMatch>) -> Self {
         let now = Instant::now();
         Self {
-            matches,
+            matches: matches.into(),
             created_at: now,
             access_count: 1,
             last_accessed: now,
@@ -154,42 +155,8 @@ impl CompletionCache {
 
     /// Get cached results for a key
     pub fn get(&mut self, key: &CacheKey) -> Option<Vec<StringMatch>> {
-        if self.config.enable_metrics {
-            self.metrics.total_lookups += 1;
-        }
-
-        // Check if key exists in cache
-        if let Some(entry) = self.cache.get_mut(key) {
-            // Check if entry has expired
-            if entry.is_expired(self.config.max_age) {
-                // Remove expired entry
-                self.cache.remove(key);
-                self.access_order.retain(|k| k != key);
-                if self.config.enable_metrics {
-                    self.metrics.expirations += 1;
-                    self.metrics.misses += 1;
-                }
-                return None;
-            }
-
-            // Mark as accessed
-            entry.touch();
-
-            // Update access order (move to front)
-            self.access_order.retain(|k| k != key);
-            self.access_order.push(key.clone());
-
-            if self.config.enable_metrics {
-                self.metrics.hits += 1;
-            }
-
-            Some(entry.matches.clone())
-        } else {
-            if self.config.enable_metrics {
-                self.metrics.misses += 1;
-            }
-            None
-        }
+        self.get_entry(key)
+            .map(|matches| matches.iter().cloned().collect())
     }
 
     /// Insert results into cache
@@ -294,7 +261,7 @@ impl CompletionCache {
         &mut self,
         base_query: &str,
         items_hash: u64,
-    ) -> Option<Vec<StringMatch>> {
+    ) -> Option<Arc<[StringMatch]>> {
         // Find the best matching cache entry for the base query
         let matching_key = self
             .cache
@@ -303,8 +270,41 @@ impl CompletionCache {
             .cloned();
 
         if let Some(key) = matching_key {
-            self.get(&key)
+            self.get_entry(&key)
         } else {
+            None
+        }
+    }
+
+    fn get_entry(&mut self, key: &CacheKey) -> Option<Arc<[StringMatch]>> {
+        if self.config.enable_metrics {
+            self.metrics.total_lookups += 1;
+        }
+
+        if let Some(entry) = self.cache.get_mut(key) {
+            if entry.is_expired(self.config.max_age) {
+                self.cache.remove(key);
+                self.access_order.retain(|k| k != key);
+                if self.config.enable_metrics {
+                    self.metrics.expirations += 1;
+                    self.metrics.misses += 1;
+                }
+                return None;
+            }
+
+            entry.touch();
+            self.access_order.retain(|k| k != key);
+            self.access_order.push(key.clone());
+
+            if self.config.enable_metrics {
+                self.metrics.hits += 1;
+            }
+
+            Some(Arc::clone(&entry.matches))
+        } else {
+            if self.config.enable_metrics {
+                self.metrics.misses += 1;
+            }
             None
         }
     }
