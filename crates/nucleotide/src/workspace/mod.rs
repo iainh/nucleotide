@@ -8,9 +8,9 @@ use prefix_extraction::PrefixExtractor;
 pub use view_manager::ViewManager;
 
 // Main workspace implementation
-use std::collections::HashSet;
 #[cfg(target_os = "windows")]
 use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -13687,8 +13687,15 @@ impl Render for Workspace {
                         let mut rows: Vec<gpui::AnyElement> = Vec::new();
 
                         // Sort servers by name for a stable order
-                        let mut servers: Vec<_> = state.servers.values().cloned().collect();
-                        servers.sort_by_key(|server| server.name.clone());
+                        let mut servers: Vec<_> = state.servers.values().collect();
+                        servers.sort_by(|a, b| a.name.cmp(&b.name));
+                        let mut progress_by_server: HashMap<_, Vec<_>> = HashMap::new();
+                        for progress in state.progress.values() {
+                            progress_by_server
+                                .entry(progress.server_id)
+                                .or_default()
+                                .push(progress);
+                        }
 
                         // If there are no servers, show muted empty message
                         if servers.is_empty() {
@@ -13706,11 +13713,11 @@ impl Render for Workspace {
                         }
 
                         for server in servers {
-                            let status_text = match server.status {
+                            let status_text = match &server.status {
                                 ServerStatus::Starting => "Starting".to_string(),
                                 ServerStatus::Initializing => "Initializing".to_string(),
                                 ServerStatus::Running => "Running".to_string(),
-                                ServerStatus::Failed(ref e) => format!("Failed: {}", e),
+                                ServerStatus::Failed(e) => format!("Failed: {}", e),
                                 ServerStatus::Stopped => "Stopped".to_string(),
                             };
 
@@ -13727,12 +13734,8 @@ impl Render for Workspace {
                             );
 
                             // Progress rows for this server, or Idle if none
-                            let progress_items: Vec<_> = state
-                                .progress
-                                .values()
-                                .filter(|p| p.server_id == server.id)
-                                .cloned()
-                                .collect();
+                            let progress_items =
+                                progress_by_server.remove(&server.id).unwrap_or_default();
 
                             if progress_items.is_empty() {
                                 rows.push(
@@ -13752,7 +13755,7 @@ impl Render for Workspace {
                                         line.push_str(&format!("{pct}% "));
                                     }
                                     line.push_str(&p.title);
-                                    if let Some(msg) = p.message {
+                                    if let Some(msg) = p.message.as_deref() {
                                         line.push_str(&format!(" ⋅ {}", msg));
                                     }
 
