@@ -254,7 +254,7 @@ mod tests {
 
     use crate::{
         EDITOR_MINIMUM_VIEWPORT_COLUMNS, EditorLayout, UnwrappedGutterLinePlanParams,
-        build_unwrapped_gutter_line_plans, visible_ruler_paint_plans,
+        VisibleLinePlan, build_unwrapped_gutter_line_plans, visible_ruler_paint_plans,
     };
 
     use super::*;
@@ -576,6 +576,20 @@ mod tests {
             cell_width: px(8.0),
         };
         let render_snapshot = document_render_snapshot(document, view_id, 0, 2);
+        let visible_lines = vec![
+            VisibleLinePlan {
+                line_idx: 0,
+                line_start: 0,
+                line_end: 3,
+                y_offset: px(0.0),
+            },
+            VisibleLinePlan {
+                line_idx: 1,
+                line_start: 4,
+                line_end: 7,
+                y_offset: layout.line_height,
+            },
+        ];
         let gutter_line_plans = build_unwrapped_gutter_line_plans(UnwrappedGutterLinePlanParams {
             editor: &editor,
             document,
@@ -585,8 +599,7 @@ mod tests {
             bounds: Bounds::new(point(px(0.0), px(0.0)), size(px(240.0), px(120.0))),
             scroll_line_offset: px(0.0),
             horizontal_offset: 0,
-            first_row: 0,
-            last_row: render_snapshot.last_row,
+            visible_lines: &visible_lines[..render_snapshot.last_row.min(visible_lines.len())],
             is_focused: true,
         });
 

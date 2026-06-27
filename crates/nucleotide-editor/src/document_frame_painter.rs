@@ -568,6 +568,7 @@ fn native_editor_frame_gutter_line_plans(
             bounds: params.bounds,
             scroll_line_offset: params.frame_state.scroll_line_offset,
             visual_lines: &soft_wrap_plan.visual_lines,
+            inline_diagnostic_virtual_rows: &soft_wrap_plan.inline_diagnostic_virtual_rows,
             vertical_offset: soft_wrap_plan.view_offset.vertical_offset,
             editor: params.editor,
             document: params.document,
@@ -577,14 +578,13 @@ fn native_editor_frame_gutter_line_plans(
         });
     }
 
-    if frame.unwrapped_render_plan.is_some() {
+    if let Some(unwrapped_plan) = frame.unwrapped_render_plan.as_ref() {
         return build_unwrapped_gutter_line_plans(UnwrappedGutterLinePlanParams {
             layout: params.layout,
             bounds: params.bounds,
             scroll_line_offset: params.frame_state.scroll_line_offset,
             horizontal_offset: view_position.horizontal_offset,
-            first_row: params.frame_state.first_row,
-            last_row: frame.render_snapshot.last_row,
+            visible_lines: &unwrapped_plan.visible_lines,
             editor: params.editor,
             document: params.document,
             view: params.view,
