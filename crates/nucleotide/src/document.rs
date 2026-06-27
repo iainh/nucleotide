@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
@@ -95,6 +95,7 @@ pub struct DocumentView {
     markdown_modes: BTreeMap<DocumentId, MarkdownDisplayMode>,
     markdown_scroll_handle: gpui::ScrollHandle,
     markdown_scrollbar_state: ScrollbarState,
+    runnable_tasks_cache: Option<RunnableTasksCache>,
 }
 
 impl DocumentView {
@@ -123,6 +124,7 @@ impl DocumentView {
             markdown_modes: BTreeMap::new(),
             markdown_scroll_handle,
             markdown_scrollbar_state,
+            runnable_tasks_cache: None,
         }
     }
 
@@ -198,13 +200,87 @@ impl DocumentView {
 
         true
     }
+
+    fn runnable_tasks_by_line(&mut self, cx: &mut Context<Self>) -> BTreeMap<usize, ResolvedTask> {
+        let Some(snapshot) = runnable_document_snapshot(&self.core, self.view_id, cx) else {
+            self.runnable_tasks_cache = None;
+            return BTreeMap::new();
+        };
+
+        if self
+            .runnable_tasks_cache
+            .as_ref()
+            .is_some_and(|cache| cache.matches_snapshot(&snapshot))
+        {
+            return self
+                .runnable_tasks_cache
+                .as_ref()
+                .map(|cache| cache.tasks_by_line.clone())
+                .unwrap_or_default();
+        }
+
+        let document = {
+            let core = self.core.read(cx);
+            let Some(doc) = core.editor.documents.get(&snapshot.doc_id) else {
+                self.runnable_tasks_cache = None;
+                return BTreeMap::new();
+            };
+
+            crate::runnables::RunnableDocument {
+                path: snapshot.path.clone(),
+                text: String::from(doc.text().slice(..)),
+                cursor_line: 0,
+                project_root: None,
+            }
+        };
+
+        let tasks_by_line = crate::runnables::discover_local_rust_runnables(&document)
+            .into_iter()
+            .filter(|task| !crate::runnables::is_file_tests_runnable(task))
+            .filter_map(|task| {
+                let source = task.source()?;
+                Some((source.line, task))
+            })
+            .collect::<BTreeMap<_, _>>();
+
+        self.runnable_tasks_cache = Some(RunnableTasksCache {
+            doc_id: snapshot.doc_id,
+            version: snapshot.version,
+            path: snapshot.path,
+            tasks_by_line: tasks_by_line.clone(),
+        });
+
+        tasks_by_line
+    }
+}
+
+#[derive(Clone)]
+struct RunnableDocumentSnapshot {
+    doc_id: DocumentId,
+    version: i32,
+    path: PathBuf,
+}
+
+struct RunnableTasksCache {
+    doc_id: DocumentId,
+    version: i32,
+    path: PathBuf,
+    tasks_by_line: BTreeMap<usize, ResolvedTask>,
+}
+
+impl RunnableTasksCache {
+    fn matches_snapshot(&self, snapshot: &RunnableDocumentSnapshot) -> bool {
+        self.doc_id == snapshot.doc_id
+            && self.version == snapshot.version
+            && self.path == snapshot.path
+    }
 }
 
 impl EventEmitter<DismissEvent> for DocumentView {}
 
 impl Render for DocumentView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let runnable_tasks_by_line = runnable_tasks_by_line(&self.core, self.view_id, cx);
+        let runnable_tasks_by_line = self.runnable_tasks_by_line(cx);
         let layout_snapshot = self.editor_state.layout_snapshot();
         let desired_gutter_extra_columns = if runnable_tasks_by_line.is_empty() {
             0
@@ -565,39 +641,25 @@ fn markdown_mode_button_variant(
     }
 }
 
-fn runnable_tasks_by_line(
+fn runnable_document_snapshot(
     core: &Entity<Core>,
     view_id: ViewId,
     cx: &mut Context<DocumentView>,
-) -> BTreeMap<usize, ResolvedTask> {
-    let document = {
-        let core = core.read(cx);
-        let Some(view) = core.editor.tree.try_get(view_id) else {
-            return BTreeMap::new();
-        };
-        let Some(doc) = core.editor.documents.get(&view.doc) else {
-            return BTreeMap::new();
-        };
-        let Some(path) = doc.path().cloned() else {
-            return BTreeMap::new();
-        };
+) -> Option<RunnableDocumentSnapshot> {
+    let core = core.read(cx);
+    let view = core.editor.tree.try_get(view_id)?;
+    let doc = core.editor.documents.get(&view.doc)?;
+    let path = doc.path()?.to_path_buf();
 
-        crate::runnables::RunnableDocument {
-            path,
-            text: String::from(doc.text().slice(..)),
-            cursor_line: 0,
-            project_root: None,
-        }
-    };
+    if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+        return None;
+    }
 
-    crate::runnables::discover_local_rust_runnables(&document)
-        .into_iter()
-        .filter(|task| !crate::runnables::is_file_tests_runnable(task))
-        .filter_map(|task| {
-            let source = task.source()?;
-            Some((source.line, task))
-        })
-        .collect()
+    Some(RunnableDocumentSnapshot {
+        doc_id: view.doc,
+        version: doc.version(),
+        path,
+    })
 }
 
 impl Focusable for DocumentView {
