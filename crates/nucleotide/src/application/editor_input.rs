@@ -2552,8 +2552,10 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn editor_input_bridge_does_not_insert_literal_v_for_ctrl_v_in_insert_mode() {
-        let mut config = Config::default();
-        config.clipboard_provider = ClipboardProvider::None;
+        let config = Config {
+            clipboard_provider: ClipboardProvider::None,
+            ..Default::default()
+        };
         let mut editor = test_editor_with_text_and_config("", config);
         let mut bridge = EditorInputBridge::new(Keymaps::default());
         let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));

@@ -16,7 +16,6 @@ gpui.workspace = true
 nucleotide-logging.workspace = true
 helix-core.workspace = true
 helix-view.workspace = true
-helix-lsp.workspace = true
 smallvec.workspace = true
 nucleo.workspace = true
 anyhow.workspace = true

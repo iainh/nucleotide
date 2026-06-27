@@ -13,16 +13,16 @@ rust-version = "1.95"
 
 [dependencies]
 # Core tracing infrastructure
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"] }
-tracing-appender = "0.2"
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-appender.workspace = true
 
 # Configuration and serialization
 serde = { workspace = true, features = ["derive"] }
 
 # Utilities
-dirs = "6.0"
-parking_lot = "0.12"
+dirs.workspace = true
+parking_lot.workspace = true
 anyhow.workspace = true
 
 [dev-dependencies]

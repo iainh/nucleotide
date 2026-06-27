@@ -141,12 +141,12 @@ impl NativeChromePalette {
     pub fn with_accent(appearance: SystemAppearance, accent: Hsla) -> Self {
         #[cfg(target_os = "windows")]
         {
-            return Self::windows_fluent(appearance, accent);
+            Self::windows_fluent(appearance, accent)
         }
 
         #[cfg(target_os = "macos")]
         {
-            return Self::macos_native(appearance, accent);
+            Self::macos_native(appearance, accent)
         }
 
         #[cfg(not(any(target_os = "windows", target_os = "macos")))]
@@ -363,7 +363,7 @@ pub fn default_macos_accent_color() -> Hsla {
 pub fn default_system_accent_color() -> Hsla {
     #[cfg(target_os = "macos")]
     {
-        return default_macos_accent_color();
+        default_macos_accent_color()
     }
 
     #[cfg(not(target_os = "macos"))]

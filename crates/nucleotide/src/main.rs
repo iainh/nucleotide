@@ -139,7 +139,7 @@ fn configure_bundle_runtime_environment() {}
 
 // Use constructor to set environment variable before any static initialization
 #[cfg(target_os = "macos")]
-#[ctor::ctor]
+#[ctor::ctor(unsafe)]
 fn _early_runtime_init() {
     configure_bundle_runtime_environment();
 

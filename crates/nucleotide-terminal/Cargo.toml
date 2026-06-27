@@ -15,7 +15,7 @@ rust-version = "1.95"
 tokio.workspace = true
 anyhow.workspace = true
 portable-pty = "0.9"
-alacritty_terminal = { version = "0.25", optional = true }
+alacritty_terminal = { version = "0.26", optional = true }
 
 [features]
 default = []
