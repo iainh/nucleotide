@@ -53,6 +53,14 @@ mod tests {
         }
     }
 
+    fn expected_default_ui_font_size() -> f32 {
+        if cfg!(target_os = "windows") {
+            14.0
+        } else {
+            13.0
+        }
+    }
+
     #[test]
     fn test_default_gui_config() {
         let config = GuiConfig::default();
@@ -180,7 +188,7 @@ mode = "light"
         let ui_font = config.ui.font.expect("UI font should be present");
         assert_eq!(ui_font.family, "Inter");
         assert_eq!(ui_font.weight, FontWeight::Normal); // Default
-        assert_eq!(ui_font.size, 13.0); // Default platform UI font size
+        assert_eq!(ui_font.size, expected_default_ui_font_size());
 
         // Test editor font defaults
         assert!(config.editor.font.is_none());
