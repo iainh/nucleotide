@@ -1,10 +1,11 @@
 // ABOUTME: Enhanced completion system with async filtering and smart query optimization
 // ABOUTME: Professional-grade completion view based on Zed's architecture
 
+use gpui::prelude::FluentBuilder;
 use gpui::{
     App, Context, DismissEvent, EventEmitter, FocusHandle, Focusable, InteractiveElement,
     IntoElement, KeyDownEvent, ParentElement, Render, SharedString, StatefulInteractiveElement,
-    Styled, Task, Window, div, px,
+    Styled, Task, Window, div, px, relative,
 };
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -1477,6 +1478,22 @@ impl CompletionView {
         (items_memory + candidates_memory + filtered_memory + cache_memory) as u64
     }
 
+    fn selected_documentation_preview(&self) -> Option<String> {
+        let item = self.selected_item()?;
+
+        for text in [&item.documentation, &item.detail, &item.description]
+            .into_iter()
+            .flatten()
+        {
+            let preview = normalize_completion_preview(text);
+            if !preview.is_empty() {
+                return Some(preview);
+            }
+        }
+
+        None
+    }
+
     /// Tune performance parameters based on system capabilities
     pub fn tune_performance_parameters(&mut self) {
         // Adjust parameters based on current performance
@@ -1496,6 +1513,45 @@ impl CompletionView {
             self.max_items = (self.max_items * 5 / 4).min(100);
         }
     }
+}
+
+fn normalize_completion_preview(text: &SharedString) -> String {
+    let mut preview = String::new();
+    let mut in_code_block = false;
+
+    for raw_line in text.lines() {
+        let mut line = raw_line.trim();
+
+        if line.starts_with("```") {
+            in_code_block = !in_code_block;
+            continue;
+        }
+
+        if line.is_empty() {
+            continue;
+        }
+
+        if !in_code_block {
+            line = line.trim_start_matches('#').trim();
+            line = line.trim_start_matches("- ").trim();
+        }
+
+        if !preview.is_empty() {
+            preview.push(' ');
+        }
+        preview.push_str(line);
+    }
+
+    let preview = preview.replace(['`', '*'], "");
+    let mut compact = preview.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    const MAX_PREVIEW_CHARS: usize = 420;
+    if compact.chars().count() > MAX_PREVIEW_CHARS {
+        compact = compact.chars().take(MAX_PREVIEW_CHARS).collect();
+        compact.push_str("...");
+    }
+
+    compact
 }
 
 impl Focusable for CompletionView {
@@ -1544,6 +1600,7 @@ impl Render for CompletionView {
 
         // Store item count for uniform_list - processor will access view data directly
         let filtered_entries = &self.filtered_entries;
+        let selected_documentation = self.selected_documentation_preview();
 
         // Use flexible layout - let container size itself based on content
         let max_visible_items = 12; // Show up to 12 items
@@ -1659,223 +1716,273 @@ impl Render for CompletionView {
             // Remove hardcoded positioning - parent will handle this
             .child(
                 div()
-                    .id("completion-list")
+                    .id("completion-popup-layout")
                     .flex()
-                    .flex_col()
-                    // Calculate optimal width based on content
-                    .w({
-                        // Calculate optimal width based on the longest item
-                        let base_width = 250.0; // Minimum practical width
-                        let _padding = 40.0; // Account for padding, borders, icons
-
-                        // Find the longest text in visible items
-                        let max_text_length = self
-                            .filtered_entries
-                            .iter()
-                            .take(12) // Only consider visible items for performance
-                            .map(|string_match| {
-                                self.item_for_match(string_match)
-                                    .map(|item| {
-                                        // Calculate total text length including signature and type info
-                                        let mut total_len = item
-                                            .display_text
-                                            .as_ref()
-                                            .map_or(item.text.len(), |text| text.len());
-
-                                        if let Some(sig) = &item.signature_info {
-                                            total_len += sig.len();
-                                        }
-                                        if let Some(type_info) = &item.type_info {
-                                            total_len += type_info.len() + 3; // "-> " prefix
-                                        }
-                                        if let Some(detail) = &item.detail {
-                                            // Detail is on second line, consider it separately
-                                            total_len = total_len.max(detail.len());
-                                        }
-                                        total_len
-                                    })
-                                    .unwrap_or(0)
-                            })
-                            .max()
-                            .unwrap_or(0);
-
-                        // Estimate pixel width (rough approximation: 8px per character)
-                        let estimated_width: f32 = base_width + (max_text_length as f32 * 8.0);
-
-                        // Cap the width to reasonable bounds
-                        let optimal_width = estimated_width.min(600.0).max(base_width);
-
-                        nucleotide_logging::debug!(
-                            max_text_length = max_text_length,
-                            estimated_width = estimated_width,
-                            optimal_width = optimal_width,
-                            "Calculated dynamic completion width"
-                        );
-
-                        px(optimal_width)
-                    })
-                    .bg(tokens.chrome.popup_background)
-                    .border_1()
-                    .border_color(tokens.chrome.popup_border)
-                    .rounded(tokens.sizes.radius_md)
-                    .shadow(vec![
-                        tokens.chrome.shadow_md.to_box_shadow(false),
-                        tokens.chrome.inset_highlight.to_box_shadow(true),
-                    ])
-                    .py(tokens.sizes.space_1)
-                    .px(tokens.sizes.space_1)
+                    .flex_row()
+                    .items_start()
+                    .gap(tokens.sizes.space_2)
                     .child(
                         div()
-                            .id("completion-list-container")
+                            .id("completion-list")
                             .flex()
                             .flex_col()
-                            .w_full()
-                            .max_h(max_container_height) // Flexible height with maximum constraint
-                            .min_h(px(28.0)) // Allow single-item height without excessive padding
-                            .bg(tokens.chrome.popup_background) // Ensure background is visible
+                            // Calculate optimal width based on content
+                            .w({
+                                // Calculate optimal width based on the longest item
+                                let base_width = 220.0; // Minimum practical width
+
+                                // Find the longest text in visible items
+                                let max_text_length = self
+                                    .filtered_entries
+                                    .iter()
+                                    .take(12) // Only consider visible items for performance
+                                    .map(|string_match| {
+                                        self.item_for_match(string_match)
+                                            .map(|item| {
+                                                // Calculate total text length including signature and type info
+                                                let mut total_len = item
+                                                    .display_text
+                                                    .as_ref()
+                                                    .map_or(item.text.len(), |text| text.len());
+
+                                                if let Some(sig) = &item.signature_info {
+                                                    total_len += sig.len();
+                                                }
+                                                if let Some(type_info) = &item.type_info {
+                                                    total_len += type_info.len() + 1;
+                                                }
+                                                if let Some(detail) = &item.detail {
+                                                    total_len += detail.len() + 1;
+                                                }
+                                                total_len
+                                            })
+                                            .unwrap_or(0)
+                                    })
+                                    .max()
+                                    .unwrap_or(0);
+
+                                // Estimate pixel width (rough approximation: 8px per character)
+                                let estimated_width: f32 =
+                                    base_width + (max_text_length as f32 * 7.5);
+
+                                // Cap the width to reasonable bounds
+                                let optimal_width = estimated_width.min(840.0).max(base_width);
+
+                                nucleotide_logging::debug!(
+                                    max_text_length = max_text_length,
+                                    estimated_width = estimated_width,
+                                    optimal_width = optimal_width,
+                                    "Calculated dynamic completion width"
+                                );
+
+                                px(optimal_width)
+                            })
+                            .bg(tokens.chrome.popup_background)
+                            .border_1()
+                            .border_color(tokens.chrome.popup_border)
+                            .rounded(tokens.sizes.radius_md)
+                            .shadow(vec![
+                                tokens.chrome.shadow_md.to_box_shadow(false),
+                                tokens.chrome.inset_highlight.to_box_shadow(true),
+                            ])
+                            .py(tokens.sizes.space_1)
+                            .px(tokens.sizes.space_1)
                             .child(
-                                // Scrollable container with working completion items
                                 div()
-                                    .id("completion-scrollable-container")
+                                    .id("completion-list-container")
                                     .flex()
                                     .flex_col()
                                     .w_full()
-                                    // Let height be content-driven; don't force full container height
-                                    .max_h(max_container_height)
-                                    .overflow_y_scroll() // Enable scrolling
-                                    .children({
-                                        // Implement a sliding window of visible items centered around selection
-                                        let total_items = self.filtered_entries.len();
-                                        let max_visible = 12; // Show up to 12 items at a time
+                                    .max_h(max_container_height) // Flexible height with maximum constraint
+                                    .min_h(px(28.0)) // Allow single-item height without excessive padding
+                                    .bg(tokens.chrome.popup_background) // Ensure background is visible
+                                    .child(
+                                        // Scrollable container with working completion items
+                                        div()
+                                            .id("completion-scrollable-container")
+                                            .flex()
+                                            .flex_col()
+                                            .w_full()
+                                            // Let height be content-driven; don't force full container height
+                                            .max_h(max_container_height)
+                                            .overflow_y_scroll() // Enable scrolling
+                                            .children({
+                                                // Implement a sliding window of visible items centered around selection
+                                                let total_items = self.filtered_entries.len();
+                                                let max_visible = 12; // Show up to 12 items at a time
 
-                                        let (start_index, end_index) = if total_items <= max_visible
-                                        {
-                                            // Show all items if we have few enough
-                                            nucleotide_logging::debug!(
-                                                "Using full list - items fit in window"
-                                            );
-                                            (0, total_items)
-                                        } else {
-                                            // Need a sliding window
-                                            let selected = self.selected_index;
+                                                let (start_index, end_index) =
+                                                    if total_items <= max_visible {
+                                                        // Show all items if we have few enough
+                                                        nucleotide_logging::debug!(
+                                                            "Using full list - items fit in window"
+                                                        );
+                                                        (0, total_items)
+                                                    } else {
+                                                        // Need a sliding window
+                                                        let selected = self.selected_index;
 
-                                            nucleotide_logging::debug!(
-                                                selected = selected,
-                                                total_items = total_items,
-                                                max_visible = max_visible,
-                                                "Calculating sliding window"
-                                            );
+                                                        nucleotide_logging::debug!(
+                                                            selected = selected,
+                                                            total_items = total_items,
+                                                            max_visible = max_visible,
+                                                            "Calculating sliding window"
+                                                        );
 
-                                            // Simple logic: ensure selected item is always visible
-                                            let start = if selected < max_visible.saturating_sub(1)
-                                            {
-                                                // Selected is near beginning, show from start
-                                                0
-                                            } else if selected >= total_items.saturating_sub(1) {
-                                                // Selected is last item, show last window
-                                                total_items.saturating_sub(max_visible)
-                                            } else {
-                                                // Selected is in middle, center it
-                                                let half = max_visible / 2;
-                                                selected.saturating_sub(half)
-                                            };
+                                                        // Simple logic: ensure selected item is always visible
+                                                        let start = if selected
+                                                            < max_visible.saturating_sub(1)
+                                                        {
+                                                            // Selected is near beginning, show from start
+                                                            0
+                                                        } else if selected
+                                                            >= total_items.saturating_sub(1)
+                                                        {
+                                                            // Selected is last item, show last window
+                                                            total_items.saturating_sub(max_visible)
+                                                        } else {
+                                                            // Selected is in middle, center it
+                                                            let half = max_visible / 2;
+                                                            selected.saturating_sub(half)
+                                                        };
 
-                                            // Ensure we don't go past the end
-                                            let start =
-                                                start.min(total_items.saturating_sub(max_visible));
-                                            let end = (start + max_visible).min(total_items);
+                                                        // Ensure we don't go past the end
+                                                        let start = start.min(
+                                                            total_items.saturating_sub(max_visible),
+                                                        );
+                                                        let end =
+                                                            (start + max_visible).min(total_items);
 
-                                            nucleotide_logging::debug!(
-                                                calculated_start = start,
-                                                calculated_end = end,
-                                                "Calculated window bounds"
-                                            );
+                                                        nucleotide_logging::debug!(
+                                                            calculated_start = start,
+                                                            calculated_end = end,
+                                                            "Calculated window bounds"
+                                                        );
 
-                                            (start, end)
-                                        };
+                                                        (start, end)
+                                                    };
 
-                                        // Verify the selected item is actually in the window
-                                        let selected_visible = self.selected_index >= start_index
-                                            && self.selected_index < end_index;
+                                                // Verify the selected item is actually in the window
+                                                let selected_visible = self.selected_index
+                                                    >= start_index
+                                                    && self.selected_index < end_index;
 
-                                        nucleotide_logging::debug!(
-                                            total_items = total_items,
-                                            selected_index = self.selected_index,
-                                            start_index = start_index,
-                                            end_index = end_index,
-                                            window_size = end_index - start_index,
-                                            selected_visible = selected_visible,
-                                            "Rendering completion window"
-                                        );
-
-                                        if !selected_visible {
-                                            nucleotide_logging::error!(
-                                                selected_index = self.selected_index,
-                                                start_index = start_index,
-                                                end_index = end_index,
-                                                total_items = total_items,
-                                                max_visible = max_visible,
-                                                "SELECTED ITEM NOT IN VISIBLE WINDOW!"
-                                            );
-                                        }
-
-                                        // Special debugging for last few items
-                                        if self.selected_index >= total_items.saturating_sub(3) {
-                                            nucleotide_logging::debug!(
-                                                selected_index = self.selected_index,
-                                                total_items = total_items,
-                                                start_index = start_index,
-                                                end_index = end_index,
-                                                is_last_item = self.selected_index
-                                                    == total_items.saturating_sub(1),
-                                                is_second_last = self.selected_index
-                                                    == total_items.saturating_sub(2),
-                                                "Debugging last few items"
-                                            );
-                                        }
-
-                                        let items_to_render_count =
-                                            end_index.saturating_sub(start_index);
-
-                                        nucleotide_logging::debug!(
-                                            items_to_render_count = items_to_render_count,
-                                            expected_count = end_index - start_index,
-                                            first_index =
-                                                (items_to_render_count > 0).then_some(start_index),
-                                            last_index = (items_to_render_count > 0)
-                                                .then_some(end_index - 1),
-                                            "Items actually being rendered"
-                                        );
-
-                                        (start_index..end_index)
-                                            .filter_map(|index| {
-                                                let string_match =
-                                                    self.filtered_entries.get(index)?;
-                                                let item = self.item_for_match(string_match)?;
-                                                let is_selected = index == self.selected_index;
-
-                                                // Add explicit ID for scroll-to-element functionality
-                                                let completion_element = CompletionItemElement::new(
-                                                    item.clone(),
-                                                    string_match.clone(),
-                                                    is_selected,
+                                                nucleotide_logging::debug!(
+                                                    total_items = total_items,
+                                                    selected_index = self.selected_index,
+                                                    start_index = start_index,
+                                                    end_index = end_index,
+                                                    window_size = end_index - start_index,
+                                                    selected_visible = selected_visible,
+                                                    "Rendering completion window"
                                                 );
 
-                                                // Wrap in div with ID for scroll targeting
-                                                Some(
-                                                    div()
-                                                        .id(("completion-item-wrapper", index))
-                                                        .w_full()
-                                                        .child(
-                                                            completion_element
-                                                                .into_element_with_theme(theme),
-                                                        ),
-                                                )
-                                            })
-                                            .collect::<Vec<_>>()
-                                    }),
+                                                if !selected_visible {
+                                                    nucleotide_logging::error!(
+                                                        selected_index = self.selected_index,
+                                                        start_index = start_index,
+                                                        end_index = end_index,
+                                                        total_items = total_items,
+                                                        max_visible = max_visible,
+                                                        "SELECTED ITEM NOT IN VISIBLE WINDOW!"
+                                                    );
+                                                }
+
+                                                // Special debugging for last few items
+                                                if self.selected_index
+                                                    >= total_items.saturating_sub(3)
+                                                {
+                                                    nucleotide_logging::debug!(
+                                                        selected_index = self.selected_index,
+                                                        total_items = total_items,
+                                                        start_index = start_index,
+                                                        end_index = end_index,
+                                                        is_last_item = self.selected_index
+                                                            == total_items.saturating_sub(1),
+                                                        is_second_last = self.selected_index
+                                                            == total_items.saturating_sub(2),
+                                                        "Debugging last few items"
+                                                    );
+                                                }
+
+                                                let items_to_render_count =
+                                                    end_index.saturating_sub(start_index);
+
+                                                nucleotide_logging::debug!(
+                                                    items_to_render_count = items_to_render_count,
+                                                    expected_count = end_index - start_index,
+                                                    first_index = (items_to_render_count > 0)
+                                                        .then_some(start_index),
+                                                    last_index = (items_to_render_count > 0)
+                                                        .then_some(end_index - 1),
+                                                    "Items actually being rendered"
+                                                );
+
+                                                (start_index..end_index)
+                                                    .filter_map(|index| {
+                                                        let string_match =
+                                                            self.filtered_entries.get(index)?;
+                                                        let item =
+                                                            self.item_for_match(string_match)?;
+                                                        let is_selected =
+                                                            index == self.selected_index;
+
+                                                        // Add explicit ID for scroll-to-element functionality
+                                                        let completion_element =
+                                                            CompletionItemElement::new(
+                                                                item.clone(),
+                                                                string_match.clone(),
+                                                                is_selected,
+                                                            );
+
+                                                        // Wrap in div with ID for scroll targeting
+                                                        Some(
+                                                            div()
+                                                                .id((
+                                                                    "completion-item-wrapper",
+                                                                    index,
+                                                                ))
+                                                                .w_full()
+                                                                .child(
+                                                                    completion_element
+                                                                        .compact()
+                                                                        .hide_icon()
+                                                                        .into_element_with_theme(
+                                                                            theme,
+                                                                        ),
+                                                                ),
+                                                        )
+                                                    })
+                                                    .collect::<Vec<_>>()
+                                            }),
+                                    ),
                             ),
-                    ),
+                    )
+                    .when_some(selected_documentation, |layout, documentation| {
+                        layout.child(
+                            div()
+                                .id("completion-documentation-preview")
+                                .flex()
+                                .flex_col()
+                                .w(px(390.0))
+                                .max_w(px(460.0))
+                                .max_h(max_container_height)
+                                .overflow_hidden()
+                                .p(tokens.sizes.space_3)
+                                .bg(tokens.chrome.popup_background)
+                                .border_1()
+                                .border_color(tokens.chrome.popup_border)
+                                .rounded(tokens.sizes.radius_md)
+                                .shadow(vec![
+                                    tokens.chrome.shadow_md.to_box_shadow(false),
+                                    tokens.chrome.inset_highlight.to_box_shadow(true),
+                                ])
+                                .text_size(tokens.sizes.text_base)
+                                .line_height(relative(1.35))
+                                .text_color(tokens.chrome.text_on_chrome)
+                                .child(documentation),
+                        )
+                    }),
             )
     }
 }
