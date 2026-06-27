@@ -11712,8 +11712,8 @@ impl Workspace {
             if let Some(view) = self.view_manager.get_document_view(&view_id) {
                 view.update(cx, |view, cx| {
                     let focus_changed = view.set_focused(is_focused);
-                    view.update_text_style(style.clone());
-                    if focus_changed {
+                    let style_changed = view.update_text_style(style.clone());
+                    if focus_changed || style_changed {
                         cx.notify();
                     }
                 });

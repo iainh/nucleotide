@@ -134,12 +134,25 @@ impl DocumentView {
         changed
     }
 
-    pub fn update_text_style(&mut self, style: TextStyle) {
-        // Recalculate line height with new font size
-        // Use the actual font size as rem base for proper line height calculation
-        self.editor_state.update_line_height_from_text_style(&style);
+    pub fn update_text_style(&mut self, style: TextStyle) -> bool {
+        if self.style == style {
+            return false;
+        }
+
+        let metrics_changed = text_style_metrics_changed(&self.style, &style);
+        let shape_changed = text_style_shape_changed(&self.style, &style);
+
+        if metrics_changed {
+            self.editor_state.update_line_height_from_text_style(&style);
+        }
+
         self.style = style;
-        self.editor_state.clear_shaped_lines_cache();
+
+        if shape_changed {
+            self.editor_state.clear_shaped_lines_cache();
+        }
+
+        true
     }
 
     pub fn clear_shaped_lines_cache(&self) {
@@ -252,6 +265,19 @@ impl DocumentView {
 
         tasks_by_line
     }
+}
+
+fn text_style_metrics_changed(previous: &TextStyle, next: &TextStyle) -> bool {
+    previous.font_size != next.font_size || previous.line_height != next.line_height
+}
+
+fn text_style_shape_changed(previous: &TextStyle, next: &TextStyle) -> bool {
+    previous.font_family != next.font_family
+        || previous.font_features != next.font_features
+        || previous.font_fallbacks != next.font_fallbacks
+        || previous.font_size != next.font_size
+        || previous.font_weight != next.font_weight
+        || previous.font_style != next.font_style
 }
 
 #[derive(Clone)]
