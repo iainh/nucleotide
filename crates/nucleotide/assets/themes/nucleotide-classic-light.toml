@@ -1,0 +1,187 @@
+# Nucleotide Classic Light Theme
+# Author: Nucleotide contributors
+# License: MPL-2.0
+# Compatibility: This theme was created for Nucleotide but is fully compatible with Helix.
+#
+# Palette values are mapped from JetBrains' classic Default editor color scheme
+# and IntelliJ light LAF resources.
+
+attribute = { fg = "blue", modifiers = ["bold"] }
+keyword = { fg = "keyword_blue", modifiers = ["bold"] }
+"keyword.directive" = { fg = "keyword_blue", modifiers = ["bold"] }
+namespace = "text"
+punctuation = "text"
+"punctuation.delimiter" = "text"
+operator = "text"
+special = { fg = "keyword_blue", modifiers = ["bold"] }
+"variable.other.member" = { fg = "field_purple", modifiers = ["bold"] }
+variable = "text"
+"variable.parameter" = { fg = "text" }
+"variable.builtin" = { fg = "keyword_blue", modifiers = ["bold"] }
+type = "text"
+"type.builtin" = { fg = "keyword_blue", modifiers = ["bold"] }
+constructor = "text"
+function = "text"
+"function.macro" = { fg = "metadata_olive" }
+"function.builtin" = { fg = "keyword_blue", modifiers = ["bold"] }
+tag = { fg = "text", bg = "tag_bg" }
+markup = { fg = "text", bg = "doc_markup_bg" }
+comment = { fg = "comment_gray", modifiers = ["italic"] }
+"comment.block.documentation" = { fg = "comment_gray", modifiers = ["italic"] }
+"comment.line.documentation" = { fg = "comment_gray", modifiers = ["italic"] }
+constant = { fg = "field_purple", modifiers = ["bold", "italic"] }
+"constant.builtin" = { fg = "field_purple", modifiers = ["bold", "italic"] }
+string = { fg = "string_green", modifiers = ["bold"] }
+"constant.numeric" = "blue"
+"constant.character.escape" = { fg = "keyword_blue", modifiers = ["bold"] }
+"constant.character.escape.invalid" = { fg = "string_green", bg = "invalid_escape_bg", modifiers = [
+  "bold",
+] }
+label = { fg = "text", modifiers = ["bold"] }
+tabstop = { modifiers = ["italic"], bg = "template_language_bg" }
+
+"markup.heading" = { fg = "keyword_blue", bg = "doc_markup_bg", modifiers = [
+  "bold",
+] }
+"markup.bold" = { modifiers = ["bold"] }
+"markup.italic" = { modifiers = ["italic"] }
+"markup.strikethrough" = { modifiers = ["crossed_out"] }
+"markup.link.url" = { fg = "blue", modifiers = ["underlined"] }
+"markup.link.text" = "blue"
+"markup.raw" = { fg = "string_green", bg = "doc_markup_bg", modifiers = [
+  "bold",
+] }
+"markup.raw.block" = { fg = "string_green", bg = "injected_bg", modifiers = [
+  "bold",
+] }
+"markup.quote" = { fg = "comment_gray", bg = "doc_markup_bg", modifiers = [
+  "italic",
+] }
+
+"diff.plus" = "diff_insert"
+"diff.minus" = "diff_delete"
+"diff.delta" = "diff_modify"
+
+"ui.background" = { bg = "editor_bg" }
+"ui.background.separator" = { fg = "border" }
+"ui.linenr" = { fg = "line_number", bg = "gutter" }
+"ui.linenr.selected" = { fg = "text", bg = "gutter" }
+"ui.statusline" = { fg = "text", bg = "panel" }
+"ui.statusline.inactive" = { fg = "info_text", bg = "panel" }
+"ui.popup" = { fg = "text", bg = "lookup_bg" }
+"ui.window" = { fg = "border" }
+"ui.help" = { fg = "text", bg = "documentation_bg" }
+"ui.text" = { fg = "text" }
+"ui.text.focus" = { fg = "text" }
+"ui.text.inactive" = "disabled_text"
+"ui.text.directory" = { fg = "link_blue" }
+"ui.virtual" = { fg = "whitespace" }
+"ui.virtual.ruler" = { bg = "right_margin" }
+"ui.virtual.jump-label" = { fg = "error", modifiers = ["bold"] }
+"ui.virtual.indent-guide" = { fg = "indent_guide" }
+
+"ui.selection" = { fg = "selection_fg", bg = "selection_bg" }
+"ui.selection.primary" = { fg = "selection_fg", bg = "selection_bg" }
+"ui.cursor.select" = { bg = "selection_bg" }
+"ui.cursor.insert" = { bg = "caret" }
+"ui.cursor.primary.select" = { bg = "selection_bg" }
+"ui.cursor.primary.insert" = { bg = "caret" }
+"ui.cursor.match" = { bg = "brace_match" }
+"ui.cursor" = { modifiers = ["reversed"] }
+"ui.cursorline.primary" = { bg = "caret_row" }
+"ui.highlight" = { bg = "identifier_under_caret" }
+"ui.highlight.frameline" = { bg = "warning_bg" }
+"ui.highlight.search" = { fg = "text", bg = "search_bg" }
+"ui.highlight.search.current" = { fg = "text", bg = "search_result" }
+"ui.highlight.search.write" = { fg = "text", bg = "write_search_result" }
+"ui.highlight.injection" = { bg = "injected_bg" }
+"ui.debug" = { fg = "execution_bg" }
+"ui.debug.breakpoint" = { fg = "error" }
+"ui.menu" = { fg = "text", bg = "panel" }
+"ui.menu.selected" = { fg = "selection_fg", bg = "laf_selection" }
+"ui.menu.scroll" = { fg = "text", bg = "border" }
+
+"diagnostic.hint" = { underline = { color = "info_stripe", style = "curl" } }
+"diagnostic.info" = { underline = { color = "info_stripe", style = "curl" } }
+"diagnostic.warning" = { underline = { color = "warning_stripe", style = "curl" } }
+"diagnostic.error" = { underline = { color = "error", style = "curl" } }
+"diagnostic.unnecessary" = { modifiers = ["dim"] }
+"diagnostic.deprecated" = { modifiers = ["crossed_out"] }
+
+warning = "warning_stripe"
+error = "error"
+info = "info_stripe"
+hint = "comment_gray"
+
+[palette]
+# Editor surfaces from JetBrains Default color scheme.
+editor_bg = "#ffffff"
+gutter = "#f0f0f0"
+caret_row = "#fffae3"
+selection_bg = "#5974ab"
+selection_inactive = "#b5b7bd"
+selection_fg = "#ffffff"
+caret = "#000000"
+right_margin = "#e0e0e0"
+tearline = "#d0d0d0"
+selected_tearline = "#9c9c9c"
+indent_guide = "#e6e6e6"
+selected_indent_guide = "#c8c8c8"
+whitespace = "#adadad"
+line_number = "#999999"
+documentation_bg = "#f7f7f7"
+lookup_bg = "#f7f7f7"
+tag_bg = "#efefef"
+doc_markup_bg = "#e2ffe2"
+invalid_escape_bg = "#ffcccc"
+template_language_bg = "#f7faff"
+injected_bg = "#edfced"
+folded_bg = "#ecfaeb"
+folded_border = "#add9c7"
+identifier_under_caret = "#e4e4ff"
+search_bg = "#ffff00"
+search_result = "#ccccff"
+write_search_result = "#ffcdff"
+brace_match = "#99ccff"
+warning_bg = "#f6ebbc"
+
+# Classic syntax colors.
+text = "#000000"
+keyword_blue = "#000080"
+string_green = "#008000"
+comment_gray = "#808080"
+field_purple = "#660e7a"
+metadata_olive = "#808000"
+blue = "#0000ff"
+doc_tag_value = "#3d3d3d"
+type_parameter = "#20999d"
+inline_hint = "#7a7a7a"
+inline_hint_bg = "#ededed"
+
+# IntelliJ light LAF chrome.
+panel = "#f2f2f2"
+content_bg = "#ffffff"
+light_panel = "#f5f5f5"
+hover = "#dfdfdf"
+pressed = "#d1d1d1"
+border = "#d1d1d1"
+component_border = "#c4c4c4"
+light_border = "#d9d9d9"
+info_text = "#808080"
+disabled_text = "#8c8c8c"
+laf_selection = "#2675bf"
+link_blue = "#2470b3"
+
+# Diagnostics, VCS, and diff colors from JetBrains defaults.
+error = "#ff0000"
+error_stripe = "#cf5b56"
+warning_stripe = "#ebc700"
+server_warning = "#f49810"
+info_stripe = "#d9cfad"
+diff_insert = "#bee6be"
+diff_delete = "#d6d6d6"
+diff_modify = "#cad9fa"
+vcs_added = "#0a7700"
+vcs_modified = "#0032a0"
+vcs_deleted = "#616161"
+execution_bg = "#2154a6"
