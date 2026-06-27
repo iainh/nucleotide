@@ -477,11 +477,11 @@ where
             nucleotide_logging::trace!(
                 match_index = index,
                 candidate_id = string_match.candidate_id,
+                item_index = string_match.item_index,
                 "COMP: Processing match"
             );
 
-            // Use the candidate_id as the direct index into the items array
-            let item = items.get(string_match.candidate_id)?;
+            let item = items.get(string_match.item_index)?;
             nucleotide_logging::trace!(item = %item.text, "COMP: Got item");
             nucleotide_logging::trace!(item = %item.text, "COMP: About to create simple div");
 
