@@ -722,7 +722,7 @@ impl CompletionView {
                 "Using optimization base from cache"
             );
             // Filter the base results for the new query
-            let optimized_results = self.filter_cached_results(base_results, &query);
+            let optimized_results = self.filter_cached_results(&base_results, &query);
             self.cache.insert(cache_key, optimized_results.clone());
             self.filtered_entries = optimized_results;
             self.selected_index = 0;
@@ -852,7 +852,7 @@ impl CompletionView {
     }
 
     /// Try to get optimization base from cache
-    fn try_optimization_from_cache(&mut self, query: &str) -> Option<Vec<StringMatch>> {
+    fn try_optimization_from_cache(&mut self, query: &str) -> Option<Arc<[StringMatch]>> {
         // Look for shorter queries that we can build upon
         for len in (1..query.len()).rev() {
             let base_query = &query[..len];
@@ -887,13 +887,13 @@ impl CompletionView {
     /// Filter cached results for a more specific query
     fn filter_cached_results(
         &self,
-        cached_results: Vec<StringMatch>,
+        cached_results: &[StringMatch],
         query: &str,
     ) -> Vec<StringMatch> {
         let query_lower = query.to_lowercase();
 
         cached_results
-            .into_iter()
+            .iter()
             .filter(|string_match| {
                 // Find the candidate and check if it still matches the new query
                 if let Some(candidate) = self.candidate_for_match(string_match) {
@@ -902,6 +902,7 @@ impl CompletionView {
                     false
                 }
             })
+            .cloned()
             .take(self.max_items)
             .collect()
     }
