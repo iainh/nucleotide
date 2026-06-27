@@ -13936,21 +13936,12 @@ fn open_at(
             continue;
         }
 
-        // Skip zed-source directory
-        if path.to_string_lossy().starts_with("zed-source/") {
-            continue;
-        }
-
         // Get relative path from base directory
         let relative_path = path.strip_prefix(&base_dir).unwrap_or(&path);
+        if relative_path.starts_with("zed-source") {
+            continue;
+        }
         let path_str = relative_path.to_string_lossy().into_owned();
-
-        // Get filename for label
-        let _filename = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("<unknown>")
-            .to_string();
 
         // For project files, use path as label for better visibility
         items.push(PickerItem {
@@ -13974,20 +13965,13 @@ fn open_at(
     debug!("File picker has {} items", items.len());
 
     // Populate VCS status for all file items using the global VCS service
-    let _file_paths: Vec<std::path::PathBuf> = items
-        .iter()
-        .filter_map(|item| item.file_path.clone())
-        .collect();
-
-    // Populate VCS status for all file items using the global VCS service
-    if cx.has_global::<nucleotide_vcs::VcsServiceHandle>() {
+    if let Some(vcs_service) = cx.try_global::<nucleotide_vcs::VcsServiceHandle>() {
         debug!("VCS service available, populating file picker VCS status");
 
         // Apply VCS status to items using cached status
         let mut vcs_status_count = 0;
         for item in &mut items {
             if let Some(ref file_path) = item.file_path {
-                let vcs_service = cx.global::<nucleotide_vcs::VcsServiceHandle>();
                 item.vcs_status = vcs_service.get_status_cached(file_path, cx);
                 if item.vcs_status.is_some() {
                     vcs_status_count += 1;
@@ -14054,31 +14038,25 @@ fn show_buffer_picker(
         focused_at: std::time::Instant,
     }
 
-    // Collect all open documents/buffers with metadata
-    let mut buffer_metas = Vec::new();
-    let current_doc_id = core
-        .read(cx)
-        .editor
-        .tree
-        .get(core.read(cx).editor.tree.focus)
-        .doc;
-
-    core.update(cx, |core, _cx| {
+    let (project_directory, mut buffer_metas) = {
+        let core = core.read(cx);
         let editor = &core.editor;
+        let current_doc_id = editor.tree.get(editor.tree.focus).doc;
 
-        // Collect buffer metadata
-        for (doc_id, doc) in editor.documents.iter() {
-            let focused_at = doc.focused_at;
-
-            buffer_metas.push(BufferMeta {
+        let buffer_metas: Vec<BufferMeta> = editor
+            .documents
+            .iter()
+            .map(|(doc_id, doc)| BufferMeta {
                 doc_id: *doc_id,
                 path: doc.path().map(|p| p.to_path_buf()),
                 is_modified: doc.is_modified(),
                 is_current: *doc_id == current_doc_id,
-                focused_at,
-            });
-        }
-    });
+                focused_at: doc.focused_at,
+            })
+            .collect();
+
+        (core.project_directory.clone(), buffer_metas)
+    };
 
     // Sort by MRU (Most Recently Used) - most recent first
     buffer_metas.sort_by_key(|meta| std::cmp::Reverse(meta.focused_at));
@@ -14129,7 +14107,7 @@ fn show_buffer_picker(
         // Get path or [scratch] label
         let path_str = if let Some(path) = &meta.path {
             // Show relative path if possible
-            if let Some(project_dir) = &core.read(cx).project_directory {
+            if let Some(project_dir) = &project_directory {
                 path.strip_prefix(project_dir)
                     .unwrap_or(path)
                     .display()
