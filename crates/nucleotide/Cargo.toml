@@ -64,10 +64,8 @@ helix-term.workspace = true
 anyhow.workspace = true
 arc-swap.workspace = true
 tokio.workspace = true
-tokio-stream.workspace = true
 futures-util.workspace = true
 futures-executor = "0.3"
-unicode-segmentation.workspace = true
 
 tracing.workspace = true
 once_cell.workspace = true

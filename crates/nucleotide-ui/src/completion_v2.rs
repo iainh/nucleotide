@@ -902,8 +902,8 @@ impl CompletionView {
                     false
                 }
             })
-            .cloned()
             .take(self.max_items)
+            .cloned()
             .collect()
     }
 
