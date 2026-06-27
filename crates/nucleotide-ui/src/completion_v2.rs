@@ -359,7 +359,7 @@ impl CompletionView {
         cx: &mut Context<Self>,
     ) {
         // Log the incoming completion data
-        nucleotide_logging::info!(
+        nucleotide_logging::debug!(
             item_count = items.len(),
             has_filter = initial_filter.is_some(),
             filter = %initial_filter.as_deref().unwrap_or(""),
@@ -422,7 +422,7 @@ impl CompletionView {
         // Apply initial filter if provided, otherwise show all items
         if !self.all_items.is_empty() {
             if let Some(filter) = initial_filter {
-                nucleotide_logging::info!(
+                nucleotide_logging::debug!(
                     filter = %filter,
                     "Applying initial filter to completion items"
                 );
@@ -441,7 +441,7 @@ impl CompletionView {
                     .collect();
                 self.visible = true;
 
-                nucleotide_logging::info!(
+                nucleotide_logging::debug!(
                     total_items = self.all_items.len(),
                     filtered_items = self.filtered_entries.len(),
                     "Completion items set without filtering"
@@ -570,7 +570,7 @@ impl CompletionView {
         position: Option<Position>,
         cx: &mut Context<Self>,
     ) {
-        nucleotide_logging::info!(
+        nucleotide_logging::debug!(
             query = %query,
             position = ?position,
             total_items = self.all_items.len(),
@@ -604,7 +604,7 @@ impl CompletionView {
             self.performance_monitor
                 .record_filter(duration, true, false);
 
-            nucleotide_logging::info!(
+            nucleotide_logging::debug!(
                 query = %query,
                 cached_results = cached_results.len(),
                 duration_ms = duration.as_millis(),
@@ -645,7 +645,7 @@ impl CompletionView {
 
         // If query is empty, show all items
         if query.is_empty() {
-            nucleotide_logging::info!(
+            nucleotide_logging::debug!(
                 total_items = self.match_candidates.len(),
                 max_items = self.max_items,
                 "Empty query, showing all items"
@@ -661,7 +661,7 @@ impl CompletionView {
             // Cache the results
             self.cache.insert(cache_key, results.clone());
 
-            nucleotide_logging::info!(
+            nucleotide_logging::debug!(
                 filtered_count = results.len(),
                 "Filtered results for empty query"
             );
@@ -704,7 +704,7 @@ impl CompletionView {
         let candidates = &self.match_candidates;
         let max_items = self.max_items;
 
-        nucleotide_logging::info!(
+        nucleotide_logging::debug!(
             query = %query,
             candidates = candidates.len(),
             "Performing synchronous filtering with fuzzy matching"
@@ -773,7 +773,7 @@ impl CompletionView {
         filtered_matches.sort_by_key(|candidate| std::cmp::Reverse(candidate.score));
         filtered_matches.truncate(max_items);
 
-        nucleotide_logging::info!(
+        nucleotide_logging::debug!(
             total_candidates = candidates.len(),
             matched_count = matched_count,
             filtered_matches = filtered_matches.len(),
@@ -794,7 +794,7 @@ impl CompletionView {
 
         // Check and log visibility state
         let is_visible = self.is_visible();
-        nucleotide_logging::info!(
+        nucleotide_logging::debug!(
             filtered_entries = self.filtered_entries.len(),
             visible_flag = self.visible,
             is_visible_result = is_visible,
@@ -890,7 +890,7 @@ impl CompletionView {
         let total_before = self.all_items.len();
         let filtered_count = matches.len();
 
-        nucleotide_logging::info!(
+        nucleotide_logging::debug!(
             total_items = total_before,
             filtered_items = filtered_count,
             filter_ratio = if total_before > 0 { (filtered_count as f32 / total_before as f32) * 100.0 } else { 0.0 },
@@ -968,7 +968,7 @@ impl CompletionView {
 
     /// Move selection up/down
     pub fn select_next(&mut self, cx: &mut Context<Self>) {
-        nucleotide_logging::info!(
+        nucleotide_logging::debug!(
             current_index = self.selected_index,
             filtered_count = self.filtered_entries.len(),
             "select_next called"
@@ -976,7 +976,7 @@ impl CompletionView {
         if !self.filtered_entries.is_empty() {
             let old_index = self.selected_index;
             self.selected_index = (self.selected_index + 1) % self.filtered_entries.len();
-            nucleotide_logging::info!(
+            nucleotide_logging::debug!(
                 old_index = old_index,
                 new_index = self.selected_index,
                 "select_next: changed selection"
@@ -990,7 +990,7 @@ impl CompletionView {
     }
 
     pub fn select_prev(&mut self, cx: &mut Context<Self>) {
-        nucleotide_logging::info!(
+        nucleotide_logging::debug!(
             current_index = self.selected_index,
             filtered_count = self.filtered_entries.len(),
             "select_prev called"
@@ -1002,7 +1002,7 @@ impl CompletionView {
             } else {
                 self.selected_index - 1
             };
-            nucleotide_logging::info!(
+            nucleotide_logging::debug!(
                 old_index = old_index,
                 new_index = self.selected_index,
                 "select_prev: changed selection"
@@ -1130,7 +1130,7 @@ impl CompletionView {
             (self.selected_index + page_size).min(self.filtered_entries.len() - 1);
 
         if old_index != self.selected_index {
-            nucleotide_logging::info!(
+            nucleotide_logging::debug!(
                 old_index = old_index,
                 new_index = self.selected_index,
                 page_size = page_size,
@@ -1153,7 +1153,7 @@ impl CompletionView {
         self.selected_index = self.selected_index.saturating_sub(page_size);
 
         if old_index != self.selected_index {
-            nucleotide_logging::info!(
+            nucleotide_logging::debug!(
                 old_index = old_index,
                 new_index = self.selected_index,
                 page_size = page_size,
@@ -1170,7 +1170,7 @@ impl CompletionView {
         if !self.filtered_entries.is_empty() && self.selected_index != 0 {
             let old_index = self.selected_index;
             self.selected_index = 0;
-            nucleotide_logging::info!(
+            nucleotide_logging::debug!(
                 old_index = old_index,
                 new_index = self.selected_index,
                 "select_first: changed selection"
@@ -1188,7 +1188,7 @@ impl CompletionView {
             let last_index = self.filtered_entries.len() - 1;
             if self.selected_index != last_index {
                 self.selected_index = last_index;
-                nucleotide_logging::info!(
+                nucleotide_logging::debug!(
                     old_index = old_index,
                     new_index = self.selected_index,
                     "select_last: changed selection"
@@ -1269,7 +1269,7 @@ impl CompletionView {
                 description,
             } => {
                 // Switch to basic completion mode
-                nucleotide_logging::info!(description = %description, "Fallback activated");
+                nucleotide_logging::debug!(description = %description, "Fallback activated");
                 self.enter_fallback_mode();
             }
             RecoveryAction::ClearCache { cache_types: _ } => {
@@ -1289,7 +1289,7 @@ impl CompletionView {
                 action_text: _,
             } => {
                 // Show user notification
-                nucleotide_logging::info!(message = %message, "Completion system notification");
+                nucleotide_logging::debug!(message = %message, "Completion system notification");
             }
         }
     }
@@ -1301,7 +1301,7 @@ impl CompletionView {
         };
 
         let position = self.initial_position.clone();
-        nucleotide_logging::info!(
+        nucleotide_logging::debug!(
             query = %query,
             position = ?position,
             "Retrying completion filter"
@@ -1547,7 +1547,7 @@ impl Render for CompletionView {
                     "tab" => {
                         // Tab: Accept the currently selected completion item
                         if let Some(selected_index) = view.selected_index() {
-                            nucleotide_logging::info!(
+                            nucleotide_logging::debug!(
                                 selected_index = selected_index,
                                 "Tab pressed - accepting selected completion via Helix"
                             );
@@ -1567,36 +1567,36 @@ impl Render for CompletionView {
                         }
                     }
                     "up" => {
-                        nucleotide_logging::info!("Up arrow key pressed in completion popup");
+                        nucleotide_logging::trace!("Up arrow key pressed in completion popup");
                         // Up arrow: Move to previous completion item
                         view.select_prev(cx);
                         // Stop propagation so arrow keys don't move cursor in editor
                         cx.stop_propagation();
                     }
                     "down" => {
-                        nucleotide_logging::info!("Down arrow key pressed in completion popup");
+                        nucleotide_logging::trace!("Down arrow key pressed in completion popup");
                         // Down arrow: Move to next completion item
                         view.select_next(cx);
                         // Stop propagation so arrow keys don't move cursor in editor
                         cx.stop_propagation();
                     }
                     "pagedown" => {
-                        nucleotide_logging::info!("Page Down pressed in completion popup");
+                        nucleotide_logging::trace!("Page Down pressed in completion popup");
                         view.select_page_down(cx);
                         cx.stop_propagation();
                     }
                     "pageup" => {
-                        nucleotide_logging::info!("Page Up pressed in completion popup");
+                        nucleotide_logging::trace!("Page Up pressed in completion popup");
                         view.select_page_up(cx);
                         cx.stop_propagation();
                     }
                     "home" => {
-                        nucleotide_logging::info!("Home key pressed in completion popup");
+                        nucleotide_logging::trace!("Home key pressed in completion popup");
                         view.select_first(cx);
                         cx.stop_propagation();
                     }
                     "end" => {
-                        nucleotide_logging::info!("End key pressed in completion popup");
+                        nucleotide_logging::trace!("End key pressed in completion popup");
                         view.select_last(cx);
                         cx.stop_propagation();
                     }
@@ -1801,7 +1801,7 @@ impl Render for CompletionView {
 
                                         // Special debugging for last few items
                                         if self.selected_index >= total_items.saturating_sub(3) {
-                                            nucleotide_logging::info!(
+                                            nucleotide_logging::debug!(
                                                 selected_index = self.selected_index,
                                                 total_items = total_items,
                                                 start_index = start_index,
