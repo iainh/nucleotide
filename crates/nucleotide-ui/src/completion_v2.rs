@@ -41,11 +41,22 @@ pub struct StringMatchCandidate {
     pub id: usize,
     /// Text content to match against
     pub text: String,
+    /// Lowercased text used by the completion filter hot path
+    normalized_text: String,
 }
 
 impl StringMatchCandidate {
     pub fn new(id: usize, text: String) -> Self {
-        Self { id, text }
+        let normalized_text = text.to_lowercase();
+        Self {
+            id,
+            text,
+            normalized_text,
+        }
+    }
+
+    fn matches_query(&self, query_lower: &str) -> bool {
+        self.normalized_text.contains(query_lower)
     }
 }
 
@@ -713,7 +724,8 @@ impl CompletionView {
         // Use simple prefix matching for now (can be enhanced with fuzzy matching later)
         let query_lower = query.to_lowercase();
         let mut matched_count = 0;
-        let mut filtered_matches: Vec<StringMatch> = Vec::new();
+        let mut prefix_matches: Vec<StringMatch> = Vec::with_capacity(max_items);
+        let mut substring_matches: Vec<StringMatch> = Vec::with_capacity(max_items);
 
         nucleotide_logging::debug!(
             query = %query,
@@ -723,12 +735,10 @@ impl CompletionView {
         );
 
         for (idx, candidate) in candidates.iter().enumerate() {
-            let candidate_text = candidate.text.to_lowercase();
-
             if idx < 5 {
                 nucleotide_logging::debug!(
                     idx = idx,
-                    candidate_text = %candidate_text,
+                    candidate_text = %candidate.text,
                     candidate_id = candidate.id,
                     query_lower = %query_lower,
                     "Checking candidate"
@@ -736,41 +746,48 @@ impl CompletionView {
             }
 
             // Check if candidate text starts with or contains the query
-            let score = if candidate_text.starts_with(&query_lower) {
+            if candidate.normalized_text.starts_with(&query_lower) {
                 matched_count += 1;
                 if idx < 5 {
                     nucleotide_logging::debug!(
-                        candidate_text = %candidate_text,
+                        candidate_text = %candidate.text,
                         "MATCHED: prefix match"
                     );
                 }
-                Some(100) // High score for prefix match
-            } else if candidate_text.contains(&query_lower) {
+
+                if prefix_matches.len() < max_items {
+                    prefix_matches.push(StringMatch::new(candidate.id, 100, vec![]));
+                }
+            } else if candidate.matches_query(&query_lower) {
                 matched_count += 1;
                 if idx < 5 {
                     nucleotide_logging::debug!(
-                        candidate_text = %candidate_text,
+                        candidate_text = %candidate.text,
                         "MATCHED: substring match"
                     );
                 }
-                Some(50) // Lower score for substring match
+
+                if substring_matches.len() < max_items {
+                    substring_matches.push(StringMatch::new(candidate.id, 50, vec![]));
+                }
             } else {
                 if idx < 5 {
                     nucleotide_logging::debug!(
-                        candidate_text = %candidate_text,
+                        candidate_text = %candidate.text,
                         "NO MATCH"
                     );
                 }
-                None
-            };
-
-            if let Some(score_val) = score {
-                filtered_matches.push(StringMatch::new(candidate.id, score_val, vec![]));
             }
         }
 
-        // Sort by score descending (highest scores first) and limit to max_items
-        filtered_matches.sort_by_key(|candidate| std::cmp::Reverse(candidate.score));
+        // Scores only have two buckets today, so avoid sorting every match just
+        // to truncate to the visible result limit.
+        let mut filtered_matches = prefix_matches;
+        filtered_matches.extend(
+            substring_matches
+                .into_iter()
+                .take(max_items.saturating_sub(filtered_matches.len())),
+        );
         filtered_matches.truncate(max_items);
 
         nucleotide_logging::debug!(
@@ -779,7 +796,7 @@ impl CompletionView {
             filtered_matches = filtered_matches.len(),
             max_items = max_items,
             query = %query,
-            "Filtering completed with detailed results, sorted by score descending"
+            "Filtering completed with detailed results"
         );
 
         // Cache the results
@@ -833,6 +850,8 @@ impl CompletionView {
         cached_results: Vec<StringMatch>,
         query: &str,
     ) -> Vec<StringMatch> {
+        let query_lower = query.to_lowercase();
+
         cached_results
             .into_iter()
             .filter(|string_match| {
@@ -842,10 +861,7 @@ impl CompletionView {
                     .iter()
                     .find(|c| c.id == string_match.candidate_id)
                 {
-                    candidate
-                        .text
-                        .to_lowercase()
-                        .contains(&query.to_lowercase())
+                    candidate.matches_query(&query_lower)
                 } else {
                     false
                 }
@@ -858,6 +874,8 @@ impl CompletionView {
     fn filter_existing_results(&mut self, query: &str, cx: &mut Context<Self>) {
         // For query extensions, filter the existing results
         if self.is_query_extension(query) {
+            let query_lower = query.to_lowercase();
+
             self.filtered_entries.retain(|string_match| {
                 // Find the candidate and check if it still matches
                 if let Some(candidate) = self
@@ -865,10 +883,7 @@ impl CompletionView {
                     .iter()
                     .find(|c| c.id == string_match.candidate_id)
                 {
-                    candidate
-                        .text
-                        .to_lowercase()
-                        .contains(&query.to_lowercase())
+                    candidate.matches_query(&query_lower)
                 } else {
                     false
                 }
