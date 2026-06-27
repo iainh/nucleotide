@@ -39,6 +39,8 @@ pub struct CompletionWarningEvent {
 pub struct StringMatchCandidate {
     /// Unique identifier for this candidate
     pub id: usize,
+    /// Index of the source item in the completion list
+    pub item_index: usize,
     /// Text content to match against
     pub text: String,
     /// Lowercased text used by the completion filter hot path
@@ -47,12 +49,23 @@ pub struct StringMatchCandidate {
 
 impl StringMatchCandidate {
     pub fn new(id: usize, text: String) -> Self {
+        Self::with_index(id, text, 0)
+    }
+
+    pub fn with_index(id: usize, text: String, item_index: usize) -> Self {
         let normalized_text = text.to_lowercase();
         Self {
             id,
+            item_index,
             text,
             normalized_text,
         }
+    }
+
+    fn from_item(index: usize, item: &CompletionItem) -> Self {
+        let mut candidate = Self::from(item);
+        candidate.item_index = index;
+        candidate
     }
 
     fn matches_query(&self, query_lower: &str) -> bool {
@@ -80,6 +93,8 @@ impl From<&CompletionItem> for StringMatchCandidate {
 pub struct StringMatch {
     /// ID of the matched candidate
     pub candidate_id: usize,
+    /// Index of the matched item in the source completion list
+    pub item_index: usize,
     /// Match score (higher is better)
     pub score: u16,
     /// Character positions that matched in the original string
@@ -90,6 +105,16 @@ impl StringMatch {
     pub fn new(candidate_id: usize, score: u16, positions: Vec<usize>) -> Self {
         Self {
             candidate_id,
+            item_index: candidate_id,
+            score,
+            positions,
+        }
+    }
+
+    fn for_candidate(candidate: &StringMatchCandidate, score: u16, positions: Vec<usize>) -> Self {
+        Self {
+            candidate_id: candidate.id,
+            item_index: candidate.item_index,
             score,
             positions,
         }
@@ -415,7 +440,8 @@ impl CompletionView {
         self.match_candidates = self
             .all_items
             .iter()
-            .map(StringMatchCandidate::from)
+            .enumerate()
+            .map(|(index, item)| StringMatchCandidate::from_item(index, item))
             .collect();
 
         // Reset state
@@ -444,11 +470,7 @@ impl CompletionView {
                 self.filtered_entries = self
                     .match_candidates
                     .iter()
-                    .map(|candidate| StringMatch {
-                        candidate_id: candidate.id,
-                        score: 100,
-                        positions: Vec::new(),
-                    })
+                    .map(|candidate| StringMatch::for_candidate(candidate, 100, Vec::new()))
                     .collect();
                 self.visible = true;
 
@@ -665,7 +687,7 @@ impl CompletionView {
             let results: Vec<StringMatch> = self
                 .match_candidates
                 .iter()
-                .map(|candidate| StringMatch::new(candidate.id, 100, vec![]))
+                .map(|candidate| StringMatch::for_candidate(candidate, 100, Vec::new()))
                 .take(self.max_items)
                 .collect();
 
@@ -756,7 +778,7 @@ impl CompletionView {
                 }
 
                 if prefix_matches.len() < max_items {
-                    prefix_matches.push(StringMatch::new(candidate.id, 100, vec![]));
+                    prefix_matches.push(StringMatch::for_candidate(candidate, 100, Vec::new()));
                 }
             } else if candidate.matches_query(&query_lower) {
                 matched_count += 1;
@@ -768,7 +790,7 @@ impl CompletionView {
                 }
 
                 if substring_matches.len() < max_items {
-                    substring_matches.push(StringMatch::new(candidate.id, 50, vec![]));
+                    substring_matches.push(StringMatch::for_candidate(candidate, 50, Vec::new()));
                 }
             } else {
                 if idx < 5 {
@@ -844,6 +866,24 @@ impl CompletionView {
         None
     }
 
+    fn candidate_for_match(&self, string_match: &StringMatch) -> Option<&StringMatchCandidate> {
+        self.match_candidates
+            .get(string_match.item_index)
+            .filter(|candidate| candidate.id == string_match.candidate_id)
+            .or_else(|| {
+                self.match_candidates
+                    .iter()
+                    .find(|candidate| candidate.id == string_match.candidate_id)
+            })
+    }
+
+    fn item_for_match(&self, string_match: &StringMatch) -> Option<&CompletionItem> {
+        self.all_items.get(string_match.item_index).or_else(|| {
+            self.candidate_for_match(string_match)
+                .and_then(|candidate| self.all_items.get(candidate.item_index))
+        })
+    }
+
     /// Filter cached results for a more specific query
     fn filter_cached_results(
         &self,
@@ -856,11 +896,7 @@ impl CompletionView {
             .into_iter()
             .filter(|string_match| {
                 // Find the candidate and check if it still matches the new query
-                if let Some(candidate) = self
-                    .match_candidates
-                    .iter()
-                    .find(|c| c.id == string_match.candidate_id)
-                {
+                if let Some(candidate) = self.candidate_for_match(string_match) {
                     candidate.matches_query(&query_lower)
                 } else {
                     false
@@ -880,8 +916,13 @@ impl CompletionView {
                 // Find the candidate and check if it still matches
                 if let Some(candidate) = self
                     .match_candidates
-                    .iter()
-                    .find(|c| c.id == string_match.candidate_id)
+                    .get(string_match.item_index)
+                    .filter(|candidate| candidate.id == string_match.candidate_id)
+                    .or_else(|| {
+                        self.match_candidates
+                            .iter()
+                            .find(|candidate| candidate.id == string_match.candidate_id)
+                    })
                 {
                     candidate.matches_query(&query_lower)
                 } else {
@@ -919,12 +960,7 @@ impl CompletionView {
                 .iter()
                 .take(5)
                 .filter_map(|string_match| {
-                    self.all_items
-                        .iter()
-                        .find(|item| {
-                            let candidate = StringMatchCandidate::from(*item);
-                            candidate.id == string_match.candidate_id
-                        })
+                    self.item_for_match(string_match)
                         .map(|item| format!("{}({})", item.text, string_match.score))
                 })
                 .collect();
@@ -948,28 +984,16 @@ impl CompletionView {
 
     /// Get the currently selected completion item
     pub fn selected_item(&self) -> Option<&CompletionItem> {
-        if let Some(string_match) = self.filtered_entries.get(self.selected_index) {
-            // Find the original item by matching candidate ID
-            self.all_items.iter().find(|item| {
-                let candidate = StringMatchCandidate::from(*item);
-                candidate.id == string_match.candidate_id
-            })
-        } else {
-            None
-        }
+        self.filtered_entries
+            .get(self.selected_index)
+            .and_then(|string_match| self.item_for_match(string_match))
     }
 
     /// Get completion item at specific index
     pub fn get_item_at_index(&self, index: usize) -> Option<&CompletionItem> {
-        if let Some(string_match) = self.filtered_entries.get(index) {
-            // Find the original item by matching candidate ID
-            self.all_items.iter().find(|item| {
-                let candidate = StringMatchCandidate::from(*item);
-                candidate.id == string_match.candidate_id
-            })
-        } else {
-            None
-        }
+        self.filtered_entries
+            .get(index)
+            .and_then(|string_match| self.item_for_match(string_match))
     }
 
     /// Get the currently selected item index in the filtered list
@@ -1056,19 +1080,7 @@ impl CompletionView {
 
     /// Update documentation for the currently selected item
     fn update_documentation_for_selection(&mut self, cx: &mut Context<Self>) {
-        let selected_item =
-            if let Some(string_match) = self.filtered_entries.get(self.selected_index) {
-                // Find the original item by matching candidate ID
-                self.all_items
-                    .iter()
-                    .find(|item| {
-                        let candidate = StringMatchCandidate::from(*item);
-                        candidate.id == string_match.candidate_id
-                    })
-                    .cloned()
-            } else {
-                None
-            };
+        let selected_item = self.selected_item().cloned();
 
         if let Some(item) = selected_item {
             self.current_documentation = self.documentation_loader.load_documentation(&item, cx);
@@ -1661,31 +1673,23 @@ impl Render for CompletionView {
                             .iter()
                             .take(12) // Only consider visible items for performance
                             .map(|string_match| {
-                                // Find the corresponding completion item
-                                self.all_items
-                                    .iter()
-                                    .find(|item| {
-                                        let candidate = StringMatchCandidate::from(*item);
-                                        candidate.id == string_match.candidate_id
-                                    })
+                                self.item_for_match(string_match)
                                     .map(|item| {
                                         // Calculate total text length including signature and type info
-                                        let display_text = item
+                                        let mut total_len = item
                                             .display_text
                                             .as_ref()
-                                            .map(|s| s.to_string())
-                                            .unwrap_or_else(|| item.text.to_string());
-                                        let mut total_len = display_text.len();
+                                            .map_or(item.text.len(), |text| text.len());
 
                                         if let Some(sig) = &item.signature_info {
-                                            total_len += sig.to_string().len();
+                                            total_len += sig.len();
                                         }
                                         if let Some(type_info) = &item.type_info {
-                                            total_len += type_info.to_string().len() + 3; // "→ " prefix
+                                            total_len += type_info.len() + 3; // "-> " prefix
                                         }
                                         if let Some(detail) = &item.detail {
                                             // Detail is on second line, consider it separately
-                                            total_len = total_len.max(detail.to_string().len());
+                                            total_len = total_len.max(detail.len());
                                         }
                                         total_len
                                     })
@@ -1829,36 +1833,24 @@ impl Render for CompletionView {
                                             );
                                         }
 
-                                        let items_to_render: Vec<_> = self
-                                            .filtered_entries
-                                            .iter()
-                                            .enumerate()
-                                            .skip(start_index)
-                                            .take(end_index - start_index)
-                                            .collect();
+                                        let items_to_render_count =
+                                            end_index.saturating_sub(start_index);
 
                                         nucleotide_logging::debug!(
-                                            items_to_render_count = items_to_render.len(),
+                                            items_to_render_count = items_to_render_count,
                                             expected_count = end_index - start_index,
-                                            first_index = items_to_render.first().map(|(i, _)| *i),
-                                            last_index = items_to_render.last().map(|(i, _)| *i),
+                                            first_index =
+                                                (items_to_render_count > 0).then_some(start_index),
+                                            last_index = (items_to_render_count > 0)
+                                                .then_some(end_index - 1),
                                             "Items actually being rendered"
                                         );
 
-                                        items_to_render
-                                            .into_iter()
-                                            .map(|(index, string_match)| {
-                                                // Find the original completion item
-                                                let item = self
-                                                    .all_items
-                                                    .iter()
-                                                    .find(|item| {
-                                                        let candidate =
-                                                            StringMatchCandidate::from(*item);
-                                                        candidate.id == string_match.candidate_id
-                                                    })
-                                                    .unwrap();
-
+                                        (start_index..end_index)
+                                            .filter_map(|index| {
+                                                let string_match =
+                                                    self.filtered_entries.get(index)?;
+                                                let item = self.item_for_match(string_match)?;
                                                 let is_selected = index == self.selected_index;
 
                                                 // Add explicit ID for scroll-to-element functionality
@@ -1869,13 +1861,15 @@ impl Render for CompletionView {
                                                 );
 
                                                 // Wrap in div with ID for scroll targeting
-                                                div()
-                                                    .id(("completion-item-wrapper", index))
-                                                    .w_full()
-                                                    .child(
-                                                        completion_element
-                                                            .into_element_with_theme(theme),
-                                                    )
+                                                Some(
+                                                    div()
+                                                        .id(("completion-item-wrapper", index))
+                                                        .w_full()
+                                                        .child(
+                                                            completion_element
+                                                                .into_element_with_theme(theme),
+                                                        ),
+                                                )
                                             })
                                             .collect::<Vec<_>>()
                                     }),
