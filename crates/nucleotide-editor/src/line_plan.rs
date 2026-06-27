@@ -1,6 +1,8 @@
 // ABOUTME: Pure visible-line planning for native editor rendering
 // ABOUTME: Converts Helix row ranges into renderable document line segments
 
+use std::collections::BTreeMap;
+
 use gpui::{Bounds, Pixels, Point, point, size};
 use helix_core::RopeSlice;
 
@@ -44,6 +46,7 @@ pub struct UnwrappedRenderPlanParams<'a> {
     pub scroll_line_offset: Pixels,
     pub horizontal_offset: usize,
     pub cursor_line: usize,
+    pub inline_diagnostic_virtual_rows: Option<&'a BTreeMap<usize, usize>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -107,6 +110,7 @@ pub fn unwrapped_render_plan(params: UnwrappedRenderPlanParams<'_>) -> Unwrapped
         params.line_viewport,
         params.line_height,
         params.scroll_line_offset,
+        params.inline_diagnostic_virtual_rows,
     );
     let next_line_y_offset = visible_lines
         .last()
@@ -135,6 +139,7 @@ pub fn unwrapped_visible_line_plans(
     viewport: LineViewportPlan,
     line_height: Pixels,
     scroll_line_offset: Pixels,
+    inline_diagnostic_virtual_rows: Option<&BTreeMap<usize, usize>>,
 ) -> Vec<VisibleLinePlan> {
     let anchor_char = text.line_to_char(viewport.first_row.min(viewport.total_lines));
     let mut y_offset = -scroll_line_offset;
@@ -165,6 +170,11 @@ pub fn unwrapped_visible_line_plans(
             y_offset,
         });
         y_offset += line_height;
+        y_offset += line_height
+            * inline_diagnostic_virtual_rows
+                .and_then(|rows| rows.get(&line_idx))
+                .copied()
+                .unwrap_or(0) as f32;
     }
 
     plans
@@ -238,7 +248,7 @@ mod tests {
     fn plans_unwrapped_visible_lines() {
         let text = "alpha\nbeta\ngamma";
         let viewport = line_viewport_plan(text.into(), 0, 3, 0);
-        let plans = unwrapped_visible_line_plans(text.into(), viewport, px(14.0), px(0.0));
+        let plans = unwrapped_visible_line_plans(text.into(), viewport, px(14.0), px(0.0), None);
 
         assert_eq!(plans.len(), 3);
         assert_eq!(plans[0].line_idx, 0);
@@ -256,10 +266,30 @@ mod tests {
     fn starts_at_negative_scroll_offset() {
         let text = "alpha\nbeta";
         let viewport = line_viewport_plan(text.into(), 0, 2, 0);
-        let plans = unwrapped_visible_line_plans(text.into(), viewport, px(14.0), px(4.0));
+        let plans = unwrapped_visible_line_plans(text.into(), viewport, px(14.0), px(4.0), None);
 
         assert_eq!(plans[0].y_offset, px(-4.0));
         assert_eq!(plans[1].y_offset, px(10.0));
+    }
+
+    #[test]
+    fn unwrapped_lines_reserve_inline_diagnostic_rows() {
+        let text = "alpha\nbeta\ngamma";
+        let viewport = line_viewport_plan(text.into(), 0, 3, 0);
+        let mut virtual_rows = std::collections::BTreeMap::new();
+        virtual_rows.insert(0, 2);
+
+        let plans = unwrapped_visible_line_plans(
+            text.into(),
+            viewport,
+            px(14.0),
+            px(0.0),
+            Some(&virtual_rows),
+        );
+
+        assert_eq!(plans[0].y_offset, px(0.0));
+        assert_eq!(plans[1].y_offset, px(42.0));
+        assert_eq!(plans[2].y_offset, px(56.0));
     }
 
     #[test]
@@ -278,7 +308,7 @@ mod tests {
     fn skips_trailing_phantom_line_without_consuming_vertical_space() {
         let text = "alpha\n";
         let viewport = line_viewport_plan(text.into(), 0, 2, text.chars().count());
-        let plans = unwrapped_visible_line_plans(text.into(), viewport, px(14.0), px(0.0));
+        let plans = unwrapped_visible_line_plans(text.into(), viewport, px(14.0), px(0.0), None);
 
         assert_eq!(plans.len(), 1);
         assert_eq!(plans[0].line_idx, 0);
@@ -365,6 +395,7 @@ mod tests {
             scroll_line_offset: px(5.0),
             horizontal_offset: 0,
             cursor_line: 1,
+            inline_diagnostic_virtual_rows: None,
         });
 
         assert_eq!(plan.line_viewport, line_viewport);
@@ -401,6 +432,7 @@ mod tests {
             scroll_line_offset: px(7.0),
             horizontal_offset: 0,
             cursor_line: 0,
+            inline_diagnostic_virtual_rows: None,
         });
 
         assert!(plan.visible_lines.is_empty());

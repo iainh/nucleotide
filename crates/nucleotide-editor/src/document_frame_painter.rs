@@ -26,10 +26,10 @@ use crate::{
     build_soft_wrap_gutter_line_plans, build_unwrapped_gutter_line_plans, cursor_style_for_mode,
     diagnostics::DiagnosticSeverityIconColors, editor_document_frame, gutter::gutter_origin,
     highlight::gpui_hsla_to_helix_color, paint_diagnostic_gutter_markers, paint_editor_background,
-    paint_gutter_lines, paint_soft_wrap_editor_line, paint_unwrapped_editor_line,
-    paint_visible_rulers, run_gutter_button_bounds, run_gutter_icon_bounds,
-    shape_and_paint_editor_cursor, soft_wrap_cursor_paint_plan, style::helix_color_to_hsla,
-    unwrapped_cursor_paint_plan,
+    paint_gutter_lines, paint_inline_diagnostic_plan, paint_soft_wrap_editor_line,
+    paint_unwrapped_editor_line, paint_visible_rulers, run_gutter_button_bounds,
+    run_gutter_icon_bounds, shape_and_paint_editor_cursor, soft_wrap_cursor_paint_plan,
+    style::helix_color_to_hsla, unwrapped_cursor_paint_plan,
 };
 
 pub struct DocumentFramePaintParams<'a> {
@@ -776,8 +776,11 @@ fn paint_soft_wrap_document_frame(
 
     for (line_plan, line_runs) in soft_wrap_paint_plans
         .into_iter()
+        .enumerate()
         .zip(frame.soft_wrap_line_runs.iter())
     {
+        let (index, line_plan) = line_plan;
+        let mut source_line_width = Pixels::ZERO;
         match paint_soft_wrap_editor_line(
             window,
             cx,
@@ -796,11 +799,39 @@ fn paint_soft_wrap_document_frame(
                 },
             },
         ) {
-            Ok(Some(layout)) => params.line_cache.push(layout),
+            Ok(Some(layout)) => {
+                source_line_width = layout.shaped_line.width;
+                params.line_cache.push(layout);
+            }
             Ok(None) => {}
             Err(e) => {
                 error!(error = ?e, "Failed to paint text");
             }
+        }
+
+        let is_last_visual_for_doc_line = soft_wrap_render_plan
+            .visual_lines
+            .get(index + 1)
+            .is_none_or(|next| next.doc_line != line_plan.visual.doc_line);
+        if is_last_visual_for_doc_line
+            && let Some(diagnostic_line) =
+                frame.inline_diagnostic_plan.line(line_plan.visual.doc_line)
+        {
+            paint_inline_diagnostic_plan(
+                window,
+                cx,
+                crate::InlineDiagnosticPaintParams {
+                    line_plan: diagnostic_line,
+                    line_cache: params.line_cache,
+                    font: params.text_style.font(),
+                    font_size: params.font_size,
+                    viewport_width: params.bounds.size.width,
+                    line_height: params.layout.line_height,
+                    text_origin_x: line_plan.text_origin.x,
+                    source_line_y: line_plan.text_origin.y,
+                    source_line_width,
+                },
+            );
         }
     }
 
@@ -882,7 +913,26 @@ fn paint_unwrapped_document_frame(
             "LINE LAYOUT CACHED: line_idx={}, y_offset={:?}, is_phantom={}",
             line_idx, y_offset, false
         );
+        let source_line_width = layout.shaped_line.width;
         params.line_cache.push(layout);
+
+        if let Some(diagnostic_line) = frame.inline_diagnostic_plan.line(line_idx) {
+            paint_inline_diagnostic_plan(
+                window,
+                cx,
+                crate::InlineDiagnosticPaintParams {
+                    line_plan: diagnostic_line,
+                    line_cache: params.line_cache,
+                    font: params.text_style.font(),
+                    font_size: params.font_size,
+                    viewport_width: params.bounds.size.width,
+                    line_height: params.layout.line_height,
+                    text_origin_x: unwrapped_plan.text_origin.x,
+                    source_line_y: unwrapped_plan.text_origin.y,
+                    source_line_width,
+                },
+            );
+        }
     }
 
     let cursor_overlay = paint_unwrapped_cursor(window, cx, &params);
