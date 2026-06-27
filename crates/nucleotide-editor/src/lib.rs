@@ -93,15 +93,18 @@ pub use highlight::{
 };
 pub use hit_test::{EditorHitTestResult, hit_test_document_position};
 pub use inline_diagnostics::{
+    FallbackDiagnosticFramePlan, FallbackDiagnosticFramePlanParams, FallbackDiagnosticPaintParams,
     InlineDiagnosticColors, InlineDiagnosticConnector, InlineDiagnosticFramePlan,
     InlineDiagnosticFramePlanParams, InlineDiagnosticLinePlan, InlineDiagnosticPaintParams,
-    InlineDiagnosticTextLine, inline_diagnostic_frame_plan, paint_inline_diagnostic_plan,
+    InlineDiagnosticTextLine, fallback_diagnostic_frame_plan, inline_diagnostic_frame_plan,
+    paint_fallback_diagnostic_plan, paint_inline_diagnostic_plan,
 };
 pub use line_cache::{LineLayout, LineLayoutCache};
 pub use line_painter::{
-    EditorLineBackgroundStyle, SoftWrapEditorLinePaintParams, UnwrappedEditorLinePaintParams,
-    paint_cursorline_background, paint_editor_line, paint_line_backgrounds,
-    paint_soft_wrap_editor_line, paint_unwrapped_editor_line,
+    EditorLineBackgroundStyle, IndentGuidePaintConfig, SoftWrapEditorLinePaintParams,
+    UnwrappedEditorLinePaintParams, paint_cursorline_background, paint_editor_line,
+    paint_indent_guides, paint_line_backgrounds, paint_soft_wrap_editor_line,
+    paint_unwrapped_editor_line,
 };
 pub use line_plan::{
     LineViewportPlan, UnwrappedLinePaintPlan, UnwrappedRenderPlan, UnwrappedRenderPlanParams,
@@ -120,6 +123,7 @@ pub use render_snapshot::{
 pub use ruler::{
     DocumentRulerPaintParams, RulerPaintPlan, document_ruler_paint_plans, paint_document_rulers,
     paint_visible_rulers, visible_ruler_bounds, visible_ruler_paint_plans,
+    visible_zero_based_column_bound,
 };
 pub use run_gutter::{
     GutterRunButtonHit, run_gutter_button_bounds, run_gutter_button_left, run_gutter_button_size,

@@ -6,6 +6,8 @@ use std::ops::Range;
 use gpui::{Font, Hsla, TextRun};
 use helix_core::{
     RopeSlice,
+    doc_formatter::{DocumentFormatter, GraphemeSource, TextFormat},
+    graphemes::Grapheme,
     graphemes::{next_grapheme_boundary, prev_grapheme_boundary},
     syntax::{self, HighlightEvent, OverlayHighlights},
 };
@@ -13,6 +15,7 @@ use helix_stdx::rope::RopeSliceExt;
 use helix_view::{
     Document, Theme, View,
     document::Mode,
+    editor::WhitespaceRenderValue,
     graphics::{Color, CursorKind, Style},
     view::ViewPosition,
 };
@@ -21,13 +24,14 @@ use nucleotide_logging::trace;
 use crate::{
     line_plan::VisibleLinePlan,
     line_text::{
-        DisplayLineText, expand_text_runs_for_display, line_text_without_trailing_newline,
+        DisplayLineText, DisplayLineTextBuilder, DisplayWhitespace, VirtualTextRange,
+        expand_text_runs_for_display, line_text_without_trailing_newline,
     },
-    soft_wrap::{SoftWrapVisualLine, decorate_soft_wrap_line_runs},
+    soft_wrap::{SoftWrapVisualLine, VirtualHighlightRange, decorate_soft_wrap_line_runs},
     style::{create_styled_text_run, helix_color_to_hsla},
 };
 
-pub type DiagnosticOverlaySpans = Vec<(syntax::Highlight, Range<usize>)>;
+pub type DiagnosticOverlaySpans = Vec<(syntax::Highlight, Vec<Range<usize>>)>;
 
 pub struct HighlightLineParams<'a> {
     pub doc: &'a Document,
@@ -62,6 +66,8 @@ pub struct EditorLineHighlightContext<'a> {
     pub default_bg: Hsla,
     pub diagnostic_overlay_spans: Option<&'a DiagnosticOverlaySpans>,
     pub tab_width: u16,
+    pub display_whitespace: Option<DisplayWhitespace>,
+    pub whitespace_style: Style,
 }
 
 pub struct SoftWrapHighlightedLineRunsParams<'a> {
@@ -95,38 +101,243 @@ pub struct UnwrappedHighlightedLine {
 }
 
 pub fn diagnostic_overlay_spans(doc: &Document, theme: &Theme) -> Option<DiagnosticOverlaySpans> {
-    let mut spans = DiagnosticOverlaySpans::new();
-    let error_h = theme.find_highlight_exact("diagnostic.error");
-    let warn_h = theme.find_highlight_exact("diagnostic.warning");
-    let info_h = theme.find_highlight_exact("diagnostic.info");
-    let hint_h = theme.find_highlight_exact("diagnostic.hint");
+    use helix_core::diagnostic::{DiagnosticTag, Severity};
+
+    let get_scope_of = |scope| {
+        theme
+            .find_highlight_exact(scope)
+            .or_else(|| theme.find_highlight_exact("diagnostic"))
+            .or_else(|| theme.find_highlight_exact("ui.cursor"))
+            .or_else(|| theme.find_highlight_exact("ui.selection"))
+    };
 
     let diagnostics = doc.diagnostics();
     if diagnostics.is_empty() {
         return None;
     }
 
-    for diagnostic in diagnostics.iter() {
-        let (start, end) = (diagnostic.range.start, diagnostic.range.end);
-        let highlight = match diagnostic.severity {
-            Some(helix_core::diagnostic::Severity::Error) => error_h,
-            Some(helix_core::diagnostic::Severity::Warning) => warn_h,
-            Some(helix_core::diagnostic::Severity::Info) => info_h,
-            Some(helix_core::diagnostic::Severity::Hint) | None => hint_h,
-        };
+    let unnecessary = theme.find_highlight_exact("diagnostic.unnecessary");
+    let deprecated = theme.find_highlight_exact("diagnostic.deprecated");
 
-        let Some(highlight) = highlight else {
-            continue;
-        };
+    let mut default_vec = Vec::new();
+    let mut info_vec = Vec::new();
+    let mut hint_vec = Vec::new();
+    let mut warning_vec = Vec::new();
+    let mut error_vec = Vec::new();
+    let mut unnecessary_vec = Vec::new();
+    let mut deprecated_vec = Vec::new();
 
-        if start >= end {
-            spans.push((highlight, start..start.saturating_add(1)));
+    let push_diagnostic = |ranges: &mut Vec<Range<usize>>, range: Range<usize>| {
+        let range = if range.start >= range.end {
+            range.start..range.start.saturating_add(1)
         } else {
-            spans.push((highlight, start..end));
+            range
+        };
+
+        match ranges.last_mut() {
+            Some(existing) if range.start <= existing.end => {
+                debug_assert!(existing.start <= range.start);
+                existing.end = existing.end.max(range.end);
+            }
+            _ => ranges.push(range),
+        }
+    };
+
+    for diagnostic in diagnostics.iter() {
+        let ranges = match diagnostic.severity {
+            Some(Severity::Info) => &mut info_vec,
+            Some(Severity::Hint) => &mut hint_vec,
+            Some(Severity::Warning) => &mut warning_vec,
+            Some(Severity::Error) => &mut error_vec,
+            _ => &mut default_vec,
+        };
+
+        if diagnostic.tags.is_empty()
+            || matches!(
+                diagnostic.severity,
+                Some(Severity::Warning | Severity::Error)
+            )
+        {
+            push_diagnostic(ranges, diagnostic.range.start..diagnostic.range.end);
+        }
+
+        for tag in &diagnostic.tags {
+            match tag {
+                DiagnosticTag::Unnecessary => {
+                    if unnecessary.is_some() {
+                        push_diagnostic(
+                            &mut unnecessary_vec,
+                            diagnostic.range.start..diagnostic.range.end,
+                        );
+                    }
+                }
+                DiagnosticTag::Deprecated => {
+                    if deprecated.is_some() {
+                        push_diagnostic(
+                            &mut deprecated_vec,
+                            diagnostic.range.start..diagnostic.range.end,
+                        );
+                    }
+                }
+            }
         }
     }
 
-    (!spans.is_empty()).then_some(spans)
+    let mut overlays = Vec::new();
+    if let Some(highlight) = get_scope_of("diagnostic") {
+        push_diagnostic_overlay(&mut overlays, highlight, default_vec);
+    }
+    if let Some(highlight) = unnecessary {
+        push_diagnostic_overlay(&mut overlays, highlight, unnecessary_vec);
+    }
+    if let Some(highlight) = deprecated {
+        push_diagnostic_overlay(&mut overlays, highlight, deprecated_vec);
+    }
+    for (scope, ranges) in [
+        ("diagnostic.info", info_vec),
+        ("diagnostic.hint", hint_vec),
+        ("diagnostic.warning", warning_vec),
+        ("diagnostic.error", error_vec),
+    ] {
+        if let Some(highlight) = get_scope_of(scope) {
+            push_diagnostic_overlay(&mut overlays, highlight, ranges);
+        }
+    }
+
+    (!overlays.is_empty()).then_some(overlays)
+}
+
+fn push_diagnostic_overlay(
+    overlays: &mut DiagnosticOverlaySpans,
+    highlight: syntax::Highlight,
+    ranges: Vec<Range<usize>>,
+) {
+    if !ranges.is_empty() {
+        overlays.push((highlight, ranges));
+    }
+}
+
+fn diagnostic_overlay_highlights(
+    overlays: &DiagnosticOverlaySpans,
+) -> impl Iterator<Item = OverlayHighlights> + '_ {
+    overlays
+        .iter()
+        .map(|(highlight, ranges)| OverlayHighlights::Homogeneous {
+            highlight: *highlight,
+            ranges: ranges.clone(),
+        })
+}
+
+pub(crate) fn display_whitespace_for_document(doc: &Document) -> Option<DisplayWhitespace> {
+    let config = doc.config.load();
+    let render = &config.whitespace.render;
+    let chars = &config.whitespace.characters;
+    let whitespace = DisplayWhitespace {
+        space: (render.space() == WhitespaceRenderValue::All).then_some(chars.space),
+        nbsp: (render.nbsp() == WhitespaceRenderValue::All).then_some(chars.nbsp),
+        nnbsp: (render.nnbsp() == WhitespaceRenderValue::All).then_some(chars.nnbsp),
+        tab: (render.tab() == WhitespaceRenderValue::All).then_some((chars.tab, chars.tabpad)),
+    };
+
+    (whitespace.space.is_some()
+        || whitespace.nbsp.is_some()
+        || whitespace.nnbsp.is_some()
+        || whitespace.tab.is_some())
+    .then_some(whitespace)
+}
+
+struct DocumentOverlayHighlightParams<'a> {
+    doc: &'a Document,
+    view: &'a View,
+    theme: &'a Theme,
+    syntax_loader: &'a helix_core::syntax::Loader,
+    is_view_focused: bool,
+    visible_range: Range<usize>,
+    diagnostic_overlay_spans: Option<&'a DiagnosticOverlaySpans>,
+}
+
+fn document_overlay_highlights(
+    params: DocumentOverlayHighlightParams<'_>,
+) -> Vec<OverlayHighlights> {
+    let mut overlays = Vec::new();
+    let text_annotations = params.view.text_annotations(params.doc, Some(params.theme));
+    overlays.push(text_annotations.collect_overlay_highlights(params.visible_range.clone()));
+
+    if let Some(rainbow) = rainbow_overlay_highlights(
+        params.doc,
+        params.theme,
+        params.syntax_loader,
+        params.visible_range.clone(),
+    ) {
+        overlays.push(rainbow);
+    }
+
+    if let Some(highlights) = params.diagnostic_overlay_spans {
+        overlays.extend(diagnostic_overlay_highlights(highlights));
+    }
+
+    if params.is_view_focused
+        && let Some(tabstops) = tabstop_highlights(params.doc, params.theme)
+    {
+        overlays.push(tabstops);
+    }
+
+    overlays
+}
+
+fn rainbow_overlay_highlights(
+    doc: &Document,
+    theme: &Theme,
+    loader: &helix_core::syntax::Loader,
+    visible_range: Range<usize>,
+) -> Option<OverlayHighlights> {
+    let editor_config = doc.config.load();
+    let enabled = doc
+        .language_config()
+        .and_then(|config| config.rainbow_brackets)
+        .unwrap_or(editor_config.rainbow_brackets);
+    if !enabled || visible_range.is_empty() {
+        return None;
+    }
+
+    let syntax = doc.syntax()?;
+    let text = doc.text().slice(..);
+    let start_byte = text.char_to_byte(visible_range.start.min(text.len_chars()));
+    let end_byte = text.char_to_byte(visible_range.end.min(text.len_chars()));
+    if start_byte >= end_byte {
+        return None;
+    }
+
+    let start = syntax::child_for_byte_range(
+        &syntax.tree().root_node(),
+        start_byte as u32..end_byte as u32,
+    )
+    .map_or(start_byte as u32, |node| node.start_byte());
+
+    Some(syntax.rainbow_highlights(text, theme.rainbow_length(), loader, start..end_byte as u32))
+}
+
+fn matching_bracket_highlight(
+    view: &View,
+    doc: &Document,
+    theme: &Theme,
+) -> Option<OverlayHighlights> {
+    let syntax = doc.syntax()?;
+    let highlight = theme.find_highlight_exact("ui.cursor.match")?;
+    let text = doc.text().slice(..);
+    let pos = doc.selection(view.id).primary().cursor(text);
+    let pos = helix_core::match_brackets::find_matching_bracket(syntax, text, pos)?;
+    Some(OverlayHighlights::single(highlight, pos..pos + 1))
+}
+
+fn tabstop_highlights(doc: &Document, theme: &Theme) -> Option<OverlayHighlights> {
+    let snippet = doc.active_snippet.as_ref()?;
+    let highlight = theme.find_highlight_exact("tabstop")?;
+    let mut ranges = Vec::new();
+    for tabstop in snippet.tabstops() {
+        ranges.extend(tabstop.ranges.iter().map(|range| range.start..range.end));
+    }
+    Some(OverlayHighlights::Homogeneous { highlight, ranges })
 }
 
 pub fn text_style_at_position(
@@ -177,12 +388,21 @@ pub fn highlight_line(params: HighlightLineParams<'_>) -> Vec<TextRun> {
         params.theme,
         params.default_text_style,
     );
-    let mut overlays = Vec::new();
+    let mut overlays = document_overlay_highlights(DocumentOverlayHighlightParams {
+        doc: params.doc,
+        view: params.view,
+        theme: params.theme,
+        syntax_loader: params.syntax_loader,
+        is_view_focused: params.is_view_focused,
+        visible_range: params.line_start..params.line_end,
+        diagnostic_overlay_spans: params.diagnostic_overlay_spans,
+    });
     overlays.push(selection_overlay);
-    if let Some(highlights) = params.diagnostic_overlay_spans {
-        overlays.push(OverlayHighlights::Heterogenous {
-            highlights: highlights.clone(),
-        });
+    if params.is_view_focused
+        && let Some(matching_bracket) =
+            matching_bracket_highlight(params.view, params.doc, params.theme)
+    {
+        overlays.push(matching_bracket);
     }
     let mut overlay_hl = OverlayHighlighter::new(overlays, params.theme);
 
@@ -226,6 +446,18 @@ pub fn soft_wrap_highlighted_line_runs(
         Vec::new()
     };
     line_runs = expand_text_runs_for_display(&line_runs, &params.visual.display_map);
+    line_runs = apply_whitespace_text_runs(
+        line_runs,
+        params.visual.text.len(),
+        &params.visual.whitespace_ranges,
+        &context,
+    );
+    line_runs = apply_virtual_text_runs(
+        line_runs,
+        params.visual.text.len(),
+        &params.visual.virtual_text_ranges,
+        &context,
+    );
 
     line_runs = decorate_soft_wrap_line_runs(
         line_runs,
@@ -263,6 +495,18 @@ pub fn soft_wrap_highlighted_line_runs_batch(
                 Vec::new()
             };
             line_runs = expand_text_runs_for_display(&line_runs, &visual.display_map);
+            line_runs = apply_whitespace_text_runs(
+                line_runs,
+                visual.text.len(),
+                &visual.whitespace_ranges,
+                &context,
+            );
+            line_runs = apply_virtual_text_runs(
+                line_runs,
+                visual.text.len(),
+                &visual.virtual_text_ranges,
+                &context,
+            );
 
             line_runs = decorate_soft_wrap_line_runs(
                 line_runs,
@@ -280,12 +524,13 @@ pub fn soft_wrap_highlighted_line_runs_batch(
 pub fn unwrapped_highlighted_line(
     params: UnwrappedHighlightedLineParams<'_>,
 ) -> UnwrappedHighlightedLine {
-    let line_slice = params
-        .text
-        .slice(params.line.line_start..params.line.line_end);
-    let source_text = line_text_without_trailing_newline(line_slice);
     let context = params.context;
-    let line_text = DisplayLineText::from_source(source_text, context.tab_width);
+    let (line_text, virtual_text_ranges) = unwrapped_display_line_text(
+        params.text,
+        params.line.line_start,
+        params.line.line_end,
+        &context,
+    );
     let line_runs = highlight_line(HighlightLineParams {
         doc: context.doc,
         view: context.view,
@@ -298,12 +543,24 @@ pub fn unwrapped_highlighted_line(
         line_start: params.line.line_start,
         line_end: params.line.line_end,
         fg_color: context.fg_color,
-        font: context.font,
+        font: context.font.clone(),
         default_text_style: context.default_text_style,
         default_bg: context.default_bg,
         diagnostic_overlay_spans: context.diagnostic_overlay_spans,
     });
     let line_runs = expand_text_runs_for_display(&line_runs, &line_text.map);
+    let line_runs = apply_whitespace_text_runs(
+        line_runs,
+        line_text.display.len(),
+        &line_text.whitespace_ranges,
+        &context,
+    );
+    let line_runs = apply_virtual_text_runs(
+        line_runs,
+        line_text.display.len(),
+        &virtual_text_ranges,
+        &context,
+    );
 
     UnwrappedHighlightedLine {
         line_text,
@@ -327,11 +584,22 @@ pub fn unwrapped_highlighted_lines(
         .lines
         .iter()
         .map(|line| {
-            let line_slice = params.text.slice(line.line_start..line.line_end);
-            let source_text = line_text_without_trailing_newline(line_slice);
-            let line_text = DisplayLineText::from_source(source_text, context.tab_width);
+            let (line_text, virtual_text_ranges) =
+                unwrapped_display_line_text(params.text, line.line_start, line.line_end, &context);
             let line_runs = state.highlight_range(line.line_start, line.line_end, &context);
             let line_runs = expand_text_runs_for_display(&line_runs, &line_text.map);
+            let line_runs = apply_whitespace_text_runs(
+                line_runs,
+                line_text.display.len(),
+                &line_text.whitespace_ranges,
+                &context,
+            );
+            let line_runs = apply_virtual_text_runs(
+                line_runs,
+                line_text.display.len(),
+                &virtual_text_ranges,
+                &context,
+            );
 
             UnwrappedHighlightedLine {
                 line_text,
@@ -339,6 +607,69 @@ pub fn unwrapped_highlighted_lines(
             }
         })
         .collect()
+}
+
+fn unwrapped_display_line_text(
+    text: RopeSlice<'_>,
+    line_start: usize,
+    line_end: usize,
+    context: &EditorLineHighlightContext<'_>,
+) -> (DisplayLineText, Vec<VirtualHighlightRange>) {
+    let text_format = TextFormat {
+        soft_wrap: false,
+        tab_width: context.tab_width,
+        viewport_width: u16::MAX,
+        ..TextFormat::default()
+    };
+    let text_annotations = context
+        .view
+        .text_annotations(context.doc, Some(context.theme));
+    let mut formatter = DocumentFormatter::new_at_prev_checkpoint(
+        text,
+        &text_format,
+        &text_annotations,
+        line_start,
+    );
+    let mut builder = DisplayLineTextBuilder::with_whitespace(0, context.display_whitespace);
+
+    for grapheme in formatter.by_ref() {
+        if !grapheme.is_virtual() && grapheme.char_idx < line_start {
+            continue;
+        }
+        if !grapheme.is_virtual() && grapheme.char_idx >= line_end {
+            break;
+        }
+
+        match (&grapheme.raw, grapheme.source) {
+            (Grapheme::Other { g }, GraphemeSource::VirtualText { highlight }) => {
+                builder.push_virtual(g, highlight, context.tab_width);
+            }
+            (Grapheme::Tab { .. }, GraphemeSource::Document { codepoints }) if codepoints > 0 => {
+                builder.push_source_char('\t', context.tab_width);
+            }
+            (Grapheme::Other { g }, GraphemeSource::Document { codepoints }) if codepoints > 0 => {
+                for ch in g.chars() {
+                    builder.push_source_char(ch, context.tab_width);
+                }
+            }
+            (Grapheme::Newline, GraphemeSource::Document { .. }) => break,
+            _ => {}
+        }
+    }
+
+    let (line_text, virtual_text_ranges) = builder.finish();
+    if line_text.source.is_empty() && line_start < line_end {
+        (
+            DisplayLineText::from_source_with_whitespace(
+                line_text_without_trailing_newline(text.slice(line_start..line_end)),
+                context.tab_width,
+                context.display_whitespace,
+            ),
+            Vec::new(),
+        )
+    } else {
+        (line_text, virtual_text_ranges)
+    }
 }
 
 pub fn gpui_hsla_to_helix_color(c: Hsla) -> Option<Color> {
@@ -519,6 +850,223 @@ fn visible_char_range(ranges: impl IntoIterator<Item = Range<usize>>) -> Option<
     has_range.then_some(start..end)
 }
 
+fn apply_virtual_text_runs(
+    runs: Vec<TextRun>,
+    display_len: usize,
+    virtual_ranges: &[VirtualHighlightRange],
+    context: &EditorLineHighlightContext<'_>,
+) -> Vec<TextRun> {
+    if virtual_ranges.is_empty() || display_len == 0 {
+        return runs;
+    }
+
+    let mut run_segments = Vec::with_capacity(runs.len());
+    let mut offset = 0usize;
+    for run in runs {
+        let start = offset;
+        offset = offset.saturating_add(run.len);
+        run_segments.push((start, offset, run));
+    }
+
+    let fallback = text_run_from_style(
+        0,
+        context.default_text_style,
+        context.fg_color,
+        context.default_bg,
+        &context.font,
+    );
+    let mut boundaries = vec![0, display_len];
+    for (start, end, _) in &run_segments {
+        boundaries.push((*start).min(display_len));
+        boundaries.push((*end).min(display_len));
+    }
+    for range in virtual_ranges {
+        boundaries.push(range.display_start.min(display_len));
+        boundaries.push(
+            range
+                .display_start
+                .saturating_add(range.display_len)
+                .min(display_len),
+        );
+    }
+    boundaries.sort_unstable();
+    boundaries.dedup();
+
+    let mut merged = Vec::new();
+    for window in boundaries.windows(2) {
+        let start = window[0];
+        let end = window[1];
+        if start >= end {
+            continue;
+        }
+
+        let mut run = virtual_ranges
+            .iter()
+            .find(|range| {
+                start >= range.display_start
+                    && start
+                        < range
+                            .display_start
+                            .saturating_add(range.display_len)
+                            .min(display_len)
+            })
+            .map(|range| {
+                virtual_text_run(
+                    end - start,
+                    range.metadata,
+                    context.theme,
+                    context.default_text_style,
+                    context.fg_color,
+                    context.default_bg,
+                    &context.font,
+                )
+            })
+            .unwrap_or_else(|| {
+                run_segments
+                    .iter()
+                    .find(|(run_start, run_end, _)| start >= *run_start && start < *run_end)
+                    .map(|(_, _, run)| run.clone())
+                    .unwrap_or_else(|| fallback.clone())
+            });
+        run.len = end - start;
+        push_text_run(&mut merged, run);
+    }
+
+    merged
+}
+
+fn apply_whitespace_text_runs(
+    runs: Vec<TextRun>,
+    display_len: usize,
+    whitespace_ranges: &[VirtualTextRange<()>],
+    context: &EditorLineHighlightContext<'_>,
+) -> Vec<TextRun> {
+    if whitespace_ranges.is_empty() || display_len == 0 {
+        return runs;
+    }
+
+    let mut run_segments = Vec::with_capacity(runs.len());
+    let mut offset = 0usize;
+    for run in runs {
+        let start = offset;
+        offset = offset.saturating_add(run.len);
+        run_segments.push((start, offset, run));
+    }
+
+    let mut boundaries = vec![0, display_len];
+    for (start, end, _) in &run_segments {
+        boundaries.push((*start).min(display_len));
+        boundaries.push((*end).min(display_len));
+    }
+    for range in whitespace_ranges {
+        boundaries.push(range.display_start.min(display_len));
+        boundaries.push(
+            range
+                .display_start
+                .saturating_add(range.display_len)
+                .min(display_len),
+        );
+    }
+    boundaries.sort_unstable();
+    boundaries.dedup();
+
+    let fallback = text_run_from_style(
+        0,
+        context.default_text_style,
+        context.fg_color,
+        context.default_bg,
+        &context.font,
+    );
+    let whitespace_style = context.default_text_style.patch(context.whitespace_style);
+    let mut merged = Vec::new();
+    for window in boundaries.windows(2) {
+        let start = window[0];
+        let end = window[1];
+        if start >= end {
+            continue;
+        }
+
+        let mut run = if whitespace_ranges.iter().any(|range| {
+            start >= range.display_start
+                && start
+                    < range
+                        .display_start
+                        .saturating_add(range.display_len)
+                        .min(display_len)
+        }) {
+            text_run_from_style(
+                end - start,
+                whitespace_style,
+                context.fg_color,
+                context.default_bg,
+                &context.font,
+            )
+        } else {
+            run_segments
+                .iter()
+                .find(|(run_start, run_end, _)| start >= *run_start && start < *run_end)
+                .map(|(_, _, run)| run.clone())
+                .unwrap_or_else(|| fallback.clone())
+        };
+        run.len = end - start;
+        push_text_run(&mut merged, run);
+    }
+
+    merged
+}
+
+fn virtual_text_run(
+    len: usize,
+    highlight: Option<syntax::Highlight>,
+    theme: &Theme,
+    default_style: Style,
+    fg_color: Hsla,
+    default_bg: Hsla,
+    font: &Font,
+) -> TextRun {
+    let style = highlight
+        .map(|highlight| default_style.patch(safe_highlight(theme, highlight)))
+        .unwrap_or(default_style);
+    let fg = style.fg.and_then(helix_color_to_hsla).unwrap_or(fg_color);
+    let bg = style.bg.and_then(helix_color_to_hsla);
+    let underline = style.underline_color.and_then(helix_color_to_hsla);
+
+    create_styled_text_run(len, font, &style, fg, bg, default_bg, underline)
+}
+
+fn text_run_from_style(
+    len: usize,
+    style: Style,
+    fg_color: Hsla,
+    default_bg: Hsla,
+    font: &Font,
+) -> TextRun {
+    let fg = style.fg.and_then(helix_color_to_hsla).unwrap_or(fg_color);
+    let bg = style.bg.and_then(helix_color_to_hsla);
+    let underline = style.underline_color.and_then(helix_color_to_hsla);
+
+    create_styled_text_run(len, font, &style, fg, bg, default_bg, underline)
+}
+
+fn push_text_run(runs: &mut Vec<TextRun>, run: TextRun) {
+    if run.len == 0 {
+        return;
+    }
+
+    if let Some(last) = runs.last_mut()
+        && last.font == run.font
+        && last.color == run.color
+        && last.background_color == run.background_color
+        && last.underline == run.underline
+        && last.strikethrough == run.strikethrough
+    {
+        last.len += run.len;
+        return;
+    }
+
+    runs.push(run);
+}
+
 struct FrameHighlightState<'a> {
     text: RopeSlice<'a>,
     syntax_hl: SyntaxHighlighter<'a, 'a, 'a>,
@@ -531,21 +1079,34 @@ impl<'a> FrameHighlightState<'a> {
         text: RopeSlice<'a>,
         visible_range: Option<Range<usize>>,
     ) -> Self {
-        let (anchor, height) =
-            syntax_highlight_window_for_char_range(text, context.view_position, visible_range);
+        let (anchor, height) = syntax_highlight_window_for_char_range(
+            text,
+            context.view_position,
+            visible_range.clone(),
+        );
         let syntax_highlighter =
             doc_syntax_highlights(context.doc, anchor, height, context.syntax_loader);
-        let mut overlays = vec![selection_overlay_highlights(
+        let mut overlays = document_overlay_highlights(DocumentOverlayHighlightParams {
+            doc: context.doc,
+            view: context.view,
+            theme: context.theme,
+            syntax_loader: context.syntax_loader,
+            is_view_focused: context.is_view_focused,
+            visible_range: visible_range.clone().unwrap_or(0..0),
+            diagnostic_overlay_spans: context.diagnostic_overlay_spans,
+        });
+        overlays.push(selection_overlay_highlights(
             context.editor_mode,
             context.doc,
             context.view,
             context.theme,
             context.cursor_shape,
-        )];
-        if let Some(highlights) = context.diagnostic_overlay_spans {
-            overlays.push(OverlayHighlights::Heterogenous {
-                highlights: highlights.clone(),
-            });
+        ));
+        if context.is_view_focused
+            && let Some(matching_bracket) =
+                matching_bracket_highlight(context.view, context.doc, context.theme)
+        {
+            overlays.push(matching_bracket);
         }
 
         Self {

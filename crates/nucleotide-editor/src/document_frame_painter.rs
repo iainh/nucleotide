@@ -7,7 +7,7 @@ use gpui::{
     App, Bounds, CursorStyle, FocusHandle, Hsla, Pixels, SharedString, TextStyle,
     TransformationMatrix, Window,
 };
-use helix_core::{Rope, RopeSlice};
+use helix_core::{Rope, RopeSlice, visual_offset_from_block};
 use helix_view::{
     Document, Editor, Theme, View, ViewId,
     document::Mode,
@@ -20,16 +20,20 @@ use crate::{
     CursorOverlayPlan, DiagnosticGutterMarkersPaintParams, EditorCursorTextPaintParams,
     EditorDocumentFrame, EditorDocumentFrameParams, EditorLayout, EditorLineBackgroundStyle,
     EditorSurfaceGeometry, EditorViewFrameState, EditorViewState, EditorViewportSurfaceLayout,
-    GutterLine, GutterLinePlan, LineLayoutCache, SoftWrapCursorPaintPlanParams,
-    SoftWrapEditorLinePaintParams, SoftWrapGutterLinePlanParams, UnwrappedCursorPaintPlanParams,
-    UnwrappedEditorLinePaintParams, UnwrappedGutterLinePlanParams, build_gutter_lines_from_plans,
-    build_soft_wrap_gutter_line_plans, build_unwrapped_gutter_line_plans, cursor_style_for_mode,
-    diagnostics::DiagnosticSeverityIconColors, editor_document_frame, gutter::gutter_origin,
-    highlight::gpui_hsla_to_helix_color, paint_diagnostic_gutter_markers, paint_editor_background,
-    paint_gutter_lines, paint_inline_diagnostic_plan, paint_soft_wrap_editor_line,
-    paint_unwrapped_editor_line, paint_visible_rulers, run_gutter_button_bounds,
-    run_gutter_icon_bounds, shape_and_paint_editor_cursor, soft_wrap_cursor_paint_plan,
-    style::helix_color_to_hsla, unwrapped_cursor_paint_plan,
+    GutterLine, GutterLinePlan, IndentGuidePaintConfig, LineLayoutCache, RulerPaintPlan,
+    SoftWrapCursorPaintPlanParams, SoftWrapEditorLinePaintParams, SoftWrapGutterLinePlanParams,
+    UnwrappedCursorPaintPlanParams, UnwrappedEditorLinePaintParams, UnwrappedGutterLinePlanParams,
+    build_gutter_lines_from_plans, build_soft_wrap_gutter_line_plans,
+    build_unwrapped_gutter_line_plans, cursor_style_for_mode,
+    diagnostics::DiagnosticSeverityIconColors, document_text_format_for_surface,
+    editor_document_frame, gutter::gutter_origin, highlight::gpui_hsla_to_helix_color,
+    line_text::line_text_without_trailing_newline, paint_cursorline_background,
+    paint_diagnostic_gutter_markers, paint_editor_background, paint_fallback_diagnostic_plan,
+    paint_gutter_lines, paint_indent_guides, paint_inline_diagnostic_plan,
+    paint_soft_wrap_editor_line, paint_unwrapped_editor_line, paint_visible_rulers,
+    run_gutter_button_bounds, run_gutter_icon_bounds, shape_and_paint_editor_cursor,
+    soft_wrap_cursor_paint_plan, style::helix_color_to_hsla, unwrapped_cursor_paint_plan,
+    visible_zero_based_column_bound,
 };
 
 pub struct DocumentFramePaintParams<'a> {
@@ -43,6 +47,7 @@ pub struct DocumentFramePaintParams<'a> {
     pub fg_color: Hsla,
     pub default_bg: Hsla,
     pub cursorline_color: Option<Hsla>,
+    pub cursorline_secondary_color: Option<Hsla>,
     pub is_focused: bool,
     pub element_focused: bool,
     pub selection_primary: Hsla,
@@ -60,6 +65,10 @@ pub struct NativeEditorFramePaintStyle {
     pub default_text_style: Style,
     pub cursor_style: Style,
     pub cursorline_color: Option<Hsla>,
+    pub cursorline_secondary_color: Option<Hsla>,
+    pub cursorcolumn_primary_color: Option<Hsla>,
+    pub cursorcolumn_secondary_color: Option<Hsla>,
+    pub frameline_color: Option<Hsla>,
     pub selection_primary: Hsla,
     pub selection_secondary: Hsla,
     pub gutter_color: Hsla,
@@ -68,6 +77,7 @@ pub struct NativeEditorFramePaintStyle {
     pub diagnostic_icon_colors: DiagnosticSeverityIconColors,
     pub gutter_bg: Option<Hsla>,
     pub wrap_indicator_color: Option<Hsla>,
+    pub indent_guide_color: Option<Hsla>,
     pub ruler_color: Hsla,
     pub run_button_color: Hsla,
 }
@@ -94,7 +104,14 @@ pub struct NativeEditorFrameThemeStyles {
     pub cursor_primary_select: Style,
     pub virtual_wrap: Style,
     pub virtual_ruler: Style,
+    pub virtual_whitespace: Style,
+    pub virtual_indent_guide: Style,
     pub cursorline_primary: Style,
+    pub cursorline_secondary: Style,
+    pub cursorcolumn: Style,
+    pub cursorcolumn_primary: Style,
+    pub cursorcolumn_secondary: Style,
+    pub highlight_frameline: Style,
     pub line_number: Style,
     pub line_number_selected: Style,
     pub gutter: Style,
@@ -110,7 +127,14 @@ impl NativeEditorFrameThemeStyles {
             cursor_primary_select: style_for_key("ui.cursor.primary.select"),
             virtual_wrap: style_for_key("ui.virtual.wrap"),
             virtual_ruler: style_for_key("ui.virtual.ruler"),
+            virtual_whitespace: style_for_key("ui.virtual.whitespace"),
+            virtual_indent_guide: style_for_key("ui.virtual.indent-guide"),
             cursorline_primary: style_for_key("ui.cursorline.primary"),
+            cursorline_secondary: style_for_key("ui.cursorline.secondary"),
+            cursorcolumn: style_for_key("ui.cursorcolumn"),
+            cursorcolumn_primary: style_for_key("ui.cursorcolumn.primary"),
+            cursorcolumn_secondary: style_for_key("ui.cursorcolumn.secondary"),
+            highlight_frameline: style_for_key("ui.highlight.frameline"),
             line_number: style_for_key("ui.linenr"),
             line_number_selected: style_for_key("ui.linenr.selected"),
             gutter: style_for_key("ui.gutter"),
@@ -126,7 +150,14 @@ impl NativeEditorFrameThemeStyles {
             "ui.cursor.primary.select" => self.cursor_primary_select,
             "ui.virtual.wrap" => self.virtual_wrap,
             "ui.virtual.ruler" => self.virtual_ruler,
+            "ui.virtual.whitespace" => self.virtual_whitespace,
+            "ui.virtual.indent-guide" => self.virtual_indent_guide,
             "ui.cursorline.primary" => self.cursorline_primary,
+            "ui.cursorline.secondary" => self.cursorline_secondary,
+            "ui.cursorcolumn" => self.cursorcolumn,
+            "ui.cursorcolumn.primary" => self.cursorcolumn_primary,
+            "ui.cursorcolumn.secondary" => self.cursorcolumn_secondary,
+            "ui.highlight.frameline" => self.highlight_frameline,
             "ui.linenr" => self.line_number,
             "ui.linenr.selected" => self.line_number_selected,
             "ui.gutter" => self.gutter,
@@ -163,9 +194,44 @@ pub fn native_editor_frame_paint_style(
         .bg
         .and_then(helix_color_to_hsla)
         .unwrap_or(params.palette.fallback_ruler_color);
+    let indent_guide_color = params
+        .theme_styles
+        .virtual_indent_guide
+        .fg
+        .or(params.theme_styles.virtual_whitespace.fg)
+        .and_then(helix_color_to_hsla);
     let cursorline_color = params
         .theme_styles
         .cursorline_primary
+        .bg
+        .and_then(helix_color_to_hsla);
+    let cursorline_secondary_color = params
+        .theme_styles
+        .cursorline_secondary
+        .bg
+        .and_then(helix_color_to_hsla);
+    let cursorcolumn_color = params
+        .theme_styles
+        .cursorcolumn
+        .bg
+        .and_then(helix_color_to_hsla);
+    let cursorcolumn_primary_color = params
+        .theme_styles
+        .cursorcolumn_primary
+        .bg
+        .and_then(helix_color_to_hsla)
+        .or(cursorcolumn_color)
+        .or(cursorline_color);
+    let cursorcolumn_secondary_color = params
+        .theme_styles
+        .cursorcolumn_secondary
+        .bg
+        .and_then(helix_color_to_hsla)
+        .or(cursorcolumn_color)
+        .or(cursorline_secondary_color);
+    let frameline_color = params
+        .theme_styles
+        .highlight_frameline
         .bg
         .and_then(helix_color_to_hsla);
     let gutter_color = params
@@ -188,6 +254,10 @@ pub fn native_editor_frame_paint_style(
         default_text_style,
         cursor_style,
         cursorline_color,
+        cursorline_secondary_color,
+        cursorcolumn_primary_color,
+        cursorcolumn_secondary_color,
+        frameline_color,
         selection_primary: params.palette.selection_primary,
         selection_secondary: params.palette.selection_secondary,
         gutter_color,
@@ -196,6 +266,7 @@ pub fn native_editor_frame_paint_style(
         diagnostic_icon_colors: params.palette.diagnostic_icon_colors,
         gutter_bg,
         wrap_indicator_color,
+        indent_guide_color,
         ruler_color,
         run_button_color: params.palette.run_button_color,
     }
@@ -289,6 +360,7 @@ struct UnwrappedDocumentFramePaintParams<'a> {
     pub fg_color: Hsla,
     pub default_bg: Hsla,
     pub cursorline_color: Option<Hsla>,
+    pub cursorline_secondary_color: Option<Hsla>,
     pub is_focused: bool,
     pub element_focused: bool,
     pub selection_primary: Hsla,
@@ -310,6 +382,7 @@ struct SoftWrapDocumentFramePaintParams<'a> {
     pub fg_color: Hsla,
     pub default_bg: Hsla,
     pub cursorline_color: Option<Hsla>,
+    pub cursorline_secondary_color: Option<Hsla>,
     pub is_focused: bool,
     pub selection_primary: Hsla,
     pub selection_secondary: Hsla,
@@ -497,6 +570,35 @@ pub fn native_editor_frame_paint_plan(
             .view_position_plan
             .view_position,
     );
+    if params.editor.config().cursorcolumn && params.is_focused {
+        frame.cursorcolumn_paint_plans = native_editor_frame_cursorcolumn_paint_plans(
+            &params,
+            params
+                .frame_state
+                .viewport_update
+                .view_position_plan
+                .view_position,
+        );
+    }
+    if params.editor.config().indent_guides.render
+        && let Some(color) = params.style.indent_guide_color
+    {
+        frame.indent_guide_config = Some(IndentGuidePaintConfig {
+            indent_width: params
+                .document
+                .indent_style
+                .indent_width(params.document.tab_width())
+                .max(1) as u16,
+            skip_levels: params.editor.config().indent_guides.skip_levels,
+            color,
+        });
+    }
+    if let Some(color) = params.style.frameline_color
+        && let Some(stack_frame) = params.editor.current_stack_frame()
+    {
+        frame.frameline_paint_plans =
+            native_editor_frame_frameline_paint_plans(&frame, &params, stack_frame.line, color);
+    }
 
     trace!(
         "Cursorline check - focused: {}, enabled: {}",
@@ -555,6 +657,94 @@ pub fn native_editor_frame_paint_plan(
         is_focused: params.is_focused,
         style: params.style,
     }
+}
+
+fn native_editor_frame_frameline_paint_plans(
+    frame: &EditorDocumentFrame,
+    params: &NativeEditorFramePlanParams<'_>,
+    stack_frame_line: usize,
+    color: Hsla,
+) -> Vec<RulerPaintPlan> {
+    let doc_line = stack_frame_line.saturating_sub(1);
+    if let Some(soft_wrap_plan) = frame.soft_wrap_render_plan.as_ref() {
+        return soft_wrap_plan
+            .line_paint_plans(
+                params.layout.line_height,
+                params.frame_state.scroll_line_offset,
+                frame.render_snapshot.cursor_line,
+            )
+            .into_iter()
+            .filter(|plan| plan.visual.doc_line == doc_line)
+            .map(|plan| RulerPaintPlan {
+                bounds: plan.cursorline_bounds,
+                color,
+            })
+            .collect();
+    }
+
+    if let Some(unwrapped_plan) = frame.unwrapped_render_plan.as_ref() {
+        return unwrapped_plan
+            .line_paint_plans()
+            .into_iter()
+            .filter(|plan| plan.line.line_idx == doc_line)
+            .map(|plan| RulerPaintPlan {
+                bounds: plan.cursorline_bounds,
+                color,
+            })
+            .collect();
+    }
+
+    Vec::new()
+}
+
+fn native_editor_frame_cursorcolumn_paint_plans(
+    params: &NativeEditorFramePlanParams<'_>,
+    view_position: helix_view::view::ViewPosition,
+) -> Vec<RulerPaintPlan> {
+    let primary_color = params.style.cursorcolumn_primary_color;
+    let secondary_color = params.style.cursorcolumn_secondary_color.or(primary_color);
+    let Some(primary_color) = primary_color else {
+        return Vec::new();
+    };
+
+    let geometry = EditorSurfaceGeometry::new(
+        params.bounds,
+        params.frame_state.viewport_update.gutter_columns,
+        params.layout.cell_width,
+    );
+    let (_, text_format) = document_text_format_for_surface(
+        params.document,
+        Some(params.theme),
+        params.bounds,
+        params.frame_state.viewport_update.gutter_columns,
+        params.layout.cell_width,
+        params.soft_wrap_minimum_columns,
+    );
+    let text_annotations = params
+        .view
+        .text_annotations(params.document, Some(params.theme));
+    let text = params.document.text().slice(..);
+    let selection = params.document.selection(params.view_id);
+    let primary_index = selection.primary_index();
+
+    selection
+        .iter()
+        .enumerate()
+        .filter_map(|(index, range)| {
+            let cursor = range.cursor(text);
+            let col =
+                visual_offset_from_block(text, cursor, cursor, &text_format, &text_annotations)
+                    .0
+                    .col;
+            let color = if index == primary_index {
+                primary_color
+            } else {
+                secondary_color.unwrap_or(primary_color)
+            };
+            visible_zero_based_column_bound(geometry, col, view_position.horizontal_offset)
+                .map(|bounds| RulerPaintPlan { bounds, color })
+        })
+        .collect()
 }
 
 fn native_editor_frame_gutter_line_plans(
@@ -621,6 +811,11 @@ pub fn paint_native_editor_frame(
                 .frame
                 .cursorline_enabled
                 .then_some(plan.style.cursorline_color)
+                .flatten(),
+            cursorline_secondary_color: plan
+                .frame
+                .cursorline_enabled
+                .then_some(plan.style.cursorline_secondary_color)
                 .flatten(),
             is_focused: plan.is_focused,
             element_focused: params.element_focused,
@@ -704,6 +899,8 @@ pub fn paint_document_frame(
     cx: &mut App,
     params: DocumentFramePaintParams<'_>,
 ) -> Option<CursorOverlayPlan> {
+    paint_visible_rulers(window, &params.frame.frameline_paint_plans);
+    paint_visible_rulers(window, &params.frame.cursorcolumn_paint_plans);
     paint_visible_rulers(window, &params.frame.ruler_paint_plans);
 
     if params.frame.soft_wrap_render_plan.is_some() {
@@ -721,6 +918,7 @@ pub fn paint_document_frame(
                 fg_color: params.fg_color,
                 default_bg: params.default_bg,
                 cursorline_color: params.cursorline_color,
+                cursorline_secondary_color: params.cursorline_secondary_color,
                 is_focused: params.is_focused,
                 selection_primary: params.selection_primary,
                 selection_secondary: params.selection_secondary,
@@ -746,6 +944,7 @@ pub fn paint_document_frame(
             fg_color: params.fg_color,
             default_bg: params.default_bg,
             cursorline_color: params.cursorline_color,
+            cursorline_secondary_color: params.cursorline_secondary_color,
             is_focused: params.is_focused,
             element_focused: params.element_focused,
             selection_primary: params.selection_primary,
@@ -781,6 +980,34 @@ fn paint_soft_wrap_document_frame(
     {
         let (index, line_plan) = line_plan;
         let mut source_line_width = Pixels::ZERO;
+        if line_plan.visual.segment_char_offset == 0
+            && let Some(config) = frame.indent_guide_config
+        {
+            let source =
+                line_text_without_trailing_newline(params.text.slice(
+                    params.text.line_to_char(line_plan.visual.doc_line)
+                        ..params.text.line_to_char(
+                            (line_plan.visual.doc_line + 1).min(params.text.len_lines()),
+                        ),
+                ));
+            paint_indent_guides(
+                window,
+                line_plan.text_origin,
+                params.layout.line_height,
+                params.layout.cell_width,
+                &source,
+                config,
+            );
+        }
+        if !line_plan.is_cursor_visual_line
+            && frame
+                .secondary_cursor_lines
+                .binary_search(&line_plan.visual.doc_line)
+                .is_ok()
+            && let Some(color) = params.cursorline_secondary_color
+        {
+            paint_cursorline_background(window, line_plan.cursorline_bounds, color);
+        }
         match paint_soft_wrap_editor_line(
             window,
             cx,
@@ -851,6 +1078,19 @@ fn paint_soft_wrap_document_frame(
             scroll_line_offset: params.scroll_line_offset,
         },
     );
+    paint_fallback_diagnostic_plan(
+        window,
+        cx,
+        crate::FallbackDiagnosticPaintParams {
+            plan: &frame.fallback_diagnostic_plan,
+            line_cache: params.line_cache,
+            font: params.text_style.font(),
+            font_size: params.font_size,
+            bounds: params.bounds,
+            line_height: params.layout.line_height,
+            cell_width: params.layout.cell_width,
+        },
+    );
 
     paint_soft_wrap_cursor(window, cx, &params)
 }
@@ -882,6 +1122,26 @@ fn paint_unwrapped_document_frame(
                 "Painting cursorline for line {} (cursor at line {})",
                 line_idx, frame.render_snapshot.cursor_line
             );
+        }
+
+        if let Some(config) = frame.indent_guide_config {
+            paint_indent_guides(
+                window,
+                unwrapped_plan.text_origin,
+                params.layout.line_height,
+                params.layout.cell_width,
+                &line_text.source,
+                config,
+            );
+        }
+        if !unwrapped_plan.is_cursor_line
+            && frame
+                .secondary_cursor_lines
+                .binary_search(&line_idx)
+                .is_ok()
+            && let Some(color) = params.cursorline_secondary_color
+        {
+            paint_cursorline_background(window, unwrapped_plan.cursorline_bounds, color);
         }
 
         let layout = match paint_unwrapped_editor_line(
@@ -951,6 +1211,19 @@ fn paint_unwrapped_document_frame(
             diagnostic_icon_colors: params.diagnostic_icon_colors,
             gutter_bg: params.gutter_bg,
             scroll_line_offset: params.scroll_line_offset,
+        },
+    );
+    paint_fallback_diagnostic_plan(
+        window,
+        cx,
+        crate::FallbackDiagnosticPaintParams {
+            plan: &frame.fallback_diagnostic_plan,
+            line_cache: params.line_cache,
+            font: params.text_style.font(),
+            font_size: params.font_size,
+            bounds: params.bounds,
+            line_height: params.layout.line_height,
+            cell_width: params.layout.cell_width,
         },
     );
 
@@ -1251,6 +1524,7 @@ mod tests {
                 "ui.virtual.wrap" => Style::default().fg(Color::Rgb(4, 5, 6)),
                 "ui.virtual.ruler" => Style::default().bg(Color::Rgb(7, 8, 9)),
                 "ui.cursorline.primary" => Style::default().bg(Color::Rgb(10, 11, 12)),
+                "ui.cursorline.secondary" => Style::default().bg(Color::Rgb(20, 21, 22)),
                 "ui.linenr" => Style::default().fg(Color::Rgb(13, 14, 15)),
                 "ui.gutter" => Style::default().bg(Color::Rgb(16, 17, 18)),
                 _ => Style::default(),
@@ -1293,6 +1567,18 @@ mod tests {
             helix_color_to_hsla(Color::Rgb(10, 11, 12))
         );
         assert_eq!(
+            style.cursorline_secondary_color,
+            helix_color_to_hsla(Color::Rgb(20, 21, 22))
+        );
+        assert_eq!(
+            style.cursorcolumn_primary_color,
+            helix_color_to_hsla(Color::Rgb(10, 11, 12))
+        );
+        assert_eq!(
+            style.cursorcolumn_secondary_color,
+            helix_color_to_hsla(Color::Rgb(20, 21, 22))
+        );
+        assert_eq!(
             style.gutter_color,
             helix_color_to_hsla(Color::Rgb(13, 14, 15)).unwrap()
         );
@@ -1326,6 +1612,10 @@ mod tests {
             default_text_style: Style::default(),
             cursor_style: Style::default(),
             cursorline_color: Some(black()),
+            cursorline_secondary_color: Some(white()),
+            cursorcolumn_primary_color: Some(black()),
+            cursorcolumn_secondary_color: Some(white()),
+            frameline_color: Some(black()),
             selection_primary: black(),
             selection_secondary: white(),
             gutter_color: black(),
@@ -1334,6 +1624,7 @@ mod tests {
             diagnostic_icon_colors: test_diagnostic_icon_colors(),
             gutter_bg: None,
             wrap_indicator_color: None,
+            indent_guide_color: Some(black()),
             ruler_color: black(),
             run_button_color: black(),
         }

@@ -3,7 +3,7 @@
 
 use gpui::{
     App, Bounds, Hsla, Pixels, Point, Result, ShapedLine, SharedString, TextAlign, TextRun, Window,
-    fill, point, size,
+    fill, point, px, size,
 };
 
 use crate::{
@@ -12,6 +12,13 @@ use crate::{
     line_text::DisplayLineText,
     soft_wrap::SoftWrapLinePaintPlan,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct IndentGuidePaintConfig {
+    pub indent_width: u16,
+    pub skip_levels: u8,
+    pub color: Hsla,
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct EditorLineBackgroundStyle {
@@ -22,6 +29,41 @@ pub struct EditorLineBackgroundStyle {
 
 pub fn paint_cursorline_background(window: &mut Window, bounds: Bounds<Pixels>, color: Hsla) {
     window.paint_quad(fill(bounds, color));
+}
+
+pub fn paint_indent_guides(
+    window: &mut Window,
+    text_origin: Point<Pixels>,
+    line_height: Pixels,
+    cell_width: Pixels,
+    source_text: &str,
+    config: IndentGuidePaintConfig,
+) {
+    let indent_width = usize::from(config.indent_width.max(1));
+    let indent_cols = leading_indent_columns(source_text, indent_width as u16);
+    let start_level = usize::from(config.skip_levels);
+
+    for level in start_level..(indent_cols / indent_width) {
+        let col = level * indent_width;
+        let x = text_origin.x + cell_width * col as f32;
+        window.paint_quad(fill(
+            Bounds::new(point(x, text_origin.y), size(px(1.0), line_height)),
+            config.color,
+        ));
+    }
+}
+
+fn leading_indent_columns(text: &str, tab_width: u16) -> usize {
+    let mut col = 0usize;
+    for ch in text.chars() {
+        match ch {
+            ' ' => col += 1,
+            '\t' => col += helix_core::graphemes::tab_width_at(col, tab_width),
+            _ if ch.is_whitespace() => col += 1,
+            _ => break,
+        }
+    }
+    col
 }
 
 pub fn paint_line_backgrounds(
@@ -248,6 +290,13 @@ mod tests {
         assert!(should_paint_background(nearly_primary, style(true)));
     }
 
+    #[test]
+    fn leading_indent_columns_expands_tabs() {
+        assert_eq!(super::leading_indent_columns(" \tvalue", 4), 4);
+        assert_eq!(super::leading_indent_columns("    value", 4), 4);
+        assert_eq!(super::leading_indent_columns("value", 4), 0);
+    }
+
     fn soft_wrap_visual(text: &str, is_phantom_line: bool) -> SoftWrapVisualLine {
         SoftWrapVisualLine {
             visual_line: 3,
@@ -261,6 +310,8 @@ mod tests {
             text_start_byte_offset: 0,
             is_phantom_line,
             display_map: DisplayTextMap::identity(text.len()),
+            virtual_text_ranges: Vec::new(),
+            whitespace_ranges: Vec::new(),
         }
     }
 

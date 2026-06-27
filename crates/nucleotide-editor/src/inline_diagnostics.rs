@@ -117,6 +117,27 @@ pub struct InlineDiagnosticPaintParams<'a> {
     pub source_line_width: Pixels,
 }
 
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct FallbackDiagnosticFramePlan {
+    pub lines: Vec<InlineDiagnosticTextLine>,
+}
+
+pub struct FallbackDiagnosticFramePlanParams<'a> {
+    pub document: &'a Document,
+    pub view_id: ViewId,
+    pub theme: &'a Theme,
+}
+
+pub struct FallbackDiagnosticPaintParams<'a> {
+    pub plan: &'a FallbackDiagnosticFramePlan,
+    pub line_cache: &'a LineLayoutCache,
+    pub font: Font,
+    pub font_size: Pixels,
+    pub bounds: gpui::Bounds<Pixels>,
+    pub line_height: Pixels,
+    pub cell_width: Pixels,
+}
+
 struct InlineDiagnosticTextPaintParams<'a> {
     line_cache: &'a LineLayoutCache,
     line: &'a InlineDiagnosticTextLine,
@@ -162,6 +183,57 @@ pub fn inline_diagnostic_frame_plan(
         horizontal_offset: params.horizontal_offset,
         tab_width: params.tab_width,
     })
+}
+
+pub fn fallback_diagnostic_frame_plan(
+    params: FallbackDiagnosticFramePlanParams<'_>,
+) -> FallbackDiagnosticFramePlan {
+    let config = params.document.config.load();
+    let inline_config = config.inline_diagnostics.prepare(0, false);
+    if !inline_config.disabled() || config.end_of_line_diagnostics != DiagnosticFilter::Disable {
+        return FallbackDiagnosticFramePlan::default();
+    }
+
+    let text = params.document.text().slice(..);
+    let cursor = params
+        .document
+        .selection(params.view_id)
+        .primary()
+        .cursor(text);
+    let colors = inline_diagnostic_colors(params.theme);
+    let mut lines = Vec::new();
+    for diagnostic in params
+        .document
+        .diagnostics()
+        .iter()
+        .filter(|diagnostic| diagnostic.range.start <= cursor && diagnostic.range.end >= cursor)
+    {
+        let severity = diagnostic_severity(diagnostic);
+        let color = colors.color_for(severity);
+        for line in diagnostic.message.lines() {
+            lines.push(InlineDiagnosticTextLine {
+                text: SharedString::from(line.trim()),
+                severity,
+                color,
+                text_col: 0,
+                connector: None,
+            });
+        }
+        if let Some(code) = diagnostic.code.as_ref().map(|code| match code {
+            helix_core::diagnostic::NumberOrString::Number(number) => format!("({number})"),
+            helix_core::diagnostic::NumberOrString::String(value) => format!("({value})"),
+        }) {
+            lines.push(InlineDiagnosticTextLine {
+                text: SharedString::from(code),
+                severity,
+                color,
+                text_col: 0,
+                connector: None,
+            });
+        }
+    }
+
+    FallbackDiagnosticFramePlan { lines }
 }
 
 struct InlineDiagnosticFramePlanFromConfigParams<'a> {
@@ -353,6 +425,53 @@ fn paint_inline_diagnostic_text_line(
         window,
         cx,
     );
+}
+
+pub fn paint_fallback_diagnostic_plan(
+    window: &mut Window,
+    cx: &mut App,
+    params: FallbackDiagnosticPaintParams<'_>,
+) {
+    if params.plan.lines.is_empty() {
+        return;
+    }
+
+    let max_width = params.cell_width * 100.0;
+    let width = params.bounds.size.width.min(max_width);
+    let right = params.bounds.origin.x + params.bounds.size.width;
+    let top = params.bounds.origin.y + params.line_height;
+    let max_lines = ((params.bounds.size.height / params.line_height) as usize)
+        .saturating_sub(1)
+        .min(15);
+
+    for (index, line) in params.plan.lines.iter().take(max_lines).enumerate() {
+        let runs = [TextRun {
+            len: line.text.len(),
+            font: params.font.clone(),
+            color: line.color,
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        }];
+        let text_system = window.text_system().clone();
+        let shaped_line = params.line_cache.shape_line_cached(
+            text_system.as_ref(),
+            line.text.clone(),
+            params.font_size,
+            width,
+            &runs,
+        );
+        let x = (right - shaped_line.width).max(right - width);
+        let y = top + params.line_height * index as f32;
+        let _ = shaped_line.paint(
+            point(x, y),
+            params.line_height,
+            TextAlign::Left,
+            None,
+            window,
+            cx,
+        );
+    }
 }
 
 fn paint_inline_diagnostic_connector(
