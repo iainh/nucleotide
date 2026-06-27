@@ -56,6 +56,154 @@ pub struct DisplayLineText {
     pub source: String,
     pub display: SharedString,
     pub map: DisplayTextMap,
+    pub whitespace_ranges: Vec<VirtualTextRange<()>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VirtualTextRange<T> {
+    pub display_start: usize,
+    pub display_len: usize,
+    pub metadata: T,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DisplayWhitespace {
+    pub space: Option<char>,
+    pub nbsp: Option<char>,
+    pub nnbsp: Option<char>,
+    pub tab: Option<(char, char)>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DisplayLineTextBuilder<T> {
+    source: String,
+    display: String,
+    source_to_display: Vec<usize>,
+    display_to_source: Vec<usize>,
+    visual_col: usize,
+    virtual_ranges: Vec<VirtualTextRange<T>>,
+    whitespace_ranges: Vec<VirtualTextRange<()>>,
+    whitespace: Option<DisplayWhitespace>,
+}
+
+impl<T: PartialEq> DisplayLineTextBuilder<T> {
+    pub fn new(initial_col: usize) -> Self {
+        Self {
+            source: String::new(),
+            display: String::new(),
+            source_to_display: vec![0],
+            display_to_source: vec![0],
+            visual_col: initial_col,
+            virtual_ranges: Vec::new(),
+            whitespace_ranges: Vec::new(),
+            whitespace: None,
+        }
+    }
+
+    pub fn with_whitespace(initial_col: usize, whitespace: Option<DisplayWhitespace>) -> Self {
+        Self {
+            whitespace,
+            ..Self::new(initial_col)
+        }
+    }
+
+    pub fn push_virtual(&mut self, text: &str, metadata: T, tab_width: u16) {
+        let display_start = self.display.len();
+        for ch in text.chars() {
+            self.push_display_char(ch, tab_width, self.source.len());
+        }
+        let display_len = self.display.len().saturating_sub(display_start);
+        if display_len > 0 {
+            if let Some(last) = self.virtual_ranges.last_mut()
+                && last.display_start + last.display_len == display_start
+                && last.metadata == metadata
+            {
+                last.display_len += display_len;
+            } else {
+                self.virtual_ranges.push(VirtualTextRange {
+                    display_start,
+                    display_len,
+                    metadata,
+                });
+            }
+        }
+    }
+
+    pub fn push_prefix(&mut self, text: &str, tab_width: u16) {
+        for ch in text.chars() {
+            self.push_display_char(ch, tab_width, 0);
+        }
+        self.source_to_display[0] = self.display.len();
+    }
+
+    pub fn push_source_char(&mut self, ch: char, tab_width: u16) {
+        let source_start = self.source.len();
+        self.source.push(ch);
+        let source_end = self.source.len();
+        let display_start = self.display.len();
+
+        self.push_display_char(ch, tab_width, source_start);
+
+        let display_end = self.display.len();
+        self.display_to_source[display_end] = source_end;
+        self.source_to_display.resize(source_end + 1, display_start);
+        self.source_to_display[source_start..source_end].fill(display_start);
+        self.source_to_display[source_end] = display_end;
+    }
+
+    pub fn finish(self) -> (DisplayLineText, Vec<VirtualTextRange<T>>) {
+        let display_to_source = if self.display_to_source.is_empty() {
+            vec![0]
+        } else {
+            self.display_to_source
+        };
+
+        (
+            DisplayLineText {
+                source: self.source,
+                display: self.display.into(),
+                map: DisplayTextMap {
+                    source_to_display: self.source_to_display,
+                    display_to_source,
+                },
+                whitespace_ranges: self.whitespace_ranges,
+            },
+            self.virtual_ranges,
+        )
+    }
+
+    fn push_display_char(&mut self, ch: char, tab_width: u16, source_byte: usize) {
+        let display_start = self.display.len();
+        if ch == '\t' {
+            let tab_width = tab_width_at(self.visual_col, tab_width);
+            if let Some((tab, tabpad)) = self.whitespace.and_then(|ws| ws.tab) {
+                self.display.push(tab);
+                self.display
+                    .extend(std::iter::repeat_n(tabpad, tab_width.saturating_sub(1)));
+            } else {
+                self.display.extend(std::iter::repeat_n(' ', tab_width));
+            }
+            self.display_to_source
+                .resize(self.display.len() + 1, source_byte);
+            self.visual_col += tab_width;
+        } else {
+            self.display
+                .push(visible_whitespace_char(ch, self.whitespace));
+            self.display_to_source
+                .resize(self.display.len() + 1, source_byte);
+            self.visual_col += char_display_width(ch);
+        }
+        if should_style_whitespace(ch, self.whitespace) {
+            self.whitespace_ranges.push(VirtualTextRange {
+                display_start,
+                display_len: self.display.len().saturating_sub(display_start),
+                metadata: (),
+            });
+        }
+        if let Some(last) = self.display_to_source.last_mut() {
+            *last = source_byte;
+        }
+    }
 }
 
 impl DisplayLineText {
@@ -69,12 +217,31 @@ impl DisplayLineText {
         initial_col: usize,
         tab_width: u16,
     ) -> Self {
+        Self::from_source_with_prefix_and_whitespace(prefix, source, initial_col, tab_width, None)
+    }
+
+    pub fn from_source_with_whitespace(
+        source: String,
+        tab_width: u16,
+        whitespace: Option<DisplayWhitespace>,
+    ) -> Self {
+        Self::from_source_with_prefix_and_whitespace("", source, 0, tab_width, whitespace)
+    }
+
+    pub fn from_source_with_prefix_and_whitespace(
+        prefix: &str,
+        source: String,
+        initial_col: usize,
+        tab_width: u16,
+        whitespace: Option<DisplayWhitespace>,
+    ) -> Self {
         let mut display = String::with_capacity(prefix.len() + source.len());
         display.push_str(prefix);
 
         let prefix_len = display.len();
         let mut source_to_display = vec![prefix_len; source.len() + 1];
         let mut spans = Vec::new();
+        let mut whitespace_ranges = Vec::new();
         if prefix_len > 0 {
             spans.push((0, prefix_len, 0, 0));
         }
@@ -86,14 +253,26 @@ impl DisplayLineText {
 
             if ch == '\t' {
                 let tab_width = tab_width_at(visual_col, tab_width);
-                display.extend(std::iter::repeat_n(' ', tab_width));
+                if let Some((tab, tabpad)) = whitespace.and_then(|ws| ws.tab) {
+                    display.push(tab);
+                    display.extend(std::iter::repeat_n(tabpad, tab_width.saturating_sub(1)));
+                } else {
+                    display.extend(std::iter::repeat_n(' ', tab_width));
+                }
                 visual_col += tab_width;
             } else {
-                display.push(ch);
+                display.push(visible_whitespace_char(ch, whitespace));
                 visual_col += char_display_width(ch);
             }
 
             let display_end = display.len();
+            if should_style_whitespace(ch, whitespace) {
+                whitespace_ranges.push(VirtualTextRange {
+                    display_start,
+                    display_len: display_end.saturating_sub(display_start),
+                    metadata: (),
+                });
+            }
             source_to_display[source_start..source_end].fill(display_start);
             source_to_display[source_end] = display_end;
             spans.push((display_start, display_end, source_start, source_end));
@@ -116,11 +295,31 @@ impl DisplayLineText {
                 source_to_display,
                 display_to_source,
             },
+            whitespace_ranges,
         }
     }
 
     pub fn is_empty(&self) -> bool {
         self.display.is_empty()
+    }
+}
+
+fn visible_whitespace_char(ch: char, whitespace: Option<DisplayWhitespace>) -> char {
+    match ch {
+        ' ' => whitespace.and_then(|ws| ws.space).unwrap_or(ch),
+        '\u{00A0}' => whitespace.and_then(|ws| ws.nbsp).unwrap_or(ch),
+        '\u{202F}' => whitespace.and_then(|ws| ws.nnbsp).unwrap_or(ch),
+        _ => ch,
+    }
+}
+
+fn should_style_whitespace(ch: char, whitespace: Option<DisplayWhitespace>) -> bool {
+    match ch {
+        '\t' => whitespace.and_then(|ws| ws.tab).is_some(),
+        ' ' => whitespace.and_then(|ws| ws.space).is_some(),
+        '\u{00A0}' => whitespace.and_then(|ws| ws.nbsp).is_some(),
+        '\u{202F}' => whitespace.and_then(|ws| ws.nnbsp).is_some(),
+        _ => false,
     }
 }
 
@@ -175,9 +374,9 @@ fn char_display_width(ch: char) -> usize {
 #[cfg(test)]
 mod tests {
     use super::{
-        DisplayLineText, DisplayTextMap, byte_offset_for_char_offset,
-        line_text_without_trailing_newline, shared_line_text_without_trailing_newline,
-        visual_columns_for_text,
+        DisplayLineText, DisplayLineTextBuilder, DisplayTextMap, DisplayWhitespace,
+        byte_offset_for_char_offset, line_text_without_trailing_newline,
+        shared_line_text_without_trailing_newline, visual_columns_for_text,
     };
     use gpui::{TextRun, black, font};
 
@@ -249,6 +448,53 @@ mod tests {
         assert_eq!(
             display_runs.iter().map(|run| run.len).collect::<Vec<_>>(),
             vec![4, 2]
+        );
+    }
+
+    #[test]
+    fn builder_preserves_virtual_text_in_display() {
+        let mut builder = DisplayLineTextBuilder::new(0);
+        builder.push_source_char('a', 4);
+        builder.push_virtual(": hint", Some("hint"), 4);
+        builder.push_source_char('b', 4);
+
+        let (text, virtual_ranges) = builder.finish();
+
+        assert_eq!(text.source, "ab");
+        assert_eq!(text.display.to_string(), "a: hintb");
+        assert_eq!(virtual_ranges.len(), 1);
+        assert_eq!(virtual_ranges[0].display_start, 1);
+        assert_eq!(virtual_ranges[0].display_len, ": hint".len());
+        assert_eq!(virtual_ranges[0].metadata, Some("hint"));
+        assert_eq!(text.map.display_byte_for_source_byte(0), 0);
+        assert_eq!(text.map.display_byte_for_source_byte(1), "a: hint".len());
+        assert_eq!(text.map.display_byte_for_source_byte(2), "a: hintb".len());
+    }
+
+    #[test]
+    fn renders_configured_visible_whitespace() {
+        let text = DisplayLineText::from_source_with_whitespace(
+            " \t\u{00a0}".to_string(),
+            4,
+            Some(DisplayWhitespace {
+                space: Some('·'),
+                nbsp: Some('⍽'),
+                nnbsp: None,
+                tab: Some(('→', '·')),
+            }),
+        );
+
+        assert_eq!(text.display.to_string(), "·→··⍽");
+        assert_eq!(
+            text.whitespace_ranges
+                .iter()
+                .map(|range| (range.display_start, range.display_len))
+                .collect::<Vec<_>>(),
+            vec![
+                (0, "·".len()),
+                ("·".len(), "→··".len()),
+                ("·→··".len(), "⍽".len())
+            ]
         );
     }
 

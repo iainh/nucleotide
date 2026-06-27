@@ -46,6 +46,25 @@ pub fn visible_ruler_bounds(
         .collect()
 }
 
+pub fn visible_zero_based_column_bound(
+    geometry: EditorSurfaceGeometry,
+    column: usize,
+    horizontal_offset: usize,
+) -> Option<Bounds<Pixels>> {
+    let text_bounds = geometry.text_bounds();
+    let right_edge = geometry.bounds.origin.x + geometry.bounds.size.width;
+    let column = column as f32;
+    let horizontal_offset = horizontal_offset as f32;
+    let x = text_bounds.origin.x + geometry.cell_width * (column - horizontal_offset);
+
+    (x >= text_bounds.origin.x && x < right_edge).then(|| {
+        Bounds::new(
+            point(x, geometry.bounds.origin.y),
+            size(geometry.cell_width, geometry.bounds.size.height),
+        )
+    })
+}
+
 pub fn visible_ruler_paint_plans(
     geometry: EditorSurfaceGeometry,
     ruler_columns: &[u16],
@@ -160,5 +179,17 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn zero_based_column_bounds_account_for_horizontal_offset() {
+        assert_eq!(
+            visible_zero_based_column_bound(geometry(), 3, 1),
+            Some(Bounds::new(
+                point(px(148.0), px(40.0)),
+                size(px(8.0), px(300.0)),
+            ))
+        );
+        assert_eq!(visible_zero_based_column_bound(geometry(), 0, 1), None);
     }
 }

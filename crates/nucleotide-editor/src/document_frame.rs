@@ -15,13 +15,15 @@ use helix_view::{
 use crate::{
     DiagnosticOverlaySpans, DiagnosticSeverityByLine, DocumentRulerPaintParams,
     DocumentSoftWrapRenderPlanParams, EditorCursorPresentation, EditorCursorPresentationParams,
-    EditorLineHighlightContext, EditorRenderSnapshot, EditorSurfaceGeometry, GutterLinePlan,
-    InlineDiagnosticFramePlan, InlineDiagnosticFramePlanParams, RulerPaintPlan,
-    SoftWrapHighlightedLineRunsBatchParams, SoftWrapRenderPlan, UnwrappedHighlightedLine,
-    UnwrappedHighlightedLinesParams, UnwrappedRenderPlan, UnwrappedRenderPlanParams,
-    diagnostic_overlay_spans, diagnostic_severity_by_line, document_render_snapshot,
-    document_ruler_paint_plans, document_soft_wrap_render_plan, document_text_format_for_surface,
-    editor_cursor_presentation, inline_diagnostic_frame_plan,
+    EditorLineHighlightContext, EditorRenderSnapshot, EditorSurfaceGeometry,
+    FallbackDiagnosticFramePlan, FallbackDiagnosticFramePlanParams, GutterLinePlan,
+    IndentGuidePaintConfig, InlineDiagnosticFramePlan, InlineDiagnosticFramePlanParams,
+    RulerPaintPlan, SoftWrapHighlightedLineRunsBatchParams, SoftWrapRenderPlan,
+    UnwrappedHighlightedLine, UnwrappedHighlightedLinesParams, UnwrappedRenderPlan,
+    UnwrappedRenderPlanParams, diagnostic_overlay_spans, diagnostic_severity_by_line,
+    document_render_snapshot, document_ruler_paint_plans, document_soft_wrap_render_plan,
+    document_text_format_for_surface, editor_cursor_presentation, fallback_diagnostic_frame_plan,
+    highlight::display_whitespace_for_document, inline_diagnostic_frame_plan,
     soft_wrap_highlighted_line_runs_batch, unwrapped_highlighted_lines, unwrapped_render_plan,
 };
 use nucleotide_logging::PerfTimer;
@@ -64,6 +66,7 @@ pub struct EditorDocumentFrame {
     pub primary_cursor_idx: usize,
     pub primary_cursor_line: usize,
     pub primary_cursor_col: usize,
+    pub secondary_cursor_lines: Vec<usize>,
     pub total_lines: usize,
     pub editor_mode: Mode,
     pub cursor_shape: CursorShapeConfig,
@@ -74,10 +77,14 @@ pub struct EditorDocumentFrame {
     pub diagnostic_overlay_spans: Option<DiagnosticOverlaySpans>,
     pub diagnostic_severity_by_line: DiagnosticSeverityByLine,
     pub inline_diagnostic_plan: InlineDiagnosticFramePlan,
+    pub fallback_diagnostic_plan: FallbackDiagnosticFramePlan,
     pub soft_wrap_render_plan: Option<SoftWrapRenderPlan>,
     pub unwrapped_render_plan: Option<UnwrappedRenderPlan>,
     pub soft_wrap_line_runs: Vec<Vec<TextRun>>,
     pub unwrapped_highlighted_lines: Vec<UnwrappedHighlightedLine>,
+    pub cursorcolumn_paint_plans: Vec<RulerPaintPlan>,
+    pub frameline_paint_plans: Vec<RulerPaintPlan>,
+    pub indent_guide_config: Option<IndentGuidePaintConfig>,
     pub ruler_paint_plans: Vec<RulerPaintPlan>,
     pub gutter_line_plans: Vec<GutterLinePlan>,
 }
@@ -116,6 +123,16 @@ pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDoc
     let primary_cursor_line = text.char_to_line(primary_cursor_idx);
     let line_start = text.line_to_char(primary_cursor_line);
     let primary_cursor_col = primary_cursor_idx - line_start;
+    let selection = params.document.selection(params.view_id);
+    let primary_selection_index = selection.primary_index();
+    let mut secondary_cursor_lines = selection
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| *index != primary_selection_index)
+        .map(|(_, range)| text.char_to_line(range.cursor(text.slice(..))))
+        .collect::<Vec<_>>();
+    secondary_cursor_lines.sort_unstable();
+    secondary_cursor_lines.dedup();
     let inline_diagnostic_plan = inline_diagnostic_frame_plan(InlineDiagnosticFramePlanParams {
         document: params.document,
         view: params.view,
@@ -126,6 +143,12 @@ pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDoc
         horizontal_offset: params.view_position.horizontal_offset,
         tab_width: text_format.tab_width,
     });
+    let fallback_diagnostic_plan =
+        fallback_diagnostic_frame_plan(FallbackDiagnosticFramePlanParams {
+            document: params.document,
+            view_id: params.view_id,
+            theme: params.theme,
+        });
     let inline_diagnostic_virtual_rows = inline_diagnostic_plan.virtual_rows_by_line();
     let ruler_geometry = EditorSurfaceGeometry::new(params.bounds, gutter_width, params.cell_width);
     let ruler_paint_plans = document_ruler_paint_plans(DocumentRulerPaintParams {
@@ -181,6 +204,8 @@ pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDoc
         default_bg: params.default_bg,
         diagnostic_overlay_spans: diagnostic_overlay_spans.as_ref(),
         tab_width: text_format.tab_width,
+        display_whitespace: display_whitespace_for_document(params.document),
+        whitespace_style: params.theme.get("ui.virtual.whitespace"),
     };
 
     let soft_wrap_line_runs = {
@@ -218,6 +243,7 @@ pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDoc
         primary_cursor_idx,
         primary_cursor_line,
         primary_cursor_col,
+        secondary_cursor_lines,
         total_lines: text.len_lines(),
         editor_mode: params.editor_mode,
         cursor_shape: params.cursor_shape,
@@ -228,10 +254,14 @@ pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDoc
         diagnostic_overlay_spans,
         diagnostic_severity_by_line: diagnostic_severity_by_line(params.document),
         inline_diagnostic_plan,
+        fallback_diagnostic_plan,
         soft_wrap_render_plan,
         unwrapped_render_plan,
         soft_wrap_line_runs,
         unwrapped_highlighted_lines,
+        cursorcolumn_paint_plans: Vec::new(),
+        frameline_paint_plans: Vec::new(),
+        indent_guide_config: None,
         ruler_paint_plans,
         gutter_line_plans: params.gutter_line_plans,
     }

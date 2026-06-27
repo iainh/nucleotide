@@ -6,8 +6,9 @@ use std::collections::BTreeMap;
 use gpui::{Bounds, Font, Hsla, Pixels, Point, SharedString, TextRun, point, px, size};
 use helix_core::{
     RopeSlice,
-    doc_formatter::{DocumentFormatter, FormattedGrapheme, TextFormat},
+    doc_formatter::{DocumentFormatter, FormattedGrapheme, GraphemeSource, TextFormat},
     graphemes::Grapheme,
+    syntax,
     text_annotations::TextAnnotations,
     visual_offset_from_block,
 };
@@ -15,8 +16,10 @@ use helix_view::{Document, Theme, view::ViewPosition};
 
 use crate::{
     EditorSurfaceGeometry, document_text_format_for_surface,
-    line_text::{DisplayLineText, DisplayTextMap},
+    line_text::{DisplayLineTextBuilder, DisplayTextMap, DisplayWhitespace, VirtualTextRange},
 };
+
+pub type VirtualHighlightRange = VirtualTextRange<Option<syntax::Highlight>>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SoftWrapVisualLine {
@@ -31,6 +34,8 @@ pub struct SoftWrapVisualLine {
     pub text_start_byte_offset: usize,
     pub is_phantom_line: bool,
     pub display_map: DisplayTextMap,
+    pub virtual_text_ranges: Vec<VirtualHighlightRange>,
+    pub whitespace_ranges: Vec<VirtualTextRange<()>>,
 }
 
 impl SoftWrapVisualLine {
@@ -58,7 +63,7 @@ pub struct SoftWrapLinePaintPlan<'a> {
 pub struct SoftWrapRenderPlanParams<'a> {
     pub text: RopeSlice<'a>,
     pub text_format: TextFormat,
-    pub text_annotations: Option<&'a TextAnnotations<'a>>,
+    pub text_annotations: Option<TextAnnotations<'a>>,
     pub view_offset: ViewPosition,
     pub bounds: Bounds<Pixels>,
     pub gutter_columns: u16,
@@ -66,6 +71,7 @@ pub struct SoftWrapRenderPlanParams<'a> {
     pub line_height: Pixels,
     pub scroll_line_offset: Pixels,
     pub inline_diagnostic_virtual_rows: Option<&'a BTreeMap<usize, usize>>,
+    pub whitespace: Option<DisplayWhitespace>,
 }
 
 pub struct DocumentSoftWrapRenderPlanParams<'a> {
@@ -127,7 +133,7 @@ pub fn document_soft_wrap_render_plan(
     soft_wrap_render_plan(SoftWrapRenderPlanParams {
         text: params.document.text().slice(..),
         text_format,
-        text_annotations: None,
+        text_annotations: Some(params.view.text_annotations(params.document, params.theme)),
         view_offset: params.view_position,
         bounds: params.bounds,
         gutter_columns: params.gutter_columns,
@@ -135,6 +141,7 @@ pub fn document_soft_wrap_render_plan(
         line_height: params.line_height,
         scroll_line_offset: params.scroll_line_offset,
         inline_diagnostic_virtual_rows: params.inline_diagnostic_virtual_rows,
+        whitespace: crate::highlight::display_whitespace_for_document(params.document),
     })
 }
 
@@ -146,10 +153,11 @@ pub fn soft_wrap_render_plan(params: SoftWrapRenderPlanParams<'_>) -> SoftWrapRe
     let visual_lines = soft_wrap_visual_lines(
         params.text,
         &params.text_format,
-        params.text_annotations,
+        params.text_annotations.as_ref(),
         params.view_offset.anchor,
         params.view_offset.vertical_offset,
         viewport_height,
+        params.whitespace,
     );
 
     SoftWrapRenderPlan {
@@ -173,6 +181,7 @@ pub fn soft_wrap_visual_lines(
     anchor: usize,
     vertical_offset: usize,
     viewport_height: usize,
+    whitespace: Option<DisplayWhitespace>,
 ) -> Vec<SoftWrapVisualLine> {
     let default_annotations = TextAnnotations::default();
     let annotations = text_annotations.unwrap_or(&default_annotations);
@@ -237,6 +246,7 @@ pub fn soft_wrap_visual_lines(
             visual_line.saturating_sub(anchor_visual_row),
             current_doc_line,
             &line_graphemes,
+            whitespace,
         );
         current_doc_line = visual.doc_line;
         lines.push(visual);
@@ -380,6 +390,7 @@ fn build_visual_line(
     visual_line: usize,
     fallback_doc_line: usize,
     line_graphemes: &[FormattedGrapheme<'_>],
+    whitespace: Option<DisplayWhitespace>,
 ) -> SoftWrapVisualLine {
     let doc_line = line_graphemes
         .first()
@@ -388,31 +399,26 @@ fn build_visual_line(
         .first()
         .map_or(0, |grapheme| grapheme.visual_pos.col);
     let mut prefix_text = String::new();
-    let mut source_text = String::new();
     let mut wrap_indicator_len = 0;
     let mut prefix_visual_col = line_start_col;
 
     prefix_text.extend(std::iter::repeat_n(' ', line_start_col));
-
-    for grapheme in line_graphemes {
-        if grapheme.is_virtual() {
-            if let Grapheme::Other { g } = &grapheme.raw {
-                wrap_indicator_len += g.len();
-                prefix_visual_col += helix_core::graphemes::grapheme_width(g);
-                prefix_text.push_str(g);
-            }
-        } else {
-            match &grapheme.raw {
-                Grapheme::Tab { .. } => source_text.push('\t'),
-                Grapheme::Other { g } => source_text.push_str(g),
-                Grapheme::Newline => {}
-            }
-        }
-    }
-
     let first_real = line_graphemes
         .iter()
         .find(|grapheme| !grapheme.is_virtual());
+
+    for grapheme in line_graphemes {
+        if grapheme.is_virtual()
+            && let Grapheme::Other { g } = &grapheme.raw
+            && first_real.is_none_or(|real| grapheme.char_idx <= real.char_idx)
+            && grapheme.visual_pos.col <= prefix_visual_col
+        {
+            wrap_indicator_len += g.len();
+            prefix_visual_col += helix_core::graphemes::grapheme_width(g);
+            prefix_text.push_str(g);
+        }
+    }
+
     let line_start_char = first_real.map(|grapheme| grapheme.char_idx);
     let line_end_char = first_real.map(|first_grapheme| {
         let last_real = line_graphemes
@@ -440,12 +446,31 @@ fn build_visual_line(
     };
     let segment_char_offset =
         first_real.map_or(0, |grapheme| grapheme.char_idx.saturating_sub(line_start));
-    let display_line_text = DisplayLineText::from_source_with_prefix(
-        &prefix_text,
-        source_text,
-        prefix_visual_col,
-        tab_width,
-    );
+    let mut builder = DisplayLineTextBuilder::with_whitespace(0, whitespace);
+    builder.push_prefix(&prefix_text, tab_width);
+    for grapheme in line_graphemes {
+        match (&grapheme.raw, grapheme.source) {
+            (Grapheme::Other { g }, GraphemeSource::VirtualText { highlight }) => {
+                if first_real.is_some_and(|real| {
+                    grapheme.char_idx > real.char_idx || grapheme.visual_pos.col > prefix_visual_col
+                }) {
+                    builder.push_virtual(g, highlight, tab_width);
+                }
+            }
+            (Grapheme::Tab { .. }, GraphemeSource::Document { .. }) => {
+                builder.push_source_char('\t', tab_width);
+            }
+            (Grapheme::Other { g }, GraphemeSource::Document { .. }) => {
+                for ch in g.chars() {
+                    builder.push_source_char(ch, tab_width);
+                }
+            }
+            (Grapheme::Newline, GraphemeSource::Document { .. }) => {}
+            _ => {}
+        }
+    }
+    let (display_line_text, virtual_text_ranges) = builder.finish();
+    let whitespace_ranges = display_line_text.whitespace_ranges.clone();
 
     SoftWrapVisualLine {
         visual_line,
@@ -459,13 +484,18 @@ fn build_visual_line(
         text_start_byte_offset: line_start_col + wrap_indicator_len,
         is_phantom_line: line_start >= line_end,
         display_map: display_line_text.map,
+        virtual_text_ranges,
+        whitespace_ranges,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use gpui::{Bounds, Font, Hsla, TextRun, black, blue, font, point, px, size, white};
-    use helix_core::doc_formatter::TextFormat;
+    use helix_core::{
+        doc_formatter::TextFormat,
+        text_annotations::{InlineAnnotation, TextAnnotations},
+    };
     use helix_view::view::ViewPosition;
 
     use super::{
@@ -501,6 +531,8 @@ mod tests {
             text_start_byte_offset: line_start_col + wrap_indicator_len,
             is_phantom_line: false,
             display_map: DisplayTextMap::identity("    .wrapped".len()),
+            virtual_text_ranges: Vec::new(),
+            whitespace_ranges: Vec::new(),
         }
     }
 
@@ -530,7 +562,8 @@ mod tests {
     #[test]
     fn collects_wrapped_visual_lines_with_metadata() {
         let text = "foo ".repeat(10);
-        let lines = soft_wrap_visual_lines(text.as_str().into(), &text_format(), None, 0, 0, 3);
+        let lines =
+            soft_wrap_visual_lines(text.as_str().into(), &text_format(), None, 0, 0, 3, None);
 
         assert_eq!(lines.len(), 3);
         assert_eq!(lines[0].visual_line, 0);
@@ -559,9 +592,36 @@ mod tests {
     }
 
     #[test]
+    fn visual_lines_preserve_inline_annotations() {
+        let text = "ab";
+        let annotations = [InlineAnnotation::new(1, ": hint")];
+        let mut text_annotations = TextAnnotations::default();
+        text_annotations.add_inline_annotations(&annotations, None);
+
+        let lines = soft_wrap_visual_lines(
+            text.into(),
+            &text_format(),
+            Some(&text_annotations),
+            0,
+            0,
+            1,
+            None,
+        );
+
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].text.to_string(), "a: hintb ");
+        assert_eq!(lines[0].line_start_char, Some(0));
+        assert_eq!(lines[0].line_end_char, Some(2));
+        assert_eq!(lines[0].virtual_text_ranges.len(), 1);
+        assert_eq!(lines[0].virtual_text_ranges[0].display_start, 1);
+        assert_eq!(lines[0].virtual_text_ranges[0].display_len, ": hint".len());
+    }
+
+    #[test]
     fn starts_at_viewport_vertical_offset() {
         let text = "foo ".repeat(10);
-        let lines = soft_wrap_visual_lines(text.as_str().into(), &text_format(), None, 0, 1, 1);
+        let lines =
+            soft_wrap_visual_lines(text.as_str().into(), &text_format(), None, 0, 1, 1, None);
 
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].visual_line, 1);
@@ -572,7 +632,8 @@ mod tests {
     #[test]
     fn starts_at_anchor_visual_row() {
         let text = "foo ".repeat(10);
-        let lines = soft_wrap_visual_lines(text.as_str().into(), &text_format(), None, 16, 0, 1);
+        let lines =
+            soft_wrap_visual_lines(text.as_str().into(), &text_format(), None, 16, 0, 1, None);
 
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].visual_line, 0);
@@ -595,6 +656,7 @@ mod tests {
             0,
             0,
             1,
+            None,
         );
 
         assert_eq!(lines.len(), 1);
@@ -751,6 +813,8 @@ mod tests {
                 text_start_byte_offset: 0,
                 is_phantom_line: false,
                 display_map: DisplayTextMap::identity("next".len()),
+                virtual_text_ranges: Vec::new(),
+                whitespace_ranges: Vec::new(),
             },
         ];
 
@@ -789,6 +853,8 @@ mod tests {
                 text_start_byte_offset: 0,
                 is_phantom_line: false,
                 display_map: DisplayTextMap::identity("first".len()),
+                virtual_text_ranges: Vec::new(),
+                whitespace_ranges: Vec::new(),
             },
             SoftWrapVisualLine {
                 visual_line: 1,
@@ -802,6 +868,8 @@ mod tests {
                 text_start_byte_offset: 1,
                 is_phantom_line: false,
                 display_map: DisplayTextMap::identity(".wrap".len()),
+                virtual_text_ranges: Vec::new(),
+                whitespace_ranges: Vec::new(),
             },
             SoftWrapVisualLine {
                 visual_line: 2,
@@ -815,6 +883,8 @@ mod tests {
                 text_start_byte_offset: 0,
                 is_phantom_line: false,
                 display_map: DisplayTextMap::identity("next".len()),
+                virtual_text_ranges: Vec::new(),
+                whitespace_ranges: Vec::new(),
             },
         ];
         let mut virtual_rows = std::collections::BTreeMap::new();
@@ -849,6 +919,7 @@ mod tests {
             line_height: px(20.0),
             scroll_line_offset: px(5.0),
             inline_diagnostic_virtual_rows: None,
+            whitespace: None,
         });
 
         assert_eq!(plan.view_offset, view_offset);

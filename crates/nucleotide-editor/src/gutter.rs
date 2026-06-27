@@ -767,6 +767,8 @@ mod tests {
             text_start_byte_offset: 0,
             is_phantom_line: false,
             display_map: DisplayTextMap::identity(0),
+            virtual_text_ranges: Vec::new(),
+            whitespace_ranges: Vec::new(),
         }
     }
 
