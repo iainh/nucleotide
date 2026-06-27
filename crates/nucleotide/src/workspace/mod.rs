@@ -36,7 +36,7 @@ use helix_view::input::KeyEvent;
 use helix_view::keyboard::{KeyCode, KeyModifiers};
 use helix_view::{DocumentId, ViewId, graphics::Rect as HelixRect};
 use nucleotide_core::{event_bridge, gpui_to_helix_bridge};
-use nucleotide_logging::{debug, error, info, instrument, warn};
+use nucleotide_logging::{debug, error, info, instrument, trace, warn};
 use nucleotide_types::scrollbar::SCROLLBAR_THICKNESS;
 use nucleotide_ui::ThemedContext as UIThemedContext;
 
@@ -6686,13 +6686,13 @@ impl Workspace {
         match ev {
             EditorEvent::Redraw => cx.notify(),
             EditorEvent::ConfigEvent(config_event) => {
-                use nucleotide_logging::info;
+                use nucleotide_logging::debug;
                 // Handle configuration changes
-                info!(config_event = ?config_event, "Workspace received ConfigEvent");
+                debug!(config_event = ?config_event, "Workspace received ConfigEvent");
 
                 // Log current bufferline config when we receive a config event
                 let current_bufferline = &self.core.read(cx).editor.config().bufferline;
-                info!(bufferline_config = ?current_bufferline, "Current bufferline config during ConfigEvent");
+                debug!(bufferline_config = ?current_bufferline, "Current bufferline config during ConfigEvent");
 
                 match config_event {
                     ConfigEvent::Refresh => {
@@ -6707,7 +6707,7 @@ impl Workspace {
             }
             EditorEvent::LanguageServerMessage(_) => { /* handled by notifications */ }
             _ => {
-                info!("editor event {ev:?} not handled");
+                trace!("editor event {ev:?} not handled");
             }
         }
     }
@@ -6919,7 +6919,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         // LSP diagnostics changed - update specific document view
-        nucleotide_logging::info!(doc_id = ?doc_id, "DIAG: Workspace handling DiagnosticsChanged - updating view");
+        nucleotide_logging::debug!(doc_id = ?doc_id, "DIAG: Workspace handling DiagnosticsChanged - updating view");
         self.update_specific_document_view(doc_id, cx);
         cx.notify();
     }
@@ -7060,7 +7060,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         // Completion was requested - trigger completion UI
-        nucleotide_logging::info!(
+        nucleotide_logging::debug!(
             "🎯 TRIGGER COMPLETION: doc {:?}, view {:?}, trigger: {:?}",
             doc_id,
             view_id,
@@ -7073,7 +7073,7 @@ impl Workspace {
 
         match trigger {
             crate::types::CompletionTrigger::Manual => {
-                nucleotide_logging::info!("Manual completion triggered (CTRL+Space)");
+                nucleotide_logging::debug!("Manual completion triggered (CTRL+Space)");
                 self.process_completion_trigger(
                     cursor,
                     doc_id,
@@ -7083,7 +7083,7 @@ impl Workspace {
                 );
             }
             crate::types::CompletionTrigger::Character(c) => {
-                nucleotide_logging::info!(character = %c, "Character-triggered completion");
+                nucleotide_logging::debug!(character = %c, "Character-triggered completion");
                 self.process_completion_trigger(
                     cursor,
                     doc_id,
@@ -7093,7 +7093,7 @@ impl Workspace {
                 );
             }
             crate::types::CompletionTrigger::Automatic => {
-                nucleotide_logging::info!("Automatic completion triggered");
+                nucleotide_logging::debug!("Automatic completion triggered");
                 self.process_completion_trigger(
                     cursor,
                     doc_id,
@@ -7109,7 +7109,7 @@ impl Workspace {
 
     fn handle_search_submitted(&mut self, search_text: &str, cx: &mut Context<Self>) {
         // Execute the search in Helix
-        info!("Search submitted: {}", search_text);
+        debug!("Search submitted: {}", search_text);
 
         // Clear the overlay first to hide the prompt
         self.overlay.update(cx, |overlay, cx| {
@@ -7248,7 +7248,7 @@ impl Workspace {
     }
 
     fn handle_global_search_submitted(&mut self, query: &str, cx: &mut Context<Self>) {
-        info!(query = query, "Global search submitted");
+        debug!(query = query, "Global search submitted");
 
         self.overlay.update(cx, |overlay, cx| {
             overlay.dismiss_all(cx);
@@ -7331,7 +7331,7 @@ impl Workspace {
         regex_text: &str,
         cx: &mut Context<Self>,
     ) {
-        info!(
+        debug!(
             action = ?action,
             regex = regex_text,
             "Regex selection submitted"
@@ -7424,7 +7424,7 @@ impl Workspace {
     }
 
     fn handle_command_submitted(&mut self, command: &str, cx: &mut Context<Self>) {
-        info!("handle_command_submitted called with '{}'", command);
+        debug!("handle_command_submitted called with '{}'", command);
 
         // If a file op is pending, treat the submitted text as the name and dispatch an intent
         if let Some(pending) = self.pending_file_op.take() {
@@ -7536,12 +7536,12 @@ impl Workspace {
         match nucleotide_core::ParsedCommand::parse(command) {
             Ok(parsed) => {
                 // Log the parsed command for debugging
-                info!("Parsed command: {:?}", parsed);
+                debug!("Parsed command: {:?}", parsed);
 
                 // Convert to typed command if possible
                 match nucleotide_core::Command::from_parsed(parsed.clone()) {
                     Ok(typed_cmd) => {
-                        info!("Typed command: {:?}", typed_cmd);
+                        debug!("Typed command: {:?}", typed_cmd);
                         // Execute the typed command
                         self.execute_typed_command(typed_cmd, cx);
                     }
@@ -7591,7 +7591,7 @@ impl Workspace {
     fn execute_typed_command(&mut self, command: nucleotide_core::Command, cx: &mut Context<Self>) {
         use nucleotide_core::{Command, command_system::SplitDirection};
 
-        info!("execute_typed_command called with: {:?}", command);
+        debug!("execute_typed_command called with: {:?}", command);
 
         match command {
             Command::Quit { force } => {
@@ -7647,13 +7647,13 @@ impl Workspace {
     }
 
     fn execute_raw_command(&mut self, command: &str, cx: &mut Context<Self>) {
-        use nucleotide_logging::info;
+        use nucleotide_logging::debug;
         // Execute the command through helix's command system
         let core = self.core.clone();
         let handle = self.handle.clone();
         let handle_for_command = handle.clone();
 
-        info!(command = %command, "Executing raw command");
+        debug!(command = %command, "Executing raw command");
 
         // Store the current theme before executing the command
         let theme_before = core.read(cx).editor.theme.name().to_string();
@@ -7661,7 +7661,7 @@ impl Workspace {
 
         // Log current bufferline config before execution
         let bufferline_before = core.read(cx).editor.config().bufferline.clone();
-        info!(bufferline_config = ?bufferline_before, "Bufferline config before command execution");
+        debug!(bufferline_config = ?bufferline_before, "Bufferline config before command execution");
 
         let command_status = core.update(cx, move |core, cx| {
             let _guard = handle_for_command.enter();
@@ -7721,11 +7721,11 @@ impl Workspace {
 
         // Log bufferline config after execution
         let bufferline_after = core.read(cx).editor.config().bufferline.clone();
-        info!(bufferline_config = ?bufferline_after, "Bufferline config after command execution");
+        debug!(bufferline_config = ?bufferline_after, "Bufferline config after command execution");
 
         // If command execution changed bufferline visibility, refresh workspace chrome directly.
         let changed = if bufferline_before != bufferline_after {
-            info!(old_config = ?bufferline_before, new_config = ?bufferline_after, "Bufferline config changed - refreshing workspace chrome");
+            debug!(old_config = ?bufferline_before, new_config = ?bufferline_after, "Bufferline config changed - refreshing workspace chrome");
             true
         } else {
             false
@@ -7742,7 +7742,7 @@ impl Workspace {
 
         // Log bufferline config in workspace context after command execution
         let bufferline_after_workspace = &core.read(cx).editor.config().bufferline;
-        info!(bufferline_config = ?bufferline_after_workspace, "Bufferline config after command (workspace context)");
+        debug!(bufferline_config = ?bufferline_after_workspace, "Bufferline config after command (workspace context)");
     }
 
     fn handle_open_directory(&mut self, path: &std::path::Path, cx: &mut Context<Self>) {
@@ -8034,7 +8034,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         // Open the specified file in the editor
-        info!("Workspace: Received OpenFile update for: {path:?}");
+        debug!("Workspace: Received OpenFile update for: {path:?}");
         let mut reveal_opened_view = None;
         let mut opened_doc_id = None;
         let mut project_panel_preview = None;
@@ -8048,15 +8048,15 @@ impl Workspace {
 
             // Determine the right action based on whether we have views
             let action = if core.editor.tree.views().count() == 0 {
-                info!("No views exist, using VerticalSplit action");
+                debug!("No views exist, using VerticalSplit action");
                 helix_view::editor::Action::VerticalSplit
             } else {
-                info!("Views exist, using Replace action to show in current view");
+                debug!("Views exist, using Replace action to show in current view");
                 helix_view::editor::Action::Replace
             };
 
             // Now open the file
-            info!(
+            debug!(
                 "About to open file from picker: {path:?} with action: {:?}",
                 action
             );
@@ -8070,7 +8070,7 @@ impl Workspace {
 
                     // Log document info
                     if let Some(doc) = core.editor.document(doc_id) {
-                        info!(
+                        debug!(
                             "Document language: {:?}, path: {:?}",
                             doc.language_name(),
                             doc.path()
@@ -8078,14 +8078,14 @@ impl Workspace {
 
                         // Check if document has language servers
                         let lang_servers: Vec<_> = doc.language_servers().collect();
-                        info!("Document has {} language servers", lang_servers.len());
+                        debug!("Document has {} language servers", lang_servers.len());
                         for ls in &lang_servers {
-                            info!("  Language server: {:?}", ls);
+                            debug!("  Language server: {:?}", ls);
                         }
                     }
 
                     // Use the new LSP manager with feature flag support
-                    info!("Starting LSP for document using feature flag system");
+                    debug!("Starting LSP for document using feature flag system");
                     let lsp_result = core.start_lsp_with_feature_flags(doc_id);
 
                     match lsp_result {
@@ -8117,7 +8117,7 @@ impl Workspace {
                             helix_event::request_redraw();
                         }
                         nucleotide_lsp::LspStartupResult::Skipped { reason } => {
-                            info!(
+                            debug!(
                                 reason = %reason,
                                 "LSP startup skipped"
                             );
@@ -8146,14 +8146,14 @@ impl Workspace {
                     if let Some(view) = core.editor.tree.try_get(view_id) {
                         // Get the current document id from the view
                         let view_doc_id = view.doc;
-                        info!(
+                        debug!(
                             "View {:?} has document ID: {:?}, opened doc_id: {:?}",
                             view_id, view_doc_id, doc_id
                         );
 
                         // Make sure the view is showing the document we just opened
                         if view_doc_id != doc_id {
-                            info!(
+                            debug!(
                                 "View is showing different document, switching to opened document"
                             );
                             core.editor
@@ -8188,7 +8188,7 @@ impl Workspace {
         // Force focus update to ensure the correct view is focused
         self.core.update(cx, |core, _cx| {
             let view_id = core.editor.tree.focus;
-            info!("Current focused view after opening: {:?}", view_id);
+            debug!("Current focused view after opening: {:?}", view_id);
         });
 
         if opened_doc_id.is_some() {
@@ -8273,7 +8273,7 @@ impl Workspace {
 
     #[instrument(skip(self, cx), fields(event = ?ev))]
     pub fn handle_event(&mut self, ev: &crate::Update, cx: &mut Context<Self>) {
-        info!("handling event {ev:?}");
+        trace!("handling event {ev:?}");
         let skip_editor_status_sync = matches!(
             ev,
             crate::Update::EditorStatus(_)
@@ -8301,7 +8301,7 @@ impl Workspace {
                 self.set_documentation_sidebar_entries(entries.clone(), cx);
             }
             crate::Update::Completion(_completion_view) => {
-                nucleotide_logging::info!("Forwarding completion to overlay");
+                nucleotide_logging::trace!("Forwarding completion to overlay");
 
                 // Overlay will handle completion view setup in its own Update handler
                 self.handle_overlay_update(cx);
@@ -8312,14 +8312,14 @@ impl Workspace {
                 self.handle_file_tree_event(event, cx);
             }
             crate::Update::ShowFilePicker => {
-                nucleotide_logging::info!("DIAG: Workspace received ShowFilePicker");
+                nucleotide_logging::debug!("DIAG: Workspace received ShowFilePicker");
                 let handle = self.handle.clone();
                 let core = self.core.clone();
                 let overlay = self.overlay.clone();
                 open(core, handle, overlay, cx);
             }
             crate::Update::ShowFilePickerAt(path) => {
-                nucleotide_logging::info!(
+                nucleotide_logging::debug!(
                     path = %path.display(),
                     "DIAG: Workspace received ShowFilePickerAt"
                 );
@@ -8329,28 +8329,28 @@ impl Workspace {
                 open_at(core, handle, overlay, path.clone(), cx);
             }
             crate::Update::ShowBufferPicker => {
-                nucleotide_logging::info!("DIAG: Workspace received ShowBufferPicker");
+                nucleotide_logging::debug!("DIAG: Workspace received ShowBufferPicker");
                 let handle = self.handle.clone();
                 let core = self.core.clone();
                 let overlay = self.overlay.clone();
                 show_buffer_picker(core, handle, overlay, cx);
             }
             crate::Update::ShowCodeActions => {
-                nucleotide_logging::info!("Workspace received ShowCodeActions");
+                nucleotide_logging::debug!("Workspace received ShowCodeActions");
                 let handle = self.handle.clone();
                 let core = self.core.clone();
                 show_code_actions(core, handle, cx);
             }
             crate::Update::ShowRunnables => {
-                nucleotide_logging::info!("Workspace received ShowRunnables");
+                nucleotide_logging::debug!("Workspace received ShowRunnables");
                 self.show_runnables(cx);
             }
             crate::Update::RunTask(task) => {
-                nucleotide_logging::info!(label = %task.label(), "Workspace received RunTask");
+                nucleotide_logging::debug!(label = %task.label(), "Workspace received RunTask");
                 self.run_task(task.clone(), cx);
             }
             crate::Update::ShowHoverDocs => {
-                nucleotide_logging::info!("Workspace received ShowHoverDocs");
+                nucleotide_logging::debug!("Workspace received ShowHoverDocs");
                 if self.toggle_documentation_sidebar(cx) {
                     let handle = self.handle.clone();
                     let core = self.core.clone();
@@ -8552,7 +8552,7 @@ impl Workspace {
                                 use nucleotide_events::v2::ui::OverlayType;
                                 match overlay_type {
                                     OverlayType::FilePicker => {
-                                        nucleotide_logging::info!(
+                                        nucleotide_logging::debug!(
                                             "DIAG: Workspace observed OverlayShown(FilePicker)"
                                         );
                                         let handle = self.handle.clone();
@@ -8561,7 +8561,7 @@ impl Workspace {
                                         open(core, handle, overlay, cx);
                                     }
                                     OverlayType::BufferPicker => {
-                                        nucleotide_logging::info!(
+                                        nucleotide_logging::debug!(
                                             "DIAG: Workspace observed OverlayShown(BufferPicker)"
                                         );
                                         let handle = self.handle.clone();
@@ -10266,11 +10266,11 @@ impl Workspace {
     ) {
         use helix_view::handlers::completion::CompletionEvent;
 
-        info!("Workspace handling completion event");
+        debug!("Workspace handling completion event");
 
         match event {
             CompletionEvent::ManualTrigger { cursor, doc, view } => {
-                info!(cursor = *cursor, doc_id = ?doc, view_id = ?view, "Processing manual completion trigger");
+                debug!(cursor = *cursor, doc_id = ?doc, view_id = ?view, "Processing manual completion trigger");
                 self.process_completion_trigger(
                     *cursor,
                     *doc,
@@ -10280,7 +10280,7 @@ impl Workspace {
                 );
             }
             CompletionEvent::AutoTrigger { cursor, doc, view } => {
-                info!(cursor = *cursor, doc_id = ?doc, view_id = ?view, "Processing auto completion trigger");
+                debug!(cursor = *cursor, doc_id = ?doc, view_id = ?view, "Processing auto completion trigger");
                 self.process_completion_trigger(
                     *cursor,
                     *doc,
@@ -10290,7 +10290,7 @@ impl Workspace {
                 );
             }
             CompletionEvent::TriggerChar { cursor, doc, view } => {
-                info!(cursor = *cursor, doc_id = ?doc, view_id = ?view, "Processing trigger character completion");
+                debug!(cursor = *cursor, doc_id = ?doc, view_id = ?view, "Processing trigger character completion");
                 let trigger = self
                     .completion_character_before_cursor(*cursor, *doc, cx)
                     .map(LspCompletionTrigger::Character)
@@ -10298,11 +10298,11 @@ impl Workspace {
                 self.process_completion_trigger(*cursor, *doc, *view, trigger, cx);
             }
             CompletionEvent::DeleteText { cursor: _ } => {
-                info!("Processing delete text - hiding completions");
+                debug!("Processing delete text - hiding completions");
                 self.hide_completions(cx);
             }
             CompletionEvent::Cancel => {
-                info!("Processing completion cancel - hiding completions");
+                debug!("Processing completion cancel - hiding completions");
                 self.hide_completions(cx);
             }
         }
@@ -10311,7 +10311,7 @@ impl Workspace {
     /// Update completion filter if completion is active and prefix has changed
     /// This should be called when text changes while completion is active
     pub fn update_completion_filter(&mut self, new_prefix: String, cx: &mut Context<Self>) -> bool {
-        info!(
+        debug!(
             prefix = %new_prefix,
             "Updating completion filter with new prefix"
         );
@@ -10487,7 +10487,7 @@ impl Workspace {
         trigger: LspCompletionTrigger,
         cx: &mut Context<Self>,
     ) {
-        info!(cursor = cursor, doc_id = ?doc_id, view_id = ?view_id, trigger = ?trigger, "Requesting completions through Nucleotide");
+        debug!(cursor = cursor, doc_id = ?doc_id, view_id = ?view_id, trigger = ?trigger, "Requesting completions through Nucleotide");
 
         if matches!(trigger, LspCompletionTrigger::Manual)
             && self.manual_completion_needs_lsp_settle_delay(cursor, doc_id, cx)
@@ -10578,7 +10578,7 @@ impl Workspace {
     ) {
         match completion_result {
             Ok((completion_items, prefix, is_incomplete)) => {
-                nucleotide_logging::info!(
+                nucleotide_logging::debug!(
                     item_count = completion_items.len(),
                     prefix = %prefix,
                     is_incomplete = is_incomplete,
@@ -10736,7 +10736,7 @@ impl Workspace {
             })
             .collect();
 
-        nucleotide_logging::info!(
+        nucleotide_logging::debug!(
             ui_item_count = ui_items.len(),
             prefix = %prefix,
             is_incomplete = is_incomplete,
@@ -10763,7 +10763,7 @@ impl Workspace {
             view.set_items_with_filter(ui_items, initial_filter, cx);
             view
         });
-        nucleotide_logging::info!(
+        nucleotide_logging::debug!(
             "✨ CREATING COMPLETION VIEW: {} items, emitting Update::Completion event via core",
             ui_items_count
         );
@@ -10778,7 +10778,7 @@ impl Workspace {
 
     /// Hide completions
     fn hide_completions(&mut self, cx: &mut Context<Self>) {
-        info!("Hiding completions via overlay dismiss");
+        debug!("Hiding completions via overlay dismiss");
         self.active_completion_session = None;
         self.overlay.update(cx, |overlay, cx| {
             overlay.dismiss_completion(cx);
@@ -10850,7 +10850,7 @@ impl Workspace {
 
     /// Trigger completion in the active editor
     pub fn trigger_completion(&mut self, cx: &mut Context<Self>) {
-        nucleotide_logging::info!("Triggering completion directly using real LSP completions");
+        nucleotide_logging::debug!("Triggering completion directly using real LSP completions");
 
         // Get current document and view information (in a separate scope to release the borrow)
         let (cursor, doc_id, view_id) = {
@@ -10865,7 +10865,7 @@ impl Workspace {
             (cursor, doc.id(), view.id)
         };
 
-        nucleotide_logging::info!(
+        nucleotide_logging::debug!(
             cursor = cursor,
             doc_id = ?doc_id,
             view_id = ?view_id,
@@ -10877,7 +10877,7 @@ impl Workspace {
 
     /// Handle completion acceptance via Helix's transaction system
     fn handle_completion_via_helix(&mut self, item_index: usize, cx: &mut Context<Self>) {
-        nucleotide_logging::info!(
+        nucleotide_logging::debug!(
             item_index = item_index,
             "Accepting completion via Helix transaction system"
         );
@@ -10895,7 +10895,7 @@ impl Workspace {
             return;
         };
 
-        nucleotide_logging::info!(
+        nucleotide_logging::debug!(
             item_index = item_index,
             completion_text = %completion_item.text,
             insert_text_format = ?completion_item.insert_text_format,
@@ -10924,7 +10924,7 @@ impl Workspace {
         completion_item: nucleotide_ui::CompletionItem,
         cx: &mut Context<Self>,
     ) {
-        nucleotide_logging::info!(
+        nucleotide_logging::debug!(
             completion_text = %completion_item.text,
             "Processing snippet completion with cursor positioning"
         );
@@ -10948,7 +10948,7 @@ impl Workspace {
         // Render snippet to plain text and calculate cursor position
         let plain_text = snippet_template.render_plain_text();
 
-        nucleotide_logging::info!(
+        nucleotide_logging::debug!(
             original_snippet = %completion_item.text,
             rendered_text = %plain_text,
             has_final_tabstop = snippet_template.final_cursor_pos.is_some(),
@@ -10961,7 +10961,7 @@ impl Workspace {
             let _guard = rt_handle.enter();
             let editor = &mut core.editor;
 
-            nucleotide_logging::info!(
+            nucleotide_logging::debug!(
                 rendered_text = %plain_text,
                 "Creating Helix transaction for snippet completion"
             );
@@ -10975,7 +10975,7 @@ impl Workspace {
             let selection = doc.selection(view.id);
             let primary_cursor = selection.primary().cursor(text.slice(..));
 
-            nucleotide_logging::info!(
+            nucleotide_logging::debug!(
                 cursor_pos = primary_cursor,
                 doc_len = text.len_chars(),
                 selection_ranges = selection.len(),
@@ -10990,7 +10990,7 @@ impl Workspace {
                 let text_slice = text.slice(..);
                 let start_pos = completion_word_start(text_slice, cursor_pos);
 
-                nucleotide_logging::info!(
+                nucleotide_logging::trace!(
                     range_cursor = cursor_pos,
                     "Processing range in snippet transaction"
                 );
@@ -10998,7 +10998,7 @@ impl Workspace {
                 // Store the start position for cursor calculation
                 replacement_start_pos = start_pos;
 
-                nucleotide_logging::info!(
+                nucleotide_logging::trace!(
                     start_pos = start_pos,
                     end_pos = cursor_pos,
                     replacement_text = %plain_text,
@@ -11010,14 +11010,14 @@ impl Workspace {
             });
 
             // Apply the transaction
-            nucleotide_logging::info!("Applying snippet transaction to document");
+            nucleotide_logging::debug!("Applying snippet transaction to document");
             doc.apply(&transaction, view.id);
 
             // Calculate and set the final cursor position for snippet
             if let Some(cursor_pos) =
                 snippet_template.calculate_final_cursor_position(replacement_start_pos)
             {
-                nucleotide_logging::info!(
+                nucleotide_logging::debug!(
                     calculated_cursor_pos = cursor_pos,
                     replacement_start = replacement_start_pos,
                     "Setting final cursor position for snippet"
@@ -11027,17 +11027,17 @@ impl Workspace {
                 let new_selection = Selection::point(cursor_pos);
                 doc.set_selection(view.id, new_selection);
 
-                nucleotide_logging::info!(
+                nucleotide_logging::debug!(
                     final_cursor_pos = cursor_pos,
                     "Snippet cursor positioned successfully"
                 );
             } else {
-                nucleotide_logging::info!(
+                nucleotide_logging::debug!(
                     "No $0 tabstop found, cursor remains at end of insertion"
                 );
             }
 
-            nucleotide_logging::info!("Applied snippet completion transaction successfully");
+            nucleotide_logging::debug!("Applied snippet completion transaction successfully");
 
             cx.notify();
         });
@@ -11047,7 +11047,7 @@ impl Workspace {
             overlay.dismiss_completion(cx);
         });
 
-        nucleotide_logging::info!("Snippet completion processing complete - view dismissed");
+        nucleotide_logging::debug!("Snippet completion processing complete - view dismissed");
     }
 
     fn handle_lsp_edit_completion(
@@ -11056,7 +11056,7 @@ impl Workspace {
         edit: nucleotide_ui::CompletionEdit,
         cx: &mut Context<Self>,
     ) {
-        nucleotide_logging::info!(
+        nucleotide_logging::debug!(
             completion_text = %completion_item.text,
             has_primary_edit = edit.text_edit.is_some(),
             additional_edit_count = edit.additional_text_edits.len(),
@@ -11110,7 +11110,7 @@ impl Workspace {
                 replacement_text,
             );
 
-            nucleotide_logging::info!(
+            nucleotide_logging::debug!(
                 replacement_start = replacement_start,
                 has_edit_offset = edit_offset.is_some(),
                 "Applying completion transaction from LSP edit metadata"
@@ -11135,7 +11135,7 @@ impl Workspace {
                     additional_edits,
                     offset_encoding,
                 );
-                nucleotide_logging::info!(
+                nucleotide_logging::debug!(
                     additional_edit_count = edit.additional_text_edits.len(),
                     "Applying additional LSP completion edits"
                 );
@@ -11149,7 +11149,7 @@ impl Workspace {
             overlay.dismiss_completion(cx);
         });
 
-        nucleotide_logging::info!("LSP edit completion processing complete - view dismissed");
+        nucleotide_logging::debug!("LSP edit completion processing complete - view dismissed");
     }
 
     fn handle_plain_text_completion(
@@ -11157,7 +11157,7 @@ impl Workspace {
         completion_item: nucleotide_ui::CompletionItem,
         cx: &mut Context<Self>,
     ) {
-        nucleotide_logging::info!(
+        nucleotide_logging::debug!(
             completion_text = %completion_item.text,
             "Processing plain text completion"
         );
@@ -11168,7 +11168,7 @@ impl Workspace {
             let _guard = rt_handle.enter();
             let editor = &mut core.editor;
 
-            nucleotide_logging::info!(
+            nucleotide_logging::debug!(
                 completion_text = %completion_item.text,
                 "Creating Helix transaction for plain text completion"
             );
@@ -11182,7 +11182,7 @@ impl Workspace {
             let selection = doc.selection(view.id);
             let primary_cursor = selection.primary().cursor(text.slice(..));
 
-            nucleotide_logging::info!(
+            nucleotide_logging::debug!(
                 cursor_pos = primary_cursor,
                 doc_len = text.len_chars(),
                 selection_ranges = selection.len(),
@@ -11196,12 +11196,12 @@ impl Workspace {
                 let text_slice = text.slice(..);
                 let start_pos = completion_word_start(text_slice, cursor_pos);
 
-                nucleotide_logging::info!(
+                nucleotide_logging::trace!(
                     range_cursor = cursor_pos,
                     "Processing range in plain text transaction"
                 );
 
-                nucleotide_logging::info!(
+                nucleotide_logging::trace!(
                     start_pos = start_pos,
                     end_pos = cursor_pos,
                     replacement_text = %completion_item.text,
@@ -11217,10 +11217,10 @@ impl Workspace {
             });
 
             // Apply the transaction
-            nucleotide_logging::info!("Applying plain text transaction to document");
+            nucleotide_logging::debug!("Applying plain text transaction to document");
             doc.apply(&transaction, view.id);
 
-            nucleotide_logging::info!("Applied plain text completion transaction successfully");
+            nucleotide_logging::debug!("Applied plain text completion transaction successfully");
 
             cx.notify();
         });
@@ -11230,7 +11230,7 @@ impl Workspace {
             overlay.dismiss_completion(cx);
         });
 
-        nucleotide_logging::info!("Plain text completion processing complete - view dismissed");
+        nucleotide_logging::debug!("Plain text completion processing complete - view dismissed");
     }
 
     // /// Handle completion acceptance - insert the selected text into the editor (DEPRECATED)
@@ -13888,12 +13888,12 @@ fn open_at(
     use ignore::WalkBuilder;
     use std::sync::Arc;
 
-    info!("Opening file picker");
+    debug!("Opening file picker");
 
     // Get all files in the current directory using ignore crate (respects .gitignore)
     let mut items = Vec::new();
 
-    info!("Base directory for file picker: {:?}", base_dir);
+    debug!("Base directory for file picker: {:?}", base_dir);
 
     // Use ignore::Walk to get files, respecting .gitignore and other VCS ignore files
     // Configure WalkBuilder like Helix does to properly respect all ignore files
@@ -13969,7 +13969,7 @@ fn open_at(
     // Sort items by label (path) for consistent ordering
     items.sort_by_key(|item| item.label.clone());
 
-    info!("File picker has {} items", items.len());
+    debug!("File picker has {} items", items.len());
 
     // Populate VCS status for all file items using the global VCS service
     let _file_paths: Vec<std::path::PathBuf> = items
@@ -13979,7 +13979,7 @@ fn open_at(
 
     // Populate VCS status for all file items using the global VCS service
     if cx.has_global::<nucleotide_vcs::VcsServiceHandle>() {
-        info!("VCS service available, populating file picker VCS status");
+        debug!("VCS service available, populating file picker VCS status");
 
         // Apply VCS status to items using cached status
         let mut vcs_status_count = 0;
@@ -13993,13 +13993,13 @@ fn open_at(
             }
         }
 
-        info!(
+        debug!(
             file_count = items.len(),
             vcs_status_count = vcs_status_count,
             "Populated file picker VCS status"
         );
     } else {
-        info!("VCS service not available");
+        debug!("VCS service not available");
     }
 
     // Create a simple native picker without callback - the overlay will handle file opening via events
@@ -14009,13 +14009,13 @@ fn open_at(
     })
     .with_preview(true);
 
-    info!("Emitting file picker to overlay");
+    debug!("Emitting file picker to overlay");
 
     emit_picker_update(file_picker, &overlay, cx);
 }
 
 fn open_directory(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &mut App) {
-    info!("Opening directory picker");
+    debug!("Opening directory picker");
 
     // Create a native directory picker
     let directory_picker =
@@ -14040,7 +14040,7 @@ fn show_buffer_picker(
     use helix_view::DocumentId;
     use std::sync::Arc;
 
-    info!("Opening buffer picker");
+    debug!("Opening buffer picker");
 
     // Structure to hold buffer metadata for sorting
     #[derive(Clone)]
@@ -14153,11 +14153,11 @@ fn show_buffer_picker(
         ));
     }
 
-    info!("Buffer picker has {} items", items.len());
+    debug!("Buffer picker has {} items", items.len());
 
     // Create the picker with buffer items
     let buffer_picker = crate::picker::Picker::native("Switch Buffer", items, move |index| {
-        info!("Buffer selected at index: {}", index);
+        debug!("Buffer selected at index: {}", index);
         // The overlay will handle buffer switching via the stored document ID
     })
     .with_preview(true);
@@ -14420,7 +14420,7 @@ fn show_code_actions(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &m
     use helix_lsp::lsp;
     use helix_lsp::util::{diagnostic_to_lsp_diagnostic, range_to_lsp_range};
 
-    info!("Opening code actions dropdown");
+    debug!("Opening code actions dropdown");
 
     // Snapshot needed editor state under read lock
     let (identifier, selection_range, doc_text, diags, servers) = {
@@ -14453,7 +14453,7 @@ fn show_code_actions(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &m
     };
 
     if servers.is_empty() {
-        info!("No language servers with CodeAction support");
+        debug!("No language servers with CodeAction support");
         core.update(cx, |core, cx| {
             core.editor
                 .set_error("No configured language server supports code actions");
@@ -14591,18 +14591,18 @@ fn test_completion(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &mut
 fn show_hover_docs(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &mut App) {
     use futures_util::stream::{FuturesOrdered, StreamExt};
 
-    info!("Requesting hover documentation");
+    debug!("Requesting hover documentation");
 
     let hover_requests = {
         let core_r = core.read(cx);
         let editor = &core_r.editor;
         let hover_requests = || {
             let Some(view) = editor.tree.try_get(editor.tree.focus) else {
-                info!("No focused editor view available for hover documentation");
+                debug!("No focused editor view available for hover documentation");
                 return None;
             };
             let Some(doc) = editor.documents.get(&view.doc) else {
-                info!(
+                debug!(
                     view_id = ?view.id,
                     doc_id = ?view.doc,
                     "No focused document available for hover documentation"
@@ -14611,7 +14611,7 @@ fn show_hover_docs(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &mut
             };
 
             let Some(url) = doc.url() else {
-                info!(
+                debug!(
                     view_id = ?view.id,
                     doc_id = ?view.doc,
                     "Focused document has no file URL for hover documentation"
@@ -14652,7 +14652,7 @@ fn show_hover_docs(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &mut
     };
 
     if requested_servers == 0 {
-        info!("No LSP servers with hover capability are available");
+        debug!("No LSP servers with hover capability are available");
         core.update(cx, |core, cx| {
             core.editor
                 .set_error("No configured language server supports hover");

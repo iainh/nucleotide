@@ -242,7 +242,7 @@ impl OverlayView {
             completion_view.update(cx, |view, cx| {
                 // Accept the currently selected completion item
                 if let Some(selected_index) = view.selected_index() {
-                    nucleotide_logging::info!(
+                    nucleotide_logging::debug!(
                         selected_index = selected_index,
                         "Tab key forwarded - accepting selected completion via Helix"
                     );
@@ -397,7 +397,7 @@ impl OverlayView {
     pub fn handle_event(&mut self, ev: &crate::Update, cx: &mut Context<Self>) {
         match ev {
             crate::Update::Prompt(prompt) => {
-                nucleotide_logging::info!("DIAG: Overlay Update::Prompt received");
+                nucleotide_logging::trace!("DIAG: Overlay Update::Prompt received");
                 self.replace_prompt(cx);
                 let Prompt {
                     prompt: prompt_text,
@@ -451,8 +451,8 @@ impl OverlayView {
                     // Set up the submit callback with command/search execution
                     let core_weak_submit = self.core.clone();
                     view = view.on_submit(move |input: &str, cx| {
-                        use nucleotide_logging::info;
-                        info!(input = %input, input_len = input.len(), "Overlay on_submit received input");
+                        use nucleotide_logging::debug;
+                        debug!(input = %input, input_len = input.len(), "Overlay on_submit received input");
                         // Emit appropriate event based on prompt type
                         if let Some(core) = core_weak_submit.upgrade() {
                             core.update(cx, |_core, cx| {
@@ -477,7 +477,7 @@ impl OverlayView {
                                         });
                                     }
                                     PromptSubmitAction::Command => {
-                                        info!(command = %input, "Emitting CommandSubmitted event");
+                                        debug!(command = %input, "Emitting CommandSubmitted event");
                                         cx.emit(crate::Update::CommandSubmitted(input.to_string()));
                                     }
                                 }
@@ -524,8 +524,8 @@ impl OverlayView {
                 cx.notify();
             }
             crate::Update::Completion(completion_view) => {
-                nucleotide_logging::info!("DIAG: Overlay Update::Completion received");
-                nucleotide_logging::info!(
+                nucleotide_logging::trace!("DIAG: Overlay Update::Completion received");
+                nucleotide_logging::debug!(
                     "🎨 OVERLAY RECEIVED COMPLETION VIEW: Setting up completion overlay"
                 );
 
@@ -548,7 +548,7 @@ impl OverlayView {
                 cx.subscribe(
                     completion_view,
                     |_this, _completion_view, event: &nucleotide_ui::CompleteViaHelixEvent, cx| {
-                        nucleotide_logging::info!(
+                        nucleotide_logging::debug!(
                             item_index = event.item_index,
                             "Completion accepted via Helix transaction system - forwarding to workspace"
                         );
@@ -560,7 +560,7 @@ impl OverlayView {
 
                         // IMPORTANT: Don't dismiss yet - let workspace handle completion first
                         // The workspace will call dismiss_completion() after successful text insertion
-                        nucleotide_logging::info!("Completion acceptance forwarded - workspace will dismiss after processing");
+                        nucleotide_logging::trace!("Completion acceptance forwarded - workspace will dismiss after processing");
                     },
                 )
                 .detach();
@@ -583,7 +583,7 @@ impl OverlayView {
                 cx.notify();
             }
             crate::Update::Picker(picker) => {
-                nucleotide_logging::info!("DIAG: Overlay Update::Picker received");
+                nucleotide_logging::trace!("DIAG: Overlay Update::Picker received");
                 // Clean up any existing picker before creating a new one
                 self.replace_picker(cx);
 
@@ -1641,7 +1641,7 @@ impl Render for OverlayView {
         }
 
         if let Some(prompt_view) = &self.native_prompt_view {
-            nucleotide_logging::info!("DIAG: Render overlay branch: prompt");
+            nucleotide_logging::trace!("DIAG: Render overlay branch: prompt");
             // Render prompt with design tokens and consistent overlay patterns
             let theme = cx.theme();
             let tokens = &theme.tokens;
@@ -1676,7 +1676,7 @@ impl Render for OverlayView {
         }
 
         if let Some(completion_view) = &self.completion_view {
-            nucleotide_logging::info!("DIAG: Render overlay branch: completion");
+            nucleotide_logging::trace!("DIAG: Render overlay branch: completion");
             use gpui::{Anchor, anchored, point};
 
             // Calculate proper completion position based on cursor location

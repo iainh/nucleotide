@@ -276,7 +276,9 @@ pub fn implicit_workspace_root_from_current_dir() -> Option<PathBuf> {
 use anyhow::Error;
 use nucleotide_core::{EventAggregatorHandle, EventBus, event_bridge, gpui_to_helix_bridge};
 use nucleotide_events::v2::diagnostics::Event as DiagnosticsEvent;
-use nucleotide_logging::{Level, PerfTimer, debug, error, info, instrument, span, timed, warn};
+use nucleotide_logging::{
+    Level, PerfTimer, debug, error, info, instrument, span, timed, trace, warn,
+};
 use nucleotide_lsp::lsp_state::DiagnosticInfo;
 
 use crate::types::{AppEvent, CoreEvent, Update};
@@ -581,7 +583,7 @@ impl Application {
                         })
                         .count();
 
-                    info!(
+                    debug!(
                         uri = %uri.to_string(),
                         total = total,
                         errors = errors,
@@ -605,7 +607,7 @@ impl Application {
                         cx.notify();
                     });
 
-                    info!(uri = %uri.to_string(), "DIAG: LspState.set_diagnostics applied");
+                    trace!(uri = %uri.to_string(), "DIAG: LspState.set_diagnostics applied");
 
                     if let Some(aggregator) = &self.event_aggregator {
                         use helix_core::diagnostic::DiagnosticProvider;
@@ -623,7 +625,7 @@ impl Application {
                         }
 
                         for (provider, diagnostics) in by_provider {
-                            info!(
+                            trace!(
                                 provider = ?provider,
                                 count = diagnostics.len(),
                                 "DIAG: Dispatching diagnostics provider set"
@@ -643,15 +645,15 @@ impl Application {
                 self.emit_diagnostics_picker(*workspace, cx);
             }
             event_bridge::BridgedEvent::FilePickerRequested => {
-                info!("DIAG: FilePickerRequested received - emitting ShowFilePicker");
+                debug!("DIAG: FilePickerRequested received - emitting ShowFilePicker");
                 cx.emit(crate::Update::ShowFilePicker);
             }
             event_bridge::BridgedEvent::BufferPickerRequested => {
-                info!("DIAG: BufferPickerRequested received - emitting ShowBufferPicker");
+                debug!("DIAG: BufferPickerRequested received - emitting ShowBufferPicker");
                 cx.emit(crate::Update::ShowBufferPicker);
             }
             event_bridge::BridgedEvent::LanguageServerInitialized { server_id } => {
-                info!(
+                debug!(
                     server_id = ?server_id,
                     "MAIN_LOOP: Processing LanguageServerInitialized event with GPUI context"
                 );
@@ -668,7 +670,7 @@ impl Application {
                             .as_ref()
                             .map(|p| p.display().to_string());
 
-                        info!(
+                        debug!(
                             server_id = ?server_id,
                             server_name = %server_name,
                             workspace = ?workspace_path,
@@ -685,14 +687,14 @@ impl Application {
                 }
             }
             event_bridge::BridgedEvent::LanguageServerExited { server_id } => {
-                info!(
+                debug!(
                     server_id = ?server_id,
                     "MAIN_LOOP: Processing LanguageServerExited event with GPUI context"
                 );
 
                 if let Some(lsp_state) = &self.lsp_state {
                     lsp_state.update(cx, |state, cx| {
-                        info!(
+                        debug!(
                             server_id = ?server_id,
                             "MAIN_LOOP: Removing LSP server from statusline state"
                         );
@@ -703,7 +705,7 @@ impl Application {
                 }
 
                 if let Some(aggregator) = &self.event_aggregator {
-                    info!(server_id = ?server_id, "DIAG: Dispatching workspace diagnostics cleared for server");
+                    trace!(server_id = ?server_id, "DIAG: Dispatching workspace diagnostics cleared for server");
                     aggregator.dispatch_diagnostics(
                         DiagnosticsEvent::WorkspaceDiagnosticsClearedForServer {
                             server_id: *server_id,
@@ -1291,15 +1293,15 @@ impl Application {
                                     }),
                                 );
                                 merge(&mut cfg, override_cfg);
-                                info!(
+                                debug!(
                                     "DIAG: Sending didChangeConfiguration with diagnostics enabled for rust-analyzer"
                                 );
                             } else {
-                                info!(server = %server_name, "DIAG: Sending didChangeConfiguration (no RA-specific overrides)");
+                                debug!(server = %server_name, "DIAG: Sending didChangeConfiguration (no RA-specific overrides)");
                             }
                             language_server.did_change_configuration(cfg);
                         } else {
-                            info!(server = %server_name, "DIAG: No config available to send in didChangeConfiguration");
+                            debug!(server = %server_name, "DIAG: No config available to send in didChangeConfiguration");
                         }
                         debug!(server_id = ?server_id, "LSP server initialized");
                     }
@@ -1337,7 +1339,7 @@ impl Application {
                                 None => {}
                             }
                         }
-                        info!(
+                        debug!(
                             server_id = ?server_id,
                             server_name = %language_server.name(),
                             uri = %uri.to_string(),
@@ -1362,7 +1364,7 @@ impl Application {
                             params.version,
                             params.diagnostics,
                         );
-                        info!("DIAG: Forwarded diagnostics to Helix editor for application");
+                        trace!("DIAG: Forwarded diagnostics to Helix editor for application");
                     }
                     Notification::ProgressMessage(params) => {
                         use helix_lsp::lsp;
@@ -2583,7 +2585,7 @@ impl Application {
     }
 
     fn emit_diagnostics_picker(&mut self, workspace: bool, cx: &mut gpui::Context<crate::Core>) {
-        info!(workspace = workspace, "DIAG: Diagnostics picker requested");
+        debug!(workspace = workspace, "DIAG: Diagnostics picker requested");
 
         let focused_doc_id = self
             .editor
@@ -2974,7 +2976,7 @@ impl Application {
         cx: &mut gpui::Context<Self>,
     ) {
         let old_config = self.editor.config();
-        info!("Old bufferline config: {:?}", old_config.bufferline);
+        debug!("Old bufferline config: {:?}", old_config.bufferline);
 
         self.config = new_config;
         let mut updated_helix_config = self.config.to_helix_config();
@@ -2983,7 +2985,7 @@ impl Application {
         updated_helix_config.editor.true_color = true;
         self.config.helix.editor.true_color = true;
 
-        info!(
+        debug!(
             "Updated helix config bufferline: {:?}",
             updated_helix_config.editor.bufferline
         );
@@ -2991,7 +2993,7 @@ impl Application {
 
         self.update_lsp_manager_config();
         self.editor.refresh_config(&old_config);
-        info!(
+        debug!(
             "After refresh_config, editor bufferline: {:?}",
             self.editor.config().bufferline
         );
@@ -2999,7 +3001,7 @@ impl Application {
         for client in self.editor.language_servers.iter_clients() {
             let cfg = client.config();
             if let Some(cfg) = cfg {
-                info!(server = %client.name(), "Re-sending LSP didChangeConfiguration with current settings");
+                debug!(server = %client.name(), "Re-sending LSP didChangeConfiguration with current settings");
                 client.did_change_configuration(cfg.clone());
             }
         }
@@ -3015,11 +3017,11 @@ impl Application {
         config_event: helix_view::editor::ConfigEvent,
         cx: &mut gpui::Context<crate::Core>,
     ) {
-        info!("Application received ConfigEvent: {:?}", config_event);
+        debug!("Application received ConfigEvent: {:?}", config_event);
 
         match &config_event {
             helix_view::editor::ConfigEvent::Update(new_editor_config) => {
-                info!(
+                debug!(
                     "New bufferline config in Update event: {:?}",
                     new_editor_config.bufferline
                 );
@@ -3041,7 +3043,7 @@ impl Application {
             }
         }
 
-        info!("Forwarding ConfigEvent to workspace");
+        debug!("Forwarding ConfigEvent to workspace");
         cx.emit(crate::Update::EditorEvent(
             helix_view::editor::EditorEvent::ConfigEvent(config_event),
         ));

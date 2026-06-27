@@ -7,7 +7,7 @@ use helix_view::ViewId;
 use helix_view::document::Mode;
 use nucleotide_events::ProjectLspCommand;
 use nucleotide_events::v2::document::ChangeType;
-use nucleotide_logging::{debug, info, instrument, warn};
+use nucleotide_logging::{debug, info, instrument, trace, warn};
 use std::sync::OnceLock;
 use tokio::sync::mpsc;
 
@@ -96,10 +96,10 @@ pub fn send_bridged_event(event: BridgedEvent) {
         // DIAG: Special-case diagnostics/picker for clearer tracing
         match &event {
             BridgedEvent::DiagnosticsChanged { doc_id } => {
-                info!(doc_id = ?doc_id, "DIAG: Bridging DiagnosticsChanged to GPUI");
+                trace!(doc_id = ?doc_id, "DIAG: Bridging DiagnosticsChanged to GPUI");
             }
             BridgedEvent::DiagnosticsPickerRequested { workspace } => {
-                info!(
+                debug!(
                     workspace = *workspace,
                     "DIAG: Bridging DiagnosticsPickerRequested to GPUI"
                 );
@@ -194,7 +194,7 @@ pub fn register_event_hooks() {
     register_hook!(move |event: &mut OnModeSwitch<'_, '_>| {
         let old_mode = event.old_mode;
         let new_mode = event.new_mode;
-        info!(
+        debug!(
             old_mode = ?old_mode,
             new_mode = ?new_mode,
             "Mode switch event"
@@ -307,7 +307,7 @@ pub fn register_event_hooks() {
             _ => None,
         };
         if let Some(workspace) = show {
-            info!(
+            debug!(
                 workspace = workspace,
                 "DIAG: Diagnostics picker command observed"
             );
@@ -318,11 +318,11 @@ pub fn register_event_hooks() {
         if let MappableCommand::Static { name, .. } = event.command {
             match *name {
                 "file_picker" => {
-                    info!("DIAG: File picker command observed");
+                    debug!("DIAG: File picker command observed");
                     send_bridged_event(BridgedEvent::FilePickerRequested);
                 }
                 "buffer_picker" => {
-                    info!("DIAG: Buffer picker command observed");
+                    debug!("DIAG: Buffer picker command observed");
                     send_bridged_event(BridgedEvent::BufferPickerRequested);
                 }
                 _ => {}
