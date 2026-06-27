@@ -3,7 +3,10 @@
 
 use std::collections::BTreeMap;
 
-use gpui::{App, Font, Hsla, Pixels, SharedString, TextAlign, TextRun, Window, point};
+use gpui::{
+    App, Font, Hsla, PathBuilder, Pixels, Point, SharedString, TextAlign, TextRun, Window, point,
+    px,
+};
 use helix_core::{
     Diagnostic, RopeSlice,
     diagnostic::Severity,
@@ -23,6 +26,14 @@ pub struct InlineDiagnosticTextLine {
     pub text: SharedString,
     pub severity: Severity,
     pub color: Hsla,
+    pub text_col: usize,
+    pub connector: Option<InlineDiagnosticConnector>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InlineDiagnosticConnector {
+    pub anchor_col: usize,
+    pub prefix_len: u16,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -98,6 +109,7 @@ pub struct InlineDiagnosticPaintParams<'a> {
     pub line_cache: &'a LineLayoutCache,
     pub font: Font,
     pub font_size: Pixels,
+    pub cell_width: Pixels,
     pub viewport_width: Pixels,
     pub line_height: Pixels,
     pub text_origin_x: Pixels,
@@ -114,6 +126,17 @@ struct InlineDiagnosticTextPaintParams<'a> {
     font_size: Pixels,
     viewport_width: Pixels,
     line_height: Pixels,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct InlineDiagnosticConnectorPaintPlan {
+    start: Point<Pixels>,
+    corner_start: Point<Pixels>,
+    corner_control: Point<Pixels>,
+    corner_end: Point<Pixels>,
+    end: Point<Pixels>,
+    stroke_width: Pixels,
+    color: Hsla,
 }
 
 pub fn inline_diagnostic_frame_plan(
@@ -203,6 +226,8 @@ fn inline_diagnostic_frame_plan_from_config(
                     )),
                     severity: diagnostic_severity(diagnostic),
                     color: colors.color_for(diagnostic_severity(diagnostic)),
+                    text_col: 0,
+                    connector: None,
                 }
             });
 
@@ -262,6 +287,21 @@ pub fn paint_inline_diagnostic_plan(
     }
 
     for (index, row) in params.line_plan.rows.iter().enumerate() {
+        let row_y = params.source_line_y + params.line_height * (index + 1) as f32;
+        if let Some(connector) = row.connector {
+            paint_inline_diagnostic_connector(
+                window,
+                inline_diagnostic_connector_paint_plan(
+                    params.text_origin_x,
+                    row_y,
+                    params.cell_width,
+                    params.line_height,
+                    connector,
+                    row.color,
+                ),
+            );
+        }
+
         paint_inline_diagnostic_text_line(
             window,
             cx,
@@ -269,8 +309,8 @@ pub fn paint_inline_diagnostic_plan(
                 line_cache: params.line_cache,
                 line: row,
                 font: params.font.clone(),
-                x: params.text_origin_x,
-                y: params.source_line_y + params.line_height * (index + 1) as f32,
+                x: params.text_origin_x + params.cell_width * row.text_col as f32,
+                y: row_y,
                 font_size: params.font_size,
                 viewport_width: params.viewport_width,
                 line_height: params.line_height,
@@ -313,6 +353,49 @@ fn paint_inline_diagnostic_text_line(
         window,
         cx,
     );
+}
+
+fn paint_inline_diagnostic_connector(
+    window: &mut Window,
+    plan: InlineDiagnosticConnectorPaintPlan,
+) {
+    let mut builder = PathBuilder::stroke(plan.stroke_width);
+    builder.move_to(plan.start);
+    builder.line_to(plan.corner_start);
+    builder.curve_to(plan.corner_end, plan.corner_control);
+    builder.line_to(plan.end);
+
+    if let Ok(path) = builder.build() {
+        window.paint_path(path, plan.color);
+    }
+}
+
+fn inline_diagnostic_connector_paint_plan(
+    text_origin_x: Pixels,
+    row_y: Pixels,
+    cell_width: Pixels,
+    line_height: Pixels,
+    connector: InlineDiagnosticConnector,
+    color: Hsla,
+) -> InlineDiagnosticConnectorPaintPlan {
+    let stroke_width = (line_height * 0.075).max(px(1.0)).min(px(2.0));
+    let anchor_x = text_origin_x + cell_width * connector.anchor_col as f32 + cell_width * 0.5;
+    let elbow_y = row_y + line_height * 0.54;
+    let horizontal_end_x = text_origin_x
+        + cell_width * (connector.anchor_col + usize::from(connector.prefix_len) + 1) as f32;
+    let radius = (cell_width * 0.45)
+        .min((elbow_y - row_y) * 0.6)
+        .max(px(2.0));
+
+    InlineDiagnosticConnectorPaintPlan {
+        start: point(anchor_x, row_y),
+        corner_start: point(anchor_x, elbow_y - radius),
+        corner_control: point(anchor_x, elbow_y),
+        corner_end: point(anchor_x + radius, elbow_y),
+        end: point(horizontal_end_x, elbow_y),
+        stroke_width,
+        color,
+    }
 }
 
 fn filtered_inline_diagnostics<'a>(
@@ -364,10 +447,13 @@ fn inline_diagnostic_rows(
     let severity = diagnostic_severity(diagnostic);
     let color = colors.color_for(severity);
     let anchor_col = anchor_col.min(config.max_diagnostic_start(viewport_columns) as usize);
-    let prefix = diagnostic_prefix(anchor_col, config.prefix_len);
-    let continuation_prefix = " ".repeat(prefix.chars().count());
+    let connector = InlineDiagnosticConnector {
+        anchor_col,
+        prefix_len: config.prefix_len,
+    };
+    let text_col = diagnostic_text_col(anchor_col, config.prefix_len);
     let text_width = usize::from(viewport_columns)
-        .saturating_sub(prefix.chars().count())
+        .saturating_sub(text_col)
         .max(1);
     let mut rows = Vec::new();
 
@@ -376,37 +462,31 @@ fn inline_diagnostic_rows(
             .into_iter()
             .enumerate()
         {
-            let prefix = if message_index == 0 && wrap_index == 0 {
-                prefix.as_str()
-            } else {
-                continuation_prefix.as_str()
-            };
             rows.push(InlineDiagnosticTextLine {
-                text: SharedString::from(format!("{prefix}{wrapped}")),
+                text: SharedString::from(wrapped),
                 severity,
                 color,
+                text_col,
+                connector: (message_index == 0 && wrap_index == 0).then_some(connector),
             });
         }
     }
 
     if rows.is_empty() {
         rows.push(InlineDiagnosticTextLine {
-            text: SharedString::from(prefix),
+            text: SharedString::default(),
             severity,
             color,
+            text_col,
+            connector: Some(connector),
         });
     }
 
     rows
 }
 
-fn diagnostic_prefix(anchor_col: usize, prefix_len: u16) -> String {
-    let mut prefix = String::new();
-    prefix.extend(std::iter::repeat_n(' ', anchor_col));
-    prefix.push('└');
-    prefix.extend(std::iter::repeat_n('─', usize::from(prefix_len)));
-    prefix.push(' ');
-    prefix
+fn diagnostic_text_col(anchor_col: usize, prefix_len: u16) -> usize {
+    anchor_col + usize::from(prefix_len) + 2
 }
 
 fn wrap_message_line(message: &str, width: usize) -> Vec<String> {
@@ -558,7 +638,7 @@ mod tests {
     }
 
     #[test]
-    fn inline_rows_respect_anchor_and_prefix() {
+    fn inline_rows_respect_anchor_and_prefix_geometry() {
         let diag = diagnostic(4, 5, Severity::Error, "missing value");
         let config = InlineDiagnosticsConfig {
             cursor_line: DiagnosticFilter::Enable(Severity::Warning),
@@ -577,8 +657,80 @@ mod tests {
 
         let rows = inline_diagnostic_rows(&diag, 4, 80, &config, colors);
 
-        assert_eq!(rows[0].text.as_ref(), "    └── missing value");
+        assert_eq!(rows[0].text.as_ref(), "missing value");
+        assert_eq!(rows[0].text_col, 8);
+        assert_eq!(
+            rows[0].connector,
+            Some(InlineDiagnosticConnector {
+                anchor_col: 4,
+                prefix_len: 2,
+            })
+        );
         assert_eq!(rows[0].severity, Severity::Error);
+    }
+
+    #[test]
+    fn wrapped_inline_rows_align_without_repeating_connector() {
+        let diag = diagnostic(4, 5, Severity::Error, "alpha beta gamma");
+        let config = InlineDiagnosticsConfig {
+            cursor_line: DiagnosticFilter::Enable(Severity::Warning),
+            other_lines: DiagnosticFilter::Disable,
+            min_diagnostic_width: 10,
+            prefix_len: 1,
+            max_wrap: 20,
+            max_diagnostics: 10,
+        };
+        let colors = InlineDiagnosticColors {
+            hint: rgb(0x111111).into(),
+            info: rgb(0x222222).into(),
+            warning: rgb(0x333333).into(),
+            error: rgb(0x444444).into(),
+        };
+
+        let rows = inline_diagnostic_rows(&diag, 4, 17, &config, colors);
+
+        assert_eq!(rows[0].text.as_ref(), "alpha beta");
+        assert!(rows[0].connector.is_some());
+        assert_eq!(rows[1].text.as_ref(), "gamma");
+        assert_eq!(rows[1].text_col, rows[0].text_col);
+        assert_eq!(rows[1].connector, None);
+    }
+
+    #[test]
+    fn connector_paint_plan_uses_grid_columns() {
+        let color = rgb(0x444444).into();
+        let plan = inline_diagnostic_connector_paint_plan(
+            px(100.0),
+            px(50.0),
+            px(8.0),
+            px(20.0),
+            InlineDiagnosticConnector {
+                anchor_col: 4,
+                prefix_len: 2,
+            },
+            color,
+        );
+
+        assert_point_close(plan.start, point(px(136.0), px(50.0)));
+        assert_point_close(plan.corner_start, point(px(136.0), px(57.2)));
+        assert_point_close(plan.corner_control, point(px(136.0), px(60.8)));
+        assert_point_close(plan.corner_end, point(px(139.6), px(60.8)));
+        assert_point_close(plan.end, point(px(156.0), px(60.8)));
+        assert_pixels_close(plan.stroke_width, px(1.5));
+        assert_eq!(plan.color, color);
+    }
+
+    fn assert_point_close(actual: Point<Pixels>, expected: Point<Pixels>) {
+        assert_pixels_close(actual.x, expected.x);
+        assert_pixels_close(actual.y, expected.y);
+    }
+
+    fn assert_pixels_close(actual: Pixels, expected: Pixels) {
+        let delta = (f32::from(actual) - f32::from(expected)).abs();
+        assert!(
+            delta < 0.001,
+            "expected {actual:?} to be within 0.001px of {expected:?}"
+        );
     }
 
     #[test]

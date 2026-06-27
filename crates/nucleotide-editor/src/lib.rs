@@ -93,9 +93,9 @@ pub use highlight::{
 };
 pub use hit_test::{EditorHitTestResult, hit_test_document_position};
 pub use inline_diagnostics::{
-    InlineDiagnosticColors, InlineDiagnosticFramePlan, InlineDiagnosticFramePlanParams,
-    InlineDiagnosticLinePlan, InlineDiagnosticPaintParams, InlineDiagnosticTextLine,
-    inline_diagnostic_frame_plan, paint_inline_diagnostic_plan,
+    InlineDiagnosticColors, InlineDiagnosticConnector, InlineDiagnosticFramePlan,
+    InlineDiagnosticFramePlanParams, InlineDiagnosticLinePlan, InlineDiagnosticPaintParams,
+    InlineDiagnosticTextLine, inline_diagnostic_frame_plan, paint_inline_diagnostic_plan,
 };
 pub use line_cache::{LineLayout, LineLayoutCache};
 pub use line_painter::{
