@@ -60,6 +60,10 @@ impl EventAggregator {
             std::mem::take(&mut *queue)
         };
 
+        if events.is_empty() {
+            return;
+        }
+
         let mut handlers = self.handlers.lock().unwrap();
 
         for event in events {
@@ -92,6 +96,11 @@ impl EventAggregator {
     /// Get the number of queued events
     pub fn queued_count(&self) -> usize {
         self.event_queue.lock().unwrap().len()
+    }
+
+    /// Check whether there are events waiting to be processed
+    pub fn has_queued_events(&self) -> bool {
+        !self.event_queue.lock().unwrap().is_empty()
     }
 }
 
@@ -169,6 +178,11 @@ impl EventAggregatorHandle {
     /// Process all queued events
     pub fn process_events(&self) {
         self.inner.process_events();
+    }
+
+    /// Check whether there are events waiting to be processed
+    pub fn has_queued_events(&self) -> bool {
+        self.inner.has_queued_events()
     }
 
     /// Get the event bus interface
