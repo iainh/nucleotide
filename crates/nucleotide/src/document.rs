@@ -95,6 +95,7 @@ pub struct DocumentView {
     markdown_modes: BTreeMap<DocumentId, MarkdownDisplayMode>,
     markdown_scroll_handle: gpui::ScrollHandle,
     markdown_scrollbar_state: ScrollbarState,
+    markdown_snapshot_cache: Option<MarkdownSnapshotCache>,
     runnable_tasks_cache: Option<RunnableTasksCache>,
 }
 
@@ -124,6 +125,7 @@ impl DocumentView {
             markdown_modes: BTreeMap::new(),
             markdown_scroll_handle,
             markdown_scrollbar_state,
+            markdown_snapshot_cache: None,
             runnable_tasks_cache: None,
         }
     }
@@ -207,11 +209,52 @@ impl DocumentView {
 
         if mode == MarkdownDisplayMode::default() {
             self.markdown_modes.remove(&doc_id);
+            self.markdown_snapshot_cache = None;
         } else {
             self.markdown_modes.insert(doc_id, mode);
         }
 
         true
+    }
+
+    fn markdown_document_snapshot(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Option<MarkdownDocumentSnapshot> {
+        let (doc_id, version, source) = {
+            let core = self.core.read(cx);
+            let view = core.editor.tree.try_get(self.view_id)?;
+            let doc = core.editor.documents.get(&view.doc)?;
+            if !doc
+                .path()
+                .is_some_and(|path| is_markdown_document_path(path))
+            {
+                self.markdown_snapshot_cache = None;
+                return None;
+            }
+
+            if let Some(cache) = self.markdown_snapshot_cache.as_ref()
+                && cache.doc_id == view.doc
+                && cache.version == doc.version()
+            {
+                return Some(cache.snapshot.clone());
+            }
+
+            (
+                view.doc,
+                doc.version(),
+                SharedString::from(String::from(doc.text().slice(..))),
+            )
+        };
+
+        let snapshot = MarkdownDocumentSnapshot { doc_id, source };
+        self.markdown_snapshot_cache = Some(MarkdownSnapshotCache {
+            doc_id,
+            version,
+            snapshot: snapshot.clone(),
+        });
+
+        Some(snapshot)
     }
 
     fn runnable_tasks_by_line(&mut self, cx: &mut Context<Self>) -> BTreeMap<usize, ResolvedTask> {
@@ -416,7 +459,7 @@ impl Render for DocumentView {
         };
 
         let rendered_markdown = if show_rendered_markdown {
-            markdown_document_snapshot(&self.core, self.view_id, cx)
+            self.markdown_document_snapshot(cx)
         } else {
             None
         };
@@ -450,9 +493,17 @@ enum MarkdownDisplayMode {
     Rendered,
 }
 
+#[derive(Clone)]
 struct MarkdownDocumentSnapshot {
     doc_id: DocumentId,
     source: SharedString,
+}
+
+#[derive(Clone)]
+struct MarkdownSnapshotCache {
+    doc_id: DocumentId,
+    version: i32,
+    snapshot: MarkdownDocumentSnapshot,
 }
 
 struct MarkdownDocumentInfo {
@@ -475,27 +526,6 @@ fn markdown_document_info(
     }
 
     Some(MarkdownDocumentInfo { doc_id: view.doc })
-}
-
-fn markdown_document_snapshot(
-    core: &Entity<Core>,
-    view_id: ViewId,
-    cx: &mut Context<DocumentView>,
-) -> Option<MarkdownDocumentSnapshot> {
-    let core = core.read(cx);
-    let view = core.editor.tree.try_get(view_id)?;
-    let doc = core.editor.documents.get(&view.doc)?;
-    if !doc
-        .path()
-        .is_some_and(|path| is_markdown_document_path(path))
-    {
-        return None;
-    }
-
-    Some(MarkdownDocumentSnapshot {
-        doc_id: view.doc,
-        source: SharedString::from(String::from(doc.text().slice(..))),
-    })
 }
 
 fn is_markdown_document_path(path: &Path) -> bool {
