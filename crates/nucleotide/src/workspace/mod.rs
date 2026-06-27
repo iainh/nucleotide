@@ -82,6 +82,9 @@ type TabContextMenuHandler = fn(&mut Workspace, DocumentId, &mut Context<Workspa
 type TabBarSplitMenuHandler = fn(&mut Workspace, &mut Context<Workspace>);
 type TabBarNewMenuHandler = fn(&mut Workspace, &mut Context<Workspace>);
 
+const STATUSBAR_NOTIFICATION_MESSAGE_MAX_CHARS: usize = 64;
+const STATUSBAR_LSP_INDICATOR_MAX_CHARS: usize = 56;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum EnvironmentBadge {
     Loading,
@@ -123,6 +126,56 @@ fn titlebar_filename(filename: Option<&str>) -> String {
         .filter(|name| !name.is_empty())
         .unwrap_or("Nucleotide")
         .to_string()
+}
+
+fn shorten_statusbar_text(text: &str, max_chars: usize) -> String {
+    debug_assert!(max_chars >= 2);
+
+    let mut normalized = String::new();
+    let mut saw_whitespace = false;
+
+    for ch in text.trim().chars() {
+        if ch.is_whitespace() {
+            if !saw_whitespace && !normalized.is_empty() {
+                normalized.push(' ');
+            }
+            saw_whitespace = true;
+        } else {
+            normalized.push(ch);
+            saw_whitespace = false;
+        }
+    }
+
+    if normalized.chars().count() <= max_chars {
+        return normalized;
+    }
+
+    let mut shortened: String = normalized.chars().take(max_chars - 1).collect();
+    shortened.push('…');
+    shortened
+}
+
+fn statusbar_lsp_indicator_for_state(
+    state: &mut nucleotide_lsp::LspState,
+    preferred_server_id: Option<helix_lsp::LanguageServerId>,
+) -> Option<String> {
+    if !state.progress.is_empty() {
+        return state.get_lsp_indicator();
+    }
+
+    if let Some(pref_id) = preferred_server_id
+        && let Some(server) = state.servers.get(&pref_id).cloned()
+    {
+        let indicator = match server.status {
+            ServerStatus::Starting | ServerStatus::Initializing => {
+                state.get_spinner_frame().to_string()
+            }
+            _ => "◉".to_string(),
+        };
+        return Some(format!("{} {}", indicator, server.name));
+    }
+
+    state.get_lsp_indicator()
 }
 
 fn should_render_app_titlebar(
@@ -2545,7 +2598,7 @@ impl Workspace {
         )
     }
 
-    /// Build the LSP indicator string for the preferred server if available.
+    /// Build the LSP indicator string, preferring active progress over the focused document server.
     fn compute_statusbar_lsp_indicator(
         &self,
         cx: &mut Context<Self>,
@@ -2562,47 +2615,14 @@ impl Workspace {
         }?;
 
         lsp_state_entity.update(cx, |state, _| {
-            if let Some(pref_id) = preferred_server_id
-                && let Some(server) = state.servers.get(&pref_id).cloned()
-            {
-                // Prefer progress for this server if any
-                if let Some(p) = state
-                    .progress
-                    .values()
-                    .find(|p| p.server_id == pref_id)
-                    .cloned()
-                {
-                    let indicator = state.get_spinner_frame().to_string();
-                    let mut s = format!("{} {}: ", indicator, server.name);
-                    if let Some(pct) = p.percentage {
-                        s.push_str(&format!("{:>2}% ", pct));
-                    }
-                    s.push_str(&p.title);
-                    if let Some(msg) = &p.message {
-                        s.push_str(" ⋅ ");
-                        s.push_str(msg);
-                    }
-                    return Some(s);
-                }
-
-                // Otherwise show basic server indicator based on status
-                let indicator = match server.status {
-                    ServerStatus::Starting | ServerStatus::Initializing => {
-                        state.get_spinner_frame().to_string()
-                    }
-                    _ => "◉".to_string(),
-                };
-                return Some(format!("{} {}", indicator, server.name));
-            }
-
-            // Fallback to default indicator
-            state.get_lsp_indicator()
+            statusbar_lsp_indicator_for_state(state, preferred_server_id)
         })
     }
 
     /// Standard divider element for the status bar.
     fn statusbar_divider(&self, color: gpui::Hsla) -> gpui::AnyElement {
         gpui::div()
+            .flex_none()
             .w(gpui::px(1.0))
             .h(gpui::px(18.0))
             .bg(color)
@@ -2661,11 +2681,13 @@ impl Workspace {
         let mut row = gpui::div()
             .flex()
             .flex_1()
+            .min_w_0()
             .flex_row()
             .items_center()
             .child(
                 // Mode indicator
                 gpui::div()
+                    .flex_none()
                     .child(mode_name)
                     .min_w(gpui::px(50.0))
                     .text_color(mode_color),
@@ -2676,7 +2698,12 @@ impl Workspace {
                 self.statusbar_message_slot(file_name, notification, status_bar_tokens, cx),
             )
             .child(self.statusbar_divider(divider_color))
-            .child(gpui::div().child(position_text).min_w(gpui::px(80.0)));
+            .child(
+                gpui::div()
+                    .flex_none()
+                    .child(position_text)
+                    .min_w(gpui::px(80.0)),
+            );
 
         if let Some(environment_badge) = self.statusbar_environment_badge(status_bar_tokens) {
             row = row
@@ -2685,8 +2712,10 @@ impl Workspace {
         }
 
         if let Some(indicator) = lsp_indicator {
+            let shortened_indicator =
+                shorten_statusbar_text(&indicator, STATUSBAR_LSP_INDICATOR_MAX_CHARS);
             row = row.child(self.statusbar_divider(divider_color)).child(
-                Button::new("lsp-status-trigger", indicator)
+                Button::new("lsp-status-trigger", shortened_indicator)
                     .variant(ButtonVariant::Ghost)
                     .size(ButtonSize::ExtraSmall)
                     .tooltip("Show LSP Status")
@@ -2717,6 +2746,7 @@ impl Workspace {
         let Some(notification) = notification else {
             return gpui::div()
                 .flex_1()
+                .min_w_0()
                 .overflow_hidden()
                 .whitespace_nowrap()
                 .text_ellipsis()
@@ -2731,10 +2761,15 @@ impl Workspace {
             StatusBarNotificationSeverity::Warning => notification_tokens.warning_text,
             StatusBarNotificationSeverity::Error => notification_tokens.error_text,
         };
+        let message = shorten_statusbar_text(
+            &notification.message,
+            STATUSBAR_NOTIFICATION_MESSAGE_MAX_CHARS,
+        );
 
         gpui::div()
             .flex()
             .flex_1()
+            .min_w_0()
             .items_center()
             .gap_2()
             .overflow_hidden()
@@ -2748,11 +2783,12 @@ impl Workspace {
             .child(
                 gpui::div()
                     .flex_1()
+                    .min_w_0()
                     .overflow_hidden()
                     .whitespace_nowrap()
                     .text_ellipsis()
                     .text_color(status_bar_tokens.text_primary)
-                    .child(notification.message),
+                    .child(message),
             )
             .into_any_element()
     }
@@ -14803,6 +14839,68 @@ mod tests {
         assert_eq!(titlebar_filename(Some("main.rs")), "main.rs");
         assert_eq!(titlebar_filename(Some("")), "Nucleotide");
         assert_eq!(titlebar_filename(None), "Nucleotide");
+    }
+
+    #[test]
+    fn statusbar_text_shortening_collapses_whitespace() {
+        assert_eq!(
+            shorten_statusbar_text("  indexing\nworkspace\tfiles  ", 64),
+            "indexing workspace files"
+        );
+    }
+
+    #[test]
+    fn statusbar_text_shortening_caps_display_width() {
+        assert_eq!(
+            shorten_statusbar_text("abcdefghijklmnopqrstuvwxyz", 10),
+            "abcdefghi…"
+        );
+    }
+
+    #[test]
+    fn statusbar_text_shortening_counts_characters() {
+        assert_eq!(shorten_statusbar_text("éééééé", 4), "ééé…");
+    }
+
+    #[test]
+    fn statusbar_lsp_indicator_prefers_working_server_over_focused_server() {
+        let focused_server_id: helix_lsp::LanguageServerId = KeyData::from_ffi(1).into();
+        let working_server_id: helix_lsp::LanguageServerId = KeyData::from_ffi(2).into();
+        let mut state = nucleotide_lsp::LspState::new();
+
+        state.register_server(focused_server_id, "rust-analyzer".to_string(), None);
+        state.register_server(working_server_id, "pyright".to_string(), None);
+        state.add_progress(nucleotide_lsp::LspProgress {
+            server_id: working_server_id,
+            token: "workspace-index".to_string(),
+            title: "indexing".to_string(),
+            message: Some("workspace".to_string()),
+            percentage: None,
+        });
+
+        let indicator = statusbar_lsp_indicator_for_state(&mut state, Some(focused_server_id))
+            .expect("lsp indicator");
+
+        assert!(indicator.contains("pyright"));
+        assert!(indicator.contains("indexing"));
+        assert!(!indicator.contains("rust-analyzer"));
+    }
+
+    #[test]
+    fn statusbar_lsp_indicator_uses_focused_server_when_idle() {
+        let focused_server_id: helix_lsp::LanguageServerId = KeyData::from_ffi(3).into();
+        let other_server_id: helix_lsp::LanguageServerId = KeyData::from_ffi(4).into();
+        let mut state = nucleotide_lsp::LspState::new();
+
+        state.register_server(focused_server_id, "rust-analyzer".to_string(), None);
+        state.update_server_status(focused_server_id, nucleotide_lsp::ServerStatus::Running);
+        state.register_server(other_server_id, "pyright".to_string(), None);
+        state.update_server_status(other_server_id, nucleotide_lsp::ServerStatus::Running);
+
+        let indicator = statusbar_lsp_indicator_for_state(&mut state, Some(focused_server_id))
+            .expect("lsp indicator");
+
+        assert_eq!(indicator, "◉ rust-analyzer");
     }
 
     #[test]

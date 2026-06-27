@@ -1387,83 +1387,18 @@ impl Application {
                             "Processing LSP progress message"
                         );
 
-                        let (title, message, percentage) = match &work {
-                            lsp::WorkDoneProgress::Begin(lsp::WorkDoneProgressBegin {
-                                title,
-                                message,
-                                percentage,
-                                ..
-                            }) => (Some(title), message, percentage),
-                            lsp::WorkDoneProgress::Report(lsp::WorkDoneProgressReport {
-                                message,
-                                percentage,
-                                ..
-                            }) => (None, message, percentage),
-                            lsp::WorkDoneProgress::End(lsp::WorkDoneProgressEnd { message }) => {
-                                if message.is_some() {
-                                    (None, message, &None)
-                                } else {
-                                    // End progress without message - clear status
-                                    debug!(
-                                        server_id = ?server_id,
-                                        server_name = %server_name,
-                                        token = ?token,
-                                        "Processing progress END message (first path)"
-                                    );
-                                    self.lsp_progress.end_progress(server_id, &token);
-                                    let still_progressing =
-                                        self.lsp_progress.is_progressing(server_id);
-                                    debug!(
-                                        server_id = ?server_id,
-                                        still_progressing = still_progressing,
-                                        "Checked if server is still progressing after ending token"
-                                    );
-                                    if !still_progressing {
-                                        info!(
-                                            server_id = ?server_id,
-                                            server_name = %server_name,
-                                            "Progress completed - clearing status"
-                                        );
-                                        self.editor.clear_status();
-                                    } else {
-                                        debug!(
-                                            server_id = ?server_id,
-                                            server_name = %server_name,
-                                            "Still have active progress - NOT clearing status"
-                                        );
-                                    }
-                                    return;
-                                }
-                            }
-                        };
-
-                        // Set status message like Helix does
-                        if self.editor.config().lsp.display_progress_messages {
-                            let title =
-                                title.or_else(|| self.lsp_progress.title(server_id, &token));
-                            if title.is_some() || percentage.is_some() || message.is_some() {
-                                use std::fmt::Write as _;
-                                let mut status = format!("{}: ", server_name);
-                                if let Some(percentage) = percentage {
-                                    write!(status, "{percentage:>2}% ").unwrap();
-                                }
-                                if let Some(title) = title {
-                                    status.push_str(title);
-                                }
-                                if title.is_some() && message.is_some() {
-                                    status.push_str(" ⋅ ");
-                                }
-                                if let Some(message) = message {
-                                    status.push_str(message);
-                                }
-                                debug!(
-                                    server_id = ?server_id,
-                                    server_name = %server_name,
-                                    status = %status,
-                                    "Setting LSP progress status"
-                                );
-                                self.editor.set_status(status);
-                            }
+                        if let lsp::WorkDoneProgress::End(lsp::WorkDoneProgressEnd {
+                            message: None,
+                        }) = &work
+                        {
+                            debug!(
+                                server_id = ?server_id,
+                                server_name = %server_name,
+                                token = ?token,
+                                "Processing progress END message"
+                            );
+                            self.lsp_progress.end_progress(server_id, &token);
+                            return;
                         }
 
                         // Update progress tracking
@@ -1496,15 +1431,6 @@ impl Application {
                                     token = ?token,
                                     "Ended progress tracking"
                                 );
-                                // Clear status if no more progress operations are active
-                                if !self.lsp_progress.is_progressing(server_id) {
-                                    info!(
-                                        server_id = ?server_id,
-                                        server_name = %server_name,
-                                        "All progress completed - clearing status"
-                                    );
-                                    self.editor.clear_status();
-                                }
                             }
                         }
                     }
