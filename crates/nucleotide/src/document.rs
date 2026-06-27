@@ -755,6 +755,8 @@ fn paint_document_content(
 
     let helix_theme = cx.global::<crate::ThemeManager>().helix_theme().clone();
     core.update(cx, |core, cx| {
+        core.schedule_inlay_hints_for_visible_views();
+
         let tokens = cx.theme().tokens;
         let ui_tokens = cx.ui_theme().tokens;
         let theme_styles = NativeEditorFrameThemeStyles::from_style_fn(|key| cx.theme_style(key));

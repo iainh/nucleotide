@@ -11,6 +11,7 @@ use helix_core::{
     RopeSlice,
     doc_formatter::TextFormat,
     graphemes::{next_grapheme_boundary, tab_width_at},
+    text_annotations::TextAnnotations,
 };
 use helix_view::{
     Document, Theme, ViewId,
@@ -396,9 +397,11 @@ pub struct SoftWrapCursorPaintPlan {
     pub paint_position: CursorPaintPosition,
 }
 
-pub struct SoftWrapCursorPaintPlanParams<'a> {
+pub struct SoftWrapCursorPaintPlanParams<'a, 'b> {
     pub text: RopeSlice<'a>,
-    pub text_format: &'a TextFormat,
+    pub text_format: &'b TextFormat,
+    pub text_annotations: Option<&'b TextAnnotations<'a>>,
+    pub precomputed_visual_position: Option<SoftWrapVisualPosition>,
     pub anchor: usize,
     pub cursor_char_idx: usize,
     pub geometry: EditorSurfaceGeometry,
@@ -658,14 +661,17 @@ pub fn soft_wrap_cursor_paint_position(
 }
 
 pub fn soft_wrap_cursor_paint_plan(
-    params: SoftWrapCursorPaintPlanParams<'_>,
+    params: SoftWrapCursorPaintPlanParams<'_, '_>,
 ) -> Option<SoftWrapCursorPaintPlan> {
-    let visual_position = soft_wrap_visual_position(
-        params.text,
-        params.text_format,
-        params.anchor,
-        params.cursor_char_idx,
-    )?;
+    let visual_position = params.precomputed_visual_position.or_else(|| {
+        soft_wrap_visual_position(
+            params.text,
+            params.text_format,
+            params.text_annotations,
+            params.anchor,
+            params.cursor_char_idx,
+        )
+    })?;
     let paint_position = soft_wrap_cursor_paint_position(SoftWrapCursorPaintPositionParams {
         geometry: params.geometry,
         line_height: params.line_height,
@@ -744,7 +750,12 @@ mod tests {
 
     use arc_swap::{ArcSwap, access::Map};
     use gpui::{black, hsla, point, px, size};
-    use helix_core::{Selection, Transaction, doc_formatter::TextFormat, syntax};
+    use helix_core::{
+        Selection, Transaction,
+        doc_formatter::TextFormat,
+        syntax,
+        text_annotations::{InlineAnnotation, TextAnnotations},
+    };
     use helix_view::{
         DocumentId, Editor,
         editor::{Action, Config},
@@ -1110,6 +1121,8 @@ mod tests {
         let plan = soft_wrap_cursor_paint_plan(SoftWrapCursorPaintPlanParams {
             text: text.as_str().into(),
             text_format: &text_format,
+            text_annotations: None,
+            precomputed_visual_position: None,
             anchor: 0,
             cursor_char_idx: 16,
             geometry,
@@ -1134,6 +1147,46 @@ mod tests {
     }
 
     #[test]
+    fn soft_wrap_cursor_paint_plan_counts_inline_annotations_before_cursor() {
+        let geometry = EditorSurfaceGeometry::new(
+            Bounds::new(point(px(100.0), px(40.0)), size(px(500.0), px(300.0))),
+            4,
+            px(8.0),
+        );
+        let text = "ab";
+        let text_format = soft_wrap_text_format();
+        let annotations = [InlineAnnotation::new(1, ": hint")];
+        let mut text_annotations = TextAnnotations::default();
+        text_annotations.add_inline_annotations(&annotations, None);
+
+        let plan = soft_wrap_cursor_paint_plan(SoftWrapCursorPaintPlanParams {
+            text: text.into(),
+            text_format: &text_format,
+            text_annotations: Some(&text_annotations),
+            precomputed_visual_position: None,
+            anchor: 0,
+            cursor_char_idx: 2,
+            geometry,
+            line_height: px(20.0),
+            cell_width: px(8.0),
+            scroll_line_offset: px(0.0),
+            vertical_offset: 0,
+            viewport_height: 4,
+            horizontal_offset: 0,
+        })
+        .expect("visible cursor plan");
+
+        assert_eq!(
+            plan.visual_position,
+            SoftWrapVisualPosition {
+                visual_line: 0,
+                visual_col: "a: hintb".len(),
+            }
+        );
+        assert_eq!(plan.paint_position.paint_origin, point(px(196.0), px(41.0)));
+    }
+
+    #[test]
     fn soft_wrap_cursor_paint_plan_rejects_cursor_outside_viewport() {
         let geometry = EditorSurfaceGeometry::new(
             Bounds::new(point(px(100.0), px(40.0)), size(px(500.0), px(300.0))),
@@ -1147,6 +1200,8 @@ mod tests {
             soft_wrap_cursor_paint_plan(SoftWrapCursorPaintPlanParams {
                 text: text.as_str().into(),
                 text_format: &text_format,
+                text_annotations: None,
+                precomputed_visual_position: None,
                 anchor: 0,
                 cursor_char_idx: 16,
                 geometry,
@@ -1175,6 +1230,8 @@ mod tests {
             soft_wrap_cursor_paint_plan(SoftWrapCursorPaintPlanParams {
                 text: text.as_str().into(),
                 text_format: &text_format,
+                text_annotations: None,
+                precomputed_visual_position: None,
                 anchor: 16,
                 cursor_char_idx: 0,
                 geometry,
