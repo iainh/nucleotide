@@ -1,7 +1,7 @@
 // ABOUTME: Native GPUI gutter rendering for editor document views
 // ABOUTME: Converts Helix gutter decorations into shaped GPUI lines
 
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use gpui::{
     App, Bounds, Hsla, Pixels, Point, Result, ShapedLine, TextAlign, TextStyle, Window,
@@ -10,7 +10,7 @@ use gpui::{
 use helix_view::{Document, Editor, Theme, View, editor::GutterType, graphics::Style};
 
 use crate::{
-    EditorLayout, SoftWrapVisualLine,
+    EditorLayout, SoftWrapVisualLine, VisibleLinePlan,
     style::{create_styled_text_run, helix_color_to_hsla},
 };
 
@@ -80,8 +80,7 @@ pub struct UnwrappedGutterLinePlanParams<'a> {
     pub bounds: Bounds<Pixels>,
     pub scroll_line_offset: Pixels,
     pub horizontal_offset: usize,
-    pub first_row: usize,
-    pub last_row: usize,
+    pub visible_lines: &'a [VisibleLinePlan],
     pub editor: &'a Editor,
     pub document: &'a Document,
     pub view: &'a View,
@@ -94,6 +93,7 @@ pub struct SoftWrapGutterLinePlanParams<'a> {
     pub bounds: Bounds<Pixels>,
     pub scroll_line_offset: Pixels,
     pub visual_lines: &'a [SoftWrapVisualLine],
+    pub inline_diagnostic_virtual_rows: &'a BTreeMap<usize, usize>,
     pub vertical_offset: usize,
     pub editor: &'a Editor,
     pub document: &'a Document,
@@ -162,7 +162,11 @@ pub fn build_unwrapped_gutter_line_plans(
         params.layout.cell_width,
         params.horizontal_offset,
     );
-    let positions = unwrapped_gutter_line_positions(params.first_row, params.last_row);
+    let positions = unwrapped_gutter_line_positions_from_plans(
+        params.visible_lines,
+        params.layout.line_height,
+        params.scroll_line_offset,
+    );
 
     build_gutter_line_plans(GutterLinePlanParams {
         layout: params.layout,
@@ -185,7 +189,11 @@ pub fn build_soft_wrap_gutter_line_plans(
         params.layout.cell_width,
         0,
     );
-    let positions = soft_wrap_gutter_line_positions(params.visual_lines, params.vertical_offset);
+    let positions = soft_wrap_gutter_line_positions_with_virtual_rows(
+        params.visual_lines,
+        params.vertical_offset,
+        params.inline_diagnostic_virtual_rows,
+    );
 
     build_gutter_line_plans(GutterLinePlanParams {
         layout: params.layout,
@@ -523,31 +531,99 @@ pub fn unwrapped_gutter_line_positions(
         .collect()
 }
 
-pub fn soft_wrap_gutter_line_positions(
-    visual_lines: &[SoftWrapVisualLine],
-    vertical_offset: usize,
+pub fn unwrapped_gutter_line_positions_from_plans(
+    visible_lines: &[VisibleLinePlan],
+    line_height: Pixels,
+    scroll_line_offset: Pixels,
 ) -> Vec<GutterLinePosition> {
-    visual_lines
+    visible_lines
         .iter()
-        .map(|visual| GutterLinePosition {
-            first_visual_line: visual.segment_char_offset == 0,
-            doc_line: visual.doc_line,
-            visual_line: u16::try_from(visual.relative_row(vertical_offset)).unwrap_or(u16::MAX),
+        .map(|line| GutterLinePosition {
+            first_visual_line: true,
+            doc_line: line.line_idx,
+            visual_line: visual_row_for_y_offset(line.y_offset, line_height, scroll_line_offset),
         })
         .collect()
 }
 
+pub fn soft_wrap_gutter_line_positions(
+    visual_lines: &[SoftWrapVisualLine],
+    vertical_offset: usize,
+) -> Vec<GutterLinePosition> {
+    soft_wrap_gutter_line_positions_with_virtual_rows(
+        visual_lines,
+        vertical_offset,
+        &BTreeMap::new(),
+    )
+}
+
+pub fn soft_wrap_gutter_line_positions_with_virtual_rows(
+    visual_lines: &[SoftWrapVisualLine],
+    vertical_offset: usize,
+    inline_diagnostic_virtual_rows: &BTreeMap<usize, usize>,
+) -> Vec<GutterLinePosition> {
+    let mut extra_rows_before = 0usize;
+
+    visual_lines
+        .iter()
+        .enumerate()
+        .map(|(index, visual)| {
+            let position = GutterLinePosition {
+                first_visual_line: visual.segment_char_offset == 0,
+                doc_line: visual.doc_line,
+                visual_line: u16::try_from(
+                    visual.relative_row(vertical_offset) + extra_rows_before,
+                )
+                .unwrap_or(u16::MAX),
+            };
+
+            let is_last_visual_for_doc_line = visual_lines
+                .get(index + 1)
+                .is_none_or(|next| next.doc_line != visual.doc_line);
+            if is_last_visual_for_doc_line {
+                extra_rows_before += inline_diagnostic_virtual_rows
+                    .get(&visual.doc_line)
+                    .copied()
+                    .unwrap_or(0);
+            }
+
+            position
+        })
+        .collect()
+}
+
+fn visual_row_for_y_offset(
+    y_offset: Pixels,
+    line_height: Pixels,
+    scroll_line_offset: Pixels,
+) -> u16 {
+    if line_height <= px(0.0) {
+        return 0;
+    }
+
+    let row = ((y_offset + scroll_line_offset) / line_height)
+        .round()
+        .max(0.0);
+    u16::try_from(row as usize).unwrap_or(u16::MAX)
+}
+
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use gpui::{Bounds, point, px, size};
     use helix_view::graphics::{Color, Style};
 
     use super::{
         DIFF_DELTA_GUTTER_SCOPE, DIFF_PLUS_GUTTER_SCOPE, DiffGutterStyle, GutterLinePosition,
         diff_gutter_bar_bounds, diff_gutter_bar_color_from_style, empty_gutter_decoration,
-        gutter_origin, soft_wrap_gutter_line_positions, unwrapped_gutter_line_positions,
+        gutter_origin, soft_wrap_gutter_line_positions,
+        soft_wrap_gutter_line_positions_with_virtual_rows, unwrapped_gutter_line_positions,
+        unwrapped_gutter_line_positions_from_plans,
     };
-    use crate::{SoftWrapVisualLine, line_text::DisplayTextMap, style::helix_color_to_hsla};
+    use crate::{
+        SoftWrapVisualLine, VisibleLinePlan, line_text::DisplayTextMap, style::helix_color_to_hsla,
+    };
 
     #[test]
     fn gutter_positions_map_document_rows_to_visual_rows() {
@@ -578,6 +654,43 @@ mod tests {
     #[test]
     fn empty_ranges_produce_no_positions() {
         assert!(unwrapped_gutter_line_positions(4, 4).is_empty());
+    }
+
+    #[test]
+    fn unwrapped_positions_follow_shifted_render_rows() {
+        let visible_lines = vec![
+            VisibleLinePlan {
+                line_idx: 40,
+                line_start: 0,
+                line_end: 8,
+                y_offset: px(0.0),
+            },
+            VisibleLinePlan {
+                line_idx: 41,
+                line_start: 9,
+                line_end: 10,
+                y_offset: px(40.0),
+            },
+        ];
+
+        let positions =
+            unwrapped_gutter_line_positions_from_plans(&visible_lines, px(20.0), px(0.0));
+
+        assert_eq!(
+            positions,
+            vec![
+                GutterLinePosition {
+                    first_visual_line: true,
+                    doc_line: 40,
+                    visual_line: 0,
+                },
+                GutterLinePosition {
+                    first_visual_line: true,
+                    doc_line: 41,
+                    visual_line: 2,
+                },
+            ]
+        );
     }
 
     #[test]
@@ -700,6 +813,48 @@ mod tests {
                 doc_line: 3,
                 visual_line: 0,
             }]
+        );
+    }
+
+    #[test]
+    fn soft_wrap_positions_leave_diagnostic_rows_unnumbered() {
+        let visual_lines = vec![
+            visual_line(0, 40, 0),
+            visual_line(1, 41, 0),
+            visual_line(2, 41, 12),
+            visual_line(3, 42, 0),
+        ];
+        let mut virtual_rows = BTreeMap::new();
+        virtual_rows.insert(40, 1);
+        virtual_rows.insert(41, 2);
+
+        let positions =
+            soft_wrap_gutter_line_positions_with_virtual_rows(&visual_lines, 0, &virtual_rows);
+
+        assert_eq!(
+            positions,
+            vec![
+                GutterLinePosition {
+                    first_visual_line: true,
+                    doc_line: 40,
+                    visual_line: 0,
+                },
+                GutterLinePosition {
+                    first_visual_line: true,
+                    doc_line: 41,
+                    visual_line: 2,
+                },
+                GutterLinePosition {
+                    first_visual_line: false,
+                    doc_line: 41,
+                    visual_line: 3,
+                },
+                GutterLinePosition {
+                    first_visual_line: true,
+                    doc_line: 42,
+                    visual_line: 6,
+                },
+            ]
         );
     }
 }
