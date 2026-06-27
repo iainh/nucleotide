@@ -2689,6 +2689,8 @@ impl Workspace {
                 Button::new("lsp-status-trigger", indicator)
                     .variant(ButtonVariant::Ghost)
                     .size(ButtonSize::ExtraSmall)
+                    .tooltip("Show LSP Status")
+                    .activate_on_mouse_down()
                     .icon("icons/chevron-up.svg")
                     .icon_position(IconPosition::End)
                     .on_click(cx.listener(
