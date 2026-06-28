@@ -122,6 +122,7 @@ pub enum LspCompletionTrigger {
 
 pub struct PendingCompletionRequest {
     prefix: String,
+    retained_items: Vec<nucleotide_events::completion::CompletionItem>,
     local_items: Vec<nucleotide_events::completion::CompletionItem>,
     lsp_error: Option<anyhow::Error>,
     lsp_futures: FuturesOrdered<CompletionServerFuture>,
@@ -134,16 +135,21 @@ impl PendingCompletionRequest {
         Vec<nucleotide_events::completion::CompletionItem>,
         String,
         bool,
+        Vec<u64>,
     )> {
-        let mut items = Vec::new();
+        let mut items = self.retained_items;
         let mut lsp_error = self.lsp_error.take();
         let mut is_incomplete = false;
+        let mut incomplete_server_ids = Vec::new();
 
         while let Some(response) = futures_util::StreamExt::next(&mut self.lsp_futures).await {
             match response {
                 Ok((server_id, offset_encoding, Some(lsp_response))) => {
                     let server_is_incomplete = lsp_completion_response_is_incomplete(&lsp_response);
                     is_incomplete |= server_is_incomplete;
+                    if server_is_incomplete {
+                        incomplete_server_ids.push(server_id.data().as_ffi());
+                    }
                     let mut server_items = lsp_completion_items_from_response_for_server(
                         lsp_response,
                         offset_encoding,
@@ -178,6 +184,7 @@ impl PendingCompletionRequest {
         nucleotide_logging::debug!(
             lsp_item_count = items.len(),
             local_item_count = self.local_items.len(),
+            incomplete_server_count = incomplete_server_ids.len(),
             prefix = %self.prefix,
             is_incomplete = is_incomplete,
             "Merging LSP and local completion items"
@@ -191,7 +198,7 @@ impl PendingCompletionRequest {
             return Err(err);
         }
 
-        Ok((items, self.prefix, is_incomplete))
+        Ok((items, self.prefix, is_incomplete, incomplete_server_ids))
     }
 }
 
@@ -4415,11 +4422,32 @@ impl Application {
         view_id: helix_view::ViewId,
         trigger: LspCompletionTrigger,
     ) -> anyhow::Result<PendingCompletionRequest> {
+        self.prepare_lsp_completions_with_prefix_for_servers(
+            cursor,
+            doc_id,
+            view_id,
+            trigger,
+            None,
+            Vec::new(),
+        )
+    }
+
+    pub fn prepare_lsp_completions_with_prefix_for_servers(
+        &mut self,
+        cursor: usize,
+        doc_id: helix_view::DocumentId,
+        view_id: helix_view::ViewId,
+        trigger: LspCompletionTrigger,
+        server_filter: Option<Vec<u64>>,
+        retained_items: Vec<nucleotide_events::completion::CompletionItem>,
+    ) -> anyhow::Result<PendingCompletionRequest> {
         nucleotide_logging::info!(
             cursor = cursor,
             doc_id = ?doc_id,
             view_id = ?view_id,
             trigger = ?trigger,
+            filtered_server_count = server_filter.as_ref().map_or(0, Vec::len),
+            retained_item_count = retained_items.len(),
             "Preparing LSP completion request with prefix extraction"
         );
 
@@ -4433,9 +4461,13 @@ impl Application {
         );
 
         let local_items = self.collect_local_completion_items(cursor, doc_id, &prefix);
-        let (lsp_futures, lsp_error) = match self
-            .prepare_lsp_completion_futures(cursor, doc_id, view_id, trigger)
-        {
+        let (lsp_futures, lsp_error) = match self.prepare_lsp_completion_futures(
+            cursor,
+            doc_id,
+            view_id,
+            trigger,
+            server_filter.as_deref(),
+        ) {
             Ok(futures) => (futures, None),
             Err(err) => {
                 nucleotide_logging::warn!(
@@ -4448,6 +4480,7 @@ impl Application {
 
         Ok(PendingCompletionRequest {
             prefix,
+            retained_items,
             local_items,
             lsp_error,
             lsp_futures,
@@ -4462,12 +4495,14 @@ impl Application {
         doc_id: helix_view::DocumentId,
         view_id: helix_view::ViewId,
         trigger: LspCompletionTrigger,
+        server_filter: Option<&[u64]>,
     ) -> anyhow::Result<FuturesOrdered<CompletionServerFuture>> {
         nucleotide_logging::info!(
             cursor = cursor,
             doc_id = ?doc_id,
             view_id = ?view_id,
             trigger = ?trigger,
+            filtered_server_count = server_filter.map_or(0, |server_filter| server_filter.len()),
             "Preparing LSP completion futures for event-driven system"
         );
 
@@ -4500,6 +4535,11 @@ impl Application {
 
         let language_servers: Vec<_> = doc
             .language_servers_with_feature(syntax::config::LanguageServerFeature::Completion)
+            .filter(|language_server| {
+                server_filter.is_none_or(|server_filter| {
+                    server_filter.contains(&language_server.id().data().as_ffi())
+                })
+            })
             .collect();
         if language_servers.is_empty() {
             nucleotide_logging::warn!(
@@ -4666,7 +4706,7 @@ impl Application {
         doc_id: helix_view::DocumentId,
         view_id: helix_view::ViewId,
     ) -> anyhow::Result<(Vec<nucleotide_events::completion::CompletionItem>, String)> {
-        let (items, prefix, _) = self
+        let (items, prefix, _, _) = self
             .prepare_lsp_completions_with_prefix(
                 cursor,
                 doc_id,
@@ -8427,6 +8467,7 @@ mod tests {
 
         let request = PendingCompletionRequest {
             prefix: "pri".to_string(),
+            retained_items: vec![],
             local_items: vec![CompletionItem::new(
                 "private".to_string(),
                 CompletionItemKind::Text,
@@ -8435,10 +8476,12 @@ mod tests {
             lsp_futures,
         };
 
-        let (items, prefix, is_incomplete) = request.collect().await.expect("completion results");
+        let (items, prefix, is_incomplete, incomplete_server_ids) =
+            request.collect().await.expect("completion results");
 
         assert_eq!(prefix, "pri");
         assert!(!is_incomplete);
+        assert!(incomplete_server_ids.is_empty());
         let labels: Vec<_> = items.iter().map(|item| item.label.as_str()).collect();
         assert_eq!(labels, vec!["println", "private"]);
     }
@@ -8447,6 +8490,7 @@ mod tests {
     async fn pending_completion_request_keeps_local_items_when_lsp_fails() {
         let request = PendingCompletionRequest {
             prefix: "src".to_string(),
+            retained_items: vec![],
             local_items: vec![CompletionItem::new(
                 "src/lib.rs".to_string(),
                 CompletionItemKind::File,
@@ -8455,10 +8499,12 @@ mod tests {
             lsp_futures: FuturesOrdered::new(),
         };
 
-        let (items, prefix, is_incomplete) = request.collect().await.expect("local fallback");
+        let (items, prefix, is_incomplete, incomplete_server_ids) =
+            request.collect().await.expect("local fallback");
 
         assert_eq!(prefix, "src");
         assert!(!is_incomplete);
+        assert!(incomplete_server_ids.is_empty());
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].label, "src/lib.rs");
     }
@@ -8486,15 +8532,21 @@ mod tests {
 
         let request = PendingCompletionRequest {
             prefix: "pri".to_string(),
+            retained_items: vec![],
             local_items: vec![],
             lsp_error: None,
             lsp_futures,
         };
 
-        let (items, prefix, is_incomplete) = request.collect().await.expect("completion results");
+        let (items, prefix, is_incomplete, incomplete_server_ids) =
+            request.collect().await.expect("completion results");
 
         assert_eq!(prefix, "pri");
         assert!(is_incomplete);
+        assert_eq!(
+            incomplete_server_ids,
+            vec![helix_lsp::LanguageServerId::default().data().as_ffi()]
+        );
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].label, "println");
     }
