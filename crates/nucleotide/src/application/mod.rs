@@ -320,6 +320,24 @@ const MAINTENANCE_DRAIN_WARN_THRESHOLD: Duration = Duration::from_millis(8);
 const MAINTENANCE_ITERATION_WARN_THRESHOLD: Duration = Duration::from_millis(2);
 const MAINTENANCE_POLLER_WARN_THRESHOLD: Duration = Duration::from_millis(2);
 
+fn bridged_event_needs_gpui_context(bridged_event: &event_bridge::BridgedEvent) -> bool {
+    match bridged_event {
+        event_bridge::BridgedEvent::DiagnosticsChanged { .. }
+        | event_bridge::BridgedEvent::DiagnosticsPickerRequested { .. }
+        | event_bridge::BridgedEvent::FilePickerRequested
+        | event_bridge::BridgedEvent::BufferPickerRequested
+        | event_bridge::BridgedEvent::LanguageServerInitialized { .. }
+        | event_bridge::BridgedEvent::LanguageServerExited { .. } => true,
+        event_bridge::BridgedEvent::DocumentChanged { .. }
+        | event_bridge::BridgedEvent::SelectionChanged { .. }
+        | event_bridge::BridgedEvent::ModeChanged { .. }
+        | event_bridge::BridgedEvent::DocumentOpened { .. }
+        | event_bridge::BridgedEvent::DocumentClosed { .. }
+        | event_bridge::BridgedEvent::ViewFocused { .. }
+        | event_bridge::BridgedEvent::CompletionRequested { .. } => false,
+    }
+}
+
 #[derive(Clone)]
 pub struct MaintenanceWake {
     tx: tokio::sync::mpsc::UnboundedSender<()>,
@@ -585,7 +603,9 @@ impl Application {
                 }
             }
 
-            self.handle_bridged_event_with_gpui_context(&bridged_event, cx);
+            if bridged_event_needs_gpui_context(&bridged_event) {
+                self.handle_bridged_event_with_gpui_context(&bridged_event, cx);
+            }
         }
 
         progressed
@@ -7531,16 +7551,17 @@ mod tests {
 
     use super::{
         Application, ApplicationCore, EditorInputBridge, LspCompletionTrigger, MaintenanceWake,
-        NativeSymbolItem, NativeSymbolTarget, PendingCompletionRequest, buffer_text_matches_path,
-        buffer_word_completion_items, completion_context_for_trigger,
-        current_dir_is_executable_dir, dedupe_completion_items, detect_project_lsp_metadata,
-        diagnostic_picker_path_label, diagnostic_severity_label, home_requires_login_shell_capture,
-        local_path_completion_context, lsp_completion_insert_text,
-        lsp_completion_insert_text_format, lsp_completion_items_from_response,
-        lsp_completion_items_from_response_for_server, lsp_completion_resolve_supported,
-        lsp_completion_response_is_incomplete, lsp_symbol_picker, native_symbol_item_from_lsp,
-        path_completion_items, project_health_status, project_server_language_id,
-        suppress_shadowed_buffer_word_completion_items, syntax_symbol_kind_from_capture_name,
+        NativeSymbolItem, NativeSymbolTarget, PendingCompletionRequest,
+        bridged_event_needs_gpui_context, buffer_text_matches_path, buffer_word_completion_items,
+        completion_context_for_trigger, current_dir_is_executable_dir, dedupe_completion_items,
+        detect_project_lsp_metadata, diagnostic_picker_path_label, diagnostic_severity_label,
+        home_requires_login_shell_capture, local_path_completion_context,
+        lsp_completion_insert_text, lsp_completion_insert_text_format,
+        lsp_completion_items_from_response, lsp_completion_items_from_response_for_server,
+        lsp_completion_resolve_supported, lsp_completion_response_is_incomplete, lsp_symbol_picker,
+        native_symbol_item_from_lsp, path_completion_items, project_health_status,
+        project_server_language_id, suppress_shadowed_buffer_word_completion_items,
+        syntax_symbol_kind_from_capture_name,
     };
     use crate::test_utils::test_support::{
         TestUpdate, create_counting_channel, create_test_diagnostic_events,
@@ -7581,6 +7602,70 @@ mod tests {
             .build()
             .expect("test tokio runtime")
     });
+
+    #[test]
+    fn bridged_event_gpui_context_route_only_includes_side_effect_variants() {
+        let doc_id = helix_view::DocumentId::default();
+        let view_id = helix_view::ViewId::default();
+
+        assert!(bridged_event_needs_gpui_context(
+            &event_bridge::BridgedEvent::DiagnosticsChanged { doc_id }
+        ));
+        assert!(bridged_event_needs_gpui_context(
+            &event_bridge::BridgedEvent::DiagnosticsPickerRequested { workspace: true }
+        ));
+        assert!(bridged_event_needs_gpui_context(
+            &event_bridge::BridgedEvent::FilePickerRequested
+        ));
+        assert!(bridged_event_needs_gpui_context(
+            &event_bridge::BridgedEvent::BufferPickerRequested
+        ));
+        assert!(bridged_event_needs_gpui_context(
+            &event_bridge::BridgedEvent::LanguageServerInitialized {
+                server_id: helix_lsp::LanguageServerId::default(),
+            }
+        ));
+        assert!(bridged_event_needs_gpui_context(
+            &event_bridge::BridgedEvent::LanguageServerExited {
+                server_id: helix_lsp::LanguageServerId::default(),
+            }
+        ));
+
+        assert!(!bridged_event_needs_gpui_context(
+            &event_bridge::BridgedEvent::DocumentChanged {
+                doc_id,
+                change_summary: nucleotide_events::v2::document::ChangeType::Insert,
+            }
+        ));
+        assert!(!bridged_event_needs_gpui_context(
+            &event_bridge::BridgedEvent::SelectionChanged { doc_id, view_id }
+        ));
+        assert!(!bridged_event_needs_gpui_context(
+            &event_bridge::BridgedEvent::ModeChanged {
+                old_mode: helix_view::document::Mode::Normal,
+                new_mode: helix_view::document::Mode::Insert,
+            }
+        ));
+        assert!(!bridged_event_needs_gpui_context(
+            &event_bridge::BridgedEvent::DocumentOpened { doc_id }
+        ));
+        assert!(!bridged_event_needs_gpui_context(
+            &event_bridge::BridgedEvent::DocumentClosed {
+                doc_id,
+                was_modified: false,
+            }
+        ));
+        assert!(!bridged_event_needs_gpui_context(
+            &event_bridge::BridgedEvent::ViewFocused { view_id }
+        ));
+        assert!(!bridged_event_needs_gpui_context(
+            &event_bridge::BridgedEvent::CompletionRequested {
+                doc_id,
+                view_id,
+                trigger: event_bridge::CompletionTrigger::Manual,
+            }
+        ));
+    }
 
     #[test]
     fn current_dir_is_executable_dir_matches_executable_parent() {
