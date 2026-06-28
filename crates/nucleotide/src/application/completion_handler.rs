@@ -510,6 +510,7 @@ mod tests {
             data: None,
             source_index: 0,
             server_id: None,
+            raw_lsp_item: None,
         }];
 
         let results_event = Event::ResultsAvailable {

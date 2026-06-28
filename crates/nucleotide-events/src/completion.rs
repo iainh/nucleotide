@@ -127,6 +127,7 @@ pub struct CompletionItem {
     pub data: Option<serde_json::Value>,
     pub source_index: usize,
     pub server_id: Option<u64>,
+    pub raw_lsp_item: Option<serde_json::Value>,
 }
 
 /// LSP-style edit metadata for accepting a completion item.
@@ -300,6 +301,7 @@ impl CompletionItem {
             data: None,
             source_index: 0,
             server_id: None,
+            raw_lsp_item: None,
         }
     }
 
@@ -385,6 +387,11 @@ impl CompletionItem {
 
     pub fn with_server_id(mut self, server_id: Option<u64>) -> Self {
         self.server_id = server_id;
+        self
+    }
+
+    pub fn with_raw_lsp_item(mut self, raw_lsp_item: Option<serde_json::Value>) -> Self {
+        self.raw_lsp_item = raw_lsp_item;
         self
     }
 }
@@ -483,7 +490,11 @@ mod tests {
             .with_tags(vec![CompletionItemTag::Deprecated])
             .with_data(Some(serde_json::json!({"server": "rust-analyzer"})))
             .with_source_index(3)
-            .with_server_id(Some(42));
+            .with_server_id(Some(42))
+            .with_raw_lsp_item(Some(serde_json::json!({
+                "label": "test_function",
+                "data": { "server": "rust-analyzer" }
+            })));
 
         assert_eq!(item.label, "test_function");
         assert_eq!(item.kind, CompletionItemKind::Function);
@@ -501,6 +512,13 @@ mod tests {
         );
         assert_eq!(item.source_index, 3);
         assert_eq!(item.server_id, Some(42));
+        assert_eq!(
+            item.raw_lsp_item,
+            Some(serde_json::json!({
+                "label": "test_function",
+                "data": { "server": "rust-analyzer" }
+            }))
+        );
     }
 
     #[test]
