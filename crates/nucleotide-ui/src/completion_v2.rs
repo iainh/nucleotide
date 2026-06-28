@@ -290,6 +290,7 @@ pub struct CompletionItem {
     pub selection_priority: u64,
     pub server_id: Option<u64>,
     pub raw_lsp_item: Option<serde_json::Value>,
+    pub locality_score: u16,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -434,6 +435,7 @@ impl CompletionItem {
             selection_priority: 0,
             server_id: None,
             raw_lsp_item: None,
+            locality_score: 0,
         }
     }
 
@@ -531,6 +533,11 @@ impl CompletionItem {
 
     pub fn with_raw_lsp_item(mut self, raw_lsp_item: Option<serde_json::Value>) -> Self {
         self.raw_lsp_item = raw_lsp_item;
+        self
+    }
+
+    pub fn with_locality_score(mut self, locality_score: u16) -> Self {
+        self.locality_score = locality_score;
         self
     }
 }
@@ -1122,6 +1129,16 @@ impl CompletionView {
         right
             .score
             .cmp(&left.score)
+            .then_with(
+                || match (self.item_for_match(left), self.item_for_match(right)) {
+                    (Some(left_item), Some(right_item)) => {
+                        right_item.locality_score.cmp(&left_item.locality_score)
+                    }
+                    (Some(_), None) => CmpOrdering::Less,
+                    (None, Some(_)) => CmpOrdering::Greater,
+                    (None, None) => CmpOrdering::Equal,
+                },
+            )
             .then_with(
                 || match (self.item_for_match(left), self.item_for_match(right)) {
                     (Some(left_item), Some(right_item)) => {
@@ -2359,7 +2376,8 @@ mod tests {
             .with_raw_lsp_item(Some(serde_json::json!({
                 "label": "function_name",
                 "data": { "provider": "rust-analyzer" }
-            })));
+            })))
+            .with_locality_score(25);
 
         assert_eq!(item.text, "function_name");
         assert_eq!(item.description.as_ref().unwrap(), "A cool function");
@@ -2381,6 +2399,7 @@ mod tests {
                 "data": { "provider": "rust-analyzer" }
             }))
         );
+        assert_eq!(item.locality_score, 25);
     }
 
     #[test]

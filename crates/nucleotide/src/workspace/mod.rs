@@ -1258,6 +1258,36 @@ fn retained_completion_items_for_completed_providers(
         .collect()
 }
 
+fn completion_locality_key(item: &nucleotide_ui::completion_v2::CompletionItem) -> Option<String> {
+    let text = item
+        .filter_text
+        .as_ref()
+        .or(item.display_text.as_ref())
+        .unwrap_or(&item.text);
+    let key: String = text
+        .chars()
+        .skip_while(|ch| !helix_core::chars::char_is_word(*ch))
+        .take_while(|ch| helix_core::chars::char_is_word(*ch))
+        .collect();
+
+    (!key.is_empty()).then(|| key.to_lowercase())
+}
+
+fn completion_locality_score_for_text(document_text: &str, cursor_line: usize, key: &str) -> u16 {
+    if key.is_empty() {
+        return 0;
+    }
+
+    document_text
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| line.to_lowercase().contains(key))
+        .map(|(line, _)| line.abs_diff(cursor_line).min(200) as u16)
+        .min()
+        .map(|distance| 200u16.saturating_sub(distance))
+        .unwrap_or(0)
+}
+
 fn completion_commit_character_from_key(
     key: &str,
     key_char: Option<&str>,
@@ -1344,6 +1374,7 @@ fn ui_completion_item_from_event(
         selection_priority: 0,
         server_id: item.server_id,
         raw_lsp_item: item.raw_lsp_item,
+        locality_score: 0,
     }
 }
 
@@ -11346,6 +11377,35 @@ impl Workspace {
         }
     }
 
+    fn apply_completion_locality_scores(
+        &self,
+        doc_id: helix_view::DocumentId,
+        view_id: helix_view::ViewId,
+        items: &mut [nucleotide_ui::completion_v2::CompletionItem],
+        cx: &mut Context<Self>,
+    ) {
+        let Some((document_text, cursor_line)) = ({
+            let core = self.core.read(cx);
+            core.editor.document(doc_id).map(|doc| {
+                let cursor = doc
+                    .selection(view_id)
+                    .primary()
+                    .cursor(doc.text().slice(..));
+                (doc.text().to_string(), doc.text().char_to_line(cursor))
+            })
+        }) else {
+            return;
+        };
+
+        for item in items {
+            let Some(key) = completion_locality_key(item) else {
+                continue;
+            };
+            item.locality_score =
+                completion_locality_score_for_text(&document_text, cursor_line, &key);
+        }
+    }
+
     /// Process completion trigger and request LSP completions
     fn process_completion_trigger(
         &mut self,
@@ -11590,6 +11650,7 @@ impl Workspace {
             let key = Self::completion_memory_key(&language, &prefix, item);
             item.selection_priority = self.completion_memory.priority(&key);
         }
+        self.apply_completion_locality_scores(doc_id, view_id, &mut ui_items, cx);
 
         nucleotide_logging::debug!(
             ui_item_count = ui_items.len(),
@@ -16185,6 +16246,26 @@ mod tests {
         assert_eq!(retained.len(), 1);
         assert_eq!(retained[0].label, completed.label);
         assert_eq!(retained[0].server_id, Some(1));
+    }
+
+    #[test]
+    fn completion_locality_key_uses_filter_text_first() {
+        let item = nucleotide_ui::completion_v2::CompletionItem::new("fmt(${1:f})")
+            .with_display_text("fmt(...)")
+            .with_filter_text("Debug::fmt");
+
+        assert_eq!(completion_locality_key(&item).as_deref(), Some("debug"));
+    }
+
+    #[test]
+    fn completion_locality_score_prefers_nearby_lines() {
+        let text = "clone\n\nfmt\n\ninto\n";
+
+        assert!(
+            completion_locality_score_for_text(text, 2, "fmt")
+                > completion_locality_score_for_text(text, 2, "clone")
+        );
+        assert_eq!(completion_locality_score_for_text(text, 2, "missing"), 0);
     }
 
     #[test]
