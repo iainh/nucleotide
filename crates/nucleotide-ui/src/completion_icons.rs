@@ -48,7 +48,7 @@ pub fn get_completion_icon_svg(kind: &CompletionItemKind) -> Svg {
         CompletionItemKind::Constant => svg().path("icons/completion-constant.svg"),
         CompletionItemKind::Struct => svg().path("icons/completion-class.svg"), // Same as class
         CompletionItemKind::Keyword => svg().path("icons/completion-keyword.svg"),
-        CompletionItemKind::Snippet => svg().path("icons/completion-snippet.svg"),
+        CompletionItemKind::Snippet => svg().path("icons/square-scissors.svg"),
         CompletionItemKind::TypeParameter => svg().path("icons/completion-type.svg"),
 
         // File-related items use existing file icons

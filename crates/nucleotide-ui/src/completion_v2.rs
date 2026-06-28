@@ -22,6 +22,11 @@ use crate::completion_renderer::{CompletionItemElement, CompletionListState};
 use crate::debouncer::{CompletionDebouncer, create_completion_debouncer};
 // use crate::fuzzy::{FuzzyConfig, match_strings}; // Unused in synchronous filtering
 
+const COMPLETION_VISIBLE_ROWS: usize = 6;
+const COMPLETION_ROW_HEIGHT_PX: f32 = 32.0;
+const COMPLETION_LIST_MAX_HEIGHT_PX: f32 =
+    COMPLETION_VISIBLE_ROWS as f32 * COMPLETION_ROW_HEIGHT_PX;
+
 /// Event emitted to request completion acceptance via Helix's Transaction system
 /// This event signals that Helix should handle the completion acceptance
 #[derive(Debug, Clone)]
@@ -377,7 +382,10 @@ impl CompletionView {
             last_error: None,
             documentation_loader: DocumentationLoader::new(DocumentationCacheConfig::default()),
             documentation_panel: DocumentationPanel::new(),
-            list_state: CompletionListState::new(32.0, 400.0), // Increased from 24px to account for padding and multi-row layout
+            list_state: CompletionListState::new(
+                COMPLETION_ROW_HEIGHT_PX,
+                COMPLETION_LIST_MAX_HEIGHT_PX,
+            ),
             current_documentation: None,
             focus_handle,
         }
@@ -1602,12 +1610,11 @@ impl Render for CompletionView {
         let filtered_entries = &self.filtered_entries;
         let selected_documentation = self.selected_documentation_preview();
 
-        // Use flexible layout - let container size itself based on content
-        let max_visible_items = 12; // Show up to 12 items
+        // Use flexible layout - let container size itself based on content.
+        let max_visible_items = COMPLETION_VISIBLE_ROWS;
 
         // Calculate maximum container height to prevent it from growing too large
-        // Each item is approximately 32px, but let's use a more flexible approach
-        let max_container_height = px(384.0); // ~12 items * 32px = 384px, but flexible
+        let max_container_height = px(COMPLETION_LIST_MAX_HEIGHT_PX);
 
         nucleotide_logging::debug!(
             filtered_count = filtered_entries.len(),
@@ -1735,7 +1742,7 @@ impl Render for CompletionView {
                                 let max_text_length = self
                                     .filtered_entries
                                     .iter()
-                                    .take(12) // Only consider visible items for performance
+                                    .take(max_visible_items)
                                     .map(|string_match| {
                                         self.item_for_match(string_match)
                                             .map(|item| {
@@ -1809,7 +1816,7 @@ impl Render for CompletionView {
                                             .children({
                                                 // Implement a sliding window of visible items centered around selection
                                                 let total_items = self.filtered_entries.len();
-                                                let max_visible = 12; // Show up to 12 items at a time
+                                                let max_visible = max_visible_items;
 
                                                 let (start_index, end_index) =
                                                     if total_items <= max_visible {
@@ -2177,6 +2184,20 @@ mod tests {
     mod filter_tests {
         use super::*;
         use gpui::TestAppContext;
+
+        #[gpui::test]
+        async fn completion_list_state_uses_six_visible_rows(cx: &mut TestAppContext) {
+            let (completion_view, _cx) = cx.add_window_view(|_window, cx| CompletionView::new(cx));
+
+            completion_view.update(cx, |view, _cx| {
+                assert_eq!(view.list_state.item_height, COMPLETION_ROW_HEIGHT_PX);
+                assert_eq!(view.list_state.max_height, COMPLETION_LIST_MAX_HEIGHT_PX);
+                assert_eq!(
+                    (view.list_state.max_height / view.list_state.item_height).floor() as usize,
+                    COMPLETION_VISIBLE_ROWS
+                );
+            });
+        }
 
         #[gpui::test]
         async fn test_set_items_with_filter_basic(cx: &mut TestAppContext) {

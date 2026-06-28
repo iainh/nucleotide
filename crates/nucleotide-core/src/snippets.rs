@@ -59,6 +59,45 @@ impl SnippetTemplate {
         result
     }
 
+    /// Render a completion snippet when the editor does not support live
+    /// placeholder navigation yet.
+    ///
+    /// Placeholder names from language servers are hints, not final source.
+    /// Insert the surrounding snippet structure, leave placeholder text empty,
+    /// and return the preferred cursor offset for editing the first placeholder.
+    pub fn render_completion_text(&self) -> (String, usize) {
+        let mut result = String::new();
+        let mut first_tabstop_offset = None;
+
+        for part in &self.text_parts {
+            match part {
+                TextPart::Literal(text) => result.push_str(text),
+                TextPart::Tabstop { .. } => {
+                    first_tabstop_offset.get_or_insert_with(|| result.chars().count());
+                }
+            }
+        }
+
+        let cursor_offset = first_tabstop_offset
+            .or_else(|| self.adjusted_final_cursor_offset())
+            .unwrap_or_else(|| result.chars().count());
+
+        (result, cursor_offset)
+    }
+
+    fn adjusted_final_cursor_offset(&self) -> Option<usize> {
+        let final_cursor_pos = self.final_cursor_pos?;
+        let removed_placeholder_len: usize = self
+            .tabstops
+            .iter()
+            .filter(|tabstop| tabstop.position < final_cursor_pos)
+            .filter_map(|tabstop| tabstop.placeholder.as_ref())
+            .map(|placeholder| placeholder.chars().count())
+            .sum();
+
+        Some(final_cursor_pos.saturating_sub(removed_placeholder_len))
+    }
+
     /// Calculate the absolute cursor position after insertion
     /// Returns the position where $0 should be placed, or None if no $0 tabstop
     pub fn calculate_final_cursor_position(&self, insertion_start: usize) -> Option<usize> {
@@ -331,6 +370,24 @@ mod tests {
         let plain_text = template.render_plain_text();
 
         assert_eq!(plain_text, "fn name() -> ReturnType {\n\t\n}");
+    }
+
+    #[test]
+    fn test_render_completion_text_omits_placeholder_names() {
+        let template = SnippetTemplate::parse("fmt(${1:f})$0").unwrap();
+        let (plain_text, cursor_offset) = template.render_completion_text();
+
+        assert_eq!(plain_text, "fmt()");
+        assert_eq!(cursor_offset, "fmt(".chars().count());
+    }
+
+    #[test]
+    fn test_render_completion_text_uses_final_tabstop_without_placeholders() {
+        let template = SnippetTemplate::parse("concat!($0)").unwrap();
+        let (plain_text, cursor_offset) = template.render_completion_text();
+
+        assert_eq!(plain_text, "concat!()");
+        assert_eq!(cursor_offset, "concat!(".chars().count());
     }
 
     #[test]
