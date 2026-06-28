@@ -11,7 +11,8 @@ use gpui::{
 };
 
 use crate::ThemedContext;
-use crate::actions::menu::{Cancel, Confirm, SelectDown, SelectLeft, SelectRight, SelectUp};
+use crate::actions::{completion, editor, menu, workspace};
+use menu::{Cancel, Confirm, SelectDown, SelectLeft, SelectRight, SelectUp};
 
 use super::POPUP_MENU_CONTEXT;
 
@@ -37,6 +38,7 @@ pub enum PopupMenuItem {
     Label(SharedString),
     Item {
         label: SharedString,
+        shortcut: Option<SharedString>,
         disabled: bool,
         checked: bool,
         action: Option<Box<dyn Action>>,
@@ -52,6 +54,7 @@ impl PopupMenuItem {
     pub fn new(label: impl Into<SharedString>) -> Self {
         Self::Item {
             label: label.into(),
+            shortcut: None,
             disabled: false,
             checked: false,
             action: None,
@@ -81,6 +84,17 @@ impl PopupMenuItem {
         } = &mut self
         {
             *item_action = Some(action);
+        }
+        self
+    }
+
+    pub fn shortcut(mut self, shortcut: impl Into<SharedString>) -> Self {
+        if let Self::Item {
+            shortcut: item_shortcut,
+            ..
+        } = &mut self
+        {
+            *item_shortcut = Some(shortcut.into());
         }
         self
     }
@@ -131,6 +145,98 @@ impl PopupMenuItem {
     fn is_checked(&self) -> bool {
         matches!(self, Self::Item { checked: true, .. })
     }
+}
+
+fn shortcut_label_for_action(action: &dyn Action) -> Option<&'static str> {
+    if action.partial_eq(&editor::Quit) {
+        Some("Ctrl+Q")
+    } else if action.partial_eq(&editor::OpenFile) {
+        Some("Ctrl+O")
+    } else if action.partial_eq(&editor::OpenDirectory) {
+        Some("Ctrl+Shift+O")
+    } else if action.partial_eq(&editor::Save) {
+        Some("Ctrl+S")
+    } else if action.partial_eq(&editor::SaveAs) {
+        Some("Ctrl+Shift+S")
+    } else if action.partial_eq(&editor::CloseFile) {
+        Some("Ctrl+W")
+    } else if action.partial_eq(&workspace::NewFile) {
+        Some("Ctrl+N")
+    } else if action.partial_eq(&workspace::NewWindow) {
+        Some("Ctrl+Shift+N")
+    } else if action.partial_eq(&workspace::ShowFileFinder) {
+        Some("Ctrl+P")
+    } else if action.partial_eq(&workspace::ShowCommandPrompt) {
+        Some("Ctrl+Shift+P")
+    } else if action.partial_eq(&workspace::ShowBufferPicker) {
+        Some("Ctrl+B")
+    } else if action.partial_eq(&editor::Undo) {
+        Some("Ctrl+Z")
+    } else if action.partial_eq(&editor::Redo) {
+        Some("Ctrl+Shift+Z")
+    } else if action.partial_eq(&editor::Copy) {
+        Some("Ctrl+C")
+    } else if action.partial_eq(&editor::Paste) {
+        Some("Ctrl+V")
+    } else if action.partial_eq(&editor::IncreaseFontSize) {
+        Some("Ctrl++")
+    } else if action.partial_eq(&editor::DecreaseFontSize) {
+        Some("Ctrl+-")
+    } else if action.partial_eq(&completion::TriggerCompletion) {
+        Some("Ctrl+Space")
+    } else if action.partial_eq(&workspace::ShowCodeActions) {
+        Some("Ctrl+.")
+    } else if action.partial_eq(&workspace::ShowRunnables) {
+        Some("Ctrl+R")
+    } else if action.partial_eq(&workspace::RunNearest) {
+        Some("Ctrl+Shift+R")
+    } else if action.partial_eq(&workspace::RunLast) {
+        Some("Ctrl+Alt+R")
+    } else if action.partial_eq(&workspace::RunFileTests) {
+        Some("Ctrl+Alt+T")
+    } else {
+        None
+    }
+}
+
+fn popup_menu_item_height() -> Pixels {
+    #[cfg(target_os = "windows")]
+    {
+        px(32.0)
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        px(26.0)
+    }
+}
+
+fn menu_window_margin() -> Pixels {
+    px(8.0)
+}
+
+fn submenu_overlap() -> Pixels {
+    px(4.0)
+}
+
+fn submenu_horizontal_placement(
+    parent_bounds: Bounds<Pixels>,
+    submenu_width: Pixels,
+    viewport_width: Pixels,
+) -> (Anchor, Pixels) {
+    let margin = menu_window_margin();
+    let overlap = submenu_overlap();
+    let right_opening_edge = parent_bounds.right() - overlap + submenu_width;
+
+    if right_opening_edge > viewport_width - margin {
+        (Anchor::TopRight, -overlap)
+    } else {
+        (Anchor::TopLeft, parent_bounds.size.width - overlap)
+    }
+}
+
+fn submenu_opens_past_bottom(parent_bounds: Bounds<Pixels>, viewport_height: Pixels) -> bool {
+    parent_bounds.bottom() > viewport_height - menu_window_margin()
 }
 
 pub struct PopupMenu {
@@ -299,12 +405,17 @@ impl PopupMenu {
                     disabled,
                     ..
                 } => {
-                    self = self.menu_with_check_and_disabled(
-                        name,
-                        checked,
-                        action.boxed_clone(),
-                        disabled,
-                    );
+                    let shortcut = shortcut_label_for_action(action.as_ref());
+                    let mut item = PopupMenuItem::new(name)
+                        .checked(checked)
+                        .disabled(disabled)
+                        .action(action.boxed_clone());
+
+                    if let Some(shortcut) = shortcut {
+                        item = item.shortcut(shortcut);
+                    }
+
+                    self = self.item(item);
                 }
                 OwnedMenuItem::Separator => {
                     self = self.separator();
@@ -570,13 +681,10 @@ impl PopupMenu {
     fn update_submenu_anchor(&mut self, window: &Window) {
         let bounds = self.bounds;
         let max_width = self.max_width();
-        let (anchor, left) = if max_width + bounds.origin.x > window.bounds().size.width {
-            (Anchor::TopRight, -px(16.0))
-        } else {
-            (Anchor::TopLeft, bounds.size.width - px(8.0))
-        };
+        let (anchor, left) =
+            submenu_horizontal_placement(bounds, max_width, window.bounds().size.width);
 
-        let opens_past_bottom = bounds.origin.y + bounds.size.height > window.bounds().size.height;
+        let opens_past_bottom = submenu_opens_past_bottom(bounds, window.bounds().size.height);
         self.submenu_anchor = if opens_past_bottom {
             (anchor.other_side_along(Axis::Vertical), left)
         } else {
@@ -618,7 +726,7 @@ impl PopupMenu {
         let tokens = cx.theme().tokens;
         let dropdown = tokens.dropdown_tokens();
         let selected = self.selected_index == Some(index);
-        let item_height = px(26.0);
+        let item_height = popup_menu_item_height();
         match item {
             PopupMenuItem::Separator => div()
                 .h(px(1.0))
@@ -637,6 +745,7 @@ impl PopupMenu {
                 .into_any_element(),
             PopupMenuItem::Item {
                 label,
+                shortcut,
                 disabled,
                 checked,
                 ..
@@ -656,7 +765,21 @@ impl PopupMenu {
                             .when(has_check_column, |this| {
                                 this.child(self.render_indicator(is_checked_left, *disabled, cx))
                             })
-                            .child(div().flex_1().child(label.clone()))
+                            .child(div().flex_1().min_w(px(120.0)).child(label.clone()))
+                            .when_some(shortcut.clone(), |this, shortcut| {
+                                this.child(
+                                    div()
+                                        .ml(tokens.sizes.space_8)
+                                        .min_w(px(76.0))
+                                        .text_align(gpui::TextAlign::Right)
+                                        .text_color(if *disabled {
+                                            dropdown.item_text_disabled
+                                        } else {
+                                            dropdown.item_text_secondary
+                                        })
+                                        .child(shortcut),
+                                )
+                            })
                             .when(is_checked_right, |this| {
                                 this.child(self.render_indicator(true, *disabled, cx))
                             }),
@@ -701,12 +824,12 @@ impl PopupMenu {
                         this.child(
                             anchored()
                                 .anchor(anchor)
-                                .snap_to_window_with_margin(Edges::all(tokens.sizes.space_2))
+                                .snap_to_window_with_margin(Edges::all(menu_window_margin()))
                                 .child(
                                     div()
                                         .occlude()
                                         .when(opens_up, |this| this.bottom_0())
-                                        .when(!opens_up, |this| this.top(px(-4.0)))
+                                        .when(!opens_up, |this| this.top(-submenu_overlap()))
                                         .left(left)
                                         .child(menu.clone()),
                                 ),
@@ -729,6 +852,7 @@ impl PopupMenu {
 
         div()
             .id(index)
+            .role(gpui::accesskit::Role::MenuItem)
             .relative()
             .w_full()
             .self_stretch()
@@ -797,6 +921,8 @@ impl Render for PopupMenu {
                 }
             })
             .id("popup-menu")
+            .role(gpui::accesskit::Role::Menu)
+            .aria_label("Menu")
             .key_context(POPUP_MENU_CONTEXT)
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::select_up))
@@ -866,6 +992,52 @@ mod tests {
                 .child(div().id("second").track_focus(&self.second_focus))
                 .child(self.menu.clone())
         }
+    }
+
+    #[test]
+    fn shortcut_labels_cover_primary_app_menu_actions() {
+        assert_eq!(shortcut_label_for_action(&editor::OpenFile), Some("Ctrl+O"));
+        assert_eq!(shortcut_label_for_action(&editor::Save), Some("Ctrl+S"));
+        assert_eq!(
+            shortcut_label_for_action(&workspace::ShowCommandPrompt),
+            Some("Ctrl+Shift+P")
+        );
+        assert_eq!(
+            shortcut_label_for_action(&workspace::RunFileTests),
+            Some("Ctrl+Alt+T")
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_popup_menu_rows_use_fluent_pointer_target_height() {
+        assert_eq!(popup_menu_item_height(), px(32.0));
+    }
+
+    #[test]
+    fn submenu_placement_accounts_for_parent_menu_width() {
+        let parent = Bounds::new(point(px(500.0), px(20.0)), size(px(220.0), px(200.0)));
+        let (anchor, left) = submenu_horizontal_placement(parent, px(260.0), px(900.0));
+
+        assert_eq!(anchor, Anchor::TopRight);
+        assert_eq!(left, -submenu_overlap());
+    }
+
+    #[test]
+    fn submenu_placement_opens_right_when_window_has_room() {
+        let parent = Bounds::new(point(px(100.0), px(20.0)), size(px(220.0), px(200.0)));
+        let (anchor, left) = submenu_horizontal_placement(parent, px(260.0), px(900.0));
+
+        assert_eq!(anchor, Anchor::TopLeft);
+        assert_eq!(left, px(216.0));
+    }
+
+    #[test]
+    fn submenu_bottom_detection_reserves_window_margin() {
+        let parent = Bounds::new(point(px(20.0), px(300.0)), size(px(220.0), px(200.0)));
+
+        assert!(submenu_opens_past_bottom(parent, px(504.0)));
+        assert!(!submenu_opens_past_bottom(parent, px(520.0)));
     }
 
     #[gpui::test]
