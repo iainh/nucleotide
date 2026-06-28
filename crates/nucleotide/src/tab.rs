@@ -86,7 +86,7 @@ impl Render for TabMetaTooltip {
 }
 
 struct TabEndButtonProps {
-    doc_id: DocumentId,
+    doc_id: TabId,
     is_pinned: bool,
     disabled: bool,
     text_color: gpui::Hsla,
@@ -141,6 +141,33 @@ enum TabContentIcon {
     Readonly,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TabId {
+    Document(DocumentId),
+    Image(u64),
+}
+
+impl From<DocumentId> for TabId {
+    fn from(doc_id: DocumentId) -> Self {
+        Self::Document(doc_id)
+    }
+}
+
+impl PartialEq<DocumentId> for TabId {
+    fn eq(&self, other: &DocumentId) -> bool {
+        matches!(self, Self::Document(doc_id) if doc_id == other)
+    }
+}
+
+impl std::fmt::Display for TabId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Document(doc_id) => write!(f, "{doc_id}"),
+            Self::Image(id) => write!(f, "image-{id}"),
+        }
+    }
+}
+
 /// Position of a tab relative to its siblings and the active tab.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum TabPosition {
@@ -156,8 +183,8 @@ pub struct Tab {
     div: Stateful<Div>,
     /// Component identifier
     id: ElementId,
-    /// Document ID this tab represents
-    pub doc_id: DocumentId,
+    /// Tab ID this tab represents
+    pub doc_id: TabId,
     /// Display label for the tab
     pub label: String,
     /// Optional parent-path detail shown after the primary label
@@ -212,13 +239,13 @@ pub struct Tab {
 
 impl Tab {
     #[inline]
-    fn element_id_for(doc_id: DocumentId) -> ElementId {
+    fn element_id_for(doc_id: TabId) -> ElementId {
         ElementId::from(SharedString::from(format!("tab-{}", doc_id)))
     }
 
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        doc_id: DocumentId,
+        doc_id: impl Into<TabId>,
         label: String,
         file_path: Option<std::path::PathBuf>,
         is_modified: bool,
@@ -229,6 +256,7 @@ impl Tab {
         on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
         on_close: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     ) -> Self {
+        let doc_id = doc_id.into();
         let id = Self::element_id_for(doc_id);
         let variant = if is_active {
             TabVariant::Active
@@ -491,7 +519,7 @@ impl ComponentFactory for Tab {
         Self {
             div: div().id(id.clone()),
             id,
-            doc_id: DocumentId::default(),
+            doc_id: DocumentId::default().into(),
             label: String::new(),
             label_detail: None,
             file_path: None,
@@ -1113,7 +1141,7 @@ impl Tab {
 
     #[allow(clippy::too_many_arguments)]
     fn build_content_row(
-        doc_id: DocumentId,
+        doc_id: TabId,
         label: String,
         label_detail: Option<String>,
         file_path: Option<std::path::PathBuf>,

@@ -8,6 +8,7 @@ use gpui::{
     Styled, Window, div, px,
 };
 use helix_core::diagnostic::Severity as DiagnosticSeverity;
+#[cfg(test)]
 use helix_view::DocumentId;
 use nucleotide_types::VcsStatus;
 use nucleotide_ui::{ThemedContext, Tooltipped};
@@ -18,12 +19,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::config::{TabCloseButtonVisibility, TabClosePosition, TabDiagnosticsVisibility};
-use crate::tab::{Tab, TabPosition, tab_container_height};
+use crate::tab::{Tab, TabId, TabPosition, tab_container_height};
 
 /// Type alias for tab event handlers
-type TabEventHandler = Arc<dyn Fn(DocumentId, &mut Window, &mut App) + 'static>;
-type TabContextMenuHandler =
-    Arc<dyn Fn(DocumentId, &MouseDownEvent, &mut Window, &mut App) + 'static>;
+type TabEventHandler = Arc<dyn Fn(TabId, &mut Window, &mut App) + 'static>;
+type TabContextMenuHandler = Arc<dyn Fn(TabId, &MouseDownEvent, &mut Window, &mut App) + 'static>;
 type EmptyTabBarClickHandler = Arc<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 type TabBarScrollWheelHandler = Arc<dyn Fn(&ScrollWheelEvent, &mut Window, &mut App) + 'static>;
 
@@ -136,7 +136,7 @@ where
 /// Information about a document for tab display
 #[derive(Clone)]
 pub struct DocumentInfo {
-    pub id: DocumentId,
+    pub id: TabId,
     pub path: Option<PathBuf>,
     pub is_modified: bool,
     pub is_readonly: bool,
@@ -172,7 +172,7 @@ pub struct TabBar {
     /// Document information for all open documents
     documents: Vec<DocumentInfo>,
     /// Currently active document ID
-    active_doc_id: Option<DocumentId>,
+    active_doc_id: Option<TabId>,
     /// Project directory for relative paths
     project_directory: Option<PathBuf>,
     /// Callback when a tab is clicked
@@ -216,10 +216,10 @@ pub struct TabBar {
 impl TabBar {
     pub fn new(
         documents: Vec<DocumentInfo>,
-        active_doc_id: Option<DocumentId>,
+        active_doc_id: Option<TabId>,
         project_directory: Option<PathBuf>,
-        on_tab_click: impl Fn(DocumentId, &mut Window, &mut App) + 'static,
-        on_tab_close: impl Fn(DocumentId, &mut Window, &mut App) + 'static,
+        on_tab_click: impl Fn(TabId, &mut Window, &mut App) + 'static,
+        on_tab_close: impl Fn(TabId, &mut Window, &mut App) + 'static,
     ) -> Self {
         Self {
             documents,
@@ -253,7 +253,7 @@ impl TabBar {
 
     pub fn with_context_menu_handler(
         mut self,
-        on_context_menu: impl Fn(DocumentId, &MouseDownEvent, &mut Window, &mut App) + 'static,
+        on_context_menu: impl Fn(TabId, &MouseDownEvent, &mut Window, &mut App) + 'static,
     ) -> Self {
         self.on_tab_context_menu = Some(Arc::new(on_context_menu));
         self
@@ -312,7 +312,7 @@ impl TabBar {
 
     pub fn with_pin_toggle_handler(
         mut self,
-        on_toggle_pin: impl Fn(DocumentId, &mut Window, &mut App) + 'static,
+        on_toggle_pin: impl Fn(TabId, &mut Window, &mut App) + 'static,
     ) -> Self {
         self.on_tab_toggle_pin = Some(Arc::new(on_toggle_pin));
         self
@@ -320,7 +320,7 @@ impl TabBar {
 
     pub fn with_readonly_toggle_handler(
         mut self,
-        on_toggle_readonly: impl Fn(DocumentId, &mut Window, &mut App) + 'static,
+        on_toggle_readonly: impl Fn(TabId, &mut Window, &mut App) + 'static,
     ) -> Self {
         self.on_tab_toggle_readonly = Some(Arc::new(on_toggle_readonly));
         self
@@ -328,7 +328,7 @@ impl TabBar {
 
     pub fn with_double_click_handler(
         mut self,
-        on_double_click: impl Fn(DocumentId, &mut Window, &mut App) + 'static,
+        on_double_click: impl Fn(TabId, &mut Window, &mut App) + 'static,
     ) -> Self {
         self.on_tab_double_click = Some(Arc::new(on_double_click));
         self
@@ -918,7 +918,7 @@ mod tests {
 
     fn doc(path: Option<&str>, order: usize) -> DocumentInfo {
         DocumentInfo {
-            id: DocumentId::default(),
+            id: DocumentId::default().into(),
             path: path.map(PathBuf::from),
             is_modified: false,
             is_readonly: false,

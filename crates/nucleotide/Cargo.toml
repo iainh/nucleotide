@@ -74,6 +74,7 @@ async-trait = "0.1"
 # File picker
 ignore.workspace = true
 dirs.workspace = true
+image = "0.25.10"
 # markdown doc rendering
 # file type detection
 # file system watching

@@ -4975,6 +4975,7 @@ dependencies = [
  "helix-vcs",
  "helix-view",
  "ignore",
+ "image",
  "notify",
  "nucleotide-appearance",
  "nucleotide-core",
