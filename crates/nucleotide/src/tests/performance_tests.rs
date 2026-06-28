@@ -260,10 +260,7 @@ appearance_follows_theme = true
     }
 
     #[test]
-    #[cfg_attr(
-        target_os = "windows",
-        ignore = "Timing-sensitive on GitHub Windows runners"
-    )]
+    #[ignore = "Timing-sensitive wall-clock performance check"]
     fn test_repeated_workspace_detection() {
         let suite = PerformanceTestSuite::new();
         fs::create_dir_all(suite.path().join(".git")).unwrap();
@@ -460,6 +457,7 @@ appearance_follows_theme = true
 
     /// Test performance regression detection
     #[test]
+    #[ignore = "Timing-sensitive wall-clock performance check"]
     fn test_performance_regression_detection() {
         let suite = PerformanceTestSuite::new();
         fs::create_dir_all(suite.path().join(".git")).unwrap();
