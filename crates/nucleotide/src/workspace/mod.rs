@@ -11599,8 +11599,8 @@ impl Workspace {
             }
         };
 
-        // Render snippet to plain text and calculate cursor position
-        let plain_text = snippet_template.render_plain_text();
+        // Render snippet without committing placeholder names as source.
+        let (plain_text, cursor_offset) = snippet_template.render_completion_text();
 
         nucleotide_logging::debug!(
             original_snippet = %completion_item.text,
@@ -11667,29 +11667,13 @@ impl Workspace {
             nucleotide_logging::debug!("Applying snippet transaction to document");
             doc.apply(&transaction, view.id);
 
-            // Calculate and set the final cursor position for snippet
-            if let Some(cursor_pos) =
-                snippet_template.calculate_final_cursor_position(replacement_start_pos)
-            {
-                nucleotide_logging::debug!(
-                    calculated_cursor_pos = cursor_pos,
-                    replacement_start = replacement_start_pos,
-                    "Setting final cursor position for snippet"
-                );
-
-                // Create a new selection with the cursor at the calculated position
-                let new_selection = Selection::point(cursor_pos);
-                doc.set_selection(view.id, new_selection);
-
-                nucleotide_logging::debug!(
-                    final_cursor_pos = cursor_pos,
-                    "Snippet cursor positioned successfully"
-                );
-            } else {
-                nucleotide_logging::debug!(
-                    "No $0 tabstop found, cursor remains at end of insertion"
-                );
-            }
+            let cursor_pos = replacement_start_pos + cursor_offset;
+            nucleotide_logging::debug!(
+                calculated_cursor_pos = cursor_pos,
+                replacement_start = replacement_start_pos,
+                "Setting cursor position for snippet"
+            );
+            doc.set_selection(view.id, Selection::point(cursor_pos));
 
             nucleotide_logging::debug!("Applied snippet completion transaction successfully");
 
@@ -11728,10 +11712,14 @@ impl Workspace {
             let primary_cursor = selection.primary().cursor(text.slice(..));
             let offset_encoding = helix_offset_encoding_from_completion(edit.offset_encoding);
 
-            let (replacement_text, snippet_template) = match completion_item.insert_text_format {
+            let (replacement_text, snippet_cursor_offset) = match completion_item.insert_text_format
+            {
                 nucleotide_ui::completion_v2::InsertTextFormat::Snippet => {
                     match nucleotide_core::SnippetTemplate::parse(&completion_item.text) {
-                        Ok(template) => (template.render_plain_text(), Some(template)),
+                        Ok(template) => {
+                            let (text, cursor_offset) = template.render_completion_text();
+                            (text, Some(cursor_offset))
+                        }
                         Err(err) => {
                             nucleotide_logging::warn!(
                                 completion_text = %completion_item.text,
@@ -11771,11 +11759,8 @@ impl Workspace {
             );
             doc.apply(&transaction, view.id);
 
-            if let Some(snippet_template) = snippet_template
-                && let Some(cursor_pos) =
-                    snippet_template.calculate_final_cursor_position(replacement_start)
-            {
-                doc.set_selection(view.id, Selection::point(cursor_pos));
+            if let Some(cursor_offset) = snippet_cursor_offset {
+                doc.set_selection(view.id, Selection::point(replacement_start + cursor_offset));
             }
 
             if !edit.additional_text_edits.is_empty() {
