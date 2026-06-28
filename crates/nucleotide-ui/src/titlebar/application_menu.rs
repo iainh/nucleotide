@@ -5,12 +5,16 @@ use gpui::prelude::FluentBuilder;
 use gpui::{
     Anchor, Context, DismissEvent, ElementId, Entity, FocusHandle, Focusable, InteractiveElement,
     IntoElement, MouseButton, MouseDownEvent, OwnedMenu, ParentElement, Pixels, Render,
-    SharedString, Styled, Subscription, Window, anchored, deferred, div, px,
+    SharedString, StatefulInteractiveElement, Styled, Subscription, Window, anchored, deferred,
+    div, point, px,
 };
 
 use crate::actions::menu::{Cancel, SelectLeft, SelectRight};
 use crate::menu::{APP_MENU_BAR_CONTEXT, PopupMenu};
 use crate::{Theme, tokens::ColorContext};
+
+#[cfg(target_os = "windows")]
+const WINDOWS_UI_FONT_FAMILY: &str = "Segoe UI Variable";
 
 #[derive(Clone)]
 struct MenuEntry {
@@ -24,6 +28,8 @@ struct MenuBarMetrics {
     trigger_height: Pixels,
     trigger_padding_x: Pixels,
     trigger_radius: Pixels,
+    popup_gap: Pixels,
+    window_margin: Pixels,
 }
 
 fn menu_bar_metrics(embedded_in_titlebar: bool) -> MenuBarMetrics {
@@ -34,6 +40,8 @@ fn menu_bar_metrics(embedded_in_titlebar: bool) -> MenuBarMetrics {
             trigger_height: px(22.0),
             trigger_padding_x: px(7.0),
             trigger_radius: px(2.0),
+            popup_gap: px(2.0),
+            window_margin: px(8.0),
         }
     } else {
         MenuBarMetrics {
@@ -42,8 +50,15 @@ fn menu_bar_metrics(embedded_in_titlebar: bool) -> MenuBarMetrics {
             trigger_height: px(28.0),
             trigger_padding_x: px(12.0),
             trigger_radius: px(4.0),
+            popup_gap: px(2.0),
+            window_margin: px(8.0),
         }
     }
+}
+
+fn menu_popup_offset_y(row_height: Pixels, trigger_height: Pixels, popup_gap: Pixels) -> Pixels {
+    let bottom_inset = ((f32::from(row_height) - f32::from(trigger_height)).max(0.0)) / 2.0;
+    trigger_height + px(bottom_inset) + popup_gap
 }
 
 pub struct ApplicationMenu {
@@ -218,6 +233,8 @@ impl Render for ApplicationMenu {
 
         let mut container = div()
             .id(self.id.clone())
+            .role(gpui::accesskit::Role::MenuBar)
+            .aria_label("Application menu")
             .key_context(APP_MENU_BAR_CONTEXT)
             .on_action(cx.listener(Self::select_left))
             .on_action(cx.listener(Self::select_right))
@@ -250,11 +267,28 @@ impl Render for ApplicationMenu {
                 .flex()
                 .items_center()
                 .rounded(metrics.trigger_radius)
+                .border_1()
+                .border_color(crate::tokens::utils::with_alpha(chrome.border_focus, 0.0))
+                .role(gpui::accesskit::Role::MenuItem)
+                .aria_label(name.clone())
+                .aria_expanded(is_open)
                 .text_size(tokens.sizes.text_sm)
                 .text_color(titlebar_tokens.foreground)
                 .cursor_pointer()
+                .when(self.embedded_in_titlebar, |trigger| {
+                    #[cfg(target_os = "windows")]
+                    {
+                        trigger.font_family(WINDOWS_UI_FONT_FAMILY)
+                    }
+
+                    #[cfg(not(target_os = "windows"))]
+                    {
+                        trigger
+                    }
+                })
                 .when(is_open, |trigger| trigger.bg(chrome.surface_hover))
                 .hover(|trigger| trigger.bg(chrome.surface_hover))
+                .focus_visible(|style| style.border_color(chrome.border_focus))
                 .on_mouse_move(cx.listener(move |this, _, window, cx| {
                     if this.open_index.is_some() && this.open_index != Some(index) {
                         this.set_open_index(Some(index), window, cx);
@@ -279,14 +313,12 @@ impl Render for ApplicationMenu {
                 let popup_menu = self.build_popup_menu(index, window, cx);
                 let popup = anchored()
                     .anchor(Anchor::TopLeft)
-                    .snap_to_window_with_margin(px(8.0))
-                    .child(
-                        div()
-                            .size_full()
-                            .occlude()
-                            .top(tokens.sizes.space_1)
-                            .child(popup_menu),
-                    );
+                    .offset(point(
+                        px(0.0),
+                        menu_popup_offset_y(row_h, metrics.trigger_height, metrics.popup_gap),
+                    ))
+                    .snap_to_window_with_margin(metrics.window_margin)
+                    .child(div().occlude().child(popup_menu));
 
                 trigger = trigger.child(deferred(popup).with_priority(500));
             }
@@ -320,6 +352,12 @@ mod tests {
                 .child(div().id("second").track_focus(&self.second_focus))
                 .child(self.menu.clone())
         }
+    }
+
+    #[test]
+    fn popup_offset_places_flyout_below_titlebar_row() {
+        assert_eq!(menu_popup_offset_y(px(34.0), px(22.0), px(2.0)), px(30.0));
+        assert_eq!(menu_popup_offset_y(px(34.0), px(28.0), px(2.0)), px(33.0));
     }
 
     #[gpui::test]

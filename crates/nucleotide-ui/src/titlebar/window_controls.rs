@@ -2,8 +2,8 @@
 // ABOUTME: Provides minimize, maximize/restore, and close buttons with platform-specific styling
 
 use gpui::{
-    App, Hsla, InteractiveElement, IntoElement, MouseButton, ParentElement, RenderOnce, Rgba,
-    StatefulInteractiveElement, Styled, Window, WindowControlArea, svg,
+    App, AppContext, Context, Hsla, InteractiveElement, IntoElement, MouseButton, ParentElement,
+    Render, RenderOnce, Rgba, StatefulInteractiveElement, Styled, Window, WindowControlArea, svg,
 };
 
 use crate::styling::{ColorTheory, StyleSize, StyleState, StyleVariant, compute_component_style};
@@ -37,10 +37,43 @@ impl WindowControlType {
             WindowControlType::Close => "\u{e8bb}",
         }
     }
+
+    pub fn accessible_label(&self) -> &'static str {
+        match self {
+            WindowControlType::Minimize => "Minimize window",
+            WindowControlType::Restore => "Restore window",
+            WindowControlType::Maximize => "Maximize window",
+            WindowControlType::Close => "Close window",
+        }
+    }
 }
 
 const WINDOWS_CAPTION_BUTTON_WIDTH: f32 = 46.0;
 const WINDOWS_CAPTION_ICON_SIZE: f32 = 10.0;
+
+struct CaptionButtonTooltip {
+    label: &'static str,
+}
+
+impl Render for CaptionButtonTooltip {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let tokens = cx.global::<crate::Theme>().tokens;
+        let tooltip_tokens = tokens.tooltip_tokens();
+
+        gpui::div()
+            .max_w(gpui::px(420.0))
+            .px(tokens.sizes.space_2)
+            .py(tokens.sizes.space_1)
+            .rounded(tokens.sizes.radius_sm)
+            .border_1()
+            .border_color(tooltip_tokens.border)
+            .bg(tooltip_tokens.background)
+            .shadow(vec![tokens.chrome.shadow_md.to_box_shadow(false)])
+            .text_size(tokens.sizes.text_sm)
+            .text_color(tooltip_tokens.text)
+            .child(self.label)
+    }
+}
 
 fn windows_close_hover_background() -> Hsla {
     Rgba {
@@ -355,6 +388,8 @@ impl RenderOnce for WindowsCaptionButton {
 
         gpui::div()
             .id(self.id)
+            .role(gpui::accesskit::Role::Button)
+            .aria_label(control_type.accessible_label())
             .occlude()
             .flex()
             .justify_center()
@@ -366,6 +401,12 @@ impl RenderOnce for WindowsCaptionButton {
             .text_color(self.titlebar_tokens.foreground)
             .hover(|button| button.bg(hover_bg).text_color(hover_fg))
             .active(|button| button.bg(active_bg).text_color(active_fg))
+            .tooltip(move |_window, cx| {
+                cx.new(|_| CaptionButtonTooltip {
+                    label: control_type.accessible_label(),
+                })
+                .into()
+            })
             .on_mouse_down(MouseButton::Left, move |_, window, cx| {
                 window.prevent_default();
                 cx.stop_propagation();
@@ -553,5 +594,27 @@ impl RenderOnce for WindowControls {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::WindowControlType;
+
+    #[test]
+    fn windows_caption_control_labels_are_action_specific() {
+        assert_eq!(
+            WindowControlType::Minimize.accessible_label(),
+            "Minimize window"
+        );
+        assert_eq!(
+            WindowControlType::Maximize.accessible_label(),
+            "Maximize window"
+        );
+        assert_eq!(
+            WindowControlType::Restore.accessible_label(),
+            "Restore window"
+        );
+        assert_eq!(WindowControlType::Close.accessible_label(), "Close window");
     }
 }

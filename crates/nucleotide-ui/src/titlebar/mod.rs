@@ -26,9 +26,9 @@ pub use linux_titlebar::LinuxTitlebar;
 #[cfg(target_os = "linux")]
 pub use linux_window_controls::LinuxWindowControls;
 
-#[cfg(target_os = "windows")]
-use gpui::px;
 use gpui::{AppContext, Context, Entity, Hsla, IntoElement, Pixels, Render, Window};
+#[cfg(target_os = "windows")]
+use gpui::{InteractiveElement, WindowControlArea, px};
 #[cfg(not(target_os = "macos"))]
 use gpui::{ParentElement, Styled, div};
 
@@ -42,6 +42,21 @@ const WINDOWS_CONTROL_GAP: f32 = 0.0;
 const WINDOWS_CONTROL_HORIZONTAL_PADDING: f32 = 0.0;
 #[cfg(target_os = "windows")]
 const WINDOWS_CONTROL_RIGHT_INSET: f32 = 0.0;
+#[cfg(target_os = "windows")]
+const WINDOWS_UI_FONT_FAMILY: &str = "Segoe UI Variable";
+
+#[cfg(target_os = "windows")]
+fn windows_caption_controls_width() -> f32 {
+    WINDOWS_CONTROL_BUTTON_SIZE * WINDOWS_CONTROL_BUTTON_COUNT
+        + WINDOWS_CONTROL_GAP * (WINDOWS_CONTROL_BUTTON_COUNT - 1.0)
+        + WINDOWS_CONTROL_HORIZONTAL_PADDING
+        + WINDOWS_CONTROL_RIGHT_INSET
+}
+
+#[cfg(target_os = "windows")]
+fn windows_titlebar_content_width(viewport_width: f32) -> f32 {
+    (viewport_width - windows_caption_controls_width()).max(0.0)
+}
 
 pub struct TitleBar {
     platform_titlebar: Entity<PlatformTitleBar>,
@@ -136,12 +151,9 @@ impl Render for TitleBar {
         #[cfg(target_os = "windows")]
         {
             if let Some(menu) = &self.application_menu {
-                let control_width = WINDOWS_CONTROL_BUTTON_SIZE * WINDOWS_CONTROL_BUTTON_COUNT
-                    + WINDOWS_CONTROL_GAP * (WINDOWS_CONTROL_BUTTON_COUNT - 1.0)
-                    + WINDOWS_CONTROL_HORIZONTAL_PADDING
-                    + WINDOWS_CONTROL_RIGHT_INSET;
-                let menu_width =
-                    px((f32::from(window.viewport_size().width) - control_width).max(0.0));
+                let content_width = px(windows_titlebar_content_width(f32::from(
+                    window.viewport_size().width,
+                )));
                 let titlebar_tokens = if let Some(provider) =
                     crate::providers::use_provider::<crate::providers::ThemeProvider>()
                 {
@@ -149,18 +161,44 @@ impl Render for TitleBar {
                 } else {
                     cx.global::<crate::Theme>().tokens.titlebar_tokens()
                 };
+                let tokens = cx.global::<crate::Theme>().tokens;
 
                 return div()
                     .relative()
                     .w_full()
+                    .h(TitleBar::height(window))
+                    .min_h(TitleBar::height(window))
+                    .flex_shrink_0()
                     .child(self.platform_titlebar.clone())
                     .child(
                         div()
                             .absolute()
                             .left_0()
                             .top_0()
-                            .w(menu_width)
-                            .child(menu.clone()),
+                            .w(content_width)
+                            .h_full()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .overflow_hidden()
+                            .child(menu.clone())
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .h_full()
+                                    .items_center()
+                                    .window_control_area(WindowControlArea::Drag)
+                                    .px_2()
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .font_family(WINDOWS_UI_FONT_FAMILY)
+                                    .text_size(tokens.sizes.text_sm)
+                                    .text_color(tokens.chrome.text_chrome_secondary)
+                                    .child(self.filename.clone()),
+                            ),
                     )
                     .child(
                         div()
@@ -191,5 +229,21 @@ impl Render for TitleBar {
 
         // macOS (or fallback): just the platform titlebar
         self.platform_titlebar.clone().into_any_element()
+    }
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod tests {
+    use super::{windows_caption_controls_width, windows_titlebar_content_width};
+
+    #[test]
+    fn windows_caption_gutter_matches_three_system_buttons() {
+        assert_eq!(windows_caption_controls_width(), 138.0);
+    }
+
+    #[test]
+    fn windows_titlebar_content_width_reserves_caption_gutter() {
+        assert_eq!(windows_titlebar_content_width(1200.0), 1062.0);
+        assert_eq!(windows_titlebar_content_width(100.0), 0.0);
     }
 }
