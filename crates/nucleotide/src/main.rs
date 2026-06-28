@@ -234,14 +234,14 @@ fn startup_dock_action() -> Result<Option<usize>> {
     parse_startup_dock_action(std::env::args())
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
 fn is_nucleotide_url_arg(value: &str) -> bool {
     value
         .get(..NUCLEOTIDE_URL_SCHEME.len() + 1)
         .is_some_and(|prefix| prefix.eq_ignore_ascii_case("nucleotide:"))
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
 fn parse_startup_protocol_request<I, S>(args: I) -> Result<Option<ProtocolOpenRequest>>
 where
     I: IntoIterator<Item = S>,
@@ -273,7 +273,7 @@ fn startup_protocol_request() -> Result<Option<ProtocolOpenRequest>> {
     parse_startup_protocol_request(std::env::args())
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
 fn apply_protocol_request_to_args(args: &mut Args, request: ProtocolOpenRequest) {
     if let Some(working_directory) = request.working_directory {
         args.working_directory = Some(working_directory);
@@ -329,7 +329,7 @@ fn startup_protocol_request() -> Result<Option<ProtocolOpenRequest>> {
     Ok(None)
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(any(target_os = "windows", test)))]
 fn apply_protocol_request_to_args(_args: &mut Args, _request: ProtocolOpenRequest) {}
 
 #[instrument]
@@ -544,7 +544,7 @@ struct ProtocolOpenRequest {
     working_directory: Option<PathBuf>,
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
 const NUCLEOTIDE_URL_SCHEME: &str = "nucleotide";
 
 fn parse_file_url(url_str: &str) -> Option<PathBuf> {
@@ -556,7 +556,7 @@ fn parse_file_url(url_str: &str) -> Option<PathBuf> {
     None
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
 fn path_from_url_query_value(value: &str) -> Option<PathBuf> {
     if value.is_empty() {
         None
@@ -567,7 +567,7 @@ fn path_from_url_query_value(value: &str) -> Option<PathBuf> {
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
 fn one_based_query_position(line: Option<&str>, column: Option<&str>) -> helix_core::Position {
     let row = line
         .and_then(|line| line.parse::<usize>().ok())
@@ -581,7 +581,7 @@ fn one_based_query_position(line: Option<&str>, column: Option<&str>) -> helix_c
     helix_core::Position::new(row, col)
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
 fn parse_nucleotide_url(url_str: &str) -> Option<ProtocolOpenRequest> {
     let url = Url::parse(url_str).ok()?;
     if url.scheme() != NUCLEOTIDE_URL_SCHEME {
@@ -1721,7 +1721,6 @@ mod tests {
         assert!(parse_startup_dock_action(["nucl", "--dock-action", "0", "extra"]).is_err());
     }
 
-    #[cfg(target_os = "windows")]
     #[test]
     fn nucleotide_url_parser_accepts_focus_only_open() {
         let request = parse_nucleotide_url("nucleotide://open").unwrap();
@@ -1730,14 +1729,12 @@ mod tests {
         assert_eq!(request.working_directory, None);
     }
 
-    #[cfg(target_os = "windows")]
     #[test]
     fn nucleotide_url_parser_rejects_other_schemes_and_actions() {
         assert!(parse_nucleotide_url("https://example.com").is_none());
         assert!(parse_nucleotide_url("nucleotide://settings").is_none());
     }
 
-    #[cfg(target_os = "windows")]
     #[test]
     fn nucleotide_url_parser_decodes_windows_paths() {
         let request = parse_nucleotide_url(
@@ -1775,7 +1772,6 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "windows")]
     #[test]
     fn nucleotide_url_parser_accepts_one_based_line_and_column() {
         let request = parse_nucleotide_url(
@@ -1792,7 +1788,6 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "windows")]
     #[test]
     fn startup_protocol_parser_accepts_single_nucleotide_url() {
         let request = parse_startup_protocol_request(["nucl", "nucleotide://open"]).unwrap();
@@ -1806,7 +1801,6 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "windows")]
     #[test]
     fn startup_protocol_request_applies_positions_to_args() {
         let request = parse_startup_protocol_request([
@@ -1827,7 +1821,6 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "windows")]
     #[test]
     fn startup_protocol_parser_ignores_normal_cli_args() {
         assert_eq!(
@@ -1836,7 +1829,6 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "windows")]
     #[test]
     fn startup_protocol_parser_rejects_combined_args() {
         assert!(
