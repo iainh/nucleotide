@@ -13407,6 +13407,12 @@ impl Render for Workspace {
             },
         ));
 
+        workspace_div = workspace_div.on_action(cx.listener(
+            move |workspace, _: &crate::actions::editor::RevertCurrentChange, _window, cx| {
+                workspace.execute_raw_command("reset-diff-change", cx);
+            },
+        ));
+
         // Add handlers for Undo, Redo, Copy, Paste
         workspace_div = workspace_div.on_action(cx.listener(
             move |workspace, _: &crate::actions::editor::Undo, _window, cx| {

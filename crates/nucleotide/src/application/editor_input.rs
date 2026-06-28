@@ -1003,6 +1003,7 @@ fn native_command_supported(command: &MappableCommand) -> bool {
                 | "page_cursor_half_up"
                 | "page_cursor_half_down"
                 | "remove_primary_selection"
+                | "reset-diff-change"
                 | "scroll_down"
                 | "scroll_up"
                 | "select_all"
@@ -2407,6 +2408,9 @@ mod tests {
         assert!(native_command_supported(&MappableCommand::goto_last_change));
         assert!(native_command_supported(&MappableCommand::goto_next_change));
         assert!(native_command_supported(&MappableCommand::goto_prev_change));
+        assert!(native_command_supported(
+            &":reset-diff-change".parse::<MappableCommand>().unwrap()
+        ));
         assert!(native_command_supported(&MappableCommand::match_brackets));
     }
 

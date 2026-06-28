@@ -101,6 +101,7 @@ pub mod editor {
             Save,
             SaveAs,
             CloseFile,
+            RevertCurrentChange,
             Undo,
             Redo,
             Copy,
