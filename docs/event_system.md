@@ -446,6 +446,12 @@ Implements the Helix → GPUI event forwarding:
 - Transforms Helix events into BridgedEvent types
 - Handles automatic completion triggers
 
+#### Singleton bridge state
+
+The bridge sender state is process-global today. `crates/nucleotide-core/src/event_bridge.rs` stores the Helix to GPUI sender in `EVENT_BRIDGE_SENDER`, and `crates/nucleotide-core/src/gpui_to_helix_bridge.rs` stores the GPUI to Helix sender in `GPUI_TO_HELIX_SENDER`. Both are initialized once with `OnceLock`.
+
+This matches the current app model, where one `Application` owns the active Helix editor integration for the process. Tests and future multi-window work should treat this as an explicit singleton constraint. If tests need isolated bridge state, add a scoped test guard or bridge handle rather than relying on reinitializing the `OnceLock` values.
+
 ### GPUI to Helix Bridge (src/gpui_to_helix_bridge.rs)
 
 Handles GPUI → Helix communication:
