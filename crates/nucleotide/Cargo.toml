@@ -91,6 +91,7 @@ serde.workspace = true
 chrono = "0.4"
 regex.workspace = true
 smallvec.workspace = true
+slotmap.workspace = true
 
 # error handling
 

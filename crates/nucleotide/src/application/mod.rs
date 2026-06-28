@@ -51,6 +51,7 @@ use helix_view::{
 };
 use nucleotide_events::{ProjectLspCommand, ProjectLspCommandError};
 use nucleotide_lsp::{HelixLspBridge, ProjectLspManager, ServerStatus};
+use slotmap::Key;
 
 // Import our shell environment system
 use nucleotide_env::ProjectEnvironment;
@@ -141,8 +142,11 @@ impl PendingCompletionRequest {
                 Ok((server_id, offset_encoding, Some(lsp_response))) => {
                     let server_is_incomplete = lsp_completion_response_is_incomplete(&lsp_response);
                     is_incomplete |= server_is_incomplete;
-                    let mut server_items =
-                        lsp_completion_items_from_response(lsp_response, offset_encoding);
+                    let mut server_items = lsp_completion_items_from_response_for_server(
+                        lsp_response,
+                        offset_encoding,
+                        Some(server_id),
+                    );
                     nucleotide_logging::info!(
                         server_id = ?server_id,
                         item_count = server_items.len(),
@@ -6782,21 +6786,34 @@ fn lsp_completion_response_is_incomplete(response: &lsp::CompletionResponse) -> 
     }
 }
 
+#[cfg(test)]
 fn lsp_completion_items_from_response(
     response: lsp::CompletionResponse,
     offset_encoding: OffsetEncoding,
+) -> Vec<nucleotide_events::completion::CompletionItem> {
+    lsp_completion_items_from_response_for_server(response, offset_encoding, None)
+}
+
+fn lsp_completion_items_from_response_for_server(
+    response: lsp::CompletionResponse,
+    offset_encoding: OffsetEncoding,
+    server_id: Option<LanguageServerId>,
 ) -> Vec<nucleotide_events::completion::CompletionItem> {
     match response {
         lsp::CompletionResponse::Array(items) => items
             .into_iter()
             .enumerate()
-            .map(|(source_index, item)| lsp_completion_item(item, offset_encoding, source_index))
+            .map(|(source_index, item)| {
+                lsp_completion_item(item, offset_encoding, source_index, server_id)
+            })
             .collect(),
         lsp::CompletionResponse::List(list) => list
             .items
             .into_iter()
             .enumerate()
-            .map(|(source_index, item)| lsp_completion_item(item, offset_encoding, source_index))
+            .map(|(source_index, item)| {
+                lsp_completion_item(item, offset_encoding, source_index, server_id)
+            })
             .collect(),
     }
 }
@@ -6805,6 +6822,7 @@ fn lsp_completion_item(
     item: lsp::CompletionItem,
     offset_encoding: OffsetEncoding,
     source_index: usize,
+    server_id: Option<LanguageServerId>,
 ) -> nucleotide_events::completion::CompletionItem {
     use nucleotide_events::completion::{CompletionItem, CompletionItemKind};
 
@@ -6883,6 +6901,7 @@ fn lsp_completion_item(
         .with_tags(tags)
         .with_data(item.data)
         .with_source_index(source_index)
+        .with_server_id(server_id.map(|server_id| server_id.data().as_ffi()))
         .with_detail(item.detail.unwrap_or_default())
         .with_signature_info(signature_info.unwrap_or_default())
         .with_type_info(type_info.unwrap_or_default())
@@ -7335,9 +7354,9 @@ mod tests {
         diagnostic_picker_path_label, diagnostic_severity_label, home_requires_login_shell_capture,
         local_path_completion_context, lsp_completion_insert_text,
         lsp_completion_insert_text_format, lsp_completion_items_from_response,
-        lsp_completion_response_is_incomplete, lsp_symbol_picker, native_symbol_item_from_lsp,
-        path_completion_items, project_health_status, project_server_language_id,
-        syntax_symbol_kind_from_capture_name,
+        lsp_completion_items_from_response_for_server, lsp_completion_response_is_incomplete,
+        lsp_symbol_picker, native_symbol_item_from_lsp, path_completion_items,
+        project_health_status, project_server_language_id, syntax_symbol_kind_from_capture_name,
     };
     use crate::test_utils::test_support::{
         TestUpdate, create_counting_channel, create_test_diagnostic_events,
@@ -7354,6 +7373,7 @@ mod tests {
     use helix_view::{graphics::Rect, handlers::Handlers, theme};
     use nucleotide_core::event_bridge;
     use nucleotide_events::completion::{CompletionItem, CompletionItemKind};
+    use slotmap::{Key, KeyData};
     use std::cell::RefCell;
     use std::collections::HashMap;
     use std::fs;
@@ -8150,6 +8170,23 @@ mod tests {
             Some(serde_json::json!({"provider": "rust-analyzer"}))
         );
         assert_eq!(item.source_index, 0);
+    }
+
+    #[test]
+    fn lsp_completion_items_from_response_preserves_server_id() {
+        let server_id: helix_lsp::LanguageServerId = KeyData::from_ffi(42).into();
+        let response = lsp::CompletionResponse::Array(vec![lsp::CompletionItem {
+            label: "clone".to_string(),
+            ..Default::default()
+        }]);
+
+        let items = lsp_completion_items_from_response_for_server(
+            response,
+            OffsetEncoding::Utf8,
+            Some(server_id),
+        );
+
+        assert_eq!(items[0].server_id, Some(server_id.data().as_ffi()));
     }
 
     #[test]

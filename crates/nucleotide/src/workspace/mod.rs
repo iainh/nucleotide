@@ -11516,6 +11516,7 @@ impl Workspace {
                     data: item.data,
                     source_index: item.source_index,
                     selection_priority: 0,
+                    server_id: item.server_id,
                 }
             })
             .collect();

@@ -509,6 +509,7 @@ mod tests {
             tags: Vec::new(),
             data: None,
             source_index: 0,
+            server_id: None,
         }];
 
         let results_event = Event::ResultsAvailable {
