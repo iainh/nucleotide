@@ -3733,7 +3733,6 @@ dependencies = [
 [[package]]
 name = "helix-lsp-types"
 version = "0.95.1"
-source = "git+https://github.com/helix-editor/helix?rev=5a8fb732f26d6aabe757ffd2108ee66e8ef25236#5a8fb732f26d6aabe757ffd2108ee66e8ef25236"
 dependencies = [
  "bitflags 2.13.0",
  "serde",
