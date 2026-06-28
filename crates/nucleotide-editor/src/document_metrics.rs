@@ -18,7 +18,7 @@ use helix_core::{
 };
 use helix_stdx::rope::RopeSliceExt;
 use helix_view::{Document, DocumentId, Theme};
-use nucleotide_logging::PerfTimer;
+use nucleotide_logging::{PerfTimer, trace};
 
 use crate::EditorSurfaceGeometry;
 
@@ -81,6 +81,7 @@ struct CachedEditorDocumentMetrics {
 #[derive(Clone, Debug, Default)]
 pub struct EditorDocumentMetricsCache {
     entries: Vec<CachedEditorDocumentMetrics>,
+    stats: EditorDocumentMetricsCacheStats,
 }
 
 pub struct EditorDocumentMetricsCacheResolveParams<'a> {
@@ -94,6 +95,15 @@ pub struct EditorDocumentMetricsCacheResolveParams<'a> {
 }
 
 const DOCUMENT_METRICS_CACHE_CAPACITY: usize = 4;
+const DOCUMENT_METRICS_SCAN_WARN_THRESHOLD: Duration = Duration::from_millis(4);
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EditorDocumentMetricsCacheStats {
+    pub hits: u64,
+    pub misses: u64,
+    pub evictions: u64,
+    pub full_visual_row_scans: u64,
+}
 
 impl EditorDocumentMetrics {
     pub fn resolve(
@@ -207,11 +217,31 @@ impl EditorDocumentMetricsCache {
         };
 
         if let Some(index) = self.entries.iter().position(|cached| cached.key == key) {
+            self.stats.hits += 1;
+            trace!(
+                document_id = ?params.document.id(),
+                document_version = params.document.version(),
+                viewport_columns = viewport_columns,
+                gutter_columns = params.gutter_columns,
+                cache_entries = self.entries.len(),
+                "Editor document metrics cache hit"
+            );
             let cached = self.entries.remove(index);
             let metrics = cached.metrics.clone();
             self.entries.insert(0, cached);
             return metrics;
         }
+
+        self.stats.misses += 1;
+        self.stats.full_visual_row_scans += 1;
+        trace!(
+            document_id = ?params.document.id(),
+            document_version = params.document.version(),
+            viewport_columns = viewport_columns,
+            gutter_columns = params.gutter_columns,
+            cache_entries = self.entries.len(),
+            "Editor document metrics cache miss"
+        );
 
         let annotations = params.view.text_annotations(params.document, params.theme);
         let metrics = EditorDocumentMetrics::from_text_format_with_annotations(
@@ -228,9 +258,15 @@ impl EditorDocumentMetricsCache {
             },
         );
         if self.entries.len() > DOCUMENT_METRICS_CACHE_CAPACITY {
+            let evicted = self.entries.len() - DOCUMENT_METRICS_CACHE_CAPACITY;
+            self.stats.evictions += evicted as u64;
             self.entries.truncate(DOCUMENT_METRICS_CACHE_CAPACITY);
         }
         metrics
+    }
+
+    pub fn stats(&self) -> EditorDocumentMetricsCacheStats {
+        self.stats
     }
 }
 
@@ -274,6 +310,8 @@ pub fn visual_rows_for_text_with_annotations(
     text_format: &TextFormat,
     annotations: &TextAnnotations<'_>,
 ) -> usize {
+    let _timer = PerfTimer::new("EditorDocumentMetrics::visual_rows_for_text")
+        .with_warn_threshold(DOCUMENT_METRICS_SCAN_WARN_THRESHOLD);
     visual_offset_from_block(text, 0, text.len_chars(), text_format, annotations)
         .0
         .row
@@ -456,6 +494,15 @@ mod tests {
         assert!(first.soft_wrap);
         assert_eq!(second.visual_rows, first.visual_rows);
         assert_eq!(second.viewport_columns, first.viewport_columns);
+        assert_eq!(
+            cache.stats(),
+            EditorDocumentMetricsCacheStats {
+                hits: 1,
+                misses: 1,
+                evictions: 0,
+                full_visual_row_scans: 1,
+            }
+        );
     }
 
     #[test]
@@ -507,6 +554,48 @@ mod tests {
             cache.front_viewport_columns(),
             Some(narrow.viewport_columns)
         );
+        assert_eq!(
+            cache.stats(),
+            EditorDocumentMetricsCacheStats {
+                hits: 1,
+                misses: 2,
+                evictions: 0,
+                full_visual_row_scans: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn metrics_cache_counts_evictions() {
+        let mut config = Config::default();
+        config.soft_wrap.enable = Some(true);
+        let (document, view) = test_document_with_config(config, "abcdefghijklmnopqrstuvwxyz");
+        let mut cache = EditorDocumentMetricsCache::default();
+        let gutter_columns = view.gutter_offset(&document);
+
+        for width in [160.0, 240.0, 320.0, 400.0, 480.0] {
+            let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(width), px(80.0)));
+            cache.resolve(EditorDocumentMetricsCacheResolveParams {
+                document: &document,
+                view: &view,
+                theme: None,
+                bounds,
+                gutter_columns,
+                cell_width: px(8.0),
+                minimum_columns: 1,
+            });
+        }
+
+        assert_eq!(cache.len(), DOCUMENT_METRICS_CACHE_CAPACITY);
+        assert_eq!(
+            cache.stats(),
+            EditorDocumentMetricsCacheStats {
+                hits: 0,
+                misses: 5,
+                evictions: 1,
+                full_visual_row_scans: 5,
+            }
+        );
     }
 
     #[test]
@@ -545,5 +634,14 @@ mod tests {
         });
 
         assert!(second.visual_rows > first.visual_rows);
+        assert_eq!(
+            cache.stats(),
+            EditorDocumentMetricsCacheStats {
+                hits: 0,
+                misses: 2,
+                evictions: 0,
+                full_visual_row_scans: 2,
+            }
+        );
     }
 }
