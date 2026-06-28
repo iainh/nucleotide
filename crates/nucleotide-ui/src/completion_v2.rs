@@ -74,9 +74,126 @@ impl StringMatchCandidate {
         candidate.item_index = index;
         candidate
     }
+}
 
-    fn matches_query(&self, query_lower: &str) -> bool {
-        self.normalized_text.contains(query_lower)
+fn fuzzy_match_candidate(
+    candidate: &StringMatchCandidate,
+    query_lower: &str,
+) -> Option<StringMatch> {
+    if query_lower.is_empty() {
+        return Some(StringMatch::for_candidate(candidate, 100, Vec::new()));
+    }
+
+    if candidate.normalized_text == query_lower {
+        return Some(StringMatch::for_candidate(
+            candidate,
+            1000,
+            contiguous_match_positions(&candidate.normalized_text, 0, query_lower),
+        ));
+    }
+
+    if candidate.normalized_text.starts_with(query_lower) {
+        let score = 900u16.saturating_sub(length_penalty(&candidate.normalized_text, query_lower));
+        return Some(StringMatch::for_candidate(
+            candidate,
+            score,
+            contiguous_match_positions(&candidate.normalized_text, 0, query_lower),
+        ));
+    }
+
+    if let Some(byte_start) = candidate.normalized_text.find(query_lower) {
+        let start = candidate.normalized_text[..byte_start].chars().count();
+        let boundary_bonus = word_boundary_bonus(&candidate.text, start);
+        let score = 700u16
+            .saturating_add(boundary_bonus)
+            .saturating_sub(start.min(80) as u16)
+            .saturating_sub(length_penalty(&candidate.normalized_text, query_lower));
+        return Some(StringMatch::for_candidate(
+            candidate,
+            score,
+            contiguous_match_positions(&candidate.normalized_text, start, query_lower),
+        ));
+    }
+
+    subsequence_match(candidate, query_lower)
+}
+
+fn subsequence_match(candidate: &StringMatchCandidate, query_lower: &str) -> Option<StringMatch> {
+    let mut positions = Vec::with_capacity(query_lower.chars().count());
+    let mut query_chars = query_lower.chars();
+    let mut next_query = query_chars.next()?;
+    let mut last_position = None;
+    let mut consecutive_bonus = 0u16;
+    let mut boundary_bonus = 0u16;
+
+    for (position, ch) in candidate.normalized_text.chars().enumerate() {
+        if ch != next_query {
+            continue;
+        }
+
+        if last_position.is_some_and(|last| last + 1 == position) {
+            consecutive_bonus = consecutive_bonus.saturating_add(12);
+        }
+        boundary_bonus =
+            boundary_bonus.saturating_add(word_boundary_bonus(&candidate.text, position));
+        positions.push(position);
+        last_position = Some(position);
+
+        match query_chars.next() {
+            Some(next) => next_query = next,
+            None => {
+                let start_penalty = positions.first().copied().unwrap_or_default().min(80) as u16;
+                let gap_penalty = positions
+                    .windows(2)
+                    .map(|window| window[1].saturating_sub(window[0] + 1).min(20) as u16)
+                    .sum::<u16>();
+                let score = 500u16
+                    .saturating_add(consecutive_bonus)
+                    .saturating_add(boundary_bonus)
+                    .saturating_sub(start_penalty)
+                    .saturating_sub(gap_penalty)
+                    .saturating_sub(length_penalty(&candidate.normalized_text, query_lower));
+                return Some(StringMatch::for_candidate(candidate, score, positions));
+            }
+        }
+    }
+
+    None
+}
+
+fn contiguous_match_positions(text: &str, start: usize, query: &str) -> Vec<usize> {
+    let end = start + query.chars().count();
+    let text_len = text.chars().count();
+    (start..end.min(text_len)).collect()
+}
+
+fn length_penalty(text: &str, query: &str) -> u16 {
+    text.chars()
+        .count()
+        .saturating_sub(query.chars().count())
+        .min(80) as u16
+}
+
+fn word_boundary_bonus(text: &str, position: usize) -> u16 {
+    if position == 0 {
+        return 40;
+    }
+
+    let mut chars = text.chars();
+    let previous = chars.nth(position.saturating_sub(1));
+    let current = chars.next();
+
+    match (previous, current) {
+        (Some(prev), Some(curr))
+            if prev == '_'
+                || prev == '-'
+                || prev == ':'
+                || prev == '.'
+                || (prev.is_lowercase() && curr.is_uppercase()) =>
+        {
+            30
+        }
+        _ => 0,
     }
 }
 
@@ -873,11 +990,9 @@ impl CompletionView {
             "Performing synchronous filtering with fuzzy matching"
         );
 
-        // Use simple prefix matching for now (can be enhanced with fuzzy matching later)
         let query_lower = query.to_lowercase();
         let mut matched_count = 0;
-        let mut prefix_matches: Vec<StringMatch> = Vec::with_capacity(max_items);
-        let mut substring_matches: Vec<StringMatch> = Vec::with_capacity(max_items);
+        let mut filtered_matches: Vec<StringMatch> = Vec::with_capacity(max_items);
 
         nucleotide_logging::debug!(
             query = %query,
@@ -897,27 +1012,16 @@ impl CompletionView {
                 );
             }
 
-            // Check if candidate text starts with or contains the query
-            if candidate.normalized_text.starts_with(&query_lower) {
+            if let Some(string_match) = fuzzy_match_candidate(candidate, &query_lower) {
                 matched_count += 1;
                 if idx < 5 {
                     nucleotide_logging::debug!(
                         candidate_text = %candidate.text,
-                        "MATCHED: prefix match"
+                        score = string_match.score,
+                        "MATCHED: fuzzy match"
                     );
                 }
-
-                prefix_matches.push(StringMatch::for_candidate(candidate, 100, Vec::new()));
-            } else if candidate.matches_query(&query_lower) {
-                matched_count += 1;
-                if idx < 5 {
-                    nucleotide_logging::debug!(
-                        candidate_text = %candidate.text,
-                        "MATCHED: substring match"
-                    );
-                }
-
-                substring_matches.push(StringMatch::for_candidate(candidate, 50, Vec::new()));
+                filtered_matches.push(string_match);
             } else {
                 if idx < 5 {
                     nucleotide_logging::debug!(
@@ -927,11 +1031,6 @@ impl CompletionView {
                 }
             }
         }
-
-        // Scores only have two buckets today, so avoid sorting every match just
-        // to truncate to the visible result limit.
-        let mut filtered_matches = prefix_matches;
-        filtered_matches.extend(substring_matches);
 
         nucleotide_logging::debug!(
             total_candidates = candidates.len(),
@@ -1075,15 +1174,10 @@ impl CompletionView {
 
         cached_results
             .iter()
-            .filter(|string_match| {
-                // Find the candidate and check if it still matches the new query
-                if let Some(candidate) = self.candidate_for_match(string_match) {
-                    candidate.matches_query(&query_lower)
-                } else {
-                    false
-                }
+            .filter_map(|string_match| {
+                self.candidate_for_match(string_match)
+                    .and_then(|candidate| fuzzy_match_candidate(candidate, &query_lower))
             })
-            .cloned()
             .collect()
     }
 
@@ -1093,24 +1187,20 @@ impl CompletionView {
         if self.is_query_extension(query) {
             let query_lower = query.to_lowercase();
 
-            let mut filtered_entries = std::mem::take(&mut self.filtered_entries);
-            filtered_entries.retain(|string_match| {
-                // Find the candidate and check if it still matches
-                if let Some(candidate) = self
-                    .match_candidates
-                    .get(string_match.item_index)
-                    .filter(|candidate| candidate.id == string_match.candidate_id)
-                    .or_else(|| {
-                        self.match_candidates
-                            .iter()
-                            .find(|candidate| candidate.id == string_match.candidate_id)
-                    })
-                {
-                    candidate.matches_query(&query_lower)
-                } else {
-                    false
-                }
-            });
+            let filtered_entries = std::mem::take(&mut self.filtered_entries)
+                .into_iter()
+                .filter_map(|string_match| {
+                    self.match_candidates
+                        .get(string_match.item_index)
+                        .filter(|candidate| candidate.id == string_match.candidate_id)
+                        .or_else(|| {
+                            self.match_candidates
+                                .iter()
+                                .find(|candidate| candidate.id == string_match.candidate_id)
+                        })
+                        .and_then(|candidate| fuzzy_match_candidate(candidate, &query_lower))
+                })
+                .collect();
 
             self.apply_filtered_entries(filtered_entries);
             self.current_query = Some(query.to_string());
@@ -2193,6 +2283,28 @@ mod tests {
         assert_eq!(matches[0].score, 200);
         assert_eq!(matches[1].score, 150);
         assert_eq!(matches[2].score, 100);
+    }
+
+    #[test]
+    fn test_fuzzy_match_scores_prefix_above_substring() {
+        let prefix = StringMatchCandidate::with_index(1, "format".to_string(), 0);
+        let substring = StringMatchCandidate::with_index(2, "debug_format".to_string(), 1);
+
+        let prefix_match = fuzzy_match_candidate(&prefix, "fo").expect("prefix match");
+        let substring_match = fuzzy_match_candidate(&substring, "fo").expect("substring match");
+
+        assert!(prefix_match.score > substring_match.score);
+        assert_eq!(prefix_match.positions, vec![0, 1]);
+    }
+
+    #[test]
+    fn test_fuzzy_match_supports_subsequence_matches() {
+        let candidate = StringMatchCandidate::with_index(1, "HashMap".to_string(), 0);
+
+        let string_match = fuzzy_match_candidate(&candidate, "hmp").expect("subsequence match");
+
+        assert_eq!(string_match.positions, vec![0, 4, 6]);
+        assert!(string_match.score > 0);
     }
 
     #[test]
