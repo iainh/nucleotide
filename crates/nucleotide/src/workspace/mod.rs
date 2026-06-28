@@ -11939,51 +11939,17 @@ impl Workspace {
         completion_item: nucleotide_ui::CompletionItem,
         cx: &mut Context<Self>,
     ) {
+        let snippet_text = completion_item.text.to_string();
         nucleotide_logging::debug!(
-            completion_text = %completion_item.text,
-            "Processing snippet completion with cursor positioning"
+            completion_text = %snippet_text,
+            "Processing snippet completion with active snippet support"
         );
 
-        // Parse the snippet
-        let snippet_template = match nucleotide_core::SnippetTemplate::parse(&completion_item.text)
-        {
-            Ok(template) => template,
-            Err(err) => {
-                nucleotide_logging::warn!(
-                    completion_text = %completion_item.text,
-                    error = %err,
-                    "Failed to parse snippet, falling back to plain text"
-                );
-                // Fall back to plain text handling
-                self.handle_plain_text_completion(completion_item, cx);
-                return;
-            }
-        };
-
-        // Render snippet without committing placeholder names as source.
-        let (plain_text, cursor_offset) = snippet_template.render_completion_text();
-
-        nucleotide_logging::debug!(
-            original_snippet = %completion_item.text,
-            rendered_text = %plain_text,
-            has_final_tabstop = snippet_template.final_cursor_pos.is_some(),
-            "Snippet parsed successfully"
-        );
-
-        // Use Helix's transaction system to insert the plain text
         let rt_handle = self.handle.clone();
         self.core.update(cx, move |core, cx| {
             let _guard = rt_handle.enter();
             let editor = &mut core.editor;
-
-            nucleotide_logging::debug!(
-                rendered_text = %plain_text,
-                "Creating Helix transaction for snippet completion"
-            );
-
-            // Apply the completion using Helix's transaction system
             let (view, doc) = helix_view::current!(editor);
-            use helix_core::Selection;
             use helix_core::Transaction;
 
             let text = doc.text();
@@ -11997,44 +11963,38 @@ impl Workspace {
                 "Transaction context before snippet insertion"
             );
 
-            // Create transaction to replace the partial word with completion text
-            let mut replacement_start_pos = primary_cursor;
-            let transaction = Transaction::change_by_selection(text, selection, |range| {
-                // Find the start of the word being completed (go backward from cursor)
-                let cursor_pos = range.cursor(text.slice(..));
-                let text_slice = text.slice(..);
-                let start_pos = completion_word_start(text_slice, cursor_pos);
+            let snippet_result = snippet_completion_transaction(
+                text,
+                selection,
+                &snippet_text,
+                None,
+                false,
+                &mut doc.snippet_ctx(),
+            );
 
-                nucleotide_logging::trace!(
-                    range_cursor = cursor_pos,
-                    "Processing range in snippet transaction"
-                );
+            let Some((transaction, rendered_snippet)) = snippet_result
+                .map_err(|err| {
+                    nucleotide_logging::warn!(
+                        completion_text = %snippet_text,
+                        error = %err,
+                        "Failed to parse snippet, falling back to plain text"
+                    );
+                })
+                .ok()
+            else {
+                let transaction = Transaction::change_by_selection(text, selection, |range| {
+                    let cursor_pos = range.cursor(text.slice(..));
+                    let start_pos = completion_word_start(text.slice(..), cursor_pos);
+                    (start_pos, cursor_pos, Some(snippet_text.clone().into()))
+                });
+                doc.apply(&transaction, view.id);
+                cx.notify();
+                return;
+            };
 
-                // Store the start position for cursor calculation
-                replacement_start_pos = start_pos;
-
-                nucleotide_logging::trace!(
-                    start_pos = start_pos,
-                    end_pos = cursor_pos,
-                    replacement_text = %plain_text,
-                    "Snippet transaction replacement calculated"
-                );
-
-                // Return the replacement text for this range
-                (start_pos, cursor_pos, Some(plain_text.clone().into()))
-            });
-
-            // Apply the transaction
             nucleotide_logging::debug!("Applying snippet transaction to document");
             doc.apply(&transaction, view.id);
-
-            let cursor_pos = replacement_start_pos + cursor_offset;
-            nucleotide_logging::debug!(
-                calculated_cursor_pos = cursor_pos,
-                replacement_start = replacement_start_pos,
-                "Setting cursor position for snippet"
-            );
-            doc.set_selection(view.id, Selection::point(cursor_pos));
+            install_active_completion_snippet(doc, rendered_snippet);
 
             nucleotide_logging::debug!("Applied snippet completion transaction successfully");
 
@@ -12073,28 +12033,7 @@ impl Workspace {
             let primary_cursor = selection.primary().cursor(text.slice(..));
             let offset_encoding = helix_offset_encoding_from_completion(edit.offset_encoding);
 
-            let (replacement_text, snippet_cursor_offset) = match completion_item.insert_text_format
-            {
-                nucleotide_ui::completion_v2::InsertTextFormat::Snippet => {
-                    match nucleotide_core::SnippetTemplate::parse(&completion_item.text) {
-                        Ok(template) => {
-                            let (text, cursor_offset) = template.render_completion_text();
-                            (text, Some(cursor_offset))
-                        }
-                        Err(err) => {
-                            nucleotide_logging::warn!(
-                                completion_text = %completion_item.text,
-                                error = %err,
-                                "Failed to parse snippet completion edit, inserting raw text"
-                            );
-                            (completion_item.text.to_string(), None)
-                        }
-                    }
-                }
-                nucleotide_ui::completion_v2::InsertTextFormat::PlainText => {
-                    (completion_item.text.to_string(), None)
-                }
-            };
+            let replacement_text = completion_item.text.to_string();
 
             let (edit_offset, replacement_start) = edit
                 .text_edit
@@ -12105,13 +12044,49 @@ impl Workspace {
                 .map(|(offset, start)| (Some(offset), start))
                 .unwrap_or_else(|| (None, completion_word_start(text.slice(..), primary_cursor)));
 
-            let transaction = helix_lsp::util::generate_transaction_from_completion_edit(
-                text,
-                selection,
-                edit_offset,
-                false,
-                replacement_text,
-            );
+            let (transaction, rendered_snippet) = match completion_item.insert_text_format {
+                nucleotide_ui::completion_v2::InsertTextFormat::Snippet => {
+                    match snippet_completion_transaction(
+                        text,
+                        selection,
+                        &replacement_text,
+                        edit_offset,
+                        false,
+                        &mut doc.snippet_ctx(),
+                    ) {
+                        Ok((transaction, rendered_snippet)) => {
+                            (transaction, Some(rendered_snippet))
+                        }
+                        Err(err) => {
+                            nucleotide_logging::warn!(
+                                completion_text = %replacement_text,
+                                error = %err,
+                                "Failed to parse snippet completion edit, inserting raw text"
+                            );
+                            (
+                                helix_lsp::util::generate_transaction_from_completion_edit(
+                                    text,
+                                    selection,
+                                    edit_offset,
+                                    false,
+                                    replacement_text,
+                                ),
+                                None,
+                            )
+                        }
+                    }
+                }
+                nucleotide_ui::completion_v2::InsertTextFormat::PlainText => (
+                    helix_lsp::util::generate_transaction_from_completion_edit(
+                        text,
+                        selection,
+                        edit_offset,
+                        false,
+                        replacement_text,
+                    ),
+                    None,
+                ),
+            };
 
             nucleotide_logging::debug!(
                 replacement_start = replacement_start,
@@ -12120,8 +12095,8 @@ impl Workspace {
             );
             doc.apply(&transaction, view.id);
 
-            if let Some(cursor_offset) = snippet_cursor_offset {
-                doc.set_selection(view.id, Selection::point(replacement_start + cursor_offset));
+            if let Some(rendered_snippet) = rendered_snippet {
+                install_active_completion_snippet(doc, rendered_snippet);
             }
 
             if !edit.additional_text_edits.is_empty() {
@@ -15415,6 +15390,38 @@ fn should_extend_completion_edit_to_cursor(
         && start == completion_word_start(text, primary_cursor)
 }
 
+fn snippet_completion_transaction(
+    text: &Rope,
+    selection: &Selection,
+    snippet_text: &str,
+    edit_offset: Option<(i128, i128)>,
+    replace_mode: bool,
+    snippet_ctx: &mut helix_core::snippets::SnippetRenderCtx,
+) -> anyhow::Result<(
+    helix_core::Transaction,
+    helix_core::snippets::RenderedSnippet,
+)> {
+    let snippet = helix_core::snippets::Snippet::parse(snippet_text)?;
+    Ok(helix_lsp::util::generate_transaction_from_snippet(
+        text,
+        selection,
+        edit_offset,
+        replace_mode,
+        snippet,
+        snippet_ctx,
+    ))
+}
+
+fn install_active_completion_snippet(
+    doc: &mut helix_view::Document,
+    snippet: helix_core::snippets::RenderedSnippet,
+) {
+    doc.active_snippet = match doc.active_snippet.take() {
+        Some(active) => active.insert_subsnippet(snippet),
+        None => helix_core::snippets::ActiveSnippet::new(snippet),
+    };
+}
+
 fn lsp_text_edit_from_completion(edit: &nucleotide_ui::CompletionTextEdit) -> lsp::TextEdit {
     lsp::TextEdit::new(lsp_range_from_completion(edit.range), edit.new_text.clone())
 }
@@ -16397,6 +16404,66 @@ mod tests {
 
         assert_eq!(offset, (-5, -2));
         assert_eq!(start, 2);
+    }
+
+    fn test_snippet_render_ctx() -> helix_core::snippets::SnippetRenderCtx {
+        helix_core::snippets::SnippetRenderCtx {
+            resolve_var: Box::new(|_| None),
+            tab_width: 4,
+            indent_style: helix_core::indent::IndentStyle::Spaces(4),
+            line_ending: "\n",
+        }
+    }
+
+    #[test]
+    fn snippet_completion_transaction_preserves_active_placeholder() {
+        let mut rope = Rope::from("pri");
+        let selection = Selection::point(3);
+        let mut snippet_ctx = test_snippet_render_ctx();
+
+        let (transaction, rendered_snippet) = snippet_completion_transaction(
+            &rope,
+            &selection,
+            "println(${1:value});$0",
+            None,
+            false,
+            &mut snippet_ctx,
+        )
+        .unwrap();
+
+        assert!(transaction.apply(&mut rope));
+        assert_eq!(rope.to_string(), "println(value);");
+        assert!(helix_core::snippets::ActiveSnippet::new(rendered_snippet).is_some());
+
+        let primary = transaction.selection().unwrap().primary();
+        assert_eq!(primary.from(), 8);
+        assert_eq!(primary.to(), 13);
+    }
+
+    #[test]
+    fn snippet_completion_transaction_uses_lsp_edit_range() {
+        let mut rope = Rope::from("let value = old;");
+        let selection = Selection::point(15);
+        let mut snippet_ctx = test_snippet_render_ctx();
+        let edit_offset = Some((-3, 0));
+
+        let (transaction, rendered_snippet) = snippet_completion_transaction(
+            &rope,
+            &selection,
+            "${1:new_value}$0",
+            edit_offset,
+            false,
+            &mut snippet_ctx,
+        )
+        .unwrap();
+
+        assert!(transaction.apply(&mut rope));
+        assert_eq!(rope.to_string(), "let value = new_value;");
+        assert!(helix_core::snippets::ActiveSnippet::new(rendered_snippet).is_some());
+
+        let primary = transaction.selection().unwrap().primary();
+        assert_eq!(primary.from(), 12);
+        assert_eq!(primary.to(), 21);
     }
 
     #[test]
