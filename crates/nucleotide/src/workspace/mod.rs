@@ -19,13 +19,13 @@ use std::sync::{LazyLock, Mutex};
 
 #[cfg(target_os = "windows")]
 use gpui::MenuItem;
-use gpui::prelude::FluentBuilder;
+use gpui::prelude::{FluentBuilder, StyledImage};
 use gpui::{
     Anchor, App, AppContext, BorrowAppContext, Bounds, Context, DismissEvent, DragMoveEvent, Empty,
     Entity, EventEmitter, FocusHandle, Focusable, Hsla, InteractiveElement, IntoElement,
     KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels,
     Point, Render, ScrollHandle, Size, StatefulInteractiveElement, Styled, TextStyle, Window,
-    WindowAppearance, canvas, div, px, svg,
+    WindowAppearance, canvas, div, img, px, svg,
 };
 use gpui::{FontFeatures, FontWeight};
 use helix_core::syntax::config::LanguageServerFeature;
@@ -62,6 +62,7 @@ use crate::info_box::InfoBoxView;
 use crate::key_hint_view::KeyHintView;
 use crate::notification::NotificationView;
 use crate::overlay::OverlayView;
+use crate::tab::TabId;
 use crate::types::{
     EditorStatus, GlobalSearchLocation, HoverDocEntry, RegexSelectionAction, Severity,
 };
@@ -78,12 +79,15 @@ use nucleotide_vcs::{VcsEvent, VcsServiceHandle};
 use smallvec::{SmallVec, smallvec};
 
 type FileTreeContextMenuHandler = fn(&mut Workspace, &mut Context<Workspace>);
-type TabContextMenuHandler = fn(&mut Workspace, DocumentId, &mut Context<Workspace>);
+type TabContextMenuHandler = fn(&mut Workspace, TabId, &mut Context<Workspace>);
 type TabBarSplitMenuHandler = fn(&mut Workspace, &mut Context<Workspace>);
 type TabBarNewMenuHandler = fn(&mut Workspace, &mut Context<Workspace>);
 
 const STATUSBAR_NOTIFICATION_MESSAGE_MAX_CHARS: usize = 64;
 const STATUSBAR_LSP_INDICATOR_MAX_CHARS: usize = 56;
+const IMAGE_ZOOM_STEP: f32 = 0.25;
+const IMAGE_ZOOM_MIN: f32 = 0.10;
+const IMAGE_ZOOM_MAX: f32 = 8.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum EnvironmentBadge {
@@ -96,6 +100,15 @@ enum RunnableAction {
     ShowPicker,
     RunNearest,
     RunFileTests,
+}
+
+#[derive(Clone)]
+struct ImageTab {
+    id: u64,
+    path: PathBuf,
+    dimensions: Option<(u32, u32)>,
+    focused_at: std::time::Instant,
+    zoom: f32,
 }
 
 impl EnvironmentBadge {
@@ -153,6 +166,52 @@ fn shorten_statusbar_text(text: &str, max_chars: usize) -> String {
     let mut shortened: String = normalized.chars().take(max_chars - 1).collect();
     shortened.push('…');
     shortened
+}
+
+fn is_image_file_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "avif"
+                    | "bmp"
+                    | "dds"
+                    | "exr"
+                    | "farbfeld"
+                    | "ff"
+                    | "gif"
+                    | "hdr"
+                    | "ico"
+                    | "jpeg"
+                    | "jpg"
+                    | "pam"
+                    | "pbm"
+                    | "pgm"
+                    | "png"
+                    | "ppm"
+                    | "qoi"
+                    | "svg"
+                    | "tga"
+                    | "tif"
+                    | "tiff"
+                    | "webp"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn image_zoom_percent(zoom: f32) -> String {
+    format!("{:.0}%", zoom * 100.0)
+}
+
+fn image_file_dimensions(path: &Path) -> Option<(u32, u32)> {
+    image::ImageReader::open(path)
+        .ok()?
+        .with_guessed_format()
+        .ok()?
+        .into_dimensions()
+        .ok()
 }
 
 fn statusbar_lsp_indicator_for_state(
@@ -983,8 +1042,11 @@ pub struct Workspace {
     needs_window_appearance_update: bool,
     pending_appearance: Option<gpui::WindowAppearance>,
     tab_bar_scroll_handle: ScrollHandle,
-    last_scrolled_tab_doc_id: Option<helix_view::DocumentId>,
+    last_scrolled_tab_doc_id: Option<TabId>,
     suppress_tab_bar_auto_scroll: bool,
+    image_tabs: Vec<ImageTab>,
+    active_image_tab_id: Option<u64>,
+    next_image_tab_index: u64,
     // File tree context menu state
     context_menu_open: bool,
     context_menu_pos: (f32, f32),
@@ -993,9 +1055,9 @@ pub struct Workspace {
     // Tab context menu state
     tab_context_menu_open: bool,
     tab_context_menu_pos: (f32, f32),
-    tab_context_menu_doc_id: Option<DocumentId>,
+    tab_context_menu_doc_id: Option<TabId>,
     tab_context_menu_index: usize,
-    pinned_documents: HashSet<DocumentId>,
+    pinned_documents: HashSet<TabId>,
     // Tab bar split menu state
     tab_bar_split_menu_open: bool,
     tab_bar_split_menu_pos: (f32, f32),
@@ -1343,6 +1405,7 @@ fn zed_style_tab_order<T: Copy + Eq + Hash>(
     pinned
 }
 
+#[cfg(test)]
 fn change_tab_pin_state<T: Copy + Eq + Hash>(
     ordered_items: &mut Vec<T>,
     pinned_items: &mut HashSet<T>,
@@ -2538,6 +2601,15 @@ impl Workspace {
         let mut file_name = "[no file]".to_string();
         let mut position_text = "1:1".to_string();
 
+        if let Some(tab) = self
+            .active_image_tab_id
+            .and_then(|doc_id| self.image_tabs.iter().find(|tab| tab.id == doc_id))
+        {
+            file_name = tab.path.display().to_string();
+            position_text = image_zoom_percent(tab.zoom);
+            return (mode, mode_name, file_name, position_text, false, None);
+        }
+
         // Get info from focused view if available
         if let Some(view_id) = self.view_manager.focused_view_id()
             && let Some((view, doc)) = editor
@@ -3010,16 +3082,81 @@ impl Workspace {
         }
     }
 
-    fn visible_tab_document_ids(&self, cx: &mut Context<Self>) -> Vec<DocumentId> {
+    fn image_tab_mut(&mut self, image_id: u64) -> Option<&mut ImageTab> {
+        self.image_tabs.iter_mut().find(|tab| tab.id == image_id)
+    }
+
+    fn next_image_tab_id(&mut self) -> u64 {
+        let id = self.next_image_tab_index;
+        self.next_image_tab_index = self.next_image_tab_index.saturating_add(1);
+        id
+    }
+
+    fn open_image_file_internal(
+        &mut self,
+        path: &std::path::Path,
+        should_focus: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let path = path.to_path_buf();
+        if let Some(tab) = self.image_tabs.iter_mut().find(|tab| tab.path == path) {
+            tab.focused_at = std::time::Instant::now();
+            self.active_image_tab_id = Some(tab.id);
+        } else {
+            let tab = ImageTab {
+                id: self.next_image_tab_id(),
+                path: path.clone(),
+                dimensions: image_file_dimensions(&path),
+                focused_at: std::time::Instant::now(),
+                zoom: 1.0,
+            };
+            self.active_image_tab_id = Some(tab.id);
+            self.image_tabs.push(tab);
+        }
+
+        self.allow_tab_bar_auto_scroll();
+
+        if let Some(file_tree) = &self.file_tree {
+            file_tree.update(cx, |tree, cx| {
+                tree.sync_selection_with_file(Some(&path), cx);
+            });
+        }
+
+        if should_focus {
+            self.view_manager.set_needs_focus_restore(false);
+        }
+
+        cx.notify();
+    }
+
+    fn switch_to_image_tab(&mut self, image_id: u64, cx: &mut Context<Self>) {
+        if let Some(tab) = self.image_tab_mut(image_id) {
+            tab.focused_at = std::time::Instant::now();
+            self.active_image_tab_id = Some(image_id);
+            self.allow_tab_bar_auto_scroll();
+            cx.notify();
+        }
+    }
+
+    fn set_image_tab_zoom(&mut self, image_id: u64, zoom: f32, cx: &mut Context<Self>) {
+        if let Some(tab) = self.image_tab_mut(image_id) {
+            tab.zoom = zoom.clamp(IMAGE_ZOOM_MIN, IMAGE_ZOOM_MAX);
+            cx.notify();
+        }
+    }
+
+    fn visible_tab_document_ids(&self, cx: &mut Context<Self>) -> Vec<TabId> {
         let core = self.core.read(cx);
         let editor = &core.editor;
 
-        let visible_doc_ids = self
+        let mut visible_doc_ids = self
             .document_order
             .iter()
             .copied()
             .filter(|doc_id| editor.documents.contains_key(doc_id))
+            .map(TabId::Document)
             .collect::<Vec<_>>();
+        visible_doc_ids.extend(self.image_tabs.iter().map(|tab| TabId::Image(tab.id)));
 
         zed_style_tab_order(&visible_doc_ids, &self.pinned_documents)
     }
@@ -3027,16 +3164,28 @@ impl Workspace {
     fn tab_activation_documents(
         &self,
         cx: &mut Context<Self>,
-    ) -> Vec<TabActivationDocument<DocumentId>> {
+    ) -> Vec<TabActivationDocument<TabId>> {
         let visible_doc_ids = self.visible_tab_document_ids(cx);
         let core = self.core.read(cx);
 
         visible_doc_ids
             .into_iter()
-            .filter_map(|doc_id| {
+            .filter_map(|tab_id| {
+                if let TabId::Image(image_id) = tab_id
+                    && let Some(tab) = self.image_tabs.iter().find(|tab| tab.id == image_id)
+                {
+                    return Some(TabActivationDocument {
+                        id: tab_id,
+                        focused_at: tab.focused_at,
+                    });
+                }
+
+                let TabId::Document(doc_id) = tab_id else {
+                    return None;
+                };
                 let doc = core.editor.documents.get(&doc_id)?;
                 Some(TabActivationDocument {
-                    id: doc_id,
+                    id: tab_id,
                     focused_at: doc.focused_at,
                 })
             })
@@ -3152,27 +3301,65 @@ impl Workspace {
         }
     }
 
+    fn close_tab_ids(&mut self, tab_ids: impl IntoIterator<Item = TabId>, cx: &mut Context<Self>) {
+        let mut document_ids = Vec::new();
+        for tab_id in tab_ids {
+            match tab_id {
+                TabId::Document(doc_id) => document_ids.push(doc_id),
+                TabId::Image(image_id) => self.close_image_tab(image_id, None, cx),
+            }
+        }
+
+        self.close_tab_documents(document_ids, cx);
+    }
+
     fn close_single_tab_document(
         &mut self,
         doc_id: DocumentId,
-        active_doc_id: Option<DocumentId>,
-        activation_documents: &[TabActivationDocument<DocumentId>],
+        active_doc_id: Option<TabId>,
+        activation_documents: &[TabActivationDocument<TabId>],
         activate_on_close: crate::config::TabActivateOnClose,
         cx: &mut Context<Self>,
     ) {
         let activation_target = tab_activation_target_after_close(
             activation_documents,
-            doc_id,
+            TabId::Document(doc_id),
             active_doc_id,
             activate_on_close,
         );
         self.close_single_tab_document_with_activation_target(doc_id, activation_target, false, cx);
     }
 
+    fn close_image_tab(
+        &mut self,
+        image_id: u64,
+        activation_target: Option<TabId>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(index) = self.image_tabs.iter().position(|tab| tab.id == image_id) else {
+            return;
+        };
+
+        self.image_tabs.remove(index);
+        self.pinned_documents.remove(&TabId::Image(image_id));
+
+        if self.active_image_tab_id == Some(image_id) {
+            self.active_image_tab_id = None;
+            if let Some(target_id) = activation_target {
+                match target_id {
+                    TabId::Image(image_id) => self.switch_to_image_tab(image_id, cx),
+                    TabId::Document(doc_id) => self.switch_to_tab_document(doc_id, cx),
+                }
+            }
+        }
+
+        cx.notify();
+    }
+
     fn close_single_tab_document_with_activation_target(
         &mut self,
         doc_id: DocumentId,
-        activation_target: Option<DocumentId>,
+        activation_target: Option<TabId>,
         force: bool,
         cx: &mut Context<Self>,
     ) {
@@ -3182,7 +3369,7 @@ impl Workspace {
 
             match core.editor.close_document(doc_id, force) {
                 Ok(()) => {
-                    if let Some(target_doc_id) = activation_target
+                    if let Some(TabId::Document(target_doc_id)) = activation_target
                         && core.editor.documents.contains_key(&target_doc_id)
                     {
                         core.editor
@@ -3223,7 +3410,10 @@ impl Workspace {
             self.request_unsaved_close(
                 PendingUnsavedClose::Single {
                     doc_id,
-                    activation_target,
+                    activation_target: match activation_target {
+                        Some(TabId::Document(doc_id)) => Some(doc_id),
+                        Some(TabId::Image(_)) | None => None,
+                    },
                 },
                 vec![name],
                 cx,
@@ -3234,6 +3424,9 @@ impl Workspace {
         if closed {
             if activation_target.is_some() {
                 self.allow_tab_bar_auto_scroll();
+            }
+            if let Some(TabId::Image(image_id)) = activation_target {
+                self.switch_to_image_tab(image_id, cx);
             }
             self.unregister_preview_document(doc_id, cx);
             self.update_document_views(cx);
@@ -3247,7 +3440,12 @@ impl Workspace {
         activation_target: Option<DocumentId>,
         cx: &mut Context<Self>,
     ) {
-        self.close_single_tab_document_with_activation_target(doc_id, activation_target, true, cx);
+        self.close_single_tab_document_with_activation_target(
+            doc_id,
+            activation_target.map(TabId::Document),
+            true,
+            cx,
+        );
     }
 
     fn force_close_tab_documents(
@@ -3297,8 +3495,16 @@ impl Workspace {
         Some((doc_id, view_id))
     }
 
+    fn active_tab_doc_id(&self, cx: &mut Context<Self>) -> Option<TabId> {
+        self.active_image_tab_id.map(TabId::Image).or_else(|| {
+            self.active_document_and_view(cx)
+                .map(|(doc_id, _)| TabId::Document(doc_id))
+        })
+    }
+
     fn switch_to_tab_document(&mut self, doc_id: DocumentId, cx: &mut Context<Self>) {
         self.allow_tab_bar_auto_scroll();
+        self.active_image_tab_id = None;
         let handle = self.handle.clone();
         self.core.update(cx, |core, cx| {
             let _guard = handle.enter();
@@ -3362,7 +3568,7 @@ impl Workspace {
                         id: doc_id,
                         focused_at: doc.focused_at,
                         is_modified: doc.is_modified(),
-                        is_pinned: self.pinned_documents.contains(&doc_id),
+                        is_pinned: self.pinned_documents.contains(&TabId::Document(doc_id)),
                         is_protected: protected_doc_id == Some(doc_id),
                     })
                 })
@@ -3384,23 +3590,37 @@ impl Workspace {
         self.enforce_max_tabs_to_target(target_count, protected_doc_id, cx);
     }
 
-    fn unpinned_tab_document_ids(
-        &self,
-        doc_ids: impl IntoIterator<Item = DocumentId>,
-    ) -> Vec<DocumentId> {
-        doc_ids
+    fn unpinned_tab_document_ids(&self, tab_ids: impl IntoIterator<Item = TabId>) -> Vec<TabId> {
+        tab_ids
             .into_iter()
-            .filter(|doc_id| !self.pinned_documents.contains(doc_id))
+            .filter(|tab_id| !self.pinned_documents.contains(tab_id))
             .collect()
     }
 
-    fn tab_cm_action_close(&mut self, doc_id: DocumentId, cx: &mut Context<Self>) {
+    fn tab_cm_action_close(&mut self, tab_id: TabId, cx: &mut Context<Self>) {
+        if let TabId::Image(image_id) = tab_id {
+            let active_doc_id = self.active_tab_doc_id(cx);
+            let activation_documents = self.tab_activation_documents(cx);
+            let activate_on_close = self.core.read(cx).config.gui.tabs.activate_on_close;
+            let activation_target = tab_activation_target_after_close(
+                &activation_documents,
+                tab_id,
+                active_doc_id,
+                activate_on_close,
+            );
+            self.close_image_tab(image_id, activation_target, cx);
+            return;
+        }
+
+        let TabId::Document(doc_id) = tab_id else {
+            return;
+        };
         let active_doc_id = {
             let core = self.core.read(cx);
             self.view_manager
                 .focused_view_id()
                 .and_then(|focused_view_id| core.editor.tree.try_get(focused_view_id))
-                .map(|view| view.doc)
+                .map(|view| TabId::Document(view.doc))
         };
         let activation_documents = self.tab_activation_documents(cx);
         let activate_on_close = self.core.read(cx).config.gui.tabs.activate_on_close;
@@ -3426,8 +3646,8 @@ impl Workspace {
         let activate_on_close = self.core.read(cx).config.gui.tabs.activate_on_close;
         let activation_target = tab_activation_target_after_close(
             &activation_documents,
-            active_doc_id,
-            Some(active_doc_id),
+            TabId::Document(active_doc_id),
+            Some(TabId::Document(active_doc_id)),
             activate_on_close,
         );
         self.close_single_tab_document_with_activation_target(
@@ -3439,7 +3659,7 @@ impl Workspace {
     }
 
     fn close_active_tab_document_with_force(&mut self, force: bool, cx: &mut Context<Self>) {
-        let Some((active_doc_id, _active_view_id)) = self.active_document_and_view(cx) else {
+        let Some(active_doc_id) = self.active_tab_doc_id(cx) else {
             return;
         };
 
@@ -3449,43 +3669,53 @@ impl Workspace {
             &self.pinned_documents,
             Some(active_doc_id),
         ) {
-            ActiveTabClosePlan::Activate(doc_id) => {
-                self.switch_to_tab_document(doc_id, cx);
-            }
-            ActiveTabClosePlan::Close(doc_id) => {
+            ActiveTabClosePlan::Activate(tab_id) => match tab_id {
+                TabId::Image(image_id) => self.switch_to_image_tab(image_id, cx),
+                TabId::Document(doc_id) => self.switch_to_tab_document(doc_id, cx),
+            },
+            ActiveTabClosePlan::Close(tab_id) => {
                 let activation_documents = self.tab_activation_documents(cx);
                 let activate_on_close = self.core.read(cx).config.gui.tabs.activate_on_close;
                 let activation_target = tab_activation_target_after_close(
                     &activation_documents,
-                    doc_id,
-                    Some(doc_id),
+                    tab_id,
+                    Some(tab_id),
                     activate_on_close,
                 );
-                self.close_single_tab_document_with_activation_target(
-                    doc_id,
-                    activation_target,
-                    force,
-                    cx,
-                );
+                match tab_id {
+                    TabId::Image(image_id) => self.close_image_tab(image_id, activation_target, cx),
+                    TabId::Document(doc_id) => self
+                        .close_single_tab_document_with_activation_target(
+                            doc_id,
+                            activation_target,
+                            force,
+                            cx,
+                        ),
+                }
             }
             ActiveTabClosePlan::Ignore => {}
         }
     }
 
-    fn tab_document_path(&self, doc_id: DocumentId, cx: &mut Context<Self>) -> Option<PathBuf> {
-        let core = self.core.read(cx);
-        core.editor
-            .documents
-            .get(&doc_id)
-            .and_then(|doc| doc.path().map(|path| path.to_path_buf()))
+    fn tab_document_path(&self, tab_id: TabId, cx: &mut Context<Self>) -> Option<PathBuf> {
+        match tab_id {
+            TabId::Image(image_id) => self
+                .image_tabs
+                .iter()
+                .find(|tab| tab.id == image_id)
+                .map(|tab| tab.path.clone()),
+            TabId::Document(doc_id) => {
+                let core = self.core.read(cx);
+                core.editor
+                    .documents
+                    .get(&doc_id)
+                    .and_then(|doc| doc.path().map(|path| path.to_path_buf()))
+            }
+        }
     }
 
-    fn tab_terminal_directory(
-        &self,
-        doc_id: DocumentId,
-        cx: &mut Context<Self>,
-    ) -> Option<PathBuf> {
-        let path = self.tab_document_path(doc_id, cx)?;
+    fn tab_terminal_directory(&self, tab_id: TabId, cx: &mut Context<Self>) -> Option<PathBuf> {
+        let path = self.tab_document_path(tab_id, cx)?;
         let parent = path.parent()?;
         if parent.as_os_str().is_empty() {
             return self.current_project_root.clone();
@@ -3494,17 +3724,20 @@ impl Workspace {
     }
 
     fn tab_context_menu_capabilities(&self, cx: &mut Context<Self>) -> TabContextMenuCapabilities {
-        let Some(doc_id) = self.tab_context_menu_doc_id else {
+        let Some(tab_id) = self.tab_context_menu_doc_id else {
             return TabContextMenuCapabilities::default();
         };
 
-        let tab_path = self.tab_document_path(doc_id, cx);
-        let is_readonly = {
-            let core = self.core.read(cx);
-            core.editor
-                .documents
-                .get(&doc_id)
-                .is_some_and(|doc| doc.readonly)
+        let tab_path = self.tab_document_path(tab_id, cx);
+        let is_readonly = match tab_id {
+            TabId::Image(_) => false,
+            TabId::Document(doc_id) => {
+                let core = self.core.read(cx);
+                core.editor
+                    .documents
+                    .get(&doc_id)
+                    .is_some_and(|doc| doc.readonly)
+            }
         };
 
         TabContextMenuCapabilities {
@@ -3512,7 +3745,7 @@ impl Workspace {
             has_project_panel_path: tab_path
                 .as_deref()
                 .is_some_and(|path| self.tab_path_visible_in_project_panel(path, cx)),
-            has_terminal_directory: self.tab_terminal_directory(doc_id, cx).is_some(),
+            has_terminal_directory: self.tab_terminal_directory(tab_id, cx).is_some(),
             is_readonly,
         }
     }
@@ -3546,8 +3779,8 @@ impl Workspace {
         path.display().to_string()
     }
 
-    fn tab_cm_action_copy_path(&mut self, doc_id: DocumentId, cx: &mut Context<Self>) {
-        if let Some(path) = self.tab_document_path(doc_id, cx) {
+    fn tab_cm_action_copy_path(&mut self, tab_id: TabId, cx: &mut Context<Self>) {
+        if let Some(path) = self.tab_document_path(tab_id, cx) {
             let text = path.display().to_string();
             if !Self::copy_to_clipboard_impl(&text) {
                 nucleotide_logging::warn!(path=%text, "Failed to copy tab path to clipboard");
@@ -3562,8 +3795,8 @@ impl Workspace {
         }
     }
 
-    fn tab_cm_action_copy_relative_path(&mut self, doc_id: DocumentId, cx: &mut Context<Self>) {
-        if let Some(path) = self.tab_document_path(doc_id, cx) {
+    fn tab_cm_action_copy_relative_path(&mut self, tab_id: TabId, cx: &mut Context<Self>) {
+        if let Some(path) = self.tab_document_path(tab_id, cx) {
             let text = self.relative_tab_path_text(&path);
             if !Self::copy_to_clipboard_impl(&text) {
                 nucleotide_logging::warn!(
@@ -3581,8 +3814,8 @@ impl Workspace {
         }
     }
 
-    fn tab_cm_action_reveal_in_os(&mut self, doc_id: DocumentId, cx: &mut Context<Self>) {
-        if let Some(path) = self.tab_document_path(doc_id, cx) {
+    fn tab_cm_action_reveal_in_os(&mut self, tab_id: TabId, cx: &mut Context<Self>) {
+        if let Some(path) = self.tab_document_path(tab_id, cx) {
             let event = nucleotide_events::v2::workspace::Event::FileOpRequested {
                 intent: nucleotide_events::v2::workspace::FileOpIntent::RevealInOs { path },
             };
@@ -3590,12 +3823,8 @@ impl Workspace {
         }
     }
 
-    fn tab_cm_action_reveal_in_project_panel(
-        &mut self,
-        doc_id: DocumentId,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(path) = self.tab_document_path(doc_id, cx) else {
+    fn tab_cm_action_reveal_in_project_panel(&mut self, tab_id: TabId, cx: &mut Context<Self>) {
+        let Some(path) = self.tab_document_path(tab_id, cx) else {
             return;
         };
 
@@ -3610,13 +3839,17 @@ impl Workspace {
         cx.notify();
     }
 
-    fn tab_cm_action_open_in_terminal(&mut self, doc_id: DocumentId, cx: &mut Context<Self>) {
-        if let Some(cwd) = self.tab_terminal_directory(doc_id, cx) {
+    fn tab_cm_action_open_in_terminal(&mut self, tab_id: TabId, cx: &mut Context<Self>) {
+        if let Some(cwd) = self.tab_terminal_directory(tab_id, cx) {
             self.open_terminal_panel_at(Some(cwd), cx);
         }
     }
 
-    fn tab_cm_action_toggle_readonly(&mut self, doc_id: DocumentId, cx: &mut Context<Self>) {
+    fn tab_cm_action_toggle_readonly(&mut self, tab_id: TabId, cx: &mut Context<Self>) {
+        let TabId::Document(doc_id) = tab_id else {
+            return;
+        };
+
         let toggled = self.core.update(cx, |core, _cx| {
             core.editor.documents.get_mut(&doc_id).map(|doc| {
                 doc.readonly = !doc.readonly;
@@ -3630,96 +3863,103 @@ impl Workspace {
         }
     }
 
-    fn tab_cm_action_toggle_pin(&mut self, doc_id: DocumentId, cx: &mut Context<Self>) {
-        let should_pin = !self.pinned_documents.contains(&doc_id);
-        if change_tab_pin_state(
-            &mut self.document_order,
-            &mut self.pinned_documents,
-            doc_id,
-            should_pin,
-        ) {
-            cx.notify();
+    fn tab_cm_action_toggle_pin(&mut self, tab_id: TabId, cx: &mut Context<Self>) {
+        if self.pinned_documents.contains(&tab_id) {
+            self.pinned_documents.remove(&tab_id);
+        } else {
+            self.pinned_documents.insert(tab_id);
         }
+        cx.notify();
     }
 
-    fn tab_action_double_click(&mut self, doc_id: DocumentId, cx: &mut Context<Self>) {
-        self.unregister_preview_document(doc_id, cx);
+    fn tab_action_double_click(&mut self, tab_id: TabId, cx: &mut Context<Self>) {
+        if let TabId::Document(doc_id) = tab_id {
+            self.unregister_preview_document(doc_id, cx);
+        }
 
-        let path = self.tab_document_path(doc_id, cx);
+        let path = self.tab_document_path(tab_id, cx);
         match tab_double_click_plan(path.is_some()) {
             TabDoubleClickPlan::Rename => {
                 if let Some(path) = path {
                     self.start_rename_file(path, cx);
                 }
             }
-            TabDoubleClickPlan::Activate => {
-                self.switch_to_tab_document(doc_id, cx);
-            }
+            TabDoubleClickPlan::Activate => match tab_id {
+                TabId::Image(image_id) => self.switch_to_image_tab(image_id, cx),
+                TabId::Document(doc_id) => self.switch_to_tab_document(doc_id, cx),
+            },
         }
 
         cx.notify();
     }
 
-    fn tab_cm_action_close_others(&mut self, doc_id: DocumentId, cx: &mut Context<Self>) {
+    fn tab_cm_action_close_others(&mut self, tab_id: TabId, cx: &mut Context<Self>) {
         let should_unpreview_retained_tab = cx
             .try_global::<nucleotide_core::preview_tracker::PreviewTracker>()
-            .is_some_and(|tracker| {
-                should_unpreview_retained_tab_after_close_others(tracker.is_preview_doc(doc_id))
+            .is_some_and(|tracker| match tab_id {
+                TabId::Document(doc_id) => {
+                    should_unpreview_retained_tab_after_close_others(tracker.is_preview_doc(doc_id))
+                }
+                TabId::Image(_) => false,
             });
         if should_unpreview_retained_tab {
-            self.unregister_preview_document(doc_id, cx);
+            if let TabId::Document(doc_id) = tab_id {
+                self.unregister_preview_document(doc_id, cx);
+            }
         }
 
-        let doc_ids = self.visible_tab_document_ids(cx);
-        let doc_ids = self.unpinned_tab_document_ids(
-            doc_ids.into_iter().filter(|candidate| *candidate != doc_id),
+        let tab_ids = self.visible_tab_document_ids(cx);
+        let tab_ids = self.unpinned_tab_document_ids(
+            tab_ids.into_iter().filter(|candidate| *candidate != tab_id),
         );
-        self.close_tab_documents(doc_ids, cx);
+        self.close_tab_ids(tab_ids, cx);
     }
 
-    fn tab_cm_action_close_left(&mut self, doc_id: DocumentId, cx: &mut Context<Self>) {
+    fn tab_cm_action_close_left(&mut self, tab_id: TabId, cx: &mut Context<Self>) {
         let visible_doc_ids = self.visible_tab_document_ids(cx);
         let doc_ids = visible_doc_ids
             .iter()
-            .position(|candidate| *candidate == doc_id)
+            .position(|candidate| *candidate == tab_id)
             .map(|index| visible_doc_ids[..index].to_vec())
             .unwrap_or_default();
         let doc_ids = self.unpinned_tab_document_ids(doc_ids);
-        self.close_tab_documents(doc_ids, cx);
+        self.close_tab_ids(doc_ids, cx);
     }
 
-    fn tab_cm_action_close_right(&mut self, doc_id: DocumentId, cx: &mut Context<Self>) {
+    fn tab_cm_action_close_right(&mut self, tab_id: TabId, cx: &mut Context<Self>) {
         let visible_doc_ids = self.visible_tab_document_ids(cx);
         let doc_ids = visible_doc_ids
             .iter()
-            .position(|candidate| *candidate == doc_id)
+            .position(|candidate| *candidate == tab_id)
             .map(|index| visible_doc_ids[index + 1..].to_vec())
             .unwrap_or_default();
         let doc_ids = self.unpinned_tab_document_ids(doc_ids);
-        self.close_tab_documents(doc_ids, cx);
+        self.close_tab_ids(doc_ids, cx);
     }
 
-    fn tab_cm_action_close_clean(&mut self, _doc_id: DocumentId, cx: &mut Context<Self>) {
+    fn tab_cm_action_close_clean(&mut self, _tab_id: TabId, cx: &mut Context<Self>) {
         let visible_doc_ids = self.visible_tab_document_ids(cx);
         let doc_ids = {
             let core = self.core.read(cx);
             visible_doc_ids
                 .into_iter()
-                .filter(|doc_id| {
-                    core.editor
+                .filter(|tab_id| match tab_id {
+                    TabId::Image(_) => true,
+                    TabId::Document(doc_id) => core
+                        .editor
                         .documents
                         .get(doc_id)
-                        .is_some_and(|doc| !doc.is_modified())
+                        .is_some_and(|doc| !doc.is_modified()),
                 })
                 .collect::<Vec<_>>()
         };
         let doc_ids = self.unpinned_tab_document_ids(doc_ids);
-        self.close_tab_documents(doc_ids, cx);
+        self.close_tab_ids(doc_ids, cx);
     }
 
-    fn tab_cm_action_close_all(&mut self, _doc_id: DocumentId, cx: &mut Context<Self>) {
+    fn tab_cm_action_close_all(&mut self, _tab_id: TabId, cx: &mut Context<Self>) {
         let doc_ids = self.unpinned_tab_document_ids(self.visible_tab_document_ids(cx));
-        self.close_tab_documents(doc_ids, cx);
+        self.close_tab_ids(doc_ids, cx);
     }
 
     fn tab_bar_action_split_right(&mut self, cx: &mut Context<Self>) {
@@ -3813,6 +4053,19 @@ impl Workspace {
 
     // (debug focus logger removed for commit)
     pub fn current_filename(&self, cx: &App) -> Option<String> {
+        if let Some(tab) = self
+            .active_image_tab_id
+            .and_then(|doc_id| self.image_tabs.iter().find(|tab| tab.id == doc_id))
+        {
+            return Some(
+                tab.path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .map(std::string::ToString::to_string)
+                    .unwrap_or_else(|| tab.path.display().to_string()),
+            );
+        }
+
         let editor = &self.core.read(cx).editor;
 
         // Get the currently focused view
@@ -3988,6 +4241,9 @@ impl Workspace {
             tab_bar_scroll_handle: ScrollHandle::new(),
             last_scrolled_tab_doc_id: None,
             suppress_tab_bar_auto_scroll: false,
+            image_tabs: Vec::new(),
+            active_image_tab_id: None,
+            next_image_tab_index: 1,
             context_menu_open: false,
             context_menu_pos: (0.0, 0.0),
             context_menu_path: None,
@@ -4489,11 +4745,13 @@ impl Workspace {
         let menu_capabilities = self.tab_context_menu_capabilities(cx);
         let has_clean_items = {
             let core = self.core.read(cx);
-            visible_doc_ids.iter().any(|doc_id| {
-                core.editor
+            visible_doc_ids.iter().any(|tab_id| match tab_id {
+                TabId::Image(_) => true,
+                TabId::Document(doc_id) => core
+                    .editor
                     .documents
                     .get(doc_id)
-                    .is_some_and(|doc| !doc.is_modified())
+                    .is_some_and(|doc| !doc.is_modified()),
             })
         };
         let target_is_pinned = self
@@ -5446,11 +5704,13 @@ impl Workspace {
                         let target_index = visible_doc_ids.iter().position(|id| *id == doc_id);
                         let has_clean_items = {
                             let core = self.core.read(cx);
-                            visible_doc_ids.iter().any(|doc_id| {
-                                core.editor
+                            visible_doc_ids.iter().any(|tab_id| match tab_id {
+                                TabId::Image(_) => true,
+                                TabId::Document(doc_id) => core
+                                    .editor
                                     .documents
                                     .get(doc_id)
-                                    .is_some_and(|doc| !doc.is_modified())
+                                    .is_some_and(|doc| !doc.is_modified()),
                             })
                         };
 
@@ -5733,6 +5993,32 @@ impl Workspace {
         &self,
         cx: &Context<Self>,
     ) -> (Option<String>, NativeWindowMetadata) {
+        if let Some(tab) = self
+            .active_image_tab_id
+            .and_then(|doc_id| self.image_tabs.iter().find(|tab| tab.id == doc_id))
+        {
+            let focused_file_name = tab
+                .path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_string);
+            let title = native_window_title(focused_file_name.as_deref());
+            return (
+                focused_file_name,
+                NativeWindowMetadata {
+                    title,
+                    document_path: Some(tab.path.clone()),
+                    edited: self
+                        .core
+                        .read(cx)
+                        .editor
+                        .documents
+                        .values()
+                        .any(|doc| doc.is_modified()),
+                },
+            );
+        }
+
         let core = self.core.read(cx);
         let editor = &core.editor;
         let mut focused_file_name = None;
@@ -7034,13 +7320,14 @@ impl Workspace {
         // Document closed - the view will be cleaned up automatically
         info!("Document closed: {:?}", doc_id);
         self.document_order.retain(|candidate| *candidate != doc_id);
-        self.pinned_documents.remove(&doc_id);
+        self.pinned_documents.remove(&TabId::Document(doc_id));
         self.unregister_preview_document(doc_id, cx);
         cx.notify();
     }
 
     fn handle_view_focused(&mut self, view_id: helix_view::ViewId, cx: &mut Context<Self>) {
         info!("View focused: {:?}", view_id);
+        self.active_image_tab_id = None;
         self.view_manager.handle_view_focused(view_id, cx);
 
         let focused_filename = self.current_filename(cx);
@@ -8071,6 +8358,11 @@ impl Workspace {
         initial_position: Option<Position>,
         cx: &mut Context<Self>,
     ) {
+        if initial_position.is_none() && is_image_file_path(path) {
+            self.open_image_file_internal(path, should_focus, cx);
+            return;
+        }
+
         // Open the specified file in the editor
         debug!("Workspace: Received OpenFile update for: {path:?}");
         let mut reveal_opened_view = None;
@@ -8695,14 +8987,15 @@ impl Workspace {
         debug!(
             "render_tab_bar: bufferline config = {:?}, doc count = {}",
             bufferline_config,
-            editor.documents.len()
+            editor.documents.len() + self.image_tabs.len()
         );
+        let tab_count = editor.documents.len() + self.image_tabs.len();
 
         let should_show_tabs = core.config.gui.tab_bar.show
             && match bufferline_config {
                 BufferLine::Never => false,
                 BufferLine::Always => true,
-                BufferLine::Multiple => editor.documents.len() > 1,
+                BufferLine::Multiple => tab_count > 1,
             };
 
         debug!(
@@ -8722,12 +9015,13 @@ impl Workspace {
 
         debug!("Tab bar visible, rendering tabs");
 
-        // Get the currently active document ID
-        let active_doc_id = self
-            .view_manager
-            .focused_view_id()
-            .and_then(|focused_view_id| editor.tree.try_get(focused_view_id))
-            .map(|view| view.doc);
+        // Get the currently active tab ID
+        let active_doc_id = self.active_image_tab_id.map(TabId::Image).or_else(|| {
+            self.view_manager
+                .focused_view_id()
+                .and_then(|focused_view_id| editor.tree.try_get(focused_view_id))
+                .map(|view| TabId::Document(view.doc))
+        });
 
         // Get project directory for relative paths first
         let project_directory = core.project_directory.clone();
@@ -8744,9 +9038,16 @@ impl Workspace {
         let activate_on_close = core.config.gui.tabs.activate_on_close;
         let show_preview_tabs = core.config.gui.preview_tabs.enabled;
 
-        // Collect all current document IDs
+        // Collect all current tab IDs
         let current_doc_ids: std::collections::HashSet<_> =
             editor.documents.keys().copied().collect();
+        let mut current_tab_ids: std::collections::HashSet<_> = editor
+            .documents
+            .keys()
+            .copied()
+            .map(TabId::Document)
+            .collect();
+        current_tab_ids.extend(self.image_tabs.iter().map(|tab| TabId::Image(tab.id)));
 
         // Release the core borrow early by ending the scope
 
@@ -8754,7 +9055,7 @@ impl Workspace {
         self.document_order
             .retain(|doc_id| current_doc_ids.contains(doc_id));
         self.pinned_documents
-            .retain(|doc_id| current_doc_ids.contains(doc_id));
+            .retain(|tab_id| current_tab_ids.contains(tab_id));
 
         // Add any new documents to the end of the order list (rightmost position)
         for &doc_id in &current_doc_ids {
@@ -8820,12 +9121,12 @@ impl Workspace {
                 };
 
                 documents.push(DocumentInfo {
-                    id: doc_id,
+                    id: TabId::Document(doc_id),
                     is_deleted: is_deleted_document_path(path.as_deref()),
                     path,
                     is_modified: doc.is_modified(),
                     is_readonly: doc.readonly,
-                    is_pinned: self.pinned_documents.contains(&doc_id),
+                    is_pinned: self.pinned_documents.contains(&TabId::Document(doc_id)),
                     is_preview,
                     focused_at: doc.focused_at,
                     order: order_index, // Use position in Vec as order
@@ -8833,6 +9134,23 @@ impl Workspace {
                     diagnostic_severity,
                 });
             }
+        }
+
+        let image_order_offset = documents.len();
+        for (index, tab) in self.image_tabs.iter().enumerate() {
+            documents.push(DocumentInfo {
+                id: TabId::Image(tab.id),
+                is_deleted: is_deleted_document_path(Some(&tab.path)),
+                path: Some(tab.path.clone()),
+                is_modified: false,
+                is_readonly: false,
+                is_pinned: self.pinned_documents.contains(&TabId::Image(tab.id)),
+                is_preview: false,
+                focused_at: tab.focused_at,
+                order: image_order_offset + index,
+                git_status: None,
+                diagnostic_severity: None,
+            });
         }
 
         // Ensure VCS service is monitoring the current project directory
@@ -8903,21 +9221,29 @@ impl Workspace {
                 let core = self.core.clone();
                 let handle = self.handle.clone();
                 move |doc_id, _window, cx| {
-                    // Switch the current view to display this document
-                    core.update(cx, |core, cx| {
-                        let _guard = handle.enter();
-
-                        // Use Helix's switch method to change which document is displayed
-                        core.editor
-                            .switch(doc_id, helix_view::editor::Action::Replace);
-
-                        // Emit a redraw event so the UI updates
-                        cx.emit(crate::Update::Redraw);
-                    });
-
-                    // Update workspace to refresh the view
                     workspace.update(cx, |workspace, cx| {
+                        match doc_id {
+                            TabId::Image(image_id) => {
+                                workspace.switch_to_image_tab(image_id, cx);
+                                return;
+                            }
+                            TabId::Document(doc_id) => {
+                                // Switch the current view to display this document
+                                core.update(cx, |core, cx| {
+                                    let _guard = handle.enter();
+
+                                    // Use Helix's switch method to change which document is displayed
+                                    core.editor
+                                        .switch(doc_id, helix_view::editor::Action::Replace);
+
+                                    // Emit a redraw event so the UI updates
+                                    cx.emit(crate::Update::Redraw);
+                                });
+                            }
+                        }
+
                         // Update document views to reflect the change
+                        workspace.active_image_tab_id = None;
                         workspace.tab_context_menu_open = false;
                         workspace.tab_context_menu_doc_id = None;
                         workspace.allow_tab_bar_auto_scroll();
@@ -8932,13 +9258,25 @@ impl Workspace {
                     workspace.update(cx, |workspace, cx| {
                         workspace.tab_context_menu_open = false;
                         workspace.tab_context_menu_doc_id = None;
-                        workspace.close_single_tab_document(
+                        let activation_target = tab_activation_target_after_close(
+                            &activation_documents,
                             doc_id,
                             active_doc_id,
-                            &activation_documents,
                             activate_on_close,
-                            cx,
                         );
+                        match doc_id {
+                            TabId::Image(image_id) => {
+                                workspace.close_image_tab(image_id, activation_target, cx);
+                            }
+                            TabId::Document(doc_id) => {
+                                workspace.close_single_tab_document_with_activation_target(
+                                    doc_id,
+                                    activation_target,
+                                    false,
+                                    cx,
+                                );
+                            }
+                        }
                     });
                 }
             },
@@ -9144,6 +9482,125 @@ impl Workspace {
             }
         })
         .into_any_element()
+    }
+
+    fn render_image_viewer(&self, tab: ImageTab, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let tokens = &cx.theme().tokens;
+        let tab_id = tab.id;
+        let zoom = tab.zoom;
+        let image_path = tab.path.clone();
+        let image_element = if let Some((width, height)) = tab.dimensions {
+            img(image_path)
+                .object_fit(gpui::ObjectFit::Contain)
+                .w(px(width as f32 * zoom))
+                .h(px(height as f32 * zoom))
+                .flex_none()
+                .into_any_element()
+        } else {
+            img(image_path)
+                .object_fit(gpui::ObjectFit::Contain)
+                .max_w_full()
+                .max_h_full()
+                .into_any_element()
+        };
+
+        div()
+            .id(format!("image-viewer-{tab_id:?}"))
+            .flex()
+            .flex_col()
+            .size_full()
+            .bg(tokens.editor.background)
+            .child(
+                div()
+                    .id("image-viewer-toolbar")
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .gap(tokens.sizes.space_2)
+                    .px(tokens.sizes.space_3)
+                    .h(crate::tab::tab_container_height(*tokens))
+                    .border_b_1()
+                    .border_color(tokens.chrome.border_default)
+                    .bg(tokens.tab_bar_tokens().container_background)
+                    .child(
+                        Button::icon_only("image-zoom-out", "icons/zoom-out.svg")
+                            .variant(ButtonVariant::Ghost)
+                            .size(ButtonSize::Small)
+                            .tooltip("Zoom Out")
+                            .activate_on_mouse_down()
+                            .disabled(zoom <= IMAGE_ZOOM_MIN)
+                            .on_click({
+                                let workspace = cx.entity().clone();
+                                move |_event, _window, cx| {
+                                    workspace.update(cx, |workspace, cx| {
+                                        workspace.set_image_tab_zoom(
+                                            tab_id,
+                                            zoom - IMAGE_ZOOM_STEP,
+                                            cx,
+                                        );
+                                    });
+                                    cx.stop_propagation();
+                                }
+                            }),
+                    )
+                    .child(
+                        Button::icon_only("image-zoom-reset", "icons/rotate-ccw.svg")
+                            .variant(ButtonVariant::Ghost)
+                            .size(ButtonSize::Small)
+                            .tooltip("Zoom to 100%")
+                            .activate_on_mouse_down()
+                            .disabled((zoom - 1.0).abs() < f32::EPSILON)
+                            .on_click({
+                                let workspace = cx.entity().clone();
+                                move |_event, _window, cx| {
+                                    workspace.update(cx, |workspace, cx| {
+                                        workspace.set_image_tab_zoom(tab_id, 1.0, cx);
+                                    });
+                                    cx.stop_propagation();
+                                }
+                            }),
+                    )
+                    .child(
+                        Button::icon_only("image-zoom-in", "icons/zoom-in.svg")
+                            .variant(ButtonVariant::Ghost)
+                            .size(ButtonSize::Small)
+                            .tooltip("Zoom In")
+                            .activate_on_mouse_down()
+                            .disabled(zoom >= IMAGE_ZOOM_MAX)
+                            .on_click({
+                                let workspace = cx.entity().clone();
+                                move |_event, _window, cx| {
+                                    workspace.update(cx, |workspace, cx| {
+                                        workspace.set_image_tab_zoom(
+                                            tab_id,
+                                            zoom + IMAGE_ZOOM_STEP,
+                                            cx,
+                                        );
+                                    });
+                                    cx.stop_propagation();
+                                }
+                            }),
+                    )
+                    .child(
+                        div()
+                            .min_w(px(48.0))
+                            .text_size(tokens.sizes.text_sm)
+                            .text_color(tokens.chrome.text_chrome_secondary)
+                            .child(image_zoom_percent(zoom)),
+                    ),
+            )
+            .child(
+                div()
+                    .id("image-viewer-content")
+                    .flex()
+                    .flex_1()
+                    .items_center()
+                    .justify_center()
+                    .overflow_scroll()
+                    .p(tokens.sizes.space_4)
+                    .child(image_element),
+            )
+            .into_any_element()
     }
 
     /// Render unified status bar with file tree toggle and status information
@@ -11798,15 +12255,21 @@ impl Workspace {
         let has_pinned_tabs = editor
             .documents
             .keys()
-            .any(|doc_id| self.pinned_documents.contains(doc_id));
+            .copied()
+            .map(TabId::Document)
+            .chain(self.image_tabs.iter().map(|tab| TabId::Image(tab.id)))
+            .any(|tab_id| self.pinned_documents.contains(&tab_id));
         let has_unpinned_tabs = editor
             .documents
             .keys()
-            .any(|doc_id| !self.pinned_documents.contains(doc_id));
+            .copied()
+            .map(TabId::Document)
+            .chain(self.image_tabs.iter().map(|tab| TabId::Image(tab.id)))
+            .any(|tab_id| !self.pinned_documents.contains(&tab_id));
         tab_bar_height_for_editor(
             core.config.gui.tab_bar.show,
             &editor.config().bufferline,
-            editor.documents.len(),
+            editor.documents.len() + self.image_tabs.len(),
             crate::tab::tab_container_height(cx.theme().tokens),
             core.config.gui.tab_bar.show_pinned_tabs_in_separate_row,
             has_pinned_tabs,
@@ -12311,69 +12774,86 @@ impl Render for Workspace {
                     .border_color(cx.theme().tokens.chrome.border_strong)
             }); // No gap needed for documents
 
-        let layouts = self.document_view_layouts(cx);
-        let layout_bounds = document_view_layout_bounds(&layouts);
-        let dim_inactive_panes =
-            layouts.len() > 1 && layouts.iter().any(|layout| layout.is_focused);
-        let dividers = if layouts.len() > 1 {
-            split_pane_dividers(&layouts)
+        let active_image_tab = self
+            .active_image_tab_id
+            .and_then(|doc_id| self.image_tabs.iter().find(|tab| tab.id == doc_id).cloned());
+        if let Some(image_tab) = active_image_tab {
+            docs_root = docs_root.child(
+                div()
+                    .id("image-viewer-container")
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .child(self.render_image_viewer(image_tab, cx)),
+            );
         } else {
-            Vec::new()
-        };
-        if layouts.is_empty() {
-            if let Some(doc_view) = self.view_manager.document_views().values().next().cloned() {
-                docs_root = docs_root.child(
-                    div()
-                        .id("document-container")
-                        .absolute()
-                        .top_0()
-                        .left_0()
-                        .size_full()
-                        .when(self.debug_colors_enabled, |d| {
-                            d.border_1()
-                                .border_color(cx.theme().tokens.chrome.border_default)
-                        })
-                        .child(doc_view),
-                );
-            }
-        } else {
-            if let Some(total_area) = layout_bounds {
-                for layout in layouts.iter().copied() {
-                    let layout = DocumentViewLayout {
-                        area: document_view_visual_area(layout, &dividers),
-                        ..layout
-                    };
-                    if let Some(doc_element) = self.render_document_view_layout(
-                        layout,
-                        total_area,
-                        editor_content_w_px,
-                        editor_content_h_px,
-                        dim_inactive_panes,
-                        cx,
-                    ) {
-                        docs_root = docs_root.child(doc_element);
+            let layouts = self.document_view_layouts(cx);
+            let layout_bounds = document_view_layout_bounds(&layouts);
+            let dim_inactive_panes =
+                layouts.len() > 1 && layouts.iter().any(|layout| layout.is_focused);
+            let dividers = if layouts.len() > 1 {
+                split_pane_dividers(&layouts)
+            } else {
+                Vec::new()
+            };
+
+            if layouts.is_empty() {
+                if let Some(doc_view) = self.view_manager.document_views().values().next().cloned()
+                {
+                    docs_root = docs_root.child(
+                        div()
+                            .id("document-container")
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .size_full()
+                            .when(self.debug_colors_enabled, |d| {
+                                d.border_1()
+                                    .border_color(cx.theme().tokens.chrome.border_default)
+                            })
+                            .child(doc_view),
+                    );
+                }
+            } else {
+                if let Some(total_area) = layout_bounds {
+                    for layout in layouts.iter().copied() {
+                        let layout = DocumentViewLayout {
+                            area: document_view_visual_area(layout, &dividers),
+                            ..layout
+                        };
+                        if let Some(doc_element) = self.render_document_view_layout(
+                            layout,
+                            total_area,
+                            editor_content_w_px,
+                            editor_content_h_px,
+                            dim_inactive_panes,
+                            cx,
+                        ) {
+                            docs_root = docs_root.child(doc_element);
+                        }
                     }
-                }
 
-                for divider in dividers.iter().cloned() {
-                    docs_root = docs_root.child(self.render_split_pane_resize_handle(
-                        divider,
-                        total_area,
-                        editor_content_w_px,
-                        editor_content_h_px,
-                        cx,
-                    ));
-                }
+                    for divider in dividers.iter().cloned() {
+                        docs_root = docs_root.child(self.render_split_pane_resize_handle(
+                            divider,
+                            total_area,
+                            editor_content_w_px,
+                            editor_content_h_px,
+                            cx,
+                        ));
+                    }
 
-                for divider in &dividers {
-                    let divider = split_pane_divider_visual_line(divider.clone(), &dividers);
-                    docs_root = docs_root.child(self.render_split_pane_divider_line(
-                        &divider,
-                        total_area,
-                        editor_content_w_px,
-                        editor_content_h_px,
-                        cx,
-                    ));
+                    for divider in &dividers {
+                        let divider = split_pane_divider_visual_line(divider.clone(), &dividers);
+                        docs_root = docs_root.child(self.render_split_pane_divider_line(
+                            &divider,
+                            total_area,
+                            editor_content_w_px,
+                            editor_content_h_px,
+                            cx,
+                        ));
+                    }
                 }
             }
         }
