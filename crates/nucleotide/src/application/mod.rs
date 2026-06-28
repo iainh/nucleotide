@@ -189,7 +189,9 @@ impl PendingCompletionRequest {
             is_incomplete = is_incomplete,
             "Merging LSP and local completion items"
         );
-        items.extend(self.local_items);
+        let mut local_items = self.local_items;
+        suppress_shadowed_buffer_word_completion_items(&items, &mut local_items);
+        items.extend(local_items);
         dedupe_completion_items(&mut items);
 
         if items.is_empty()
@@ -7136,7 +7138,7 @@ fn buffer_word_completion_items(
                 nucleotide_events::completion::CompletionItemKind::Text,
             )
             .with_insert_text(word)
-            .with_detail("buffer".to_string())
+            .with_detail(LOCAL_BUFFER_COMPLETION_DETAIL.to_string())
         })
         .collect()
 }
@@ -7248,6 +7250,59 @@ fn local_path_documentation(full_path: &Path, kind: &str) -> String {
 fn dedupe_completion_items(items: &mut Vec<nucleotide_events::completion::CompletionItem>) {
     let mut seen = HashSet::new();
     items.retain(|item| seen.insert((item.label.clone(), item.insert_text.clone())));
+}
+
+const LOCAL_BUFFER_COMPLETION_DETAIL: &str = "buffer";
+
+fn suppress_shadowed_buffer_word_completion_items(
+    existing_items: &[nucleotide_events::completion::CompletionItem],
+    local_items: &mut Vec<nucleotide_events::completion::CompletionItem>,
+) {
+    let shadowed_symbols: HashSet<String> = existing_items
+        .iter()
+        .filter(|item| !is_local_buffer_word_completion(item))
+        .filter(|item| {
+            !matches!(
+                item.kind,
+                nucleotide_events::completion::CompletionItemKind::File
+                    | nucleotide_events::completion::CompletionItemKind::Folder
+            )
+        })
+        .flat_map(completion_symbol_keys)
+        .collect();
+
+    local_items.retain(|item| {
+        !is_local_buffer_word_completion(item)
+            || completion_symbol_keys(item).all(|key| !shadowed_symbols.contains(&key))
+    });
+}
+
+fn is_local_buffer_word_completion(item: &nucleotide_events::completion::CompletionItem) -> bool {
+    item.kind == nucleotide_events::completion::CompletionItemKind::Text
+        && item.detail.as_deref() == Some(LOCAL_BUFFER_COMPLETION_DETAIL)
+}
+
+fn completion_symbol_keys(
+    item: &nucleotide_events::completion::CompletionItem,
+) -> impl Iterator<Item = String> + '_ {
+    [
+        Some(item.label.as_str()),
+        Some(item.insert_text.as_str()),
+        item.filter_text.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(completion_symbol_key)
+}
+
+fn completion_symbol_key(text: &str) -> Option<String> {
+    let key: String = text
+        .chars()
+        .skip_while(|ch| !helix_core::chars::char_is_word(*ch))
+        .take_while(|ch| helix_core::chars::char_is_word(*ch))
+        .collect();
+
+    (!key.is_empty()).then_some(key)
 }
 
 fn detect_project_lsp_metadata(
@@ -7455,7 +7510,7 @@ mod tests {
         lsp_completion_items_from_response_for_server, lsp_completion_resolve_supported,
         lsp_completion_response_is_incomplete, lsp_symbol_picker, native_symbol_item_from_lsp,
         path_completion_items, project_health_status, project_server_language_id,
-        syntax_symbol_kind_from_capture_name,
+        suppress_shadowed_buffer_word_completion_items, syntax_symbol_kind_from_capture_name,
     };
     use crate::test_utils::test_support::{
         TestUpdate, create_counting_channel, create_test_diagnostic_events,
@@ -8446,6 +8501,34 @@ mod tests {
         assert_eq!(items[1].label, "print");
     }
 
+    #[test]
+    fn suppress_shadowed_buffer_word_completion_items_hides_macro_duplicate() {
+        let existing_items = vec![
+            nucleotide_events::completion::CompletionItem::new(
+                "println!".to_string(),
+                nucleotide_events::completion::CompletionItemKind::Snippet,
+            )
+            .with_insert_text("println!(\"${1}\");$0".to_string()),
+        ];
+        let mut local_items = vec![
+            nucleotide_events::completion::CompletionItem::new(
+                "println".to_string(),
+                nucleotide_events::completion::CompletionItemKind::Text,
+            )
+            .with_detail("buffer".to_string()),
+            nucleotide_events::completion::CompletionItem::new(
+                "printer".to_string(),
+                nucleotide_events::completion::CompletionItemKind::Text,
+            )
+            .with_detail("buffer".to_string()),
+        ];
+
+        suppress_shadowed_buffer_word_completion_items(&existing_items, &mut local_items);
+
+        let labels: Vec<_> = local_items.iter().map(|item| item.label.as_str()).collect();
+        assert_eq!(labels, vec!["printer"]);
+    }
+
     #[tokio::test]
     async fn pending_completion_request_collects_lsp_and_local_items() {
         let mut lsp_futures: FuturesOrdered<super::CompletionServerFuture> = FuturesOrdered::new();
@@ -8484,6 +8567,45 @@ mod tests {
         assert!(incomplete_server_ids.is_empty());
         let labels: Vec<_> = items.iter().map(|item| item.label.as_str()).collect();
         assert_eq!(labels, vec!["println", "private"]);
+    }
+
+    #[tokio::test]
+    async fn pending_completion_request_suppresses_buffer_word_shadowed_by_lsp_macro() {
+        let mut lsp_futures: FuturesOrdered<super::CompletionServerFuture> = FuturesOrdered::new();
+        lsp_futures.push_back(
+            async {
+                Ok::<_, anyhow::Error>((
+                    helix_lsp::LanguageServerId::default(),
+                    OffsetEncoding::Utf16,
+                    Some(lsp::CompletionResponse::Array(vec![lsp::CompletionItem {
+                        label: "println!".to_string(),
+                        kind: Some(lsp::CompletionItemKind::FUNCTION),
+                        insert_text: Some("println!(${1:value})$0".to_string()),
+                        insert_text_format: Some(lsp::InsertTextFormat::SNIPPET),
+                        ..Default::default()
+                    }])),
+                ))
+            }
+            .boxed(),
+        );
+
+        let request = PendingCompletionRequest {
+            prefix: "pri".to_string(),
+            retained_items: vec![],
+            local_items: vec![
+                CompletionItem::new("println".to_string(), CompletionItemKind::Text)
+                    .with_detail("buffer".to_string()),
+                CompletionItem::new("private".to_string(), CompletionItemKind::Text)
+                    .with_detail("buffer".to_string()),
+            ],
+            lsp_error: None,
+            lsp_futures,
+        };
+
+        let (items, _, _, _) = request.collect().await.expect("completion results");
+
+        let labels: Vec<_> = items.iter().map(|item| item.label.as_str()).collect();
+        assert_eq!(labels, vec!["println!", "private"]);
     }
 
     #[tokio::test]

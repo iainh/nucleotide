@@ -154,15 +154,23 @@ fn analyze_change_type(changes: &ChangeSet) -> ChangeType {
 pub fn register_event_hooks() {
     use helix_event::register_hook;
     use helix_term::events::{OnModeSwitch, PostCommand, PostInsertChar};
+    use helix_view::doc_mut;
     use helix_view::events::{
         DiagnosticsDidChange, DocumentDidChange, DocumentDidClose, DocumentDidOpen,
-        LanguageServerExited, LanguageServerInitialized, SelectionDidChange,
+        DocumentFocusLost, LanguageServerExited, LanguageServerInitialized, SelectionDidChange,
     };
 
     info!("Registering Helix event hooks for event bridge");
 
     // Document change events
     register_hook!(move |event: &mut DocumentDidChange<'_>| {
+        if let Some(snippet) = &mut event.doc.active_snippet {
+            let invalid = snippet.map(event.changes);
+            if invalid {
+                event.doc.active_snippet = None;
+            }
+        }
+
         let doc_id = event.doc.id();
         let change_summary = analyze_change_type(event.changes);
         debug!(
@@ -179,6 +187,12 @@ pub fn register_event_hooks() {
 
     // Selection change events
     register_hook!(move |event: &mut SelectionDidChange<'_>| {
+        if let Some(snippet) = &event.doc.active_snippet
+            && !snippet.is_valid(event.doc.selection(event.view))
+        {
+            event.doc.active_snippet = None;
+        }
+
         let doc_id = event.doc.id();
         let view_id = event.view;
         debug!(
@@ -187,6 +201,12 @@ pub fn register_event_hooks() {
             "Selection changed event"
         );
         send_bridged_event(BridgedEvent::SelectionChanged { doc_id, view_id });
+        Ok(())
+    });
+
+    register_hook!(move |event: &mut DocumentFocusLost<'_>| {
+        let editor = &mut event.editor;
+        doc_mut!(editor, &event.doc).active_snippet = None;
         Ok(())
     });
 
