@@ -1241,6 +1241,21 @@ fn should_retrigger_incomplete_completion_for_focused_session(
         && focused_view_id == session.view_id
 }
 
+fn completion_commit_character_from_key(
+    key: &str,
+    key_char: Option<&str>,
+    has_control_modifier: bool,
+) -> Option<char> {
+    if has_control_modifier {
+        return None;
+    }
+
+    let text = key_char.unwrap_or(key);
+    let mut chars = text.chars();
+    let ch = chars.next()?;
+    chars.next().is_none().then_some(ch)
+}
+
 // Pending file operation kinds awaiting user input (used with the prompt overlay)
 enum PendingFileOp {
     NewFile { parent: std::path::PathBuf },
@@ -5643,6 +5658,39 @@ impl Workspace {
         self.handle_completion_overlay_action(action, false, cx)
     }
 
+    fn handle_completion_commit_character(
+        &mut self,
+        ev: &KeyDownEvent,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.overlay.read(cx).has_completion() {
+            return false;
+        }
+
+        let Some(commit_character) = completion_commit_character_from_key(
+            ev.keystroke.key.as_str(),
+            ev.keystroke.key_char.as_deref(),
+            ev.keystroke.modifiers.control,
+        ) else {
+            return false;
+        };
+
+        let accept_index = self.overlay.update(cx, |overlay, cx| {
+            overlay.completion_commit_accept_index(commit_character, cx)
+        });
+        let Some(item_index) = accept_index else {
+            return false;
+        };
+
+        nucleotide_logging::debug!(
+            item_index = item_index,
+            commit_character = %commit_character,
+            "Accepting completion before commit character"
+        );
+        self.handle_completion_via_helix(item_index, cx);
+        true
+    }
+
     /// Simplified key handler that delegates to the InputCoordinator
     fn handle_key(&mut self, ev: &KeyDownEvent, window: &Window, cx: &mut Context<Self>) {
         // If embedded terminal is focused, route all keys to it and stop here.
@@ -5971,6 +6019,9 @@ impl Workspace {
             return;
         }
 
+        let accepted_completion_on_commit_character =
+            self.handle_completion_commit_character(ev, cx);
+
         // Update input context based on current focus state
         self.update_input_context(window, cx);
 
@@ -5990,6 +6041,8 @@ impl Workspace {
                 nucleotide_logging::trace!(
                     key = ?helix_key,
                     is_held = ev.is_held,
+                    accepted_completion_on_commit_character =
+                        accepted_completion_on_commit_character,
                     "Sending key to Helix editor"
                 );
 
@@ -15978,6 +16031,26 @@ mod tests {
                 insert_text: "foobar".to_string(),
             }),
             0
+        );
+    }
+
+    #[test]
+    fn completion_commit_character_uses_unmodified_printable_key() {
+        assert_eq!(
+            completion_commit_character_from_key("(", Some("("), false),
+            Some('(')
+        );
+        assert_eq!(
+            completion_commit_character_from_key("9", Some("("), false),
+            Some('(')
+        );
+        assert_eq!(
+            completion_commit_character_from_key("(", Some("("), true),
+            None
+        );
+        assert_eq!(
+            completion_commit_character_from_key("enter", None, false),
+            None
         );
     }
 

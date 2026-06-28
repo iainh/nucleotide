@@ -268,6 +268,25 @@ impl OverlayView {
         self.handle_completion_tab_key(cx)
     }
 
+    pub fn completion_commit_accept_index(
+        &self,
+        commit_character: char,
+        cx: &mut Context<Self>,
+    ) -> Option<usize> {
+        let completion_view = self.completion_view.as_ref()?;
+        completion_view.update(cx, |view, _cx| {
+            let selected_index = view.selected_index()?;
+            let selected_item = view.selected_item()?;
+            let commit_character = commit_character.to_string();
+
+            selected_item
+                .commit_characters
+                .iter()
+                .any(|character| character.as_ref() == commit_character)
+                .then_some(selected_index)
+        })
+    }
+
     pub fn get_completion_item(
         &self,
         index: usize,
