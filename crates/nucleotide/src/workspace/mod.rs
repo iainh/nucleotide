@@ -79,6 +79,12 @@ use nucleotide_vcs::{VcsEvent, VcsServiceHandle};
 use smallvec::{SmallVec, smallvec};
 
 type FileTreeContextMenuHandler = fn(&mut Workspace, &mut Context<Workspace>);
+
+fn document_lsp_identifier(
+    doc: &helix_view::Document,
+) -> Option<helix_lsp::lsp::TextDocumentIdentifier> {
+    doc.url().map(helix_lsp::lsp::TextDocumentIdentifier::new)
+}
 type TabContextMenuHandler = fn(&mut Workspace, TabId, &mut Context<Workspace>);
 type TabBarSplitMenuHandler = fn(&mut Workspace, &mut Context<Workspace>);
 type TabBarNewMenuHandler = fn(&mut Workspace, &mut Context<Workspace>);
@@ -2449,7 +2455,10 @@ impl Workspace {
                 return;
             }
 
-            let identifier = doc.identifier();
+            let Some(identifier) = document_lsp_identifier(doc) else {
+                self.finish_runnable_request(action, local_tasks, cursor_line, cx);
+                return;
+            };
             let mut seen = std::collections::HashSet::new();
             doc.language_servers()
                 .filter(|language_server| {
@@ -15074,11 +15083,11 @@ fn show_code_actions(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &m
     debug!("Opening code actions dropdown");
 
     // Snapshot needed editor state under read lock
-    let (identifier, selection_range, doc_text, diags, servers) = {
+    let Some((identifier, selection_range, doc_text, diags, servers)) = (|| {
         let core_r = core.read(cx);
         let editor = &core_r.editor;
         let view = editor.tree.get(editor.tree.focus);
-        let doc = editor.documents.get(&view.doc).expect("doc exists");
+        let doc = editor.documents.get(&view.doc)?;
 
         let selection_range = doc.selection(view.id).primary();
         let doc_text = doc.text().clone();
@@ -15098,9 +15107,16 @@ fn show_code_actions(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &m
             .filter(|ls| seen.insert(ls.id()))
             .collect();
 
-        let identifier = doc.identifier();
+        let identifier = document_lsp_identifier(doc)?;
 
-        (identifier, selection_range, doc_text, diags, servers)
+        Some((identifier, selection_range, doc_text, diags, servers))
+    })() else {
+        core.update(cx, |core, cx| {
+            core.editor
+                .set_error("Code actions require a file-backed document");
+            cx.notify();
+        });
+        return;
     };
 
     if servers.is_empty() {

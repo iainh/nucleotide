@@ -105,6 +105,10 @@ type CompletionServerFuture = BoxFuture<'static, CompletionServerResult>;
 type InlayHintJobFuture =
     Pin<Box<dyn Future<Output = anyhow::Result<helix_term::job::Callback>> + Send>>;
 
+fn document_lsp_identifier(doc: &Document) -> Option<lsp::TextDocumentIdentifier> {
+    doc.url().map(lsp::TextDocumentIdentifier::new)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LspCompletionTrigger {
     Manual,
@@ -4445,8 +4449,15 @@ impl Application {
 
         let trigger_text = text.slice(..cursor_pos).to_string();
 
-        // Get document identifier for LSP request
-        let doc_id_lsp = doc.identifier();
+        let Some(doc_id_lsp) = document_lsp_identifier(doc) else {
+            nucleotide_logging::warn!(
+                doc_id = ?doc_id,
+                "Skipping LSP completion for document without file URL"
+            );
+            return Err(anyhow::anyhow!(
+                "Cannot request LSP completions for an untitled document"
+            ));
+        };
         let server_count = language_servers.len();
         let mut lsp_futures = FuturesOrdered::new();
 
@@ -5323,16 +5334,20 @@ impl Application {
                     .set_error("No active document for LSP navigation");
                 return;
             };
+            let Some(identifier) = document_lsp_identifier(doc) else {
+                self.editor
+                    .set_error("LSP navigation requires a file-backed document");
+                return;
+            };
 
             for language_server in doc.language_servers_with_feature(feature) {
                 let offset_encoding = language_server.offset_encoding();
                 let position = doc.position(view.id, offset_encoding);
-                let identifier = doc.identifier();
 
                 match request {
                     editor_input::NativeLspNavigationRequest::GotoDeclaration => {
                         if let Some(future) =
-                            language_server.goto_declaration(identifier, position, None)
+                            language_server.goto_declaration(identifier.clone(), position, None)
                         {
                             futures.push_back(
                                 async move {
@@ -5348,7 +5363,7 @@ impl Application {
                     }
                     editor_input::NativeLspNavigationRequest::GotoDefinition => {
                         if let Some(future) =
-                            language_server.goto_definition(identifier, position, None)
+                            language_server.goto_definition(identifier.clone(), position, None)
                         {
                             futures.push_back(
                                 async move {
@@ -5364,7 +5379,7 @@ impl Application {
                     }
                     editor_input::NativeLspNavigationRequest::GotoTypeDefinition => {
                         if let Some(future) =
-                            language_server.goto_type_definition(identifier, position, None)
+                            language_server.goto_type_definition(identifier.clone(), position, None)
                         {
                             futures.push_back(
                                 async move {
@@ -5380,7 +5395,7 @@ impl Application {
                     }
                     editor_input::NativeLspNavigationRequest::GotoImplementation => {
                         if let Some(future) =
-                            language_server.goto_implementation(identifier, position, None)
+                            language_server.goto_implementation(identifier.clone(), position, None)
                         {
                             futures.push_back(
                                 async move {
@@ -5396,7 +5411,7 @@ impl Application {
                     }
                     editor_input::NativeLspNavigationRequest::GotoReference => {
                         if let Some(future) = language_server.goto_reference(
-                            identifier,
+                            identifier.clone(),
                             position,
                             include_declaration,
                             None,
@@ -5494,7 +5509,8 @@ impl Application {
                         );
                     }
                 } else if let Some(path) = doc_path.clone()
-                    && let Some(future) = language_server.document_symbols(doc.identifier())
+                    && let Some(identifier) = document_lsp_identifier(doc)
+                    && let Some(future) = language_server.document_symbols(identifier)
                 {
                     futures.push_back(
                         async move {
@@ -6457,7 +6473,8 @@ fn inlay_hint_job_for_view(view: &View, doc: &Document) -> Option<InlayHintJobFu
         Range::new(first_char_in_range, last_char_in_range),
         offset_encoding,
     );
-    let request = language_server.text_document_range_inlay_hints(doc.identifier(), range, None)?;
+    let identifier = document_lsp_identifier(doc)?;
+    let request = language_server.text_document_range_inlay_hints(identifier, range, None)?;
 
     Some(Box::pin(async move {
         let response = request.await?;
