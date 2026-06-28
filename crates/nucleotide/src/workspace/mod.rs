@@ -25,7 +25,7 @@ use gpui::{
     Entity, EventEmitter, FocusHandle, Focusable, Hsla, InteractiveElement, IntoElement,
     KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels,
     Point, Render, ScrollHandle, Size, StatefulInteractiveElement, Styled, TextStyle, Window,
-    WindowAppearance, canvas, div, img, px, svg,
+    WindowAppearance, canvas, div, img, px, relative, svg,
 };
 use gpui::{FontFeatures, FontWeight};
 use helix_core::syntax::config::LanguageServerFeature;
@@ -110,6 +110,9 @@ struct ImageTab {
     dimensions: Option<(u32, u32)>,
     focused_at: std::time::Instant,
     zoom: f32,
+    scroll_handle: ScrollHandle,
+    vertical_scrollbar_state: ScrollbarState,
+    horizontal_scrollbar_state: ScrollbarState,
 }
 
 impl EnvironmentBadge {
@@ -3157,12 +3160,18 @@ impl Workspace {
             tab.focused_at = std::time::Instant::now();
             self.active_image_tab_id = Some(tab.id);
         } else {
+            let scroll_handle = ScrollHandle::new();
+            let vertical_scrollbar_state = ScrollbarState::new(scroll_handle.clone());
+            let horizontal_scrollbar_state = ScrollbarState::new(scroll_handle.clone());
             let tab = ImageTab {
                 id: self.next_image_tab_id(),
                 path: path.clone(),
                 dimensions: image_file_dimensions(&path),
                 focused_at: std::time::Instant::now(),
                 zoom: 1.0,
+                scroll_handle,
+                vertical_scrollbar_state,
+                horizontal_scrollbar_state,
             };
             self.active_image_tab_id = Some(tab.id);
             self.image_tabs.push(tab);
@@ -9544,38 +9553,65 @@ impl Workspace {
         let zoom = tab.zoom;
         let image_path = tab.path.clone();
         let (grid_base, grid_alternate) = image_transparency_grid_colors(tokens.editor.background);
-        let image_element = if let Some((width, height)) = tab.dimensions {
+        let (image_element, image_size) = if let Some((width, height)) = tab.dimensions {
             let width = px(width as f32 * zoom);
             let height = px(height as f32 * zoom);
+            (
+                div()
+                    .relative()
+                    .flex_none()
+                    .overflow_hidden()
+                    .mx_auto()
+                    .my_auto()
+                    .w(width)
+                    .h(height)
+                    .child(image_transparency_grid(grid_base, grid_alternate))
+                    .child(
+                        img(image_path)
+                            .object_fit(gpui::ObjectFit::Contain)
+                            .w(width)
+                            .h(height)
+                            .flex_none(),
+                    )
+                    .into_any_element(),
+                Some((width, height)),
+            )
+        } else {
+            (
+                div()
+                    .relative()
+                    .flex_none()
+                    .overflow_hidden()
+                    .mx_auto()
+                    .my_auto()
+                    .max_w_full()
+                    .max_h_full()
+                    .child(image_transparency_grid(grid_base, grid_alternate))
+                    .child(
+                        img(image_path)
+                            .object_fit(gpui::ObjectFit::Contain)
+                            .max_w_full()
+                            .max_h_full(),
+                    )
+                    .into_any_element(),
+                None,
+            )
+        };
+        let image_scroll_body = if let Some((width, height)) = image_size {
             div()
-                .relative()
-                .flex_none()
-                .overflow_hidden()
+                .flex()
                 .w(width)
                 .h(height)
-                .child(image_transparency_grid(grid_base, grid_alternate))
-                .child(
-                    img(image_path)
-                        .object_fit(gpui::ObjectFit::Contain)
-                        .w(width)
-                        .h(height)
-                        .flex_none(),
-                )
+                .min_w(relative(1.0))
+                .min_h(relative(1.0))
+                .child(image_element)
                 .into_any_element()
         } else {
             div()
-                .relative()
-                .flex_none()
-                .overflow_hidden()
-                .max_w_full()
-                .max_h_full()
-                .child(image_transparency_grid(grid_base, grid_alternate))
-                .child(
-                    img(image_path)
-                        .object_fit(gpui::ObjectFit::Contain)
-                        .max_w_full()
-                        .max_h_full(),
-                )
+                .flex()
+                .min_w(relative(1.0))
+                .min_h(relative(1.0))
+                .child(image_element)
                 .into_any_element()
         };
 
@@ -9664,17 +9700,56 @@ impl Workspace {
                             .child(image_zoom_percent(zoom)),
                     ),
             )
-            .child(
+            .child({
+                let scroll_content = div()
+                    .id("image-viewer-scroll-content")
+                    .size_full()
+                    .min_w(px(0.0))
+                    .min_h(px(0.0))
+                    .overflow_scroll()
+                    .track_scroll(&tab.scroll_handle)
+                    .p(tokens.sizes.space_4)
+                    .child(image_scroll_body);
+
                 div()
                     .id("image-viewer-content")
-                    .flex()
+                    .relative()
                     .flex_1()
-                    .items_center()
-                    .justify_center()
-                    .overflow_scroll()
-                    .p(tokens.sizes.space_4)
-                    .child(image_element),
-            )
+                    .min_w(px(0.0))
+                    .min_h(px(0.0))
+                    .overflow_hidden()
+                    .child(scroll_content)
+                    .when_some(
+                        Scrollbar::vertical(tab.vertical_scrollbar_state.clone()),
+                        |container, scrollbar| {
+                            container.child(
+                                div()
+                                    .id("image-viewer-vertical-scrollbar")
+                                    .absolute()
+                                    .top_0()
+                                    .right_0()
+                                    .bottom_0()
+                                    .w(SCROLLBAR_THICKNESS)
+                                    .child(scrollbar),
+                            )
+                        },
+                    )
+                    .when_some(
+                        Scrollbar::horizontal(tab.horizontal_scrollbar_state.clone()),
+                        |container, scrollbar| {
+                            container.child(
+                                div()
+                                    .id("image-viewer-horizontal-scrollbar")
+                                    .absolute()
+                                    .left_0()
+                                    .right_0()
+                                    .bottom_0()
+                                    .h(SCROLLBAR_THICKNESS)
+                                    .child(scrollbar),
+                            )
+                        },
+                    )
+            })
             .into_any_element()
     }
 
