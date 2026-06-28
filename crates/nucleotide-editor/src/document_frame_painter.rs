@@ -77,7 +77,7 @@ pub struct NativeEditorFramePaintStyle {
     pub diagnostic_icon_colors: DiagnosticSeverityIconColors,
     pub gutter_bg: Option<Hsla>,
     pub wrap_indicator_color: Option<Hsla>,
-    pub indent_guide_color: Option<Hsla>,
+    pub indent_guide_color: Hsla,
     pub ruler_color: Hsla,
     pub run_button_color: Hsla,
 }
@@ -203,7 +203,9 @@ pub fn native_editor_frame_paint_style(
         .fg
         .or(params.theme_styles.virtual_whitespace.fg)
         .or(params.theme_styles.virtual_base.fg)
-        .and_then(helix_color_to_hsla);
+        .or(params.theme_styles.line_number.fg)
+        .and_then(helix_color_to_hsla)
+        .unwrap_or(params.palette.fallback_gutter_color);
     let cursorline_color = params
         .theme_styles
         .cursorline_primary
@@ -584,9 +586,7 @@ pub fn native_editor_frame_paint_plan(
                 .view_position,
         );
     }
-    if params.editor.config().indent_guides.render
-        && let Some(color) = params.style.indent_guide_color
-    {
+    if params.editor.config().indent_guides.render {
         frame.indent_guide_config = Some(IndentGuidePaintConfig {
             indent_width: params
                 .document
@@ -594,7 +594,7 @@ pub fn native_editor_frame_paint_plan(
                 .indent_width(params.document.tab_width())
                 .max(1) as u16,
             skip_levels: params.editor.config().indent_guides.skip_levels,
-            color,
+            color: params.style.indent_guide_color,
         });
     }
     if let Some(color) = params.style.frameline_color
@@ -1572,7 +1572,7 @@ mod tests {
         );
         assert_eq!(
             style.indent_guide_color,
-            helix_color_to_hsla(Color::Rgb(30, 31, 32))
+            helix_color_to_hsla(Color::Rgb(30, 31, 32)).unwrap()
         );
         assert_eq!(
             style.cursorline_color,
@@ -1601,6 +1601,40 @@ mod tests {
         assert_eq!(style.diagnostic_highlight_base, diagnostic_highlight_base);
         assert_eq!(style.diagnostic_icon_colors, diagnostic_icon_colors);
         assert_eq!(style.run_button_color, fallback_gutter_color);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn native_frame_paint_style_falls_back_for_indent_guide_color() {
+        let fallback_gutter_color = helix_color_to_hsla(Color::Rgb(80, 90, 100)).unwrap();
+        let fallback_ruler_color = helix_color_to_hsla(Color::Rgb(110, 120, 130)).unwrap();
+        let selection_primary = helix_color_to_hsla(Color::Rgb(140, 150, 160)).unwrap();
+        let selection_secondary = helix_color_to_hsla(Color::Rgb(170, 180, 190)).unwrap();
+        let diagnostic_highlight_base = helix_color_to_hsla(Color::Rgb(200, 210, 220)).unwrap();
+        let diagnostic_icon_colors = test_diagnostic_icon_colors();
+
+        let style = native_editor_frame_paint_style(NativeEditorFramePaintStyleParams {
+            editor_mode: Mode::Normal,
+            theme_styles: NativeEditorFrameThemeStyles::from_style_fn(|key| match key {
+                "ui.linenr" => Style::default().fg(Color::Rgb(13, 14, 15)),
+                _ => Style::default(),
+            }),
+            palette: NativeEditorFramePalette {
+                fg_color: black(),
+                bg_color: white(),
+                selection_primary,
+                selection_secondary,
+                fallback_gutter_color,
+                diagnostic_highlight_base,
+                diagnostic_icon_colors,
+                fallback_ruler_color,
+                run_button_color: fallback_gutter_color,
+            },
+        });
+
+        assert_eq!(
+            style.indent_guide_color,
+            helix_color_to_hsla(Color::Rgb(13, 14, 15)).unwrap()
+        );
     }
 
     fn paint_palette() -> NativeEditorFramePalette {
@@ -1636,7 +1670,7 @@ mod tests {
             diagnostic_icon_colors: test_diagnostic_icon_colors(),
             gutter_bg: None,
             wrap_indicator_color: None,
-            indent_guide_color: Some(black()),
+            indent_guide_color: black(),
             ruler_color: black(),
             run_button_color: black(),
         }

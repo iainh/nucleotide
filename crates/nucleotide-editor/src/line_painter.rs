@@ -39,18 +39,33 @@ pub fn paint_indent_guides(
     source_text: &str,
     config: IndentGuidePaintConfig,
 ) {
+    for bounds in indent_guide_bounds(text_origin, line_height, cell_width, source_text, config) {
+        window.paint_quad(fill(bounds, config.color));
+    }
+}
+
+pub fn indent_guide_bounds(
+    text_origin: Point<Pixels>,
+    line_height: Pixels,
+    cell_width: Pixels,
+    source_text: &str,
+    config: IndentGuidePaintConfig,
+) -> Vec<Bounds<Pixels>> {
     let indent_width = usize::from(config.indent_width.max(1));
     let indent_cols = leading_indent_columns(source_text, indent_width as u16);
     let start_level = usize::from(config.skip_levels);
+    let mut bounds = Vec::new();
 
     for level in start_level..(indent_cols / indent_width) {
         let col = level * indent_width;
-        let x = text_origin.x + cell_width * col as f32;
-        window.paint_quad(fill(
-            Bounds::new(point(x, text_origin.y), size(px(1.0), line_height)),
-            config.color,
+        let x = text_origin.x + cell_width * (col as f32 + 0.5) - px(0.5);
+        bounds.push(Bounds::new(
+            point(x, text_origin.y),
+            size(px(1.0), line_height),
         ));
     }
+
+    bounds
 }
 
 fn leading_indent_columns(text: &str, tab_width: u16) -> usize {
@@ -295,6 +310,46 @@ mod tests {
         assert_eq!(super::leading_indent_columns(" \tvalue", 4), 4);
         assert_eq!(super::leading_indent_columns("    value", 4), 4);
         assert_eq!(super::leading_indent_columns("value", 4), 0);
+    }
+
+    #[test]
+    fn indent_guide_bounds_center_lines_in_indent_cells() {
+        let config = IndentGuidePaintConfig {
+            indent_width: 4,
+            skip_levels: 0,
+            color: rgb(0x999999).into(),
+        };
+        let bounds = indent_guide_bounds(
+            point(px(100.0), px(20.0)),
+            px(18.0),
+            px(10.0),
+            "        value",
+            config,
+        );
+
+        assert_eq!(bounds.len(), 2);
+        assert_eq!(bounds[0].origin, point(px(104.5), px(20.0)));
+        assert_eq!(bounds[0].size, size(px(1.0), px(18.0)));
+        assert_eq!(bounds[1].origin, point(px(144.5), px(20.0)));
+    }
+
+    #[test]
+    fn indent_guide_bounds_honor_skip_levels() {
+        let config = IndentGuidePaintConfig {
+            indent_width: 4,
+            skip_levels: 1,
+            color: rgb(0x999999).into(),
+        };
+        let bounds = indent_guide_bounds(
+            point(px(100.0), px(20.0)),
+            px(18.0),
+            px(10.0),
+            "        value",
+            config,
+        );
+
+        assert_eq!(bounds.len(), 1);
+        assert_eq!(bounds[0].origin, point(px(144.5), px(20.0)));
     }
 
     fn soft_wrap_visual(text: &str, is_phantom_line: bool) -> SoftWrapVisualLine {
