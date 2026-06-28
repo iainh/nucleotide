@@ -73,6 +73,7 @@ use nucleotide_env::EnvironmentOrigin;
 use nucleotide_events::v2::run::{Event as RunEvent, ResolvedTask, RunId, RunStatus};
 use nucleotide_events::v2::terminal::{Event as TerminalEvent, TerminalId};
 use nucleotide_terminal::TerminalBounds;
+use slotmap::KeyData;
 // (no direct Workspace v2 items used here)
 use nucleotide_vcs::{VcsEvent, VcsServiceHandle};
 #[cfg(target_os = "windows")]
@@ -1254,6 +1255,80 @@ fn completion_commit_character_from_key(
     let mut chars = text.chars();
     let ch = chars.next()?;
     chars.next().is_none().then_some(ch)
+}
+
+fn ui_completion_item_from_event(
+    item: nucleotide_events::completion::CompletionItem,
+) -> nucleotide_ui::completion_v2::CompletionItem {
+    use nucleotide_events::completion::{CompletionItemKind, CompletionItemTag};
+    use nucleotide_ui::completion_v2::{
+        CompletionItem as UiCompletionItem, CompletionItemKind as UiCompletionItemKind,
+        CompletionItemTag as UiCompletionItemTag,
+    };
+
+    let ui_kind = match item.kind {
+        CompletionItemKind::Text => UiCompletionItemKind::Text,
+        CompletionItemKind::Method => UiCompletionItemKind::Method,
+        CompletionItemKind::Function => UiCompletionItemKind::Function,
+        CompletionItemKind::Constructor => UiCompletionItemKind::Constructor,
+        CompletionItemKind::Field => UiCompletionItemKind::Field,
+        CompletionItemKind::Variable => UiCompletionItemKind::Variable,
+        CompletionItemKind::Class => UiCompletionItemKind::Class,
+        CompletionItemKind::Interface => UiCompletionItemKind::Interface,
+        CompletionItemKind::Module => UiCompletionItemKind::Module,
+        CompletionItemKind::Property => UiCompletionItemKind::Property,
+        CompletionItemKind::Unit => UiCompletionItemKind::Unit,
+        CompletionItemKind::Value => UiCompletionItemKind::Value,
+        CompletionItemKind::Enum => UiCompletionItemKind::Enum,
+        CompletionItemKind::Keyword => UiCompletionItemKind::Keyword,
+        CompletionItemKind::Snippet => UiCompletionItemKind::Snippet,
+        CompletionItemKind::Color => UiCompletionItemKind::Color,
+        CompletionItemKind::File => UiCompletionItemKind::File,
+        CompletionItemKind::Reference => UiCompletionItemKind::Reference,
+        CompletionItemKind::Folder => UiCompletionItemKind::Folder,
+        CompletionItemKind::EnumMember => UiCompletionItemKind::EnumMember,
+        CompletionItemKind::Constant => UiCompletionItemKind::Constant,
+        CompletionItemKind::Struct => UiCompletionItemKind::Struct,
+        CompletionItemKind::Event => UiCompletionItemKind::Event,
+        CompletionItemKind::Operator => UiCompletionItemKind::Operator,
+        CompletionItemKind::TypeParameter => UiCompletionItemKind::TypeParameter,
+    };
+
+    UiCompletionItem {
+        text: item.insert_text.into(),
+        description: item.detail.as_ref().map(|d| d.clone().into()),
+        display_text: Some(item.label.into()),
+        kind: Some(ui_kind),
+        documentation: item.documentation.map(|d| d.into()),
+        detail: item.detail.map(|d| d.into()),
+        signature_info: item.signature_info.map(|s| s.into()),
+        type_info: item.type_info.map(|t| t.into()),
+        insert_text_format: match item.insert_text_format {
+            nucleotide_events::completion::InsertTextFormat::PlainText => {
+                nucleotide_ui::completion_v2::InsertTextFormat::PlainText
+            }
+            nucleotide_events::completion::InsertTextFormat::Snippet => {
+                nucleotide_ui::completion_v2::InsertTextFormat::Snippet
+            }
+        },
+        edit: item.edit.map(ui_completion_edit_from_event),
+        sort_text: item.sort_text.map(Into::into),
+        filter_text: item.filter_text.map(Into::into),
+        preselect: item.preselect,
+        commit_characters: item.commit_characters.into_iter().map(Into::into).collect(),
+        tags: item
+            .tags
+            .into_iter()
+            .map(|tag| match tag {
+                CompletionItemTag::Deprecated => UiCompletionItemTag::Deprecated,
+            })
+            .collect(),
+        data: item.data,
+        source_index: item.source_index,
+        selection_priority: 0,
+        server_id: item.server_id,
+        raw_lsp_item: item.raw_lsp_item,
+    }
 }
 
 // Pending file operation kinds awaiting user input (used with the prompt overlay)
@@ -11449,77 +11524,7 @@ impl Workspace {
         let language = self.completion_language_for_doc(doc_id, cx);
         let mut ui_items: Vec<nucleotide_ui::completion_v2::CompletionItem> = items
             .into_iter()
-            .map(|item| {
-                use nucleotide_events::completion::{CompletionItemKind, CompletionItemTag};
-                use nucleotide_ui::completion_v2::{
-                    CompletionItem as UiCompletionItem, CompletionItemKind as UiCompletionItemKind,
-                    CompletionItemTag as UiCompletionItemTag,
-                };
-
-                let ui_kind = match item.kind {
-                    CompletionItemKind::Text => UiCompletionItemKind::Text,
-                    CompletionItemKind::Method => UiCompletionItemKind::Method,
-                    CompletionItemKind::Function => UiCompletionItemKind::Function,
-                    CompletionItemKind::Constructor => UiCompletionItemKind::Constructor,
-                    CompletionItemKind::Field => UiCompletionItemKind::Field,
-                    CompletionItemKind::Variable => UiCompletionItemKind::Variable,
-                    CompletionItemKind::Class => UiCompletionItemKind::Class,
-                    CompletionItemKind::Interface => UiCompletionItemKind::Interface,
-                    CompletionItemKind::Module => UiCompletionItemKind::Module,
-                    CompletionItemKind::Property => UiCompletionItemKind::Property,
-                    CompletionItemKind::Unit => UiCompletionItemKind::Unit,
-                    CompletionItemKind::Value => UiCompletionItemKind::Value,
-                    CompletionItemKind::Enum => UiCompletionItemKind::Enum,
-                    CompletionItemKind::Keyword => UiCompletionItemKind::Keyword,
-                    CompletionItemKind::Snippet => UiCompletionItemKind::Snippet,
-                    CompletionItemKind::Color => UiCompletionItemKind::Color,
-                    CompletionItemKind::File => UiCompletionItemKind::File,
-                    CompletionItemKind::Reference => UiCompletionItemKind::Reference,
-                    CompletionItemKind::Folder => UiCompletionItemKind::Folder,
-                    CompletionItemKind::EnumMember => UiCompletionItemKind::EnumMember,
-                    CompletionItemKind::Constant => UiCompletionItemKind::Constant,
-                    CompletionItemKind::Struct => UiCompletionItemKind::Struct,
-                    CompletionItemKind::Event => UiCompletionItemKind::Event,
-                    CompletionItemKind::Operator => UiCompletionItemKind::Operator,
-                    CompletionItemKind::TypeParameter => UiCompletionItemKind::TypeParameter,
-                };
-
-                UiCompletionItem {
-                    text: item.insert_text.into(),
-                    description: item.detail.as_ref().map(|d| d.clone().into()),
-                    display_text: Some(item.label.into()),
-                    kind: Some(ui_kind),
-                    documentation: item.documentation.map(|d| d.into()),
-                    detail: item.detail.map(|d| d.into()),
-                    signature_info: item.signature_info.map(|s| s.into()),
-                    type_info: item.type_info.map(|t| t.into()),
-                    insert_text_format: match item.insert_text_format {
-                        nucleotide_events::completion::InsertTextFormat::PlainText => {
-                            nucleotide_ui::completion_v2::InsertTextFormat::PlainText
-                        }
-                        nucleotide_events::completion::InsertTextFormat::Snippet => {
-                            nucleotide_ui::completion_v2::InsertTextFormat::Snippet
-                        }
-                    },
-                    edit: item.edit.map(ui_completion_edit_from_event),
-                    sort_text: item.sort_text.map(Into::into),
-                    filter_text: item.filter_text.map(Into::into),
-                    preselect: item.preselect,
-                    commit_characters: item.commit_characters.into_iter().map(Into::into).collect(),
-                    tags: item
-                        .tags
-                        .into_iter()
-                        .map(|tag| match tag {
-                            CompletionItemTag::Deprecated => UiCompletionItemTag::Deprecated,
-                        })
-                        .collect(),
-                    data: item.data,
-                    source_index: item.source_index,
-                    selection_priority: 0,
-                    server_id: item.server_id,
-                    raw_lsp_item: item.raw_lsp_item,
-                }
-            })
+            .map(ui_completion_item_from_event)
             .collect();
 
         for item in &mut ui_items {
@@ -11703,6 +11708,89 @@ impl Workspace {
             Self::completion_memory_key(&language, &prefix, &completion_item)
         });
 
+        if self.resolve_completion_before_accept(
+            completion_item.clone(),
+            completion_memory_key.clone(),
+            cx,
+        ) {
+            return;
+        }
+
+        self.accept_completion_item(completion_item, completion_memory_key, cx);
+    }
+
+    fn resolve_completion_before_accept(
+        &mut self,
+        completion_item: nucleotide_ui::CompletionItem,
+        completion_memory_key: Option<CompletionMemoryKey>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(server_id) = completion_item.server_id else {
+            return false;
+        };
+        let Some(raw_lsp_item) = completion_item.raw_lsp_item.clone() else {
+            return false;
+        };
+        let raw_lsp_item = match serde_json::from_value::<lsp::CompletionItem>(raw_lsp_item) {
+            Ok(item) => item,
+            Err(err) => {
+                nucleotide_logging::warn!(
+                    error = %err,
+                    "Failed to deserialize raw LSP completion item for resolve"
+                );
+                return false;
+            }
+        };
+
+        let server_id: helix_lsp::LanguageServerId = KeyData::from_ffi(server_id).into();
+        let source_index = completion_item.source_index;
+        let resolve_future = self.core.update(cx, |core, _cx| {
+            core.prepare_lsp_completion_resolve(server_id, raw_lsp_item, source_index)
+        });
+        let resolve_future = match resolve_future {
+            Ok(Some(resolve_future)) => resolve_future,
+            Ok(None) => return false,
+            Err(err) => {
+                nucleotide_logging::warn!(
+                    error = %err,
+                    server_id = ?server_id,
+                    "Failed to prepare completion item resolve"
+                );
+                return false;
+            }
+        };
+
+        cx.spawn(async move |this, cx| {
+            let resolved_item = resolve_future.await;
+
+            if let Some(this) = this.upgrade() {
+                this.update(cx, move |workspace, cx| {
+                    let completion_item = match resolved_item {
+                        Ok(resolved_item) => ui_completion_item_from_event(resolved_item),
+                        Err(err) => {
+                            nucleotide_logging::warn!(
+                                error = %err,
+                                "Completion item resolve failed; accepting original item"
+                            );
+                            completion_item
+                        }
+                    };
+
+                    workspace.accept_completion_item(completion_item, completion_memory_key, cx);
+                });
+            }
+        })
+        .detach();
+
+        true
+    }
+
+    fn accept_completion_item(
+        &mut self,
+        completion_item: nucleotide_ui::CompletionItem,
+        completion_memory_key: Option<CompletionMemoryKey>,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(edit) = completion_item.edit.clone() {
             self.handle_lsp_edit_completion(completion_item, edit, cx);
         } else {

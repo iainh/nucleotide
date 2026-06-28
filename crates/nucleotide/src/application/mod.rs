@@ -103,6 +103,8 @@ type CompletionServerResult = anyhow::Result<(
     Option<lsp::CompletionResponse>,
 )>;
 type CompletionServerFuture = BoxFuture<'static, CompletionServerResult>;
+type CompletionResolveFuture =
+    BoxFuture<'static, anyhow::Result<nucleotide_events::completion::CompletionItem>>;
 type InlayHintJobFuture =
     Pin<Box<dyn Future<Output = anyhow::Result<helix_term::job::Callback>> + Send>>;
 
@@ -4604,6 +4606,54 @@ impl Application {
         Ok(lsp_futures)
     }
 
+    pub fn prepare_lsp_completion_resolve(
+        &mut self,
+        server_id: LanguageServerId,
+        completion_item: lsp::CompletionItem,
+        source_index: usize,
+    ) -> anyhow::Result<Option<CompletionResolveFuture>> {
+        let Some(language_server) = self.editor.language_server_by_id(server_id) else {
+            nucleotide_logging::warn!(
+                server_id = ?server_id,
+                "Cannot resolve completion item because the language server is unavailable"
+            );
+            return Err(anyhow::anyhow!("Language server not found"));
+        };
+
+        if !lsp_completion_resolve_supported(
+            language_server.capabilities().completion_provider.as_ref(),
+        ) {
+            nucleotide_logging::debug!(
+                server_id = ?server_id,
+                "Skipping completion resolve because the language server does not advertise it"
+            );
+            return Ok(None);
+        }
+
+        crate::lsp_traffic_logger::log_outgoing(
+            language_server.id(),
+            language_server.name(),
+            "completionItem/resolve",
+            &serde_json::to_value(&completion_item).unwrap_or(serde_json::Value::Null),
+        );
+
+        let offset_encoding = language_server.offset_encoding();
+        let resolve_future = language_server.resolve_completion_item(&completion_item);
+
+        Ok(Some(
+            async move {
+                let resolved_item = resolve_future.await?;
+                Ok(lsp_completion_item(
+                    resolved_item,
+                    offset_encoding,
+                    source_index,
+                    Some(server_id),
+                ))
+            }
+            .boxed(),
+        ))
+    }
+
     /// Request LSP completions synchronously with prefix extraction for filtering.
     ///
     /// Tests and legacy call sites should prefer `prepare_lsp_completions_with_prefix`, which
@@ -6786,6 +6836,12 @@ fn lsp_completion_response_is_incomplete(response: &lsp::CompletionResponse) -> 
     }
 }
 
+fn lsp_completion_resolve_supported(provider: Option<&lsp::CompletionOptions>) -> bool {
+    provider
+        .and_then(|provider| provider.resolve_provider)
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 fn lsp_completion_items_from_response(
     response: lsp::CompletionResponse,
@@ -7356,9 +7412,10 @@ mod tests {
         diagnostic_picker_path_label, diagnostic_severity_label, home_requires_login_shell_capture,
         local_path_completion_context, lsp_completion_insert_text,
         lsp_completion_insert_text_format, lsp_completion_items_from_response,
-        lsp_completion_items_from_response_for_server, lsp_completion_response_is_incomplete,
-        lsp_symbol_picker, native_symbol_item_from_lsp, path_completion_items,
-        project_health_status, project_server_language_id, syntax_symbol_kind_from_capture_name,
+        lsp_completion_items_from_response_for_server, lsp_completion_resolve_supported,
+        lsp_completion_response_is_incomplete, lsp_symbol_picker, native_symbol_item_from_lsp,
+        path_completion_items, project_health_status, project_server_language_id,
+        syntax_symbol_kind_from_capture_name,
     };
     use crate::test_utils::test_support::{
         TestUpdate, create_counting_channel, create_test_diagnostic_events,
@@ -8074,6 +8131,21 @@ mod tests {
 
         assert!(!lsp_completion_response_is_incomplete(&array_response));
         assert!(lsp_completion_response_is_incomplete(&list_response));
+    }
+
+    #[test]
+    fn lsp_completion_resolve_supported_uses_server_capability() {
+        assert!(!lsp_completion_resolve_supported(None));
+        assert!(!lsp_completion_resolve_supported(Some(
+            &lsp::CompletionOptions::default()
+        )));
+
+        let options = lsp::CompletionOptions {
+            resolve_provider: Some(true),
+            ..Default::default()
+        };
+
+        assert!(lsp_completion_resolve_supported(Some(&options)));
     }
 
     #[test]
