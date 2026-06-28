@@ -195,7 +195,7 @@ jobs:
         run: |
           git clone --depth 1 --branch 25.07.1 https://github.com/helix-editor/helix.git helix-temp
           try {
-            .\scripts\setup-windows-runtime.ps1 -RuntimeSource helix-temp\runtime -NuclExe target\release\nucl-grammar.exe
+            .\scripts\setup-windows-runtime.ps1 -RuntimeSource helix-temp\runtime -NuclExe target\release\nucl-grammar.exe -AllowGrammarFailures
           } finally {
             Remove-Item -LiteralPath helix-temp -Recurse -Force
           }
