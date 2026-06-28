@@ -1946,7 +1946,6 @@ impl Render for CompletionView {
                                                                 .child(
                                                                     completion_element
                                                                         .compact()
-                                                                        .hide_icon()
                                                                         .into_element_with_theme(
                                                                             theme,
                                                                         ),

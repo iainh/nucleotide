@@ -2,6 +2,7 @@
 // ABOUTME: Maps CompletionItemKind to appropriate SVG icon paths in assets/icons/
 
 use crate::completion_v2::CompletionItemKind;
+use crate::styling::{ColorTheory, ContrastRatios};
 use gpui::{Hsla, Styled, Svg, svg};
 
 /// Icon configuration for completion items
@@ -113,6 +114,20 @@ pub fn get_completion_icon_color(kind: &CompletionItemKind, theme: &crate::Theme
     }
 }
 
+/// Get a themed completion icon color with enough contrast against a tokenized
+/// icon background.
+pub fn get_completion_icon_color_on_background(
+    kind: &CompletionItemKind,
+    theme: &crate::Theme,
+    background: Hsla,
+) -> Hsla {
+    ColorTheory::ensure_contrast(
+        background,
+        get_completion_icon_color(kind, theme),
+        ContrastRatios::AA_LARGE,
+    )
+}
+
 /// Create a themed completion icon with appropriate colors
 pub fn create_themed_completion_icon(
     kind: &CompletionItemKind,
@@ -182,5 +197,54 @@ mod tests {
         let config = CompletionIconConfig::default();
         assert_eq!(config.size, 16.0);
         assert!(config.color.is_none());
+    }
+
+    #[test]
+    fn themed_icon_colors_contrast_with_token_backgrounds() {
+        let theme = crate::Theme::default();
+        let icon_tokens = theme
+            .tokens
+            .chrome
+            .completion_icon_tokens(&theme.tokens.editor);
+
+        for background in [
+            icon_tokens.icon_background,
+            icon_tokens.icon_background_selected,
+        ] {
+            for kind in [
+                CompletionItemKind::Text,
+                CompletionItemKind::Method,
+                CompletionItemKind::Function,
+                CompletionItemKind::Constructor,
+                CompletionItemKind::Field,
+                CompletionItemKind::Variable,
+                CompletionItemKind::Class,
+                CompletionItemKind::Interface,
+                CompletionItemKind::Module,
+                CompletionItemKind::Property,
+                CompletionItemKind::Unit,
+                CompletionItemKind::Value,
+                CompletionItemKind::Enum,
+                CompletionItemKind::Keyword,
+                CompletionItemKind::Snippet,
+                CompletionItemKind::Color,
+                CompletionItemKind::File,
+                CompletionItemKind::Reference,
+                CompletionItemKind::Folder,
+                CompletionItemKind::EnumMember,
+                CompletionItemKind::Constant,
+                CompletionItemKind::Struct,
+                CompletionItemKind::Event,
+                CompletionItemKind::Operator,
+                CompletionItemKind::TypeParameter,
+            ] {
+                let color = get_completion_icon_color_on_background(&kind, &theme, background);
+                let contrast = ColorTheory::contrast_ratio(background, color);
+                assert!(
+                    contrast >= ContrastRatios::AA_LARGE,
+                    "{kind:?} icon contrast {contrast:.2} is below 3:1"
+                );
+            }
+        }
     }
 }
