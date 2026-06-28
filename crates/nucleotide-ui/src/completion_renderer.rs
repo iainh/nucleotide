@@ -109,6 +109,63 @@ impl CompletionItemElement {
         self
     }
 
+    fn render_icon(
+        &self,
+        theme: &crate::Theme,
+        icon_size: f32,
+        slot_size: f32,
+    ) -> Option<AnyElement> {
+        if !self.show_icon {
+            return None;
+        }
+
+        let tokens = &theme.tokens;
+        let icon_tokens = tokens.chrome.completion_icon_tokens(&tokens.editor);
+        let icon_background = if self.is_selected {
+            icon_tokens.icon_background_selected
+        } else {
+            icon_tokens.icon_background
+        };
+        let (svg, icon_color) = if let Some(kind) = self.item.kind.as_ref() {
+            (
+                crate::completion_icons::get_completion_icon_svg(kind),
+                crate::completion_icons::get_completion_icon_color_on_background(
+                    kind,
+                    theme,
+                    icon_background,
+                ),
+            )
+        } else {
+            (
+                gpui::svg().path("icons/file-text.svg"),
+                crate::styling::ColorTheory::ensure_contrast(
+                    icon_background,
+                    icon_tokens.generic_color,
+                    crate::styling::ContrastRatios::AA_LARGE,
+                ),
+            )
+        };
+
+        Some(
+            div()
+                .flex()
+                .items_center()
+                .justify_center()
+                .w(px(slot_size))
+                .h(px(slot_size))
+                .flex_shrink_0()
+                .rounded_sm()
+                .bg(icon_background)
+                .border_1()
+                .border_color(icon_tokens.icon_border)
+                .when(!self.is_selected, |div| {
+                    div.hover(|style| style.bg(icon_tokens.icon_background_hover))
+                })
+                .child(svg.size(px(icon_size)).text_color(icon_color))
+                .into_any_element(),
+        )
+    }
+
     /// Render highlighted text with match positions
     fn render_highlighted_text(
         &self,
@@ -227,6 +284,9 @@ impl CompletionItemElement {
                         .min_w(px(0.0))
                         .flex_1()
                         .gap(tokens.sizes.space_2)
+                        .when_some(self.render_icon(theme, 12.0, 16.0), |row, icon| {
+                            row.child(icon)
+                        })
                         .child(
                             div()
                                 .text_size(tokens.sizes.text_base)
@@ -296,68 +356,10 @@ impl CompletionItemElement {
             });
 
         // Icon section - using Lucide SVG icons with design tokens
-        let with_icon = if self.show_icon
-            && let Some(kind) = self.item.kind.as_ref()
-        {
-            let icon_tokens = tokens.chrome.completion_icon_tokens(&tokens.editor);
-            let svg = crate::completion_icons::get_completion_icon_svg(kind);
-            let icon_color = crate::completion_icons::get_completion_icon_color(kind, theme);
-
-            base_container.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .w_4()
-                    .h_4()
-                    .rounded_sm()
-                    .bg(if self.is_selected {
-                        icon_tokens.icon_background_selected
-                    } else {
-                        icon_tokens.icon_background
-                    })
-                    .border_1()
-                    .border_color(icon_tokens.icon_border)
-                    .when(self.is_selected, |div| {
-                        div.bg(icon_tokens.icon_background_selected)
-                    })
-                    .when(!self.is_selected, |div| {
-                        div.hover(|style| style.bg(icon_tokens.icon_background_hover))
-                    })
-                    .child(svg.size(gpui::px(12.0)).text_color(icon_color)),
-            )
-        } else if self.show_icon {
-            // Fallback icon when no kind is specified
-            let icon_tokens = tokens.chrome.completion_icon_tokens(&tokens.editor);
-
-            base_container.child(
-                div()
-                    .w_4()
-                    .h_4()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded_sm()
-                    .bg(if self.is_selected {
-                        icon_tokens.icon_background_selected
-                    } else {
-                        icon_tokens.icon_background
-                    })
-                    .border_1()
-                    .border_color(icon_tokens.icon_border)
-                    .when(!self.is_selected, |div| {
-                        div.hover(|style| style.bg(icon_tokens.icon_background_hover))
-                    })
-                    .child(
-                        gpui::svg()
-                            .path("icons/file-text.svg")
-                            .size(gpui::px(12.0))
-                            .text_color(icon_tokens.generic_color),
-                    ),
-            )
-        } else {
-            base_container
-        };
+        let with_icon = base_container
+            .when_some(self.render_icon(theme, 12.0, 16.0), |div, icon| {
+                div.child(icon)
+            });
 
         // Main content section - Enhanced Zed-style layout with richer information
         let with_content = with_icon.child(
@@ -722,5 +724,18 @@ mod tests {
         assert!(!compact_element.is_selected);
         assert!(!compact_element.show_icon);
         assert!(compact_element.compact);
+    }
+
+    #[test]
+    fn compact_completion_item_keeps_icon_by_default() {
+        let element = CompletionItemElement::new(
+            CompletionItem::new("test").with_kind(CompletionItemKind::Variable),
+            StringMatch::new(1, 100, vec![]),
+            false,
+        )
+        .compact();
+
+        assert!(element.show_icon);
+        assert!(element.compact);
     }
 }
