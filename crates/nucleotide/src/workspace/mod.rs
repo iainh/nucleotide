@@ -1202,6 +1202,8 @@ struct ActiveCompletionSession {
     doc_id: DocumentId,
     view_id: ViewId,
     is_incomplete: bool,
+    incomplete_server_ids: Vec<u64>,
+    retained_items: Vec<nucleotide_events::completion::CompletionItem>,
     requested_prefix: String,
 }
 
@@ -1240,6 +1242,20 @@ fn should_retrigger_incomplete_completion_for_focused_session(
         && session.requested_prefix != current_prefix
         && focused_doc_id == Some(session.doc_id)
         && focused_view_id == session.view_id
+}
+
+fn retained_completion_items_for_completed_providers(
+    items: &[nucleotide_events::completion::CompletionItem],
+    incomplete_server_ids: &[u64],
+) -> Vec<nucleotide_events::completion::CompletionItem> {
+    items
+        .iter()
+        .filter(|item| {
+            item.server_id
+                .is_some_and(|server_id| !incomplete_server_ids.contains(&server_id))
+        })
+        .cloned()
+        .collect()
 }
 
 fn completion_commit_character_from_key(
@@ -11171,6 +11187,11 @@ impl Workspace {
 
         let doc_id = session.doc_id;
         let view_id = session.view_id;
+        let server_filter = session.incomplete_server_ids.clone();
+        let retained_items = session.retained_items.clone();
+        if server_filter.is_empty() {
+            return;
+        }
         session.requested_prefix = current_prefix.to_string();
 
         let Some(cursor) = self.completion_cursor(doc_id, view_id, cx) else {
@@ -11181,13 +11202,17 @@ impl Workspace {
             prefix = %current_prefix,
             doc_id = ?doc_id,
             view_id = ?view_id,
-            "Retriggering incomplete LSP completion list"
+            incomplete_server_count = server_filter.len(),
+            retained_item_count = retained_items.len(),
+            "Retriggering incomplete LSP completion providers"
         );
-        self.start_completion_request(
+        self.start_completion_request_with_provider_reuse(
             cursor,
             doc_id,
             view_id,
             LspCompletionTrigger::Incomplete,
+            Some(server_filter),
+            retained_items,
             cx,
         );
     }
@@ -11381,8 +11406,36 @@ impl Workspace {
         trigger: LspCompletionTrigger,
         cx: &mut Context<Self>,
     ) {
+        self.start_completion_request_with_provider_reuse(
+            cursor,
+            doc_id,
+            view_id,
+            trigger,
+            None,
+            Vec::new(),
+            cx,
+        );
+    }
+
+    fn start_completion_request_with_provider_reuse(
+        &mut self,
+        cursor: usize,
+        doc_id: helix_view::DocumentId,
+        view_id: helix_view::ViewId,
+        trigger: LspCompletionTrigger,
+        server_filter: Option<Vec<u64>>,
+        retained_items: Vec<nucleotide_events::completion::CompletionItem>,
+        cx: &mut Context<Self>,
+    ) {
         let completion_request = self.core.update(cx, |core, _cx| {
-            core.prepare_lsp_completions_with_prefix(cursor, doc_id, view_id, trigger)
+            core.prepare_lsp_completions_with_prefix_for_servers(
+                cursor,
+                doc_id,
+                view_id,
+                trigger,
+                server_filter,
+                retained_items,
+            )
         });
 
         let completion_request = match completion_request {
@@ -11414,17 +11467,19 @@ impl Workspace {
             Vec<nucleotide_events::completion::CompletionItem>,
             String,
             bool,
+            Vec<u64>,
         )>,
         doc_id: helix_view::DocumentId,
         view_id: helix_view::ViewId,
         cx: &mut Context<Self>,
     ) {
         match completion_result {
-            Ok((completion_items, prefix, is_incomplete)) => {
+            Ok((completion_items, prefix, is_incomplete, incomplete_server_ids)) => {
                 nucleotide_logging::debug!(
                     item_count = completion_items.len(),
                     prefix = %prefix,
                     is_incomplete = is_incomplete,
+                    incomplete_server_count = incomplete_server_ids.len(),
                     "Received completion items from Nucleotide LSP path"
                 );
 
@@ -11438,6 +11493,7 @@ impl Workspace {
                         doc_id,
                         view_id,
                         is_incomplete,
+                        incomplete_server_ids,
                         cx,
                     );
                 }
@@ -11518,10 +11574,13 @@ impl Workspace {
         doc_id: helix_view::DocumentId,
         view_id: helix_view::ViewId,
         is_incomplete: bool,
+        incomplete_server_ids: Vec<u64>,
         cx: &mut Context<Self>,
     ) {
         // Convert between completion item types (same as existing method)
         let language = self.completion_language_for_doc(doc_id, cx);
+        let retained_items =
+            retained_completion_items_for_completed_providers(&items, &incomplete_server_ids);
         let mut ui_items: Vec<nucleotide_ui::completion_v2::CompletionItem> = items
             .into_iter()
             .map(ui_completion_item_from_event)
@@ -11536,6 +11595,8 @@ impl Workspace {
             ui_item_count = ui_items.len(),
             prefix = %prefix,
             is_incomplete = is_incomplete,
+            incomplete_server_count = incomplete_server_ids.len(),
+            retained_item_count = retained_items.len(),
             "Converted to UI completion items with prefix, creating filtered completion view"
         );
 
@@ -11543,6 +11604,8 @@ impl Workspace {
             doc_id,
             view_id,
             is_incomplete,
+            incomplete_server_ids,
+            retained_items,
             requested_prefix: prefix.clone(),
         });
 
@@ -16046,6 +16109,8 @@ mod tests {
             doc_id,
             view_id,
             is_incomplete: true,
+            incomplete_server_ids: vec![1],
+            retained_items: Vec::new(),
             requested_prefix: "pri".to_string(),
         };
 
@@ -16065,6 +16130,8 @@ mod tests {
             doc_id,
             view_id,
             is_incomplete: false,
+            incomplete_server_ids: vec![1],
+            retained_items: Vec::new(),
             requested_prefix: "pri".to_string(),
         };
 
@@ -16091,6 +16158,33 @@ mod tests {
             Some(doc_id),
             test_view_id(2)
         ));
+    }
+
+    #[test]
+    fn incomplete_completion_retains_completed_provider_items() {
+        let completed = nucleotide_events::completion::CompletionItem::new(
+            "clone".to_string(),
+            nucleotide_events::completion::CompletionItemKind::Method,
+        )
+        .with_server_id(Some(1));
+        let incomplete = nucleotide_events::completion::CompletionItem::new(
+            "fmt".to_string(),
+            nucleotide_events::completion::CompletionItemKind::Method,
+        )
+        .with_server_id(Some(2));
+        let local = nucleotide_events::completion::CompletionItem::new(
+            "local".to_string(),
+            nucleotide_events::completion::CompletionItemKind::Text,
+        );
+
+        let retained = retained_completion_items_for_completed_providers(
+            &[completed.clone(), incomplete, local],
+            &[2],
+        );
+
+        assert_eq!(retained.len(), 1);
+        assert_eq!(retained[0].label, completed.label);
+        assert_eq!(retained[0].server_id, Some(1));
     }
 
     #[test]
