@@ -38,7 +38,7 @@ use futures_util::{
     stream::{FuturesOrdered, StreamExt},
 };
 use helix_core::{
-    Position, Range, RopeSlice, Selection, Uri, pos_at_coords, syntax,
+    Position, Range, Rope, RopeSlice, Selection, Uri, pos_at_coords, syntax,
     text_annotations::InlineAnnotation,
 };
 use helix_lsp::{LanguageServerId, LspProgressMap, OffsetEncoding, lsp};
@@ -258,6 +258,10 @@ fn workspace_marker_exists(path: &Path) -> bool {
         || path.join(".hg").exists()
         || path.join(".jj").exists()
         || path.join(".helix").exists()
+}
+
+fn buffer_text_matches_path(text: &Rope, path: &Path) -> bool {
+    std::fs::read_to_string(path).is_ok_and(|file_text| file_text == text.to_string())
 }
 
 pub fn implicit_workspace_root_from_current_dir() -> Option<PathBuf> {
@@ -2337,6 +2341,62 @@ impl Application {
             }));
         }
     }
+
+    pub(crate) fn reconcile_vcs_after_diff_reset(&mut self, cx: &mut gpui::Context<crate::Core>) {
+        let view_id = self.editor.tree.focus;
+        let Some(doc_id) = self.editor.tree.try_get(view_id).map(|view| view.doc) else {
+            return;
+        };
+
+        let Some((path, text)) = self.editor.document(doc_id).and_then(|doc| {
+            doc.path()
+                .map(|path| (path.to_path_buf(), doc.text().clone()))
+        }) else {
+            return;
+        };
+
+        let modified_reset = self.reset_modified_if_buffer_matches_disk(doc_id, view_id, &path);
+
+        let vcs_service = cx
+            .try_global::<nucleotide_vcs::VcsServiceHandle>()
+            .map(|handle| handle.service().clone());
+        if let Some(vcs_service) = vcs_service {
+            vcs_service.update(cx, |service, cx| {
+                service.update_file_diff(&path, text, cx);
+            });
+        }
+
+        if modified_reset {
+            cx.emit(crate::Update::Event(AppEvent::Core(
+                CoreEvent::RedrawRequested,
+            )));
+        }
+    }
+
+    fn reset_modified_if_buffer_matches_disk(
+        &mut self,
+        doc_id: DocumentId,
+        view_id: ViewId,
+        path: &Path,
+    ) -> bool {
+        let Some(doc) = self.editor.document(doc_id) else {
+            return false;
+        };
+        if !buffer_text_matches_path(doc.text(), path) {
+            return false;
+        }
+
+        let tree = &mut self.editor.tree;
+        let documents = &mut self.editor.documents;
+        let view = tree.get_mut(view_id);
+        let Some(doc) = documents.get_mut(&doc_id) else {
+            return false;
+        };
+        doc.append_changes_to_history(view);
+        doc.reset_modified();
+        true
+    }
+
     pub fn handle_input_event(
         &mut self,
         event: InputEvent,
@@ -2377,6 +2437,10 @@ impl Application {
                 let selection_or_viewport_updated = outcome.selection_changed
                     || outcome.viewport_scroll_requested.is_some()
                     || outcome.viewport_cursor_requested.is_some();
+
+                if outcome.reset_diff_change_executed {
+                    self.reconcile_vcs_after_diff_reset(cx);
+                }
 
                 if outcome.selection_changed
                     && let Some(doc_id) = outcome.focused_doc_id
@@ -7233,7 +7297,7 @@ mod tests {
 
     use super::{
         Application, ApplicationCore, EditorInputBridge, LspCompletionTrigger, MaintenanceWake,
-        NativeSymbolItem, NativeSymbolTarget, PendingCompletionRequest,
+        NativeSymbolItem, NativeSymbolTarget, PendingCompletionRequest, buffer_text_matches_path,
         buffer_word_completion_items, completion_context_for_trigger,
         current_dir_is_executable_dir, dedupe_completion_items, detect_project_lsp_metadata,
         diagnostic_picker_path_label, diagnostic_severity_label, home_requires_login_shell_capture,
@@ -7301,6 +7365,22 @@ mod tests {
         assert!(!current_dir_is_executable_dir(
             current_dir.path(),
             &exe_path
+        ));
+    }
+
+    #[test]
+    fn buffer_text_matches_path_requires_exact_saved_text() {
+        let temp_dir = tempdir().unwrap();
+        let path = temp_dir.path().join("sample.txt");
+        fs::write(&path, "one\ntwo\n").unwrap();
+
+        assert!(buffer_text_matches_path(
+            &helix_core::Rope::from_str("one\ntwo\n"),
+            &path
+        ));
+        assert!(!buffer_text_matches_path(
+            &helix_core::Rope::from_str("one\ntwo"),
+            &path
         ));
     }
 

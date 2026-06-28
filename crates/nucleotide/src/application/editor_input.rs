@@ -38,6 +38,7 @@ pub struct EditorInputOutcome {
     pub focused_doc_id: Option<DocumentId>,
     pub selection_changed: bool,
     pub handled_by_native_command: bool,
+    pub reset_diff_change_executed: bool,
     pub unhandled_keys: Vec<KeyEvent>,
     pub completion_requested: Option<NativeCompletionRequest>,
     pub picker_requested: Option<NativePickerRequest>,
@@ -144,10 +145,12 @@ impl EditorInputBridge {
         let mut workspace_requested = None;
         let mut viewport_scroll_requested = None;
         let mut viewport_cursor_requested = None;
-        match self
+        let native_input_result = self
             .native_commands
-            .handle_key(key, compositor, editor, jobs)
-        {
+            .handle_key(key, compositor, editor, jobs);
+        let reset_diff_change_executed = self.native_commands.take_reset_diff_change_executed();
+
+        match native_input_result {
             NativeInputResult::Handled {
                 completion_requested: request,
                 picker_requested: picker_request,
@@ -213,6 +216,7 @@ impl EditorInputBridge {
             focused_doc_id,
             selection_changed,
             handled_by_native_command,
+            reset_diff_change_executed,
             unhandled_keys,
             completion_requested,
             picker_requested,
@@ -230,6 +234,7 @@ struct NativeCommandInput {
     on_next_key: Option<(OnKeyCallback, OnKeyCallbackKind)>,
     current_insert_replay: InsertReplay,
     last_insert_replay: Option<InsertReplay>,
+    reset_diff_change_executed: bool,
 }
 
 enum NativeInputResult {
@@ -306,7 +311,12 @@ impl NativeCommandInput {
             on_next_key: None,
             current_insert_replay: InsertReplay::default(),
             last_insert_replay: None,
+            reset_diff_change_executed: false,
         }
+    }
+
+    fn take_reset_diff_change_executed(&mut self) -> bool {
+        std::mem::take(&mut self.reset_diff_change_executed)
     }
 
     fn handle_key(
@@ -738,6 +748,7 @@ impl NativeCommandInput {
                 if !native_command_supported(command) {
                     return KeymapDispatch::Unhandled;
                 }
+                self.record_reset_diff_change_if_needed(command);
                 execute_native_command(command, context, &mut last_mode);
                 KeymapDispatch::Handled
             }
@@ -783,6 +794,7 @@ impl NativeCommandInput {
                     if let Some(request) = native_viewport_scroll_command(command, context.count) {
                         return KeymapDispatch::RequestViewportScroll(request);
                     }
+                    self.record_reset_diff_change_if_needed(command);
                     execute_native_command(command, context, &mut last_mode);
                 }
                 KeymapDispatch::Handled
@@ -795,6 +807,12 @@ impl NativeCommandInput {
                 }
             }
             KeymapResult::Cancelled(_) => KeymapDispatch::Unhandled,
+        }
+    }
+
+    fn record_reset_diff_change_if_needed(&mut self, command: &MappableCommand) {
+        if is_reset_diff_change_command(command) {
+            self.reset_diff_change_executed = true;
         }
     }
 
@@ -1012,6 +1030,10 @@ fn native_command_supported(command: &MappableCommand) -> bool {
                 | "select_mode"
                 | "match_brackets"
         )
+}
+
+fn is_reset_diff_change_command(command: &MappableCommand) -> bool {
+    command.name() == "reset-diff-change"
 }
 
 fn native_insert_entry_command(command: &MappableCommand) -> bool {
@@ -1969,6 +1991,42 @@ mod tests {
         key: &str,
     ) -> EditorInputOutcome {
         bridge.handle_key(KeyEvent::from_str(key).unwrap(), compositor, editor, jobs)
+    }
+
+    fn reset_diff_change_keymaps() -> Keymaps {
+        use helix_term::config::Config as HelixConfig;
+        use helix_term::keymap::{KeyTrie, KeyTrieNode, merge_keys};
+        use std::collections::HashMap;
+
+        let space = KeyEvent::from_str("space").unwrap();
+        let v = KeyEvent::from_str("v").unwrap();
+        let r = KeyEvent::from_str("r").unwrap();
+
+        let mut vcs_node = HashMap::new();
+        vcs_node.insert(
+            r,
+            KeyTrie::MappableCommand(MappableCommand::from_str(":reset-diff-change").unwrap()),
+        );
+
+        let mut space_node = HashMap::new();
+        space_node.insert(v, KeyTrie::Node(KeyTrieNode::new("VCS", vcs_node, vec![r])));
+
+        let mut normal_node = HashMap::new();
+        normal_node.insert(
+            space,
+            KeyTrie::Node(KeyTrieNode::new("Space", space_node, vec![v])),
+        );
+
+        let mut config = HelixConfig::default();
+        merge_keys(
+            &mut config.keys,
+            HashMap::from([(
+                Mode::Normal,
+                KeyTrie::Node(KeyTrieNode::new("Normal mode", normal_node, vec![space])),
+            )]),
+        );
+
+        Keymaps::new(Box::new(arc_swap::access::Constant(config.keys)))
     }
 
     #[test]
@@ -2957,6 +3015,32 @@ mod tests {
         assert!(picker.handled_by_native_command);
         assert_eq!(picker.picker_requested, Some(NativePickerRequest::File));
         assert_eq!(picker.workspace_requested, None);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn editor_input_bridge_reports_reset_diff_change_command() {
+        let mut bridge = EditorInputBridge::new(reset_diff_change_keymaps());
+        let mut editor = test_editor_with_text("one\ntwo\n");
+        let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
+        let mut jobs = Jobs::new();
+
+        let pending = handle_key_str(
+            &mut bridge,
+            &mut editor,
+            &mut compositor,
+            &mut jobs,
+            "space",
+        );
+        assert!(pending.handled_by_native_command);
+        assert!(!pending.reset_diff_change_executed);
+
+        let pending = handle_key_str(&mut bridge, &mut editor, &mut compositor, &mut jobs, "v");
+        assert!(pending.handled_by_native_command);
+        assert!(!pending.reset_diff_change_executed);
+
+        let reset = handle_key_str(&mut bridge, &mut editor, &mut compositor, &mut jobs, "r");
+        assert!(reset.handled_by_native_command);
+        assert!(reset.reset_diff_change_executed);
     }
 
     #[tokio::test(flavor = "current_thread")]
