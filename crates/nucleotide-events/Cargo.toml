@@ -21,3 +21,4 @@ helix-view.workspace = true
 helix-lsp.workspace = true
 helix-core.workspace = true
 helix-vcs.workspace = true
+serde_json.workspace = true

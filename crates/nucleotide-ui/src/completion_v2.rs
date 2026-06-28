@@ -7,6 +7,7 @@ use gpui::{
     IntoElement, KeyDownEvent, ParentElement, Render, SharedString, StatefulInteractiveElement,
     Styled, Task, Window, div, px, relative,
 };
+use std::cmp::Ordering as CmpOrdering;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -81,8 +82,7 @@ impl StringMatchCandidate {
 
 impl From<&CompletionItem> for StringMatchCandidate {
     fn from(item: &CompletionItem) -> Self {
-        // Use display_text if available, otherwise use the main text
-        let text = item.display_text.as_ref().unwrap_or(&item.text).to_string();
+        let text = item.match_text().to_string();
 
         // For now, use text hash as id - in real implementation,
         // this would be an actual unique identifier
@@ -160,6 +160,65 @@ pub struct CompletionItem {
     pub insert_text_format: InsertTextFormat,
     /// Optional edit metadata used to apply LSP completion edits precisely.
     pub edit: Option<CompletionEdit>,
+    /// Server-provided sort key used to preserve language-server ranking intent.
+    pub sort_text: Option<SharedString>,
+    /// Server-provided match key. This is used for filtering instead of display text.
+    pub filter_text: Option<SharedString>,
+    /// Whether the server recommends this item as the initial selection.
+    pub preselect: bool,
+    pub commit_characters: Vec<SharedString>,
+    pub tags: Vec<CompletionItemTag>,
+    pub data: Option<serde_json::Value>,
+    pub source_index: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompletionItemTag {
+    Deprecated,
+}
+
+fn compare_completion_items(left: &CompletionItem, right: &CompletionItem) -> CmpOrdering {
+    compare_completion_text(left.sort_key(), right.sort_key())
+        .then_with(|| {
+            compare_completion_text(left.label_text().as_ref(), right.label_text().as_ref())
+        })
+        .then_with(|| completion_kind_rank(left.kind).cmp(&completion_kind_rank(right.kind)))
+        .then_with(|| left.source_index.cmp(&right.source_index))
+}
+
+fn compare_completion_text(left: &str, right: &str) -> CmpOrdering {
+    left.to_lowercase()
+        .cmp(&right.to_lowercase())
+        .then_with(|| left.cmp(right))
+}
+
+fn completion_kind_rank(kind: Option<CompletionItemKind>) -> u8 {
+    match kind {
+        Some(CompletionItemKind::Method) => 0,
+        Some(CompletionItemKind::Function) => 1,
+        Some(CompletionItemKind::Field) | Some(CompletionItemKind::Property) => 2,
+        Some(CompletionItemKind::Variable) => 3,
+        Some(CompletionItemKind::Constructor) => 4,
+        Some(CompletionItemKind::Class)
+        | Some(CompletionItemKind::Interface)
+        | Some(CompletionItemKind::Struct)
+        | Some(CompletionItemKind::Enum)
+        | Some(CompletionItemKind::TypeParameter) => 5,
+        Some(CompletionItemKind::Module) => 6,
+        Some(CompletionItemKind::Keyword) => 7,
+        Some(CompletionItemKind::Snippet) => 8,
+        Some(CompletionItemKind::Text) | None => 9,
+        Some(CompletionItemKind::Unit) => 10,
+        Some(CompletionItemKind::Value) => 11,
+        Some(CompletionItemKind::Color) => 12,
+        Some(CompletionItemKind::File) => 13,
+        Some(CompletionItemKind::Reference) => 14,
+        Some(CompletionItemKind::Folder) => 15,
+        Some(CompletionItemKind::EnumMember) => 16,
+        Some(CompletionItemKind::Constant) => 17,
+        Some(CompletionItemKind::Event) => 18,
+        Some(CompletionItemKind::Operator) => 19,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -203,7 +262,7 @@ pub enum InsertTextFormat {
     Snippet,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompletionItemKind {
     Text,
     Method,
@@ -245,7 +304,31 @@ impl CompletionItem {
             type_info: None,
             insert_text_format: InsertTextFormat::PlainText,
             edit: None,
+            sort_text: None,
+            filter_text: None,
+            preselect: false,
+            commit_characters: Vec::new(),
+            tags: Vec::new(),
+            data: None,
+            source_index: 0,
         }
+    }
+
+    fn label_text(&self) -> &SharedString {
+        self.display_text.as_ref().unwrap_or(&self.text)
+    }
+
+    fn match_text(&self) -> &SharedString {
+        self.filter_text
+            .as_ref()
+            .unwrap_or_else(|| self.label_text())
+    }
+
+    fn sort_key(&self) -> &str {
+        self.sort_text
+            .as_ref()
+            .map(|text| text.as_ref())
+            .unwrap_or_else(|| self.label_text().as_ref())
     }
 
     pub fn with_description(mut self, description: impl Into<SharedString>) -> Self {
@@ -290,6 +373,26 @@ impl CompletionItem {
 
     pub fn with_edit(mut self, edit: CompletionEdit) -> Self {
         self.edit = Some(edit);
+        self
+    }
+
+    pub fn with_sort_text(mut self, sort_text: impl Into<SharedString>) -> Self {
+        self.sort_text = Some(sort_text.into());
+        self
+    }
+
+    pub fn with_filter_text(mut self, filter_text: impl Into<SharedString>) -> Self {
+        self.filter_text = Some(filter_text.into());
+        self
+    }
+
+    pub fn with_preselect(mut self, preselect: bool) -> Self {
+        self.preselect = preselect;
+        self
+    }
+
+    pub fn with_source_index(mut self, source_index: usize) -> Self {
+        self.source_index = source_index;
         self
     }
 }
@@ -476,11 +579,12 @@ impl CompletionView {
                 self.filter_immediate(filter, None, cx);
             } else {
                 nucleotide_logging::debug!("No filter provided, showing all items");
-                self.filtered_entries = self
+                let results = self
                     .match_candidates
                     .iter()
                     .map(|candidate| StringMatch::for_candidate(candidate, 100, Vec::new()))
                     .collect();
+                self.apply_filtered_entries(results);
                 self.visible = true;
 
                 nucleotide_logging::debug!(
@@ -653,8 +757,7 @@ impl CompletionView {
                 "Using cached filter results"
             );
 
-            self.filtered_entries = cached_results;
-            self.selected_index = 0;
+            self.apply_filtered_entries(cached_results);
             self.visible = !self.filtered_entries.is_empty();
             self.current_query = Some(query);
             self.update_list_state();
@@ -697,7 +800,6 @@ impl CompletionView {
                 .match_candidates
                 .iter()
                 .map(|candidate| StringMatch::for_candidate(candidate, 100, Vec::new()))
-                .take(self.max_items)
                 .collect();
 
             // Cache the results
@@ -708,8 +810,7 @@ impl CompletionView {
                 "Filtered results for empty query"
             );
 
-            self.filtered_entries = results;
-            self.selected_index = 0;
+            self.apply_filtered_entries(results);
             self.visible = !self.filtered_entries.is_empty();
             self.update_list_state();
             self.update_documentation_for_selection(cx);
@@ -733,8 +834,7 @@ impl CompletionView {
             // Filter the base results for the new query
             let optimized_results = self.filter_cached_results(&base_results, &query);
             self.cache.insert(cache_key, optimized_results.clone());
-            self.filtered_entries = optimized_results;
-            self.selected_index = 0;
+            self.apply_filtered_entries(optimized_results);
             self.visible = !self.filtered_entries.is_empty();
             self.update_list_state();
             self.update_documentation_for_selection(cx);
@@ -786,9 +886,7 @@ impl CompletionView {
                     );
                 }
 
-                if prefix_matches.len() < max_items {
-                    prefix_matches.push(StringMatch::for_candidate(candidate, 100, Vec::new()));
-                }
+                prefix_matches.push(StringMatch::for_candidate(candidate, 100, Vec::new()));
             } else if candidate.matches_query(&query_lower) {
                 matched_count += 1;
                 if idx < 5 {
@@ -798,9 +896,7 @@ impl CompletionView {
                     );
                 }
 
-                if substring_matches.len() < max_items {
-                    substring_matches.push(StringMatch::for_candidate(candidate, 50, Vec::new()));
-                }
+                substring_matches.push(StringMatch::for_candidate(candidate, 50, Vec::new()));
             } else {
                 if idx < 5 {
                     nucleotide_logging::debug!(
@@ -814,12 +910,7 @@ impl CompletionView {
         // Scores only have two buckets today, so avoid sorting every match just
         // to truncate to the visible result limit.
         let mut filtered_matches = prefix_matches;
-        filtered_matches.extend(
-            substring_matches
-                .into_iter()
-                .take(max_items.saturating_sub(filtered_matches.len())),
-        );
-        filtered_matches.truncate(max_items);
+        filtered_matches.extend(substring_matches);
 
         nucleotide_logging::debug!(
             total_candidates = candidates.len(),
@@ -834,8 +925,7 @@ impl CompletionView {
         self.cache.insert(cache_key, filtered_matches.clone());
 
         // Apply the filtered results immediately
-        self.filtered_entries = filtered_matches;
-        self.selected_index = 0;
+        self.apply_filtered_entries(filtered_matches);
 
         // Set visible to true if we have matches
         self.visible = !self.filtered_entries.is_empty();
@@ -893,6 +983,54 @@ impl CompletionView {
         })
     }
 
+    fn apply_filtered_entries(&mut self, mut matches: Vec<StringMatch>) {
+        self.sort_matches(&mut matches);
+        matches.truncate(self.max_items);
+        self.selected_index = self.initial_selection_index(&matches);
+        self.filtered_entries = matches;
+    }
+
+    fn sort_matches(&self, matches: &mut [StringMatch]) {
+        if !self.sort_completions {
+            return;
+        }
+
+        matches.sort_by(|left, right| self.compare_match_rank(left, right));
+    }
+
+    fn compare_match_rank(&self, left: &StringMatch, right: &StringMatch) -> CmpOrdering {
+        right
+            .score
+            .cmp(&left.score)
+            .then_with(
+                || match (self.item_for_match(left), self.item_for_match(right)) {
+                    (Some(left_item), Some(right_item)) => {
+                        compare_completion_items(left_item, right_item)
+                    }
+                    (Some(_), None) => CmpOrdering::Less,
+                    (None, Some(_)) => CmpOrdering::Greater,
+                    (None, None) => left.item_index.cmp(&right.item_index),
+                },
+            )
+            .then_with(|| left.item_index.cmp(&right.item_index))
+    }
+
+    fn initial_selection_index(&self, matches: &[StringMatch]) -> usize {
+        let Some(first_match) = matches.first() else {
+            return 0;
+        };
+
+        let top_score = first_match.score;
+        matches
+            .iter()
+            .take_while(|string_match| string_match.score == top_score)
+            .position(|string_match| {
+                self.item_for_match(string_match)
+                    .is_some_and(|item| item.preselect)
+            })
+            .unwrap_or(0)
+    }
+
     /// Filter cached results for a more specific query
     fn filter_cached_results(
         &self,
@@ -911,7 +1049,6 @@ impl CompletionView {
                     false
                 }
             })
-            .take(self.max_items)
             .cloned()
             .collect()
     }
@@ -922,7 +1059,8 @@ impl CompletionView {
         if self.is_query_extension(query) {
             let query_lower = query.to_lowercase();
 
-            self.filtered_entries.retain(|string_match| {
+            let mut filtered_entries = std::mem::take(&mut self.filtered_entries);
+            filtered_entries.retain(|string_match| {
                 // Find the candidate and check if it still matches
                 if let Some(candidate) = self
                     .match_candidates
@@ -940,7 +1078,7 @@ impl CompletionView {
                 }
             });
 
-            self.selected_index = 0;
+            self.apply_filtered_entries(filtered_entries);
             self.current_query = Some(query.to_string());
             self.update_list_state();
             self.update_documentation_for_selection(cx);
@@ -982,8 +1120,7 @@ impl CompletionView {
             );
         }
 
-        self.filtered_entries = matches;
-        self.selected_index = 0;
+        self.apply_filtered_entries(matches);
         self.visible = !self.filtered_entries.is_empty();
         self.filter_task = None;
         self.update_list_state();
@@ -2066,7 +2203,11 @@ mod tests {
         let item = CompletionItem::new("function_name")
             .with_description("A cool function")
             .with_kind(CompletionItemKind::Function)
-            .with_documentation("Detailed documentation here");
+            .with_documentation("Detailed documentation here")
+            .with_filter_text("function")
+            .with_sort_text("001")
+            .with_preselect(true)
+            .with_source_index(7);
 
         assert_eq!(item.text, "function_name");
         assert_eq!(item.description.as_ref().unwrap(), "A cool function");
@@ -2075,6 +2216,10 @@ mod tests {
             item.documentation.as_ref().unwrap(),
             "Detailed documentation here"
         );
+        assert_eq!(item.filter_text.as_ref().unwrap(), "function");
+        assert_eq!(item.sort_text.as_ref().unwrap(), "001");
+        assert!(item.preselect);
+        assert_eq!(item.source_index, 7);
     }
 
     #[test]
@@ -2449,6 +2594,41 @@ mod tests {
                     "Expected fewer than 4 items matching 'pr', got {}",
                     filtered_count
                 );
+            });
+        }
+
+        #[gpui::test]
+        async fn test_filter_uses_lsp_ranking_metadata(cx: &mut TestAppContext) {
+            let completion_items = vec![
+                CompletionItem::new("alpha")
+                    .with_kind(CompletionItemKind::Function)
+                    .with_sort_text("999"),
+                CompletionItem::new("fmt(...)")
+                    .with_kind(CompletionItemKind::Method)
+                    .with_filter_text("debug_fmt")
+                    .with_sort_text("001")
+                    .with_preselect(true),
+                CompletionItem::new("debug_print")
+                    .with_kind(CompletionItemKind::Function)
+                    .with_sort_text("010"),
+            ];
+
+            let (completion_view, _cx) = cx.add_window_view(|_window, cx| {
+                let mut view = CompletionView::new(cx);
+                view.set_items_with_filter(completion_items.clone(), Some("debug".to_string()), cx);
+                view
+            });
+
+            cx.run_until_parked();
+
+            completion_view.update(cx, |view, _cx| {
+                let labels: Vec<_> = (0..view.item_count())
+                    .filter_map(|index| view.get_item_at_index(index))
+                    .map(|item| item.label_text().to_string())
+                    .collect();
+
+                assert_eq!(labels, vec!["fmt(...)", "debug_print"]);
+                assert_eq!(view.selected_index, 0);
             });
         }
 
