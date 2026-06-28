@@ -264,9 +264,17 @@ impl LspManager {
 
         // Get document information
         let (doc_path, project_dir) = if let Some(doc) = editor.document(doc_id) {
-            let doc_path = doc.path().map(|p| p.to_path_buf());
-            let project_dir = self.detect_project_root(doc_path.as_deref());
-            (doc_path, project_dir)
+            let Some(doc_path) = doc.path().map(|p| p.to_path_buf()) else {
+                debug!(
+                    doc_id = ?doc_id,
+                    "Skipping LSP startup for document without file path"
+                );
+                return LspStartupResult::Skipped {
+                    reason: "Document is not backed by a file".to_string(),
+                };
+            };
+            let project_dir = self.detect_project_root(Some(doc_path.as_path()));
+            (Some(doc_path), project_dir)
         } else {
             error!(doc_id = ?doc_id, "Document not found");
             return LspStartupResult::Failed {
