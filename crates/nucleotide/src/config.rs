@@ -1028,14 +1028,63 @@ impl Config {
 fn load_helix_config(_dir: &Path) -> anyhow::Result<HelixConfig> {
     use helix_term::config::{Config, ConfigLoadError};
 
-    match Config::load_default() {
-        Ok(config) => Ok(config),
+    let mut config = match Config::load_default() {
+        Ok(config) => config,
         Err(ConfigLoadError::Error(err)) if err.kind() == std::io::ErrorKind::NotFound => {
-            Ok(Config::default())
+            Config::default()
         }
-        Err(ConfigLoadError::Error(err)) => Err(err.into()),
-        Err(ConfigLoadError::BadConfig(err)) => Err(err.into()),
+        Err(ConfigLoadError::Error(err)) => return Err(err.into()),
+        Err(ConfigLoadError::BadConfig(err)) => return Err(err.into()),
+    };
+
+    merge_nucleotide_helix_keybindings(&mut config)?;
+
+    Ok(config)
+}
+
+fn merge_nucleotide_helix_keybindings(config: &mut HelixConfig) -> anyhow::Result<()> {
+    use helix_term::{
+        commands::MappableCommand,
+        keymap::{KeyTrie, KeyTrieNode, merge_keys},
+    };
+    use helix_view::{document::Mode, input::KeyEvent};
+    use std::{collections::HashMap, str::FromStr};
+
+    let space = KeyEvent::from_str("space")?;
+    let v = KeyEvent::from_str("v")?;
+    let r = KeyEvent::from_str("r")?;
+    let reset_diff_change = MappableCommand::from_str(":reset-diff-change")?;
+    if let Some(normal_keymap) = config.keys.get(&Mode::Normal) {
+        if matches!(
+            normal_keymap.search(&[space, v]),
+            Some(KeyTrie::MappableCommand(_) | KeyTrie::Sequence(_))
+        ) || normal_keymap.search(&[space, v, r]).is_some()
+        {
+            return Ok(());
+        }
     }
+
+    let mut vcs_node = HashMap::new();
+    vcs_node.insert(r, KeyTrie::MappableCommand(reset_diff_change));
+
+    let mut space_node = HashMap::new();
+    space_node.insert(v, KeyTrie::Node(KeyTrieNode::new("VCS", vcs_node, vec![r])));
+
+    let mut normal_node = HashMap::new();
+    normal_node.insert(
+        space,
+        KeyTrie::Node(KeyTrieNode::new("Space", space_node, vec![v])),
+    );
+
+    merge_keys(
+        &mut config.keys,
+        HashMap::from([(
+            Mode::Normal,
+            KeyTrie::Node(KeyTrieNode::new("Normal mode", normal_node, vec![space])),
+        )]),
+    );
+
+    Ok(())
 }
 
 /// Load GUI configuration from nucleotide.toml
@@ -1195,6 +1244,94 @@ fn load_project_markers_config(dir: &Path) -> anyhow::Result<Option<ProjectMarke
 mod tests {
     use super::*;
     use nucleotide_types::{ProjectMarker, RootStrategy};
+
+    #[test]
+    fn nucleotide_helix_keybindings_include_revert_current_change() {
+        use helix_term::{
+            commands::MappableCommand,
+            keymap::{KeymapResult, Keymaps},
+        };
+        use helix_view::{document::Mode, input::KeyEvent};
+        use std::str::FromStr;
+
+        let mut config = HelixConfig::default();
+        merge_nucleotide_helix_keybindings(&mut config).unwrap();
+
+        let mut keymaps = Keymaps::new(Box::new(arc_swap::access::Constant(config.keys)));
+        assert!(matches!(
+            keymaps.get(Mode::Normal, KeyEvent::from_str("space").unwrap()),
+            KeymapResult::Pending(_)
+        ));
+        assert!(matches!(
+            keymaps.get(Mode::Normal, KeyEvent::from_str("v").unwrap()),
+            KeymapResult::Pending(_)
+        ));
+
+        let command = match keymaps.get(Mode::Normal, KeyEvent::from_str("r").unwrap()) {
+            KeymapResult::Matched(command) => command,
+            other => panic!("expected <space> v r to match reset-diff-change, got {other:?}"),
+        };
+
+        assert_eq!(
+            command,
+            MappableCommand::from_str(":reset-diff-change").unwrap()
+        );
+    }
+
+    #[test]
+    fn nucleotide_helix_keybindings_do_not_override_existing_binding() {
+        use helix_term::{
+            commands::MappableCommand,
+            keymap::{KeyTrie, KeyTrieNode, KeymapResult, Keymaps, merge_keys},
+        };
+        use helix_view::{document::Mode, input::KeyEvent};
+        use std::{collections::HashMap, str::FromStr};
+
+        let space = KeyEvent::from_str("space").unwrap();
+        let v = KeyEvent::from_str("v").unwrap();
+        let r = KeyEvent::from_str("r").unwrap();
+
+        let mut vcs_node = HashMap::new();
+        vcs_node.insert(
+            r,
+            KeyTrie::MappableCommand(MappableCommand::command_palette),
+        );
+
+        let mut space_node = HashMap::new();
+        space_node.insert(v, KeyTrie::Node(KeyTrieNode::new("VCS", vcs_node, vec![r])));
+
+        let mut normal_node = HashMap::new();
+        normal_node.insert(
+            space,
+            KeyTrie::Node(KeyTrieNode::new("Space", space_node, vec![v])),
+        );
+
+        let mut config = HelixConfig::default();
+        merge_keys(
+            &mut config.keys,
+            HashMap::from([(
+                Mode::Normal,
+                KeyTrie::Node(KeyTrieNode::new("Normal mode", normal_node, vec![space])),
+            )]),
+        );
+
+        merge_nucleotide_helix_keybindings(&mut config).unwrap();
+
+        let mut keymaps = Keymaps::new(Box::new(arc_swap::access::Constant(config.keys)));
+        assert!(matches!(
+            keymaps.get(Mode::Normal, KeyEvent::from_str("space").unwrap()),
+            KeymapResult::Pending(_)
+        ));
+        assert!(matches!(
+            keymaps.get(Mode::Normal, KeyEvent::from_str("v").unwrap()),
+            KeymapResult::Pending(_)
+        ));
+        let command = match keymaps.get(Mode::Normal, KeyEvent::from_str("r").unwrap()) {
+            KeymapResult::Matched(command) => command,
+            other => panic!("expected existing <space> v r binding to remain, got {other:?}"),
+        };
+        assert_eq!(command, MappableCommand::command_palette);
+    }
 
     #[test]
     fn test_font_weight_serialization() {

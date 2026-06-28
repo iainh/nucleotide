@@ -743,6 +743,10 @@ fn is_running_in_wsl() -> bool {
 // Import actions from our centralized definitions
 #[cfg(not(target_os = "windows"))]
 use nucleotide::actions::window::{Hide, HideOthers, ShowAll};
+#[cfg(target_os = "windows")]
+use nucleotide::actions::workspace::{
+    NewFile, NewWindow, ShowBufferPicker, ShowCodeActions, ShowCommandPrompt, ShowFileFinder,
+};
 use nucleotide::actions::{
     common::{Cancel, Confirm, MoveDown, MoveLeft, MoveRight, MoveUp},
     completion::{
@@ -751,15 +755,14 @@ use nucleotide::actions::{
     },
     editor::{
         CloseFile, Copy, DecreaseFontSize, IncreaseFontSize, OpenDirectory, OpenFile, OpenSettings,
-        Paste, Quit, Redo, ReloadConfiguration, Save, SaveAs, Undo,
+        Paste, Quit, Redo, ReloadConfiguration, RevertCurrentChange, Save, SaveAs, Undo,
     },
     help::{About, OpenTutorial, ThemeDebug},
     picker::{ConfirmSelection, DismissPicker, SelectFirst, SelectLast, TogglePreview},
     test::{TestCompletion, TestPrompt},
     window::{Minimize, Zoom},
     workspace::{
-        NewFile, NewWindow, RunFileTests, RunLast, RunNearest, ShowBufferPicker, ShowCodeActions,
-        ShowCommandPrompt, ShowFileFinder, ShowRunnables, SplitPaneDown, SplitPaneLeft,
+        RunFileTests, RunLast, RunNearest, ShowRunnables, SplitPaneDown, SplitPaneLeft,
         SplitPaneRight, SplitPaneUp, ToggleDocumentation, ToggleFileTree, TogglePreviewTab,
         ToggleTerminal, UnpinAllTabs,
     },
@@ -808,6 +811,8 @@ fn default_app_menus() -> Vec<Menu> {
             items: vec![
                 MenuItem::action("Undo", Undo),
                 MenuItem::action("Redo", Redo),
+                MenuItem::separator(),
+                MenuItem::action("Revert Current Change", RevertCurrentChange),
                 MenuItem::separator(),
                 MenuItem::action("Copy", Copy),
                 MenuItem::action("Paste", Paste),
@@ -885,6 +890,8 @@ fn windows_app_menus() -> Vec<Menu> {
         Menu::new("Edit").items([
             MenuItem::action("Undo", Undo),
             MenuItem::action("Redo", Redo),
+            MenuItem::separator(),
+            MenuItem::action("Revert Current Change", RevertCurrentChange),
             MenuItem::separator(),
             MenuItem::action("Copy", Copy),
             MenuItem::action("Paste", Paste),
@@ -1899,5 +1906,24 @@ mod tests {
             }),
             "View menu should expose Toggle Terminal"
         );
+    }
+
+    #[test]
+    fn edit_menu_exposes_revert_current_change() {
+        let menus = app_menus();
+        let edit_menu = menus
+            .iter()
+            .find(|menu| menu.name.as_ref() == "Edit")
+            .expect("edit menu should exist");
+
+        let has_revert = edit_menu.items.iter().any(|item| match item {
+            MenuItem::Action { name, action, .. } => {
+                name.as_ref() == "Revert Current Change"
+                    && action.partial_eq(&nucleotide::actions::editor::RevertCurrentChange)
+            }
+            _ => false,
+        });
+
+        assert!(has_revert, "Edit menu should expose Revert Current Change");
     }
 }
