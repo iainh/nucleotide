@@ -170,6 +170,7 @@ pub struct CompletionItem {
     pub tags: Vec<CompletionItemTag>,
     pub data: Option<serde_json::Value>,
     pub source_index: usize,
+    pub selection_priority: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -262,7 +263,7 @@ pub enum InsertTextFormat {
     Snippet,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CompletionItemKind {
     Text,
     Method,
@@ -311,6 +312,7 @@ impl CompletionItem {
             tags: Vec::new(),
             data: None,
             source_index: 0,
+            selection_priority: 0,
         }
     }
 
@@ -393,6 +395,11 @@ impl CompletionItem {
 
     pub fn with_source_index(mut self, source_index: usize) -> Self {
         self.source_index = source_index;
+        self
+    }
+
+    pub fn with_selection_priority(mut self, selection_priority: u64) -> Self {
+        self.selection_priority = selection_priority;
         self
     }
 }
@@ -1027,6 +1034,19 @@ impl CompletionView {
             .position(|string_match| {
                 self.item_for_match(string_match)
                     .is_some_and(|item| item.preselect)
+            })
+            .or_else(|| {
+                matches
+                    .iter()
+                    .take_while(|string_match| string_match.score == top_score)
+                    .enumerate()
+                    .filter_map(|(index, string_match)| {
+                        self.item_for_match(string_match)
+                            .map(|item| (index, item.selection_priority))
+                    })
+                    .filter(|(_, priority)| *priority > 0)
+                    .max_by_key(|(_, priority)| *priority)
+                    .map(|(index, _)| index)
             })
             .unwrap_or(0)
     }
@@ -2207,7 +2227,8 @@ mod tests {
             .with_filter_text("function")
             .with_sort_text("001")
             .with_preselect(true)
-            .with_source_index(7);
+            .with_source_index(7)
+            .with_selection_priority(42);
 
         assert_eq!(item.text, "function_name");
         assert_eq!(item.description.as_ref().unwrap(), "A cool function");
@@ -2220,6 +2241,7 @@ mod tests {
         assert_eq!(item.sort_text.as_ref().unwrap(), "001");
         assert!(item.preselect);
         assert_eq!(item.source_index, 7);
+        assert_eq!(item.selection_priority, 42);
     }
 
     #[test]
@@ -2629,6 +2651,32 @@ mod tests {
 
                 assert_eq!(labels, vec!["fmt(...)", "debug_print"]);
                 assert_eq!(view.selected_index, 0);
+            });
+        }
+
+        #[gpui::test]
+        async fn test_selection_priority_selects_recent_match(cx: &mut TestAppContext) {
+            let completion_items = vec![
+                CompletionItem::new("foo").with_kind(CompletionItemKind::Function),
+                CompletionItem::new("foobar")
+                    .with_kind(CompletionItemKind::Function)
+                    .with_selection_priority(5),
+            ];
+
+            let (completion_view, _cx) = cx.add_window_view(|_window, cx| {
+                let mut view = CompletionView::new(cx);
+                view.set_items_with_filter(completion_items.clone(), Some("foo".to_string()), cx);
+                view
+            });
+
+            cx.run_until_parked();
+
+            completion_view.update(cx, |view, _cx| {
+                assert_eq!(view.selected_index, 1);
+                assert_eq!(
+                    view.selected_item().map(|item| item.text.to_string()),
+                    Some("foobar".to_string())
+                );
             });
         }
 

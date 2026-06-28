@@ -1192,6 +1192,7 @@ pub struct Workspace {
     cached_char_width: Option<f32>,
     cached_line_height: Option<f32>,
     active_completion_session: Option<ActiveCompletionSession>,
+    completion_memory: CompletionMemory,
     last_native_window_metadata: Option<NativeWindowMetadata>,
 }
 
@@ -1201,6 +1202,31 @@ struct ActiveCompletionSession {
     view_id: ViewId,
     is_incomplete: bool,
     requested_prefix: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct CompletionMemoryKey {
+    language: String,
+    prefix: String,
+    kind: Option<nucleotide_ui::completion_v2::CompletionItemKind>,
+    insert_text: String,
+}
+
+#[derive(Default)]
+struct CompletionMemory {
+    entries: HashMap<CompletionMemoryKey, u64>,
+    next_touch: u64,
+}
+
+impl CompletionMemory {
+    fn priority(&self, key: &CompletionMemoryKey) -> u64 {
+        self.entries.get(key).copied().unwrap_or(0)
+    }
+
+    fn memorize(&mut self, key: CompletionMemoryKey) {
+        self.next_touch = self.next_touch.saturating_add(1);
+        self.entries.insert(key, self.next_touch);
+    }
 }
 
 fn should_retrigger_incomplete_completion_for_focused_session(
@@ -4386,6 +4412,7 @@ impl Workspace {
             cached_char_width: None,
             cached_line_height: None,
             active_completion_session: None,
+            completion_memory: CompletionMemory::default(),
             last_native_window_metadata: None,
         };
 
@@ -11132,6 +11159,40 @@ impl Workspace {
         }
     }
 
+    fn completion_language_for_doc(
+        &self,
+        doc_id: helix_view::DocumentId,
+        cx: &mut Context<Self>,
+    ) -> String {
+        let extension = {
+            let core = self.core.read(cx);
+            core.editor
+                .document(doc_id)
+                .and_then(|doc| doc.path())
+                .and_then(|path| path.extension())
+                .and_then(|extension| extension.to_str())
+                .map(str::to_string)
+        };
+
+        extension
+            .as_deref()
+            .map(|extension| self.map_extension_to_language(extension))
+            .unwrap_or_else(|| "generic".to_string())
+    }
+
+    fn completion_memory_key(
+        language: &str,
+        prefix: &str,
+        item: &nucleotide_ui::CompletionItem,
+    ) -> CompletionMemoryKey {
+        CompletionMemoryKey {
+            language: language.to_string(),
+            prefix: prefix.to_string(),
+            kind: item.kind,
+            insert_text: item.text.to_string(),
+        }
+    }
+
     /// Process completion trigger and request LSP completions
     fn process_completion_trigger(
         &mut self,
@@ -11332,7 +11393,8 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         // Convert between completion item types (same as existing method)
-        let ui_items: Vec<nucleotide_ui::completion_v2::CompletionItem> = items
+        let language = self.completion_language_for_doc(doc_id, cx);
+        let mut ui_items: Vec<nucleotide_ui::completion_v2::CompletionItem> = items
             .into_iter()
             .map(|item| {
                 use nucleotide_events::completion::{CompletionItemKind, CompletionItemTag};
@@ -11400,9 +11462,15 @@ impl Workspace {
                         .collect(),
                     data: item.data,
                     source_index: item.source_index,
+                    selection_priority: 0,
                 }
             })
             .collect();
+
+        for item in &mut ui_items {
+            let key = Self::completion_memory_key(&language, &prefix, item);
+            item.selection_priority = self.completion_memory.priority(&key);
+        }
 
         nucleotide_logging::debug!(
             ui_item_count = ui_items.len(),
@@ -11571,19 +11639,31 @@ impl Workspace {
             "Retrieved completion item for transaction"
         );
 
+        let completion_memory_context = self
+            .active_completion_session
+            .as_ref()
+            .map(|session| (session.doc_id, session.requested_prefix.clone()));
+        let completion_memory_key = completion_memory_context.map(|(doc_id, prefix)| {
+            let language = self.completion_language_for_doc(doc_id, cx);
+            Self::completion_memory_key(&language, &prefix, &completion_item)
+        });
+
         if let Some(edit) = completion_item.edit.clone() {
             self.handle_lsp_edit_completion(completion_item, edit, cx);
-            return;
+        } else {
+            // Check if this is a snippet completion
+            match completion_item.insert_text_format {
+                nucleotide_ui::completion_v2::InsertTextFormat::Snippet => {
+                    self.handle_snippet_completion(completion_item, cx);
+                }
+                nucleotide_ui::completion_v2::InsertTextFormat::PlainText => {
+                    self.handle_plain_text_completion(completion_item, cx);
+                }
+            }
         }
 
-        // Check if this is a snippet completion
-        match completion_item.insert_text_format {
-            nucleotide_ui::completion_v2::InsertTextFormat::Snippet => {
-                self.handle_snippet_completion(completion_item, cx);
-            }
-            nucleotide_ui::completion_v2::InsertTextFormat::PlainText => {
-                self.handle_plain_text_completion(completion_item, cx);
-            }
+        if let Some(key) = completion_memory_key {
+            self.completion_memory.memorize(key);
         }
     }
 
@@ -15868,6 +15948,37 @@ mod tests {
             Some(doc_id),
             test_view_id(2)
         ));
+    }
+
+    #[test]
+    fn completion_memory_prioritizes_recent_prefix_match() {
+        let mut memory = CompletionMemory::default();
+        let old_key = CompletionMemoryKey {
+            language: "rust".to_string(),
+            prefix: "fo".to_string(),
+            kind: Some(nucleotide_ui::completion_v2::CompletionItemKind::Function),
+            insert_text: "foo".to_string(),
+        };
+        let recent_key = CompletionMemoryKey {
+            language: "rust".to_string(),
+            prefix: "fo".to_string(),
+            kind: Some(nucleotide_ui::completion_v2::CompletionItemKind::Function),
+            insert_text: "foobar".to_string(),
+        };
+
+        memory.memorize(old_key.clone());
+        memory.memorize(recent_key.clone());
+
+        assert!(memory.priority(&recent_key) > memory.priority(&old_key));
+        assert_eq!(
+            memory.priority(&CompletionMemoryKey {
+                language: "rust".to_string(),
+                prefix: "ba".to_string(),
+                kind: Some(nucleotide_ui::completion_v2::CompletionItemKind::Function),
+                insert_text: "foobar".to_string(),
+            }),
+            0
+        );
     }
 
     #[test]
