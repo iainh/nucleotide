@@ -1868,6 +1868,54 @@ mod tests {
         assert_eq!(viewport.content_visual_rows(), expected.visual_rows);
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn surface_layout_sync_returns_none_for_missing_view() {
+        let (mut editor, doc_id, _view_id) = test_editor_with_text("one\ntwo\nthree\n");
+        let mut viewport = EditorViewport::new(px(20.0));
+        let layout = EditorViewportSurfaceLayout {
+            theme: None,
+            bounds: Bounds::new(point(px(0.0), px(0.0)), size(px(240.0), px(80.0))),
+            cell_width: px(8.0),
+            line_height: px(20.0),
+            minimum_columns: 1,
+            extra_gutter_columns: 0,
+            scrolloff: Config::default().scrolloff,
+            cursor_reveal: None,
+        };
+
+        assert!(
+            viewport
+                .sync_surface_layout(&mut editor, doc_id, ViewId::default(), layout)
+                .is_none()
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn surface_layout_sync_returns_none_for_missing_document() {
+        let (mut editor, _doc_id, view_id) = test_editor_with_text("one\ntwo\nthree\n");
+        let missing_doc_id = editor.new_file(Action::Load);
+        assert!(editor.close_document(missing_doc_id, true).is_ok());
+        let mut viewport = EditorViewport::new(px(20.0));
+        let layout = EditorViewportSurfaceLayout {
+            theme: None,
+            bounds: Bounds::new(point(px(0.0), px(0.0)), size(px(240.0), px(80.0))),
+            cell_width: px(8.0),
+            line_height: px(20.0),
+            minimum_columns: 1,
+            extra_gutter_columns: 0,
+            scrolloff: Config::default().scrolloff,
+            cursor_reveal: None,
+        };
+
+        assert!(editor.tree.try_get(view_id).is_some());
+        assert!(editor.document(missing_doc_id).is_none());
+        assert!(
+            viewport
+                .sync_surface_layout(&mut editor, missing_doc_id, view_id, layout)
+                .is_none()
+        );
+    }
+
     #[test]
     fn editor_layout_constructors_use_shared_minimum_columns() {
         let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(240.0), px(80.0)));
