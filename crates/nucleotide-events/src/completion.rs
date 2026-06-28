@@ -119,6 +119,13 @@ pub struct CompletionItem {
     pub type_info: Option<String>,
     pub insert_text_format: InsertTextFormat,
     pub edit: Option<CompletionEdit>,
+    pub sort_text: Option<String>,
+    pub filter_text: Option<String>,
+    pub preselect: bool,
+    pub commit_characters: Vec<String>,
+    pub tags: Vec<CompletionItemTag>,
+    pub data: Option<serde_json::Value>,
+    pub source_index: usize,
 }
 
 /// LSP-style edit metadata for accepting a completion item.
@@ -193,6 +200,11 @@ pub enum CompletionItemKind {
     Event,
     Operator,
     TypeParameter,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompletionItemTag {
+    Deprecated,
 }
 
 /// Source of completion results
@@ -279,6 +291,13 @@ impl CompletionItem {
             type_info: None,
             insert_text_format: InsertTextFormat::PlainText,
             edit: None,
+            sort_text: None,
+            filter_text: None,
+            preselect: false,
+            commit_characters: Vec::new(),
+            tags: Vec::new(),
+            data: None,
+            source_index: 0,
         }
     }
 
@@ -324,6 +343,41 @@ impl CompletionItem {
 
     pub fn with_optional_edit(mut self, edit: Option<CompletionEdit>) -> Self {
         self.edit = edit;
+        self
+    }
+
+    pub fn with_sort_text(mut self, sort_text: Option<String>) -> Self {
+        self.sort_text = sort_text;
+        self
+    }
+
+    pub fn with_filter_text(mut self, filter_text: Option<String>) -> Self {
+        self.filter_text = filter_text;
+        self
+    }
+
+    pub fn with_preselect(mut self, preselect: bool) -> Self {
+        self.preselect = preselect;
+        self
+    }
+
+    pub fn with_commit_characters(mut self, commit_characters: Vec<String>) -> Self {
+        self.commit_characters = commit_characters;
+        self
+    }
+
+    pub fn with_tags(mut self, tags: Vec<CompletionItemTag>) -> Self {
+        self.tags = tags;
+        self
+    }
+
+    pub fn with_data(mut self, data: Option<serde_json::Value>) -> Self {
+        self.data = data;
+        self
+    }
+
+    pub fn with_source_index(mut self, source_index: usize) -> Self {
+        self.source_index = source_index;
         self
     }
 }
@@ -414,13 +468,30 @@ mod tests {
         let item = CompletionItem::new("test_function".to_string(), CompletionItemKind::Function)
             .with_detail("fn test_function() -> bool".to_string())
             .with_documentation("A test function that returns a boolean".to_string())
-            .with_score(0.95);
+            .with_score(0.95)
+            .with_sort_text(Some("001".to_string()))
+            .with_filter_text(Some("test_function".to_string()))
+            .with_preselect(true)
+            .with_commit_characters(vec!["(".to_string()])
+            .with_tags(vec![CompletionItemTag::Deprecated])
+            .with_data(Some(serde_json::json!({"server": "rust-analyzer"})))
+            .with_source_index(3);
 
         assert_eq!(item.label, "test_function");
         assert_eq!(item.kind, CompletionItemKind::Function);
         assert!(item.detail.is_some());
         assert!(item.documentation.is_some());
         assert_eq!(item.score, 0.95);
+        assert_eq!(item.sort_text.as_deref(), Some("001"));
+        assert_eq!(item.filter_text.as_deref(), Some("test_function"));
+        assert!(item.preselect);
+        assert_eq!(item.commit_characters, vec!["("]);
+        assert_eq!(item.tags, vec![CompletionItemTag::Deprecated]);
+        assert_eq!(
+            item.data,
+            Some(serde_json::json!({"server": "rust-analyzer"}))
+        );
+        assert_eq!(item.source_index, 3);
     }
 
     #[test]

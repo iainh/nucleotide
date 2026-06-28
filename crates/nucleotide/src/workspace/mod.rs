@@ -11335,9 +11335,10 @@ impl Workspace {
         let ui_items: Vec<nucleotide_ui::completion_v2::CompletionItem> = items
             .into_iter()
             .map(|item| {
-                use nucleotide_events::completion::CompletionItemKind;
+                use nucleotide_events::completion::{CompletionItemKind, CompletionItemTag};
                 use nucleotide_ui::completion_v2::{
                     CompletionItem as UiCompletionItem, CompletionItemKind as UiCompletionItemKind,
+                    CompletionItemTag as UiCompletionItemTag,
                 };
 
                 let ui_kind = match item.kind {
@@ -11386,6 +11387,19 @@ impl Workspace {
                         }
                     },
                     edit: item.edit.map(ui_completion_edit_from_event),
+                    sort_text: item.sort_text.map(Into::into),
+                    filter_text: item.filter_text.map(Into::into),
+                    preselect: item.preselect,
+                    commit_characters: item.commit_characters.into_iter().map(Into::into).collect(),
+                    tags: item
+                        .tags
+                        .into_iter()
+                        .map(|tag| match tag {
+                            CompletionItemTag::Deprecated => UiCompletionItemTag::Deprecated,
+                        })
+                        .collect(),
+                    data: item.data,
+                    source_index: item.source_index,
                 }
             })
             .collect();

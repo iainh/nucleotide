@@ -502,6 +502,13 @@ mod tests {
             type_info: None,
             insert_text_format: nucleotide_events::completion::InsertTextFormat::PlainText,
             edit: None,
+            sort_text: None,
+            filter_text: None,
+            preselect: false,
+            commit_characters: Vec::new(),
+            tags: Vec::new(),
+            data: None,
+            source_index: 0,
         }];
 
         let results_event = Event::ResultsAvailable {

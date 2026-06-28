@@ -6789,12 +6789,14 @@ fn lsp_completion_items_from_response(
     match response {
         lsp::CompletionResponse::Array(items) => items
             .into_iter()
-            .map(|item| lsp_completion_item(item, offset_encoding))
+            .enumerate()
+            .map(|(source_index, item)| lsp_completion_item(item, offset_encoding, source_index))
             .collect(),
         lsp::CompletionResponse::List(list) => list
             .items
             .into_iter()
-            .map(|item| lsp_completion_item(item, offset_encoding))
+            .enumerate()
+            .map(|(source_index, item)| lsp_completion_item(item, offset_encoding, source_index))
             .collect(),
     }
 }
@@ -6802,6 +6804,7 @@ fn lsp_completion_items_from_response(
 fn lsp_completion_item(
     item: lsp::CompletionItem,
     offset_encoding: OffsetEncoding,
+    source_index: usize,
 ) -> nucleotide_events::completion::CompletionItem {
     use nucleotide_events::completion::{CompletionItem, CompletionItemKind};
 
@@ -6837,6 +6840,7 @@ fn lsp_completion_item(
     let insert_text = lsp_completion_insert_text(&item);
     let insert_text_format = lsp_completion_insert_text_format(&item);
     let edit = lsp_completion_edit(&item, offset_encoding);
+    let tags = lsp_completion_tags(&item);
 
     let signature_info = item
         .label_details
@@ -6872,6 +6876,13 @@ fn lsp_completion_item(
         .with_insert_text(insert_text)
         .with_insert_text_format(insert_text_format)
         .with_optional_edit(edit)
+        .with_sort_text(item.sort_text)
+        .with_filter_text(item.filter_text)
+        .with_preselect(item.preselect.unwrap_or(false))
+        .with_commit_characters(item.commit_characters.unwrap_or_default())
+        .with_tags(tags)
+        .with_data(item.data)
+        .with_source_index(source_index)
         .with_detail(item.detail.unwrap_or_default())
         .with_signature_info(signature_info.unwrap_or_default())
         .with_type_info(type_info.unwrap_or_default())
@@ -6884,6 +6895,25 @@ fn lsp_completion_item(
                 })
                 .unwrap_or_default(),
         )
+}
+
+fn lsp_completion_tags(
+    item: &lsp::CompletionItem,
+) -> Vec<nucleotide_events::completion::CompletionItemTag> {
+    let mut tags = Vec::new();
+    if item.deprecated == Some(true) {
+        tags.push(nucleotide_events::completion::CompletionItemTag::Deprecated);
+    }
+    if let Some(item_tags) = item.tags.as_deref() {
+        for tag in item_tags {
+            if matches!(*tag, lsp::CompletionItemTag::DEPRECATED)
+                && !tags.contains(&nucleotide_events::completion::CompletionItemTag::Deprecated)
+            {
+                tags.push(nucleotide_events::completion::CompletionItemTag::Deprecated);
+            }
+        }
+    }
+    tags
 }
 
 fn lsp_completion_edit(
@@ -8089,6 +8119,37 @@ mod tests {
             edit.additional_text_edits[0].new_text,
             "use std::collections::HashMap;\n"
         );
+    }
+
+    #[test]
+    fn lsp_completion_items_from_response_preserves_ranking_metadata() {
+        let response = lsp::CompletionResponse::Array(vec![lsp::CompletionItem {
+            label: "fmt(...)".to_string(),
+            sort_text: Some("0001".to_string()),
+            filter_text: Some("fmt".to_string()),
+            preselect: Some(true),
+            commit_characters: Some(vec!["(".to_string(), ".".to_string()]),
+            tags: Some(vec![lsp::CompletionItemTag::DEPRECATED]),
+            data: Some(serde_json::json!({"provider": "rust-analyzer"})),
+            ..Default::default()
+        }]);
+
+        let items = lsp_completion_items_from_response(response, OffsetEncoding::Utf8);
+        let item = &items[0];
+
+        assert_eq!(item.sort_text.as_deref(), Some("0001"));
+        assert_eq!(item.filter_text.as_deref(), Some("fmt"));
+        assert!(item.preselect);
+        assert_eq!(item.commit_characters, vec!["(", "."]);
+        assert_eq!(
+            item.tags,
+            vec![nucleotide_events::completion::CompletionItemTag::Deprecated]
+        );
+        assert_eq!(
+            item.data,
+            Some(serde_json::json!({"provider": "rust-analyzer"}))
+        );
+        assert_eq!(item.source_index, 0);
     }
 
     #[test]
