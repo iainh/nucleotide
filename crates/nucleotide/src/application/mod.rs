@@ -6786,15 +6786,17 @@ fn lsp_completion_items_from_response(
     response: lsp::CompletionResponse,
     offset_encoding: OffsetEncoding,
 ) -> Vec<nucleotide_events::completion::CompletionItem> {
-    let lsp_items = match response {
-        lsp::CompletionResponse::Array(items) => items,
-        lsp::CompletionResponse::List(list) => list.items,
-    };
-
-    lsp_items
-        .into_iter()
-        .map(|item| lsp_completion_item(item, offset_encoding))
-        .collect()
+    match response {
+        lsp::CompletionResponse::Array(items) => items
+            .into_iter()
+            .map(|item| lsp_completion_item(item, offset_encoding))
+            .collect(),
+        lsp::CompletionResponse::List(list) => list
+            .items
+            .into_iter()
+            .map(|item| lsp_completion_item(item, offset_encoding))
+            .collect(),
+    }
 }
 
 fn lsp_completion_item(
@@ -8087,6 +8089,50 @@ mod tests {
             edit.additional_text_edits[0].new_text,
             "use std::collections::HashMap;\n"
         );
+    }
+
+    #[test]
+    fn lsp_completion_items_from_response_applies_list_defaults() {
+        let response: lsp::CompletionResponse = serde_json::from_value(serde_json::json!({
+            "isIncomplete": false,
+            "itemDefaults": {
+                "editRange": {
+                    "start": { "line": 4, "character": 12 },
+                    "end": { "line": 4, "character": 15 }
+                },
+                "insertTextFormat": 2
+            },
+            "items": [{
+                "label": "fmt(...)",
+                "textEditText": "fmt(${1:f})$0"
+            }]
+        }))
+        .expect("completion response with item defaults");
+
+        let items = lsp_completion_items_from_response(response, OffsetEncoding::Utf16);
+        let item = &items[0];
+        let edit = item.edit.as_ref().expect("default edit metadata");
+        let text_edit = edit.text_edit.as_ref().expect("default text edit");
+
+        assert_eq!(item.insert_text, "fmt(${1:f})$0");
+        assert_eq!(
+            item.insert_text_format,
+            nucleotide_events::completion::InsertTextFormat::Snippet
+        );
+        assert_eq!(
+            text_edit.range,
+            nucleotide_events::completion::CompletionRange {
+                start: nucleotide_events::completion::CompletionPosition {
+                    line: 4,
+                    character: 12,
+                },
+                end: nucleotide_events::completion::CompletionPosition {
+                    line: 4,
+                    character: 15,
+                },
+            }
+        );
+        assert_eq!(text_edit.new_text, "fmt(${1:f})$0");
     }
 
     #[test]
