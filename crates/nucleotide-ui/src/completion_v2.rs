@@ -171,6 +171,7 @@ pub struct CompletionItem {
     pub data: Option<serde_json::Value>,
     pub source_index: usize,
     pub selection_priority: u64,
+    pub server_id: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -313,6 +314,7 @@ impl CompletionItem {
             data: None,
             source_index: 0,
             selection_priority: 0,
+            server_id: None,
         }
     }
 
@@ -400,6 +402,11 @@ impl CompletionItem {
 
     pub fn with_selection_priority(mut self, selection_priority: u64) -> Self {
         self.selection_priority = selection_priority;
+        self
+    }
+
+    pub fn with_server_id(mut self, server_id: Option<u64>) -> Self {
+        self.server_id = server_id;
         self
     }
 }
@@ -2228,7 +2235,8 @@ mod tests {
             .with_sort_text("001")
             .with_preselect(true)
             .with_source_index(7)
-            .with_selection_priority(42);
+            .with_selection_priority(42)
+            .with_server_id(Some(9));
 
         assert_eq!(item.text, "function_name");
         assert_eq!(item.description.as_ref().unwrap(), "A cool function");
@@ -2242,6 +2250,7 @@ mod tests {
         assert!(item.preselect);
         assert_eq!(item.source_index, 7);
         assert_eq!(item.selection_priority, 42);
+        assert_eq!(item.server_id, Some(9));
     }
 
     #[test]
