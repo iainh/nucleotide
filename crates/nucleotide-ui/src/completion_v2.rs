@@ -172,6 +172,7 @@ pub struct CompletionItem {
     pub source_index: usize,
     pub selection_priority: u64,
     pub server_id: Option<u64>,
+    pub raw_lsp_item: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -315,6 +316,7 @@ impl CompletionItem {
             source_index: 0,
             selection_priority: 0,
             server_id: None,
+            raw_lsp_item: None,
         }
     }
 
@@ -407,6 +409,11 @@ impl CompletionItem {
 
     pub fn with_server_id(mut self, server_id: Option<u64>) -> Self {
         self.server_id = server_id;
+        self
+    }
+
+    pub fn with_raw_lsp_item(mut self, raw_lsp_item: Option<serde_json::Value>) -> Self {
+        self.raw_lsp_item = raw_lsp_item;
         self
     }
 }
@@ -2236,7 +2243,11 @@ mod tests {
             .with_preselect(true)
             .with_source_index(7)
             .with_selection_priority(42)
-            .with_server_id(Some(9));
+            .with_server_id(Some(9))
+            .with_raw_lsp_item(Some(serde_json::json!({
+                "label": "function_name",
+                "data": { "provider": "rust-analyzer" }
+            })));
 
         assert_eq!(item.text, "function_name");
         assert_eq!(item.description.as_ref().unwrap(), "A cool function");
@@ -2251,6 +2262,13 @@ mod tests {
         assert_eq!(item.source_index, 7);
         assert_eq!(item.selection_priority, 42);
         assert_eq!(item.server_id, Some(9));
+        assert_eq!(
+            item.raw_lsp_item,
+            Some(serde_json::json!({
+                "label": "function_name",
+                "data": { "provider": "rust-analyzer" }
+            }))
+        );
     }
 
     #[test]

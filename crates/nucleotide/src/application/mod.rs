@@ -6826,6 +6826,7 @@ fn lsp_completion_item(
 ) -> nucleotide_events::completion::CompletionItem {
     use nucleotide_events::completion::{CompletionItem, CompletionItemKind};
 
+    let raw_lsp_item = serde_json::to_value(&item).ok();
     let kind = match item.kind {
         Some(lsp::CompletionItemKind::TEXT) => CompletionItemKind::Text,
         Some(lsp::CompletionItemKind::METHOD) => CompletionItemKind::Method,
@@ -6902,6 +6903,7 @@ fn lsp_completion_item(
         .with_data(item.data)
         .with_source_index(source_index)
         .with_server_id(server_id.map(|server_id| server_id.data().as_ffi()))
+        .with_raw_lsp_item(raw_lsp_item)
         .with_detail(item.detail.unwrap_or_default())
         .with_signature_info(signature_info.unwrap_or_default())
         .with_type_info(type_info.unwrap_or_default())
@@ -8170,6 +8172,12 @@ mod tests {
             Some(serde_json::json!({"provider": "rust-analyzer"}))
         );
         assert_eq!(item.source_index, 0);
+        let raw_lsp_item = item.raw_lsp_item.as_ref().expect("raw LSP item");
+        assert_eq!(raw_lsp_item["label"], "fmt(...)");
+        assert_eq!(
+            raw_lsp_item["data"],
+            serde_json::json!({"provider": "rust-analyzer"})
+        );
     }
 
     #[test]

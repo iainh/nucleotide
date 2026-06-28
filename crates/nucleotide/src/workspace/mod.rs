@@ -11517,6 +11517,7 @@ impl Workspace {
                     source_index: item.source_index,
                     selection_priority: 0,
                     server_id: item.server_id,
+                    raw_lsp_item: item.raw_lsp_item,
                 }
             })
             .collect();
