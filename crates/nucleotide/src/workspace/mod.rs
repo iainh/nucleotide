@@ -88,6 +88,7 @@ const STATUSBAR_LSP_INDICATOR_MAX_CHARS: usize = 56;
 const IMAGE_ZOOM_STEP: f32 = 0.25;
 const IMAGE_ZOOM_MIN: f32 = 0.10;
 const IMAGE_ZOOM_MAX: f32 = 8.0;
+const IMAGE_TRANSPARENCY_GRID_SIZE: f32 = 12.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum EnvironmentBadge {
@@ -203,6 +204,59 @@ fn is_image_file_path(path: &Path) -> bool {
 
 fn image_zoom_percent(zoom: f32) -> String {
     format!("{:.0}%", zoom * 100.0)
+}
+
+fn image_transparency_grid_colors(editor_background: Hsla) -> (Hsla, Hsla) {
+    if editor_background.l > 0.5 {
+        (
+            gpui::hsla(0.0, 0.0, 0.98, 1.0),
+            gpui::hsla(0.0, 0.0, 0.86, 1.0),
+        )
+    } else {
+        (
+            gpui::hsla(0.0, 0.0, 0.16, 1.0),
+            gpui::hsla(0.0, 0.0, 0.26, 1.0),
+        )
+    }
+}
+
+fn image_transparency_grid(base: Hsla, alternate: Hsla) -> gpui::AnyElement {
+    let square_size = px(IMAGE_TRANSPARENCY_GRID_SIZE);
+
+    div()
+        .absolute()
+        .size_full()
+        .bg(base)
+        .child(
+            canvas(
+                move |_, _, _| (),
+                move |bounds, _, window, _| {
+                    let rows = (bounds.size.height / square_size).ceil() as i32;
+                    let cols = (bounds.size.width / square_size).ceil() as i32;
+
+                    for row in 0..rows {
+                        for col in 0..cols {
+                            if (row + col) % 2 != 0 {
+                                continue;
+                            }
+
+                            let origin = bounds.origin
+                                + gpui::point(square_size * col as f32, square_size * row as f32);
+                            window.paint_quad(gpui::fill(
+                                Bounds {
+                                    origin,
+                                    size: gpui::size(square_size, square_size),
+                                },
+                                alternate,
+                            ));
+                        }
+                    }
+                },
+            )
+            .absolute()
+            .size_full(),
+        )
+        .into_any_element()
 }
 
 fn image_file_dimensions(path: &Path) -> Option<(u32, u32)> {
@@ -9489,18 +9543,39 @@ impl Workspace {
         let tab_id = tab.id;
         let zoom = tab.zoom;
         let image_path = tab.path.clone();
+        let (grid_base, grid_alternate) = image_transparency_grid_colors(tokens.editor.background);
         let image_element = if let Some((width, height)) = tab.dimensions {
-            img(image_path)
-                .object_fit(gpui::ObjectFit::Contain)
-                .w(px(width as f32 * zoom))
-                .h(px(height as f32 * zoom))
+            let width = px(width as f32 * zoom);
+            let height = px(height as f32 * zoom);
+            div()
+                .relative()
                 .flex_none()
+                .overflow_hidden()
+                .w(width)
+                .h(height)
+                .child(image_transparency_grid(grid_base, grid_alternate))
+                .child(
+                    img(image_path)
+                        .object_fit(gpui::ObjectFit::Contain)
+                        .w(width)
+                        .h(height)
+                        .flex_none(),
+                )
                 .into_any_element()
         } else {
-            img(image_path)
-                .object_fit(gpui::ObjectFit::Contain)
+            div()
+                .relative()
+                .flex_none()
+                .overflow_hidden()
                 .max_w_full()
                 .max_h_full()
+                .child(image_transparency_grid(grid_base, grid_alternate))
+                .child(
+                    img(image_path)
+                        .object_fit(gpui::ObjectFit::Contain)
+                        .max_w_full()
+                        .max_h_full(),
+                )
                 .into_any_element()
         };
 
