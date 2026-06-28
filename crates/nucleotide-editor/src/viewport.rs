@@ -150,12 +150,38 @@ struct EditorViewportConversionCache {
     helix_snapshot: Option<CachedHelixViewportSnapshot>,
     view_position_plan: Option<CachedEditorViewportViewPositionPlan>,
     cursor_visual_row: Option<CachedDocumentCursorVisualRow>,
+    stats: EditorViewportConversionStats,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EditorViewportConversionStats {
+    pub helix_snapshot_hits: u64,
+    pub helix_snapshot_misses: u64,
+    pub view_position_plan_hits: u64,
+    pub view_position_plan_misses: u64,
+    pub cursor_visual_row_hits: u64,
+    pub cursor_visual_row_misses: u64,
+    pub helix_snapshot_visual_scans: u64,
+    pub view_position_char_scans: u64,
+    pub cursor_visual_row_scans: u64,
 }
 
 impl EditorViewportConversionCache {
-    fn helix_snapshot(&self, key: &HelixViewportSnapshotCacheKey) -> Option<HelixViewportSnapshot> {
-        let cached = self.helix_snapshot.as_ref()?;
-        (cached.key == *key).then_some(cached.snapshot)
+    fn helix_snapshot(
+        &mut self,
+        key: &HelixViewportSnapshotCacheKey,
+    ) -> Option<HelixViewportSnapshot> {
+        let Some(cached) = self.helix_snapshot.as_ref() else {
+            self.stats.helix_snapshot_misses += 1;
+            return None;
+        };
+        if cached.key == *key {
+            self.stats.helix_snapshot_hits += 1;
+            Some(cached.snapshot)
+        } else {
+            self.stats.helix_snapshot_misses += 1;
+            None
+        }
     }
 
     fn store_helix_snapshot(
@@ -167,11 +193,20 @@ impl EditorViewportConversionCache {
     }
 
     fn view_position_plan(
-        &self,
+        &mut self,
         key: &EditorViewportViewPositionPlanCacheKey,
     ) -> Option<EditorViewportViewPositionPlan> {
-        let cached = self.view_position_plan.as_ref()?;
-        (cached.key == *key).then_some(cached.plan)
+        let Some(cached) = self.view_position_plan.as_ref() else {
+            self.stats.view_position_plan_misses += 1;
+            return None;
+        };
+        if cached.key == *key {
+            self.stats.view_position_plan_hits += 1;
+            Some(cached.plan)
+        } else {
+            self.stats.view_position_plan_misses += 1;
+            None
+        }
     }
 
     fn store_view_position_plan(
@@ -182,13 +217,38 @@ impl EditorViewportConversionCache {
         self.view_position_plan = Some(CachedEditorViewportViewPositionPlan { key, plan });
     }
 
-    fn cursor_visual_row(&self, key: &DocumentCursorVisualRowCacheKey) -> Option<usize> {
-        let cached = self.cursor_visual_row.as_ref()?;
-        (cached.key == *key).then_some(cached.visual_row)
+    fn cursor_visual_row(&mut self, key: &DocumentCursorVisualRowCacheKey) -> Option<usize> {
+        let Some(cached) = self.cursor_visual_row.as_ref() else {
+            self.stats.cursor_visual_row_misses += 1;
+            return None;
+        };
+        if cached.key == *key {
+            self.stats.cursor_visual_row_hits += 1;
+            Some(cached.visual_row)
+        } else {
+            self.stats.cursor_visual_row_misses += 1;
+            None
+        }
     }
 
     fn store_cursor_visual_row(&mut self, key: DocumentCursorVisualRowCacheKey, visual_row: usize) {
         self.cursor_visual_row = Some(CachedDocumentCursorVisualRow { key, visual_row });
+    }
+
+    fn record_helix_snapshot_visual_scan(&mut self) {
+        self.stats.helix_snapshot_visual_scans += 1;
+    }
+
+    fn record_view_position_char_scan(&mut self) {
+        self.stats.view_position_char_scans += 1;
+    }
+
+    fn record_cursor_visual_row_scan(&mut self) {
+        self.stats.cursor_visual_row_scans += 1;
+    }
+
+    fn stats(&self) -> EditorViewportConversionStats {
+        self.stats
     }
 }
 
@@ -397,6 +457,10 @@ impl EditorViewport {
 
     pub fn content_visual_rows(&self) -> usize {
         self.scroll.total_lines()
+    }
+
+    pub fn conversion_stats(&self) -> EditorViewportConversionStats {
+        self.conversion_cache.borrow().stats()
     }
 
     pub fn max_scroll_offset(&self) -> Size<Pixels> {
@@ -635,12 +699,15 @@ impl EditorViewport {
             view_position,
         };
 
-        if let Some(snapshot) = self.conversion_cache.borrow().helix_snapshot(&key) {
+        if let Some(snapshot) = self.conversion_cache.borrow_mut().helix_snapshot(&key) {
             self.sync_from_helix_horizontal_offset(view_position.horizontal_offset, text_format);
             self.sync_from_helix_top_visual_row(snapshot.top_visual_row);
             return snapshot;
         }
 
+        self.conversion_cache
+            .borrow_mut()
+            .record_helix_snapshot_visual_scan();
         let annotations = view.text_annotations(document, None);
         let snapshot = helix_viewport_snapshot(
             document.text().slice(..),
@@ -951,10 +1018,13 @@ impl EditorViewport {
             horizontal_offset,
         };
 
-        if let Some(plan) = self.conversion_cache.borrow().view_position_plan(&key) {
+        if let Some(plan) = self.conversion_cache.borrow_mut().view_position_plan(&key) {
             return plan;
         }
 
+        self.conversion_cache
+            .borrow_mut()
+            .record_view_position_char_scan();
         let annotations = view.text_annotations(document, None);
         let plan = view_position_plan_for_top_visual_row(
             document.text().slice(..),
@@ -1019,10 +1089,13 @@ impl EditorViewport {
             cursor_char_idx,
         };
 
-        if let Some(visual_row) = self.conversion_cache.borrow().cursor_visual_row(&key) {
+        if let Some(visual_row) = self.conversion_cache.borrow_mut().cursor_visual_row(&key) {
             return visual_row;
         }
 
+        self.conversion_cache
+            .borrow_mut()
+            .record_cursor_visual_row_scan();
         let visual_row =
             document_cursor_visual_row_for_cursor(document, view, text_format, cursor_char_idx);
         self.conversion_cache
@@ -2309,6 +2382,14 @@ mod tests {
             ..key
         };
         assert_eq!(cache.view_position_plan(&changed_key), None);
+        assert_eq!(
+            cache.stats(),
+            EditorViewportConversionStats {
+                view_position_plan_hits: 1,
+                view_position_plan_misses: 2,
+                ..EditorViewportConversionStats::default()
+            }
+        );
     }
 
     #[test]
@@ -2334,6 +2415,99 @@ mod tests {
             ..key
         };
         assert_eq!(cache.cursor_visual_row(&changed_key), None);
+        assert_eq!(
+            cache.stats(),
+            EditorViewportConversionStats {
+                cursor_visual_row_hits: 1,
+                cursor_visual_row_misses: 2,
+                ..EditorViewportConversionStats::default()
+            }
+        );
+    }
+
+    #[test]
+    fn conversion_cache_reuses_matching_helix_snapshot() {
+        let base = EditorViewportConversionBaseKey {
+            document_version: 1,
+            text_len: 12,
+            view_id: ViewId::default(),
+            text_format: EditorViewportTextFormatKey::from(&TextFormat::default()),
+        };
+        let key = HelixViewportSnapshotCacheKey {
+            base: base.clone(),
+            view_position: ViewPosition::default(),
+        };
+        let snapshot = HelixViewportSnapshot {
+            anchor_line: 2,
+            vertical_offset: 1,
+            top_visual_row: 3,
+        };
+        let mut cache = EditorViewportConversionCache::default();
+
+        assert_eq!(cache.helix_snapshot(&key), None);
+        cache.store_helix_snapshot(key.clone(), snapshot);
+        assert_eq!(cache.helix_snapshot(&key), Some(snapshot));
+
+        let changed_key = HelixViewportSnapshotCacheKey {
+            view_position: ViewPosition {
+                anchor: 8,
+                vertical_offset: 0,
+                horizontal_offset: 0,
+            },
+            ..key
+        };
+        assert_eq!(cache.helix_snapshot(&changed_key), None);
+        assert_eq!(
+            cache.stats(),
+            EditorViewportConversionStats {
+                helix_snapshot_hits: 1,
+                helix_snapshot_misses: 2,
+                ..EditorViewportConversionStats::default()
+            }
+        );
+    }
+
+    #[test]
+    fn viewport_conversion_stats_count_misses_hits_and_scans() {
+        let (document, view) = test_document_and_view("one\ntwo\nthree");
+        let viewport = EditorViewport::new(px(20.0));
+        let text_format = TextFormat::default();
+
+        viewport.sync_from_helix_view(&document, &view, view.id, &text_format);
+        viewport.plan_view_position(&document, &view, view.id, &text_format);
+        viewport.document_cursor_visual_row(&document, &view, view.id, &text_format);
+
+        assert_eq!(
+            viewport.conversion_stats(),
+            EditorViewportConversionStats {
+                helix_snapshot_misses: 1,
+                view_position_plan_misses: 1,
+                cursor_visual_row_misses: 1,
+                helix_snapshot_visual_scans: 1,
+                view_position_char_scans: 1,
+                cursor_visual_row_scans: 1,
+                ..EditorViewportConversionStats::default()
+            }
+        );
+
+        viewport.sync_from_helix_view(&document, &view, view.id, &text_format);
+        viewport.plan_view_position(&document, &view, view.id, &text_format);
+        viewport.document_cursor_visual_row(&document, &view, view.id, &text_format);
+
+        assert_eq!(
+            viewport.conversion_stats(),
+            EditorViewportConversionStats {
+                helix_snapshot_hits: 1,
+                helix_snapshot_misses: 1,
+                view_position_plan_hits: 1,
+                view_position_plan_misses: 1,
+                cursor_visual_row_hits: 1,
+                cursor_visual_row_misses: 1,
+                helix_snapshot_visual_scans: 1,
+                view_position_char_scans: 1,
+                cursor_visual_row_scans: 1,
+            }
+        );
     }
 
     #[test]
