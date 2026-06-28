@@ -29,6 +29,7 @@ use std::{
     pin::Pin,
     sync::Arc,
     task::{Context as TaskContext, Poll, Wake, Waker},
+    time::Duration,
 };
 use tokio::sync::RwLock;
 
@@ -314,6 +315,10 @@ use crate::types::{AppEvent, CoreEvent, Update};
 // ApplicationCore already imported above via pub use
 use editor_input::EditorInputBridge;
 use gpui::EventEmitter;
+
+const MAINTENANCE_DRAIN_WARN_THRESHOLD: Duration = Duration::from_millis(8);
+const MAINTENANCE_ITERATION_WARN_THRESHOLD: Duration = Duration::from_millis(2);
+const MAINTENANCE_POLLER_WARN_THRESHOLD: Duration = Duration::from_millis(2);
 
 #[derive(Clone)]
 pub struct MaintenanceWake {
@@ -2853,18 +2858,43 @@ impl Application {
         handle: tokio::runtime::Handle,
         wake: &MaintenanceWake,
     ) -> bool {
+        let _timer = PerfTimer::new("Application::drive_event_driven_maintenance")
+            .with_warn_threshold(MAINTENANCE_DRAIN_WARN_THRESHOLD);
         let _guard = handle.enter();
         let waker = wake.waker();
         let mut task_cx = TaskContext::from_waker(&waker);
         let mut made_progress = false;
 
         loop {
+            let _iteration_timer =
+                PerfTimer::new("Application::drive_event_driven_maintenance.iteration")
+                    .with_warn_threshold(MAINTENANCE_ITERATION_WARN_THRESHOLD);
             let mut progressed = false;
-            progressed |= self.poll_pending_helix_jobs(cx, &mut task_cx);
-            progressed |= self.poll_pending_gpui_to_helix_events(&mut task_cx);
-            progressed |= self.poll_ready_editor_events(cx, &handle, &mut task_cx);
-            progressed |= self.poll_pending_bridged_events(cx, &handle, &mut task_cx);
-            progressed |= self.poll_pending_lsp_commands(cx, &handle, &mut task_cx);
+            progressed |= {
+                let _timer = PerfTimer::new("Application::poll_pending_helix_jobs")
+                    .with_warn_threshold(MAINTENANCE_POLLER_WARN_THRESHOLD);
+                self.poll_pending_helix_jobs(cx, &mut task_cx)
+            };
+            progressed |= {
+                let _timer = PerfTimer::new("Application::poll_pending_gpui_to_helix_events")
+                    .with_warn_threshold(MAINTENANCE_POLLER_WARN_THRESHOLD);
+                self.poll_pending_gpui_to_helix_events(&mut task_cx)
+            };
+            progressed |= {
+                let _timer = PerfTimer::new("Application::poll_ready_editor_events")
+                    .with_warn_threshold(MAINTENANCE_POLLER_WARN_THRESHOLD);
+                self.poll_ready_editor_events(cx, &handle, &mut task_cx)
+            };
+            progressed |= {
+                let _timer = PerfTimer::new("Application::poll_pending_bridged_events")
+                    .with_warn_threshold(MAINTENANCE_POLLER_WARN_THRESHOLD);
+                self.poll_pending_bridged_events(cx, &handle, &mut task_cx)
+            };
+            progressed |= {
+                let _timer = PerfTimer::new("Application::poll_pending_lsp_commands")
+                    .with_warn_threshold(MAINTENANCE_POLLER_WARN_THRESHOLD);
+                self.poll_pending_lsp_commands(cx, &handle, &mut task_cx)
+            };
 
             if !progressed {
                 break;
