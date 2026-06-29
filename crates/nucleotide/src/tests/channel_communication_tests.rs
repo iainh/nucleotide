@@ -234,8 +234,14 @@ async fn test_concurrent_lsp_operations() {
 /// Test environment integration with timeout handling
 #[tokio::test]
 async fn test_environment_integration_with_timeout() {
-    // Create ProjectEnvironment
-    let project_env = Arc::new(ProjectEnvironment::new(None));
+    // Provide a CLI environment so the timeout test does not depend on
+    // platform-specific login shell startup time.
+    let mut cli_env: HashMap<String, String> = std::env::vars().collect();
+    if !env_contains_key(&cli_env, "PATH") {
+        cli_env.insert("PATH".to_string(), "test-path".to_string());
+    }
+
+    let project_env = Arc::new(ProjectEnvironment::new(Some(cli_env)));
 
     // Test with timeout
     let temp_dir = tempfile::tempdir().unwrap();
