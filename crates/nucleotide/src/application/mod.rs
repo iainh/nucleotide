@@ -132,6 +132,43 @@ fn workspace_diagnostic_refresh_reply(
         })
 }
 
+fn str_prefix_at_byte_limit(value: &str, max_bytes: usize) -> &str {
+    let limit = max_bytes.min(value.len());
+    if value.is_char_boundary(limit) {
+        return &value[..limit];
+    }
+
+    let boundary = value
+        .char_indices()
+        .map(|(index, _)| index)
+        .take_while(|index| *index < limit)
+        .last()
+        .unwrap_or(0);
+    &value[..boundary]
+}
+
+fn byte_limited_preview(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value.to_string();
+    }
+
+    format!(
+        "{}... ({} bytes total)",
+        str_prefix_at_byte_limit(value, max_bytes),
+        value.len()
+    )
+}
+
+fn char_index_for_line_col(text: RopeSlice<'_>, line: usize, col: usize) -> usize {
+    let len = text.len_chars();
+    let Ok(line_start) = text.try_line_to_char(line) else {
+        return len;
+    };
+    let line_end = text.try_line_to_char(line.saturating_add(1)).unwrap_or(len);
+
+    line_start.saturating_add(col).min(line_end).min(len)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LspCompletionTrigger {
     Manual,
@@ -5443,11 +5480,7 @@ impl Application {
 
                 // Log PATH for debugging (truncated)
                 if let Some(path) = env.get("PATH") {
-                    let path_preview = if path.len() > 200 {
-                        format!("{}... ({} chars total)", &path[..200], path.len())
-                    } else {
-                        path.clone()
-                    };
+                    let path_preview = byte_limited_preview(path, 200);
                     debug!(
                         path_preview = %path_preview,
                         "Shell environment PATH set globally for LSP tools"
@@ -5585,7 +5618,10 @@ impl Application {
         let mut futures: FuturesOrdered<LspLocationFuture> = FuturesOrdered::new();
 
         {
-            let view = self.editor.tree.get(self.editor.tree.focus);
+            let Some(view) = self.editor.tree.try_get(self.editor.tree.focus) else {
+                self.editor.set_error("No active view for LSP navigation");
+                return;
+            };
             let Some(doc) = self.editor.document(view.doc) else {
                 self.editor
                     .set_error("No active document for LSP navigation");
@@ -5731,7 +5767,10 @@ impl Application {
         let mut syntax_fallback_symbols = None;
 
         {
-            let view = self.editor.tree.get(self.editor.tree.focus);
+            let Some(view) = self.editor.tree.try_get(self.editor.tree.focus) else {
+                self.editor.set_error("No active view for symbol picker");
+                return;
+            };
             let Some(doc) = self.editor.document(view.doc) else {
                 self.editor
                     .set_error("No active document for symbol picker");
@@ -5823,7 +5862,11 @@ impl Application {
     }
 
     fn trigger_workspace_syntax_symbol_picker(&mut self, cx: &mut gpui::Context<crate::Core>) {
-        let view = self.editor.tree.get(self.editor.tree.focus);
+        let Some(view) = self.editor.tree.try_get(self.editor.tree.focus) else {
+            self.editor
+                .set_error("No active view for workspace symbol picker");
+            return;
+        };
         let Some(active_doc) = self.editor.document(view.doc) else {
             self.editor
                 .set_error("No active document for workspace symbol picker");
@@ -6506,7 +6549,7 @@ pub fn init_editor(
                             if let Some(first_pos) = pos.first() {
                                 let line = first_pos.row.saturating_sub(1); // Convert to 0-indexed
                                 let col = first_pos.col;
-                                let char_pos = text.try_line_to_char(line).unwrap_or(0) + col;
+                                let char_pos = char_index_for_line_col(text.slice(..), line, col);
                                 let selection = Selection::point(char_pos);
                                 doc.set_selection(view_id, selection);
                             }
@@ -7669,14 +7712,15 @@ mod tests {
         Application, ApplicationCore, EditorInputBridge, LspCompletionTrigger, MaintenanceWake,
         NativeSymbolItem, NativeSymbolTarget, PendingCompletionRequest,
         bridged_event_needs_gpui_context, buffer_text_matches_path, buffer_word_completion_items,
-        completion_context_for_trigger, current_dir_is_executable_dir, dedupe_completion_items,
-        detect_project_lsp_metadata, diagnostic_picker_path_label, diagnostic_severity_label,
-        home_requires_login_shell_capture, is_workspace_diagnostic_refresh_method,
-        local_path_completion_context, lsp_completion_insert_text,
-        lsp_completion_insert_text_format, lsp_completion_items_from_response,
-        lsp_completion_items_from_response_for_server, lsp_completion_resolve_supported,
-        lsp_completion_response_is_incomplete, lsp_symbol_picker, native_symbol_item_from_lsp,
-        path_completion_items, project_health_status, project_server_language_id,
+        char_index_for_line_col, completion_context_for_trigger, current_dir_is_executable_dir,
+        dedupe_completion_items, detect_project_lsp_metadata, diagnostic_picker_path_label,
+        diagnostic_severity_label, home_requires_login_shell_capture,
+        is_workspace_diagnostic_refresh_method, local_path_completion_context,
+        lsp_completion_insert_text, lsp_completion_insert_text_format,
+        lsp_completion_items_from_response, lsp_completion_items_from_response_for_server,
+        lsp_completion_resolve_supported, lsp_completion_response_is_incomplete, lsp_symbol_picker,
+        native_symbol_item_from_lsp, path_completion_items, project_health_status,
+        project_server_language_id, str_prefix_at_byte_limit,
         suppress_shadowed_buffer_word_completion_items, syntax_symbol_kind_from_capture_name,
         workspace_diagnostic_refresh_reply,
     };
@@ -7687,7 +7731,7 @@ mod tests {
     use arc_swap::{ArcSwap, access::Map};
     use futures_util::{FutureExt, stream::FuturesOrdered};
     use gpui::{AppContext, Entity};
-    use helix_core::{diagnostic::Severity, syntax};
+    use helix_core::{Rope, diagnostic::Severity, syntax};
     use helix_lsp::{LspProgressMap, OffsetEncoding, lsp};
     use helix_term::{
         compositor::Compositor, config::Config as HelixConfig, job::Jobs, keymap::Keymaps,
@@ -7873,6 +7917,25 @@ mod tests {
             .expect_err("non-unit refresh params should be rejected");
 
         assert_eq!(err.code, helix_lsp::jsonrpc::ErrorCode::InvalidParams);
+    }
+
+    #[test]
+    fn str_prefix_at_byte_limit_uses_utf8_boundary() {
+        assert_eq!(str_prefix_at_byte_limit("abc", 2), "ab");
+        assert_eq!(str_prefix_at_byte_limit("éclair", 1), "");
+        assert_eq!(str_prefix_at_byte_limit("éclair", 2), "é");
+    }
+
+    #[test]
+    fn char_index_for_line_col_clamps_to_valid_document_position() {
+        let text = Rope::from_str("éx\nlast");
+
+        assert_eq!(char_index_for_line_col(text.slice(..), 0, 1), 1);
+        assert_eq!(char_index_for_line_col(text.slice(..), 0, 100), 3);
+        assert_eq!(
+            char_index_for_line_col(text.slice(..), 99, 0),
+            text.len_chars()
+        );
     }
 
     fn test_gui_config() -> crate::config::Config {

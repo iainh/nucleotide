@@ -167,6 +167,13 @@ fn contiguous_match_positions(text: &str, start: usize, query: &str) -> Vec<usiz
     (start..end.min(text_len)).collect()
 }
 
+fn query_prefix_boundaries_desc(query: &str) -> impl Iterator<Item = usize> + '_ {
+    query
+        .char_indices()
+        .rev()
+        .filter_map(|(index, _)| (index > 0).then_some(index))
+}
+
 fn length_penalty(text: &str, query: &str) -> u16 {
     text.chars()
         .count()
@@ -1080,7 +1087,7 @@ impl CompletionView {
     /// Try to get optimization base from cache
     fn try_optimization_from_cache(&mut self, query: &str) -> Option<Arc<[StringMatch]>> {
         // Look for shorter queries that we can build upon
-        for len in (1..query.len()).rev() {
+        for len in query_prefix_boundaries_desc(query) {
             let base_query = &query[..len];
             if let Some(results) = self
                 .cache
@@ -1168,7 +1175,6 @@ impl CompletionView {
             .or_else(|| {
                 matches
                     .iter()
-                    .take_while(|string_match| string_match.score == top_score)
                     .enumerate()
                     .filter_map(|(index, string_match)| {
                         self.item_for_match(string_match)
@@ -2322,6 +2328,15 @@ mod tests {
 
         assert_eq!(string_match.positions, vec![0, 4, 6]);
         assert!(string_match.score > 0);
+    }
+
+    #[test]
+    fn query_prefix_boundaries_desc_uses_utf8_boundaries() {
+        let prefixes: Vec<&str> = query_prefix_boundaries_desc("éclair")
+            .map(|boundary| &"éclair"[..boundary])
+            .collect();
+
+        assert_eq!(prefixes, vec!["éclai", "écla", "écl", "éc", "é"]);
     }
 
     #[test]

@@ -117,8 +117,8 @@ pub trait EditorReadAccess {
     }
 
     /// Get a specific view by ID
-    fn view(&self, view_id: ViewId) -> &View {
-        self.editor().tree.get(view_id)
+    fn view(&self, view_id: ViewId) -> Option<&View> {
+        self.editor().tree.try_get(view_id)
     }
 }
 

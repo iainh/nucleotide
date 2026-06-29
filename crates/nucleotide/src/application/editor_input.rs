@@ -952,8 +952,25 @@ fn finalize_native_command(
     }
 
     if editor.mode() != Mode::Insert {
-        let (view, doc) = helix_view::current!(editor);
-        doc.append_changes_to_history(view);
+        let view_id = editor.tree.focus;
+        if let Some(doc_id) = editor.tree.try_get(view_id).map(|view| view.doc) {
+            let tree = &mut editor.tree;
+            let documents = &mut editor.documents;
+            let view = tree.get_mut(view_id);
+            if let Some(doc) = documents.get_mut(&doc_id) {
+                doc.append_changes_to_history(view);
+            } else {
+                debug!(
+                    doc_id = ?doc_id,
+                    "Skipping native command history append because focused document is missing"
+                );
+            }
+        } else {
+            debug!(
+                view_id = ?view_id,
+                "Skipping native command history append because focused view is missing"
+            );
+        }
     }
 
     for callback in callbacks {
@@ -1445,7 +1462,9 @@ fn handle_native_file_navigation(
     context: &mut commands::Context<'_>,
     action: Action,
 ) -> KeymapDispatch {
-    let (base_path, targets) = native_file_navigation_targets(context.editor);
+    let Some((base_path, targets)) = native_file_navigation_targets(context.editor) else {
+        return KeymapDispatch::Unhandled;
+    };
 
     for target in targets {
         if target_is_external_url(&target) {
@@ -1480,8 +1499,9 @@ fn target_is_external_url(target: &str) -> bool {
     url::Url::parse(target).is_ok()
 }
 
-fn native_file_navigation_targets(editor: &Editor) -> (PathBuf, Vec<String>) {
-    let (view, doc) = helix_view::current_ref!(editor);
+fn native_file_navigation_targets(editor: &Editor) -> Option<(PathBuf, Vec<String>)> {
+    let view = editor.tree.try_get(editor.tree.focus)?;
+    let doc = editor.documents.get(&view.doc)?;
     let text = doc.text().slice(..);
     let selections = doc.selection(view.id);
     let primary = selections.primary();
@@ -1517,7 +1537,7 @@ fn native_file_navigation_targets(editor: &Editor) -> (PathBuf, Vec<String>) {
             .collect()
     };
 
-    (base_path, targets)
+    Some((base_path, targets))
 }
 
 fn native_history_command(command: &MappableCommand) -> bool {
