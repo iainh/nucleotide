@@ -305,7 +305,10 @@ pub mod session {
         /// Synchronous write — preferred for the input hot-path since the
         /// underlying PTY writer is blocking anyway.
         pub fn write_sync(&self, bytes: &[u8]) -> std::io::Result<()> {
-            let mut guard = self.writer.lock().unwrap();
+            let mut guard = self
+                .writer
+                .lock()
+                .map_err(|_| std::io::Error::other("terminal writer lock poisoned"))?;
             guard.write_all(bytes)?;
             guard.flush()
         }
@@ -329,7 +332,10 @@ pub mod session {
         pub async fn kill(&mut self) -> Result<()> {
             // Attempt graceful termination, then force kill
             // Drop writer to send HUP on Unix; then kill if still alive
-            drop(self.writer.lock().unwrap());
+            match self.writer.lock() {
+                Ok(writer) => drop(writer),
+                Err(poisoned) => drop(poisoned.into_inner()),
+            }
             // portable-pty's Child provides kill()
             self.child.kill().ok();
             Ok(())

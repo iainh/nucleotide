@@ -19,7 +19,13 @@ use nucleotide_ui::scrollbar::{Scrollbar, ScrollbarState};
 use nucleotide_ui::{ColorTheory, ContrastRatios, DesignTokens};
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
+
+fn lock_or_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 #[cfg(feature = "emulator")]
 #[derive(Debug, Default, Clone)]
@@ -417,7 +423,7 @@ pub struct TerminalScrollHandle {
 #[cfg(feature = "emulator")]
 impl nucleotide_ui::scrollbar::ScrollableHandle for TerminalScrollHandle {
     fn max_offset(&self) -> gpui::Size<gpui::Pixels> {
-        let guard = self.model.lock().unwrap();
+        let guard = lock_or_recover(self.model.as_ref());
         let max_y = guard.history_size as f32 * guard.cell_height.max(1.0);
         gpui::Size {
             width: gpui::px(0.0),
@@ -426,7 +432,7 @@ impl nucleotide_ui::scrollbar::ScrollableHandle for TerminalScrollHandle {
     }
 
     fn offset(&self) -> gpui::Point<gpui::Pixels> {
-        let guard = self.model.lock().unwrap();
+        let guard = lock_or_recover(self.model.as_ref());
         // display_offset=0 → at bottom (live) → most scrolled → offset = -max
         // display_offset=history_size → at top → not scrolled → offset = 0
         let scrolled_lines = guard.history_size.saturating_sub(guard.display_offset) as f32;
@@ -438,7 +444,7 @@ impl nucleotide_ui::scrollbar::ScrollableHandle for TerminalScrollHandle {
     }
 
     fn set_offset(&self, point: gpui::Point<gpui::Pixels>) {
-        let mut guard = self.model.lock().unwrap();
+        let mut guard = lock_or_recover(self.model.as_ref());
         let cell_h = guard.cell_height.max(1.0);
         let history = guard.history_size;
         let max_y = history as f32 * cell_h;
@@ -451,7 +457,7 @@ impl nucleotide_ui::scrollbar::ScrollableHandle for TerminalScrollHandle {
     }
 
     fn viewport(&self) -> gpui::Bounds<gpui::Pixels> {
-        let guard = self.model.lock().unwrap();
+        let guard = lock_or_recover(self.model.as_ref());
         let h = guard.rows as f32 * guard.cell_height.max(1.0);
         let w = guard.cols as f32 * guard.cell_width.max(1.0);
         gpui::Bounds::new(
@@ -467,11 +473,11 @@ impl nucleotide_ui::scrollbar::ScrollableHandle for TerminalScrollHandle {
     }
 
     fn drag_started(&self) {
-        self.model.lock().unwrap().scroll_dragging = true;
+        lock_or_recover(self.model.as_ref()).scroll_dragging = true;
     }
 
     fn drag_ended(&self) {
-        self.model.lock().unwrap().scroll_dragging = false;
+        lock_or_recover(self.model.as_ref()).scroll_dragging = false;
     }
 }
 
@@ -508,12 +514,7 @@ impl TerminalView {
                     cx.background_executor()
                         .timer(std::time::Duration::from_millis(32))
                         .await;
-                    let has_updates = {
-                        let Ok(guard) = poll_model.lock() else {
-                            break;
-                        };
-                        guard.has_dirty_rows()
-                    };
+                    let has_updates = lock_or_recover(poll_model.as_ref()).has_dirty_rows();
                     if has_updates && this.update(cx, |_, cx| cx.notify()).is_err() {
                         break;
                     }
@@ -561,7 +562,7 @@ impl Render for TerminalView {
         // Render
         #[cfg(feature = "emulator")]
         {
-            let rows_len = { self.model.lock().unwrap().grid.len() };
+            let rows_len = { lock_or_recover(self.model.as_ref()).grid.len() };
 
             // Ensure we have the right number of row entities
             if self.rows.len() != rows_len {
@@ -576,7 +577,7 @@ impl Render for TerminalView {
             }
 
             // Take dirty rows and update only those
-            let dirty_rows = { self.model.lock().unwrap().take_dirty_rows() };
+            let dirty_rows = { lock_or_recover(self.model.as_ref()).take_dirty_rows() };
             for idx in dirty_rows {
                 if let Some(ent) = self.rows.get(idx) {
                     ent.update(_cx, |row, cx| row.mark_dirty(cx));
@@ -604,7 +605,7 @@ impl Render for TerminalView {
                 content
                     .id("terminal-content")
                     .on_scroll_wheel(move |event, window, cx| {
-                        let mut guard = scroll_model.lock().unwrap();
+                        let mut guard = lock_or_recover(scroll_model.as_ref());
                         let delta_y = f32::from(event.delta.pixel_delta(window.line_height()).y);
                         if guard.scroll_wheel_by_pixel_delta(delta_y) {
                             window.refresh();
@@ -979,7 +980,7 @@ impl Render for TerminalRowView {
         let ansi_palette = TerminalAnsiPalette::from_tokens(tokens);
 
         let (grid_row, cursor_row, cursor_col, cell_height) = {
-            let guard = self.model.lock().unwrap();
+            let guard = lock_or_recover(self.model.as_ref());
             let row = if self.row_index < guard.grid.len() {
                 guard.grid[self.row_index].clone()
             } else {
@@ -1134,17 +1135,17 @@ static TERMINAL_VIEW_REGISTRY: Lazy<Mutex<HashMap<TerminalId, Arc<Mutex<Terminal
     Lazy::new(|| Mutex::new(HashMap::new()));
 
 pub fn register_view_model(id: TerminalId, model: Arc<Mutex<TerminalViewModel>>) {
-    let mut map = TERMINAL_VIEW_REGISTRY.lock().unwrap();
+    let mut map = lock_or_recover(&TERMINAL_VIEW_REGISTRY);
     map.insert(id, model);
 }
 
 pub fn get_view_model(id: TerminalId) -> Option<Arc<Mutex<TerminalViewModel>>> {
-    let map = TERMINAL_VIEW_REGISTRY.lock().unwrap();
+    let map = lock_or_recover(&TERMINAL_VIEW_REGISTRY);
     map.get(&id).cloned()
 }
 
 pub fn unregister_view_model(id: TerminalId) {
-    let mut map = TERMINAL_VIEW_REGISTRY.lock().unwrap();
+    let mut map = lock_or_recover(&TERMINAL_VIEW_REGISTRY);
     map.remove(&id);
 }
 

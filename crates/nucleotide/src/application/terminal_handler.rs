@@ -5,7 +5,7 @@ use nucleotide_events::EventBus;
 use nucleotide_events::v2::terminal::{Event as TerminalEvent, TerminalId};
 use nucleotide_logging::{error, info};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 #[cfg(feature = "terminal-emulator")]
 use nucleotide_terminal::TerminalBounds;
@@ -60,6 +60,24 @@ fn metrics_resize_bounds(
         .then_some(new_bounds)
 }
 
+fn lock_view_model<'a>(
+    view: &'a Mutex<TerminalViewModel>,
+    id: TerminalId,
+    operation: &'static str,
+) -> MutexGuard<'a, TerminalViewModel> {
+    match view.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            error!(
+                terminal_id = ?id,
+                operation,
+                "Terminal view model lock poisoned; recovering"
+            );
+            poisoned.into_inner()
+        }
+    }
+}
+
 impl TerminalRuntimeHandler {
     pub fn new() -> Self {
         Self {
@@ -102,8 +120,7 @@ impl TerminalRuntimeHandler {
         let view = Arc::new(Mutex::new(TerminalViewModel::new(id)));
         #[cfg(feature = "terminal-emulator")]
         {
-            view.lock()
-                .unwrap()
+            lock_view_model(view.as_ref(), id, "set_control_sender")
                 .set_control_sender(session.control_sender());
         }
         let view_clone = Arc::clone(&view);
@@ -122,11 +139,11 @@ impl TerminalRuntimeHandler {
                 while let Ok(next) = rx.try_recv() {
                     frame = next;
                 }
-                let mut guard = view_clone.lock().unwrap();
+                let mut guard = lock_view_model(view_clone.as_ref(), id, "apply_frame");
                 guard.apply_frame(frame);
             }
             // Channel closed – shell process exited; mark view model and notify the event bus
-            view_clone.lock().unwrap().set_exited();
+            lock_view_model(view_clone.as_ref(), id, "set_exited").set_exited();
             let code = session_for_exit
                 .lock()
                 .ok()

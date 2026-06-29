@@ -1201,10 +1201,18 @@ pub struct Workspace {
 struct ActiveCompletionSession {
     doc_id: DocumentId,
     view_id: ViewId,
+    document_version: i32,
     is_incomplete: bool,
     incomplete_server_ids: Vec<u64>,
     retained_items: Vec<nucleotide_events::completion::CompletionItem>,
     requested_prefix: String,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct CompletionAcceptTarget {
+    doc_id: DocumentId,
+    view_id: ViewId,
+    document_version: i32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -7753,17 +7761,19 @@ impl Workspace {
                 Ok(ref regex) => {
                     // Get current state
                     let view_id = core.editor.tree.focus;
-                    let doc_id = core
-                        .editor
-                        .tree
-                        .try_get(view_id)
-                        .map(|view| view.doc)
-                        .unwrap_or_default();
+                    let Some(doc_id) = core.editor.tree.try_get(view_id).map(|view| view.doc)
+                    else {
+                        core.editor.set_error("No active view for search");
+                        return;
+                    };
                     let wrap_around = core.editor.config().search.wrap_around;
 
                     // Get text and current selection
                     let (text, current_selection, search_start_byte) = {
-                        let doc = core.editor.documents.get(&doc_id).unwrap();
+                        let Some(doc) = core.editor.documents.get(&doc_id) else {
+                            core.editor.set_error("No active document for search");
+                            return;
+                        };
                         let text = doc.text().slice(..);
                         let selection = doc.selection(view_id);
 
@@ -7814,8 +7824,12 @@ impl Workspace {
                         let primary_index = current_selection.primary_index();
                         let new_selection = current_selection.replace(primary_index, range);
 
-                        let doc = core.editor.documents.get_mut(&doc_id).unwrap();
-                        doc.set_selection(view_id, new_selection);
+                        if let Some(doc) = core.editor.documents.get_mut(&doc_id) {
+                            doc.set_selection(view_id, new_selection);
+                        } else {
+                            core.editor.set_error("No active document for search");
+                            return;
+                        }
 
                         reveal_center_view = Some(view_id);
 
@@ -11252,8 +11266,16 @@ impl Workspace {
     fn get_current_completion_prefix(&mut self, cx: &mut Context<Self>) -> Option<String> {
         let core = self.core.clone();
         core.update(cx, |core, _cx| {
-            let editor = &mut core.editor;
-            let (view, doc) = helix_view::current!(editor);
+            let editor = &core.editor;
+            let view_id = editor.tree.focus;
+            let Some(view) = editor.tree.try_get(view_id) else {
+                nucleotide_logging::warn!("No active view for completion prefix extraction");
+                return None;
+            };
+            let Some(doc) = editor.document(view.doc) else {
+                nucleotide_logging::warn!("No active document for completion prefix extraction");
+                return None;
+            };
             let text = doc.text();
             let selection = doc.selection(view.id);
             let cursor_pos = selection.primary().cursor(text.slice(..));
@@ -11277,8 +11299,11 @@ impl Workspace {
                 "Cursor position analysis"
             );
 
-            // Try getting text up to cursor position
-            let line_text_to_cursor = &full_line[..cursor_in_line.min(full_line.len())];
+            // Try getting text up to cursor position. Helix cursor positions
+            // are character offsets; convert to a UTF-8 byte boundary before
+            // taking a Rust string slice.
+            let line_text_to_cursor =
+                PrefixExtractor::line_prefix_at_char(&full_line, cursor_in_line);
 
             nucleotide_logging::debug!(
                 line_text_to_cursor = %line_text_to_cursor,
@@ -11298,7 +11323,7 @@ impl Workspace {
             // Use the enhanced prefix extractor for language-aware completion
             let (prefix, is_trigger_completion) = self
                 .prefix_extractor
-                .extract_prefix(line_text_to_cursor, cursor_in_line);
+                .extract_prefix(&full_line, cursor_in_line);
 
             nucleotide_logging::debug!(
                 is_trigger_completion = is_trigger_completion,
@@ -11641,6 +11666,13 @@ impl Workspace {
         let language = self.completion_language_for_doc(doc_id, cx);
         let retained_items =
             retained_completion_items_for_completed_providers(&items, &incomplete_server_ids);
+        let document_version = self
+            .core
+            .read(cx)
+            .editor
+            .document(doc_id)
+            .map(|doc| doc.version())
+            .unwrap_or_default();
         let mut ui_items: Vec<nucleotide_ui::completion_v2::CompletionItem> = items
             .into_iter()
             .map(ui_completion_item_from_event)
@@ -11664,6 +11696,7 @@ impl Workspace {
         self.active_completion_session = Some(ActiveCompletionSession {
             doc_id,
             view_id,
+            document_version,
             is_incomplete,
             incomplete_server_ids,
             retained_items,
@@ -11773,16 +11806,28 @@ impl Workspace {
         nucleotide_logging::debug!("Triggering completion directly using real LSP completions");
 
         // Get current document and view information (in a separate scope to release the borrow)
-        let (cursor, doc_id, view_id) = {
+        let Some((cursor, doc_id, view_id)) = ({
             let editor = &self.core.read(cx).editor;
             let view_id = editor.tree.focus;
-            let view = editor.tree.get(view_id);
-            let doc = editor.documents.get(&view.doc).unwrap();
-            let cursor = doc
-                .selection(view.id)
-                .primary()
-                .cursor(doc.text().slice(..));
-            (cursor, doc.id(), view.id)
+            if let Some(view) = editor.tree.try_get(view_id) {
+                if let Some(doc) = editor.documents.get(&view.doc) {
+                    let cursor = doc
+                        .selection(view.id)
+                        .primary()
+                        .cursor(doc.text().slice(..));
+                    Some((cursor, doc.id(), view.id))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }) else {
+            self.core.update(cx, |core, cx| {
+                core.editor.set_error("No active document for completion");
+                cx.notify();
+            });
+            return;
         };
 
         nucleotide_logging::debug!(
@@ -11793,6 +11838,32 @@ impl Workspace {
         );
 
         self.start_completion_request(cursor, doc_id, view_id, LspCompletionTrigger::Manual, cx);
+    }
+
+    fn active_completion_accept_context(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<(CompletionAcceptTarget, String)> {
+        let session = self.active_completion_session.as_ref()?;
+        let core = self.core.read(cx);
+        let view_doc = core.editor.tree.try_get(session.view_id)?.doc;
+        if view_doc != session.doc_id {
+            return None;
+        }
+
+        let doc = core.editor.document(session.doc_id)?;
+        if doc.version() != session.document_version {
+            return None;
+        }
+
+        Some((
+            CompletionAcceptTarget {
+                doc_id: session.doc_id,
+                view_id: session.view_id,
+                document_version: session.document_version,
+            },
+            session.requested_prefix.clone(),
+        ))
     }
 
     /// Handle completion acceptance via Helix's transaction system
@@ -11823,30 +11894,40 @@ impl Workspace {
             "Retrieved completion item for transaction"
         );
 
-        let completion_memory_context = self
-            .active_completion_session
-            .as_ref()
-            .map(|session| (session.doc_id, session.requested_prefix.clone()));
-        let completion_memory_key = completion_memory_context.map(|(doc_id, prefix)| {
-            let language = self.completion_language_for_doc(doc_id, cx);
-            Self::completion_memory_key(&language, &prefix, &completion_item)
-        });
+        let Some((target, requested_prefix)) = self.active_completion_accept_context(cx) else {
+            nucleotide_logging::warn!(
+                item_index = item_index,
+                "Dropping completion acceptance for stale completion session"
+            );
+            self.active_completion_session = None;
+            self.overlay.update(cx, |overlay, cx| {
+                overlay.dismiss_completion(cx);
+            });
+            return;
+        };
+
+        let completion_memory_key = {
+            let language = self.completion_language_for_doc(target.doc_id, cx);
+            Self::completion_memory_key(&language, &requested_prefix, &completion_item)
+        };
 
         if self.resolve_completion_before_accept(
             completion_item.clone(),
-            completion_memory_key.clone(),
+            Some(completion_memory_key.clone()),
+            target,
             cx,
         ) {
             return;
         }
 
-        self.accept_completion_item(completion_item, completion_memory_key, cx);
+        self.accept_completion_item(completion_item, Some(completion_memory_key), target, cx);
     }
 
     fn resolve_completion_before_accept(
         &mut self,
         completion_item: nucleotide_ui::CompletionItem,
         completion_memory_key: Option<CompletionMemoryKey>,
+        target: CompletionAcceptTarget,
         cx: &mut Context<Self>,
     ) -> bool {
         let Some(server_id) = completion_item.server_id else {
@@ -11900,7 +11981,12 @@ impl Workspace {
                         }
                     };
 
-                    workspace.accept_completion_item(completion_item, completion_memory_key, cx);
+                    workspace.accept_completion_item(
+                        completion_item,
+                        completion_memory_key,
+                        target,
+                        cx,
+                    );
                 });
             }
         })
@@ -11913,23 +11999,24 @@ impl Workspace {
         &mut self,
         completion_item: nucleotide_ui::CompletionItem,
         completion_memory_key: Option<CompletionMemoryKey>,
+        target: CompletionAcceptTarget,
         cx: &mut Context<Self>,
     ) {
-        if let Some(edit) = completion_item.edit.clone() {
-            self.handle_lsp_edit_completion(completion_item, edit, cx);
+        let accepted = if let Some(edit) = completion_item.edit.clone() {
+            self.handle_lsp_edit_completion(completion_item, edit, target, cx)
         } else {
             // Check if this is a snippet completion
             match completion_item.insert_text_format {
                 nucleotide_ui::completion_v2::InsertTextFormat::Snippet => {
-                    self.handle_snippet_completion(completion_item, cx);
+                    self.handle_snippet_completion(completion_item, target, cx)
                 }
                 nucleotide_ui::completion_v2::InsertTextFormat::PlainText => {
-                    self.handle_plain_text_completion(completion_item, cx);
+                    self.handle_plain_text_completion(completion_item, target, cx)
                 }
             }
-        }
+        };
 
-        if let Some(key) = completion_memory_key {
+        if accepted && let Some(key) = completion_memory_key {
             self.completion_memory.memorize(key);
         }
     }
@@ -11937,8 +12024,9 @@ impl Workspace {
     fn handle_snippet_completion(
         &mut self,
         completion_item: nucleotide_ui::CompletionItem,
+        target: CompletionAcceptTarget,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         let snippet_text = completion_item.text.to_string();
         nucleotide_logging::debug!(
             completion_text = %snippet_text,
@@ -11946,14 +12034,46 @@ impl Workspace {
         );
 
         let rt_handle = self.handle.clone();
-        self.core.update(cx, move |core, cx| {
+        let applied = self.core.update(cx, move |core, cx| {
             let _guard = rt_handle.enter();
             let editor = &mut core.editor;
-            let (view, doc) = helix_view::current!(editor);
+            let Some(view_doc_id) = editor.tree.try_get(target.view_id).map(|view| view.doc) else {
+                nucleotide_logging::warn!(
+                    view_id = ?target.view_id,
+                    "Dropping snippet completion for missing view"
+                );
+                return false;
+            };
+            if view_doc_id != target.doc_id {
+                nucleotide_logging::warn!(
+                    view_id = ?target.view_id,
+                    expected_doc_id = ?target.doc_id,
+                    actual_doc_id = ?view_doc_id,
+                    "Dropping snippet completion for stale view/document association"
+                );
+                return false;
+            }
+
+            let Some(doc) = editor.document_mut(target.doc_id) else {
+                nucleotide_logging::warn!(
+                    doc_id = ?target.doc_id,
+                    "Dropping snippet completion for missing document"
+                );
+                return false;
+            };
+            if doc.version() != target.document_version {
+                nucleotide_logging::warn!(
+                    doc_id = ?target.doc_id,
+                    request_version = target.document_version,
+                    current_version = doc.version(),
+                    "Dropping snippet completion for changed document"
+                );
+                return false;
+            }
             use helix_core::Transaction;
 
             let text = doc.text();
-            let selection = doc.selection(view.id);
+            let selection = doc.selection(target.view_id);
             let primary_cursor = selection.primary().cursor(text.slice(..));
 
             nucleotide_logging::debug!(
@@ -11987,34 +12107,39 @@ impl Workspace {
                     let start_pos = completion_word_start(text.slice(..), cursor_pos);
                     (start_pos, cursor_pos, Some(snippet_text.clone().into()))
                 });
-                doc.apply(&transaction, view.id);
+                doc.apply(&transaction, target.view_id);
                 cx.notify();
-                return;
+                return true;
             };
 
             nucleotide_logging::debug!("Applying snippet transaction to document");
-            doc.apply(&transaction, view.id);
+            doc.apply(&transaction, target.view_id);
             install_active_completion_snippet(doc, rendered_snippet);
 
             nucleotide_logging::debug!("Applied snippet completion transaction successfully");
 
             cx.notify();
+            true
         });
 
         // Dismiss the completion view after successful text insertion
-        self.overlay.update(cx, |overlay, cx| {
-            overlay.dismiss_completion(cx);
-        });
+        if applied {
+            self.overlay.update(cx, |overlay, cx| {
+                overlay.dismiss_completion(cx);
+            });
+        }
 
         nucleotide_logging::debug!("Snippet completion processing complete - view dismissed");
+        applied
     }
 
     fn handle_lsp_edit_completion(
         &mut self,
         completion_item: nucleotide_ui::CompletionItem,
         edit: nucleotide_ui::CompletionEdit,
+        target: CompletionAcceptTarget,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         nucleotide_logging::debug!(
             completion_text = %completion_item.text,
             has_primary_edit = edit.text_edit.is_some(),
@@ -12023,13 +12148,45 @@ impl Workspace {
         );
 
         let rt_handle = self.handle.clone();
-        self.core.update(cx, move |core, cx| {
+        let applied = self.core.update(cx, move |core, cx| {
             let _guard = rt_handle.enter();
             let editor = &mut core.editor;
-            let (view, doc) = helix_view::current!(editor);
+            let Some(view_doc_id) = editor.tree.try_get(target.view_id).map(|view| view.doc) else {
+                nucleotide_logging::warn!(
+                    view_id = ?target.view_id,
+                    "Dropping LSP edit completion for missing view"
+                );
+                return false;
+            };
+            if view_doc_id != target.doc_id {
+                nucleotide_logging::warn!(
+                    view_id = ?target.view_id,
+                    expected_doc_id = ?target.doc_id,
+                    actual_doc_id = ?view_doc_id,
+                    "Dropping LSP edit completion for stale view/document association"
+                );
+                return false;
+            }
+
+            let Some(doc) = editor.document_mut(target.doc_id) else {
+                nucleotide_logging::warn!(
+                    doc_id = ?target.doc_id,
+                    "Dropping LSP edit completion for missing document"
+                );
+                return false;
+            };
+            if doc.version() != target.document_version {
+                nucleotide_logging::warn!(
+                    doc_id = ?target.doc_id,
+                    request_version = target.document_version,
+                    current_version = doc.version(),
+                    "Dropping LSP edit completion for changed document"
+                );
+                return false;
+            }
 
             let text = doc.text();
-            let selection = doc.selection(view.id);
+            let selection = doc.selection(target.view_id);
             let primary_cursor = selection.primary().cursor(text.slice(..));
             let offset_encoding = helix_offset_encoding_from_completion(edit.offset_encoding);
 
@@ -12093,7 +12250,7 @@ impl Workspace {
                 has_edit_offset = edit_offset.is_some(),
                 "Applying completion transaction from LSP edit metadata"
             );
-            doc.apply(&transaction, view.id);
+            doc.apply(&transaction, target.view_id);
 
             if let Some(rendered_snippet) = rendered_snippet {
                 install_active_completion_snippet(doc, rendered_snippet);
@@ -12114,24 +12271,29 @@ impl Workspace {
                     additional_edit_count = edit.additional_text_edits.len(),
                     "Applying additional LSP completion edits"
                 );
-                doc.apply(&transaction, view.id);
+                doc.apply(&transaction, target.view_id);
             }
 
             cx.notify();
+            true
         });
 
-        self.overlay.update(cx, |overlay, cx| {
-            overlay.dismiss_completion(cx);
-        });
+        if applied {
+            self.overlay.update(cx, |overlay, cx| {
+                overlay.dismiss_completion(cx);
+            });
+        }
 
         nucleotide_logging::debug!("LSP edit completion processing complete - view dismissed");
+        applied
     }
 
     fn handle_plain_text_completion(
         &mut self,
         completion_item: nucleotide_ui::CompletionItem,
+        target: CompletionAcceptTarget,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         nucleotide_logging::debug!(
             completion_text = %completion_item.text,
             "Processing plain text completion"
@@ -12139,7 +12301,7 @@ impl Workspace {
 
         // Use Helix's transaction system to insert the completion text
         let rt_handle = self.handle.clone();
-        self.core.update(cx, move |core, cx| {
+        let applied = self.core.update(cx, move |core, cx| {
             let _guard = rt_handle.enter();
             let editor = &mut core.editor;
 
@@ -12149,12 +12311,44 @@ impl Workspace {
             );
 
             // Apply the completion using Helix's transaction system
-            let (view, doc) = helix_view::current!(editor);
+            let Some(view_doc_id) = editor.tree.try_get(target.view_id).map(|view| view.doc) else {
+                nucleotide_logging::warn!(
+                    view_id = ?target.view_id,
+                    "Dropping plain text completion for missing view"
+                );
+                return false;
+            };
+            if view_doc_id != target.doc_id {
+                nucleotide_logging::warn!(
+                    view_id = ?target.view_id,
+                    expected_doc_id = ?target.doc_id,
+                    actual_doc_id = ?view_doc_id,
+                    "Dropping plain text completion for stale view/document association"
+                );
+                return false;
+            }
+
+            let Some(doc) = editor.document_mut(target.doc_id) else {
+                nucleotide_logging::warn!(
+                    doc_id = ?target.doc_id,
+                    "Dropping plain text completion for missing document"
+                );
+                return false;
+            };
+            if doc.version() != target.document_version {
+                nucleotide_logging::warn!(
+                    doc_id = ?target.doc_id,
+                    request_version = target.document_version,
+                    current_version = doc.version(),
+                    "Dropping plain text completion for changed document"
+                );
+                return false;
+            }
 
             use helix_core::Transaction;
 
             let text = doc.text();
-            let selection = doc.selection(view.id);
+            let selection = doc.selection(target.view_id);
             let primary_cursor = selection.primary().cursor(text.slice(..));
 
             nucleotide_logging::debug!(
@@ -12193,19 +12387,23 @@ impl Workspace {
 
             // Apply the transaction
             nucleotide_logging::debug!("Applying plain text transaction to document");
-            doc.apply(&transaction, view.id);
+            doc.apply(&transaction, target.view_id);
 
             nucleotide_logging::debug!("Applied plain text completion transaction successfully");
 
             cx.notify();
+            true
         });
 
         // Dismiss the completion view after successful text insertion
-        self.overlay.update(cx, |overlay, cx| {
-            overlay.dismiss_completion(cx);
-        });
+        if applied {
+            self.overlay.update(cx, |overlay, cx| {
+                overlay.dismiss_completion(cx);
+            });
+        }
 
         nucleotide_logging::debug!("Plain text completion processing complete - view dismissed");
+        applied
     }
 
     // /// Handle completion acceptance - insert the selected text into the editor (DEPRECATED)
@@ -12992,7 +13190,16 @@ impl Render for Workspace {
         if self.terminal_panel_visible
             && let Some(id) = self.terminal_id
             && let Some(vm) = nucleotide_terminal_view::get_view_model(id)
-            && vm.lock().unwrap().has_exited()
+            && match vm.lock() {
+                Ok(vm) => vm.has_exited(),
+                Err(poisoned) => {
+                    warn!(
+                        terminal_id = ?id,
+                        "Terminal view model lock poisoned while checking exit state; recovering"
+                    );
+                    poisoned.into_inner().has_exited()
+                }
+            }
             && self.run_output_terminal != Some(id)
         {
             self.hide_terminal_panel();
@@ -15051,7 +15258,11 @@ fn show_buffer_picker(
     let (project_directory, mut buffer_metas) = {
         let core = core.read(cx);
         let editor = &core.editor;
-        let current_doc_id = editor.tree.get(editor.tree.focus).doc;
+        let current_doc_id = editor
+            .tree
+            .try_get(editor.tree.focus)
+            .map(|view| view.doc)
+            .unwrap_or_else(|| editor.documents.keys().next().copied().unwrap_or_default());
 
         let buffer_metas: Vec<BufferMeta> = editor
             .documents
@@ -15448,7 +15659,7 @@ fn show_code_actions(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &m
     let Some((identifier, selection_range, doc_text, diags, servers)) = (|| {
         let core_r = core.read(cx);
         let editor = &core_r.editor;
-        let view = editor.tree.get(editor.tree.focus);
+        let view = editor.tree.try_get(editor.tree.focus)?;
         let doc = editor.documents.get(&view.doc)?;
 
         let selection_range = doc.selection(view.id).primary();
@@ -16176,6 +16387,7 @@ mod tests {
         let session = ActiveCompletionSession {
             doc_id,
             view_id,
+            document_version: 0,
             is_incomplete: true,
             incomplete_server_ids: vec![1],
             retained_items: Vec::new(),
@@ -16197,6 +16409,7 @@ mod tests {
         let mut session = ActiveCompletionSession {
             doc_id,
             view_id,
+            document_version: 0,
             is_incomplete: false,
             incomplete_server_ids: vec![1],
             retained_items: Vec::new(),

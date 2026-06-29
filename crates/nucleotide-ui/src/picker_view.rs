@@ -124,6 +124,21 @@ impl PickerItem {
 type PickerSelectCallback = Box<dyn FnMut(&PickerItem, &mut Context<PickerView>) + 'static>;
 type PickerCancelCallback = Box<dyn FnMut(&mut Context<PickerView>) + 'static>;
 
+fn str_prefix_at_byte_limit(value: &str, max_bytes: usize) -> &str {
+    let limit = max_bytes.min(value.len());
+    if value.is_char_boundary(limit) {
+        return &value[..limit];
+    }
+
+    let boundary = value
+        .char_indices()
+        .map(|(index, _)| index)
+        .take_while(|index| *index < limit)
+        .last()
+        .unwrap_or(0);
+    &value[..boundary]
+}
+
 pub struct PickerView {
     // Core picker state
     query: SharedString,
@@ -916,7 +931,7 @@ impl PickerView {
                         if content.len() > 10000 {
                             format!(
                                 "{}\n\n[File truncated - showing first 10KB of {}KB total]",
-                                &content[..10000],
+                                str_prefix_at_byte_limit(&content, 10000),
                                 content.len() / 1024
                             )
                         } else {
@@ -1636,6 +1651,13 @@ impl Render for PickerView {
 mod tests {
     use super::*;
     use std::sync::Arc;
+
+    #[test]
+    fn str_prefix_at_byte_limit_uses_utf8_boundary() {
+        assert_eq!(str_prefix_at_byte_limit("abcdef", 3), "abc");
+        assert_eq!(str_prefix_at_byte_limit("éclair", 1), "");
+        assert_eq!(str_prefix_at_byte_limit("éclair", 2), "é");
+    }
 
     #[test]
     fn item_search_text_includes_sublabel_and_columns() {

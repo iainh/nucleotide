@@ -67,6 +67,18 @@ impl PrefixExtractor {
         }
     }
 
+    pub fn line_prefix_at_char(line_text: &str, cursor_col: usize) -> &str {
+        if cursor_col == 0 || line_text.is_empty() {
+            return "";
+        }
+
+        line_text
+            .char_indices()
+            .nth(cursor_col)
+            .map(|(byte_index, _)| &line_text[..byte_index])
+            .unwrap_or(line_text)
+    }
+
     /// Extract completion prefix from text at cursor position
     /// Returns (prefix, is_trigger_completion)
     pub fn extract_prefix(&self, line_text: &str, cursor_col: usize) -> (String, bool) {
@@ -74,7 +86,7 @@ impl PrefixExtractor {
             return (String::new(), false);
         }
 
-        let line_text_to_cursor = &line_text[..cursor_col.min(line_text.len())];
+        let line_text_to_cursor = Self::line_prefix_at_char(line_text, cursor_col);
         let chars: Vec<char> = line_text_to_cursor.chars().collect();
 
         if chars.is_empty() {
@@ -183,6 +195,17 @@ mod tests {
         let (prefix, is_trigger) = extractor.extract_prefix("let var", 7);
         assert_eq!(prefix, "var");
         assert!(!is_trigger);
+    }
+
+    #[test]
+    fn test_prefix_extraction_uses_character_cursor_offsets() {
+        let extractor = PrefixExtractor::new();
+
+        assert_eq!(PrefixExtractor::line_prefix_at_char("é.value", 1), "é");
+
+        let (prefix, is_trigger) = extractor.extract_prefix("é.value", 3);
+        assert_eq!(prefix, "v");
+        assert!(is_trigger);
     }
 
     #[test]
