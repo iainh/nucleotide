@@ -576,29 +576,21 @@ fn inline_diagnostic_rows(
         .max(1);
     let mut rows = Vec::new();
 
-    for (message_index, message_line) in diagnostic.message.trim().lines().enumerate() {
-        for (wrap_index, wrapped) in wrap_message_line(message_line.trim(), text_width)
-            .into_iter()
-            .enumerate()
-        {
+    for message_line in diagnostic.message.trim().lines() {
+        let message_line = message_line.trim();
+        if message_line.is_empty() {
+            continue;
+        }
+
+        for wrapped in wrap_message_line(message_line, text_width) {
             rows.push(InlineDiagnosticTextLine {
                 text: SharedString::from(wrapped),
                 severity,
                 color,
                 text_col,
-                connector: (message_index == 0 && wrap_index == 0).then_some(connector),
+                connector: rows.is_empty().then_some(connector),
             });
         }
-    }
-
-    if rows.is_empty() {
-        rows.push(InlineDiagnosticTextLine {
-            text: SharedString::default(),
-            severity,
-            color,
-            text_col,
-            connector: Some(connector),
-        });
     }
 
     rows
@@ -813,6 +805,56 @@ mod tests {
         assert_eq!(rows[1].text.as_ref(), "gamma");
         assert_eq!(rows[1].text_col, rows[0].text_col);
         assert_eq!(rows[1].connector, None);
+    }
+
+    #[test]
+    fn inline_rows_skip_blank_message_lines() {
+        let diag = diagnostic(4, 5, Severity::Error, "cannot find value\n\nnot found");
+        let config = InlineDiagnosticsConfig {
+            cursor_line: DiagnosticFilter::Enable(Severity::Warning),
+            other_lines: DiagnosticFilter::Disable,
+            min_diagnostic_width: 10,
+            prefix_len: 1,
+            max_wrap: 20,
+            max_diagnostics: 10,
+        };
+        let colors = InlineDiagnosticColors {
+            hint: rgb(0x111111).into(),
+            info: rgb(0x222222).into(),
+            warning: rgb(0x333333).into(),
+            error: rgb(0x444444).into(),
+        };
+
+        let rows = inline_diagnostic_rows(&diag, 4, 80, &config, colors);
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].text.as_ref(), "cannot find value");
+        assert!(rows[0].connector.is_some());
+        assert_eq!(rows[1].text.as_ref(), "not found");
+        assert_eq!(rows[1].connector, None);
+    }
+
+    #[test]
+    fn inline_rows_do_not_reserve_space_for_empty_message() {
+        let diag = diagnostic(4, 5, Severity::Error, " \n\t ");
+        let config = InlineDiagnosticsConfig {
+            cursor_line: DiagnosticFilter::Enable(Severity::Warning),
+            other_lines: DiagnosticFilter::Disable,
+            min_diagnostic_width: 10,
+            prefix_len: 1,
+            max_wrap: 20,
+            max_diagnostics: 10,
+        };
+        let colors = InlineDiagnosticColors {
+            hint: rgb(0x111111).into(),
+            info: rgb(0x222222).into(),
+            warning: rgb(0x333333).into(),
+            error: rgb(0x444444).into(),
+        };
+
+        let rows = inline_diagnostic_rows(&diag, 4, 80, &config, colors);
+
+        assert!(rows.is_empty());
     }
 
     #[test]

@@ -113,6 +113,25 @@ fn document_lsp_identifier(doc: &Document) -> Option<lsp::TextDocumentIdentifier
     doc.url().map(lsp::TextDocumentIdentifier::new)
 }
 
+fn is_workspace_diagnostic_refresh_method(method: &str) -> bool {
+    use helix_lsp::lsp::request::Request as _;
+
+    method == lsp::request::WorkspaceDiagnosticRefresh::METHOD
+}
+
+fn workspace_diagnostic_refresh_reply(
+    params: helix_lsp::jsonrpc::Params,
+) -> Result<serde_json::Value, helix_lsp::jsonrpc::Error> {
+    params
+        .parse::<()>()
+        .map(|()| serde_json::Value::Null)
+        .map_err(|err| helix_lsp::jsonrpc::Error {
+            code: helix_lsp::jsonrpc::ErrorCode::InvalidParams,
+            message: format!("Invalid workspace/diagnostic/refresh params: {err}"),
+            data: None,
+        })
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LspCompletionTrigger {
     Manual,
@@ -1514,8 +1533,36 @@ impl Application {
                     "Handling LSP method call"
                 );
 
-                // Parse and handle method calls like Helix does
-                let reply = match MethodCall::parse(&method, params) {
+                // Parse and handle method calls like Helix does. Some LSP 3.17
+                // server-to-client requests are present in lsp-types but not in
+                // helix_lsp::MethodCall yet, so handle those by raw method name
+                // before the generic parser classifies them as unhandled.
+                let reply = match MethodCall::parse(&method, params.clone()) {
+                    Err(helix_lsp::Error::Unhandled)
+                        if is_workspace_diagnostic_refresh_method(&method) =>
+                    {
+                        let reply = workspace_diagnostic_refresh_reply(params);
+                        match &reply {
+                            Ok(_) => {
+                                debug!(
+                                    server_id = ?server_id,
+                                    method = %method,
+                                    id = ?id,
+                                    "Acknowledged workspace diagnostic refresh request"
+                                );
+                            }
+                            Err(err) => {
+                                error!(
+                                    server_id = ?server_id,
+                                    method = %method,
+                                    id = ?id,
+                                    error = %err,
+                                    "Malformed workspace diagnostic refresh request"
+                                );
+                            }
+                        }
+                        reply
+                    }
                     Err(helix_lsp::Error::Unhandled) => {
                         error!(
                             server_id = ?server_id,
@@ -6626,7 +6673,21 @@ impl Application {
                     ));
                 }
             }
-            Callback::Editor(callback) => callback(&mut self.editor),
+            Callback::Editor(callback) => {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    callback(&mut self.editor);
+                }));
+
+                if let Err(payload) = result {
+                    let panic_message = panic_payload_message(payload.as_ref());
+                    warn!(
+                        panic = %panic_message,
+                        "Skipped Helix editor callback after panic in native GPUI mode"
+                    );
+                    self.editor
+                        .set_error(format!("Skipped editor callback: {panic_message}"));
+                }
+            }
         }
     }
 }
@@ -6667,6 +6728,7 @@ fn inlay_hint_job_for_view(view: &View, doc: &Document) -> Option<InlayHintJobFu
         first_line,
         last_line,
     };
+    let document_version = doc.version();
     if !doc.inlay_hints_oudated
         && doc
             .inlay_hints(view_id)
@@ -6695,6 +6757,7 @@ fn inlay_hint_job_for_view(view: &View, doc: &Document) -> Option<InlayHintJobFu
                     view_id,
                     doc_id,
                     inlay_hints_id,
+                    document_version,
                     offset_encoding,
                     response,
                 );
@@ -6708,16 +6771,39 @@ fn apply_inlay_hint_response(
     view_id: ViewId,
     doc_id: DocumentId,
     inlay_hints_id: DocumentInlayHintsId,
+    document_version: i32,
     offset_encoding: OffsetEncoding,
     response: Option<Vec<lsp::InlayHint>>,
 ) {
-    if !editor.config().lsp.display_inlay_hints || editor.tree.try_get(view_id).is_none() {
+    if !editor.config().lsp.display_inlay_hints {
+        return;
+    }
+
+    let Some(view_doc_id) = editor.tree.try_get(view_id).map(|view| view.doc) else {
+        return;
+    };
+    if view_doc_id != doc_id {
+        trace!(
+            view_id = ?view_id,
+            expected_doc_id = ?doc_id,
+            actual_doc_id = ?view_doc_id,
+            "Ignoring inlay hint response for stale view/document association"
+        );
         return;
     }
 
     let Some(doc) = editor.documents.get_mut(&doc_id) else {
         return;
     };
+    if doc.version() != document_version {
+        trace!(
+            doc_id = ?doc_id,
+            request_version = document_version,
+            current_version = doc.version(),
+            "Ignoring stale inlay hint response for changed document"
+        );
+        return;
+    }
 
     let mut hints = match response {
         Some(hints) if !hints.is_empty() => hints,
@@ -6797,17 +6883,18 @@ fn truncate_inlay_hint_label(label: &mut String, limit: Option<std::num::NonZero
         return;
     }
 
-    let mut floor_boundary = 0;
+    let mut truncate_at = 0;
     let mut acc = 0;
     for (index, grapheme_cluster) in label.grapheme_indices(true) {
-        acc += grapheme_cluster.width();
-        if acc > limit {
-            floor_boundary = index;
+        let grapheme_width = grapheme_cluster.width();
+        if acc + grapheme_width > limit {
             break;
         }
+        acc += grapheme_width;
+        truncate_at = index + grapheme_cluster.len();
     }
 
-    label.truncate(floor_boundary);
+    label.truncate(truncate_at);
     label.push('…');
 }
 
@@ -6825,6 +6912,8 @@ fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
 mod job_callback_tests {
     use super::*;
 
+    use std::num::NonZeroU8;
+
     #[test]
     fn panic_payload_message_reads_static_str_payloads() {
         let payload: Box<dyn std::any::Any + Send> = Box::new("missing compositor component");
@@ -6840,6 +6929,33 @@ mod job_callback_tests {
         let payload: Box<dyn std::any::Any + Send> = Box::new(String::from("terminal callback"));
 
         assert_eq!(panic_payload_message(payload.as_ref()), "terminal callback");
+    }
+
+    #[test]
+    fn truncate_inlay_hint_label_leaves_short_label_under_limit() {
+        let mut label = String::from("Result");
+
+        truncate_inlay_hint_label(&mut label, NonZeroU8::new(26));
+
+        assert_eq!(label, "Result");
+    }
+
+    #[test]
+    fn truncate_inlay_hint_label_uses_grapheme_boundaries() {
+        let mut label = String::from("ééé");
+
+        truncate_inlay_hint_label(&mut label, NonZeroU8::new(2));
+
+        assert_eq!(label, "éé…");
+    }
+
+    #[test]
+    fn truncate_inlay_hint_label_handles_first_grapheme_over_limit() {
+        let mut label = String::from("你");
+
+        truncate_inlay_hint_label(&mut label, NonZeroU8::new(1));
+
+        assert_eq!(label, "…");
     }
 }
 
@@ -7555,13 +7671,14 @@ mod tests {
         bridged_event_needs_gpui_context, buffer_text_matches_path, buffer_word_completion_items,
         completion_context_for_trigger, current_dir_is_executable_dir, dedupe_completion_items,
         detect_project_lsp_metadata, diagnostic_picker_path_label, diagnostic_severity_label,
-        home_requires_login_shell_capture, local_path_completion_context,
-        lsp_completion_insert_text, lsp_completion_insert_text_format,
-        lsp_completion_items_from_response, lsp_completion_items_from_response_for_server,
-        lsp_completion_resolve_supported, lsp_completion_response_is_incomplete, lsp_symbol_picker,
-        native_symbol_item_from_lsp, path_completion_items, project_health_status,
-        project_server_language_id, suppress_shadowed_buffer_word_completion_items,
-        syntax_symbol_kind_from_capture_name,
+        home_requires_login_shell_capture, is_workspace_diagnostic_refresh_method,
+        local_path_completion_context, lsp_completion_insert_text,
+        lsp_completion_insert_text_format, lsp_completion_items_from_response,
+        lsp_completion_items_from_response_for_server, lsp_completion_resolve_supported,
+        lsp_completion_response_is_incomplete, lsp_symbol_picker, native_symbol_item_from_lsp,
+        path_completion_items, project_health_status, project_server_language_id,
+        suppress_shadowed_buffer_word_completion_items, syntax_symbol_kind_from_capture_name,
+        workspace_diagnostic_refresh_reply,
     };
     use crate::test_utils::test_support::{
         TestUpdate, create_counting_channel, create_test_diagnostic_events,
@@ -7727,6 +7844,35 @@ mod tests {
         assert_eq!(diagnostic_severity_label(Severity::Warning), "warning");
         assert_eq!(diagnostic_severity_label(Severity::Info), "info");
         assert_eq!(diagnostic_severity_label(Severity::Hint), "hint");
+    }
+
+    #[test]
+    fn workspace_diagnostic_refresh_method_matches_lsp_constant() {
+        assert!(is_workspace_diagnostic_refresh_method(
+            "workspace/diagnostic/refresh"
+        ));
+        assert!(!is_workspace_diagnostic_refresh_method(
+            "workspace/diagnostic"
+        ));
+    }
+
+    #[test]
+    fn workspace_diagnostic_refresh_reply_accepts_unit_params() {
+        let reply = workspace_diagnostic_refresh_reply(helix_lsp::jsonrpc::Params::None)
+            .expect("unit refresh params");
+
+        assert_eq!(reply, serde_json::Value::Null);
+    }
+
+    #[test]
+    fn workspace_diagnostic_refresh_reply_rejects_non_unit_params() {
+        let mut params = serde_json::Map::new();
+        params.insert("unexpected".to_string(), serde_json::Value::Bool(true));
+
+        let err = workspace_diagnostic_refresh_reply(helix_lsp::jsonrpc::Params::Map(params))
+            .expect_err("non-unit refresh params should be rejected");
+
+        assert_eq!(err.code, helix_lsp::jsonrpc::ErrorCode::InvalidParams);
     }
 
     fn test_gui_config() -> crate::config::Config {
@@ -8006,6 +8152,24 @@ mod tests {
             CapturedUpdate::StatusChanged(message, crate::types::Severity::Error)
                 if message.contains("Failed to start language server test-language-server")
         )));
+    }
+
+    #[gpui::test]
+    async fn editor_job_callback_panic_updates_status(cx: &mut gpui::TestAppContext) {
+        let app = new_test_application(cx);
+
+        app.update(cx, |app, _cx| {
+            app.handle_job_callback(helix_term::job::Callback::Editor(Box::new(|_editor| {
+                panic!("inlay hint callback")
+            })));
+
+            let (message, severity) = app.editor.get_status().expect("editor status");
+            assert_eq!(*severity, helix_view::editor::Severity::Error);
+            assert_eq!(
+                message.as_ref(),
+                "Skipped editor callback: inlay hint callback"
+            );
+        });
     }
 
     #[test]
