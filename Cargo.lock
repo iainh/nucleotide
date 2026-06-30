@@ -5161,6 +5161,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleotide-remote"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "nucleotide-terminal"
 version = "0.1.0"
 dependencies = [
