@@ -477,7 +477,7 @@ enum TabContextMenuIntent {
 }
 
 impl TabContextMenuIntent {
-    fn label(self, is_pinned: bool, is_readonly: bool) -> &'static str {
+    fn label(self, is_pinned: bool, is_readonly: bool, is_remote: bool) -> &'static str {
         match self {
             Self::Close => "Close",
             Self::CloseOthers => "Close Others",
@@ -487,7 +487,7 @@ impl TabContextMenuIntent {
             Self::CloseAll => "Close All",
             Self::CopyPath => "Copy Path",
             Self::CopyRelativePath => "Copy Relative Path",
-            Self::RevealInOs => reveal_in_file_manager_label(false),
+            Self::RevealInOs => reveal_in_file_manager_label(is_remote),
             Self::RevealInProjectPanel => "Reveal In Project Panel",
             Self::OpenInTerminal => "Open in Terminal",
             Self::ToggleReadOnly if is_readonly => "Make File Editable",
@@ -510,6 +510,7 @@ struct TabContextMenuCapabilities {
     has_project_panel_path: bool,
     has_terminal_directory: bool,
     is_readonly: bool,
+    is_remote: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -4000,6 +4001,9 @@ impl Workspace {
                 .is_some_and(|path| self.tab_path_visible_in_project_panel(path, cx)),
             has_terminal_directory: self.tab_terminal_directory(tab_id, cx).is_some(),
             is_readonly,
+            is_remote: tab_path
+                .as_deref()
+                .is_some_and(|path| WslWorkspace::from_unc_path(path).is_some()),
         }
     }
 
@@ -5025,7 +5029,11 @@ impl Workspace {
                     visible_doc_ids.len(),
                     has_clean_items,
                 );
-                let label = intent.label(target_is_pinned, menu_capabilities.is_readonly);
+                let label = intent.label(
+                    target_is_pinned,
+                    menu_capabilities.is_readonly,
+                    menu_capabilities.is_remote,
+                );
                 if is_disabled {
                     ContextMenuEntry::disabled_action(intent, label)
                 } else {
@@ -16924,11 +16932,11 @@ mod tests {
     fn tab_context_menu_items_match_zed_close_actions() {
         let unpinned_labels = Workspace::tab_context_menu_intents(false, false, false)
             .iter()
-            .map(|intent| intent.label(false, false))
+            .map(|intent| intent.label(false, false, false))
             .collect::<Vec<_>>();
         let pinned_labels = Workspace::tab_context_menu_intents(false, false, false)
             .iter()
-            .map(|intent| intent.label(true, false))
+            .map(|intent| intent.label(true, false, false))
             .collect::<Vec<_>>();
 
         assert_eq!(
@@ -16951,7 +16959,7 @@ mod tests {
         let labels = Workspace::tab_context_menu_entries(false, false, false)
             .iter()
             .map(|entry| match entry {
-                TabContextMenuEntry::Action(intent) => intent.label(false, false),
+                TabContextMenuEntry::Action(intent) => intent.label(false, false, false),
                 TabContextMenuEntry::Separator => "|",
             })
             .collect::<Vec<_>>();
@@ -16979,7 +16987,7 @@ mod tests {
         let labels = Workspace::tab_context_menu_entries(true, false, false)
             .iter()
             .map(|entry| match entry {
-                TabContextMenuEntry::Action(intent) => intent.label(false, false),
+                TabContextMenuEntry::Action(intent) => intent.label(false, false, false),
                 TabContextMenuEntry::Separator => "|",
             })
             .collect::<Vec<_>>();
@@ -17012,7 +17020,7 @@ mod tests {
     fn tab_context_menu_intents_add_zed_readonly_toggle_for_file_tabs() {
         let labels = Workspace::tab_context_menu_intents(true, false, false)
             .iter()
-            .map(|intent| intent.label(false, false))
+            .map(|intent| intent.label(false, false, false))
             .collect::<Vec<_>>();
 
         assert_eq!(
@@ -17036,11 +17044,11 @@ mod tests {
     #[test]
     fn tab_context_menu_readonly_toggle_label_matches_zed_state() {
         assert_eq!(
-            TabContextMenuIntent::ToggleReadOnly.label(false, false),
+            TabContextMenuIntent::ToggleReadOnly.label(false, false, false),
             "Make File Read-Only"
         );
         assert_eq!(
-            TabContextMenuIntent::ToggleReadOnly.label(false, true),
+            TabContextMenuIntent::ToggleReadOnly.label(false, true, false),
             "Make File Editable"
         );
     }
@@ -17051,7 +17059,7 @@ mod tests {
         let labels = Workspace::tab_context_menu_entries(true, true, false)
             .iter()
             .map(|entry| match entry {
-                TabContextMenuEntry::Action(intent) => intent.label(false, false),
+                TabContextMenuEntry::Action(intent) => intent.label(false, false, false),
                 TabContextMenuEntry::Separator => "|",
             })
             .collect::<Vec<_>>();
@@ -17087,7 +17095,7 @@ mod tests {
         let labels = Workspace::tab_context_menu_entries(true, true, true)
             .iter()
             .map(|entry| match entry {
-                TabContextMenuEntry::Action(intent) => intent.label(false, false),
+                TabContextMenuEntry::Action(intent) => intent.label(false, false, false),
                 TabContextMenuEntry::Separator => "|",
             })
             .collect::<Vec<_>>();
@@ -17134,6 +17142,14 @@ mod tests {
             );
         }
         assert_eq!(reveal_in_file_manager_label(true), "Reveal in File Manager");
+    }
+
+    #[test]
+    fn tab_context_reveal_label_uses_remote_file_manager_label() {
+        assert_eq!(
+            TabContextMenuIntent::RevealInOs.label(false, false, true),
+            "Reveal in File Manager"
+        );
     }
 
     #[test]
