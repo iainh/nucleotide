@@ -165,7 +165,7 @@ impl WslPathMapper {
             return None;
         }
 
-        let path = normalize_linux_path(url.path());
+        let path = normalized_file_url_path(url)?;
         let distro_prefix = format!("/{}", self.distro);
         let linux_path = if path == distro_prefix {
             "/".to_string()
@@ -182,7 +182,7 @@ impl WslPathMapper {
             return None;
         }
 
-        let linux_path = normalize_linux_path(url.path());
+        let linux_path = normalized_file_url_path(url)?;
         let linux_root = self.linux_root.as_str();
         if linux_path != linux_root
             && !linux_path
@@ -256,6 +256,38 @@ fn normalize_windows_path(path: &str) -> String {
         normalized.pop();
     }
     normalized
+}
+
+fn normalized_file_url_path(url: &url::Url) -> Option<String> {
+    percent_decode_utf8(url.path()).map(|path| normalize_linux_path(&path))
+}
+
+fn percent_decode_utf8(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let high = bytes.get(index + 1).copied()?;
+            let low = bytes.get(index + 2).copied()?;
+            decoded.push((hex_value(high)? << 4) | hex_value(low)?);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+
+    String::from_utf8(decoded).ok()
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 fn linux_file_url(path: &str) -> Option<String> {
@@ -603,5 +635,45 @@ mod tests {
 
         assert_eq!(mapped["uri"], "file:///tmp/outside.rs");
         assert_eq!(mapped["other"], "https://example.com/file.rs");
+    }
+
+    #[test]
+    fn maps_percent_encoded_wsl_uris_without_double_encoding() {
+        let mapper = WslPathMapper::new(
+            "Ubuntu".to_string(),
+            "/home/iain/my repo".to_string(),
+            r"\\wsl.localhost\Ubuntu\home\iain\my repo".to_string(),
+        );
+        let body = serde_json::json!({
+            "uri": "file://wsl.localhost/Ubuntu/home/iain/my%20repo/src/hash%23tag.rs"
+        });
+
+        let mapped = mapper.client_to_server_body(&serde_json::to_vec(&body).unwrap());
+        let mapped: JsonValue = serde_json::from_slice(&mapped).unwrap();
+
+        assert_eq!(
+            mapped["uri"],
+            "file:///home/iain/my%20repo/src/hash%23tag.rs"
+        );
+    }
+
+    #[test]
+    fn maps_percent_encoded_linux_uris_back_to_wsl_without_double_encoding() {
+        let mapper = WslPathMapper::new(
+            "Ubuntu".to_string(),
+            "/home/iain/my repo".to_string(),
+            r"\\wsl.localhost\Ubuntu\home\iain\my repo".to_string(),
+        );
+        let body = serde_json::json!({
+            "uri": "file:///home/iain/my%20repo/src/hash%23tag.rs"
+        });
+
+        let mapped = mapper.server_to_client_body(&serde_json::to_vec(&body).unwrap());
+        let mapped: JsonValue = serde_json::from_slice(&mapped).unwrap();
+
+        assert_eq!(
+            mapped["uri"],
+            "file://wsl.localhost/Ubuntu/home/iain/my%20repo/src/hash%23tag.rs"
+        );
     }
 }
