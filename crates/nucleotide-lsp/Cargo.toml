@@ -14,6 +14,7 @@ rust-version = "1.95"
 [dependencies]
 # Internal crates
 nucleotide-events.workspace = true
+nucleotide-env.workspace = true
 nucleotide-logging.workspace = true
 nucleotide-types.workspace = true
 

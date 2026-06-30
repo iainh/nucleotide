@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use helix_lsp::LanguageServerId;
 use helix_view::Editor;
+use nucleotide_env::WslWorkspace;
 use nucleotide_events::{ProjectLspEvent, ServerStartupResult};
 use nucleotide_logging::{debug, error, info, instrument, warn};
 use serde_json::Value as JsonValue;
@@ -327,19 +328,21 @@ impl HelixLspBridge {
         };
 
         // Optionally wrap the server launch through our stdio proxy by PATH shimming.
-        // Controlled via env var NUCLEOTIDE_LSP_USE_PROXY=1.
+        // Controlled via env var NUCLEOTIDE_LSP_USE_PROXY=1 for native servers.
+        // WSL workspaces use the proxy automatically so URI/path mapping is transparent.
         let mut shim_dir_to_cleanup: Option<std::path::PathBuf> = None;
-        if std::env::var("NUCLEOTIDE_LSP_USE_PROXY")
-            .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        {
+        let wsl_workspace = WslWorkspace::from_unc_path(workspace_root);
+        let proxy_requested = std::env::var("NUCLEOTIDE_LSP_USE_PROXY")
+            .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+        if proxy_requested || wsl_workspace.is_some() {
             // Best-effort: build a shim dir with an executable named `server_name` that execs our proxy.
-            if let Ok(real_path) = which::which(server_name) {
+            if wsl_workspace.is_some() || which::which(server_name).is_ok() {
                 use std::fs;
                 use std::io::Write as _;
                 let shim_dir =
                     std::env::temp_dir().join(format!("nuc-lsp-shims-{}", std::process::id()));
                 let _ = fs::create_dir_all(&shim_dir);
-                let shim_path = shim_dir.join(server_name);
+                let shim_path = shim_path_for_server(&shim_dir, server_name);
 
                 let log_dir = std::path::Path::new("logs").join("lsp");
                 let _ = fs::create_dir_all(&log_dir);
@@ -349,12 +352,22 @@ impl HelixLspBridge {
                     chrono::Utc::now().timestamp_millis()
                 ));
 
-                // Write a simple POSIX shell wrapper
-                let script = format!(
-                    "#!/bin/sh\nexec nucleotide-lsp-proxy --server-cmd '{}' --log '{}' -- \"$@\"\n",
-                    real_path.display(),
-                    log_file.display()
-                );
+                let script = if let Some(wsl_workspace) = &wsl_workspace {
+                    wsl_proxy_shim_script(server_name, &log_file, wsl_workspace, workspace_root)
+                } else {
+                    match which::which(server_name) {
+                        Ok(real_path) => native_proxy_shim_script(&real_path, &log_file),
+                        Err(error) => {
+                            warn!(
+                                server_name = %server_name,
+                                error = %error,
+                                "LSP proxy enabled but real server was not found in PATH"
+                            );
+                            String::new()
+                        }
+                    }
+                };
+
                 if let Ok(mut f) = fs::File::create(&shim_path) {
                     let _ = f.write_all(script.as_bytes());
                     let _ = f.flush();
@@ -368,15 +381,14 @@ impl HelixLspBridge {
                 // Prepend to PATH via our temporary env injection mechanism
                 let original = std::env::var("PATH").ok();
                 original_env_vars.push(("PATH".to_string(), original));
-                let new_path = match std::env::var("PATH") {
-                    Ok(p) => format!("{}:{}", shim_dir.display(), p),
-                    Err(_) => shim_dir.display().to_string(),
-                };
-                unsafe { std::env::set_var("PATH", &new_path) };
+                if let Some(new_path) = path_with_prepended_dir(&shim_dir) {
+                    unsafe { std::env::set_var("PATH", &new_path) };
+                }
                 shim_dir_to_cleanup = Some(shim_dir);
                 info!(
                     server_name = %server_name,
                     shim_dir = %shim_dir_to_cleanup.as_ref().unwrap().display(),
+                    is_wsl = wsl_workspace.is_some(),
                     "Enabled LSP proxy via PATH shim"
                 );
             } else {
@@ -461,6 +473,7 @@ impl HelixLspBridge {
         // Best-effort cleanup of shims (directory may remain if in use)
         if let Some(dir) = shim_dir_to_cleanup {
             let _ = std::fs::remove_file(dir.join(server_name));
+            let _ = std::fs::remove_file(shim_path_for_server(&dir, server_name));
             let _ = std::fs::remove_dir(dir);
         }
 
@@ -764,6 +777,91 @@ impl MockHelixLspBridge {
     }
 }
 
+fn shim_path_for_server(shim_dir: &std::path::Path, server_name: &str) -> std::path::PathBuf {
+    #[cfg(windows)]
+    {
+        shim_dir.join(format!("{server_name}.cmd"))
+    }
+
+    #[cfg(not(windows))]
+    {
+        shim_dir.join(server_name)
+    }
+}
+
+fn native_proxy_shim_script(real_path: &std::path::Path, log_file: &std::path::Path) -> String {
+    #[cfg(windows)]
+    {
+        format!(
+            "@echo off\r\nnucleotide-lsp-proxy --server-cmd {} --log {} -- %*\r\n",
+            quote_cmd_arg(&real_path.display().to_string()),
+            quote_cmd_arg(&log_file.display().to_string())
+        )
+    }
+
+    #[cfg(not(windows))]
+    {
+        format!(
+            "#!/bin/sh\nexec nucleotide-lsp-proxy --server-cmd '{}' --log '{}' -- \"$@\"\n",
+            quote_posix_single(real_path),
+            quote_posix_single(log_file)
+        )
+    }
+}
+
+fn wsl_proxy_shim_script(
+    server_name: &str,
+    log_file: &std::path::Path,
+    workspace: &WslWorkspace,
+    windows_root: &std::path::Path,
+) -> String {
+    #[cfg(windows)]
+    {
+        format!(
+            "@echo off\r\nnucleotide-lsp-proxy --server-cmd wsl.exe --log {} --wsl-distro {} --wsl-linux-root {} --wsl-windows-root {} -- --distribution {} --cd {} -- {} %*\r\n",
+            quote_cmd_arg(&log_file.display().to_string()),
+            quote_cmd_arg(workspace.distro()),
+            quote_cmd_arg(workspace.linux_path()),
+            quote_cmd_arg(&windows_root.display().to_string()),
+            quote_cmd_arg(workspace.distro()),
+            quote_cmd_arg(workspace.linux_path()),
+            quote_cmd_arg(server_name)
+        )
+    }
+
+    #[cfg(not(windows))]
+    {
+        format!(
+            "#!/bin/sh\nexec nucleotide-lsp-proxy --server-cmd wsl.exe --log '{}' --wsl-distro '{}' --wsl-linux-root '{}' --wsl-windows-root '{}' -- --distribution '{}' --cd '{}' -- '{}' \"$@\"\n",
+            quote_posix_single(log_file),
+            workspace.distro().replace('\'', "'\"'\"'"),
+            workspace.linux_path().replace('\'', "'\"'\"'"),
+            windows_root.display().to_string().replace('\'', "'\"'\"'"),
+            workspace.distro().replace('\'', "'\"'\"'"),
+            workspace.linux_path().replace('\'', "'\"'\"'"),
+            server_name.replace('\'', "'\"'\"'")
+        )
+    }
+}
+
+#[cfg(windows)]
+fn quote_cmd_arg(value: &str) -> String {
+    format!("\"{}\"", value.replace('"', "\"\""))
+}
+
+#[cfg(not(windows))]
+fn quote_posix_single(path: &std::path::Path) -> String {
+    path.display().to_string().replace('\'', "'\"'\"'")
+}
+
+fn path_with_prepended_dir(shim_dir: &std::path::Path) -> Option<std::ffi::OsString> {
+    let mut paths = vec![shim_dir.to_path_buf()];
+    if let Some(existing) = std::env::var_os("PATH") {
+        paths.extend(std::env::split_paths(&existing));
+    }
+    std::env::join_paths(paths).ok()
+}
+
 /// Find a representative file within the workspace that rust-analyzer can use
 /// to determine the proper workspace root and configuration
 fn find_representative_file(
@@ -877,3 +975,66 @@ fn find_active_rust_document(editor: &Editor, workspace_root: &std::path::Path) 
 }
 
 // removed unused helper find_cargo_root_for to eliminate dead code warnings
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn proxy_shim_path_uses_platform_executable_name() {
+        let path = shim_path_for_server(Path::new("C:\\Temp\\shims"), "rust-analyzer");
+
+        #[cfg(windows)]
+        assert_eq!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some("rust-analyzer.cmd")
+        );
+
+        #[cfg(not(windows))]
+        assert_eq!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some("rust-analyzer")
+        );
+    }
+
+    #[test]
+    fn wsl_proxy_shim_script_contains_mapping_arguments() {
+        let workspace =
+            WslWorkspace::from_unc_path(Path::new(r"\\wsl.localhost\Ubuntu\home\iain\repo"))
+                .expect("expected WSL workspace");
+        let script = wsl_proxy_shim_script(
+            "rust-analyzer",
+            Path::new("logs/lsp/proxy.jsonl"),
+            &workspace,
+            Path::new(r"\\wsl.localhost\Ubuntu\home\iain\repo"),
+        );
+
+        assert!(script.contains("nucleotide-lsp-proxy"));
+        assert!(script.contains("--server-cmd"));
+        assert!(script.contains("wsl.exe"));
+        assert!(script.contains("--wsl-distro"));
+        assert!(script.contains("Ubuntu"));
+        assert!(script.contains("--wsl-linux-root"));
+        assert!(script.contains("/home/iain/repo"));
+        assert!(script.contains("--wsl-windows-root"));
+        assert!(script.contains("rust-analyzer"));
+    }
+
+    #[test]
+    fn native_proxy_shim_script_forwards_original_args() {
+        let script = native_proxy_shim_script(
+            Path::new("C:\\Tools\\rust-analyzer.exe"),
+            Path::new("logs/lsp/proxy.jsonl"),
+        );
+
+        assert!(script.contains("nucleotide-lsp-proxy"));
+        assert!(script.contains("--server-cmd"));
+
+        #[cfg(windows)]
+        assert!(script.contains("%*"));
+
+        #[cfg(not(windows))]
+        assert!(script.contains("\"$@\""));
+    }
+}
