@@ -229,6 +229,7 @@ impl WindowsWindowInner {
     }
 
     fn handle_size_move_loop(&self, handle: HWND) -> Option<isize> {
+        self.state.renderer.borrow_mut().set_live_resize(true);
         unsafe {
             let ret = SetTimer(
                 Some(handle),
@@ -247,6 +248,7 @@ impl WindowsWindowInner {
     }
 
     fn handle_size_move_loop_exit(&self, handle: HWND) -> Option<isize> {
+        self.state.renderer.borrow_mut().set_live_resize(false);
         unsafe {
             KillTimer(Some(handle), SIZE_MOVE_LOOP_TIMER_ID).log_err();
         }

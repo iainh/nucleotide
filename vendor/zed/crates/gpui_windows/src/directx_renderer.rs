@@ -12,7 +12,7 @@ use gpui_util::ResultExt;
 use parking_lot::RwLock;
 use windows::{
     Win32::{
-        Foundation::HWND,
+        Foundation::{CloseHandle, HWND},
         Graphics::{
             Direct3D::*,
             Direct3D11::*,
@@ -69,8 +69,9 @@ pub(crate) struct DirectXRenderer {
     cached_font_info: Option<(u64, FontInfo)>,
     path_rasterization_vertices: Vec<PathRasterizationSprite>,
     path_sprites: Vec<PathSprite>,
+    live_resize: bool,
 
-    /// Whether we want to skip drwaing due to device lost events.
+    /// Whether we want to skip drawing due to device lost events.
     ///
     /// In that case we want to discard the first frame that we draw as we got reset in the middle of a frame
     /// meaning we lost all the allocated gpu textures and scene resources.
@@ -95,9 +96,9 @@ struct DirectXResources {
     frame_latency_waitable_object: Option<windows::Win32::Foundation::HANDLE>,
 
     // Path intermediate textures (with MSAA)
-    path_intermediate_texture: ID3D11Texture2D,
+    path_intermediate_texture: Option<ID3D11Texture2D>,
     path_intermediate_srv: Option<ID3D11ShaderResourceView>,
-    path_intermediate_msaa_texture: ID3D11Texture2D,
+    path_intermediate_msaa_texture: Option<ID3D11Texture2D>,
     path_intermediate_msaa_view: Option<ID3D11RenderTargetView>,
 
     // Cached viewport
@@ -213,6 +214,7 @@ impl DirectXRenderer {
             cached_font_info: None,
             path_rasterization_vertices: Vec::new(),
             path_sprites: Vec::new(),
+            live_resize: false,
             skip_draws: false,
         })
     }
@@ -372,6 +374,10 @@ impl DirectXRenderer {
         Ok(())
     }
 
+    pub(crate) fn set_live_resize(&mut self, live_resize: bool) {
+        self.live_resize = live_resize;
+    }
+
     pub(crate) fn draw(
         &mut self,
         scene: &Scene,
@@ -382,10 +388,12 @@ impl DirectXRenderer {
             // and so likely do not have the textures anymore that are required for drawing
             return Ok(());
         }
-        self.resources
-            .as_ref()
-            .context("resources missing")?
-            .wait_for_frame_latency();
+        if !self.live_resize {
+            self.resources
+                .as_ref()
+                .context("resources missing")?
+                .wait_for_frame_latency();
+        }
         self.pre_draw(&match background_appearance {
             WindowBackgroundAppearance::Opaque => [1.0f32; 4],
             _ => [0.0f32; 4],
@@ -452,6 +460,8 @@ impl DirectXRenderer {
         // When a graphics device is removed or reset, the desktop resolution often changes, resulting in a window size change.
         // But here we just return the error, because we are handling device lost scenarios elsewhere.
         unsafe {
+            let swap_chain_flags =
+                DXGI_SWAP_CHAIN_FLAG(resources.swap_chain.GetDesc1()?.Flags as i32);
             resources
                 .swap_chain
                 .ResizeBuffers(
@@ -459,12 +469,12 @@ impl DirectXRenderer {
                     width,
                     height,
                     RENDER_TARGET_FORMAT,
-                    DXGI_SWAP_CHAIN_FLAG(0),
+                    swap_chain_flags,
                 )
                 .context("Failed to resize swap chain")?;
         }
 
-        resources.recreate_resources(devices, width, height)?;
+        resources.recreate_drawable_resources(devices, width, height)?;
 
         unsafe {
             devices
@@ -581,13 +591,26 @@ impl DirectXRenderer {
         }
 
         let devices = self.devices.as_ref().context("devices missing")?;
-        let resources = self.resources.as_ref().context("resources missing")?;
+        let resources = self.resources.as_mut().context("resources missing")?;
+        resources.ensure_path_intermediate_resources(devices, self.width, self.height)?;
+        let path_intermediate_msaa_view = resources
+            .path_intermediate_msaa_view
+            .as_ref()
+            .context("missing path intermediate MSAA view")?;
+        let path_intermediate_texture = resources
+            .path_intermediate_texture
+            .as_ref()
+            .context("missing path intermediate texture")?;
+        let path_intermediate_msaa_texture = resources
+            .path_intermediate_msaa_texture
+            .as_ref()
+            .context("missing path intermediate MSAA texture")?;
+
         // Clear intermediate MSAA texture
         unsafe {
-            devices.device_context.ClearRenderTargetView(
-                resources.path_intermediate_msaa_view.as_ref().unwrap(),
-                &[0.0; 4],
-            );
+            devices
+                .device_context
+                .ClearRenderTargetView(path_intermediate_msaa_view, &[0.0; 4]);
             // Set intermediate MSAA texture as render target
             devices.device_context.OMSetRenderTargets(
                 Some(slice::from_ref(&resources.path_intermediate_msaa_view)),
@@ -629,9 +652,9 @@ impl DirectXRenderer {
         // Resolve MSAA to non-MSAA intermediate texture
         unsafe {
             devices.device_context.ResolveSubresource(
-                &resources.path_intermediate_texture,
+                path_intermediate_texture,
                 0,
-                &resources.path_intermediate_msaa_texture,
+                path_intermediate_msaa_texture,
                 0,
                 RENDER_TARGET_FORMAT,
             );
@@ -673,6 +696,10 @@ impl DirectXRenderer {
 
         let devices = self.devices.as_ref().context("devices missing")?;
         let resources = self.resources.as_ref().context("resources missing")?;
+        resources
+            .path_intermediate_srv
+            .as_ref()
+            .context("missing path intermediate shader resource view")?;
         self.pipelines.path_sprite_pipeline.update_buffer(
             &devices.device,
             &devices.device_context,
@@ -889,8 +916,8 @@ impl DirectXResources {
             render_target: Some(render_target),
             render_target_view,
             frame_latency_waitable_object,
-            path_intermediate_texture,
-            path_intermediate_msaa_texture,
+            path_intermediate_texture: Some(path_intermediate_texture),
+            path_intermediate_msaa_texture: Some(path_intermediate_msaa_texture),
             path_intermediate_msaa_view,
             path_intermediate_srv,
             viewport,
@@ -898,28 +925,50 @@ impl DirectXResources {
     }
 
     #[inline]
-    fn recreate_resources(
+    fn recreate_drawable_resources(
         &mut self,
         devices: &DirectXRendererDevices,
         width: u32,
         height: u32,
     ) -> Result<()> {
-        let (
-            render_target,
-            render_target_view,
-            path_intermediate_texture,
-            path_intermediate_srv,
-            path_intermediate_msaa_texture,
-            path_intermediate_msaa_view,
-            viewport,
-        ) = create_resources(devices, &self.swap_chain, width, height)?;
+        let (render_target, render_target_view) =
+            create_render_target_and_its_view(&self.swap_chain, &devices.device)?;
+        let viewport = set_viewport(&devices.device_context, width as f32, height as f32);
         self.render_target = Some(render_target);
         self.render_target_view = render_target_view;
-        self.path_intermediate_texture = path_intermediate_texture;
-        self.path_intermediate_msaa_texture = path_intermediate_msaa_texture;
-        self.path_intermediate_msaa_view = path_intermediate_msaa_view;
-        self.path_intermediate_srv = path_intermediate_srv;
+        self.invalidate_path_intermediate_resources();
         self.viewport = viewport;
+        Ok(())
+    }
+
+    #[inline]
+    fn invalidate_path_intermediate_resources(&mut self) {
+        self.path_intermediate_texture = None;
+        self.path_intermediate_srv = None;
+        self.path_intermediate_msaa_texture = None;
+        self.path_intermediate_msaa_view = None;
+    }
+
+    #[inline]
+    fn ensure_path_intermediate_resources(
+        &mut self,
+        devices: &DirectXRendererDevices,
+        width: u32,
+        height: u32,
+    ) -> Result<()> {
+        if self.path_intermediate_texture.is_some() {
+            return Ok(());
+        }
+
+        let (path_intermediate_texture, path_intermediate_srv) =
+            create_path_intermediate_texture(&devices.device, width, height)?;
+        let (path_intermediate_msaa_texture, path_intermediate_msaa_view) =
+            create_path_intermediate_msaa_texture_and_view(&devices.device, width, height)?;
+
+        self.path_intermediate_texture = Some(path_intermediate_texture);
+        self.path_intermediate_srv = path_intermediate_srv;
+        self.path_intermediate_msaa_texture = Some(path_intermediate_msaa_texture);
+        self.path_intermediate_msaa_view = path_intermediate_msaa_view;
         Ok(())
     }
 
@@ -934,6 +983,14 @@ impl DirectXResources {
                 "DXGI frame latency wait returned {:?}; continuing without blocking further",
                 result
             );
+        }
+    }
+}
+
+impl Drop for DirectXResources {
+    fn drop(&mut self) {
+        if let Some(waitable_object) = self.frame_latency_waitable_object.take() {
+            let _ = unsafe { CloseHandle(waitable_object) };
         }
     }
 }
