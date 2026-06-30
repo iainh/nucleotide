@@ -421,12 +421,7 @@ impl HelixLspBridge {
         // For Rust, avoid using Cargo.toml; prefer an active .rs or a conventional entry point, else None
         let doc_path = if language_id == "rust" {
             find_active_rust_document(editor, workspace_root).or_else(|| {
-                for root in &root_dirs {
-                    if let Some(rs) = find_rs_file_shallow(root, 3) {
-                        return Some(rs);
-                    }
-                }
-                None
+                rust_fallback_representative_file(workspace_root, wsl_workspace.is_some())
             })
         } else {
             find_representative_file(workspace_root, language_id)
@@ -921,6 +916,26 @@ fn rust_root_dirs(workspace_root: &std::path::Path) -> Vec<PathBuf> {
 
 // removed: cargo_toml_has_workspace (no longer used)
 
+fn rust_fallback_representative_file(
+    workspace_root: &std::path::Path,
+    is_wsl_workspace: bool,
+) -> Option<PathBuf> {
+    if is_wsl_workspace {
+        debug!(
+            workspace_root = %workspace_root.display(),
+            "Skipping WSL UNC filesystem scan for Rust LSP representative file"
+        );
+        return None;
+    }
+
+    for root in rust_root_dirs(workspace_root) {
+        if let Some(rs) = find_rs_file_shallow(&root, 3) {
+            return Some(rs);
+        }
+    }
+    None
+}
+
 /// Find any .rs file within the directory up to a limited depth to use as a representative file.
 fn find_rs_file_shallow(root: &std::path::Path, max_depth: usize) -> Option<PathBuf> {
     // Prefer conventional entry points if present
@@ -1000,7 +1015,20 @@ fn find_active_rust_document(editor: &Editor, workspace_root: &std::path::Path) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::path::Path;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_test_dir(name: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "nucleotide-lsp-{name}-{}-{nonce}",
+            std::process::id()
+        ))
+    }
 
     #[test]
     fn proxy_shim_path_uses_platform_executable_name() {
@@ -1070,6 +1098,27 @@ mod tests {
         let env = HashMap::from([("PATH".to_string(), "/usr/bin".to_string())]);
 
         assert!(should_inject_project_env_into_process(None, &env));
+    }
+
+    #[test]
+    fn rust_fallback_representative_file_finds_native_rust_source() {
+        let root = unique_test_dir("native-rust-representative");
+        let src = root.join("src");
+        fs::create_dir_all(&src).expect("create src dir");
+        let main_rs = src.join("main.rs");
+        fs::write(&main_rs, "fn main() {}\n").expect("write main.rs");
+
+        let representative = rust_fallback_representative_file(&root, false);
+
+        assert_eq!(representative.as_deref(), Some(main_rs.as_path()));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rust_fallback_representative_file_skips_wsl_unc_scan() {
+        let workspace = Path::new(r"\\wsl.localhost\Ubuntu\home\iain\repo");
+
+        assert_eq!(rust_fallback_representative_file(workspace, true), None);
     }
 
     #[test]
