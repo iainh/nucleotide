@@ -2059,7 +2059,15 @@ fn tab_double_click_plan(has_file_path: bool) -> TabDoubleClickPlan {
 }
 
 fn is_deleted_document_path(path: Option<&Path>) -> bool {
-    path.is_some_and(|path| !path.exists())
+    let Some(path) = path else {
+        return false;
+    };
+
+    if WslWorkspace::from_unc_path(path).is_some() {
+        return false;
+    }
+
+    !path.exists()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18467,6 +18475,13 @@ mod tests {
 
         let missing_path = dir.path().join("missing.rs");
         assert!(is_deleted_document_path(Some(missing_path.as_path())));
+    }
+
+    #[test]
+    fn deleted_document_path_skips_wsl_unc_probe() {
+        let remote_path = Path::new(r"\\wsl.localhost\Ubuntu\home\me\missing.rs");
+
+        assert!(!is_deleted_document_path(Some(remote_path)));
     }
 
     fn activation_doc(id: char, age: u64) -> TabActivationDocument<char> {
