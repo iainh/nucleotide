@@ -103,6 +103,20 @@ mod system_chrome_token_tests {
         assert_eq!(system.border_focus, system.primary);
         assert_eq!(system.surface_selected.h, system.primary.h);
     }
+
+    #[test]
+    fn system_chrome_button_hovers_keep_native_overlay_alpha() {
+        let chrome = ChromeTokens::from_native_chrome_palette(NativeChromePalette::windows_fluent(
+            SystemAppearance::Light,
+            default_windows_accent_color(),
+        ));
+        let buttons = chrome.button_tokens(&EditorTokens::fallback(false));
+
+        assert!(chrome.surface_hover.a <= 0.05);
+        assert_eq!(buttons.secondary_background_hover.a, chrome.surface_hover.a);
+        assert_eq!(buttons.ghost_background_hover.a, chrome.surface_hover.a);
+        assert_eq!(buttons.disabled_background.a, chrome.surface_hover.a);
+    }
 }
 
 #[cfg(test)]
