@@ -44,7 +44,9 @@ editor backend into Linux:
   and shallow source-directory facts so project/LSP detection can avoid repeated
   Windows UNC filesystem probes when the helper is available. Directory listing
   returns compact file metadata from inside WSL so the project tree can populate
-  rows without enumerating `\\wsl...` paths through Windows.
+  rows without enumerating `\\wsl...` paths through Windows. The `list` command
+  is part of helper protocol version 2, so older cached helpers are bypassed by
+  the versioned cache path.
 - Application startup schedules a short, non-blocking WSL helper health probe for
   WSL roots. Probes prefer
   `~/.cache/nucleotide/remote-helper/<protocol-version>/nucleotide-remote`

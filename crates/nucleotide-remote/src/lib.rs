@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::time::UNIX_EPOCH;
 
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HelloResponse {
@@ -235,7 +235,7 @@ mod tests {
             current_dir: PathBuf::from("/workspace"),
         };
 
-        assert_eq!(response.protocol_version, 1);
+        assert_eq!(response.protocol_version, PROTOCOL_VERSION);
     }
 
     #[test]
@@ -251,7 +251,7 @@ mod tests {
         let line = encode_json_line(&response).unwrap();
 
         assert!(line.ends_with('\n'));
-        assert!(line.contains("\"protocol_version\":1"));
+        assert!(line.contains("\"protocol_version\":2"));
         assert!(line.contains("\"current_dir\":\"/workspace\""));
     }
 
