@@ -238,6 +238,10 @@ impl DirectXRenderer {
             device_context
                 .OMSetRenderTargets(Some(slice::from_ref(&resources.render_target_view)), None);
             device_context.RSSetViewports(Some(slice::from_ref(&resources.viewport)));
+            device_context
+                .VSSetConstantBuffers(0, Some(slice::from_ref(&self.globals.global_params_buffer)));
+            device_context
+                .PSSetConstantBuffers(0, Some(slice::from_ref(&self.globals.global_params_buffer)));
         }
         Ok(())
     }
@@ -1730,7 +1734,7 @@ fn set_pipeline_state(
     _viewport: &[D3D11_VIEWPORT],
     vertex_shader: &ID3D11VertexShader,
     fragment_shader: &ID3D11PixelShader,
-    global_params: &[Option<ID3D11Buffer>],
+    _global_params: &[Option<ID3D11Buffer>],
     blend_state: &ID3D11BlendState,
 ) {
     unsafe {
@@ -1739,8 +1743,6 @@ fn set_pipeline_state(
         device_context.IASetPrimitiveTopology(topology);
         device_context.VSSetShader(vertex_shader, None);
         device_context.PSSetShader(fragment_shader, None);
-        device_context.VSSetConstantBuffers(0, Some(global_params));
-        device_context.PSSetConstantBuffers(0, Some(global_params));
         device_context.OMSetBlendState(blend_state, None, 0xFFFFFFFF);
     }
 }
