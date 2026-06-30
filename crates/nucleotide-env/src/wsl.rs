@@ -1,7 +1,7 @@
 // ABOUTME: WSL workspace detection and command construction helpers
 // ABOUTME: Converts Windows WSL UNC paths into Linux paths for remote tooling
 
-use nucleotide_remote::{HelloResponse, PROTOCOL_VERSION};
+use nucleotide_remote::{EnvironmentResponse, HelloResponse, PROTOCOL_VERSION};
 use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
@@ -44,11 +44,35 @@ pub fn build_wsl_environment_capture_command(workspace: &WslWorkspace) -> Comman
 }
 
 pub fn build_wsl_remote_hello_command(workspace: &WslWorkspace) -> Command {
-    build_wsl_shell_command(workspace, "/bin/sh", &wsl_remote_helper_hello_script())
+    build_wsl_shell_command(
+        workspace,
+        "/bin/sh",
+        &wsl_remote_helper_command_script("hello"),
+    )
 }
 
 pub fn build_wsl_remote_hello_tokio_command(workspace: &WslWorkspace) -> tokio::process::Command {
-    build_wsl_tokio_shell_command(workspace, "/bin/sh", &wsl_remote_helper_hello_script())
+    build_wsl_tokio_shell_command(
+        workspace,
+        "/bin/sh",
+        &wsl_remote_helper_command_script("hello"),
+    )
+}
+
+pub fn build_wsl_remote_env_command(workspace: &WslWorkspace) -> Command {
+    build_wsl_shell_command(
+        workspace,
+        "/bin/sh",
+        &wsl_remote_helper_command_script("env"),
+    )
+}
+
+pub fn build_wsl_remote_env_tokio_command(workspace: &WslWorkspace) -> tokio::process::Command {
+    build_wsl_tokio_shell_command(
+        workspace,
+        "/bin/sh",
+        &wsl_remote_helper_command_script("env"),
+    )
 }
 
 pub fn wsl_remote_helper_cache_path() -> String {
@@ -59,13 +83,21 @@ pub fn wsl_remote_helper_cache_path() -> String {
 }
 
 pub fn wsl_remote_helper_hello_script() -> String {
+    wsl_remote_helper_command_script("hello")
+}
+
+pub fn wsl_remote_helper_env_script() -> String {
+    wsl_remote_helper_command_script("env")
+}
+
+fn wsl_remote_helper_command_script(command: &str) -> String {
     let helper_path = wsl_remote_helper_cache_path();
     format!(
         r#"helper="${{NUCLEOTIDE_REMOTE_HELPER:-{helper_path}}}"
 if [ -x "$helper" ]; then
-  exec "$helper" hello
+  exec "$helper" {command}
 fi
-exec nucleotide-remote hello"#
+exec nucleotide-remote {command}"#
     )
 }
 
@@ -104,8 +136,39 @@ pub async fn probe_wsl_remote_helper(
     parse_remote_hello_output(&output.stdout)
 }
 
+pub async fn load_wsl_remote_environment(
+    workspace: &WslWorkspace,
+    timeout_duration: Duration,
+) -> Result<EnvironmentResponse, WslRemoteHelperError> {
+    let mut command = build_wsl_remote_env_tokio_command(workspace);
+    let output = timeout(timeout_duration, command.output())
+        .await
+        .map_err(|_| WslRemoteHelperError::Timeout(timeout_duration))??;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(WslRemoteHelperError::CommandFailed(stderr));
+    }
+
+    parse_remote_environment_output(&output.stdout)
+}
+
 fn parse_remote_hello_output(output: &[u8]) -> Result<HelloResponse, WslRemoteHelperError> {
     let response: HelloResponse = serde_json::from_slice(output)?;
+    if response.protocol_version != PROTOCOL_VERSION {
+        return Err(WslRemoteHelperError::ProtocolMismatch {
+            expected: PROTOCOL_VERSION,
+            actual: response.protocol_version,
+        });
+    }
+
+    Ok(response)
+}
+
+fn parse_remote_environment_output(
+    output: &[u8],
+) -> Result<EnvironmentResponse, WslRemoteHelperError> {
+    let response: EnvironmentResponse = serde_json::from_slice(output)?;
     if response.protocol_version != PROTOCOL_VERSION {
         return Err(WslRemoteHelperError::ProtocolMismatch {
             expected: PROTOCOL_VERSION,
@@ -220,6 +283,7 @@ fn parse_wsl_unc_path(path: &str) -> Option<WslWorkspace> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
     use std::path::Path;
 
     #[test]
@@ -317,6 +381,16 @@ mod tests {
     }
 
     #[test]
+    fn remote_helper_env_script_prefers_cached_helper_before_path() {
+        let script = wsl_remote_helper_env_script();
+
+        assert!(script.contains("NUCLEOTIDE_REMOTE_HELPER"));
+        assert!(script.contains(".cache/nucleotide/remote-helper/1/nucleotide-remote"));
+        assert!(script.contains(r#"exec "$helper" env"#));
+        assert!(script.contains("exec nucleotide-remote env"));
+    }
+
+    #[test]
     fn parses_remote_hello_response() {
         let output = br#"{"protocol_version":1,"helper_version":"0.1.0","os":"linux","arch":"x86_64","current_dir":"/home/iain/repo"}
 "#;
@@ -341,6 +415,60 @@ mod tests {
                 actual: 999
             }
         ));
+    }
+
+    #[test]
+    fn parses_remote_environment_response() {
+        let output = br#"{"protocol_version":1,"current_dir":"/home/iain/repo","variables":{"PATH":"/usr/bin","SHELL":"/bin/bash"}}
+"#;
+
+        let response = parse_remote_environment_output(output).unwrap();
+
+        assert_eq!(response.protocol_version, PROTOCOL_VERSION);
+        assert_eq!(response.current_dir, Path::new("/home/iain/repo"));
+        assert_eq!(
+            response.variables,
+            BTreeMap::from([
+                ("PATH".to_string(), "/usr/bin".to_string()),
+                ("SHELL".to_string(), "/bin/bash".to_string()),
+            ])
+        );
+    }
+
+    #[test]
+    fn rejects_remote_environment_protocol_mismatch() {
+        let output = br#"{"protocol_version":999,"current_dir":"/home/iain/repo","variables":{}}"#;
+
+        let error = parse_remote_environment_output(output).unwrap_err();
+
+        assert!(matches!(
+            error,
+            WslRemoteHelperError::ProtocolMismatch {
+                expected: PROTOCOL_VERSION,
+                actual: 999
+            }
+        ));
+    }
+
+    #[test]
+    fn builds_wsl_remote_env_command() {
+        let workspace = WslWorkspace {
+            distro: "Ubuntu".to_string(),
+            linux_path: "/home/iain/repo".to_string(),
+        };
+        let command = build_wsl_remote_env_command(&workspace);
+        let debug = format!("{command:?}");
+
+        assert_eq!(command.get_program(), "wsl.exe");
+        assert!(debug.contains("--distribution"));
+        assert!(debug.contains("Ubuntu"));
+        assert!(debug.contains("--cd"));
+        assert!(debug.contains("/home/iain/repo"));
+        assert!(debug.contains("/bin/sh"));
+        assert!(debug.contains("-lc"));
+        assert!(debug.contains(".cache/nucleotide/remote-helper/1/nucleotide-remote"));
+        assert!(debug.contains("nucleotide-remote"));
+        assert!(debug.contains("env"));
     }
 
     #[test]
