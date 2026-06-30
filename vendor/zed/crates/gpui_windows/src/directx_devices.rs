@@ -15,7 +15,7 @@ use windows::Win32::{
         },
         Dxgi::{
             CreateDXGIFactory2, DXGI_CREATE_FACTORY_DEBUG, DXGI_CREATE_FACTORY_FLAGS,
-            IDXGIAdapter1, IDXGIFactory6,
+            DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, IDXGIAdapter1, IDXGIFactory6,
         },
     },
 };
@@ -113,30 +113,79 @@ fn get_adapter(
     D3D_FEATURE_LEVEL,
 )> {
     for adapter_index in 0.. {
-        let adapter: IDXGIAdapter1 = unsafe { dxgi_factory.EnumAdapters(adapter_index)?.cast()? };
-        if let Ok(desc) = unsafe { adapter.GetDesc1() } {
-            let gpu_name = String::from_utf16_lossy(&desc.Description)
-                .trim_matches(char::from(0))
-                .to_string();
-            log::info!("Using GPU: {}", gpu_name);
-        }
-        // Check to see whether the adapter supports Direct3D 11 and create
-        // the device if it does.
-        let mut context: Option<ID3D11DeviceContext> = None;
-        let mut feature_level = D3D_FEATURE_LEVEL::default();
-        if let Some(device) = get_device(
-            &adapter,
-            Some(&mut context),
-            Some(&mut feature_level),
-            debug_layer_available,
-        )
-        .log_err()
-        {
-            return Ok((adapter, device, context.unwrap(), feature_level));
+        let adapter = match unsafe {
+            dxgi_factory.EnumAdapterByGpuPreference::<IDXGIAdapter1>(
+                adapter_index,
+                DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
+            )
+        } {
+            Ok(adapter) => adapter,
+            Err(error) => {
+                log::debug!(
+                    "Finished preferred GPU adapter enumeration at index {adapter_index}: {error}"
+                );
+                break;
+            }
+        };
+
+        if let Some(device) = create_device_for_adapter(adapter, debug_layer_available)? {
+            return Ok(device);
         }
     }
 
-    unreachable!()
+    for adapter_index in 0.. {
+        let adapter: IDXGIAdapter1 = match unsafe { dxgi_factory.EnumAdapters(adapter_index) } {
+            Ok(adapter) => adapter.cast()?,
+            Err(error) => {
+                log::debug!(
+                    "Finished legacy GPU adapter enumeration at index {adapter_index}: {error}"
+                );
+                break;
+            }
+        };
+        if let Some(device) = create_device_for_adapter(adapter, debug_layer_available)? {
+            return Ok(device);
+        }
+    }
+
+    Err(anyhow::anyhow!(
+        "No Direct3D adapter supports the required feature set"
+    ))
+}
+
+fn create_device_for_adapter(
+    adapter: IDXGIAdapter1,
+    debug_layer_available: bool,
+) -> Result<
+    Option<(
+        IDXGIAdapter1,
+        ID3D11Device,
+        ID3D11DeviceContext,
+        D3D_FEATURE_LEVEL,
+    )>,
+> {
+    if let Ok(desc) = unsafe { adapter.GetDesc1() } {
+        let gpu_name = String::from_utf16_lossy(&desc.Description)
+            .trim_matches(char::from(0))
+            .to_string();
+        log::info!("Trying GPU: {}", gpu_name);
+    }
+    // Check to see whether the adapter supports Direct3D 11 and create
+    // the device if it does.
+    let mut context: Option<ID3D11DeviceContext> = None;
+    let mut feature_level = D3D_FEATURE_LEVEL::default();
+    if let Some(device) = get_device(
+        &adapter,
+        Some(&mut context),
+        Some(&mut feature_level),
+        debug_layer_available,
+    )
+    .log_err()
+    {
+        return Ok(Some((adapter, device, context.unwrap(), feature_level)));
+    }
+
+    Ok(None)
 }
 
 #[inline]
