@@ -61,6 +61,7 @@ pub(crate) struct DirectXRenderer {
     resources: Option<DirectXResources>,
     globals: DirectXGlobalElements,
     pipelines: DirectXRenderPipelines,
+    state_cache: DirectXStateCache,
     direct_composition: Option<DirectComposition>,
 
     width: u32,
@@ -117,6 +118,20 @@ struct DirectXRenderPipelines {
 struct DirectXGlobalElements {
     global_params_buffer: Option<ID3D11Buffer>,
     sampler: Option<ID3D11SamplerState>,
+}
+
+#[derive(Default)]
+struct DirectXStateCache {
+    topology: Option<i32>,
+    vertex_shader: Option<*mut std::ffi::c_void>,
+    fragment_shader: Option<*mut std::ffi::c_void>,
+    blend_state: Option<*mut std::ffi::c_void>,
+}
+
+impl DirectXStateCache {
+    fn clear(&mut self) {
+        *self = Self::default();
+    }
 }
 
 struct DirectComposition {
@@ -191,6 +206,7 @@ impl DirectXRenderer {
             resources: Some(resources),
             globals,
             pipelines,
+            state_cache: DirectXStateCache::default(),
             direct_composition,
             width: 1,
             height: 1,
@@ -243,6 +259,7 @@ impl DirectXRenderer {
             device_context
                 .PSSetConstantBuffers(0, Some(slice::from_ref(&self.globals.global_params_buffer)));
         }
+        self.state_cache.clear();
         Ok(())
     }
 
@@ -349,6 +366,7 @@ impl DirectXRenderer {
         self.resources = Some(resources);
         self.globals = globals;
         self.pipelines = pipelines;
+        self.state_cache.clear();
         self.direct_composition = direct_composition;
         self.skip_draws = true;
         Ok(())
@@ -517,6 +535,7 @@ impl DirectXRenderer {
         }
         let devices = self.devices.as_ref().context("devices missing")?;
         self.pipelines.shadow_pipeline.draw_range(
+            &mut self.state_cache,
             &devices.device_context,
             slice::from_ref(
                 &self
@@ -538,6 +557,7 @@ impl DirectXRenderer {
         }
         let devices = self.devices.as_ref().context("devices missing")?;
         self.pipelines.quad_pipeline.draw_range(
+            &mut self.state_cache,
             &devices.device_context,
             slice::from_ref(
                 &self
@@ -595,6 +615,7 @@ impl DirectXRenderer {
         )?;
 
         self.pipelines.path_rasterization_pipeline.draw(
+            &mut self.state_cache,
             &devices.device_context,
             slice::from_ref(&resources.viewport),
             slice::from_ref(&self.globals.global_params_buffer),
@@ -658,6 +679,7 @@ impl DirectXRenderer {
 
         // Draw the sprites with the path texture
         self.pipelines.path_sprite_pipeline.draw_with_texture(
+            &mut self.state_cache,
             &devices.device_context,
             slice::from_ref(&resources.path_intermediate_srv),
             slice::from_ref(&resources.viewport),
@@ -674,6 +696,7 @@ impl DirectXRenderer {
         let devices = self.devices.as_ref().context("devices missing")?;
         let resources = self.resources.as_ref().context("resources missing")?;
         self.pipelines.underline_pipeline.draw_range(
+            &mut self.state_cache,
             &devices.device_context,
             slice::from_ref(&resources.viewport),
             slice::from_ref(&self.globals.global_params_buffer),
@@ -696,6 +719,7 @@ impl DirectXRenderer {
         let resources = self.resources.as_ref().context("resources missing")?;
         let texture_view = self.atlas.get_texture_view(texture_id);
         self.pipelines.mono_sprites.draw_range_with_texture(
+            &mut self.state_cache,
             &devices.device_context,
             &texture_view,
             slice::from_ref(&resources.viewport),
@@ -719,6 +743,7 @@ impl DirectXRenderer {
         let resources = self.resources.as_ref().context("resources missing")?;
         let texture_view = self.atlas.get_texture_view(texture_id);
         self.pipelines.subpixel_sprites.draw_range_with_texture(
+            &mut self.state_cache,
             &devices.device_context,
             &texture_view,
             slice::from_ref(&resources.viewport),
@@ -742,6 +767,7 @@ impl DirectXRenderer {
         let resources = self.resources.as_ref().context("resources missing")?;
         let texture_view = self.atlas.get_texture_view(texture_id);
         self.pipelines.poly_sprites.draw_range_with_texture(
+            &mut self.state_cache,
             &devices.device_context,
             &texture_view,
             slice::from_ref(&resources.viewport),
@@ -1119,6 +1145,7 @@ impl<T> PipelineState<T> {
 
     fn draw(
         &self,
+        state_cache: &mut DirectXStateCache,
         device_context: &ID3D11DeviceContext,
         viewport: &[D3D11_VIEWPORT],
         global_params: &[Option<ID3D11Buffer>],
@@ -1127,6 +1154,7 @@ impl<T> PipelineState<T> {
         instance_count: u32,
     ) -> Result<()> {
         set_pipeline_state(
+            state_cache,
             device_context,
             slice::from_ref(&self.view),
             topology,
@@ -1144,6 +1172,7 @@ impl<T> PipelineState<T> {
 
     fn draw_with_texture(
         &self,
+        state_cache: &mut DirectXStateCache,
         device_context: &ID3D11DeviceContext,
         texture: &[Option<ID3D11ShaderResourceView>],
         viewport: &[D3D11_VIEWPORT],
@@ -1152,6 +1181,7 @@ impl<T> PipelineState<T> {
         instance_count: u32,
     ) -> Result<()> {
         set_pipeline_state(
+            state_cache,
             device_context,
             slice::from_ref(&self.view),
             D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP,
@@ -1173,6 +1203,7 @@ impl<T> PipelineState<T> {
 
     fn draw_range(
         &self,
+        state_cache: &mut DirectXStateCache,
         device_context: &ID3D11DeviceContext,
         viewport: &[D3D11_VIEWPORT],
         global_params: &[Option<ID3D11Buffer>],
@@ -1181,6 +1212,7 @@ impl<T> PipelineState<T> {
         instance_count: u32,
     ) -> Result<()> {
         set_pipeline_state(
+            state_cache,
             device_context,
             slice::from_ref(&self.view),
             D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP,
@@ -1198,6 +1230,7 @@ impl<T> PipelineState<T> {
 
     fn draw_range_with_texture(
         &self,
+        state_cache: &mut DirectXStateCache,
         device_context: &ID3D11DeviceContext,
         texture: &[Option<ID3D11ShaderResourceView>],
         viewport: &[D3D11_VIEWPORT],
@@ -1207,6 +1240,7 @@ impl<T> PipelineState<T> {
         instance_count: u32,
     ) -> Result<()> {
         set_pipeline_state(
+            state_cache,
             device_context,
             slice::from_ref(&self.view),
             D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP,
@@ -1729,6 +1763,7 @@ fn update_buffer<T>(
 
 #[inline]
 fn set_pipeline_state(
+    state_cache: &mut DirectXStateCache,
     device_context: &ID3D11DeviceContext,
     buffer_view: &[Option<ID3D11ShaderResourceView>],
     topology: D3D_PRIMITIVE_TOPOLOGY,
@@ -1741,10 +1776,28 @@ fn set_pipeline_state(
     unsafe {
         device_context.VSSetShaderResources(1, Some(buffer_view));
         device_context.PSSetShaderResources(1, Some(buffer_view));
-        device_context.IASetPrimitiveTopology(topology);
-        device_context.VSSetShader(vertex_shader, None);
-        device_context.PSSetShader(fragment_shader, None);
-        device_context.OMSetBlendState(blend_state, None, 0xFFFFFFFF);
+        if state_cache.topology != Some(topology.0) {
+            device_context.IASetPrimitiveTopology(topology);
+            state_cache.topology = Some(topology.0);
+        }
+
+        let vertex_shader_ptr = vertex_shader.as_raw();
+        if state_cache.vertex_shader != Some(vertex_shader_ptr) {
+            device_context.VSSetShader(vertex_shader, None);
+            state_cache.vertex_shader = Some(vertex_shader_ptr);
+        }
+
+        let fragment_shader_ptr = fragment_shader.as_raw();
+        if state_cache.fragment_shader != Some(fragment_shader_ptr) {
+            device_context.PSSetShader(fragment_shader, None);
+            state_cache.fragment_shader = Some(fragment_shader_ptr);
+        }
+
+        let blend_state_ptr = blend_state.as_raw();
+        if state_cache.blend_state != Some(blend_state_ptr) {
+            device_context.OMSetBlendState(blend_state, None, 0xFFFFFFFF);
+            state_cache.blend_state = Some(blend_state_ptr);
+        }
     }
 }
 
