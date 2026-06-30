@@ -40,14 +40,17 @@ editor backend into Linux:
   not inject Linux environment snapshots into the Windows process; the remote
   launch boundary owns those values.
 - `nucleotide-remote` is a versioned helper binary with `hello`, `env`,
-  `metadata`, `list`, and `files` protocol commands. Metadata includes workspace
-  marker and shallow source-directory facts so project/LSP detection can avoid
-  repeated Windows UNC filesystem probes when the helper is available. Directory
-  listing returns compact file metadata from inside WSL so the project tree can
-  populate rows without enumerating `\\wsl...` paths through Windows. Recursive
-  file search returns picker-ready relative paths from inside WSL. The `list`
-  and `files` commands are part of helper protocol version 3, so older cached
-  helpers are bypassed by the versioned cache path.
+  `metadata`, `list`, `files`, and `search` protocol commands. Metadata includes
+  workspace marker and shallow source-directory facts so project/LSP detection
+  can avoid repeated Windows UNC filesystem probes when the helper is available.
+  Directory listing returns compact file metadata from inside WSL so the project
+  tree can populate rows without enumerating `\\wsl...` paths through Windows.
+  Recursive file search returns picker-ready relative paths from inside WSL.
+  Global text search walks ignore-filtered files and reads file contents inside
+  WSL, returning relative path, line number, and line text matches to the
+  Windows UI.
+  The `list`, `files`, and `search` commands are part of helper protocol version
+  4, so older cached helpers are bypassed by the versioned cache path.
 - Application startup schedules a short, non-blocking WSL helper health probe for
   WSL roots. Probes prefer
   `~/.cache/nucleotide/remote-helper/<protocol-version>/nucleotide-remote`
@@ -82,6 +85,9 @@ editor backend into Linux:
 - Project type indicators use the helper-backed WSL directory listing when it is
   available, turning several synchronous marker-file checks into one Linux-side
   directory read.
+- Global text search uses the helper-backed `search` command for WSL roots and
+  merges those disk results with open editor buffers on the Windows side so
+  unsaved edits remain authoritative.
 
 This means the first supported path is direct WSL LSP execution with path
 translation. The helper is currently an optional foundation for richer remote

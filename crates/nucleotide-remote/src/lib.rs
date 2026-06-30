@@ -6,8 +6,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::time::UNIX_EPOCH;
 
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 pub const DEFAULT_FILE_SEARCH_LIMIT: usize = 1_000;
+pub const DEFAULT_GLOBAL_SEARCH_LIMIT: usize = 1_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HelloResponse {
@@ -256,6 +257,106 @@ impl FileSearchResponse {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GlobalSearchMatchResponse {
+    pub relative_path: PathBuf,
+    pub line: usize,
+    pub line_text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GlobalSearchResponse {
+    pub protocol_version: u32,
+    pub current_dir: PathBuf,
+    pub matches: Vec<GlobalSearchMatchResponse>,
+    pub truncated: bool,
+}
+
+impl GlobalSearchResponse {
+    pub fn current(query: &str, smart_case: bool, limit: usize) -> anyhow::Result<Self> {
+        let current_dir = std::env::current_dir()?;
+        let case_insensitive = smart_case && !query.chars().any(char::is_uppercase);
+        let regex = regex::RegexBuilder::new(query)
+            .case_insensitive(case_insensitive)
+            .multi_line(true)
+            .build()?;
+        let mut walker = ignore::WalkBuilder::new(&current_dir);
+        walker
+            .git_ignore(true)
+            .git_global(true)
+            .git_exclude(true)
+            .ignore(true)
+            .parents(true)
+            .hidden(true)
+            .add_custom_ignore_filename(".helix/ignore")
+            .filter_entry(|entry| {
+                let file_name = entry
+                    .path()
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("");
+
+                if entry.path().is_dir() {
+                    return !matches!(
+                        file_name,
+                        ".git" | ".svn" | ".hg" | ".bzr" | ".jj" | "target" | "node_modules"
+                    );
+                }
+
+                true
+            });
+
+        let mut matches = Vec::new();
+        let mut truncated = false;
+        'walk: for entry in walker.build() {
+            let entry = entry?;
+            if !entry
+                .file_type()
+                .is_some_and(|file_type| file_type.is_file())
+            {
+                continue;
+            }
+
+            let relative_path = entry
+                .path()
+                .strip_prefix(&current_dir)
+                .unwrap_or(entry.path())
+                .to_path_buf();
+            if relative_path.as_os_str().is_empty() || relative_path.starts_with("zed-source") {
+                continue;
+            }
+
+            let Ok(contents) = std::fs::read_to_string(entry.path()) else {
+                continue;
+            };
+
+            for (line, line_text) in contents.lines().enumerate() {
+                if !regex.is_match(line_text) {
+                    continue;
+                }
+
+                if matches.len() >= limit {
+                    truncated = true;
+                    break 'walk;
+                }
+
+                matches.push(GlobalSearchMatchResponse {
+                    relative_path: relative_path.clone(),
+                    line,
+                    line_text: line_text.trim_end().to_string(),
+                });
+            }
+        }
+
+        Ok(Self {
+            protocol_version: PROTOCOL_VERSION,
+            current_dir,
+            matches,
+            truncated,
+        })
+    }
+}
+
 const WORKSPACE_MARKERS: &[&str] = &[
     "Cargo.toml",
     "tsconfig.json",
@@ -338,7 +439,7 @@ mod tests {
         let line = encode_json_line(&response).unwrap();
 
         assert!(line.ends_with('\n'));
-        assert!(line.contains("\"protocol_version\":3"));
+        assert!(line.contains("\"protocol_version\":4"));
         assert!(line.contains("\"current_dir\":\"/workspace\""));
     }
 
@@ -426,6 +527,28 @@ mod tests {
 
         assert!(line.contains("\"current_dir\":\"/workspace\""));
         assert!(line.contains("\"relative_path\":\"src/main.rs\""));
+        assert!(line.contains("\"truncated\":false"));
+    }
+
+    #[test]
+    fn global_search_response_encodes_matches() {
+        let response = GlobalSearchResponse {
+            protocol_version: PROTOCOL_VERSION,
+            current_dir: PathBuf::from("/workspace"),
+            matches: vec![GlobalSearchMatchResponse {
+                relative_path: PathBuf::from("src/main.rs"),
+                line: 2,
+                line_text: "let needle = true;".to_string(),
+            }],
+            truncated: false,
+        };
+
+        let line = encode_json_line(&response).unwrap();
+
+        assert!(line.contains("\"current_dir\":\"/workspace\""));
+        assert!(line.contains("\"relative_path\":\"src/main.rs\""));
+        assert!(line.contains("\"line\":2"));
+        assert!(line.contains("\"line_text\":\"let needle = true;\""));
         assert!(line.contains("\"truncated\":false"));
     }
 }

@@ -69,10 +69,13 @@ use crate::types::{
 use crate::utils;
 use crate::{Core, Input, InputEvent};
 use nucleotide_core::EventBus;
-use nucleotide_env::{EnvironmentOrigin, WslWorkspace, load_wsl_remote_file_search_blocking};
+use nucleotide_env::{
+    EnvironmentOrigin, WslWorkspace, load_wsl_remote_file_search_blocking,
+    load_wsl_remote_global_search_blocking,
+};
 use nucleotide_events::v2::run::{Event as RunEvent, ResolvedTask, RunId, RunStatus};
 use nucleotide_events::v2::terminal::{Event as TerminalEvent, TerminalId};
-use nucleotide_remote::FileSearchResponse;
+use nucleotide_remote::{FileSearchResponse, GlobalSearchResponse};
 use nucleotide_terminal::TerminalBounds;
 use slotmap::KeyData;
 // (no direct Workspace v2 items used here)
@@ -82,6 +85,7 @@ use smallvec::{SmallVec, smallvec};
 
 type FileTreeContextMenuHandler = fn(&mut Workspace, &mut Context<Workspace>);
 const WSL_REMOTE_FILE_PICKER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+const WSL_REMOTE_GLOBAL_SEARCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 fn document_lsp_identifier(
     doc: &helix_view::Document,
@@ -2109,12 +2113,45 @@ fn global_search_matches(
         return Ok(Vec::new());
     }
 
+    let regex = compile_global_search_regex(query, smart_case)
+        .map_err(|err| format!("Failed to compile regex: {err}"))?;
+
+    if let Some(workspace) = WslWorkspace::from_unc_path(root) {
+        match load_wsl_remote_global_search_blocking(
+            &workspace,
+            query,
+            smart_case,
+            limit,
+            WSL_REMOTE_GLOBAL_SEARCH_TIMEOUT,
+        ) {
+            Ok(response) => {
+                debug!(
+                    match_count = response.matches.len(),
+                    truncated = response.truncated,
+                    "Loaded WSL global search matches from remote helper"
+                );
+                return Ok(global_search_matches_from_remote_response(
+                    root,
+                    response,
+                    open_documents,
+                    &regex,
+                    limit,
+                ));
+            }
+            Err(error) => {
+                warn!(
+                    root = %root.display(),
+                    error = %error,
+                    "Failed to load WSL global search matches from remote helper; falling back to local search"
+                );
+            }
+        }
+    }
+
     if !root.exists() {
         return Err("Current working directory does not exist".to_string());
     }
 
-    let regex = compile_global_search_regex(query, smart_case)
-        .map_err(|err| format!("Failed to compile regex: {err}"))?;
     let mut matches = Vec::new();
     let mut walker = ignore::WalkBuilder::new(root);
     walker
@@ -2158,6 +2195,57 @@ fn global_search_matches(
     }
 
     Ok(matches)
+}
+
+fn global_search_matches_from_remote_response(
+    root: &Path,
+    response: GlobalSearchResponse,
+    open_documents: &[(PathBuf, Rope)],
+    regex: &helix_stdx::rope::Regex,
+    limit: usize,
+) -> Vec<GlobalSearchMatch> {
+    let mut matches = Vec::new();
+    let mut open_paths = HashSet::new();
+
+    for (path, text) in open_documents {
+        if !path.starts_with(root) {
+            continue;
+        }
+
+        open_paths.insert(path.clone());
+        if push_global_search_matches(&mut matches, path, text.slice(..), regex, limit) {
+            return matches;
+        }
+    }
+
+    for remote_match in response.matches {
+        let path = workspace_path_from_remote_relative(root, &remote_match.relative_path);
+        if open_paths.contains(&path) {
+            continue;
+        }
+
+        matches.push(GlobalSearchMatch {
+            path,
+            line: remote_match.line,
+            line_text: remote_match.line_text,
+        });
+
+        if matches.len() >= limit {
+            break;
+        }
+    }
+
+    matches
+}
+
+fn workspace_path_from_remote_relative(root: &Path, relative_path: &Path) -> PathBuf {
+    let mut path = root.to_path_buf();
+    for component in relative_path.components() {
+        if let std::path::Component::Normal(segment) = component {
+            path.push(segment);
+        }
+    }
+    path
 }
 
 fn global_search_picker(root: &Path, matches: Vec<GlobalSearchMatch>) -> crate::picker::Picker {
@@ -15280,7 +15368,7 @@ fn file_picker_items_from_remote_search(
             }
 
             let label = file.relative_path.to_string_lossy().into_owned();
-            let path = base_dir.join(&file.relative_path);
+            let path = workspace_path_from_remote_relative(base_dir, &file.relative_path);
 
             Some(PickerItem {
                 label: label.into(),
@@ -18761,6 +18849,68 @@ mod tests {
             matches,
             vec![GlobalSearchMatch {
                 path,
+                line: 0,
+                line_text: "unsaved needle".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn remote_global_search_maps_matches_to_workspace_paths() {
+        let root = PathBuf::from(r"\\wsl.localhost\Ubuntu\home\iain\repo");
+        let regex = compile_global_search_regex("needle", true).unwrap();
+        let response = GlobalSearchResponse {
+            protocol_version: nucleotide_remote::PROTOCOL_VERSION,
+            current_dir: PathBuf::from("/home/iain/repo"),
+            matches: vec![nucleotide_remote::GlobalSearchMatchResponse {
+                relative_path: PathBuf::from("src/main.rs"),
+                line: 3,
+                line_text: "let needle = true;".to_string(),
+            }],
+            truncated: false,
+        };
+
+        let matches = global_search_matches_from_remote_response(&root, response, &[], &regex, 10);
+
+        assert_eq!(
+            matches,
+            vec![GlobalSearchMatch {
+                path: workspace_path_from_remote_relative(&root, Path::new("src/main.rs")),
+                line: 3,
+                line_text: "let needle = true;".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn remote_global_search_uses_open_document_text_for_open_paths() {
+        let root = PathBuf::from(r"\\wsl.localhost\Ubuntu\home\iain\repo");
+        let open_path = workspace_path_from_remote_relative(&root, Path::new("src/main.rs"));
+        let regex = compile_global_search_regex("needle", true).unwrap();
+        let response = GlobalSearchResponse {
+            protocol_version: nucleotide_remote::PROTOCOL_VERSION,
+            current_dir: PathBuf::from("/home/iain/repo"),
+            matches: vec![nucleotide_remote::GlobalSearchMatchResponse {
+                relative_path: PathBuf::from("src/main.rs"),
+                line: 4,
+                line_text: "saved needle".to_string(),
+            }],
+            truncated: false,
+        };
+        let open_documents = vec![(open_path.clone(), Rope::from("unsaved needle\n"))];
+
+        let matches = global_search_matches_from_remote_response(
+            &root,
+            response,
+            &open_documents,
+            &regex,
+            10,
+        );
+
+        assert_eq!(
+            matches,
+            vec![GlobalSearchMatch {
+                path: open_path,
                 line: 0,
                 line_text: "unsaved needle".to_string(),
             }]

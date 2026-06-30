@@ -2,8 +2,8 @@
 // ABOUTME: Converts Windows WSL UNC paths into Linux paths for remote tooling
 
 use nucleotide_remote::{
-    DirectoryListingResponse, EnvironmentResponse, FileSearchResponse, HelloResponse,
-    PROTOCOL_VERSION, WorkspaceMetadataResponse,
+    DirectoryListingResponse, EnvironmentResponse, FileSearchResponse, GlobalSearchResponse,
+    HelloResponse, PROTOCOL_VERSION, WorkspaceMetadataResponse,
 };
 use std::io::Read;
 use std::path::Path;
@@ -114,6 +114,19 @@ pub fn build_wsl_remote_file_search_command(workspace: &WslWorkspace) -> Command
     )
 }
 
+pub fn build_wsl_remote_global_search_command(
+    workspace: &WslWorkspace,
+    query: &str,
+    smart_case: bool,
+    limit: usize,
+) -> Command {
+    build_wsl_shell_command(
+        workspace,
+        "/bin/sh",
+        &wsl_remote_helper_global_search_script(query, smart_case, limit),
+    )
+}
+
 pub fn build_wsl_remote_directory_listing_tokio_command(
     workspace: &WslWorkspace,
 ) -> tokio::process::Command {
@@ -158,6 +171,23 @@ pub fn wsl_remote_helper_directory_listing_script() -> String {
 
 pub fn wsl_remote_helper_file_search_script() -> String {
     wsl_remote_helper_command_script("files")
+}
+
+pub fn wsl_remote_helper_global_search_script(
+    query: &str,
+    smart_case: bool,
+    limit: usize,
+) -> String {
+    let query = quote_posix_single(query);
+    let smart_case = if smart_case { "1" } else { "0" };
+    let helper_command = wsl_remote_helper_command_script("search");
+    format!(
+        r#"NUCLEOTIDE_REMOTE_SEARCH_QUERY={query}
+NUCLEOTIDE_REMOTE_SEARCH_SMART_CASE={smart_case}
+NUCLEOTIDE_REMOTE_SEARCH_LIMIT={limit}
+export NUCLEOTIDE_REMOTE_SEARCH_QUERY NUCLEOTIDE_REMOTE_SEARCH_SMART_CASE NUCLEOTIDE_REMOTE_SEARCH_LIMIT
+{helper_command}"#
+    )
 }
 
 pub fn wsl_remote_helper_install_script() -> String {
@@ -287,6 +317,18 @@ pub fn load_wsl_remote_file_search_blocking(
     let mut command = build_wsl_remote_file_search_command(workspace);
     let stdout = run_blocking_wsl_remote_command(&mut command, timeout_duration)?;
     parse_remote_file_search_output(&stdout)
+}
+
+pub fn load_wsl_remote_global_search_blocking(
+    workspace: &WslWorkspace,
+    query: &str,
+    smart_case: bool,
+    limit: usize,
+    timeout_duration: Duration,
+) -> Result<GlobalSearchResponse, WslRemoteHelperError> {
+    let mut command = build_wsl_remote_global_search_command(workspace, query, smart_case, limit);
+    let stdout = run_blocking_wsl_remote_command(&mut command, timeout_duration)?;
+    parse_remote_global_search_output(&stdout)
 }
 
 fn run_blocking_wsl_remote_command(
@@ -421,6 +463,20 @@ fn parse_remote_file_search_output(
     output: &[u8],
 ) -> Result<FileSearchResponse, WslRemoteHelperError> {
     let response: FileSearchResponse = serde_json::from_slice(output)?;
+    if response.protocol_version != PROTOCOL_VERSION {
+        return Err(WslRemoteHelperError::ProtocolMismatch {
+            expected: PROTOCOL_VERSION,
+            actual: response.protocol_version,
+        });
+    }
+
+    Ok(response)
+}
+
+fn parse_remote_global_search_output(
+    output: &[u8],
+) -> Result<GlobalSearchResponse, WslRemoteHelperError> {
+    let response: GlobalSearchResponse = serde_json::from_slice(output)?;
     if response.protocol_version != PROTOCOL_VERSION {
         return Err(WslRemoteHelperError::ProtocolMismatch {
             expected: PROTOCOL_VERSION,
@@ -637,7 +693,7 @@ mod tests {
         assert!(debug.contains("/home/iain/repo"));
         assert!(debug.contains("/bin/sh"));
         assert!(debug.contains("-c"));
-        assert!(debug.contains(".cache/nucleotide/remote-helper/3/nucleotide-remote"));
+        assert!(debug.contains(".cache/nucleotide/remote-helper/4/nucleotide-remote"));
         assert!(debug.contains("nucleotide-remote"));
         assert!(debug.contains("hello"));
     }
@@ -664,7 +720,7 @@ mod tests {
     fn remote_helper_cache_path_is_versioned() {
         assert_eq!(
             wsl_remote_helper_cache_path(),
-            "$HOME/.cache/nucleotide/remote-helper/3/nucleotide-remote"
+            "$HOME/.cache/nucleotide/remote-helper/4/nucleotide-remote"
         );
     }
 
@@ -673,7 +729,7 @@ mod tests {
         let script = wsl_remote_helper_hello_script();
 
         assert!(script.contains("NUCLEOTIDE_REMOTE_HELPER"));
-        assert!(script.contains(".cache/nucleotide/remote-helper/3/nucleotide-remote"));
+        assert!(script.contains(".cache/nucleotide/remote-helper/4/nucleotide-remote"));
         assert!(script.contains(r#"exec "$helper" hello"#));
         assert!(script.contains("exec nucleotide-remote hello"));
     }
@@ -683,7 +739,7 @@ mod tests {
         let script = wsl_remote_helper_env_script();
 
         assert!(script.contains("NUCLEOTIDE_REMOTE_HELPER"));
-        assert!(script.contains(".cache/nucleotide/remote-helper/3/nucleotide-remote"));
+        assert!(script.contains(".cache/nucleotide/remote-helper/4/nucleotide-remote"));
         assert!(script.contains(r#"exec "$helper" env"#));
         assert!(script.contains("exec nucleotide-remote env"));
     }
@@ -693,7 +749,7 @@ mod tests {
         let script = wsl_remote_helper_metadata_script();
 
         assert!(script.contains("NUCLEOTIDE_REMOTE_HELPER"));
-        assert!(script.contains(".cache/nucleotide/remote-helper/3/nucleotide-remote"));
+        assert!(script.contains(".cache/nucleotide/remote-helper/4/nucleotide-remote"));
         assert!(script.contains(r#"exec "$helper" metadata"#));
         assert!(script.contains("exec nucleotide-remote metadata"));
     }
@@ -703,7 +759,7 @@ mod tests {
         let script = wsl_remote_helper_directory_listing_script();
 
         assert!(script.contains("NUCLEOTIDE_REMOTE_HELPER"));
-        assert!(script.contains(".cache/nucleotide/remote-helper/3/nucleotide-remote"));
+        assert!(script.contains(".cache/nucleotide/remote-helper/4/nucleotide-remote"));
         assert!(script.contains(r#"exec "$helper" list"#));
         assert!(script.contains("exec nucleotide-remote list"));
     }
@@ -713,9 +769,21 @@ mod tests {
         let script = wsl_remote_helper_file_search_script();
 
         assert!(script.contains("NUCLEOTIDE_REMOTE_HELPER"));
-        assert!(script.contains(".cache/nucleotide/remote-helper/3/nucleotide-remote"));
+        assert!(script.contains(".cache/nucleotide/remote-helper/4/nucleotide-remote"));
         assert!(script.contains(r#"exec "$helper" files"#));
         assert!(script.contains("exec nucleotide-remote files"));
+    }
+
+    #[test]
+    fn remote_helper_global_search_script_passes_search_environment() {
+        let script = wsl_remote_helper_global_search_script("needle's haystack", true, 25);
+
+        assert!(script.contains("NUCLEOTIDE_REMOTE_SEARCH_QUERY='needle'\"'\"'s haystack'"));
+        assert!(script.contains("NUCLEOTIDE_REMOTE_SEARCH_SMART_CASE=1"));
+        assert!(script.contains("NUCLEOTIDE_REMOTE_SEARCH_LIMIT=25"));
+        assert!(script.contains(".cache/nucleotide/remote-helper/4/nucleotide-remote"));
+        assert!(script.contains(r#"exec "$helper" search"#));
+        assert!(script.contains("exec nucleotide-remote search"));
     }
 
     #[test]
@@ -755,12 +823,33 @@ mod tests {
     }
 
     #[test]
+    fn builds_wsl_remote_global_search_command() {
+        let workspace = WslWorkspace {
+            distro: "Ubuntu".to_string(),
+            linux_path: "/home/iain/repo".to_string(),
+        };
+        let command = build_wsl_remote_global_search_command(&workspace, "needle", false, 50);
+        let debug = format!("{command:?}");
+
+        assert_eq!(command.get_program(), "wsl.exe");
+        assert!(debug.contains("--distribution"));
+        assert!(debug.contains("Ubuntu"));
+        assert!(debug.contains("--cd"));
+        assert!(debug.contains("/home/iain/repo"));
+        assert!(debug.contains("NUCLEOTIDE_REMOTE_SEARCH_QUERY"));
+        assert!(debug.contains("NUCLEOTIDE_REMOTE_SEARCH_SMART_CASE=0"));
+        assert!(debug.contains("NUCLEOTIDE_REMOTE_SEARCH_LIMIT=50"));
+        assert!(debug.contains("nucleotide-remote"));
+        assert!(debug.contains("search"));
+    }
+
+    #[test]
     fn remote_helper_install_script_writes_versioned_cache_path() {
         let script = wsl_remote_helper_install_script();
 
         assert!(
             script
-                .contains(r#"helper="$HOME/.cache/nucleotide/remote-helper/3/nucleotide-remote""#)
+                .contains(r#"helper="$HOME/.cache/nucleotide/remote-helper/4/nucleotide-remote""#)
         );
         assert!(script.contains(r#"mkdir -p "$dir""#));
         assert!(script.contains(r#"cat > "$tmp""#));
@@ -771,7 +860,7 @@ mod tests {
 
     #[test]
     fn parses_remote_hello_response() {
-        let output = br#"{"protocol_version":3,"helper_version":"0.1.0","os":"linux","arch":"x86_64","current_dir":"/home/iain/repo"}
+        let output = br#"{"protocol_version":4,"helper_version":"0.1.0","os":"linux","arch":"x86_64","current_dir":"/home/iain/repo"}
 "#;
 
         let response = parse_remote_hello_output(output).unwrap();
@@ -798,7 +887,7 @@ mod tests {
 
     #[test]
     fn parses_remote_environment_response() {
-        let output = br#"{"protocol_version":3,"current_dir":"/home/iain/repo","variables":{"PATH":"/usr/bin","SHELL":"/bin/bash"}}
+        let output = br#"{"protocol_version":4,"current_dir":"/home/iain/repo","variables":{"PATH":"/usr/bin","SHELL":"/bin/bash"}}
 "#;
 
         let response = parse_remote_environment_output(output).unwrap();
@@ -831,7 +920,7 @@ mod tests {
 
     #[test]
     fn parses_remote_metadata_response() {
-        let output = br#"{"protocol_version":3,"helper_version":"0.1.0","os":"linux","arch":"x86_64","current_dir":"/home/iain/repo","home_dir":"/home/iain","path_separator":"/"}
+        let output = br#"{"protocol_version":4,"helper_version":"0.1.0","os":"linux","arch":"x86_64","current_dir":"/home/iain/repo","home_dir":"/home/iain","path_separator":"/"}
 "#;
 
         let response = parse_remote_metadata_output(output).unwrap();
@@ -862,7 +951,7 @@ mod tests {
 
     #[test]
     fn parses_remote_directory_listing_response() {
-        let output = br#"{"protocol_version":3,"current_dir":"/home/iain/repo","entries":[{"name":"src","kind":"directory","size":4096,"modified_unix_millis":1000,"symlink_target":null,"target_exists":null}]}
+        let output = br#"{"protocol_version":4,"current_dir":"/home/iain/repo","entries":[{"name":"src","kind":"directory","size":4096,"modified_unix_millis":1000,"symlink_target":null,"target_exists":null}]}
 "#;
 
         let response = parse_remote_directory_listing_output(output).unwrap();
@@ -890,7 +979,7 @@ mod tests {
 
     #[test]
     fn parses_remote_file_search_response() {
-        let output = br#"{"protocol_version":3,"current_dir":"/home/iain/repo","files":[{"relative_path":"src/main.rs"}],"truncated":false}
+        let output = br#"{"protocol_version":4,"current_dir":"/home/iain/repo","files":[{"relative_path":"src/main.rs"}],"truncated":false}
 "#;
 
         let response = parse_remote_file_search_output(output).unwrap();
@@ -918,6 +1007,38 @@ mod tests {
     }
 
     #[test]
+    fn parses_remote_global_search_response() {
+        let output = br#"{"protocol_version":4,"current_dir":"/home/iain/repo","matches":[{"relative_path":"src/main.rs","line":7,"line_text":"needle"}],"truncated":false}
+"#;
+
+        let response = parse_remote_global_search_output(output).unwrap();
+
+        assert_eq!(response.protocol_version, PROTOCOL_VERSION);
+        assert_eq!(response.current_dir, Path::new("/home/iain/repo"));
+        assert_eq!(response.matches.len(), 1);
+        assert_eq!(response.matches[0].relative_path, Path::new("src/main.rs"));
+        assert_eq!(response.matches[0].line, 7);
+        assert_eq!(response.matches[0].line_text, "needle");
+        assert!(!response.truncated);
+    }
+
+    #[test]
+    fn rejects_remote_global_search_protocol_mismatch() {
+        let output =
+            br#"{"protocol_version":999,"current_dir":"/home/iain/repo","matches":[],"truncated":false}"#;
+
+        let error = parse_remote_global_search_output(output).unwrap_err();
+
+        assert!(matches!(
+            error,
+            WslRemoteHelperError::ProtocolMismatch {
+                expected: PROTOCOL_VERSION,
+                actual: 999
+            }
+        ));
+    }
+
+    #[test]
     fn builds_wsl_remote_env_command() {
         let workspace = WslWorkspace {
             distro: "Ubuntu".to_string(),
@@ -933,7 +1054,7 @@ mod tests {
         assert!(debug.contains("/home/iain/repo"));
         assert!(debug.contains("/bin/sh"));
         assert!(debug.contains("-c"));
-        assert!(debug.contains(".cache/nucleotide/remote-helper/3/nucleotide-remote"));
+        assert!(debug.contains(".cache/nucleotide/remote-helper/4/nucleotide-remote"));
         assert!(debug.contains("nucleotide-remote"));
         assert!(debug.contains("env"));
     }
@@ -954,7 +1075,7 @@ mod tests {
         assert!(debug.contains("/home/iain/repo"));
         assert!(debug.contains("/bin/sh"));
         assert!(debug.contains("-c"));
-        assert!(debug.contains(".cache/nucleotide/remote-helper/3/nucleotide-remote"));
+        assert!(debug.contains(".cache/nucleotide/remote-helper/4/nucleotide-remote"));
         assert!(debug.contains("nucleotide-remote"));
         assert!(debug.contains("metadata"));
     }
@@ -975,7 +1096,7 @@ mod tests {
         assert!(debug.contains("/home/iain/repo"));
         assert!(debug.contains("/bin/sh"));
         assert!(debug.contains("-c"));
-        assert!(debug.contains(".cache/nucleotide/remote-helper/3/nucleotide-remote"));
+        assert!(debug.contains(".cache/nucleotide/remote-helper/4/nucleotide-remote"));
         assert!(debug.contains("cat >"));
         assert!(debug.contains("chmod 755"));
     }
@@ -1012,7 +1133,7 @@ mod tests {
         assert!(debug.contains("Ubuntu"));
         assert!(debug.contains("/bin/sh"));
         assert!(debug.contains("-c"));
-        assert!(debug.contains(".cache/nucleotide/remote-helper/3/nucleotide-remote"));
+        assert!(debug.contains(".cache/nucleotide/remote-helper/4/nucleotide-remote"));
         assert!(debug.contains("nucleotide-remote"));
         assert!(debug.contains("hello"));
     }
