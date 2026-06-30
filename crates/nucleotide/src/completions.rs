@@ -4,9 +4,12 @@
 use helix_core::fuzzy::fuzzy_match;
 use helix_term::commands::{TYPABLE_COMMAND_LIST, TypableCommand};
 use helix_view::{Editor, document::SCRATCH_BUFFER_NAME, editor::Config};
+use nucleotide_env::{WslWorkspace, load_wsl_remote_directory_listing_blocking};
+use nucleotide_remote::{DirectoryListingResponse, RemoteFileKind};
 use nucleotide_ui::prompt_view::CompletionItem;
 use once_cell::sync::Lazy;
 use std::path::{MAIN_SEPARATOR, Path};
+use std::time::Duration;
 
 const RUNNABLE_COMMANDS: &[(&str, &str)] = &[
     ("run", "Show runnables for the focused Rust file"),
@@ -16,6 +19,7 @@ const RUNNABLE_COMMANDS: &[(&str, &str)] = &[
     ("run-last", "Run the last runnable again"),
     ("rerun", "Run the last runnable again"),
 ];
+const WSL_COMMAND_COMPLETION_TIMEOUT: Duration = Duration::from_millis(750);
 
 /// Static list of available settings keys derived from Helix's editor config.
 pub static SETTINGS_KEYS: Lazy<Vec<String>> = Lazy::new(|| {
@@ -389,7 +393,61 @@ fn complete_filesystem_paths(
         (path, file_name)
     };
 
-    let candidates = ignore::WalkBuilder::new(&dir)
+    let candidates = if let Some(workspace) = WslWorkspace::from_unc_path(dir.as_ref()) {
+        match load_wsl_remote_directory_listing_blocking(&workspace, WSL_COMMAND_COMPLETION_TIMEOUT)
+        {
+            Ok(listing) => remote_path_candidates(listing, kind),
+            Err(error) => {
+                tracing::debug!(
+                    path = %dir.display(),
+                    error = %error,
+                    "Failed to load WSL command path completions"
+                );
+                Vec::new()
+            }
+        }
+    } else {
+        local_path_candidates(dir.as_ref(), kind, is_tilde)
+    };
+
+    let candidates = candidates.into_iter();
+
+    let arg_prefix = argument_path_prefix(current_arg, file_name.as_deref());
+    let matches = if let Some(file_name) = file_name {
+        fuzzy_match(&file_name, candidates, true)
+            .into_iter()
+            .map(|(candidate, _score)| candidate)
+            .collect()
+    } else {
+        let mut candidates: Vec<_> = candidates.collect();
+        candidates
+            .sort_by(|left, right| (!left.is_dir, &left.path).cmp(&(!right.is_dir, &right.path)));
+        candidates
+    };
+
+    matches
+        .into_iter()
+        .map(|candidate| {
+            let completed_arg = if is_tilde {
+                candidate.path
+            } else {
+                format!("{arg_prefix}{}", candidate.path)
+            };
+            CompletionItem {
+                text: replace_current_arg(input, current_arg, &completed_arg).into(),
+                description: Some(format!("{action_label} {completed_arg}").into()),
+                display_text: None,
+            }
+        })
+        .collect()
+}
+
+fn local_path_candidates(
+    dir: &Path,
+    kind: PathCompletionKind,
+    is_tilde: bool,
+) -> Vec<PathCandidate> {
+    ignore::WalkBuilder::new(dir)
         .hidden(false)
         .follow_links(false)
         .git_ignore(true)
@@ -447,34 +505,43 @@ fn complete_filesystem_paths(
             }
 
             Some(PathCandidate { path, is_dir })
-        });
+        })
+        .collect()
+}
 
-    let arg_prefix = argument_path_prefix(current_arg, file_name.as_deref());
-    let matches = if let Some(file_name) = file_name {
-        fuzzy_match(&file_name, candidates, true)
-            .into_iter()
-            .map(|(candidate, _score)| candidate)
-            .collect()
-    } else {
-        let mut candidates: Vec<_> = candidates.collect();
-        candidates
-            .sort_by(|left, right| (!left.is_dir, &left.path).cmp(&(!right.is_dir, &right.path)));
-        candidates
-    };
-
-    matches
+fn remote_path_candidates(
+    listing: DirectoryListingResponse,
+    kind: PathCompletionKind,
+) -> Vec<PathCandidate> {
+    listing
+        .entries
         .into_iter()
-        .map(|candidate| {
-            let completed_arg = if is_tilde {
-                candidate.path
-            } else {
-                format!("{arg_prefix}{}", candidate.path)
+        .filter_map(|entry| {
+            let is_dir = matches!(entry.kind, RemoteFileKind::Directory);
+            let candidate_match = match kind {
+                PathCompletionKind::FileOrDirectory if is_dir => {
+                    PathCandidateMatch::AcceptIncomplete
+                }
+                PathCompletionKind::FileOrDirectory => PathCandidateMatch::Accept,
+                PathCompletionKind::Directory if is_dir => PathCandidateMatch::Accept,
+                PathCompletionKind::Directory => PathCandidateMatch::Reject,
             };
-            CompletionItem {
-                text: replace_current_arg(input, current_arg, &completed_arg).into(),
-                description: Some(format!("{action_label} {completed_arg}").into()),
-                display_text: None,
+
+            if candidate_match == PathCandidateMatch::Reject {
+                return None;
             }
+
+            let path = if candidate_match == PathCandidateMatch::AcceptIncomplete {
+                format!("{}{}", entry.name, MAIN_SEPARATOR)
+            } else {
+                entry.name
+            };
+
+            if path.is_empty() {
+                return None;
+            }
+
+            Some(PathCandidate { path, is_dir })
         })
         .collect()
 }
@@ -677,5 +744,74 @@ mod tests {
         let items = get_command_completions_with_cache(&input, None);
 
         assert!(items.iter().any(|item| item.text.as_ref() == expected));
+    }
+
+    #[test]
+    fn remote_path_candidates_include_directories_as_incomplete() {
+        let listing = DirectoryListingResponse {
+            protocol_version: nucleotide_remote::PROTOCOL_VERSION,
+            current_dir: Path::new("/workspace").to_path_buf(),
+            entries: vec![
+                nucleotide_remote::DirectoryEntryResponse {
+                    name: "src".to_string(),
+                    kind: RemoteFileKind::Directory,
+                    size: 0,
+                    modified_unix_millis: None,
+                    symlink_target: None,
+                    target_exists: None,
+                },
+                nucleotide_remote::DirectoryEntryResponse {
+                    name: "README.md".to_string(),
+                    kind: RemoteFileKind::File,
+                    size: 10,
+                    modified_unix_millis: None,
+                    symlink_target: None,
+                    target_exists: None,
+                },
+            ],
+        };
+
+        let candidates = remote_path_candidates(listing, PathCompletionKind::FileOrDirectory);
+
+        assert!(candidates.iter().any(|candidate| {
+            candidate.path == format!("src{MAIN_SEPARATOR}") && candidate.is_dir
+        }));
+        assert!(
+            candidates
+                .iter()
+                .any(|candidate| { candidate.path == "README.md" && !candidate.is_dir })
+        );
+    }
+
+    #[test]
+    fn remote_path_candidates_can_filter_to_directories() {
+        let listing = DirectoryListingResponse {
+            protocol_version: nucleotide_remote::PROTOCOL_VERSION,
+            current_dir: Path::new("/workspace").to_path_buf(),
+            entries: vec![
+                nucleotide_remote::DirectoryEntryResponse {
+                    name: "src".to_string(),
+                    kind: RemoteFileKind::Directory,
+                    size: 0,
+                    modified_unix_millis: None,
+                    symlink_target: None,
+                    target_exists: None,
+                },
+                nucleotide_remote::DirectoryEntryResponse {
+                    name: "main.rs".to_string(),
+                    kind: RemoteFileKind::File,
+                    size: 10,
+                    modified_unix_millis: None,
+                    symlink_target: None,
+                    target_exists: None,
+                },
+            ],
+        };
+
+        let candidates = remote_path_candidates(listing, PathCompletionKind::Directory);
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].path, "src");
+        assert!(candidates[0].is_dir);
     }
 }
