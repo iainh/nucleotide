@@ -1,7 +1,9 @@
 // ABOUTME: WSL workspace detection and command construction helpers
 // ABOUTME: Converts Windows WSL UNC paths into Linux paths for remote tooling
 
-use nucleotide_remote::{EnvironmentResponse, HelloResponse, PROTOCOL_VERSION};
+use nucleotide_remote::{
+    EnvironmentResponse, HelloResponse, PROTOCOL_VERSION, WorkspaceMetadataResponse,
+};
 use std::path::Path;
 use std::process::Command;
 use std::process::Stdio;
@@ -76,6 +78,24 @@ pub fn build_wsl_remote_env_tokio_command(workspace: &WslWorkspace) -> tokio::pr
     )
 }
 
+pub fn build_wsl_remote_metadata_command(workspace: &WslWorkspace) -> Command {
+    build_wsl_shell_command(
+        workspace,
+        "/bin/sh",
+        &wsl_remote_helper_command_script("metadata"),
+    )
+}
+
+pub fn build_wsl_remote_metadata_tokio_command(
+    workspace: &WslWorkspace,
+) -> tokio::process::Command {
+    build_wsl_tokio_shell_command(
+        workspace,
+        "/bin/sh",
+        &wsl_remote_helper_command_script("metadata"),
+    )
+}
+
 pub fn build_wsl_remote_helper_install_command(
     workspace: &WslWorkspace,
 ) -> tokio::process::Command {
@@ -98,6 +118,10 @@ pub fn wsl_remote_helper_hello_script() -> String {
 
 pub fn wsl_remote_helper_env_script() -> String {
     wsl_remote_helper_command_script("env")
+}
+
+pub fn wsl_remote_helper_metadata_script() -> String {
+    wsl_remote_helper_command_script("metadata")
 }
 
 pub fn wsl_remote_helper_install_script() -> String {
@@ -177,6 +201,23 @@ pub async fn load_wsl_remote_environment(
     parse_remote_environment_output(&output.stdout)
 }
 
+pub async fn load_wsl_remote_metadata(
+    workspace: &WslWorkspace,
+    timeout_duration: Duration,
+) -> Result<WorkspaceMetadataResponse, WslRemoteHelperError> {
+    let mut command = build_wsl_remote_metadata_tokio_command(workspace);
+    let output = timeout(timeout_duration, command.output())
+        .await
+        .map_err(|_| WslRemoteHelperError::Timeout(timeout_duration))??;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(WslRemoteHelperError::CommandFailed(stderr));
+    }
+
+    parse_remote_metadata_output(&output.stdout)
+}
+
 pub async fn install_wsl_remote_helper(
     workspace: &WslWorkspace,
     local_helper_path: &Path,
@@ -214,6 +255,20 @@ fn parse_remote_environment_output(
     output: &[u8],
 ) -> Result<EnvironmentResponse, WslRemoteHelperError> {
     let response: EnvironmentResponse = serde_json::from_slice(output)?;
+    if response.protocol_version != PROTOCOL_VERSION {
+        return Err(WslRemoteHelperError::ProtocolMismatch {
+            expected: PROTOCOL_VERSION,
+            actual: response.protocol_version,
+        });
+    }
+
+    Ok(response)
+}
+
+fn parse_remote_metadata_output(
+    output: &[u8],
+) -> Result<WorkspaceMetadataResponse, WslRemoteHelperError> {
+    let response: WorkspaceMetadataResponse = serde_json::from_slice(output)?;
     if response.protocol_version != PROTOCOL_VERSION {
         return Err(WslRemoteHelperError::ProtocolMismatch {
             expected: PROTOCOL_VERSION,
@@ -436,6 +491,16 @@ mod tests {
     }
 
     #[test]
+    fn remote_helper_metadata_script_prefers_cached_helper_before_path() {
+        let script = wsl_remote_helper_metadata_script();
+
+        assert!(script.contains("NUCLEOTIDE_REMOTE_HELPER"));
+        assert!(script.contains(".cache/nucleotide/remote-helper/1/nucleotide-remote"));
+        assert!(script.contains(r#"exec "$helper" metadata"#));
+        assert!(script.contains("exec nucleotide-remote metadata"));
+    }
+
+    #[test]
     fn remote_helper_install_script_writes_versioned_cache_path() {
         let script = wsl_remote_helper_install_script();
 
@@ -511,6 +576,37 @@ mod tests {
     }
 
     #[test]
+    fn parses_remote_metadata_response() {
+        let output = br#"{"protocol_version":1,"helper_version":"0.1.0","os":"linux","arch":"x86_64","current_dir":"/home/iain/repo","home_dir":"/home/iain","path_separator":"/"}
+"#;
+
+        let response = parse_remote_metadata_output(output).unwrap();
+
+        assert_eq!(response.protocol_version, PROTOCOL_VERSION);
+        assert_eq!(response.helper_version, "0.1.0");
+        assert_eq!(response.os, "linux");
+        assert_eq!(response.arch, "x86_64");
+        assert_eq!(response.current_dir, Path::new("/home/iain/repo"));
+        assert_eq!(response.home_dir.as_deref(), Some(Path::new("/home/iain")));
+        assert_eq!(response.path_separator, "/");
+    }
+
+    #[test]
+    fn rejects_remote_metadata_protocol_mismatch() {
+        let output = br#"{"protocol_version":999,"helper_version":"0.1.0","os":"linux","arch":"x86_64","current_dir":"/home/iain/repo","home_dir":null,"path_separator":"/"}"#;
+
+        let error = parse_remote_metadata_output(output).unwrap_err();
+
+        assert!(matches!(
+            error,
+            WslRemoteHelperError::ProtocolMismatch {
+                expected: PROTOCOL_VERSION,
+                actual: 999
+            }
+        ));
+    }
+
+    #[test]
     fn builds_wsl_remote_env_command() {
         let workspace = WslWorkspace {
             distro: "Ubuntu".to_string(),
@@ -529,6 +625,27 @@ mod tests {
         assert!(debug.contains(".cache/nucleotide/remote-helper/1/nucleotide-remote"));
         assert!(debug.contains("nucleotide-remote"));
         assert!(debug.contains("env"));
+    }
+
+    #[test]
+    fn builds_wsl_remote_metadata_command() {
+        let workspace = WslWorkspace {
+            distro: "Ubuntu".to_string(),
+            linux_path: "/home/iain/repo".to_string(),
+        };
+        let command = build_wsl_remote_metadata_command(&workspace);
+        let debug = format!("{command:?}");
+
+        assert_eq!(command.get_program(), "wsl.exe");
+        assert!(debug.contains("--distribution"));
+        assert!(debug.contains("Ubuntu"));
+        assert!(debug.contains("--cd"));
+        assert!(debug.contains("/home/iain/repo"));
+        assert!(debug.contains("/bin/sh"));
+        assert!(debug.contains("-lc"));
+        assert!(debug.contains(".cache/nucleotide/remote-helper/1/nucleotide-remote"));
+        assert!(debug.contains("nucleotide-remote"));
+        assert!(debug.contains("metadata"));
     }
 
     #[test]
