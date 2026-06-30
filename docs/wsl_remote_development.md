@@ -40,21 +40,23 @@ editor backend into Linux:
   not inject Linux environment snapshots into the Windows process; the remote
   launch boundary owns those values.
 - `nucleotide-remote` is a versioned helper binary with `hello`, `env`,
-  `metadata`, `root`, `list`, `files`, `search`, and `read` protocol commands.
-  Metadata includes workspace marker and shallow source-directory facts so
-  project/LSP detection can avoid repeated Windows UNC filesystem probes when
-  the helper is available. Root detection walks parent directories inside WSL
-  and returns Linux workspace/project roots for the Windows UI to map back to
-  WSL UNC paths.
+  `metadata`, `root`, `list`, `files`, `search`, `read`, and `symbol-files`
+  protocol commands. Metadata includes workspace marker and shallow
+  source-directory facts so project/LSP detection can avoid repeated Windows UNC
+  filesystem probes when the helper is available. Root detection walks parent
+  directories inside WSL and returns Linux workspace/project roots for the
+  Windows UI to map back to WSL UNC paths.
   Directory listing returns compact file metadata from inside WSL so the project
   tree can populate rows without enumerating `\\wsl...` paths through Windows.
   Recursive file search returns picker-ready relative paths from inside WSL.
   Global text search walks ignore-filtered files and reads file contents inside
   WSL, returning relative path, line number, and line text matches to the
-  Windows UI.
-  The `root`, `list`, `files`, `search`, and `read` commands are part of helper
-  protocol version 6, so older cached helpers are bypassed by the versioned
-  cache path.
+  Windows UI. Workspace symbol fallback scanning uses `symbol-files` to collect
+  bounded, ignore-filtered file text inside WSL, then parses symbols on the
+  Windows side with the existing Helix syntax loader.
+  The `root`, `list`, `files`, `search`, `read`, and `symbol-files` commands are
+  part of helper protocol version 7, so older cached helpers are bypassed by the
+  versioned cache path.
 - Application startup schedules a short, non-blocking WSL helper health probe for
   WSL roots. Probes prefer
   `~/.cache/nucleotide/remote-helper/<protocol-version>/nucleotide-remote`
@@ -101,6 +103,9 @@ editor backend into Linux:
 - Global text search uses the helper-backed `search` command for WSL roots and
   merges those disk results with open editor buffers on the Windows side so
   unsaved edits remain authoritative.
+- Workspace symbol fallback uses helper-backed `symbol-files` for WSL roots, so
+  ignore walking and file reads stay in Linux while open buffers and syntax
+  parsing stay local.
 
 This means the first supported path is direct WSL LSP execution with path
 translation. The helper is currently an optional foundation for richer remote
@@ -117,7 +122,7 @@ flowchart LR
     Server["Language server in WSL"]
     Helper["nucleotide-remote in WSL"]
     FileTree["Project tree"]
-    Picker["Picker, search, and completions"]
+    Picker["Picker, search, symbols, and completions"]
     Terminal["Terminal or runnable in WSL"]
 
     UI --> Bridge
@@ -150,7 +155,8 @@ The next step toward a more native-feeling remote experience is to make
    helper binary rather than the Windows GUI binary.
 4. Move remote services behind helper commands where that improves latency or
    correctness, starting with environment, workspace metadata, root detection,
-   directory listing, and file search.
+   directory listing, file search, global search, previews, and symbol file
+   collection.
 5. Keep direct WSL LSP launch as the fallback path so helper bootstrap problems
    do not block editing.
 

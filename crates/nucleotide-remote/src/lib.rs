@@ -7,10 +7,13 @@ use std::io::Read;
 use std::path::PathBuf;
 use std::time::UNIX_EPOCH;
 
-pub const PROTOCOL_VERSION: u32 = 6;
+pub const PROTOCOL_VERSION: u32 = 7;
 pub const DEFAULT_FILE_SEARCH_LIMIT: usize = 1_000;
 pub const DEFAULT_GLOBAL_SEARCH_LIMIT: usize = 1_000;
 pub const DEFAULT_FILE_READ_LIMIT: usize = 10_000;
+pub const DEFAULT_WORKSPACE_SYMBOL_FILE_LIMIT: usize = 10_000;
+pub const DEFAULT_WORKSPACE_SYMBOL_FILE_BYTE_LIMIT: usize = 1_000_000;
+pub const DEFAULT_WORKSPACE_SYMBOL_TOTAL_BYTE_LIMIT: usize = 16_000_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HelloResponse {
@@ -397,6 +400,137 @@ pub struct FileReadResponse {
     pub truncated: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceSymbolFileEntryResponse {
+    pub relative_path: PathBuf,
+    pub content: String,
+    pub size: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceSymbolFilesResponse {
+    pub protocol_version: u32,
+    pub current_dir: PathBuf,
+    pub files: Vec<WorkspaceSymbolFileEntryResponse>,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorkspaceSymbolFilesOptions {
+    pub hidden: bool,
+    pub parents: bool,
+    pub ignore: bool,
+    pub follow_links: bool,
+    pub git_ignore: bool,
+    pub git_global: bool,
+    pub git_exclude: bool,
+    pub deduplicate_links: bool,
+    pub max_depth: Option<usize>,
+    pub file_limit: usize,
+    pub file_byte_limit: usize,
+    pub total_byte_limit: usize,
+}
+
+impl Default for WorkspaceSymbolFilesOptions {
+    fn default() -> Self {
+        Self {
+            hidden: false,
+            parents: true,
+            ignore: true,
+            follow_links: false,
+            git_ignore: true,
+            git_global: true,
+            git_exclude: true,
+            deduplicate_links: true,
+            max_depth: None,
+            file_limit: DEFAULT_WORKSPACE_SYMBOL_FILE_LIMIT,
+            file_byte_limit: DEFAULT_WORKSPACE_SYMBOL_FILE_BYTE_LIMIT,
+            total_byte_limit: DEFAULT_WORKSPACE_SYMBOL_TOTAL_BYTE_LIMIT,
+        }
+    }
+}
+
+impl WorkspaceSymbolFilesResponse {
+    pub fn current(options: WorkspaceSymbolFilesOptions) -> anyhow::Result<Self> {
+        let current_dir = std::env::current_dir()?;
+        let absolute_root = current_dir
+            .canonicalize()
+            .unwrap_or_else(|_| current_dir.clone());
+        let mut walker = ignore::WalkBuilder::new(&current_dir);
+        walker
+            .hidden(options.hidden)
+            .parents(options.parents)
+            .ignore(options.ignore)
+            .follow_links(options.follow_links)
+            .git_ignore(options.git_ignore)
+            .git_global(options.git_global)
+            .git_exclude(options.git_exclude)
+            .max_depth(options.max_depth)
+            .filter_entry(move |entry| {
+                filter_workspace_symbol_entry(entry, &absolute_root, options.deduplicate_links)
+            })
+            .add_custom_ignore_filename(".helix/ignore");
+
+        let mut files = Vec::new();
+        let mut total_bytes = 0usize;
+        let mut truncated = false;
+
+        for entry in walker.build() {
+            let entry = entry?;
+            if !entry
+                .file_type()
+                .is_some_and(|file_type| file_type.is_file())
+            {
+                continue;
+            }
+
+            if files.len() >= options.file_limit {
+                truncated = true;
+                break;
+            }
+
+            let metadata = match entry.metadata() {
+                Ok(metadata) => metadata,
+                Err(_) => continue,
+            };
+            let file_size = metadata.len();
+            if file_size > options.file_byte_limit as u64 {
+                continue;
+            }
+            if total_bytes.saturating_add(file_size as usize) > options.total_byte_limit {
+                truncated = true;
+                break;
+            }
+
+            let Ok(content) = std::fs::read_to_string(entry.path()) else {
+                continue;
+            };
+            total_bytes = total_bytes.saturating_add(content.len());
+            let relative_path = entry
+                .path()
+                .strip_prefix(&current_dir)
+                .unwrap_or(entry.path())
+                .to_path_buf();
+            if relative_path.as_os_str().is_empty() {
+                continue;
+            }
+
+            files.push(WorkspaceSymbolFileEntryResponse {
+                relative_path,
+                content,
+                size: file_size,
+            });
+        }
+
+        Ok(Self {
+            protocol_version: PROTOCOL_VERSION,
+            current_dir,
+            files,
+            truncated,
+        })
+    }
+}
+
 impl FileReadResponse {
     pub fn current(path: &std::path::Path, limit: usize) -> std::io::Result<Self> {
         let current_dir = std::env::current_dir()?;
@@ -509,6 +643,29 @@ fn detect_project_root_from_dir(start_dir: &std::path::Path) -> (Option<PathBuf>
     (None, None)
 }
 
+fn filter_workspace_symbol_entry(
+    entry: &ignore::DirEntry,
+    root: &std::path::Path,
+    deduplicate_links: bool,
+) -> bool {
+    if matches!(
+        entry.file_name().to_str(),
+        Some(".git" | ".pijul" | ".jj" | ".hg" | ".svn")
+    ) {
+        return false;
+    }
+
+    if deduplicate_links && entry.path_is_symlink() {
+        return entry
+            .path()
+            .canonicalize()
+            .ok()
+            .is_some_and(|path| !path.starts_with(root));
+    }
+
+    true
+}
+
 fn detect_workspace_markers() -> std::io::Result<BTreeSet<String>> {
     let current_dir = std::env::current_dir()?;
     let mut markers = BTreeSet::new();
@@ -551,6 +708,8 @@ pub fn encode_json_line<T: Serialize>(value: &T) -> serde_json::Result<String> {
 mod tests {
     use super::*;
 
+    static CURRENT_DIR_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn hello_response_uses_protocol_version() {
         let response = HelloResponse {
@@ -577,7 +736,7 @@ mod tests {
         let line = encode_json_line(&response).unwrap();
 
         assert!(line.ends_with('\n'));
-        assert!(line.contains("\"protocol_version\":6"));
+        assert!(line.contains("\"protocol_version\":7"));
         assert!(line.contains("\"current_dir\":\"/workspace\""));
     }
 
@@ -734,6 +893,79 @@ mod tests {
         assert!(line.contains("\"line\":2"));
         assert!(line.contains("\"line_text\":\"let needle = true;\""));
         assert!(line.contains("\"truncated\":false"));
+    }
+
+    #[test]
+    fn workspace_symbol_files_response_encodes_file_contents() {
+        let response = WorkspaceSymbolFilesResponse {
+            protocol_version: PROTOCOL_VERSION,
+            current_dir: PathBuf::from("/workspace"),
+            files: vec![WorkspaceSymbolFileEntryResponse {
+                relative_path: PathBuf::from("src/main.rs"),
+                content: "fn main() {}\n".to_string(),
+                size: 13,
+            }],
+            truncated: false,
+        };
+
+        let line = encode_json_line(&response).unwrap();
+
+        assert!(line.contains("\"current_dir\":\"/workspace\""));
+        assert!(line.contains("\"relative_path\":\"src/main.rs\""));
+        assert!(line.contains("\"content\":\"fn main() {}\\n\""));
+        assert!(line.contains("\"size\":13"));
+        assert!(line.contains("\"truncated\":false"));
+    }
+
+    #[test]
+    fn workspace_symbol_files_current_returns_text_files() {
+        let _guard = CURRENT_DIR_LOCK.lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(temp.path().join("src")).unwrap();
+        std::fs::write(temp.path().join("src").join("main.rs"), "fn main() {}\n").unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp.path()).unwrap();
+
+        let response = WorkspaceSymbolFilesResponse::current(WorkspaceSymbolFilesOptions {
+            file_limit: 10,
+            file_byte_limit: 100,
+            total_byte_limit: 1_000,
+            ..WorkspaceSymbolFilesOptions::default()
+        })
+        .unwrap();
+
+        std::env::set_current_dir(original).unwrap();
+
+        assert_eq!(response.files.len(), 1);
+        assert_eq!(
+            response.files[0].relative_path,
+            PathBuf::from("src/main.rs")
+        );
+        assert_eq!(response.files[0].content, "fn main() {}\n");
+        assert!(!response.truncated);
+    }
+
+    #[test]
+    fn workspace_symbol_files_current_respects_total_byte_limit() {
+        let _guard = CURRENT_DIR_LOCK.lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("first.rs"), "fn first() {}\n").unwrap();
+        std::fs::write(temp.path().join("second.rs"), "fn second() {}\n").unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp.path()).unwrap();
+
+        let response = WorkspaceSymbolFilesResponse::current(WorkspaceSymbolFilesOptions {
+            file_limit: 10,
+            file_byte_limit: 100,
+            total_byte_limit: 1,
+            ..WorkspaceSymbolFilesOptions::default()
+        })
+        .unwrap();
+
+        std::env::set_current_dir(original).unwrap();
+
+        assert!(response.files.is_empty());
+        assert!(response.truncated);
     }
 
     #[test]

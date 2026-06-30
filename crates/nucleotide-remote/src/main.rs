@@ -3,9 +3,11 @@
 
 use anyhow::{Context, Result, bail};
 use nucleotide_remote::{
-    DEFAULT_FILE_READ_LIMIT, DirectoryListingResponse, EnvironmentResponse, FileReadResponse,
-    FileSearchResponse, GlobalSearchResponse, HelloResponse, WorkspaceMetadataResponse,
-    WorkspaceRootResponse, encode_json_line,
+    DEFAULT_FILE_READ_LIMIT, DEFAULT_WORKSPACE_SYMBOL_FILE_BYTE_LIMIT,
+    DEFAULT_WORKSPACE_SYMBOL_FILE_LIMIT, DEFAULT_WORKSPACE_SYMBOL_TOTAL_BYTE_LIMIT,
+    DirectoryListingResponse, EnvironmentResponse, FileReadResponse, FileSearchResponse,
+    GlobalSearchResponse, HelloResponse, WorkspaceMetadataResponse, WorkspaceRootResponse,
+    WorkspaceSymbolFilesOptions, WorkspaceSymbolFilesResponse, encode_json_line,
 };
 
 fn main() -> Result<()> {
@@ -69,6 +71,11 @@ fn main() -> Result<()> {
                 .context("failed to build file read response")?;
             print!("{}", encode_json_line(&response)?);
         }
+        "symbol-files" => {
+            let response = WorkspaceSymbolFilesResponse::current(workspace_symbol_files_options())
+                .context("failed to build workspace symbol file response")?;
+            print!("{}", encode_json_line(&response)?);
+        }
         "--help" | "-h" => {
             println!("nucleotide-remote hello");
             println!("nucleotide-remote env");
@@ -78,9 +85,52 @@ fn main() -> Result<()> {
             println!("nucleotide-remote files");
             println!("nucleotide-remote search");
             println!("nucleotide-remote read");
+            println!("nucleotide-remote symbol-files");
         }
         other => bail!("unknown nucleotide-remote command: {other}"),
     }
 
     Ok(())
+}
+
+fn workspace_symbol_files_options() -> WorkspaceSymbolFilesOptions {
+    WorkspaceSymbolFilesOptions {
+        hidden: env_bool("NUCLEOTIDE_REMOTE_SYMBOLS_HIDDEN", false),
+        parents: env_bool("NUCLEOTIDE_REMOTE_SYMBOLS_PARENTS", true),
+        ignore: env_bool("NUCLEOTIDE_REMOTE_SYMBOLS_IGNORE", true),
+        follow_links: env_bool("NUCLEOTIDE_REMOTE_SYMBOLS_FOLLOW_LINKS", false),
+        git_ignore: env_bool("NUCLEOTIDE_REMOTE_SYMBOLS_GIT_IGNORE", true),
+        git_global: env_bool("NUCLEOTIDE_REMOTE_SYMBOLS_GIT_GLOBAL", true),
+        git_exclude: env_bool("NUCLEOTIDE_REMOTE_SYMBOLS_GIT_EXCLUDE", true),
+        deduplicate_links: env_bool("NUCLEOTIDE_REMOTE_SYMBOLS_DEDUP_LINKS", true),
+        max_depth: env_usize("NUCLEOTIDE_REMOTE_SYMBOLS_MAX_DEPTH", usize::MAX),
+        file_limit: env_usize(
+            "NUCLEOTIDE_REMOTE_SYMBOLS_FILE_LIMIT",
+            DEFAULT_WORKSPACE_SYMBOL_FILE_LIMIT,
+        )
+        .unwrap_or(DEFAULT_WORKSPACE_SYMBOL_FILE_LIMIT),
+        file_byte_limit: env_usize(
+            "NUCLEOTIDE_REMOTE_SYMBOLS_FILE_BYTE_LIMIT",
+            DEFAULT_WORKSPACE_SYMBOL_FILE_BYTE_LIMIT,
+        )
+        .unwrap_or(DEFAULT_WORKSPACE_SYMBOL_FILE_BYTE_LIMIT),
+        total_byte_limit: env_usize(
+            "NUCLEOTIDE_REMOTE_SYMBOLS_TOTAL_BYTE_LIMIT",
+            DEFAULT_WORKSPACE_SYMBOL_TOTAL_BYTE_LIMIT,
+        )
+        .unwrap_or(DEFAULT_WORKSPACE_SYMBOL_TOTAL_BYTE_LIMIT),
+    }
+}
+
+fn env_bool(name: &str, default: bool) -> bool {
+    std::env::var(name)
+        .map(|value| matches!(value.as_str(), "1" | "true" | "yes"))
+        .unwrap_or(default)
+}
+
+fn env_usize(name: &str, none_value: usize) -> Option<usize> {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .and_then(|value| (value != none_value).then_some(value))
 }

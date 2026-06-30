@@ -59,15 +59,20 @@ use slotmap::Key;
 use nucleotide_env::{
     ProjectEnvironment, WslWorkspace, install_wsl_remote_helper,
     load_wsl_remote_directory_listing_blocking, load_wsl_remote_metadata,
-    load_wsl_remote_workspace_root_blocking, probe_wsl_remote_helper,
+    load_wsl_remote_workspace_root_blocking, load_wsl_remote_workspace_symbol_files_blocking,
+    probe_wsl_remote_helper,
 };
-use nucleotide_remote::{DirectoryListingResponse, RemoteFileKind};
+use nucleotide_remote::{
+    DEFAULT_WORKSPACE_SYMBOL_FILE_BYTE_LIMIT, DEFAULT_WORKSPACE_SYMBOL_TOTAL_BYTE_LIMIT,
+    DirectoryListingResponse, RemoteFileKind, WorkspaceSymbolFilesOptions,
+};
 
 const WSL_REMOTE_HELPER_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 const WSL_REMOTE_HELPER_INSTALL_TIMEOUT: Duration = Duration::from_secs(15);
 const WSL_REMOTE_METADATA_TIMEOUT: Duration = Duration::from_secs(2);
 const WSL_REMOTE_PATH_COMPLETION_TIMEOUT: Duration = Duration::from_millis(500);
 const WSL_REMOTE_ROOT_TIMEOUT: Duration = Duration::from_millis(750);
+const WSL_REMOTE_SYMBOL_FILES_TIMEOUT: Duration = Duration::from_secs(10);
 const WSL_REMOTE_HELPER_INSTALL_SOURCE_ENV: &str = "NUCLEOTIDE_REMOTE_HELPER_INSTALL_SOURCE";
 
 /// Implementation of EnvironmentProvider trait for our ProjectEnvironment
@@ -4026,6 +4031,31 @@ fn syntax_symbol_items_from_path(path: &Path, loader: &syntax::Loader) -> Vec<Na
             return Vec::new();
         }
     };
+    syntax_symbol_items_from_rope(path, rope, loader)
+}
+
+fn syntax_symbol_items_from_content(
+    path: &Path,
+    content: &str,
+    loader: &syntax::Loader,
+) -> Vec<NativeSymbolItem> {
+    let mut reader = std::io::Cursor::new(content.as_bytes());
+    let (rope, _encoding, _has_bom) = match from_reader(&mut reader, None) {
+        Ok(result) => result,
+        Err(err) => {
+            debug!(path = %path.display(), error = %err, "Skipping undecodable remote syntax symbol file");
+            return Vec::new();
+        }
+    };
+
+    syntax_symbol_items_from_rope(path, rope, loader)
+}
+
+fn syntax_symbol_items_from_rope(
+    path: &Path,
+    rope: Rope,
+    loader: &syntax::Loader,
+) -> Vec<NativeSymbolItem> {
     let text = rope.slice(..);
     let Some(language) = loader
         .language_for_filename(path)
@@ -4058,6 +4088,16 @@ fn workspace_syntax_symbol_items_from_paths(
     loader: Arc<syntax::Loader>,
     open_paths: HashSet<PathBuf>,
 ) -> anyhow::Result<Vec<NativeSymbolItem>> {
+    if let Some(workspace) = WslWorkspace::from_unc_path(&search_root) {
+        return workspace_syntax_symbol_items_from_wsl(
+            search_root,
+            workspace,
+            file_picker_config,
+            loader,
+            open_paths,
+        );
+    }
+
     if !search_root.exists() {
         anyhow::bail!("Current working directory does not exist");
     }
@@ -4117,6 +4157,96 @@ fn workspace_syntax_symbol_items_from_paths(
     }
 
     Ok(items)
+}
+
+fn workspace_syntax_symbol_items_from_wsl(
+    search_root: PathBuf,
+    workspace: WslWorkspace,
+    file_picker_config: helix_view::editor::FilePickerConfig,
+    loader: Arc<syntax::Loader>,
+    open_paths: HashSet<PathBuf>,
+) -> anyhow::Result<Vec<NativeSymbolItem>> {
+    let options = workspace_symbol_files_options_from_picker_config(&file_picker_config);
+    let response = load_wsl_remote_workspace_symbol_files_blocking(
+        &workspace,
+        &options,
+        WSL_REMOTE_SYMBOL_FILES_TIMEOUT,
+    )?;
+
+    let mut items = Vec::new();
+    for file in response.files {
+        let Some(path) = wsl_workspace_path_from_remote_relative(&workspace, &file.relative_path)
+        else {
+            continue;
+        };
+        if open_paths.contains(&path) {
+            continue;
+        }
+
+        items.extend(syntax_symbol_items_from_content(
+            &path,
+            &file.content,
+            &loader,
+        ));
+        if items.len() >= WORKSPACE_SYNTAX_SYMBOL_ITEM_LIMIT {
+            items.truncate(WORKSPACE_SYNTAX_SYMBOL_ITEM_LIMIT);
+            warn!(
+                limit = WORKSPACE_SYNTAX_SYMBOL_ITEM_LIMIT,
+                "Stopped WSL workspace syntax symbol scan at item limit"
+            );
+            break;
+        }
+    }
+
+    if response.truncated {
+        warn!(
+            path = %search_root.display(),
+            "WSL workspace syntax symbol file response was truncated"
+        );
+    }
+
+    Ok(items)
+}
+
+fn workspace_symbol_files_options_from_picker_config(
+    file_picker_config: &helix_view::editor::FilePickerConfig,
+) -> WorkspaceSymbolFilesOptions {
+    WorkspaceSymbolFilesOptions {
+        hidden: file_picker_config.hidden,
+        parents: file_picker_config.parents,
+        ignore: file_picker_config.ignore,
+        follow_links: file_picker_config.follow_symlinks,
+        git_ignore: file_picker_config.git_ignore,
+        git_global: file_picker_config.git_global,
+        git_exclude: file_picker_config.git_exclude,
+        deduplicate_links: file_picker_config.deduplicate_links,
+        max_depth: file_picker_config.max_depth,
+        file_limit: WORKSPACE_SYNTAX_SYMBOL_FILE_LIMIT,
+        file_byte_limit: DEFAULT_WORKSPACE_SYMBOL_FILE_BYTE_LIMIT,
+        total_byte_limit: DEFAULT_WORKSPACE_SYMBOL_TOTAL_BYTE_LIMIT,
+    }
+}
+
+fn wsl_workspace_path_from_remote_relative(
+    workspace: &WslWorkspace,
+    relative_path: &Path,
+) -> Option<PathBuf> {
+    let relative_path = relative_path
+        .as_os_str()
+        .to_string_lossy()
+        .replace('\\', "/");
+    let linux_path = if workspace.linux_path() == "/" {
+        format!("/{relative_path}")
+    } else {
+        format!(
+            "{}/{}",
+            workspace.linux_path().trim_end_matches('/'),
+            relative_path.trim_start_matches('/')
+        )
+    };
+    workspace
+        .unc_path_for_linux_path(linux_path)
+        .map(PathBuf::from)
 }
 
 fn filter_workspace_symbol_entry(
@@ -8368,11 +8498,11 @@ mod tests {
     use super::{
         Application, ApplicationCore, EditorInputBridge, LspCompletionTrigger, MaintenanceWake,
         NativeSymbolItem, NativeSymbolTarget, PendingCompletionRequest,
-        apply_remote_workspace_config_overrides, bridged_event_needs_gpui_context,
-        buffer_text_matches_path, buffer_word_completion_items, char_index_for_line_col,
-        coalesce_bridged_events, completion_context_for_trigger, current_dir_is_executable_dir,
-        dedupe_completion_items, detect_project_lsp_metadata, diagnostic_picker_path_label,
-        diagnostic_severity_label, home_requires_login_shell_capture,
+        WORKSPACE_SYNTAX_SYMBOL_FILE_LIMIT, apply_remote_workspace_config_overrides,
+        bridged_event_needs_gpui_context, buffer_text_matches_path, buffer_word_completion_items,
+        char_index_for_line_col, coalesce_bridged_events, completion_context_for_trigger,
+        current_dir_is_executable_dir, dedupe_completion_items, detect_project_lsp_metadata,
+        diagnostic_picker_path_label, diagnostic_severity_label, home_requires_login_shell_capture,
         is_workspace_diagnostic_refresh_method, local_path_completion_context,
         lsp_completion_insert_text, lsp_completion_insert_text_format,
         lsp_completion_items_from_response, lsp_completion_items_from_response_for_server,
@@ -8382,8 +8512,10 @@ mod tests {
         remote_path_completion_items, should_apply_project_environment_overrides,
         str_prefix_at_byte_limit, suppress_shadowed_buffer_word_completion_items,
         syntax_symbol_kind_from_capture_name, workspace_diagnostic_refresh_reply,
+        workspace_symbol_files_options_from_picker_config,
         wsl_remote_helper_install_source_from_value, wsl_remote_helper_unavailable_message,
         wsl_unc_path_for_remote_path, wsl_workspace_for_project_directory,
+        wsl_workspace_path_from_remote_relative,
     };
     use crate::test_utils::test_support::{
         TestUpdate, create_counting_channel, create_test_diagnostic_events,
@@ -9680,6 +9812,41 @@ mod tests {
                 .expect("wsl workspace");
 
         assert!(wsl_unc_path_for_remote_path(&workspace, Path::new("repo")).is_none());
+    }
+
+    #[test]
+    fn wsl_symbol_relative_paths_map_back_to_unc_paths() {
+        let workspace =
+            WslWorkspace::from_unc_path(Path::new(r"\\wsl.localhost\Ubuntu\home\iain\repo"))
+                .expect("wsl workspace");
+
+        let mapped = wsl_workspace_path_from_remote_relative(
+            &workspace,
+            Path::new("src").join("main.rs").as_path(),
+        )
+        .expect("mapped path");
+
+        assert_eq!(
+            mapped,
+            PathBuf::from(r"\\wsl.localhost\Ubuntu\home\iain\repo\src\main.rs")
+        );
+    }
+
+    #[test]
+    fn workspace_symbol_file_options_follow_picker_config() {
+        let mut config = helix_view::editor::Config::default().file_picker;
+        config.hidden = true;
+        config.parents = false;
+        config.follow_symlinks = true;
+        config.max_depth = Some(3);
+
+        let options = workspace_symbol_files_options_from_picker_config(&config);
+
+        assert!(options.hidden);
+        assert!(!options.parents);
+        assert!(options.follow_links);
+        assert_eq!(options.max_depth, Some(3));
+        assert_eq!(options.file_limit, WORKSPACE_SYNTAX_SYMBOL_FILE_LIMIT);
     }
 
     #[test]
