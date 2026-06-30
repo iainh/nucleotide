@@ -5,10 +5,11 @@ use nucleotide_remote::{
     DirectoryListingResponse, EnvironmentResponse, HelloResponse, PROTOCOL_VERSION,
     WorkspaceMetadataResponse,
 };
+use std::io::Read;
 use std::path::Path;
 use std::process::Command;
 use std::process::Stdio;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::time::timeout;
 
 const WSL_LOCALHOST_PREFIX: &str = "wsl.localhost";
@@ -256,6 +257,60 @@ pub async fn load_wsl_remote_directory_listing(
     }
 
     parse_remote_directory_listing_output(&output.stdout)
+}
+
+pub fn load_wsl_remote_directory_listing_blocking(
+    workspace: &WslWorkspace,
+    timeout_duration: Duration,
+) -> Result<DirectoryListingResponse, WslRemoteHelperError> {
+    let mut command = build_wsl_remote_directory_listing_command(workspace);
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command.spawn()?;
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let stdout_reader = std::thread::spawn(move || -> std::io::Result<Vec<u8>> {
+        let mut output = Vec::new();
+        if let Some(mut stdout) = stdout {
+            stdout.read_to_end(&mut output)?;
+        }
+        Ok(output)
+    });
+    let stderr_reader = std::thread::spawn(move || -> std::io::Result<Vec<u8>> {
+        let mut output = Vec::new();
+        if let Some(mut stderr) = stderr {
+            stderr.read_to_end(&mut output)?;
+        }
+        Ok(output)
+    });
+    let deadline = Instant::now() + timeout_duration;
+
+    loop {
+        if let Some(status) = child.try_wait()? {
+            let stdout = stdout_reader
+                .join()
+                .unwrap_or_else(|_| Err(std::io::Error::other("stdout reader panicked")))?;
+            let stderr = stderr_reader
+                .join()
+                .unwrap_or_else(|_| Err(std::io::Error::other("stderr reader panicked")))?;
+
+            if !status.success() {
+                let stderr = String::from_utf8_lossy(&stderr).trim().to_string();
+                return Err(WslRemoteHelperError::CommandFailed(stderr));
+            }
+
+            return parse_remote_directory_listing_output(&stdout);
+        }
+
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = stdout_reader.join();
+            let _ = stderr_reader.join();
+            return Err(WslRemoteHelperError::Timeout(timeout_duration));
+        }
+
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 pub async fn install_wsl_remote_helper(

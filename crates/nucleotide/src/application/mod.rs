@@ -57,13 +57,15 @@ use slotmap::Key;
 
 // Import our shell environment system
 use nucleotide_env::{
-    ProjectEnvironment, WslWorkspace, install_wsl_remote_helper, load_wsl_remote_metadata,
-    probe_wsl_remote_helper,
+    ProjectEnvironment, WslWorkspace, install_wsl_remote_helper,
+    load_wsl_remote_directory_listing_blocking, load_wsl_remote_metadata, probe_wsl_remote_helper,
 };
+use nucleotide_remote::{DirectoryListingResponse, RemoteFileKind};
 
 const WSL_REMOTE_HELPER_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 const WSL_REMOTE_HELPER_INSTALL_TIMEOUT: Duration = Duration::from_secs(15);
 const WSL_REMOTE_METADATA_TIMEOUT: Duration = Duration::from_secs(2);
+const WSL_REMOTE_PATH_COMPLETION_TIMEOUT: Duration = Duration::from_millis(500);
 const WSL_REMOTE_HELPER_INSTALL_SOURCE_ENV: &str = "NUCLEOTIDE_REMOTE_HELPER_INSTALL_SOURCE";
 
 /// Implementation of EnvironmentProvider trait for our ProjectEnvironment
@@ -7765,6 +7767,23 @@ fn path_completion_items(
     dir_path: &Path,
     typed_file_name: Option<&str>,
 ) -> Vec<nucleotide_events::completion::CompletionItem> {
+    if let Some(workspace) = WslWorkspace::from_unc_path(dir_path) {
+        return match load_wsl_remote_directory_listing_blocking(
+            &workspace,
+            WSL_REMOTE_PATH_COMPLETION_TIMEOUT,
+        ) {
+            Ok(listing) => remote_path_completion_items(dir_path, typed_file_name, listing),
+            Err(error) => {
+                nucleotide_logging::debug!(
+                    dir_path = %dir_path.display(),
+                    error = %error,
+                    "Failed to load WSL path completions"
+                );
+                Vec::new()
+            }
+        };
+    }
+
     let Ok(read_dir) = std::fs::read_dir(dir_path) else {
         return Vec::new();
     };
@@ -7810,8 +7829,59 @@ fn path_completion_items(
         .collect()
 }
 
+fn remote_path_completion_items(
+    dir_path: &Path,
+    typed_file_name: Option<&str>,
+    listing: DirectoryListingResponse,
+) -> Vec<nucleotide_events::completion::CompletionItem> {
+    let mut entries: Vec<_> = listing
+        .entries
+        .into_iter()
+        .filter(|entry| {
+            typed_file_name
+                .map(|typed| typed.is_empty() || entry.name.starts_with(typed))
+                .unwrap_or(true)
+        })
+        .collect();
+
+    entries.sort_by(|left, right| {
+        remote_file_kind_is_directory(&right.kind)
+            .cmp(&remote_file_kind_is_directory(&left.kind))
+            .then_with(|| left.name.cmp(&right.name))
+    });
+
+    entries
+        .into_iter()
+        .take(MAX_LOCAL_COMPLETION_ITEMS)
+        .map(|entry| {
+            let is_directory = remote_file_kind_is_directory(&entry.kind);
+            let kind = if is_directory {
+                nucleotide_events::completion::CompletionItemKind::Folder
+            } else {
+                nucleotide_events::completion::CompletionItemKind::File
+            };
+            let kind_name = if is_directory { "folder" } else { "file" };
+            let full_path = dir_path.join(&entry.name);
+            let documentation = path_documentation(&full_path, kind_name);
+
+            nucleotide_events::completion::CompletionItem::new(entry.name.clone(), kind)
+                .with_insert_text(entry.name)
+                .with_detail(kind_name.to_string())
+                .with_documentation(documentation)
+        })
+        .collect()
+}
+
+fn remote_file_kind_is_directory(kind: &RemoteFileKind) -> bool {
+    matches!(kind, RemoteFileKind::Directory)
+}
+
 fn local_path_documentation(full_path: &Path, kind: &str) -> String {
     let full_path = helix_path::fold_home_dir(helix_path::canonicalize(full_path));
+    path_documentation(&full_path, kind)
+}
+
+fn path_documentation(full_path: &Path, kind: &str) -> String {
     format!("type: `{kind}`\nfull path: `{}`", full_path.display())
 }
 
@@ -8192,10 +8262,11 @@ mod tests {
         lsp_completion_resolve_supported, lsp_completion_response_is_incomplete, lsp_symbol_picker,
         native_symbol_item_from_lsp, path_completion_items, project_health_status,
         project_server_language_id, project_type_from_remote_workspace_metadata,
-        should_apply_project_environment_overrides, str_prefix_at_byte_limit,
-        suppress_shadowed_buffer_word_completion_items, syntax_symbol_kind_from_capture_name,
-        workspace_diagnostic_refresh_reply, wsl_remote_helper_install_source_from_value,
-        wsl_remote_helper_unavailable_message, wsl_workspace_for_project_directory,
+        remote_path_completion_items, should_apply_project_environment_overrides,
+        str_prefix_at_byte_limit, suppress_shadowed_buffer_word_completion_items,
+        syntax_symbol_kind_from_capture_name, workspace_diagnostic_refresh_reply,
+        wsl_remote_helper_install_source_from_value, wsl_remote_helper_unavailable_message,
+        wsl_workspace_for_project_directory,
     };
     use crate::test_utils::test_support::{
         TestUpdate, create_counting_channel, create_test_diagnostic_events,
@@ -8212,6 +8283,7 @@ mod tests {
     use helix_view::{graphics::Rect, handlers::Handlers, theme};
     use nucleotide_core::event_bridge;
     use nucleotide_events::completion::{CompletionItem, CompletionItemKind};
+    use nucleotide_remote::{DirectoryListingResponse, RemoteFileKind};
     use slotmap::{Key, KeyData};
     use std::cell::RefCell;
     use std::collections::{BTreeSet, HashMap, HashSet};
@@ -9489,6 +9561,68 @@ mod tests {
             nucleotide_events::completion::CompletionItemKind::File
         );
         assert!(items.iter().all(|item| item.documentation.is_some()));
+    }
+
+    #[test]
+    fn remote_path_completion_items_filter_and_classify_entries() {
+        let root = Path::new(r"\\wsl.localhost\Ubuntu\home\iain\repo\src");
+        let listing = DirectoryListingResponse {
+            protocol_version: nucleotide_remote::PROTOCOL_VERSION,
+            current_dir: PathBuf::from("/home/iain/repo/src"),
+            entries: vec![
+                nucleotide_remote::DirectoryEntryResponse {
+                    name: "main.rs".to_string(),
+                    kind: RemoteFileKind::File,
+                    size: 10,
+                    modified_unix_millis: None,
+                    symlink_target: None,
+                    target_exists: None,
+                },
+                nucleotide_remote::DirectoryEntryResponse {
+                    name: "mod.rs".to_string(),
+                    kind: RemoteFileKind::File,
+                    size: 10,
+                    modified_unix_millis: None,
+                    symlink_target: None,
+                    target_exists: None,
+                },
+                nucleotide_remote::DirectoryEntryResponse {
+                    name: "module".to_string(),
+                    kind: RemoteFileKind::Directory,
+                    size: 0,
+                    modified_unix_millis: None,
+                    symlink_target: None,
+                    target_exists: None,
+                },
+                nucleotide_remote::DirectoryEntryResponse {
+                    name: "readme.md".to_string(),
+                    kind: RemoteFileKind::File,
+                    size: 10,
+                    modified_unix_millis: None,
+                    symlink_target: None,
+                    target_exists: None,
+                },
+            ],
+        };
+
+        let items = remote_path_completion_items(root, Some("m"), listing);
+
+        let labels: Vec<_> = items.iter().map(|item| item.label.as_str()).collect();
+        assert_eq!(labels, vec!["module", "main.rs", "mod.rs"]);
+        assert_eq!(
+            items[0].kind,
+            nucleotide_events::completion::CompletionItemKind::Folder
+        );
+        assert_eq!(
+            items[1].kind,
+            nucleotide_events::completion::CompletionItemKind::File
+        );
+        assert!(
+            items[0]
+                .documentation
+                .as_deref()
+                .is_some_and(|documentation| documentation.contains(r"\\wsl.localhost"))
+        );
     }
 
     #[test]

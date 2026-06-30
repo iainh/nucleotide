@@ -65,6 +65,9 @@ editor backend into Linux:
   Native workspaces keep the existing local filesystem path. WSL file watching is
   disabled for the Windows watcher path so the UI does not pay for recursive UNC
   monitoring.
+- Local path completion uses the same helper-backed directory listing for WSL
+  paths with a short timeout, avoiding per-keystroke `\\wsl...` directory reads
+  from the Windows side.
 
 This means the first supported path is direct WSL LSP execution with path
 translation. The helper is currently an optional foundation for richer remote
