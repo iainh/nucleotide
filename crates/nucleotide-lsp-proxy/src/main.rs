@@ -192,8 +192,8 @@ impl WslPathMapper {
             return None;
         }
 
-        let unc_path = format!("/{}{}", self.distro, linux_path);
-        windows_wsl_file_url(&unc_path)
+        let windows_path = self.map_root_path(&linux_path, Direction::ServerToClient)?;
+        windows_unc_file_url(&windows_path)
     }
 
     fn map_root_path(&self, text: &str, direction: Direction) -> Option<String> {
@@ -296,9 +296,18 @@ fn linux_file_url(path: &str) -> Option<String> {
     Some(url.to_string())
 }
 
-fn windows_wsl_file_url(path: &str) -> Option<String> {
-    let mut url = url::Url::parse("file://wsl.localhost/").ok()?;
-    url.set_path(&normalize_linux_path(path));
+fn windows_unc_file_url(path: &str) -> Option<String> {
+    let normalized = normalize_windows_path(path);
+    let rest = normalized.strip_prefix(r"\\")?;
+    let mut parts = rest.split('\\');
+    let host = parts.next()?.trim();
+    if host.is_empty() {
+        return None;
+    }
+
+    let path = parts.collect::<Vec<_>>().join("/");
+    let mut url = url::Url::parse(&format!("file://{host}/")).ok()?;
+    url.set_path(&normalize_linux_path(&path));
     Some(url.to_string())
 }
 
@@ -674,6 +683,26 @@ mod tests {
         assert_eq!(
             mapped["uri"],
             "file://wsl.localhost/Ubuntu/home/iain/my%20repo/src/hash%23tag.rs"
+        );
+    }
+
+    #[test]
+    fn maps_server_uris_back_to_legacy_wsl_unc_host_when_workspace_uses_it() {
+        let mapper = WslPathMapper::new(
+            "Ubuntu".to_string(),
+            "/home/iain/repo".to_string(),
+            r"\\wsl$\Ubuntu\home\iain\repo".to_string(),
+        );
+        let body = serde_json::json!({
+            "uri": "file:///home/iain/repo/src/main.rs"
+        });
+
+        let mapped = mapper.server_to_client_body(&serde_json::to_vec(&body).unwrap());
+        let mapped: JsonValue = serde_json::from_slice(&mapped).unwrap();
+
+        assert_eq!(
+            mapped["uri"],
+            "file://wsl$/Ubuntu/home/iain/repo/src/main.rs"
         );
     }
 }
