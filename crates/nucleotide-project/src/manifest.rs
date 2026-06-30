@@ -2,8 +2,10 @@
 // ABOUTME: Provides the foundation for language-specific project root detection
 
 use async_trait::async_trait;
+use nucleotide_env::WslWorkspace;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::error::{ProjectError, Result};
 
@@ -174,6 +176,110 @@ impl ManifestDelegate for FsDelegate {
     }
 }
 
+/// WSL-aware delegate that runs cheap manifest probes inside the owning distro.
+#[derive(Default)]
+pub struct WslManifestDelegate {
+    exists_cache: Mutex<HashMap<(PathBuf, Option<bool>), bool>>,
+}
+
+impl WslManifestDelegate {
+    pub fn supports(path: &Path) -> bool {
+        WslWorkspace::from_unc_path(path).is_some()
+    }
+
+    fn cached_exists(&self, path: &Path, is_dir: Option<bool>) -> Option<bool> {
+        self.exists_cache
+            .lock()
+            .ok()?
+            .get(&(path.to_path_buf(), is_dir))
+            .copied()
+    }
+
+    fn store_exists(&self, path: &Path, is_dir: Option<bool>, exists: bool) {
+        if let Ok(mut cache) = self.exists_cache.lock() {
+            cache.insert((path.to_path_buf(), is_dir), exists);
+        }
+    }
+}
+
+#[async_trait]
+impl ManifestDelegate for WslManifestDelegate {
+    async fn exists(&self, path: &Path, is_dir: Option<bool>) -> bool {
+        if let Some(exists) = self.cached_exists(path, is_dir) {
+            return exists;
+        }
+
+        let Some(mut command) = wsl_manifest_test_command(path, is_dir) else {
+            return false;
+        };
+
+        let exists = matches!(command.output().await, Ok(output) if output.status.success());
+        self.store_exists(path, is_dir, exists);
+        exists
+    }
+
+    async fn read_to_string(&self, path: &Path) -> Result<String> {
+        let Some(mut command) = wsl_manifest_read_command(path) else {
+            return Err(ProjectError::invalid_path(path.to_path_buf()));
+        };
+
+        let output = command.output().await.map_err(ProjectError::from)?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(ProjectError::Io(std::io::Error::other(format!(
+                "failed to read WSL manifest {}: {}",
+                path.display(),
+                stderr.trim()
+            ))));
+        }
+
+        String::from_utf8(output.stdout)
+            .map_err(|error| ProjectError::manifest_parse(path.to_path_buf(), error))
+    }
+
+    async fn metadata(&self, path: &Path) -> Result<std::fs::Metadata> {
+        tokio::fs::metadata(path).await.map_err(ProjectError::from)
+    }
+
+    async fn is_accessible(&self, path: &Path) -> bool {
+        self.exists(path, None).await
+    }
+}
+
+fn wsl_manifest_test_command(path: &Path, is_dir: Option<bool>) -> Option<tokio::process::Command> {
+    let test_flag = match is_dir {
+        Some(true) => "-d",
+        Some(false) => "-f",
+        None => "-e",
+    };
+    wsl_manifest_command(path, &format!("test {test_flag} {{path}}"))
+}
+
+fn wsl_manifest_read_command(path: &Path) -> Option<tokio::process::Command> {
+    wsl_manifest_command(path, "cat -- {path}")
+}
+
+fn wsl_manifest_command(path: &Path, script_template: &str) -> Option<tokio::process::Command> {
+    let workspace = WslWorkspace::from_unc_path(path)?;
+    let linux_path = quote_posix_single(workspace.linux_path());
+    let script = script_template.replace("{path}", &linux_path);
+
+    let mut command = nucleotide_process::tokio_command("wsl.exe");
+    command
+        .arg("--distribution")
+        .arg(workspace.distro())
+        .arg("--")
+        .arg("/bin/sh")
+        .arg("-c")
+        .arg(script);
+
+    Some(command)
+}
+
+fn quote_posix_single(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
 /// Base implementation for common manifest provider patterns
 pub struct BaseManifestProvider {
     pub name: ManifestName,
@@ -293,6 +399,54 @@ mod tests {
                 .is_accessible(&temp_dir.path().join("nonexistent"))
                 .await
         );
+    }
+
+    #[test]
+    fn wsl_manifest_delegate_supports_wsl_unc_paths() {
+        assert!(WslManifestDelegate::supports(Path::new(
+            r"\\wsl.localhost\Ubuntu\home\iain\repo\Cargo.toml"
+        )));
+        assert!(!WslManifestDelegate::supports(Path::new(
+            r"C:\Users\iain\repo\Cargo.toml"
+        )));
+    }
+
+    #[test]
+    fn wsl_manifest_test_command_uses_distribution_and_linux_path() {
+        let command = wsl_manifest_test_command(
+            Path::new(r"\\wsl.localhost\Ubuntu\home\iain\repo\Cargo.toml"),
+            Some(false),
+        )
+        .expect("build WSL manifest test command");
+        let command_debug = format!("{command:?}");
+
+        assert!(command_debug.contains("wsl.exe"));
+        assert!(command_debug.contains("Ubuntu"));
+        assert!(command_debug.contains("test -f"));
+        assert!(command_debug.contains("/home/iain/repo/Cargo.toml"));
+    }
+
+    #[test]
+    fn wsl_manifest_read_command_quotes_linux_path() {
+        let command = wsl_manifest_read_command(Path::new(
+            r"\\wsl.localhost\Ubuntu\home\iain\repo with spaces\Cargo.toml",
+        ))
+        .expect("build WSL manifest read command");
+        let command_debug = format!("{command:?}");
+
+        assert!(command_debug.contains("cat --"));
+        assert!(command_debug.contains("'/home/iain/repo with spaces/Cargo.toml'"));
+    }
+
+    #[test]
+    fn wsl_manifest_delegate_caches_existence_results() {
+        let delegate = WslManifestDelegate::default();
+        let path = Path::new(r"\\wsl.localhost\Ubuntu\home\iain\repo");
+
+        assert_eq!(delegate.cached_exists(path, Some(true)), None);
+        delegate.store_exists(path, Some(true), true);
+        assert_eq!(delegate.cached_exists(path, Some(true)), Some(true));
+        assert_eq!(delegate.cached_exists(path, Some(false)), None);
     }
 
     #[tokio::test]

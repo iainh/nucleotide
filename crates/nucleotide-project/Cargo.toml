@@ -7,7 +7,9 @@ description = "Project detection and manifest provider system for Nucleotide"
 
 [dependencies]
 gpui.workspace = true
+nucleotide-env.workspace = true
 nucleotide-logging.workspace = true
+nucleotide-process.workspace = true
 nucleotide-lsp.workspace = true
 nucleotide-ui.workspace = true
 serde.workspace = true

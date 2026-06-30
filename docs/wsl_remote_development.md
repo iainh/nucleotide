@@ -75,6 +75,10 @@ editor backend into Linux:
 - Git status and repository HEAD checks run through `wsl.exe` for WSL roots, so
   file decorations and VCS events use Linux Git against local Linux paths while
   still mapping results back to Windows WSL UNC paths for the UI.
+- Manifest-based project detection uses a WSL manifest delegate for WSL UNC
+  paths. Marker checks and manifest reads run inside the distro with a
+  per-detection existence cache, while native paths keep the normal filesystem
+  delegate.
 
 This means the first supported path is direct WSL LSP execution with path
 translation. The helper is currently an optional foundation for richer remote

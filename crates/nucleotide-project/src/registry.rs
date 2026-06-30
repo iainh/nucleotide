@@ -8,6 +8,7 @@ use std::sync::{Arc, OnceLock, RwLock};
 use crate::error::{ProjectError, Result};
 use crate::manifest::{
     FsDelegate, ManifestDelegate, ManifestName, ManifestProvider, ManifestQuery,
+    WslManifestDelegate,
 };
 
 /// Global registry for manifest providers
@@ -139,7 +140,7 @@ impl ManifestProviders {
         file_path: &Path,
         max_depth: Option<usize>,
     ) -> Result<Option<PathBuf>> {
-        let delegate = Arc::new(FsDelegate);
+        let delegate = manifest_delegate_for_path(file_path);
         self.detect_project_root_with_delegate(file_path, max_depth, delegate)
             .await
     }
@@ -216,7 +217,7 @@ impl ManifestProviders {
         file_path: &Path,
         max_depth: Option<usize>,
     ) -> Result<Option<ManifestName>> {
-        let delegate = Arc::new(FsDelegate);
+        let delegate = manifest_delegate_for_path(file_path);
         let max_depth = max_depth.unwrap_or(20);
         let query = ManifestQuery::new(file_path, max_depth, delegate);
 
@@ -258,6 +259,14 @@ impl ManifestProviders {
         }
 
         nucleotide_logging::debug!("Bulk provider registration completed");
+    }
+}
+
+fn manifest_delegate_for_path(file_path: &Path) -> Arc<dyn ManifestDelegate> {
+    if WslManifestDelegate::supports(file_path) {
+        Arc::new(WslManifestDelegate::default())
+    } else {
+        Arc::new(FsDelegate)
     }
 }
 

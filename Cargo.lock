@@ -5149,8 +5149,10 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "gpui",
+ "nucleotide-env",
  "nucleotide-logging",
  "nucleotide-lsp",
+ "nucleotide-process",
  "nucleotide-ui",
  "parking_lot",
  "regex",
