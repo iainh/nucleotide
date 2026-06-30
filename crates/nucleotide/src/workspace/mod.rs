@@ -408,6 +408,10 @@ fn add_recent_project(path: &Path, cx: &mut App) {
 
 #[cfg(target_os = "windows")]
 fn windows_recent_project_path(path: &Path) -> Option<PathBuf> {
+    if WslWorkspace::from_unc_path(path).is_some() {
+        return Some(path.to_path_buf());
+    }
+
     if !path.is_dir() {
         return None;
     }
@@ -16459,6 +16463,17 @@ mod tests {
         assert!(recent_path.is_absolute());
         assert!(recent_path.is_dir());
         assert_eq!(windows_recent_project_path(&file_path), None);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_recent_project_path_accepts_wsl_unc_without_local_probe() {
+        let project_path = PathBuf::from(r"\\wsl.localhost\Ubuntu\home\me\project");
+
+        assert_eq!(
+            windows_recent_project_path(&project_path),
+            Some(project_path)
+        );
     }
 
     #[cfg(target_os = "windows")]
