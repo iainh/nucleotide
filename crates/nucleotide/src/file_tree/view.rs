@@ -88,9 +88,11 @@ async fn read_directory_entries(
     path: PathBuf,
     tokio_handle: Option<tokio::runtime::Handle>,
 ) -> Result<Vec<FileTreeDirectoryEntry>, String> {
-    if let Some(workspace) = WslWorkspace::from_unc_path(&path)
-        && let Some(tokio_handle) = tokio_handle
-    {
+    if let Some(workspace) = WslWorkspace::from_unc_path(&path) {
+        let Some(tokio_handle) = tokio_handle else {
+            return Err("WSL directory listing requires an async runtime".to_string());
+        };
+
         let path_for_mapping = path.clone();
         let listing = tokio_handle
             .spawn(async move {
@@ -2178,6 +2180,17 @@ mod tests {
                 target_exists: true,
             }
         );
+    }
+
+    #[tokio::test]
+    async fn wsl_directory_entries_require_runtime_instead_of_local_read_dir() {
+        let path = PathBuf::from(r"\\wsl.localhost\Ubuntu\home\iain\repo");
+
+        let error = read_directory_entries(path, None)
+            .await
+            .expect_err("missing runtime should reject WSL directory reads");
+
+        assert!(error.contains("async runtime"));
     }
 
     #[gpui::test]
