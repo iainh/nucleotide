@@ -6,9 +6,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::time::UNIX_EPOCH;
 
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 pub const DEFAULT_FILE_SEARCH_LIMIT: usize = 1_000;
 pub const DEFAULT_GLOBAL_SEARCH_LIMIT: usize = 1_000;
+pub const DEFAULT_FILE_READ_LIMIT: usize = 10_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HelloResponse {
@@ -357,6 +358,60 @@ impl GlobalSearchResponse {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileReadResponse {
+    pub protocol_version: u32,
+    pub current_dir: PathBuf,
+    pub path: PathBuf,
+    pub content: Option<String>,
+    pub binary: bool,
+    pub size: u64,
+    pub truncated: bool,
+}
+
+impl FileReadResponse {
+    pub fn current(path: &std::path::Path, limit: usize) -> std::io::Result<Self> {
+        let current_dir = std::env::current_dir()?;
+        let metadata = std::fs::metadata(path)?;
+        let size = metadata.len();
+        let bytes = std::fs::read(path)?;
+        let truncated = bytes.len() > limit;
+        let (content, binary) = match String::from_utf8(bytes) {
+            Ok(content) => {
+                let content = if truncated {
+                    str_prefix_at_byte_limit(&content, limit).to_string()
+                } else {
+                    content
+                };
+                (Some(content), false)
+            }
+            Err(_) => (None, true),
+        };
+
+        Ok(Self {
+            protocol_version: PROTOCOL_VERSION,
+            current_dir,
+            path: path.to_path_buf(),
+            content,
+            binary,
+            size,
+            truncated,
+        })
+    }
+}
+
+fn str_prefix_at_byte_limit(text: &str, limit: usize) -> &str {
+    if text.len() <= limit {
+        return text;
+    }
+
+    let mut end = limit;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
 const WORKSPACE_MARKERS: &[&str] = &[
     "Cargo.toml",
     "tsconfig.json",
@@ -439,7 +494,7 @@ mod tests {
         let line = encode_json_line(&response).unwrap();
 
         assert!(line.ends_with('\n'));
-        assert!(line.contains("\"protocol_version\":4"));
+        assert!(line.contains("\"protocol_version\":5"));
         assert!(line.contains("\"current_dir\":\"/workspace\""));
     }
 
@@ -550,5 +605,34 @@ mod tests {
         assert!(line.contains("\"line\":2"));
         assert!(line.contains("\"line_text\":\"let needle = true;\""));
         assert!(line.contains("\"truncated\":false"));
+    }
+
+    #[test]
+    fn file_read_response_encodes_text_preview() {
+        let response = FileReadResponse {
+            protocol_version: PROTOCOL_VERSION,
+            current_dir: PathBuf::from("/workspace"),
+            path: PathBuf::from("src/main.rs"),
+            content: Some("fn main() {}\n".to_string()),
+            binary: false,
+            size: 13,
+            truncated: false,
+        };
+
+        let line = encode_json_line(&response).unwrap();
+
+        assert!(line.contains("\"current_dir\":\"/workspace\""));
+        assert!(line.contains("\"path\":\"src/main.rs\""));
+        assert!(line.contains("\"content\":\"fn main() {}\\n\""));
+        assert!(line.contains("\"binary\":false"));
+        assert!(line.contains("\"size\":13"));
+        assert!(line.contains("\"truncated\":false"));
+    }
+
+    #[test]
+    fn file_read_prefix_keeps_utf8_boundary() {
+        assert_eq!(str_prefix_at_byte_limit("abcdef", 3), "abc");
+        assert_eq!(str_prefix_at_byte_limit("éclair", 1), "");
+        assert_eq!(str_prefix_at_byte_limit("éclair", 2), "é");
     }
 }

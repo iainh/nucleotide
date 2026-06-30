@@ -3,8 +3,9 @@
 
 use anyhow::{Context, Result, bail};
 use nucleotide_remote::{
-    DirectoryListingResponse, EnvironmentResponse, FileSearchResponse, GlobalSearchResponse,
-    HelloResponse, WorkspaceMetadataResponse, encode_json_line,
+    DEFAULT_FILE_READ_LIMIT, DirectoryListingResponse, EnvironmentResponse, FileReadResponse,
+    FileSearchResponse, GlobalSearchResponse, HelloResponse, WorkspaceMetadataResponse,
+    encode_json_line,
 };
 
 fn main() -> Result<()> {
@@ -51,6 +52,18 @@ fn main() -> Result<()> {
                 .context("failed to build global search response")?;
             print!("{}", encode_json_line(&response)?);
         }
+        "read" => {
+            let path = std::env::var_os("NUCLEOTIDE_REMOTE_READ_PATH")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| std::path::PathBuf::from("."));
+            let limit = std::env::var("NUCLEOTIDE_REMOTE_READ_LIMIT")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(DEFAULT_FILE_READ_LIMIT);
+            let response = FileReadResponse::current(&path, limit)
+                .context("failed to build file read response")?;
+            print!("{}", encode_json_line(&response)?);
+        }
         "--help" | "-h" => {
             println!("nucleotide-remote hello");
             println!("nucleotide-remote env");
@@ -58,6 +71,7 @@ fn main() -> Result<()> {
             println!("nucleotide-remote list");
             println!("nucleotide-remote files");
             println!("nucleotide-remote search");
+            println!("nucleotide-remote read");
         }
         other => bail!("unknown nucleotide-remote command: {other}"),
     }

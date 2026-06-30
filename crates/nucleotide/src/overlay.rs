@@ -14,6 +14,10 @@ use nucleotide_ui::prompt::Prompt;
 use nucleotide_ui::prompt_view::PromptView;
 use nucleotide_ui::theme_manager::HelixThemedContext; // bring dispatch_* trait methods into scope
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+const WSL_REMOTE_PICKER_PREVIEW_TIMEOUT: Duration = Duration::from_millis(750);
+const WSL_REMOTE_PICKER_PREVIEW_LIMIT: usize = 10_000;
 
 pub struct OverlayView {
     native_picker_view: Option<Entity<PickerView>>,
@@ -71,6 +75,28 @@ fn changed_documents_since(
     changed
 }
 
+fn wsl_remote_picker_preview_text(
+    path: &std::path::Path,
+    response: nucleotide_remote::FileReadResponse,
+) -> String {
+    if response.binary {
+        return format!(
+            "Binary file: {}\nSize: {} bytes",
+            path.display(),
+            response.size
+        );
+    }
+
+    let mut content = response.content.unwrap_or_default();
+    if response.truncated {
+        content.push_str(&format!(
+            "\n\n[File truncated - showing first 10KB of {}KB total]",
+            response.size / 1024
+        ));
+    }
+    content
+}
+
 fn apply_code_action_or_command(
     editor: &mut helix_view::Editor,
     action: &helix_lsp::lsp::CodeActionOrCommand,
@@ -126,6 +152,75 @@ fn apply_code_action_or_command(
     }
 
     changed_documents
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn wsl_remote_picker_preview_text_returns_content() {
+        let response = nucleotide_remote::FileReadResponse {
+            protocol_version: nucleotide_remote::PROTOCOL_VERSION,
+            current_dir: PathBuf::from("/home/iain/repo"),
+            path: PathBuf::from("main.rs"),
+            content: Some("fn main() {}\n".to_string()),
+            binary: false,
+            size: 13,
+            truncated: false,
+        };
+
+        assert_eq!(
+            wsl_remote_picker_preview_text(
+                Path::new(r"\\wsl.localhost\Ubuntu\repo\main.rs"),
+                response
+            ),
+            "fn main() {}\n"
+        );
+    }
+
+    #[test]
+    fn wsl_remote_picker_preview_text_notes_truncation() {
+        let response = nucleotide_remote::FileReadResponse {
+            protocol_version: nucleotide_remote::PROTOCOL_VERSION,
+            current_dir: PathBuf::from("/home/iain/repo"),
+            path: PathBuf::from("main.rs"),
+            content: Some("prefix".to_string()),
+            binary: false,
+            size: 20_480,
+            truncated: true,
+        };
+
+        let preview = wsl_remote_picker_preview_text(
+            Path::new(r"\\wsl.localhost\Ubuntu\repo\main.rs"),
+            response,
+        );
+
+        assert!(preview.starts_with("prefix"));
+        assert!(preview.contains("showing first 10KB of 20KB total"));
+    }
+
+    #[test]
+    fn wsl_remote_picker_preview_text_describes_binary_files() {
+        let response = nucleotide_remote::FileReadResponse {
+            protocol_version: nucleotide_remote::PROTOCOL_VERSION,
+            current_dir: PathBuf::from("/home/iain/repo"),
+            path: PathBuf::from("image.bin"),
+            content: None,
+            binary: true,
+            size: 42,
+            truncated: false,
+        };
+
+        let preview = wsl_remote_picker_preview_text(
+            Path::new(r"\\wsl.localhost\Ubuntu\repo\image.bin"),
+            response,
+        );
+
+        assert!(preview.contains("Binary file:"));
+        assert!(preview.contains("Size: 42 bytes"));
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1017,6 +1112,32 @@ impl OverlayView {
                                         crate::runnables::task_preview_text(task),
                                         task.source().map(|source| source.path.clone()),
                                     ));
+                                } else if let Some(path) = item.data.downcast_ref::<std::path::PathBuf>()
+                                    && nucleotide_env::WslWorkspace::from_unc_path(path).is_some()
+                                {
+                                    match nucleotide_env::load_wsl_remote_file_read_blocking(
+                                        path,
+                                        WSL_REMOTE_PICKER_PREVIEW_LIMIT,
+                                        WSL_REMOTE_PICKER_PREVIEW_TIMEOUT,
+                                    ) {
+                                        Ok(response) => {
+                                            return Some((
+                                                wsl_remote_picker_preview_text(path, response),
+                                                Some(path.clone()),
+                                            ));
+                                        }
+                                        Err(error) => {
+                                            nucleotide_logging::warn!(
+                                                path = %path.display(),
+                                                error = %error,
+                                                "Failed to load WSL picker preview through remote helper"
+                                            );
+                                            return Some((
+                                                format!("Remote preview unavailable: {error}"),
+                                                Some(path.clone()),
+                                            ));
+                                        }
+                                    }
                                 }
                                 None
                             });

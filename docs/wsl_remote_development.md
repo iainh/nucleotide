@@ -40,17 +40,18 @@ editor backend into Linux:
   not inject Linux environment snapshots into the Windows process; the remote
   launch boundary owns those values.
 - `nucleotide-remote` is a versioned helper binary with `hello`, `env`,
-  `metadata`, `list`, `files`, and `search` protocol commands. Metadata includes
-  workspace marker and shallow source-directory facts so project/LSP detection
-  can avoid repeated Windows UNC filesystem probes when the helper is available.
+  `metadata`, `list`, `files`, `search`, and `read` protocol commands. Metadata
+  includes workspace marker and shallow source-directory facts so project/LSP
+  detection can avoid repeated Windows UNC filesystem probes when the helper is
+  available.
   Directory listing returns compact file metadata from inside WSL so the project
   tree can populate rows without enumerating `\\wsl...` paths through Windows.
   Recursive file search returns picker-ready relative paths from inside WSL.
   Global text search walks ignore-filtered files and reads file contents inside
   WSL, returning relative path, line number, and line text matches to the
   Windows UI.
-  The `list`, `files`, and `search` commands are part of helper protocol version
-  4, so older cached helpers are bypassed by the versioned cache path.
+  The `list`, `files`, `search`, and `read` commands are part of helper protocol
+  version 5, so older cached helpers are bypassed by the versioned cache path.
 - Application startup schedules a short, non-blocking WSL helper health probe for
   WSL roots. Probes prefer
   `~/.cache/nucleotide/remote-helper/<protocol-version>/nucleotide-remote`
@@ -75,6 +76,9 @@ editor backend into Linux:
 - The file picker uses helper-backed recursive file search for WSL roots, so the
   expensive ignore-aware walk runs in Linux rather than across the Windows UNC
   filesystem boundary.
+- File picker previews use the helper-backed `read` command for WSL file paths,
+  so previewing a selected file reads a bounded text slice inside WSL instead of
+  through the Windows UNC filesystem path.
 - Git status and repository HEAD checks run through `wsl.exe` for WSL roots, so
   file decorations and VCS events use Linux Git against local Linux paths while
   still mapping results back to Windows WSL UNC paths for the UI.
