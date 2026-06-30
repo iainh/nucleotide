@@ -376,6 +376,7 @@ const MAINTENANCE_DRAIN_WARN_THRESHOLD: Duration = Duration::from_millis(8);
 const MAINTENANCE_ITERATION_WARN_THRESHOLD: Duration = Duration::from_millis(2);
 const MAINTENANCE_POLLER_WARN_THRESHOLD: Duration = Duration::from_millis(2);
 const MAINTENANCE_TURN_BUDGET: Duration = Duration::from_millis(6);
+const MAINTENANCE_BRIDGED_EVENT_BATCH: usize = 64;
 
 fn bridged_event_needs_gpui_context(bridged_event: &event_bridge::BridgedEvent) -> bool {
     match bridged_event {
@@ -393,6 +394,40 @@ fn bridged_event_needs_gpui_context(bridged_event: &event_bridge::BridgedEvent) 
         | event_bridge::BridgedEvent::ViewFocused { .. }
         | event_bridge::BridgedEvent::CompletionRequested { .. } => false,
     }
+}
+
+fn coalesce_bridged_events(
+    bridged_events: Vec<event_bridge::BridgedEvent>,
+) -> Vec<event_bridge::BridgedEvent> {
+    let mut seen_diagnostics = HashSet::new();
+    let mut coalesced = Vec::with_capacity(bridged_events.len());
+
+    for bridged_event in bridged_events.into_iter().rev() {
+        match &bridged_event {
+            event_bridge::BridgedEvent::DiagnosticsChanged { doc_id } => {
+                if !seen_diagnostics.insert(*doc_id) {
+                    continue;
+                }
+            }
+            event_bridge::BridgedEvent::DocumentChanged { .. }
+            | event_bridge::BridgedEvent::SelectionChanged { .. }
+            | event_bridge::BridgedEvent::ModeChanged { .. }
+            | event_bridge::BridgedEvent::DocumentOpened { .. }
+            | event_bridge::BridgedEvent::DocumentClosed { .. }
+            | event_bridge::BridgedEvent::ViewFocused { .. }
+            | event_bridge::BridgedEvent::LanguageServerInitialized { .. }
+            | event_bridge::BridgedEvent::LanguageServerExited { .. }
+            | event_bridge::BridgedEvent::CompletionRequested { .. }
+            | event_bridge::BridgedEvent::DiagnosticsPickerRequested { .. }
+            | event_bridge::BridgedEvent::FilePickerRequested
+            | event_bridge::BridgedEvent::BufferPickerRequested => {}
+        }
+
+        coalesced.push(bridged_event);
+    }
+
+    coalesced.reverse();
+    coalesced
 }
 
 #[derive(Clone)]
@@ -625,7 +660,7 @@ impl Application {
         let mut disconnected = false;
 
         if let Some(ref mut rx) = self.event_bridge_rx {
-            loop {
+            for _ in 0..MAINTENANCE_BRIDGED_EVENT_BATCH {
                 match rx.poll_recv(task_cx) {
                     Poll::Ready(Some(event)) => bridged_events.push(event),
                     Poll::Ready(None) => {
@@ -642,7 +677,24 @@ impl Application {
             self.event_bridge_rx = None;
         }
 
+        let received_count = bridged_events.len();
+        let bridged_events = coalesce_bridged_events(bridged_events);
         let progressed = !bridged_events.is_empty();
+
+        if received_count >= MAINTENANCE_BRIDGED_EVENT_BATCH {
+            debug!(
+                received_count = received_count,
+                processed_count = bridged_events.len(),
+                batch_limit = MAINTENANCE_BRIDGED_EVENT_BATCH,
+                "Maintenance bridged-event poll reached batch limit"
+            );
+        } else if received_count != bridged_events.len() {
+            debug!(
+                received_count = received_count,
+                processed_count = bridged_events.len(),
+                "Maintenance coalesced bridged events"
+            );
+        }
 
         for bridged_event in bridged_events {
             match handle.block_on(self.process_v2_event(&bridged_event)) {
@@ -7725,9 +7777,9 @@ mod tests {
         Application, ApplicationCore, EditorInputBridge, LspCompletionTrigger, MaintenanceWake,
         NativeSymbolItem, NativeSymbolTarget, PendingCompletionRequest,
         bridged_event_needs_gpui_context, buffer_text_matches_path, buffer_word_completion_items,
-        char_index_for_line_col, completion_context_for_trigger, current_dir_is_executable_dir,
-        dedupe_completion_items, detect_project_lsp_metadata, diagnostic_picker_path_label,
-        diagnostic_severity_label, home_requires_login_shell_capture,
+        char_index_for_line_col, coalesce_bridged_events, completion_context_for_trigger,
+        current_dir_is_executable_dir, dedupe_completion_items, detect_project_lsp_metadata,
+        diagnostic_picker_path_label, diagnostic_severity_label, home_requires_login_shell_capture,
         is_workspace_diagnostic_refresh_method, local_path_completion_context,
         lsp_completion_insert_text, lsp_completion_insert_text_format,
         lsp_completion_items_from_response, lsp_completion_items_from_response_for_server,
@@ -8095,6 +8147,28 @@ mod tests {
         app.update(cx, |app, cx| {
             app.drive_event_driven_maintenance(cx, handle, &wake);
         });
+    }
+
+    #[test]
+    fn coalesce_bridged_events_drops_duplicate_diagnostics() {
+        let doc_id = helix_view::DocumentId::default();
+        let events = vec![
+            event_bridge::BridgedEvent::DiagnosticsChanged { doc_id },
+            event_bridge::BridgedEvent::FilePickerRequested,
+            event_bridge::BridgedEvent::DiagnosticsChanged { doc_id },
+        ];
+
+        let coalesced = coalesce_bridged_events(events);
+
+        assert_eq!(coalesced.len(), 2);
+        assert!(matches!(
+            coalesced[0],
+            event_bridge::BridgedEvent::FilePickerRequested
+        ));
+        assert!(matches!(
+            coalesced[1],
+            event_bridge::BridgedEvent::DiagnosticsChanged { .. }
+        ));
     }
 
     #[gpui::test]
