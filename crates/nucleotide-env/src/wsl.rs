@@ -9,6 +9,7 @@ use tokio::time::timeout;
 
 const WSL_LOCALHOST_PREFIX: &str = "wsl.localhost";
 const WSL_LEGACY_PREFIX: &str = "wsl$";
+const WSL_REMOTE_HELPER_CACHE_ROOT: &str = ".cache/nucleotide/remote-helper";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WslWorkspace {
@@ -43,17 +44,29 @@ pub fn build_wsl_environment_capture_command(workspace: &WslWorkspace) -> Comman
 }
 
 pub fn build_wsl_remote_hello_command(workspace: &WslWorkspace) -> Command {
-    let mut command = nucleotide_process::command("wsl.exe");
-    add_wsl_base_args(&mut command, workspace);
-    command.arg("nucleotide-remote").arg("hello");
-    command
+    build_wsl_shell_command(workspace, "/bin/sh", &wsl_remote_helper_hello_script())
 }
 
 pub fn build_wsl_remote_hello_tokio_command(workspace: &WslWorkspace) -> tokio::process::Command {
-    let mut command = nucleotide_process::tokio_command("wsl.exe");
-    add_wsl_base_args(&mut command, workspace);
-    command.arg("nucleotide-remote").arg("hello");
-    command
+    build_wsl_tokio_shell_command(workspace, "/bin/sh", &wsl_remote_helper_hello_script())
+}
+
+pub fn wsl_remote_helper_cache_path() -> String {
+    format!(
+        "$HOME/{}/{}/nucleotide-remote",
+        WSL_REMOTE_HELPER_CACHE_ROOT, PROTOCOL_VERSION
+    )
+}
+
+pub fn wsl_remote_helper_hello_script() -> String {
+    let helper_path = wsl_remote_helper_cache_path();
+    format!(
+        r#"helper="${{NUCLEOTIDE_REMOTE_HELPER:-{helper_path}}}"
+if [ -x "$helper" ]; then
+  exec "$helper" hello
+fi
+exec nucleotide-remote hello"#
+    )
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -278,8 +291,29 @@ mod tests {
         assert!(debug.contains("Ubuntu"));
         assert!(debug.contains("--cd"));
         assert!(debug.contains("/home/iain/repo"));
+        assert!(debug.contains("/bin/sh"));
+        assert!(debug.contains("-lc"));
+        assert!(debug.contains(".cache/nucleotide/remote-helper/1/nucleotide-remote"));
         assert!(debug.contains("nucleotide-remote"));
         assert!(debug.contains("hello"));
+    }
+
+    #[test]
+    fn remote_helper_cache_path_is_versioned() {
+        assert_eq!(
+            wsl_remote_helper_cache_path(),
+            "$HOME/.cache/nucleotide/remote-helper/1/nucleotide-remote"
+        );
+    }
+
+    #[test]
+    fn remote_helper_hello_script_prefers_cached_helper_before_path() {
+        let script = wsl_remote_helper_hello_script();
+
+        assert!(script.contains("NUCLEOTIDE_REMOTE_HELPER"));
+        assert!(script.contains(".cache/nucleotide/remote-helper/1/nucleotide-remote"));
+        assert!(script.contains(r#"exec "$helper" hello"#));
+        assert!(script.contains("exec nucleotide-remote hello"));
     }
 
     #[test]
@@ -321,6 +355,9 @@ mod tests {
         assert!(debug.contains("wsl.exe"));
         assert!(debug.contains("--distribution"));
         assert!(debug.contains("Ubuntu"));
+        assert!(debug.contains("/bin/sh"));
+        assert!(debug.contains("-lc"));
+        assert!(debug.contains(".cache/nucleotide/remote-helper/1/nucleotide-remote"));
         assert!(debug.contains("nucleotide-remote"));
         assert!(debug.contains("hello"));
     }

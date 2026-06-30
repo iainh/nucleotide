@@ -13,6 +13,7 @@ pub use shell_env::{
 pub use wsl::{
     WslRemoteHelperError, WslWorkspace, build_wsl_environment_capture_command,
     build_wsl_remote_hello_command, build_wsl_shell_command, probe_wsl_remote_helper,
+    wsl_remote_helper_cache_path, wsl_remote_helper_hello_script,
 };
 
 #[cfg(test)]
