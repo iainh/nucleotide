@@ -29,7 +29,7 @@ use std::{
     pin::Pin,
     sync::Arc,
     task::{Context as TaskContext, Poll, Wake, Waker},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::sync::RwLock;
 
@@ -375,6 +375,7 @@ use gpui::EventEmitter;
 const MAINTENANCE_DRAIN_WARN_THRESHOLD: Duration = Duration::from_millis(8);
 const MAINTENANCE_ITERATION_WARN_THRESHOLD: Duration = Duration::from_millis(2);
 const MAINTENANCE_POLLER_WARN_THRESHOLD: Duration = Duration::from_millis(2);
+const MAINTENANCE_TURN_BUDGET: Duration = Duration::from_millis(6);
 
 fn bridged_event_needs_gpui_context(bridged_event: &event_bridge::BridgedEvent) -> bool {
     match bridged_event {
@@ -2968,8 +2969,12 @@ impl Application {
         let waker = wake.waker();
         let mut task_cx = TaskContext::from_waker(&waker);
         let mut made_progress = false;
+        let turn_started = Instant::now();
+        let mut iterations = 0usize;
+        let mut yielded_for_budget = false;
 
         loop {
+            iterations += 1;
             let _iteration_timer =
                 PerfTimer::new("Application::drive_event_driven_maintenance.iteration")
                     .with_warn_threshold(MAINTENANCE_ITERATION_WARN_THRESHOLD);
@@ -3005,6 +3010,11 @@ impl Application {
             }
 
             made_progress = true;
+
+            if turn_started.elapsed() >= MAINTENANCE_TURN_BUDGET {
+                yielded_for_budget = true;
+                break;
+            }
         }
 
         if made_progress {
@@ -3015,6 +3025,16 @@ impl Application {
                 CoreEvent::RedrawRequested,
             )));
             cx.notify();
+        }
+
+        if yielded_for_budget {
+            debug!(
+                iterations = iterations,
+                elapsed_ms = turn_started.elapsed().as_millis(),
+                budget_ms = MAINTENANCE_TURN_BUDGET.as_millis(),
+                "Maintenance yielded after exhausting turn budget"
+            );
+            wake.notify();
         }
 
         self.editor.tree.views().count() > 0
