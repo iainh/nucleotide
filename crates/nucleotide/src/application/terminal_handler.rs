@@ -1,6 +1,7 @@
 // ABOUTME: Terminal runtime handler; consumes terminal events and updates view state
 
 use nucleotide_core::{self as core, EventAggregatorHandle};
+use nucleotide_env::WslWorkspace;
 use nucleotide_events::EventBus;
 use nucleotide_events::v2::terminal::{Event as TerminalEvent, TerminalId};
 use nucleotide_logging::{error, info};
@@ -76,6 +77,31 @@ fn lock_view_model<'a>(
             poisoned.into_inner()
         }
     }
+}
+
+fn adapt_wsl_terminal_config(mut cfg: TerminalSessionCfg) -> TerminalSessionCfg {
+    let Some(workspace) = cfg.cwd.as_deref().and_then(WslWorkspace::from_unc_path) else {
+        return cfg;
+    };
+
+    let mut args = vec![
+        "--distribution".to_string(),
+        workspace.distro().to_string(),
+        "--cd".to_string(),
+        workspace.linux_path().to_string(),
+    ];
+
+    if let Some(program) = cfg.program.take().or_else(|| cfg.shell.take()) {
+        args.push("--".to_string());
+        args.push(program);
+        args.append(&mut cfg.args);
+    }
+
+    cfg.cwd = None;
+    cfg.shell = None;
+    cfg.program = Some("wsl.exe".to_string());
+    cfg.args = args;
+    cfg
 }
 
 impl TerminalRuntimeHandler {
@@ -208,7 +234,7 @@ impl core::EventHandler for TerminalRuntimeHandler {
                 shell,
                 env,
             } => {
-                let cfg = TerminalSessionCfg {
+                let cfg = adapt_wsl_terminal_config(TerminalSessionCfg {
                     cwd: cwd.clone(),
                     shell: shell.clone(),
                     program: None,
@@ -216,7 +242,7 @@ impl core::EventHandler for TerminalRuntimeHandler {
                     env: env.clone(),
                     cols: Some(80),
                     rows: Some(24),
-                };
+                });
                 self.handle_spawn(*id, &cfg);
             }
             TerminalEvent::CommandSpawnRequested {
@@ -226,7 +252,7 @@ impl core::EventHandler for TerminalRuntimeHandler {
                 args,
                 env,
             } => {
-                let cfg = TerminalSessionCfg {
+                let cfg = adapt_wsl_terminal_config(TerminalSessionCfg {
                     cwd: cwd.clone(),
                     shell: None,
                     program: Some(program.clone()),
@@ -234,7 +260,7 @@ impl core::EventHandler for TerminalRuntimeHandler {
                     env: env.clone(),
                     cols: Some(80),
                     rows: Some(24),
-                };
+                });
                 self.handle_spawn(*id, &cfg);
             }
             TerminalEvent::Resized { id, cols, rows } => {
@@ -358,6 +384,87 @@ impl core::EventHandler for TerminalRuntimeHandler {
             }
             TerminalEvent::FocusChanged { .. } => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod wsl_terminal_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn wsl_terminal_config_launches_wsl_in_project_directory() {
+        let cfg = adapt_wsl_terminal_config(TerminalSessionCfg {
+            cwd: Some(PathBuf::from(r"\\wsl.localhost\Ubuntu\home\iain\project")),
+            shell: None,
+            program: None,
+            args: Vec::new(),
+            env: Vec::new(),
+            cols: Some(80),
+            rows: Some(24),
+        });
+
+        assert_eq!(cfg.cwd, None);
+        assert_eq!(cfg.shell, None);
+        assert_eq!(cfg.program.as_deref(), Some("wsl.exe"));
+        assert_eq!(
+            cfg.args,
+            vec!["--distribution", "Ubuntu", "--cd", "/home/iain/project"]
+        );
+    }
+
+    #[test]
+    fn wsl_terminal_config_runs_commands_inside_wsl() {
+        let cfg = adapt_wsl_terminal_config(TerminalSessionCfg {
+            cwd: Some(PathBuf::from(r"\\wsl.localhost\Ubuntu\repo")),
+            shell: None,
+            program: Some("cargo".to_string()),
+            args: vec!["test".to_string(), "-p".to_string(), "crate".to_string()],
+            env: vec![("RUST_LOG".to_string(), "info".to_string())],
+            cols: Some(80),
+            rows: Some(24),
+        });
+
+        assert_eq!(cfg.cwd, None);
+        assert_eq!(cfg.program.as_deref(), Some("wsl.exe"));
+        assert_eq!(
+            cfg.args,
+            vec![
+                "--distribution",
+                "Ubuntu",
+                "--cd",
+                "/repo",
+                "--",
+                "cargo",
+                "test",
+                "-p",
+                "crate",
+            ]
+        );
+        assert_eq!(cfg.env, vec![("RUST_LOG".to_string(), "info".to_string())]);
+    }
+
+    #[test]
+    fn native_terminal_config_is_unchanged() {
+        let cfg = TerminalSessionCfg {
+            cwd: Some(PathBuf::from(r"C:\Users\iain\project")),
+            shell: Some("pwsh.exe".to_string()),
+            program: None,
+            args: Vec::new(),
+            env: Vec::new(),
+            cols: Some(80),
+            rows: Some(24),
+        };
+
+        let adapted = adapt_wsl_terminal_config(cfg.clone());
+
+        assert_eq!(adapted.cwd, cfg.cwd);
+        assert_eq!(adapted.shell, cfg.shell);
+        assert_eq!(adapted.program, cfg.program);
+        assert_eq!(adapted.args, cfg.args);
+        assert_eq!(adapted.env, cfg.env);
+        assert_eq!(adapted.cols, cfg.cols);
+        assert_eq!(adapted.rows, cfg.rows);
     }
 }
 
