@@ -446,11 +446,8 @@ pub struct Application {
     pub helix_lsp_bridge: Arc<tokio::sync::RwLock<Option<HelixLspBridge>>>,
     pub project_lsp_command_tx:
         Option<tokio::sync::mpsc::UnboundedSender<nucleotide_events::ProjectLspCommand>>,
-    pub project_lsp_command_rx: Arc<
-        tokio::sync::RwLock<
-            Option<tokio::sync::mpsc::UnboundedReceiver<nucleotide_events::ProjectLspCommand>>,
-        >,
-    >,
+    pub project_lsp_command_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<nucleotide_events::ProjectLspCommand>>,
     pub project_lsp_processor_started: Arc<std::sync::atomic::AtomicBool>,
     pub project_lsp_system_initialized: Arc<std::sync::atomic::AtomicBool>,
     pub shell_env_cache: Arc<tokio::sync::Mutex<nucleotide_env::ShellEnvironmentCache>>,
@@ -940,21 +937,17 @@ impl Application {
 
         let mut commands_processed = 0;
         loop {
-            let (command, disconnected) = {
-                let mut rx_guard = handle.block_on(self.project_lsp_command_rx.write());
-                if let Some(ref mut rx) = rx_guard.as_mut() {
-                    match rx.poll_recv(task_cx) {
-                        Poll::Ready(Some(command)) => (Some(command), false),
-                        Poll::Ready(None) => {
-                            info!("LSP command channel disconnected");
-                            *rx_guard = None;
-                            (None, true)
-                        }
-                        Poll::Pending => (None, false),
+            let (command, disconnected) = match self.project_lsp_command_rx.as_mut() {
+                Some(rx) => match rx.poll_recv(task_cx) {
+                    Poll::Ready(Some(command)) => (Some(command), false),
+                    Poll::Ready(None) => {
+                        info!("LSP command channel disconnected");
+                        self.project_lsp_command_rx = None;
+                        (None, true)
                     }
-                } else {
-                    (None, true)
-                }
+                    Poll::Pending => (None, false),
+                },
+                None => (None, true),
             };
 
             let Some(lsp_command) = command else {
@@ -4034,10 +4027,10 @@ impl Application {
     }
 
     /// Take the project LSP command receiver, leaving None in its place
-    pub async fn take_project_lsp_command_receiver(
-        &self,
+    pub fn take_project_lsp_command_receiver(
+        &mut self,
     ) -> Option<tokio::sync::mpsc::UnboundedReceiver<nucleotide_events::ProjectLspCommand>> {
-        self.project_lsp_command_rx.write().await.take()
+        self.project_lsp_command_rx.take()
     }
 
     /// Initialize the ProjectLspManager and HelixLspBridge  
@@ -6683,7 +6676,7 @@ pub fn init_editor(
         project_lsp_manager: Arc::new(RwLock::new(None)), // Will be initialized after Application creation
         helix_lsp_bridge: Arc::new(RwLock::new(None)), // Will be initialized after Application creation
         project_lsp_command_tx: Some(project_lsp_command_tx),
-        project_lsp_command_rx: Arc::new(RwLock::new(Some(project_lsp_command_rx))),
+        project_lsp_command_rx: Some(project_lsp_command_rx),
         project_lsp_processor_started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         project_lsp_system_initialized: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         shell_env_cache: Arc::new(tokio::sync::Mutex::new(
@@ -8035,7 +8028,7 @@ mod tests {
                 project_lsp_manager: Arc::new(RwLock::new(None)),
                 helix_lsp_bridge: Arc::new(RwLock::new(None)),
                 project_lsp_command_tx: Some(project_lsp_command_tx),
-                project_lsp_command_rx: Arc::new(RwLock::new(Some(project_lsp_command_rx))),
+                project_lsp_command_rx: Some(project_lsp_command_rx),
                 project_lsp_processor_started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 project_lsp_system_initialized: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 shell_env_cache: Arc::new(tokio::sync::Mutex::new(

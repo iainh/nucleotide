@@ -14,13 +14,9 @@ async fn test_command_routing_integration() {
 
     // Create a mock Application structure (simplified version)
     let (project_lsp_command_tx, project_lsp_command_rx) = tokio::sync::mpsc::unbounded_channel();
-    let command_rx_arc =
-        std::sync::Arc::new(tokio::sync::RwLock::new(Some(project_lsp_command_rx)));
 
-    // Simulate what happens in Application::start_project_lsp_command_processor
-    let mut command_rx = command_rx_arc
-        .write()
-        .await
+    // Simulate what happens in Application's command processor.
+    let mut command_rx = Some(project_lsp_command_rx)
         .take()
         .expect("Command receiver should be available");
 
@@ -102,15 +98,15 @@ async fn test_command_channel_integration() {
     // Test that we can create the same channel types used in Application
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<ProjectLspCommand>();
 
-    // Test that we can simulate the Application's channel management
-    let rx_arc = std::sync::Arc::new(tokio::sync::RwLock::new(Some(rx)));
+    // Test that we can simulate Application's owned receiver management.
+    let mut owned_rx = Some(rx);
 
     // Test taking the receiver (like Application::take_project_lsp_command_receiver)
-    let taken_rx = rx_arc.write().await.take();
+    let taken_rx = owned_rx.take();
     assert!(taken_rx.is_some(), "Should be able to take receiver");
 
     // Test that second take returns None (receiver already taken)
-    let second_take = rx_arc.write().await.take();
+    let second_take = owned_rx.take();
     assert!(second_take.is_none(), "Second take should return None");
 
     println!("✅ Command channel integration test passed!");
@@ -127,8 +123,6 @@ async fn test_event_driven_command_pattern_end_to_end() {
 
     // Create mock Application structure for testing
     let (project_lsp_command_tx, project_lsp_command_rx) = tokio::sync::mpsc::unbounded_channel();
-    let command_rx_arc =
-        std::sync::Arc::new(tokio::sync::RwLock::new(Some(project_lsp_command_rx)));
 
     // Note: Simplified test without actual LSP bridge
     let (_event_tx, _event_rx): (_, tokio::sync::mpsc::UnboundedReceiver<String>) =
@@ -137,9 +131,7 @@ async fn test_event_driven_command_pattern_end_to_end() {
     // Simulate Application command processor (simplified)
     let processor_handle = {
         tokio::spawn(async move {
-            let mut command_rx = command_rx_arc
-                .write()
-                .await
+            let mut command_rx = Some(project_lsp_command_rx)
                 .take()
                 .expect("Command receiver should be available");
 
@@ -225,8 +217,6 @@ async fn test_event_driven_command_pattern_failure() {
 
     // Create mock Application structure for testing
     let (project_lsp_command_tx, project_lsp_command_rx) = tokio::sync::mpsc::unbounded_channel();
-    let command_rx_arc =
-        std::sync::Arc::new(tokio::sync::RwLock::new(Some(project_lsp_command_rx)));
 
     // Note: Simplified test without actual LSP bridge
     // Real integration tests would use actual HelixLspBridge
@@ -234,9 +224,7 @@ async fn test_event_driven_command_pattern_failure() {
     // Simulate Application command processor
     let processor_handle = {
         tokio::spawn(async move {
-            let mut command_rx = command_rx_arc
-                .write()
-                .await
+            let mut command_rx = Some(project_lsp_command_rx)
                 .take()
                 .expect("Command receiver should be available");
 
