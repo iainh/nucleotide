@@ -7,7 +7,7 @@ use std::io::Read;
 use std::path::PathBuf;
 use std::time::UNIX_EPOCH;
 
-pub const PROTOCOL_VERSION: u32 = 5;
+pub const PROTOCOL_VERSION: u32 = 6;
 pub const DEFAULT_FILE_SEARCH_LIMIT: usize = 1_000;
 pub const DEFAULT_GLOBAL_SEARCH_LIMIT: usize = 1_000;
 pub const DEFAULT_FILE_READ_LIMIT: usize = 10_000;
@@ -65,6 +65,33 @@ pub struct WorkspaceMetadataResponse {
     pub source_extensions: Option<BTreeSet<String>>,
     #[serde(default)]
     pub src_dir_exists: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceRootResponse {
+    pub protocol_version: u32,
+    pub current_dir: PathBuf,
+    pub workspace_root: Option<PathBuf>,
+    pub workspace_marker: Option<String>,
+    pub project_root: Option<PathBuf>,
+    pub project_marker: Option<String>,
+}
+
+impl WorkspaceRootResponse {
+    pub fn current() -> std::io::Result<Self> {
+        let current_dir = std::env::current_dir()?;
+        let (workspace_root, workspace_marker) = detect_workspace_root_from_dir(&current_dir);
+        let (project_root, project_marker) = detect_project_root_from_dir(&current_dir);
+
+        Ok(Self {
+            protocol_version: PROTOCOL_VERSION,
+            current_dir,
+            workspace_root,
+            workspace_marker,
+            project_root,
+            project_marker,
+        })
+    }
 }
 
 impl WorkspaceMetadataResponse {
@@ -432,6 +459,55 @@ const WORKSPACE_MARKERS: &[&str] = &[
     "CMakeLists.txt",
     "Makefile",
 ];
+const VCS_WORKSPACE_MARKERS: &[&str] = &[".git", ".svn", ".hg", ".jj", ".helix"];
+const PROJECT_ROOT_MARKERS: &[&str] = &[
+    "Cargo.toml",
+    "package.json",
+    "pyproject.toml",
+    "requirements.txt",
+    "go.mod",
+    "pom.xml",
+    "build.gradle",
+    ".git",
+    ".hg",
+    ".svn",
+];
+
+fn detect_workspace_root_from_dir(
+    start_dir: &std::path::Path,
+) -> (Option<PathBuf>, Option<String>) {
+    for ancestor in start_dir.ancestors() {
+        let candidate = ancestor.join("Cargo.toml");
+        if candidate.is_file()
+            && std::fs::read_to_string(&candidate)
+                .is_ok_and(|contents| contents.contains("[workspace]"))
+        {
+            return (Some(ancestor.to_path_buf()), Some("Cargo.toml".to_string()));
+        }
+    }
+
+    for ancestor in start_dir.ancestors() {
+        for marker in VCS_WORKSPACE_MARKERS {
+            if ancestor.join(marker).exists() {
+                return (Some(ancestor.to_path_buf()), Some((*marker).to_string()));
+            }
+        }
+    }
+
+    (None, None)
+}
+
+fn detect_project_root_from_dir(start_dir: &std::path::Path) -> (Option<PathBuf>, Option<String>) {
+    for ancestor in start_dir.ancestors() {
+        for marker in PROJECT_ROOT_MARKERS {
+            if ancestor.join(marker).exists() {
+                return (Some(ancestor.to_path_buf()), Some((*marker).to_string()));
+            }
+        }
+    }
+
+    (None, None)
+}
 
 fn detect_workspace_markers() -> std::io::Result<BTreeSet<String>> {
     let current_dir = std::env::current_dir()?;
@@ -501,7 +577,7 @@ mod tests {
         let line = encode_json_line(&response).unwrap();
 
         assert!(line.ends_with('\n'));
-        assert!(line.contains("\"protocol_version\":5"));
+        assert!(line.contains("\"protocol_version\":6"));
         assert!(line.contains("\"current_dir\":\"/workspace\""));
     }
 
@@ -549,6 +625,52 @@ mod tests {
         assert!(line.contains("\"workspace_markers\":[\"Cargo.toml\"]"));
         assert!(line.contains("\"source_extensions\":[\"rs\"]"));
         assert!(line.contains("\"src_dir_exists\":true"));
+    }
+
+    #[test]
+    fn workspace_root_response_encodes_detected_roots() {
+        let response = WorkspaceRootResponse {
+            protocol_version: PROTOCOL_VERSION,
+            current_dir: PathBuf::from("/workspace/project/src"),
+            workspace_root: Some(PathBuf::from("/workspace")),
+            workspace_marker: Some(".git".to_string()),
+            project_root: Some(PathBuf::from("/workspace/project")),
+            project_marker: Some("Cargo.toml".to_string()),
+        };
+
+        let line = encode_json_line(&response).unwrap();
+
+        assert!(line.contains("\"current_dir\":\"/workspace/project/src\""));
+        assert!(line.contains("\"workspace_root\":\"/workspace\""));
+        assert!(line.contains("\"workspace_marker\":\".git\""));
+        assert!(line.contains("\"project_root\":\"/workspace/project\""));
+        assert!(line.contains("\"project_marker\":\"Cargo.toml\""));
+    }
+
+    #[test]
+    fn workspace_root_detection_prefers_cargo_workspace() {
+        let temp = tempfile::tempdir().unwrap();
+        let project_dir = temp.path().join("crates").join("app").join("src");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        std::fs::write(temp.path().join("Cargo.toml"), "[workspace]\n").unwrap();
+
+        let (root, marker) = detect_workspace_root_from_dir(&project_dir);
+
+        assert_eq!(root.as_deref(), Some(temp.path()));
+        assert_eq!(marker.as_deref(), Some("Cargo.toml"));
+    }
+
+    #[test]
+    fn project_root_detection_finds_language_markers() {
+        let temp = tempfile::tempdir().unwrap();
+        let src_dir = temp.path().join("src").join("nested");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::write(temp.path().join("package.json"), "{}").unwrap();
+
+        let (root, marker) = detect_project_root_from_dir(&src_dir);
+
+        assert_eq!(root.as_deref(), Some(temp.path()));
+        assert_eq!(marker.as_deref(), Some("package.json"));
     }
 
     #[test]

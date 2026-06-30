@@ -58,7 +58,8 @@ use slotmap::Key;
 // Import our shell environment system
 use nucleotide_env::{
     ProjectEnvironment, WslWorkspace, install_wsl_remote_helper,
-    load_wsl_remote_directory_listing_blocking, load_wsl_remote_metadata, probe_wsl_remote_helper,
+    load_wsl_remote_directory_listing_blocking, load_wsl_remote_metadata,
+    load_wsl_remote_workspace_root_blocking, probe_wsl_remote_helper,
 };
 use nucleotide_remote::{DirectoryListingResponse, RemoteFileKind};
 
@@ -66,6 +67,7 @@ const WSL_REMOTE_HELPER_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 const WSL_REMOTE_HELPER_INSTALL_TIMEOUT: Duration = Duration::from_secs(15);
 const WSL_REMOTE_METADATA_TIMEOUT: Duration = Duration::from_secs(2);
 const WSL_REMOTE_PATH_COMPLETION_TIMEOUT: Duration = Duration::from_millis(500);
+const WSL_REMOTE_ROOT_TIMEOUT: Duration = Duration::from_millis(750);
 const WSL_REMOTE_HELPER_INSTALL_SOURCE_ENV: &str = "NUCLEOTIDE_REMOTE_HELPER_INSTALL_SOURCE";
 
 /// Implementation of EnvironmentProvider trait for our ProjectEnvironment
@@ -280,6 +282,25 @@ use helix_view::{Editor, doc_mut, graphics::Rect, handlers::Handlers};
 
 // Helper function to find workspace root from a specific directory
 pub fn find_workspace_root_from(start_dir: &Path) -> PathBuf {
+    if let Some(workspace) = WslWorkspace::from_unc_path(start_dir) {
+        match load_wsl_remote_workspace_root_blocking(&workspace, WSL_REMOTE_ROOT_TIMEOUT) {
+            Ok(response) => {
+                return response
+                    .workspace_root
+                    .as_deref()
+                    .and_then(|root| wsl_unc_path_for_remote_path(&workspace, root))
+                    .unwrap_or_else(|| start_dir.to_path_buf());
+            }
+            Err(error) => {
+                debug!(
+                    path = %start_dir.display(),
+                    error = %error,
+                    "Failed to load WSL workspace root from remote helper; falling back to local detection"
+                );
+            }
+        }
+    }
+
     // Prefer a Cargo workspace root when present
     fn find_upwards_for(start: &Path, file: &str) -> Option<PathBuf> {
         for ancestor in start.ancestors() {
@@ -318,6 +339,30 @@ pub fn find_workspace_root_from(start_dir: &Path) -> PathBuf {
         }
     }
     start_dir.to_path_buf()
+}
+
+fn wsl_unc_path_for_remote_path(workspace: &WslWorkspace, remote_path: &Path) -> Option<PathBuf> {
+    workspace
+        .unc_path_for_linux_path(remote_path)
+        .map(PathBuf::from)
+}
+
+fn implicit_wsl_workspace_root_from_current_dir(current_dir: &Path) -> Option<PathBuf> {
+    let workspace = WslWorkspace::from_unc_path(current_dir)?;
+    match load_wsl_remote_workspace_root_blocking(&workspace, WSL_REMOTE_ROOT_TIMEOUT) {
+        Ok(response) => response
+            .workspace_root
+            .as_deref()
+            .and_then(|root| wsl_unc_path_for_remote_path(&workspace, root)),
+        Err(error) => {
+            debug!(
+                path = %current_dir.display(),
+                error = %error,
+                "Failed to load implicit WSL workspace root from remote helper"
+            );
+            None
+        }
+    }
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -360,6 +405,10 @@ pub fn implicit_workspace_root_from_current_dir() -> Option<PathBuf> {
             "Skipping implicit workspace detection from executable directory"
         );
         return None;
+    }
+
+    if let Some(workspace_root) = implicit_wsl_workspace_root_from_current_dir(&current_dir) {
+        return Some(workspace_root);
     }
 
     let workspace_root = find_workspace_root_from(&current_dir);
@@ -6389,6 +6438,12 @@ impl Application {
 
 /// Detect project root by walking up parent directories looking for project markers
 fn detect_project_root_from_file(file_path: &std::path::Path) -> Option<std::path::PathBuf> {
+    if let Some(parent) = file_path.parent()
+        && let Some(root) = detect_project_root_from_wsl_dir(parent)
+    {
+        return Some(root);
+    }
+
     // Common project markers to look for
     let project_markers = [
         "Cargo.toml",       // Rust
@@ -6434,6 +6489,49 @@ fn detect_project_root_from_file(file_path: &std::path::Path) -> Option<std::pat
     }
 
     None
+}
+
+fn detect_project_root_from_wsl_dir(dir: &Path) -> Option<PathBuf> {
+    let workspace = WslWorkspace::from_unc_path(dir)?;
+    match load_wsl_remote_workspace_root_blocking(&workspace, WSL_REMOTE_ROOT_TIMEOUT) {
+        Ok(response) => response
+            .project_root
+            .as_deref()
+            .and_then(|root| wsl_unc_path_for_remote_path(&workspace, root)),
+        Err(error) => {
+            debug!(
+                path = %dir.display(),
+                error = %error,
+                "Failed to load WSL project root from remote helper"
+            );
+            None
+        }
+    }
+}
+
+fn project_directory_from_wsl_argument(path: &Path) -> Option<PathBuf> {
+    let workspace = WslWorkspace::from_unc_path(path)?;
+    match load_wsl_remote_workspace_root_blocking(&workspace, WSL_REMOTE_ROOT_TIMEOUT) {
+        Ok(response) => {
+            return Some(
+                response
+                    .project_root
+                    .as_deref()
+                    .and_then(|root| wsl_unc_path_for_remote_path(&workspace, root))
+                    .unwrap_or_else(|| path.to_path_buf()),
+            );
+        }
+        Err(error) => {
+            debug!(
+                path = %path.display(),
+                error = %error,
+                "Failed to load WSL project directory from argument path; trying parent as file path"
+            );
+        }
+    }
+
+    let parent = path.parent()?;
+    detect_project_root_from_wsl_dir(parent)
 }
 
 /// Detect if we need CLI environment and create appropriate ProjectEnvironment.
@@ -6622,6 +6720,25 @@ pub fn init_editor(
     );
     let project_directory = if let Some(path) = &args.working_directory {
         Some(path.clone())
+    } else if let Some((path, _)) = args
+        .files
+        .first()
+        .filter(|(path, _)| WslWorkspace::from_unc_path(path).is_some())
+    {
+        let detected_root = project_directory_from_wsl_argument(path);
+        if let Some(ref root) = detected_root {
+            nucleotide_logging::info!(
+                path = %path.display(),
+                project_root = %root.display(),
+                "Detected WSL project root from remote helper"
+            );
+        } else {
+            nucleotide_logging::warn!(
+                path = %path.display(),
+                "No WSL project root detected from remote helper"
+            );
+        }
+        detected_root
     } else if let Some((path, _)) = args.files.first().filter(|p| p.0.is_dir()) {
         // If the first file is a directory, use it as the project directory
         Some(path.clone())
@@ -8266,7 +8383,7 @@ mod tests {
         str_prefix_at_byte_limit, suppress_shadowed_buffer_word_completion_items,
         syntax_symbol_kind_from_capture_name, workspace_diagnostic_refresh_reply,
         wsl_remote_helper_install_source_from_value, wsl_remote_helper_unavailable_message,
-        wsl_workspace_for_project_directory,
+        wsl_unc_path_for_remote_path, wsl_workspace_for_project_directory,
     };
     use crate::test_utils::test_support::{
         TestUpdate, create_counting_channel, create_test_diagnostic_events,
@@ -8282,6 +8399,7 @@ mod tests {
     };
     use helix_view::{graphics::Rect, handlers::Handlers, theme};
     use nucleotide_core::event_bridge;
+    use nucleotide_env::WslWorkspace;
     use nucleotide_events::completion::{CompletionItem, CompletionItemKind};
     use nucleotide_remote::{DirectoryListingResponse, RemoteFileKind};
     use slotmap::{Key, KeyData};
@@ -9538,6 +9656,30 @@ mod tests {
 
         assert_eq!(context.dir_path, PathBuf::from("/workspace/project/src"));
         assert_eq!(context.typed_file_name, None);
+    }
+
+    #[test]
+    fn wsl_remote_root_paths_map_back_to_unc_paths() {
+        let workspace =
+            WslWorkspace::from_unc_path(Path::new(r"\\wsl.localhost\Ubuntu\home\iain\repo\src"))
+                .expect("wsl workspace");
+
+        let mapped = wsl_unc_path_for_remote_path(&workspace, Path::new("/home/iain/repo"))
+            .expect("mapped path");
+
+        assert_eq!(
+            mapped,
+            PathBuf::from(r"\\wsl.localhost\Ubuntu\home\iain\repo")
+        );
+    }
+
+    #[test]
+    fn wsl_remote_root_paths_reject_relative_linux_paths() {
+        let workspace =
+            WslWorkspace::from_unc_path(Path::new(r"\\wsl.localhost\Ubuntu\home\iain\repo"))
+                .expect("wsl workspace");
+
+        assert!(wsl_unc_path_for_remote_path(&workspace, Path::new("repo")).is_none());
     }
 
     #[test]

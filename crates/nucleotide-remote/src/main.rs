@@ -5,7 +5,7 @@ use anyhow::{Context, Result, bail};
 use nucleotide_remote::{
     DEFAULT_FILE_READ_LIMIT, DirectoryListingResponse, EnvironmentResponse, FileReadResponse,
     FileSearchResponse, GlobalSearchResponse, HelloResponse, WorkspaceMetadataResponse,
-    encode_json_line,
+    WorkspaceRootResponse, encode_json_line,
 };
 
 fn main() -> Result<()> {
@@ -26,6 +26,11 @@ fn main() -> Result<()> {
         "metadata" => {
             let response = WorkspaceMetadataResponse::current()
                 .context("failed to build workspace metadata response")?;
+            print!("{}", encode_json_line(&response)?);
+        }
+        "root" => {
+            let response = WorkspaceRootResponse::current()
+                .context("failed to build workspace root response")?;
             print!("{}", encode_json_line(&response)?);
         }
         "list" => {
@@ -68,6 +73,7 @@ fn main() -> Result<()> {
             println!("nucleotide-remote hello");
             println!("nucleotide-remote env");
             println!("nucleotide-remote metadata");
+            println!("nucleotide-remote root");
             println!("nucleotide-remote list");
             println!("nucleotide-remote files");
             println!("nucleotide-remote search");

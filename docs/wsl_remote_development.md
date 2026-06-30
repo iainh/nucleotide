@@ -40,18 +40,21 @@ editor backend into Linux:
   not inject Linux environment snapshots into the Windows process; the remote
   launch boundary owns those values.
 - `nucleotide-remote` is a versioned helper binary with `hello`, `env`,
-  `metadata`, `list`, `files`, `search`, and `read` protocol commands. Metadata
-  includes workspace marker and shallow source-directory facts so project/LSP
-  detection can avoid repeated Windows UNC filesystem probes when the helper is
-  available.
+  `metadata`, `root`, `list`, `files`, `search`, and `read` protocol commands.
+  Metadata includes workspace marker and shallow source-directory facts so
+  project/LSP detection can avoid repeated Windows UNC filesystem probes when
+  the helper is available. Root detection walks parent directories inside WSL
+  and returns Linux workspace/project roots for the Windows UI to map back to
+  WSL UNC paths.
   Directory listing returns compact file metadata from inside WSL so the project
   tree can populate rows without enumerating `\\wsl...` paths through Windows.
   Recursive file search returns picker-ready relative paths from inside WSL.
   Global text search walks ignore-filtered files and reads file contents inside
   WSL, returning relative path, line number, and line text matches to the
   Windows UI.
-  The `list`, `files`, `search`, and `read` commands are part of helper protocol
-  version 5, so older cached helpers are bypassed by the versioned cache path.
+  The `root`, `list`, `files`, `search`, and `read` commands are part of helper
+  protocol version 6, so older cached helpers are bypassed by the versioned
+  cache path.
 - Application startup schedules a short, non-blocking WSL helper health probe for
   WSL roots. Probes prefer
   `~/.cache/nucleotide/remote-helper/<protocol-version>/nucleotide-remote`
@@ -62,6 +65,9 @@ editor backend into Linux:
   environment commands use a portable `/bin/sh -c` wrapper that re-enters the
   user's login shell when available, so common user PATH setup is preserved
   without relying on non-portable `sh -l` behavior.
+- Application startup and project LSP coordination use helper-backed root
+  detection for WSL paths, avoiding parent-directory marker probes through the
+  Windows UNC filesystem.
 - Workspace terminals and runnable commands opened from WSL roots are launched
   through `wsl.exe --distribution <distro> --cd <linux-path>`, so shells and
   commands start where the project files live.
@@ -143,8 +149,8 @@ The next step toward a more native-feeling remote experience is to make
    `NUCLEOTIDE_REMOTE_HELPER_INSTALL_SOURCE`, because WSL must receive a Linux
    helper binary rather than the Windows GUI binary.
 4. Move remote services behind helper commands where that improves latency or
-   correctness, starting with environment, workspace metadata, directory listing,
-   and file search.
+   correctness, starting with environment, workspace metadata, root detection,
+   directory listing, and file search.
 5. Keep direct WSL LSP launch as the fallback path so helper bootstrap problems
    do not block editing.
 
