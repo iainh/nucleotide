@@ -64,6 +64,8 @@ pub(crate) struct DirectXRenderer {
     width: u32,
     height: u32,
     cached_font_info: Option<(u64, FontInfo)>,
+    path_rasterization_vertices: Vec<PathRasterizationSprite>,
+    path_sprites: Vec<PathSprite>,
 
     /// Whether we want to skip drwaing due to device lost events.
     ///
@@ -190,6 +192,8 @@ impl DirectXRenderer {
             width: 1,
             height: 1,
             cached_font_info: None,
+            path_rasterization_vertices: Vec::new(),
+            path_sprites: Vec::new(),
             skip_draws: false,
         })
     }
@@ -559,22 +563,25 @@ impl DirectXRenderer {
             );
         }
 
-        // Collect all vertices and sprites for a single draw call
-        let mut vertices = Vec::new();
+        {
+            let vertices = &mut self.path_rasterization_vertices;
+            vertices.clear();
+            vertices.reserve(paths.iter().map(|path| path.vertices.len()).sum::<usize>());
 
-        for path in paths {
-            vertices.extend(path.vertices.iter().map(|v| PathRasterizationSprite {
-                xy_position: v.xy_position,
-                st_position: v.st_position,
-                color: path.color,
-                bounds: path.clipped_bounds(),
-            }));
+            for path in paths {
+                vertices.extend(path.vertices.iter().map(|v| PathRasterizationSprite {
+                    xy_position: v.xy_position,
+                    st_position: v.st_position,
+                    color: path.color,
+                    bounds: path.clipped_bounds(),
+                }));
+            }
         }
 
         self.pipelines.path_rasterization_pipeline.update_buffer(
             &devices.device,
             &devices.device_context,
-            &vertices,
+            &self.path_rasterization_vertices,
         )?;
 
         self.pipelines.path_rasterization_pipeline.draw(
@@ -582,7 +589,7 @@ impl DirectXRenderer {
             slice::from_ref(&resources.viewport),
             slice::from_ref(&self.globals.global_params_buffer),
             D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST,
-            vertices.len() as u32,
+            self.path_rasterization_vertices.len() as u32,
             1,
         )?;
 
@@ -616,27 +623,27 @@ impl DirectXRenderer {
         // disjoint, so we can copy each path's bounds individually. If this
         // batch combines different draw orders, we perform a single copy
         // for a minimal spanning rect.
-        let sprites = if paths.last().unwrap().order == first_path.order {
-            paths
-                .iter()
-                .map(|path| PathSprite {
+        self.path_sprites.clear();
+        if paths.last().unwrap().order == first_path.order {
+            self.path_sprites.reserve(paths.len());
+            self.path_sprites
+                .extend(paths.iter().map(|path| PathSprite {
                     bounds: path.clipped_bounds(),
-                })
-                .collect::<Vec<_>>()
+                }));
         } else {
             let mut bounds = first_path.clipped_bounds();
             for path in paths.iter().skip(1) {
                 bounds = bounds.union(&path.clipped_bounds());
             }
-            vec![PathSprite { bounds }]
-        };
+            self.path_sprites.push(PathSprite { bounds });
+        }
 
         let devices = self.devices.as_ref().context("devices missing")?;
         let resources = self.resources.as_ref().context("resources missing")?;
         self.pipelines.path_sprite_pipeline.update_buffer(
             &devices.device,
             &devices.device_context,
-            &sprites,
+            &self.path_sprites,
         )?;
 
         // Draw the sprites with the path texture
@@ -646,7 +653,7 @@ impl DirectXRenderer {
             slice::from_ref(&resources.viewport),
             slice::from_ref(&self.globals.global_params_buffer),
             slice::from_ref(&self.globals.sampler),
-            sprites.len() as u32,
+            self.path_sprites.len() as u32,
         )
     }
 
