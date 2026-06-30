@@ -1256,34 +1256,57 @@ fn create_swap_chain_for_composition(
     width: u32,
     height: u32,
 ) -> Result<IDXGISwapChain1> {
-    create_swap_chain_for_composition_with_flags(
+    create_swap_chain_for_composition_with_options(
         dxgi_factory,
         device,
         width,
         height,
+        DXGI_SWAP_EFFECT_FLIP_DISCARD,
         DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT,
     )
     .inspect_err(|err| {
         log::debug!(
-            "Failed to create DirectComposition swap chain with frame latency waitable object: {err}"
+            "Failed to create DirectComposition discard swap chain with frame latency waitable object: {err}"
         );
     })
     .or_else(|_| {
-        create_swap_chain_for_composition_with_flags(
+        create_swap_chain_for_composition_with_options(
             dxgi_factory,
             device,
             width,
             height,
+            DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
+            DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT,
+        )
+    })
+    .or_else(|_| {
+        create_swap_chain_for_composition_with_options(
+            dxgi_factory,
+            device,
+            width,
+            height,
+            DXGI_SWAP_EFFECT_FLIP_DISCARD,
+            DXGI_SWAP_CHAIN_FLAG(0),
+        )
+    })
+    .or_else(|_| {
+        create_swap_chain_for_composition_with_options(
+            dxgi_factory,
+            device,
+            width,
+            height,
+            DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
             DXGI_SWAP_CHAIN_FLAG(0),
         )
     })
 }
 
-fn create_swap_chain_for_composition_with_flags(
+fn create_swap_chain_for_composition_with_options(
     dxgi_factory: &IDXGIFactory6,
     device: &ID3D11Device,
     width: u32,
     height: u32,
+    swap_effect: DXGI_SWAP_EFFECT,
     flags: DXGI_SWAP_CHAIN_FLAG,
 ) -> Result<IDXGISwapChain1> {
     let desc = DXGI_SWAP_CHAIN_DESC1 {
@@ -1299,7 +1322,7 @@ fn create_swap_chain_for_composition_with_flags(
         BufferCount: BUFFER_COUNT as u32,
         // Composition SwapChains only support the DXGI_SCALING_STRETCH Scaling.
         Scaling: DXGI_SCALING_STRETCH,
-        SwapEffect: DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
+        SwapEffect: swap_effect,
         AlphaMode: DXGI_ALPHA_MODE_PREMULTIPLIED,
         Flags: flags.0 as u32,
     };
@@ -1313,35 +1336,62 @@ fn create_swap_chain(
     width: u32,
     height: u32,
 ) -> Result<IDXGISwapChain1> {
-    create_swap_chain_with_flags(
+    create_swap_chain_with_options(
         dxgi_factory,
         device,
         hwnd,
         width,
         height,
+        DXGI_SWAP_EFFECT_FLIP_DISCARD,
         DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT,
     )
     .inspect_err(|err| {
-        log::debug!("Failed to create HWND swap chain with frame latency waitable object: {err}");
+        log::debug!(
+            "Failed to create HWND discard swap chain with frame latency waitable object: {err}"
+        );
     })
     .or_else(|_| {
-        create_swap_chain_with_flags(
+        create_swap_chain_with_options(
             dxgi_factory,
             device,
             hwnd,
             width,
             height,
+            DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
+            DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT,
+        )
+    })
+    .or_else(|_| {
+        create_swap_chain_with_options(
+            dxgi_factory,
+            device,
+            hwnd,
+            width,
+            height,
+            DXGI_SWAP_EFFECT_FLIP_DISCARD,
+            DXGI_SWAP_CHAIN_FLAG(0),
+        )
+    })
+    .or_else(|_| {
+        create_swap_chain_with_options(
+            dxgi_factory,
+            device,
+            hwnd,
+            width,
+            height,
+            DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
             DXGI_SWAP_CHAIN_FLAG(0),
         )
     })
 }
 
-fn create_swap_chain_with_flags(
+fn create_swap_chain_with_options(
     dxgi_factory: &IDXGIFactory6,
     device: &ID3D11Device,
     hwnd: HWND,
     width: u32,
     height: u32,
+    swap_effect: DXGI_SWAP_EFFECT,
     flags: DXGI_SWAP_CHAIN_FLAG,
 ) -> Result<IDXGISwapChain1> {
     use windows::Win32::Graphics::Dxgi::DXGI_MWA_NO_ALT_ENTER;
@@ -1358,7 +1408,7 @@ fn create_swap_chain_with_flags(
         BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
         BufferCount: BUFFER_COUNT as u32,
         Scaling: DXGI_SCALING_NONE,
-        SwapEffect: DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
+        SwapEffect: swap_effect,
         AlphaMode: DXGI_ALPHA_MODE_IGNORE,
         Flags: flags.0 as u32,
     };
