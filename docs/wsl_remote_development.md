@@ -72,6 +72,9 @@ editor backend into Linux:
 - The file picker uses helper-backed recursive file search for WSL roots, so the
   expensive ignore-aware walk runs in Linux rather than across the Windows UNC
   filesystem boundary.
+- Git status and repository HEAD checks run through `wsl.exe` for WSL roots, so
+  file decorations and VCS events use Linux Git against local Linux paths while
+  still mapping results back to Windows WSL UNC paths for the UI.
 
 This means the first supported path is direct WSL LSP execution with path
 translation. The helper is currently an optional foundation for richer remote

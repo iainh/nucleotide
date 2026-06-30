@@ -5246,6 +5246,7 @@ dependencies = [
  "helix-core",
  "helix-vcs",
  "helix-view",
+ "nucleotide-env",
  "nucleotide-events",
  "nucleotide-logging",
  "nucleotide-process",

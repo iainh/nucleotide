@@ -4,6 +4,7 @@
 use gpui::{App, AppContext, Context, Entity, EventEmitter};
 use helix_core::Rope;
 use helix_vcs::{DiffHandle, DiffProviderRegistry, Hunk};
+use nucleotide_env::{WslWorkspace, build_wsl_shell_command};
 use nucleotide_events::{
     EventBus,
     v2::vcs::{
@@ -115,11 +116,8 @@ fn domain_working_status(status: VcsStatus) -> Option<DomainWorkingStatus> {
 }
 
 fn current_git_head(root_path: &Path) -> Option<String> {
-    let output = nucleotide_process::command("git")
-        .args(["rev-parse", "--verify", "HEAD"])
-        .current_dir(root_path)
-        .output()
-        .ok()?;
+    let mut command = git_command_for_root(root_path, "rev-parse --verify HEAD");
+    let output = command.output().ok()?;
 
     if !output.status.success() {
         return None;
@@ -135,6 +133,17 @@ fn diff_base_revision_for_file(file_path: &Path) -> Option<String> {
 fn parse_git_head_output(stdout: &[u8]) -> Option<String> {
     let head = std::str::from_utf8(stdout).ok()?.trim();
     (!head.is_empty()).then(|| head.to_string())
+}
+
+fn git_command_for_root(root_path: &Path, script: &str) -> std::process::Command {
+    if let Some(workspace) = WslWorkspace::from_unc_path(root_path) {
+        build_wsl_shell_command(&workspace, "/bin/sh", script)
+    } else {
+        let mut command = nucleotide_process::command("git");
+        command.current_dir(root_path);
+        command.args(script.split_ascii_whitespace());
+        command
+    }
 }
 
 /// Convert Helix Hunk to DiffHunkInfo
@@ -923,13 +932,8 @@ fn run_git_status(
     root_path: &Path,
     max_files: usize,
 ) -> Result<HashMap<PathBuf, VcsStatus>, String> {
-    let mut status_map = HashMap::new();
-
-    // Run git status --porcelain
-    let output = nucleotide_process::command("git")
-        .arg("status")
-        .arg("--porcelain")
-        .current_dir(root_path)
+    let mut command = git_command_for_root(root_path, "status --porcelain");
+    let output = command
         .output()
         .map_err(|e| format!("Failed to execute git: {}", e))?;
 
@@ -937,7 +941,17 @@ fn run_git_status(
         return Err(format!("Git command failed with status: {}", output.status));
     }
 
-    let git_output = String::from_utf8_lossy(&output.stdout);
+    parse_git_status_output(root_path, &output.stdout, max_files)
+}
+
+fn parse_git_status_output(
+    root_path: &Path,
+    stdout: &[u8],
+    max_files: usize,
+) -> Result<HashMap<PathBuf, VcsStatus>, String> {
+    let mut status_map = HashMap::new();
+    let git_output = std::str::from_utf8(stdout)
+        .map_err(|error| format!("Git status output was not UTF-8: {error}"))?;
     let mut file_count = 0;
 
     for line in git_output.lines() {
@@ -948,7 +962,7 @@ fn run_git_status(
 
         if line.len() >= 3 {
             let status_chars = &line[0..2];
-            let file_path = line[3..].trim();
+            let file_path = git_status_relative_path(status_chars, line[3..].trim());
 
             // Parse git status format
             let status = match status_chars {
@@ -964,7 +978,7 @@ fn run_git_status(
                 _ => continue, // Skip unknown status
             };
 
-            let full_path = root_path.join(file_path);
+            let full_path = repository_path_from_git_relative(root_path, file_path);
             status_map.insert(full_path, status);
             file_count += 1;
         }
@@ -972,6 +986,30 @@ fn run_git_status(
 
     debug!(file_count, "VCS: Processed git status results");
     Ok(status_map)
+}
+
+fn git_status_relative_path<'a>(status_chars: &str, path: &'a str) -> &'a str {
+    if matches!(status_chars, "R " | "RM" | "C ") {
+        path.rsplit_once(" -> ")
+            .map(|(_, new_path)| new_path)
+            .unwrap_or(path)
+    } else {
+        path
+    }
+}
+
+fn repository_path_from_git_relative(root_path: &Path, relative_path: &str) -> PathBuf {
+    let mut full_path = root_path.to_path_buf();
+
+    for component in relative_path
+        .trim_matches('"')
+        .split('/')
+        .filter(|component| !component.is_empty())
+    {
+        full_path.push(component);
+    }
+
+    full_path
 }
 
 impl EventEmitter<VcsEvent> for VcsService {}
@@ -1153,6 +1191,57 @@ mod tests {
     #[test]
     fn parse_git_head_output_rejects_empty_output() {
         assert_eq!(parse_git_head_output(b"\n"), None);
+    }
+
+    #[test]
+    fn git_command_for_wsl_root_runs_inside_distribution() {
+        let command = git_command_for_root(
+            Path::new(r"\\wsl.localhost\Ubuntu\home\iain\repo"),
+            "status --porcelain",
+        );
+        let command_debug = format!("{command:?}");
+
+        assert!(command_debug.contains("wsl.exe"));
+        assert!(command_debug.contains("--distribution"));
+        assert!(command_debug.contains("Ubuntu"));
+        assert!(command_debug.contains("status --porcelain"));
+    }
+
+    #[test]
+    fn parse_git_status_output_maps_wsl_relative_paths_to_unc_root() {
+        let root_path = PathBuf::from(r"\\wsl.localhost\Ubuntu\home\iain\repo");
+        let changes = parse_git_status_output(
+            &root_path,
+            b" M src/lib.rs\n?? README.md\nR  old.rs -> src/new.rs\n",
+            10,
+        )
+        .expect("parse git status");
+
+        assert_eq!(
+            changes.get(&repository_path_from_git_relative(&root_path, "src/lib.rs")),
+            Some(&VcsStatus::Modified)
+        );
+        assert_eq!(
+            changes.get(&repository_path_from_git_relative(&root_path, "README.md")),
+            Some(&VcsStatus::Untracked)
+        );
+        assert_eq!(
+            changes.get(&repository_path_from_git_relative(&root_path, "src/new.rs")),
+            Some(&VcsStatus::Renamed)
+        );
+    }
+
+    #[test]
+    fn parse_git_status_output_respects_max_files() {
+        let root_path = PathBuf::from("/repo");
+        let changes = parse_git_status_output(&root_path, b" M src/lib.rs\n?? README.md\n", 1)
+            .expect("parse git status");
+
+        assert_eq!(changes.len(), 1);
+        assert_eq!(
+            changes.get(&repository_path_from_git_relative(&root_path, "src/lib.rs")),
+            Some(&VcsStatus::Modified)
+        );
     }
 
     #[test]
