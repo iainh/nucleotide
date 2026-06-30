@@ -24,6 +24,7 @@ pub use workspace_handler::WorkspaceHandler;
 
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
+    ffi::OsString,
     future::Future,
     path::{Path, PathBuf},
     pin::Pin,
@@ -55,9 +56,13 @@ use nucleotide_lsp::{HelixLspBridge, ProjectLspManager, ServerStatus};
 use slotmap::Key;
 
 // Import our shell environment system
-use nucleotide_env::{ProjectEnvironment, WslWorkspace, probe_wsl_remote_helper};
+use nucleotide_env::{
+    ProjectEnvironment, WslWorkspace, install_wsl_remote_helper, probe_wsl_remote_helper,
+};
 
 const WSL_REMOTE_HELPER_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+const WSL_REMOTE_HELPER_INSTALL_TIMEOUT: Duration = Duration::from_secs(15);
+const WSL_REMOTE_HELPER_INSTALL_SOURCE_ENV: &str = "NUCLEOTIDE_REMOTE_HELPER_INSTALL_SOURCE";
 
 /// Implementation of EnvironmentProvider trait for our ProjectEnvironment
 /// This bridges our environment system with the LSP system
@@ -1266,12 +1271,13 @@ impl Application {
                     );
                 }
                 Err(error) => {
-                    warn!(
-                        distro = %workspace.distro(),
-                        linux_path = %workspace.linux_path(),
-                        error = %error,
-                        "WSL remote helper probe failed; direct WSL LSP launch remains available"
-                    );
+                    let error =
+                        match bootstrap_wsl_remote_helper_after_probe_failure(&workspace, error)
+                            .await
+                        {
+                            Ok(()) => return,
+                            Err(error) => error,
+                        };
 
                     if let Some(core) = core.upgrade() {
                         let message = wsl_remote_helper_unavailable_message(&workspace, &error);
@@ -6524,6 +6530,55 @@ fn wsl_workspace_for_project_directory(project_directory: Option<&Path>) -> Opti
     project_directory.and_then(WslWorkspace::from_unc_path)
 }
 
+fn wsl_remote_helper_install_source() -> Option<PathBuf> {
+    wsl_remote_helper_install_source_from_value(std::env::var_os(
+        WSL_REMOTE_HELPER_INSTALL_SOURCE_ENV,
+    ))
+}
+
+fn wsl_remote_helper_install_source_from_value(value: Option<OsString>) -> Option<PathBuf> {
+    value
+        .map(PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty())
+}
+
+async fn bootstrap_wsl_remote_helper_after_probe_failure(
+    workspace: &WslWorkspace,
+    probe_error: nucleotide_env::WslRemoteHelperError,
+) -> Result<(), nucleotide_env::WslRemoteHelperError> {
+    let Some(source_path) = wsl_remote_helper_install_source() else {
+        warn!(
+            distro = %workspace.distro(),
+            linux_path = %workspace.linux_path(),
+            error = %probe_error,
+            install_source_env = WSL_REMOTE_HELPER_INSTALL_SOURCE_ENV,
+            "WSL remote helper probe failed and no install source was configured; direct WSL LSP launch remains available"
+        );
+        return Err(probe_error);
+    };
+
+    info!(
+        distro = %workspace.distro(),
+        linux_path = %workspace.linux_path(),
+        source_path = %source_path.display(),
+        "Attempting WSL remote helper bootstrap after failed probe"
+    );
+
+    install_wsl_remote_helper(workspace, &source_path, WSL_REMOTE_HELPER_INSTALL_TIMEOUT).await?;
+
+    let response = probe_wsl_remote_helper(workspace, WSL_REMOTE_HELPER_PROBE_TIMEOUT).await?;
+    info!(
+        distro = %workspace.distro(),
+        linux_path = %workspace.linux_path(),
+        helper_version = %response.helper_version,
+        helper_os = %response.os,
+        helper_arch = %response.arch,
+        "WSL remote helper bootstrap succeeded"
+    );
+
+    Ok(())
+}
+
 fn wsl_remote_helper_unavailable_message(
     workspace: &WslWorkspace,
     error: &nucleotide_env::WslRemoteHelperError,
@@ -8012,8 +8067,8 @@ mod tests {
         native_symbol_item_from_lsp, path_completion_items, project_health_status,
         project_server_language_id, str_prefix_at_byte_limit,
         suppress_shadowed_buffer_word_completion_items, syntax_symbol_kind_from_capture_name,
-        workspace_diagnostic_refresh_reply, wsl_remote_helper_unavailable_message,
-        wsl_workspace_for_project_directory,
+        workspace_diagnostic_refresh_reply, wsl_remote_helper_install_source_from_value,
+        wsl_remote_helper_unavailable_message, wsl_workspace_for_project_directory,
     };
     use crate::test_utils::test_support::{
         TestUpdate, create_counting_channel, create_test_diagnostic_events,
@@ -8033,6 +8088,7 @@ mod tests {
     use slotmap::{Key, KeyData};
     use std::cell::RefCell;
     use std::collections::{HashMap, HashSet};
+    use std::ffi::OsString;
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::rc::Rc;
@@ -8292,6 +8348,21 @@ mod tests {
         assert!(message.contains("Ubuntu"));
         assert!(message.contains("direct WSL language server launch"));
         assert!(message.contains("timed out"));
+    }
+
+    #[test]
+    fn wsl_remote_helper_install_source_uses_explicit_non_empty_path() {
+        assert_eq!(
+            wsl_remote_helper_install_source_from_value(Some(OsString::from(
+                r"C:\tools\nucleotide-remote-linux"
+            ))),
+            Some(PathBuf::from(r"C:\tools\nucleotide-remote-linux"))
+        );
+        assert_eq!(
+            wsl_remote_helper_install_source_from_value(Some(OsString::from(""))),
+            None
+        );
+        assert_eq!(wsl_remote_helper_install_source_from_value(None), None);
     }
 
     fn test_handlers() -> Handlers {
