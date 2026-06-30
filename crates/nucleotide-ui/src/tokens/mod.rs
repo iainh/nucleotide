@@ -960,6 +960,11 @@ pub mod utils {
         hsla(color.h, color.s, color.l, alpha)
     }
 
+    /// Create a color with opacity capped to the source alpha.
+    pub fn with_alpha_at_most(color: Hsla, alpha: f32) -> Hsla {
+        with_alpha(color, color.a.min(alpha))
+    }
+
     /// Create a lighter variant of a color
     pub fn lighten(color: Hsla, amount: f32) -> Hsla {
         // Perceptual lightness adjustment via OKLab L
@@ -1180,18 +1185,18 @@ impl FileTreeTokens {
         const BORDER_ALPHA: f32 = 0.64;
         const SEPARATOR_ALPHA: f32 = 0.58;
 
-        let with_alpha_at_most =
-            |color: Hsla, alpha: f32| utils::with_alpha(color, color.a.min(alpha));
-
         Self {
-            background: with_alpha_at_most(self.background, BACKGROUND_ALPHA),
-            item_background_hover: with_alpha_at_most(self.item_background_hover, HOVER_ALPHA),
-            item_background_selected: with_alpha_at_most(
+            background: utils::with_alpha_at_most(self.background, BACKGROUND_ALPHA),
+            item_background_hover: utils::with_alpha_at_most(
+                self.item_background_hover,
+                HOVER_ALPHA,
+            ),
+            item_background_selected: utils::with_alpha_at_most(
                 self.item_background_selected,
                 SELECTED_ALPHA,
             ),
-            border: with_alpha_at_most(self.border, BORDER_ALPHA),
-            separator: with_alpha_at_most(self.separator, SEPARATOR_ALPHA),
+            border: utils::with_alpha_at_most(self.border, BORDER_ALPHA),
+            separator: utils::with_alpha_at_most(self.separator, SEPARATOR_ALPHA),
             ..self
         }
     }
@@ -1402,8 +1407,8 @@ impl ButtonTokens {
 
         // Ghost buttons remain transparent until hovered.
         let ghost_bg = ColorTheory::transparent();
-        let ghost_bg_hover = ColorTheory::with_alpha(chrome.surface_hover, 0.8);
-        let ghost_bg_active = ColorTheory::with_alpha(chrome.surface_active, 0.9);
+        let ghost_bg_hover = utils::with_alpha_at_most(chrome.surface_hover, 0.8);
+        let ghost_bg_active = utils::with_alpha_at_most(chrome.surface_active, 0.9);
         let ghost_text = chrome.text_on_chrome;
 
         // Semantic buttons use Helix editor colors for familiarity
@@ -1428,7 +1433,7 @@ impl ButtonTokens {
         let info_text = ColorTheory::ensure_contrast(info_bg, editor.text_on_primary, 4.5);
 
         // Disabled states are muted versions
-        let disabled_bg = ColorTheory::with_alpha(chrome.surface_hover, 0.3);
+        let disabled_bg = utils::with_alpha_at_most(chrome.surface_hover, 0.3);
         let disabled_text = ColorTheory::with_alpha(chrome.text_on_chrome, 0.5);
         let disabled_border = ColorTheory::with_alpha(chrome.border_shadow, 0.45);
 
@@ -1547,7 +1552,7 @@ impl PickerTokens {
 
         // Items use transparent backgrounds with chrome/system selection colors.
         let item_bg = ColorTheory::transparent();
-        let item_bg_hover = ColorTheory::with_alpha(chrome.surface_hover, 0.3);
+        let item_bg_hover = utils::with_alpha_at_most(chrome.surface_hover, 0.3);
         let item_bg_selected = chrome.menu_selected;
         // Ensure item text contrasts against the container background (popup surface)
         let item_text = ColorTheory::ensure_contrast(
@@ -1651,7 +1656,7 @@ impl DropdownTokens {
 
         // Items use transparent backgrounds with chrome/system selection.
         let item_bg = ColorTheory::transparent();
-        let item_bg_hover = ColorTheory::with_alpha(chrome.surface_hover, 0.3);
+        let item_bg_hover = utils::with_alpha_at_most(chrome.surface_hover, 0.3);
         let item_bg_selected = chrome.menu_selected;
         let item_text = chrome.text_on_chrome;
         let item_text_secondary = chrome.text_chrome_secondary;
