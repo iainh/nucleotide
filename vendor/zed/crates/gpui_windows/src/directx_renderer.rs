@@ -1727,7 +1727,7 @@ fn set_pipeline_state(
     device_context: &ID3D11DeviceContext,
     buffer_view: &[Option<ID3D11ShaderResourceView>],
     topology: D3D_PRIMITIVE_TOPOLOGY,
-    viewport: &[D3D11_VIEWPORT],
+    _viewport: &[D3D11_VIEWPORT],
     vertex_shader: &ID3D11VertexShader,
     fragment_shader: &ID3D11PixelShader,
     global_params: &[Option<ID3D11Buffer>],
@@ -1737,7 +1737,6 @@ fn set_pipeline_state(
         device_context.VSSetShaderResources(1, Some(buffer_view));
         device_context.PSSetShaderResources(1, Some(buffer_view));
         device_context.IASetPrimitiveTopology(topology);
-        device_context.RSSetViewports(Some(viewport));
         device_context.VSSetShader(vertex_shader, None);
         device_context.PSSetShader(fragment_shader, None);
         device_context.VSSetConstantBuffers(0, Some(global_params));
