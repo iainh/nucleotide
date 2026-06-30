@@ -306,7 +306,18 @@ where
     C: WslCommandArgs,
 {
     add_wsl_base_args(command, workspace);
-    command.push_arg(shell).push_arg("-lc").push_arg(script);
+    command
+        .push_arg(shell)
+        .push_arg(wsl_shell_command_flag(shell))
+        .push_arg(script);
+}
+
+fn wsl_shell_command_flag(shell: &str) -> &'static str {
+    if shell.ends_with("/sh") || shell == "sh" {
+        "-c"
+    } else {
+        "-lc"
+    }
 }
 
 fn add_wsl_base_args<C>(command: &mut C, workspace: &WslWorkspace)
@@ -456,10 +467,17 @@ mod tests {
         assert!(debug.contains("--cd"));
         assert!(debug.contains("/home/iain/repo"));
         assert!(debug.contains("/bin/sh"));
-        assert!(debug.contains("-lc"));
+        assert!(debug.contains("-c"));
         assert!(debug.contains(".cache/nucleotide/remote-helper/1/nucleotide-remote"));
         assert!(debug.contains("nucleotide-remote"));
         assert!(debug.contains("hello"));
+    }
+
+    #[test]
+    fn wsl_shell_command_flag_uses_portable_sh_mode() {
+        assert_eq!(wsl_shell_command_flag("/bin/sh"), "-c");
+        assert_eq!(wsl_shell_command_flag("sh"), "-c");
+        assert_eq!(wsl_shell_command_flag("/bin/bash"), "-lc");
     }
 
     #[test]
@@ -621,7 +639,7 @@ mod tests {
         assert!(debug.contains("--cd"));
         assert!(debug.contains("/home/iain/repo"));
         assert!(debug.contains("/bin/sh"));
-        assert!(debug.contains("-lc"));
+        assert!(debug.contains("-c"));
         assert!(debug.contains(".cache/nucleotide/remote-helper/1/nucleotide-remote"));
         assert!(debug.contains("nucleotide-remote"));
         assert!(debug.contains("env"));
@@ -642,7 +660,7 @@ mod tests {
         assert!(debug.contains("--cd"));
         assert!(debug.contains("/home/iain/repo"));
         assert!(debug.contains("/bin/sh"));
-        assert!(debug.contains("-lc"));
+        assert!(debug.contains("-c"));
         assert!(debug.contains(".cache/nucleotide/remote-helper/1/nucleotide-remote"));
         assert!(debug.contains("nucleotide-remote"));
         assert!(debug.contains("metadata"));
@@ -663,7 +681,7 @@ mod tests {
         assert!(debug.contains("--cd"));
         assert!(debug.contains("/home/iain/repo"));
         assert!(debug.contains("/bin/sh"));
-        assert!(debug.contains("-lc"));
+        assert!(debug.contains("-c"));
         assert!(debug.contains(".cache/nucleotide/remote-helper/1/nucleotide-remote"));
         assert!(debug.contains("cat >"));
         assert!(debug.contains("chmod 755"));
@@ -700,7 +718,7 @@ mod tests {
         assert!(debug.contains("--distribution"));
         assert!(debug.contains("Ubuntu"));
         assert!(debug.contains("/bin/sh"));
-        assert!(debug.contains("-lc"));
+        assert!(debug.contains("-c"));
         assert!(debug.contains(".cache/nucleotide/remote-helper/1/nucleotide-remote"));
         assert!(debug.contains("nucleotide-remote"));
         assert!(debug.contains("hello"));
