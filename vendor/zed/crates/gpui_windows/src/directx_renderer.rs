@@ -1000,6 +1000,7 @@ struct PipelineState<T> {
     buffer: ID3D11Buffer,
     buffer_size: usize,
     view: Option<ID3D11ShaderResourceView>,
+    range_views: HashMap<(u32, u32), Option<ID3D11ShaderResourceView>>,
     blend_state: ID3D11BlendState,
     _marker: std::marker::PhantomData<T>,
 }
@@ -1030,6 +1031,7 @@ impl<T> PipelineState<T> {
             buffer,
             buffer_size,
             view,
+            range_views: HashMap::default(),
             blend_state,
             _marker: std::marker::PhantomData,
         })
@@ -1054,6 +1056,7 @@ impl<T> PipelineState<T> {
             self.buffer = buffer;
             self.view = view;
             self.buffer_size = new_buffer_size;
+            self.range_views.clear();
         }
         update_buffer(device_context, &self.buffer, data)
     }
@@ -1113,7 +1116,7 @@ impl<T> PipelineState<T> {
     }
 
     fn draw_range(
-        &self,
+        &mut self,
         device: &ID3D11Device,
         device_context: &ID3D11DeviceContext,
         viewport: &[D3D11_VIEWPORT],
@@ -1122,10 +1125,10 @@ impl<T> PipelineState<T> {
         first_instance: u32,
         instance_count: u32,
     ) -> Result<()> {
-        let view = create_buffer_view_range(device, &self.buffer, first_instance, instance_count)?;
+        let view = [self.buffer_range_view(device, first_instance, instance_count)?];
         set_pipeline_state(
             device_context,
-            slice::from_ref(&view),
+            &view,
             D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP,
             viewport,
             &self.vertex,
@@ -1140,7 +1143,7 @@ impl<T> PipelineState<T> {
     }
 
     fn draw_range_with_texture(
-        &self,
+        &mut self,
         device: &ID3D11Device,
         device_context: &ID3D11DeviceContext,
         texture: &[Option<ID3D11ShaderResourceView>],
@@ -1150,10 +1153,10 @@ impl<T> PipelineState<T> {
         first_instance: u32,
         instance_count: u32,
     ) -> Result<()> {
-        let view = create_buffer_view_range(device, &self.buffer, first_instance, instance_count)?;
+        let view = [self.buffer_range_view(device, first_instance, instance_count)?];
         set_pipeline_state(
             device_context,
-            slice::from_ref(&view),
+            &view,
             D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP,
             viewport,
             &self.vertex,
@@ -1168,6 +1171,34 @@ impl<T> PipelineState<T> {
             device_context.DrawInstanced(4, instance_count, 0, 0);
         }
         Ok(())
+    }
+
+    fn buffer_range_view(
+        &mut self,
+        device: &ID3D11Device,
+        first_instance: u32,
+        instance_count: u32,
+    ) -> Result<Option<ID3D11ShaderResourceView>> {
+        const MAX_RANGE_VIEW_CACHE_LEN: usize = 4096;
+
+        let key = (first_instance, instance_count);
+        if !self.range_views.contains_key(&key)
+            && self.range_views.len() >= MAX_RANGE_VIEW_CACHE_LEN
+        {
+            self.range_views.clear();
+        }
+
+        if !self.range_views.contains_key(&key) {
+            let view =
+                create_buffer_view_range(device, &self.buffer, first_instance, instance_count)?;
+            self.range_views.insert(key, view);
+        }
+
+        Ok(self
+            .range_views
+            .get(&key)
+            .expect("range view should exist after insertion")
+            .clone())
     }
 }
 
