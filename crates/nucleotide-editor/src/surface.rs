@@ -16,7 +16,7 @@ use crate::{
 use nucleotide_types::scrollbar::SCROLLBAR_THICKNESS;
 
 type ScrollCallback = Rc<dyn Fn(&EditorViewport, ViewportScrollUpdate, &mut App)>;
-type PointerCallback = Rc<dyn Fn(EditorSurfacePointerEvent, &mut App)>;
+type PointerCallback = Rc<dyn Fn(EditorSurfacePointerEvent, &mut App) -> bool>;
 type KeyDownCallback = Rc<dyn Fn(&KeyDownEvent, &mut Window, &mut App) -> bool>;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -141,7 +141,7 @@ impl EditorSurface {
 
     pub fn on_mouse_down(
         mut self,
-        callback: impl Fn(EditorSurfacePointerEvent, &mut App) + 'static,
+        callback: impl Fn(EditorSurfacePointerEvent, &mut App) -> bool + 'static,
     ) -> Self {
         self.on_mouse_down = Some(Rc::new(callback));
         self
@@ -149,7 +149,7 @@ impl EditorSurface {
 
     pub fn on_mouse_drag(
         mut self,
-        callback: impl Fn(EditorSurfacePointerEvent, &mut App) + 'static,
+        callback: impl Fn(EditorSurfacePointerEvent, &mut App) -> bool + 'static,
     ) -> Self {
         self.on_mouse_drag = Some(Rc::new(callback));
         self
@@ -157,7 +157,7 @@ impl EditorSurface {
 
     pub fn on_mouse_up(
         mut self,
-        callback: impl Fn(EditorSurfacePointerEvent, &mut App) + 'static,
+        callback: impl Fn(EditorSurfacePointerEvent, &mut App) -> bool + 'static,
     ) -> Self {
         self.on_mouse_up = Some(Rc::new(callback));
         self
@@ -299,12 +299,14 @@ impl RenderOnce for EditorSurface {
                     focus.focus(window, cx);
                 }
 
-                on_mouse_down(
+                let changed = on_mouse_down(
                     Self::surface_event(metrics.clone(), bounds, event.position, event.modifiers),
                     cx,
                 );
 
-                cx.notify(view_entity_id);
+                if changed {
+                    cx.notify(view_entity_id);
+                }
                 cx.stop_propagation();
             });
         }
@@ -325,12 +327,14 @@ impl RenderOnce for EditorSurface {
                     return;
                 }
 
-                on_mouse_drag(
+                let changed = on_mouse_drag(
                     Self::surface_event(metrics.clone(), bounds, event.position, event.modifiers),
                     cx,
                 );
 
-                cx.notify(view_entity_id);
+                if changed {
+                    cx.notify(view_entity_id);
+                }
                 cx.stop_propagation();
             });
         }
@@ -349,12 +353,14 @@ impl RenderOnce for EditorSurface {
                     return;
                 }
 
-                on_mouse_up_inside(
+                let changed = on_mouse_up_inside(
                     Self::surface_event(metrics.clone(), bounds, event.position, event.modifiers),
                     cx,
                 );
 
-                cx.notify(view_entity_id);
+                if changed {
+                    cx.notify(view_entity_id);
+                }
                 cx.stop_propagation();
             });
 
@@ -368,12 +374,14 @@ impl RenderOnce for EditorSurface {
                     return;
                 };
 
-                on_mouse_up_out(
+                let changed = on_mouse_up_out(
                     Self::surface_event(metrics.clone(), bounds, event.position, event.modifiers),
                     cx,
                 );
 
-                cx.notify(view_entity_id);
+                if changed {
+                    cx.notify(view_entity_id);
+                }
                 cx.stop_propagation();
             });
         }
@@ -486,15 +494,24 @@ mod tests {
                 })
                 .on_mouse_down({
                     let saw_down = Rc::clone(&saw_down);
-                    move |_, _| saw_down.set(true)
+                    move |_, _| {
+                        saw_down.set(true);
+                        true
+                    }
                 })
                 .on_mouse_drag({
                     let saw_drag = Rc::clone(&saw_drag);
-                    move |_, _| saw_drag.set(true)
+                    move |_, _| {
+                        saw_drag.set(true);
+                        true
+                    }
                 })
                 .on_mouse_up({
                     let saw_up = Rc::clone(&saw_up);
-                    move |_, _| saw_up.set(true)
+                    move |_, _| {
+                        saw_up.set(true);
+                        true
+                    }
                 })
                 .into_element()
             },
@@ -558,7 +575,10 @@ mod tests {
                     )
                     .on_mouse_up({
                         let saw_up = Rc::clone(&saw_up);
-                        move |_, _| saw_up.set(true)
+                        move |_, _| {
+                            saw_up.set(true);
+                            true
+                        }
                     }),
                 )
             },
@@ -642,7 +662,10 @@ mod tests {
                 div().size_full(),
             )
             .track_focus(self.focus.clone())
-            .on_mouse_down(move |_, _| saw_down.set(true))
+            .on_mouse_down(move |_, _| {
+                saw_down.set(true);
+                true
+            })
         }
     }
 

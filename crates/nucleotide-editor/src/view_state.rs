@@ -19,6 +19,7 @@ use crate::{
     EditorViewportScrollRequest, EditorViewportSurfaceLayout, EditorViewportSurfaceUpdate,
     GutterLineAnchor, GutterLinePlan, GutterRunButtonHit, LineLayoutCache, ViewportScrollUpdate,
     begin_editor_pointer_selection_at_event, update_editor_pointer_selection_at_event,
+    update_editor_pointer_selection_at_event_outcome,
 };
 
 #[derive(Clone)]
@@ -389,10 +390,16 @@ impl EditorViewState {
                     |update| EditorPointerSelectionOutcome::Applied { phase, update },
                 ),
             EditorPointerSelectionPhase::Extend => self
-                .update_pointer_selection_at_event(editor, doc_id, view_id, event)
+                .update_pointer_selection_at_event_outcome(editor, doc_id, view_id, event)
                 .map_or(
                     EditorPointerSelectionOutcome::Missed { phase, event },
-                    |update| EditorPointerSelectionOutcome::Applied { phase, update },
+                    |(update, changed)| {
+                        if changed {
+                            EditorPointerSelectionOutcome::Applied { phase, update }
+                        } else {
+                            EditorPointerSelectionOutcome::Unchanged { phase, update }
+                        }
+                    },
                 ),
             EditorPointerSelectionPhase::End => {
                 self.clear_pointer_selection();
@@ -403,6 +410,25 @@ impl EditorViewState {
 
     pub fn clear_pointer_selection(&self) {
         self.selection_drag_state.clear();
+    }
+
+    fn update_pointer_selection_at_event_outcome(
+        &self,
+        editor: &mut Editor,
+        doc_id: DocumentId,
+        view_id: ViewId,
+        event: EditorSurfacePointerEvent,
+    ) -> Option<(EditorPointerSelectionUpdate, bool)> {
+        let line_cache = self.surface_metrics.line_cache();
+        update_editor_pointer_selection_at_event_outcome(
+            editor,
+            doc_id,
+            view_id,
+            self.gutter_extra_columns.get(),
+            &line_cache,
+            &self.selection_drag_state,
+            event,
+        )
     }
 
     pub fn line_height(&self) -> Pixels {
@@ -444,7 +470,7 @@ mod tests {
 
     use arc_swap::{ArcSwap, access::Map};
     use gpui::{Bounds, TestAppContext, point, px, size};
-    use helix_core::{Transaction, syntax};
+    use helix_core::{Selection, Transaction, syntax};
     use helix_view::{
         DocumentId, Editor,
         editor::{Action, Config},
@@ -838,6 +864,43 @@ mod tests {
         assert!(!outcome.changed());
         assert_eq!(outcome.update(), None);
         assert_eq!(state.selection_drag_state().anchor(), None);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn view_state_pointer_phase_extend_reports_unchanged_for_same_hit() {
+        let state = EditorViewState::new(px(20.0), px(8.0));
+        state
+            .surface_metrics()
+            .line_cache()
+            .push(LineLayout::unwrapped(0, Default::default(), px(0.0)));
+        state.selection_drag_state().set_anchor(0);
+        let (mut editor, doc_id, view_id) = test_editor_with_text("one\n");
+        let event = pointer_event();
+        editor
+            .document_mut(doc_id)
+            .unwrap()
+            .set_selection(view_id, Selection::point(0));
+
+        let outcome = state.handle_pointer_selection_outcome(
+            &mut editor,
+            doc_id,
+            view_id,
+            EditorPointerSelectionPhase::Extend,
+            event,
+        );
+
+        assert!(
+            matches!(
+                outcome,
+                EditorPointerSelectionOutcome::Unchanged {
+                    phase: EditorPointerSelectionPhase::Extend,
+                    ..
+                }
+            ),
+            "{outcome:?}"
+        );
+        assert!(!outcome.changed());
+        assert_eq!(outcome.update(), None);
     }
 
     #[tokio::test(flavor = "current_thread")]

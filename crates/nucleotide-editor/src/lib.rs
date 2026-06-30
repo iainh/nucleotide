@@ -140,7 +140,8 @@ pub use selection::{
     begin_editor_pointer_selection_at_event, begin_pointer_selection,
     begin_pointer_selection_at_event, log_pointer_selection_outcome, pointer_selection_anchor,
     primary_selection_anchor, selection_for_range, update_editor_pointer_selection_at_event,
-    update_pointer_selection, update_pointer_selection_at_event,
+    update_editor_pointer_selection_at_event_outcome, update_pointer_selection,
+    update_pointer_selection_at_event,
 };
 pub use soft_wrap::{
     DocumentSoftWrapRenderPlanParams, SoftWrapLinePaintPlan, SoftWrapRenderPlan,
