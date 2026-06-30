@@ -536,6 +536,7 @@ impl DirectXRenderer {
         let devices = self.devices.as_ref().context("devices missing")?;
         self.pipelines.shadow_pipeline.draw_range(
             &mut self.state_cache,
+            &devices.device,
             &devices.device_context,
             slice::from_ref(
                 &self
@@ -558,6 +559,7 @@ impl DirectXRenderer {
         let devices = self.devices.as_ref().context("devices missing")?;
         self.pipelines.quad_pipeline.draw_range(
             &mut self.state_cache,
+            &devices.device,
             &devices.device_context,
             slice::from_ref(
                 &self
@@ -697,6 +699,7 @@ impl DirectXRenderer {
         let resources = self.resources.as_ref().context("resources missing")?;
         self.pipelines.underline_pipeline.draw_range(
             &mut self.state_cache,
+            &devices.device,
             &devices.device_context,
             slice::from_ref(&resources.viewport),
             slice::from_ref(&self.globals.global_params_buffer),
@@ -720,6 +723,7 @@ impl DirectXRenderer {
         let texture_view = self.atlas.get_texture_view(texture_id);
         self.pipelines.mono_sprites.draw_range_with_texture(
             &mut self.state_cache,
+            &devices.device,
             &devices.device_context,
             &texture_view,
             slice::from_ref(&resources.viewport),
@@ -744,6 +748,7 @@ impl DirectXRenderer {
         let texture_view = self.atlas.get_texture_view(texture_id);
         self.pipelines.subpixel_sprites.draw_range_with_texture(
             &mut self.state_cache,
+            &devices.device,
             &devices.device_context,
             &texture_view,
             slice::from_ref(&resources.viewport),
@@ -768,6 +773,7 @@ impl DirectXRenderer {
         let texture_view = self.atlas.get_texture_view(texture_id);
         self.pipelines.poly_sprites.draw_range_with_texture(
             &mut self.state_cache,
+            &devices.device,
             &devices.device_context,
             &texture_view,
             slice::from_ref(&resources.viewport),
@@ -1085,6 +1091,7 @@ struct PipelineState<T> {
     buffer: ID3D11Buffer,
     buffer_size: usize,
     view: Option<ID3D11ShaderResourceView>,
+    range_views: HashMap<(u32, u32), Option<ID3D11ShaderResourceView>>,
     blend_state: ID3D11BlendState,
     _marker: std::marker::PhantomData<T>,
 }
@@ -1115,6 +1122,7 @@ impl<T> PipelineState<T> {
             buffer,
             buffer_size,
             view,
+            range_views: HashMap::default(),
             blend_state,
             _marker: std::marker::PhantomData,
         })
@@ -1139,6 +1147,7 @@ impl<T> PipelineState<T> {
             self.buffer = buffer;
             self.view = view;
             self.buffer_size = new_buffer_size;
+            self.range_views.clear();
         }
         update_buffer(device_context, &self.buffer, data)
     }
@@ -1202,8 +1211,9 @@ impl<T> PipelineState<T> {
     }
 
     fn draw_range(
-        &self,
+        &mut self,
         state_cache: &mut DirectXStateCache,
+        device: &ID3D11Device,
         device_context: &ID3D11DeviceContext,
         viewport: &[D3D11_VIEWPORT],
         global_params: &[Option<ID3D11Buffer>],
@@ -1211,10 +1221,11 @@ impl<T> PipelineState<T> {
         first_instance: u32,
         instance_count: u32,
     ) -> Result<()> {
+        let view = [self.buffer_range_view(device, first_instance, instance_count)?];
         set_pipeline_state(
             state_cache,
             device_context,
-            slice::from_ref(&self.view),
+            &view,
             D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP,
             viewport,
             &self.vertex,
@@ -1223,14 +1234,15 @@ impl<T> PipelineState<T> {
             &self.blend_state,
         );
         unsafe {
-            device_context.DrawInstanced(vertex_count, instance_count, 0, first_instance);
+            device_context.DrawInstanced(vertex_count, instance_count, 0, 0);
         }
         Ok(())
     }
 
     fn draw_range_with_texture(
-        &self,
+        &mut self,
         state_cache: &mut DirectXStateCache,
+        device: &ID3D11Device,
         device_context: &ID3D11DeviceContext,
         texture: &[Option<ID3D11ShaderResourceView>],
         viewport: &[D3D11_VIEWPORT],
@@ -1239,10 +1251,11 @@ impl<T> PipelineState<T> {
         first_instance: u32,
         instance_count: u32,
     ) -> Result<()> {
+        let view = [self.buffer_range_view(device, first_instance, instance_count)?];
         set_pipeline_state(
             state_cache,
             device_context,
-            slice::from_ref(&self.view),
+            &view,
             D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP,
             viewport,
             &self.vertex,
@@ -1254,9 +1267,37 @@ impl<T> PipelineState<T> {
             device_context.PSSetSamplers(0, Some(sampler));
             device_context.VSSetShaderResources(0, Some(texture));
             device_context.PSSetShaderResources(0, Some(texture));
-            device_context.DrawInstanced(4, instance_count, 0, first_instance);
+            device_context.DrawInstanced(4, instance_count, 0, 0);
         }
         Ok(())
+    }
+
+    fn buffer_range_view(
+        &mut self,
+        device: &ID3D11Device,
+        first_instance: u32,
+        instance_count: u32,
+    ) -> Result<Option<ID3D11ShaderResourceView>> {
+        const MAX_RANGE_VIEW_CACHE_LEN: usize = 4096;
+
+        let key = (first_instance, instance_count);
+        if !self.range_views.contains_key(&key)
+            && self.range_views.len() >= MAX_RANGE_VIEW_CACHE_LEN
+        {
+            self.range_views.clear();
+        }
+
+        if !self.range_views.contains_key(&key) {
+            let view =
+                create_buffer_view_range(device, &self.buffer, first_instance, instance_count)?;
+            self.range_views.insert(key, view);
+        }
+
+        Ok(self
+            .range_views
+            .get(&key)
+            .expect("range view should exist after insertion")
+            .clone())
     }
 }
 
@@ -1743,6 +1784,32 @@ fn create_buffer_view(
 ) -> Result<Option<ID3D11ShaderResourceView>> {
     let mut view = None;
     unsafe { device.CreateShaderResourceView(buffer, None, Some(&mut view)) }?;
+    Ok(view)
+}
+
+#[inline]
+fn create_buffer_view_range(
+    device: &ID3D11Device,
+    buffer: &ID3D11Buffer,
+    first_element: u32,
+    num_elements: u32,
+) -> Result<Option<ID3D11ShaderResourceView>> {
+    let desc = D3D11_SHADER_RESOURCE_VIEW_DESC {
+        Format: DXGI_FORMAT_UNKNOWN,
+        ViewDimension: D3D11_SRV_DIMENSION_BUFFER,
+        Anonymous: D3D11_SHADER_RESOURCE_VIEW_DESC_0 {
+            Buffer: D3D11_BUFFER_SRV {
+                Anonymous1: D3D11_BUFFER_SRV_0 {
+                    FirstElement: first_element,
+                },
+                Anonymous2: D3D11_BUFFER_SRV_1 {
+                    NumElements: num_elements,
+                },
+            },
+        },
+    };
+    let mut view = None;
+    unsafe { device.CreateShaderResourceView(buffer, Some(&desc), Some(&mut view)) }?;
     Ok(view)
 }
 
