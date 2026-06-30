@@ -21,6 +21,7 @@ use windows::{
             Dxgi::{Common::*, *},
             Gdi::{HMONITOR, MONITOR_DEFAULTTONEAREST, MonitorFromWindow},
         },
+        System::Threading::WaitForSingleObject,
     },
     core::Interface,
 };
@@ -33,6 +34,7 @@ pub(crate) const DISABLE_DIRECT_COMPOSITION: &str = "GPUI_DISABLE_DIRECT_COMPOSI
 const RENDER_TARGET_FORMAT: DXGI_FORMAT = DXGI_FORMAT_B8G8R8A8_UNORM;
 // This configuration is used for MSAA rendering on paths only, and it's guaranteed to be supported by DirectX 11.
 const PATH_MULTISAMPLE_COUNT: u32 = 4;
+const FRAME_LATENCY_WAIT_TIMEOUT_MS: u32 = 1_000;
 
 #[derive(Clone, Copy)]
 pub(crate) struct FontInfo {
@@ -89,6 +91,7 @@ struct DirectXResources {
     swap_chain: IDXGISwapChain1,
     render_target: Option<ID3D11Texture2D>,
     render_target_view: Option<ID3D11RenderTargetView>,
+    frame_latency_waitable_object: Option<windows::Win32::Foundation::HANDLE>,
 
     // Path intermediate textures (with MSAA)
     path_intermediate_texture: ID3D11Texture2D,
@@ -357,6 +360,10 @@ impl DirectXRenderer {
             // and so likely do not have the textures anymore that are required for drawing
             return Ok(());
         }
+        self.resources
+            .as_ref()
+            .context("resources missing")?
+            .wait_for_frame_latency();
         self.pre_draw(&match background_appearance {
             WindowBackgroundAppearance::Opaque => [1.0f32; 4],
             _ => [0.0f32; 4],
@@ -827,6 +834,7 @@ impl DirectXResources {
                 height,
             )?
         };
+        let frame_latency_waitable_object = configure_frame_latency_waitable_object(&swap_chain);
 
         let (
             render_target,
@@ -843,6 +851,7 @@ impl DirectXResources {
             swap_chain,
             render_target: Some(render_target),
             render_target_view,
+            frame_latency_waitable_object,
             path_intermediate_texture,
             path_intermediate_msaa_texture,
             path_intermediate_msaa_view,
@@ -875,6 +884,20 @@ impl DirectXResources {
         self.path_intermediate_srv = path_intermediate_srv;
         self.viewport = viewport;
         Ok(())
+    }
+
+    fn wait_for_frame_latency(&self) {
+        let Some(waitable_object) = self.frame_latency_waitable_object else {
+            return;
+        };
+
+        let result = unsafe { WaitForSingleObject(waitable_object, FRAME_LATENCY_WAIT_TIMEOUT_MS) };
+        if result.0 != 0 {
+            log::trace!(
+                "DXGI frame latency wait returned {:?}; continuing without blocking further",
+                result
+            );
+        }
     }
 }
 
@@ -1233,6 +1256,36 @@ fn create_swap_chain_for_composition(
     width: u32,
     height: u32,
 ) -> Result<IDXGISwapChain1> {
+    create_swap_chain_for_composition_with_flags(
+        dxgi_factory,
+        device,
+        width,
+        height,
+        DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT,
+    )
+    .inspect_err(|err| {
+        log::debug!(
+            "Failed to create DirectComposition swap chain with frame latency waitable object: {err}"
+        );
+    })
+    .or_else(|_| {
+        create_swap_chain_for_composition_with_flags(
+            dxgi_factory,
+            device,
+            width,
+            height,
+            DXGI_SWAP_CHAIN_FLAG(0),
+        )
+    })
+}
+
+fn create_swap_chain_for_composition_with_flags(
+    dxgi_factory: &IDXGIFactory6,
+    device: &ID3D11Device,
+    width: u32,
+    height: u32,
+    flags: DXGI_SWAP_CHAIN_FLAG,
+) -> Result<IDXGISwapChain1> {
     let desc = DXGI_SWAP_CHAIN_DESC1 {
         Width: width,
         Height: height,
@@ -1248,7 +1301,7 @@ fn create_swap_chain_for_composition(
         Scaling: DXGI_SCALING_STRETCH,
         SwapEffect: DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
         AlphaMode: DXGI_ALPHA_MODE_PREMULTIPLIED,
-        Flags: 0,
+        Flags: flags.0 as u32,
     };
     Ok(unsafe { dxgi_factory.CreateSwapChainForComposition(device, &desc, None)? })
 }
@@ -1259,6 +1312,37 @@ fn create_swap_chain(
     hwnd: HWND,
     width: u32,
     height: u32,
+) -> Result<IDXGISwapChain1> {
+    create_swap_chain_with_flags(
+        dxgi_factory,
+        device,
+        hwnd,
+        width,
+        height,
+        DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT,
+    )
+    .inspect_err(|err| {
+        log::debug!("Failed to create HWND swap chain with frame latency waitable object: {err}");
+    })
+    .or_else(|_| {
+        create_swap_chain_with_flags(
+            dxgi_factory,
+            device,
+            hwnd,
+            width,
+            height,
+            DXGI_SWAP_CHAIN_FLAG(0),
+        )
+    })
+}
+
+fn create_swap_chain_with_flags(
+    dxgi_factory: &IDXGIFactory6,
+    device: &ID3D11Device,
+    hwnd: HWND,
+    width: u32,
+    height: u32,
+    flags: DXGI_SWAP_CHAIN_FLAG,
 ) -> Result<IDXGISwapChain1> {
     use windows::Win32::Graphics::Dxgi::DXGI_MWA_NO_ALT_ENTER;
 
@@ -1276,12 +1360,29 @@ fn create_swap_chain(
         Scaling: DXGI_SCALING_NONE,
         SwapEffect: DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
         AlphaMode: DXGI_ALPHA_MODE_IGNORE,
-        Flags: 0,
+        Flags: flags.0 as u32,
     };
     let swap_chain =
         unsafe { dxgi_factory.CreateSwapChainForHwnd(device, hwnd, &desc, None, None) }?;
     unsafe { dxgi_factory.MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER) }?;
     Ok(swap_chain)
+}
+
+fn configure_frame_latency_waitable_object(
+    swap_chain: &IDXGISwapChain1,
+) -> Option<windows::Win32::Foundation::HANDLE> {
+    let swap_chain: IDXGISwapChain2 = swap_chain
+        .cast()
+        .context("Casting swap chain to IDXGISwapChain2")
+        .log_err()?;
+    unsafe {
+        swap_chain
+            .SetMaximumFrameLatency(1)
+            .context("Setting swap chain maximum frame latency")
+            .log_err()?;
+        let waitable_object = swap_chain.GetFrameLatencyWaitableObject();
+        (!waitable_object.is_invalid()).then_some(waitable_object)
+    }
 }
 
 #[inline]
