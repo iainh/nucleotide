@@ -373,6 +373,7 @@ impl DirectXRenderer {
             _ => [0.0f32; 4],
         })?;
 
+        self.atlas.flush_uploads();
         self.upload_scene_buffers(scene)?;
 
         for batch in scene.batches() {
