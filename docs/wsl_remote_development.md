@@ -39,10 +39,12 @@ editor backend into Linux:
   and keeps the Windows editor side talking normal LSP. WSL LSP startup does
   not inject Linux environment snapshots into the Windows process; the remote
   launch boundary owns those values.
-- `nucleotide-remote` is a versioned helper binary with `hello`, `env`, and
-  `metadata` protocol commands. Metadata includes workspace marker and shallow
-  source-directory facts so project/LSP detection can avoid repeated Windows UNC
-  filesystem probes when the helper is available.
+- `nucleotide-remote` is a versioned helper binary with `hello`, `env`,
+  `metadata`, and `list` protocol commands. Metadata includes workspace marker
+  and shallow source-directory facts so project/LSP detection can avoid repeated
+  Windows UNC filesystem probes when the helper is available. Directory listing
+  returns compact file metadata from inside WSL so the project tree can populate
+  rows without enumerating `\\wsl...` paths through Windows.
 - Application startup schedules a short, non-blocking WSL helper health probe for
   WSL roots. Probes prefer
   `~/.cache/nucleotide/remote-helper/<protocol-version>/nucleotide-remote`
@@ -56,6 +58,11 @@ editor backend into Linux:
 - Workspace terminals and runnable commands opened from WSL roots are launched
   through `wsl.exe --distribution <distro> --cd <linux-path>`, so shells and
   commands start where the project files live.
+- The file tree uses the remote helper for WSL initial root population,
+  directory expansion, and directory refresh when a Tokio runtime is available.
+  Native workspaces keep the existing local filesystem path. WSL file watching is
+  disabled for the Windows watcher path so the UI does not pay for recursive UNC
+  monitoring.
 
 This means the first supported path is direct WSL LSP execution with path
 translation. The helper is currently an optional foundation for richer remote
@@ -71,6 +78,7 @@ flowchart LR
     WSL["wsl.exe"]
     Server["Language server in WSL"]
     Helper["nucleotide-remote in WSL"]
+    FileTree["Project tree"]
     Terminal["Terminal or runnable in WSL"]
 
     UI --> Bridge
@@ -78,6 +86,7 @@ flowchart LR
     Proxy --> WSL
     WSL --> Server
     UI -. "background health probe" .-> Helper
+    FileTree --> Helper
     UI --> Terminal
     Proxy <--> Server
 ```
@@ -100,7 +109,8 @@ The next step toward a more native-feeling remote experience is to make
    `NUCLEOTIDE_REMOTE_HELPER_INSTALL_SOURCE`, because WSL must receive a Linux
    helper binary rather than the Windows GUI binary.
 4. Move remote services behind helper commands where that improves latency or
-   correctness, starting with environment and workspace metadata.
+   correctness, starting with environment, workspace metadata, and directory
+   listing.
 5. Keep direct WSL LSP launch as the fallback path so helper bootstrap problems
    do not block editing.
 
