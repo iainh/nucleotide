@@ -41,7 +41,9 @@ editor backend into Linux:
   WSL roots. Probes prefer
   `~/.cache/nucleotide/remote-helper/<protocol-version>/nucleotide-remote`
   before falling back to `nucleotide-remote` on `PATH`. Helper success is logged;
-  helper failure falls back to direct WSL language server launch.
+  helper failure can bootstrap from `NUCLEOTIDE_REMOTE_HELPER_INSTALL_SOURCE`
+  when that variable points at a Linux helper binary, then falls back to direct
+  WSL language server launch if the helper remains unavailable.
 - Workspace terminals and runnable commands opened from WSL roots are launched
   through `wsl.exe --distribution <distro> --cd <linux-path>`, so shells and
   commands start where the project files live.
@@ -85,7 +87,9 @@ The next step toward a more native-feeling remote experience is to make
 2. Probe that exact path before falling back to `PATH`. This is implemented for
    helper health and environment snapshot commands.
 3. Bootstrap or update the helper when the cached binary is missing or reports a
-   protocol mismatch.
+   protocol mismatch. The first bootstrap path is explicit via
+   `NUCLEOTIDE_REMOTE_HELPER_INSTALL_SOURCE`, because WSL must receive a Linux
+   helper binary rather than the Windows GUI binary.
 4. Move remote services behind helper commands where that improves latency or
    correctness, starting with environment and workspace metadata.
 5. Keep direct WSL LSP launch as the fallback path so helper bootstrap problems
