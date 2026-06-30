@@ -12,7 +12,9 @@ use std::time::SystemTime;
 use tokio::sync::{RwLock, Semaphore};
 use tokio::time::{Duration, timeout};
 
-use crate::wsl::{WslWorkspace, build_wsl_environment_capture_tokio_command};
+use crate::wsl::{
+    WslWorkspace, build_wsl_environment_capture_tokio_command, load_wsl_remote_environment,
+};
 
 const DIRECTORY_SHELL_CAPTURE_TIMEOUT_SECONDS: u64 = 10;
 const PROCESS_SHELL_CAPTURE_TIMEOUT_SECONDS: u64 = 10;
@@ -47,6 +49,7 @@ pub enum ShellEnvironmentError {
 pub enum EnvironmentOrigin {
     Cli,
     NativeFlake,
+    WslRemote,
     WslShell,
     DirectoryShell,
     Process,
@@ -306,26 +309,53 @@ impl ProjectEnvironment {
             "Capturing WSL project environment"
         );
 
-        let env = capture_wsl_environment_with_timeout(
+        let (env, origin) = match load_wsl_remote_environment(
             &workspace,
-            DIRECTORY_SHELL_CAPTURE_TIMEOUT_SECONDS,
+            Duration::from_secs(DIRECTORY_SHELL_CAPTURE_TIMEOUT_SECONDS),
         )
-        .await?;
-        let mut env = env;
-        env.insert("ZED_ENVIRONMENT".to_string(), "wsl-shell".to_string());
-        env.insert("NUCLEOTIDE_REMOTE_KIND".to_string(), "wsl".to_string());
-        env.insert(
-            "NUCLEOTIDE_WSL_DISTRO".to_string(),
-            workspace.distro().to_string(),
-        );
-        env.insert(
-            "NUCLEOTIDE_WSL_ROOT".to_string(),
-            workspace.linux_path().to_string(),
-        );
+        .await
+        {
+            Ok(response) => {
+                info!(
+                    distro = %workspace.distro(),
+                    linux_path = %workspace.linux_path(),
+                    helper_current_dir = %response.current_dir.display(),
+                    env_count = response.variables.len(),
+                    "Loaded WSL project environment from remote helper"
+                );
+                (
+                    annotate_wsl_environment(
+                        response.variables.into_iter().collect(),
+                        &workspace,
+                        "wsl-remote-helper",
+                    ),
+                    EnvironmentOrigin::WslRemote,
+                )
+            }
+            Err(error) => {
+                warn!(
+                    distro = %workspace.distro(),
+                    linux_path = %workspace.linux_path(),
+                    error = %error,
+                    "WSL remote helper environment unavailable; falling back to shell capture"
+                );
+
+                let env = capture_wsl_environment_with_timeout(
+                    &workspace,
+                    DIRECTORY_SHELL_CAPTURE_TIMEOUT_SECONDS,
+                )
+                .await?;
+
+                (
+                    annotate_wsl_environment(env, &workspace, "wsl-shell"),
+                    EnvironmentOrigin::WslShell,
+                )
+            }
+        };
 
         let cached_env = CachedEnvironment {
             environment: env.clone(),
-            origin: EnvironmentOrigin::WslShell,
+            origin,
             directory: cache_key.clone(),
             native_watch_state: None,
         };
@@ -678,10 +708,29 @@ fn cached_environment_is_current(cached: &CachedEnvironment) -> bool {
             .as_deref()
             .is_some_and(watched_files_are_current),
         EnvironmentOrigin::Cli
+        | EnvironmentOrigin::WslRemote
         | EnvironmentOrigin::WslShell
         | EnvironmentOrigin::DirectoryShell
         | EnvironmentOrigin::Process => true,
     }
+}
+
+fn annotate_wsl_environment(
+    mut env: HashMap<String, String>,
+    workspace: &WslWorkspace,
+    source: &str,
+) -> HashMap<String, String> {
+    env.insert("ZED_ENVIRONMENT".to_string(), source.to_string());
+    env.insert("NUCLEOTIDE_REMOTE_KIND".to_string(), "wsl".to_string());
+    env.insert(
+        "NUCLEOTIDE_WSL_DISTRO".to_string(),
+        workspace.distro().to_string(),
+    );
+    env.insert(
+        "NUCLEOTIDE_WSL_ROOT".to_string(),
+        workspace.linux_path().to_string(),
+    );
+    env
 }
 
 fn watched_files_are_current(watched_files: &[WatchedFileState]) -> bool {
@@ -2028,6 +2077,48 @@ mod tests {
         std::fs::write(envrc_path, "use flake .#dev\n").unwrap();
 
         assert!(!cached_environment_is_current(&cached));
+    }
+
+    #[test]
+    fn test_wsl_remote_cached_environment_is_current() {
+        let cached = CachedEnvironment {
+            environment: HashMap::new(),
+            origin: EnvironmentOrigin::WslRemote,
+            directory: PathBuf::from(r"\\wsl.localhost\Ubuntu\repo"),
+            native_watch_state: None,
+        };
+
+        assert!(cached_environment_is_current(&cached));
+    }
+
+    #[test]
+    fn test_annotate_wsl_environment_sets_remote_metadata() {
+        let workspace =
+            WslWorkspace::from_unc_path(Path::new(r"\\wsl.localhost\Ubuntu\home\iain\repo"))
+                .expect("WSL workspace");
+        let env = annotate_wsl_environment(
+            HashMap::from([("PATH".to_string(), "/usr/bin".to_string())]),
+            &workspace,
+            "wsl-remote-helper",
+        );
+
+        assert_eq!(env.get("PATH").map(String::as_str), Some("/usr/bin"));
+        assert_eq!(
+            env.get("ZED_ENVIRONMENT").map(String::as_str),
+            Some("wsl-remote-helper")
+        );
+        assert_eq!(
+            env.get("NUCLEOTIDE_REMOTE_KIND").map(String::as_str),
+            Some("wsl")
+        );
+        assert_eq!(
+            env.get("NUCLEOTIDE_WSL_DISTRO").map(String::as_str),
+            Some("Ubuntu")
+        );
+        assert_eq!(
+            env.get("NUCLEOTIDE_WSL_ROOT").map(String::as_str),
+            Some("/home/iain/repo")
+        );
     }
 
     #[tokio::test]
