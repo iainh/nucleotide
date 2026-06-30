@@ -42,6 +42,9 @@ editor backend into Linux:
   `~/.cache/nucleotide/remote-helper/<protocol-version>/nucleotide-remote`
   before falling back to `nucleotide-remote` on `PATH`. Helper success is logged;
   helper failure falls back to direct WSL language server launch.
+- Workspace terminals and runnable commands opened from WSL roots are launched
+  through `wsl.exe --distribution <distro> --cd <linux-path>`, so shells and
+  commands start where the project files live.
 
 This means the first supported path is direct WSL LSP execution with path
 translation. The helper is currently an optional foundation for richer remote
@@ -57,12 +60,14 @@ flowchart LR
     WSL["wsl.exe"]
     Server["Language server in WSL"]
     Helper["nucleotide-remote in WSL"]
+    Terminal["Terminal or runnable in WSL"]
 
     UI --> Bridge
     Bridge --> Proxy
     Proxy --> WSL
     WSL --> Server
     UI -. "background health probe" .-> Helper
+    UI --> Terminal
     Proxy <--> Server
 ```
 
