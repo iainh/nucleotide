@@ -3,6 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::Read;
 use std::path::PathBuf;
 use std::time::UNIX_EPOCH;
 
@@ -374,18 +375,10 @@ impl FileReadResponse {
         let current_dir = std::env::current_dir()?;
         let metadata = std::fs::metadata(path)?;
         let size = metadata.len();
-        let bytes = std::fs::read(path)?;
-        let truncated = bytes.len() > limit;
-        let (content, binary) = match String::from_utf8(bytes) {
-            Ok(content) => {
-                let content = if truncated {
-                    str_prefix_at_byte_limit(&content, limit).to_string()
-                } else {
-                    content
-                };
-                (Some(content), false)
-            }
-            Err(_) => (None, true),
+        let (bytes, truncated) = read_file_prefix(path, limit)?;
+        let (content, binary) = match utf8_prefix_from_bytes(&bytes) {
+            Some(content) => (Some(content.to_string()), false),
+            None => (None, true),
         };
 
         Ok(Self {
@@ -400,16 +393,30 @@ impl FileReadResponse {
     }
 }
 
-fn str_prefix_at_byte_limit(text: &str, limit: usize) -> &str {
-    if text.len() <= limit {
-        return text;
+fn read_file_prefix(path: &std::path::Path, limit: usize) -> std::io::Result<(Vec<u8>, bool)> {
+    let read_limit = limit.saturating_add(1);
+    let read_limit = u64::try_from(read_limit).unwrap_or(u64::MAX);
+    let mut bytes = Vec::with_capacity(limit.min(DEFAULT_FILE_READ_LIMIT));
+    std::fs::File::open(path)?
+        .take(read_limit)
+        .read_to_end(&mut bytes)?;
+
+    let truncated = bytes.len() > limit;
+    if truncated {
+        bytes.truncate(limit);
     }
 
-    let mut end = limit;
-    while end > 0 && !text.is_char_boundary(end) {
-        end -= 1;
+    Ok((bytes, truncated))
+}
+
+fn utf8_prefix_from_bytes(bytes: &[u8]) -> Option<&str> {
+    match std::str::from_utf8(bytes) {
+        Ok(text) => Some(text),
+        Err(error) if error.error_len().is_none() => {
+            std::str::from_utf8(&bytes[..error.valid_up_to()]).ok()
+        }
+        Err(_) => None,
     }
-    &text[..end]
 }
 
 const WORKSPACE_MARKERS: &[&str] = &[
@@ -631,8 +638,65 @@ mod tests {
 
     #[test]
     fn file_read_prefix_keeps_utf8_boundary() {
-        assert_eq!(str_prefix_at_byte_limit("abcdef", 3), "abc");
-        assert_eq!(str_prefix_at_byte_limit("éclair", 1), "");
-        assert_eq!(str_prefix_at_byte_limit("éclair", 2), "é");
+        assert_eq!(utf8_prefix_from_bytes("abcdef".as_bytes()), Some("abcdef"));
+        assert_eq!(utf8_prefix_from_bytes(&"éclair".as_bytes()[..1]), Some(""));
+        assert_eq!(utf8_prefix_from_bytes(&"éclair".as_bytes()[..2]), Some("é"));
+        assert_eq!(utf8_prefix_from_bytes(&[0xff]), None);
+    }
+
+    #[test]
+    fn file_read_current_reads_only_bounded_text_prefix() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("large.txt");
+        std::fs::write(&path, "abcdef").unwrap();
+
+        let response = FileReadResponse::current(&path, 3).unwrap();
+
+        assert_eq!(response.content.as_deref(), Some("abc"));
+        assert!(!response.binary);
+        assert_eq!(response.size, 6);
+        assert!(response.truncated);
+    }
+
+    #[test]
+    fn file_read_current_truncates_on_utf8_boundary() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("unicode.txt");
+        std::fs::write(&path, "éclair").unwrap();
+
+        let response = FileReadResponse::current(&path, 1).unwrap();
+
+        assert_eq!(response.content.as_deref(), Some(""));
+        assert!(!response.binary);
+        assert_eq!(response.size, 7);
+        assert!(response.truncated);
+    }
+
+    #[test]
+    fn file_read_current_marks_invalid_utf8_prefix_as_binary() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("image.bin");
+        std::fs::write(&path, [0xff, 0x00, 0x01]).unwrap();
+
+        let response = FileReadResponse::current(&path, 2).unwrap();
+
+        assert!(response.content.is_none());
+        assert!(response.binary);
+        assert_eq!(response.size, 3);
+        assert!(response.truncated);
+    }
+
+    #[test]
+    fn file_read_current_handles_zero_limit() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("empty-preview.txt");
+        std::fs::write(&path, "abc").unwrap();
+
+        let response = FileReadResponse::current(&path, 0).unwrap();
+
+        assert_eq!(response.content.as_deref(), Some(""));
+        assert!(!response.binary);
+        assert_eq!(response.size, 3);
+        assert!(response.truncated);
     }
 }
