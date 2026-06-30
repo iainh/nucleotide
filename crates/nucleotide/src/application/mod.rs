@@ -55,7 +55,9 @@ use nucleotide_lsp::{HelixLspBridge, ProjectLspManager, ServerStatus};
 use slotmap::Key;
 
 // Import our shell environment system
-use nucleotide_env::{ProjectEnvironment, WslWorkspace};
+use nucleotide_env::{ProjectEnvironment, WslWorkspace, probe_wsl_remote_helper};
+
+const WSL_REMOTE_HELPER_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Implementation of EnvironmentProvider trait for our ProjectEnvironment
 /// This bridges our environment system with the LSP system
@@ -1222,6 +1224,8 @@ impl Application {
         // Perform initial LSP state sync to populate any existing servers
         self.sync_lsp_state_initial(cx);
 
+        self.schedule_wsl_remote_helper_probe(cx);
+
         // Initialize shotgun hook system for comprehensive completion pipeline tracing
         crate::completion_interception::initialize_shotgun_hooks();
 
@@ -1232,6 +1236,57 @@ impl Application {
             lsp_state_created = self.lsp_state.is_some(),
             "POST_INIT: Application post-initialization completed - LSP completion ready"
         );
+    }
+
+    fn schedule_wsl_remote_helper_probe(&mut self, cx: &mut gpui::Context<Self>) {
+        let Some(workspace) =
+            wsl_workspace_for_project_directory(self.project_directory.as_deref())
+        else {
+            return;
+        };
+
+        info!(
+            distro = %workspace.distro(),
+            linux_path = %workspace.linux_path(),
+            timeout_ms = WSL_REMOTE_HELPER_PROBE_TIMEOUT.as_millis(),
+            "Scheduling WSL remote helper health probe"
+        );
+
+        cx.spawn(async move |core, cx| {
+            match probe_wsl_remote_helper(&workspace, WSL_REMOTE_HELPER_PROBE_TIMEOUT).await {
+                Ok(response) => {
+                    info!(
+                        distro = %workspace.distro(),
+                        linux_path = %workspace.linux_path(),
+                        helper_version = %response.helper_version,
+                        helper_os = %response.os,
+                        helper_arch = %response.arch,
+                        helper_current_dir = %response.current_dir.display(),
+                        "WSL remote helper probe succeeded"
+                    );
+                }
+                Err(error) => {
+                    warn!(
+                        distro = %workspace.distro(),
+                        linux_path = %workspace.linux_path(),
+                        error = %error,
+                        "WSL remote helper probe failed; direct WSL LSP launch remains available"
+                    );
+
+                    if let Some(core) = core.upgrade() {
+                        let message = wsl_remote_helper_unavailable_message(&workspace, &error);
+                        core.update(cx, move |core, cx| {
+                            core.set_editor_status_feedback(
+                                cx,
+                                message,
+                                crate::types::Severity::Warning,
+                            );
+                        });
+                    }
+                }
+            }
+        })
+        .detach();
     }
 
     /// Process events through V2 event system domain handlers
@@ -6465,6 +6520,20 @@ fn apply_remote_workspace_config_overrides(
     config
 }
 
+fn wsl_workspace_for_project_directory(project_directory: Option<&Path>) -> Option<WslWorkspace> {
+    project_directory.and_then(WslWorkspace::from_unc_path)
+}
+
+fn wsl_remote_helper_unavailable_message(
+    workspace: &WslWorkspace,
+    error: &nucleotide_env::WslRemoteHelperError,
+) -> String {
+    format!(
+        "WSL remote helper unavailable for {}; using direct WSL language server launch: {error}",
+        workspace.distro()
+    )
+}
+
 pub fn init_editor(
     args: Args,
     helix_config: Config,
@@ -7943,7 +8012,8 @@ mod tests {
         native_symbol_item_from_lsp, path_completion_items, project_health_status,
         project_server_language_id, str_prefix_at_byte_limit,
         suppress_shadowed_buffer_word_completion_items, syntax_symbol_kind_from_capture_name,
-        workspace_diagnostic_refresh_reply,
+        workspace_diagnostic_refresh_reply, wsl_remote_helper_unavailable_message,
+        wsl_workspace_for_project_directory,
     };
     use crate::test_utils::test_support::{
         TestUpdate, create_counting_channel, create_test_diagnostic_events,
@@ -8194,6 +8264,34 @@ mod tests {
 
         assert!(!effective.gui.lsp.project_lsp_startup);
         assert!(!effective.gui.lsp.enable_fallback);
+    }
+
+    #[test]
+    fn wsl_workspace_for_project_directory_detects_unc_roots() {
+        let workspace =
+            wsl_workspace_for_project_directory(Some(Path::new(r"\\wsl.localhost\Ubuntu\repo")))
+                .expect("WSL UNC root");
+
+        assert_eq!(workspace.distro(), "Ubuntu");
+        assert_eq!(workspace.linux_path(), "/repo");
+        assert!(
+            wsl_workspace_for_project_directory(Some(Path::new(r"C:\Users\iain\repo"))).is_none()
+        );
+        assert!(wsl_workspace_for_project_directory(None).is_none());
+    }
+
+    #[test]
+    fn wsl_remote_helper_unavailable_message_names_direct_lsp_fallback() {
+        let workspace =
+            wsl_workspace_for_project_directory(Some(Path::new(r"\\wsl.localhost\Ubuntu\repo")))
+                .expect("WSL UNC root");
+        let error = nucleotide_env::WslRemoteHelperError::Timeout(Duration::from_secs(2));
+
+        let message = wsl_remote_helper_unavailable_message(&workspace, &error);
+
+        assert!(message.contains("Ubuntu"));
+        assert!(message.contains("direct WSL language server launch"));
+        assert!(message.contains("timed out"));
     }
 
     fn test_handlers() -> Handlers {
