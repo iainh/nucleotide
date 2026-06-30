@@ -4,6 +4,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use std::time::UNIX_EPOCH;
 
 pub const PROTOCOL_VERSION: u32 = 1;
 
@@ -75,6 +76,95 @@ impl WorkspaceMetadataResponse {
             workspace_markers: Some(detect_workspace_markers()?),
             source_extensions: Some(detect_source_extensions()?),
             src_dir_exists: Some(std::env::current_dir()?.join("src").is_dir()),
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteFileKind {
+    File,
+    Directory,
+    Symlink,
+    Other,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DirectoryEntryResponse {
+    pub name: String,
+    pub kind: RemoteFileKind,
+    pub size: u64,
+    pub modified_unix_millis: Option<i64>,
+    pub symlink_target: Option<PathBuf>,
+    pub target_exists: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DirectoryListingResponse {
+    pub protocol_version: u32,
+    pub current_dir: PathBuf,
+    pub entries: Vec<DirectoryEntryResponse>,
+}
+
+impl DirectoryListingResponse {
+    pub fn current() -> std::io::Result<Self> {
+        let current_dir = std::env::current_dir()?;
+        let mut entries = Vec::new();
+
+        for entry in std::fs::read_dir(&current_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            let metadata = std::fs::symlink_metadata(&path)?;
+            let file_type = metadata.file_type();
+            let kind = if file_type.is_dir() {
+                RemoteFileKind::Directory
+            } else if file_type.is_file() {
+                RemoteFileKind::File
+            } else if file_type.is_symlink() {
+                RemoteFileKind::Symlink
+            } else {
+                RemoteFileKind::Other
+            };
+            let modified_unix_millis = metadata.modified().ok().and_then(|modified| {
+                modified
+                    .duration_since(UNIX_EPOCH)
+                    .ok()
+                    .map(|duration| duration.as_millis() as i64)
+            });
+            let symlink_target = if file_type.is_symlink() {
+                std::fs::read_link(&path).ok()
+            } else {
+                None
+            };
+            let target_exists = symlink_target.as_ref().map(|target| {
+                if target.is_absolute() {
+                    target.exists()
+                } else {
+                    current_dir.join(target).exists()
+                }
+            });
+
+            entries.push(DirectoryEntryResponse {
+                name: entry.file_name().to_string_lossy().to_string(),
+                kind,
+                size: metadata.len(),
+                modified_unix_millis,
+                symlink_target,
+                target_exists,
+            });
+        }
+
+        entries.sort_by(|left, right| {
+            left.name
+                .to_lowercase()
+                .cmp(&right.name.to_lowercase())
+                .then_with(|| left.name.cmp(&right.name))
+        });
+
+        Ok(Self {
+            protocol_version: PROTOCOL_VERSION,
+            current_dir,
+            entries,
         })
     }
 }
@@ -209,5 +299,28 @@ mod tests {
         assert!(line.contains("\"workspace_markers\":[\"Cargo.toml\"]"));
         assert!(line.contains("\"source_extensions\":[\"rs\"]"));
         assert!(line.contains("\"src_dir_exists\":true"));
+    }
+
+    #[test]
+    fn directory_listing_response_encodes_file_metadata() {
+        let response = DirectoryListingResponse {
+            protocol_version: PROTOCOL_VERSION,
+            current_dir: PathBuf::from("/workspace"),
+            entries: vec![DirectoryEntryResponse {
+                name: "src".to_string(),
+                kind: RemoteFileKind::Directory,
+                size: 4096,
+                modified_unix_millis: Some(1_700_000_000_000),
+                symlink_target: None,
+                target_exists: None,
+            }],
+        };
+
+        let line = encode_json_line(&response).unwrap();
+
+        assert!(line.contains("\"current_dir\":\"/workspace\""));
+        assert!(line.contains("\"name\":\"src\""));
+        assert!(line.contains("\"kind\":\"directory\""));
+        assert!(line.contains("\"modified_unix_millis\":1700000000000"));
     }
 }

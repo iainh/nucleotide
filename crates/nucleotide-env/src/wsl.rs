@@ -2,7 +2,8 @@
 // ABOUTME: Converts Windows WSL UNC paths into Linux paths for remote tooling
 
 use nucleotide_remote::{
-    EnvironmentResponse, HelloResponse, PROTOCOL_VERSION, WorkspaceMetadataResponse,
+    DirectoryListingResponse, EnvironmentResponse, HelloResponse, PROTOCOL_VERSION,
+    WorkspaceMetadataResponse,
 };
 use std::path::Path;
 use std::process::Command;
@@ -96,6 +97,24 @@ pub fn build_wsl_remote_metadata_tokio_command(
     )
 }
 
+pub fn build_wsl_remote_directory_listing_command(workspace: &WslWorkspace) -> Command {
+    build_wsl_shell_command(
+        workspace,
+        "/bin/sh",
+        &wsl_remote_helper_command_script("list"),
+    )
+}
+
+pub fn build_wsl_remote_directory_listing_tokio_command(
+    workspace: &WslWorkspace,
+) -> tokio::process::Command {
+    build_wsl_tokio_shell_command(
+        workspace,
+        "/bin/sh",
+        &wsl_remote_helper_command_script("list"),
+    )
+}
+
 pub fn build_wsl_remote_helper_install_command(
     workspace: &WslWorkspace,
 ) -> tokio::process::Command {
@@ -122,6 +141,10 @@ pub fn wsl_remote_helper_env_script() -> String {
 
 pub fn wsl_remote_helper_metadata_script() -> String {
     wsl_remote_helper_command_script("metadata")
+}
+
+pub fn wsl_remote_helper_directory_listing_script() -> String {
+    wsl_remote_helper_command_script("list")
 }
 
 pub fn wsl_remote_helper_install_script() -> String {
@@ -218,6 +241,23 @@ pub async fn load_wsl_remote_metadata(
     parse_remote_metadata_output(&output.stdout)
 }
 
+pub async fn load_wsl_remote_directory_listing(
+    workspace: &WslWorkspace,
+    timeout_duration: Duration,
+) -> Result<DirectoryListingResponse, WslRemoteHelperError> {
+    let mut command = build_wsl_remote_directory_listing_tokio_command(workspace);
+    let output = timeout(timeout_duration, command.output())
+        .await
+        .map_err(|_| WslRemoteHelperError::Timeout(timeout_duration))??;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(WslRemoteHelperError::CommandFailed(stderr));
+    }
+
+    parse_remote_directory_listing_output(&output.stdout)
+}
+
 pub async fn install_wsl_remote_helper(
     workspace: &WslWorkspace,
     local_helper_path: &Path,
@@ -269,6 +309,20 @@ fn parse_remote_metadata_output(
     output: &[u8],
 ) -> Result<WorkspaceMetadataResponse, WslRemoteHelperError> {
     let response: WorkspaceMetadataResponse = serde_json::from_slice(output)?;
+    if response.protocol_version != PROTOCOL_VERSION {
+        return Err(WslRemoteHelperError::ProtocolMismatch {
+            expected: PROTOCOL_VERSION,
+            actual: response.protocol_version,
+        });
+    }
+
+    Ok(response)
+}
+
+fn parse_remote_directory_listing_output(
+    output: &[u8],
+) -> Result<DirectoryListingResponse, WslRemoteHelperError> {
+    let response: DirectoryListingResponse = serde_json::from_slice(output)?;
     if response.protocol_version != PROTOCOL_VERSION {
         return Err(WslRemoteHelperError::ProtocolMismatch {
             expected: PROTOCOL_VERSION,
@@ -544,6 +598,34 @@ mod tests {
         assert!(script.contains(".cache/nucleotide/remote-helper/1/nucleotide-remote"));
         assert!(script.contains(r#"exec "$helper" metadata"#));
         assert!(script.contains("exec nucleotide-remote metadata"));
+    }
+
+    #[test]
+    fn remote_helper_directory_listing_script_prefers_cached_helper_before_path() {
+        let script = wsl_remote_helper_directory_listing_script();
+
+        assert!(script.contains("NUCLEOTIDE_REMOTE_HELPER"));
+        assert!(script.contains(".cache/nucleotide/remote-helper/1/nucleotide-remote"));
+        assert!(script.contains(r#"exec "$helper" list"#));
+        assert!(script.contains("exec nucleotide-remote list"));
+    }
+
+    #[test]
+    fn builds_wsl_remote_directory_listing_command() {
+        let workspace = WslWorkspace {
+            distro: "Ubuntu".to_string(),
+            linux_path: "/home/iain/repo/src".to_string(),
+        };
+        let command = build_wsl_remote_directory_listing_command(&workspace);
+        let debug = format!("{command:?}");
+
+        assert_eq!(command.get_program(), "wsl.exe");
+        assert!(debug.contains("--distribution"));
+        assert!(debug.contains("Ubuntu"));
+        assert!(debug.contains("--cd"));
+        assert!(debug.contains("/home/iain/repo/src"));
+        assert!(debug.contains("nucleotide-remote"));
+        assert!(debug.contains("list"));
     }
 
     #[test]

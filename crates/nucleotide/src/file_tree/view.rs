@@ -4,7 +4,8 @@
 use crate::file_tree::watcher::FileTreeWatcher;
 use crate::file_tree::{
     FileSystemEventKind, FileTree, FileTreeCollisionStrategy, FileTreeConfig,
-    FileTreeDisplayDensity, FileTreeEntry, FileTreeEvent,
+    FileTreeDirectoryEntry, FileTreeDirectoryEntryKind, FileTreeDisplayDensity, FileTreeEntry,
+    FileTreeEvent,
     sidebar::{
         ProjectTreeDraggedEntry, ProjectTreeRow, ProjectTreeRowAction, ProjectTreeRowEvent,
         ProjectTreeRowStyle, project_tree_entry_min_width, project_tree_entry_min_width_with_vcs,
@@ -17,7 +18,9 @@ use gpui::{
     MouseButton, MouseDownEvent, ParentElement, Render, ScrollHandle, ScrollStrategy,
     StatefulInteractiveElement, Styled, UniformListScrollHandle, Window, div, px, uniform_list,
 };
+use nucleotide_env::{WslWorkspace, load_wsl_remote_directory_listing};
 use nucleotide_logging::{debug, error, warn};
+use nucleotide_remote::{DirectoryListingResponse, RemoteFileKind};
 use nucleotide_types::{VcsStatus, scrollbar::SCROLLBAR_THICKNESS};
 use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::scrollbar::{Scrollbar, ScrollbarState};
@@ -25,7 +28,10 @@ use nucleotide_vcs::VcsServiceHandle;
 use std::{
     collections::BTreeSet,
     path::{Path, PathBuf},
+    time::{Duration, UNIX_EPOCH},
 };
+
+const WSL_REMOTE_DIRECTORY_LIST_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum FileTreeScrollOffset {
@@ -76,6 +82,77 @@ fn scroll_file_tree_index(
             scroll_handle.scroll_to_item(index, strategy);
         }
     }
+}
+
+async fn read_directory_entries(
+    path: PathBuf,
+    tokio_handle: Option<tokio::runtime::Handle>,
+) -> Result<Vec<FileTreeDirectoryEntry>, String> {
+    if let Some(workspace) = WslWorkspace::from_unc_path(&path)
+        && let Some(tokio_handle) = tokio_handle
+    {
+        let path_for_mapping = path.clone();
+        let listing = tokio_handle
+            .spawn(async move {
+                load_wsl_remote_directory_listing(&workspace, WSL_REMOTE_DIRECTORY_LIST_TIMEOUT)
+                    .await
+            })
+            .await
+            .map_err(|error| format!("WSL directory listing task failed: {error}"))?
+            .map_err(|error| format!("WSL directory listing failed: {error}"))?;
+
+        return Ok(remote_listing_to_file_tree_entries(
+            &path_for_mapping,
+            listing,
+        ));
+    }
+
+    read_local_directory_entries(&path).map_err(|error| error.to_string())
+}
+
+fn read_local_directory_entries(path: &Path) -> std::io::Result<Vec<FileTreeDirectoryEntry>> {
+    let mut entries = Vec::new();
+    for entry in std::fs::read_dir(path)? {
+        let entry = entry?;
+        entries.push(FileTreeDirectoryEntry::from_metadata(
+            entry.path(),
+            entry.metadata()?,
+        ));
+    }
+    Ok(entries)
+}
+
+fn remote_listing_to_file_tree_entries(
+    directory: &Path,
+    listing: DirectoryListingResponse,
+) -> Vec<FileTreeDirectoryEntry> {
+    listing
+        .entries
+        .into_iter()
+        .map(|entry| {
+            let path = directory.join(&entry.name);
+            let mtime = entry
+                .modified_unix_millis
+                .and_then(|millis| u64::try_from(millis).ok())
+                .and_then(|millis| UNIX_EPOCH.checked_add(Duration::from_millis(millis)));
+            let kind = match entry.kind {
+                RemoteFileKind::File => FileTreeDirectoryEntryKind::File,
+                RemoteFileKind::Directory => FileTreeDirectoryEntryKind::Directory,
+                RemoteFileKind::Symlink => FileTreeDirectoryEntryKind::Symlink {
+                    target: entry.symlink_target,
+                    target_exists: entry.target_exists.unwrap_or(false),
+                },
+                RemoteFileKind::Other => FileTreeDirectoryEntryKind::Other,
+            };
+
+            FileTreeDirectoryEntry {
+                path,
+                kind,
+                size: entry.size,
+                mtime,
+            }
+        })
+        .collect()
 }
 
 fn widest_project_tree_entry_index(
@@ -266,13 +343,24 @@ impl FileTreeView {
         let load_revision = self.tree_revision;
         let root_path = self.tree.root_path().to_path_buf();
         let config = self.tree.config().clone();
+        let tokio_handle = self._tokio_handle.clone();
 
         cx.spawn(async move |this, cx| {
             let load_result = cx
                 .background_executor()
                 .spawn(async move {
-                    let mut tree = FileTree::new(root_path, config);
-                    tree.load().map(|_| tree)
+                    let mut tree = FileTree::new(root_path.clone(), config);
+                    if WslWorkspace::from_unc_path(&root_path).is_some() && tokio_handle.is_some()
+                    {
+                        tree.load_root_only();
+                        let entries = read_directory_entries(root_path.clone(), tokio_handle)
+                            .await
+                            .map_err(anyhow::Error::msg)?;
+                        tree.expand_directory_with_listing(&root_path, entries)?;
+                        Ok(tree)
+                    } else {
+                        tree.load().map(|_| tree)
+                    }
                 })
                 .await;
 
@@ -292,7 +380,8 @@ impl FileTreeView {
                     match load_result {
                         Ok(tree) => {
                             let root_path = tree.root_path().to_path_buf();
-                            let watch_filesystem = tree.config().watch_filesystem;
+                            let watch_filesystem = tree.config().watch_filesystem
+                                && WslWorkspace::from_unc_path(&root_path).is_none();
                             let previous_selected_path = view.selected_path.clone();
                             let previous_selected_paths = view.selected_paths.clone();
 
@@ -319,7 +408,10 @@ impl FileTreeView {
                                     }
                                 }
                             } else {
-                                debug!("File system watching disabled in config");
+                                debug!(
+                                    root_path = ?root_path,
+                                    "File system watching disabled for file tree"
+                                );
                             }
                         }
                         Err(error) => {
@@ -709,24 +801,12 @@ impl FileTreeView {
 
             // Expand is asynchronous - spawn background task
             let path_for_io = path_buf.clone();
+            let tokio_handle = self._tokio_handle.clone();
             cx.spawn(async move |this, cx| {
                 // Do the file I/O in a blocking task to avoid blocking the executor
                 let entries = cx
                     .background_executor()
-                    .spawn(async move {
-                        match std::fs::read_dir(&path_for_io) {
-                            Ok(read_dir) => {
-                                let mut entries = Vec::new();
-                                for entry in read_dir.flatten() {
-                                    if let Ok(metadata) = entry.metadata() {
-                                        entries.push((entry.path(), metadata));
-                                    }
-                                }
-                                Ok(entries)
-                            }
-                            Err(e) => Err(e),
-                        }
-                    })
+                    .spawn(async move { read_directory_entries(path_for_io, tokio_handle).await })
                     .await;
 
                 // Update the UI on the main thread
@@ -735,7 +815,7 @@ impl FileTreeView {
                         match entries {
                             Ok(entries) => {
                                 if let Err(e) =
-                                    view.tree.expand_directory_with_entries(&path_buf, entries)
+                                    view.tree.expand_directory_with_listing(&path_buf, entries)
                                 {
                                     error!(
                                         directory = %path_buf.display(),
@@ -902,6 +982,15 @@ impl FileTreeView {
 
     /// Refresh the tree
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
+        if WslWorkspace::from_unc_path(self.tree.root_path()).is_some()
+            && self._tokio_handle.is_some()
+        {
+            self.tree.load_root_only();
+            self.start_initial_load(cx);
+            cx.notify();
+            return;
+        }
+
         if let Err(e) = self.tree.refresh() {
             error!(error = %e, "Failed to refresh file tree");
         } else {
@@ -914,6 +1003,42 @@ impl FileTreeView {
 
     /// Refresh a single directory by rescanning its entries and expanding it
     pub fn refresh_directory(&mut self, dir: &Path, cx: &mut Context<Self>) {
+        if WslWorkspace::from_unc_path(dir).is_some() && self._tokio_handle.is_some() {
+            let dir = dir.to_path_buf();
+            let tokio_handle = self._tokio_handle.clone();
+            cx.spawn(async move |this, cx| {
+                let entries = cx
+                    .background_executor()
+                    .spawn({
+                        let dir = dir.clone();
+                        async move { read_directory_entries(dir, tokio_handle).await }
+                    })
+                    .await;
+
+                if let Some(this) = this.upgrade() {
+                    this.update(cx, |view, cx| {
+                        match entries {
+                            Ok(entries) => {
+                                if let Err(e) =
+                                    view.tree.expand_directory_with_listing(&dir, entries)
+                                {
+                                    error!(path=%dir.display(), error=%e, "Failed to refresh WSL directory entries");
+                                } else {
+                                    view.tree_revision = view.tree_revision.wrapping_add(1);
+                                }
+                                cx.notify();
+                            }
+                            Err(error) => {
+                                error!(path=%dir.display(), error=%error, "Failed to read WSL directory during refresh");
+                            }
+                        }
+                    });
+                }
+            })
+            .detach();
+            return;
+        }
+
         match std::fs::read_dir(dir) {
             Ok(read_dir) => {
                 let mut entries = Vec::new();
@@ -2001,6 +2126,51 @@ mod tests {
         cx.run_until_parked();
 
         events
+    }
+
+    #[test]
+    fn remote_directory_listing_maps_to_file_tree_entries() {
+        let directory = Path::new(r"\\wsl.localhost\Ubuntu\home\iain\repo");
+        let entries = remote_listing_to_file_tree_entries(
+            directory,
+            DirectoryListingResponse {
+                protocol_version: nucleotide_remote::PROTOCOL_VERSION,
+                current_dir: PathBuf::from("/home/iain/repo"),
+                entries: vec![
+                    nucleotide_remote::DirectoryEntryResponse {
+                        name: "src".to_string(),
+                        kind: RemoteFileKind::Directory,
+                        size: 4096,
+                        modified_unix_millis: Some(1_000),
+                        symlink_target: None,
+                        target_exists: None,
+                    },
+                    nucleotide_remote::DirectoryEntryResponse {
+                        name: "current".to_string(),
+                        kind: RemoteFileKind::Symlink,
+                        size: 7,
+                        modified_unix_millis: None,
+                        symlink_target: Some(PathBuf::from("src")),
+                        target_exists: Some(true),
+                    },
+                ],
+            },
+        );
+
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].path, directory.join("src"));
+        assert_eq!(entries[0].kind, FileTreeDirectoryEntryKind::Directory);
+        assert_eq!(
+            entries[0].mtime,
+            Some(UNIX_EPOCH + Duration::from_millis(1_000))
+        );
+        assert_eq!(
+            entries[1].kind,
+            FileTreeDirectoryEntryKind::Symlink {
+                target: Some(PathBuf::from("src")),
+                target_exists: true,
+            }
+        );
     }
 
     #[gpui::test]

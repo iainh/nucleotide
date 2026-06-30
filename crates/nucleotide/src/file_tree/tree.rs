@@ -8,11 +8,58 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use crate::file_tree::entry::{FileTreeEntryId, FileTreeFlattenedSegment};
 use crate::file_tree::{
     FileKind, FileTreeCollisionStrategy, FileTreeConfig, FileTreeEntry, FileTreeSearchMode,
 };
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum FileTreeDirectoryEntryKind {
+    File,
+    Directory,
+    Symlink {
+        target: Option<PathBuf>,
+        target_exists: bool,
+    },
+    Other,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FileTreeDirectoryEntry {
+    pub path: PathBuf,
+    pub kind: FileTreeDirectoryEntryKind,
+    pub size: u64,
+    pub mtime: Option<SystemTime>,
+}
+
+impl FileTreeDirectoryEntry {
+    pub fn from_metadata(path: PathBuf, metadata: std::fs::Metadata) -> Self {
+        let kind = if metadata.is_dir() {
+            FileTreeDirectoryEntryKind::Directory
+        } else if metadata.is_file() {
+            FileTreeDirectoryEntryKind::File
+        } else {
+            let target = fs::read_link(&path).ok();
+            let target_exists = target
+                .as_ref()
+                .map(|target| target.exists())
+                .unwrap_or(false);
+            FileTreeDirectoryEntryKind::Symlink {
+                target,
+                target_exists,
+            }
+        };
+
+        Self {
+            path,
+            kind,
+            size: metadata.len(),
+            mtime: metadata.modified().ok(),
+        }
+    }
+}
 
 /// Core file tree data structure.
 pub struct FileTree {
@@ -141,6 +188,17 @@ impl FileTree {
         self.invalidate_cache();
 
         Ok(())
+    }
+
+    pub fn load_root_only(&mut self) {
+        self.entries.clear();
+        self.path_to_id.clear();
+        self.expanded_dirs.clear();
+        self.loading_dirs.clear();
+        self.next_id = 1;
+        self.expanded_dirs.insert(self.root_path.clone());
+        self.is_loaded = true;
+        self.invalidate_cache();
     }
 
     /// Refresh the entire tree.
@@ -588,6 +646,18 @@ impl FileTree {
         path: &Path,
         entries: Vec<(PathBuf, std::fs::Metadata)>,
     ) -> Result<()> {
+        let entries = entries
+            .into_iter()
+            .map(|(path, metadata)| FileTreeDirectoryEntry::from_metadata(path, metadata))
+            .collect();
+        self.expand_directory_with_listing(path, entries)
+    }
+
+    pub fn expand_directory_with_listing(
+        &mut self,
+        path: &Path,
+        entries: Vec<FileTreeDirectoryEntry>,
+    ) -> Result<()> {
         let path = normalize_tree_path(path);
         let mut parent_entry = self.entry_by_path(&path).context("Entry not found")?;
 
@@ -605,8 +675,8 @@ impl FileTree {
         };
         let mut children = Vec::new();
 
-        for (child_path, metadata) in entries {
-            let child_path = normalize_tree_path(&child_path);
+        for entry in entries {
+            let child_path = normalize_tree_path(&entry.path);
 
             if !self.config.show_hidden && self.is_hidden_file(&child_path) {
                 continue;
@@ -616,7 +686,8 @@ impl FileTree {
                 continue;
             }
 
-            let mut child_entry = self.entry_from_metadata(child_path, metadata, parent_depth + 1);
+            let mut child_entry =
+                self.entry_from_directory_listing(child_path, entry, parent_depth + 1);
             child_entry.is_visible = true;
             children.push(child_entry);
         }
@@ -842,21 +913,26 @@ impl FileTree {
             let entry = entry?;
             let path = normalize_tree_path(&entry.path());
             let metadata = entry.metadata()?;
+            let directory_entry = FileTreeDirectoryEntry::from_metadata(path, metadata);
 
-            if !self.config.show_hidden && self.is_hidden_file(&path) {
+            if !self.config.show_hidden && self.is_hidden_file(&directory_entry.path) {
                 continue;
             }
 
-            if !self.config.show_ignored && self.is_ignored_file(&path) {
+            if !self.config.show_ignored && self.is_ignored_file(&directory_entry.path) {
                 continue;
             }
 
             immediate_count += 1;
-            let mut file_entry = self.entry_from_metadata(path.clone(), metadata, current_depth);
+            let mut file_entry = self.entry_from_directory_listing(
+                directory_entry.path.clone(),
+                directory_entry,
+                current_depth,
+            );
 
             if file_entry.is_directory() && current_depth < max_depth {
                 let (children, child_count) =
-                    self.scan_directory_recursive(&path, current_depth + 1, max_depth)?;
+                    self.scan_directory_recursive(&file_entry.path, current_depth + 1, max_depth)?;
                 if let FileKind::Directory {
                     child_count: ref mut entry_child_count,
                     ref mut is_loaded,
@@ -910,25 +986,27 @@ impl FileTree {
         Ok(())
     }
 
-    fn entry_from_metadata(
+    fn entry_from_directory_listing(
         &mut self,
         path: PathBuf,
-        metadata: std::fs::Metadata,
+        listing: FileTreeDirectoryEntry,
         depth: usize,
     ) -> FileTreeEntry {
         let id = self.next_entry_id();
-        let mtime = metadata.modified().ok();
-        let mut entry = if metadata.is_dir() {
-            FileTreeEntry::new_directory(id, path.clone(), mtime)
-        } else if metadata.is_file() {
-            FileTreeEntry::new_file(id, path.clone(), metadata.len(), mtime)
-        } else {
-            let target = fs::read_link(&path).ok();
-            let target_exists = target
-                .as_ref()
-                .map(|target| target.exists())
-                .unwrap_or(false);
-            FileTreeEntry::new_symlink(id, path, target, target_exists, mtime)
+        let mut entry = match listing.kind {
+            FileTreeDirectoryEntryKind::Directory => {
+                FileTreeEntry::new_directory(id, path.clone(), listing.mtime)
+            }
+            FileTreeDirectoryEntryKind::File => {
+                FileTreeEntry::new_file(id, path.clone(), listing.size, listing.mtime)
+            }
+            FileTreeDirectoryEntryKind::Symlink {
+                target,
+                target_exists,
+            } => FileTreeEntry::new_symlink(id, path, target, target_exists, listing.mtime),
+            FileTreeDirectoryEntryKind::Other => {
+                FileTreeEntry::new_file(id, path.clone(), listing.size, listing.mtime)
+            }
         };
 
         entry.depth = depth;
@@ -1237,6 +1315,30 @@ mod tests {
         assert!(paths.contains(&readme));
         assert!(!paths.contains(&lib));
         assert!(!tree.is_expanded(&src));
+    }
+
+    #[test]
+    fn root_only_load_can_expand_from_preloaded_listing() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path().to_path_buf();
+        let src = root.join("src");
+        let mut tree = FileTree::new(root.clone(), config());
+
+        tree.load_root_only();
+        tree.expand_directory_with_listing(
+            &root,
+            vec![FileTreeDirectoryEntry {
+                path: src.clone(),
+                kind: FileTreeDirectoryEntryKind::Directory,
+                size: 0,
+                mtime: None,
+            }],
+        )
+        .unwrap();
+
+        let paths = visible_paths(&mut tree);
+        assert!(tree.is_expanded(&root));
+        assert!(paths.contains(&src));
     }
 
     #[test]
