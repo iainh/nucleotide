@@ -69,7 +69,7 @@ use crate::types::{
 use crate::utils;
 use crate::{Core, Input, InputEvent};
 use nucleotide_core::EventBus;
-use nucleotide_env::EnvironmentOrigin;
+use nucleotide_env::{EnvironmentOrigin, WslWorkspace};
 use nucleotide_events::v2::run::{Event as RunEvent, ResolvedTask, RunId, RunStatus};
 use nucleotide_events::v2::terminal::{Event as TerminalEvent, TerminalId};
 use nucleotide_terminal::TerminalBounds;
@@ -101,6 +101,7 @@ const IMAGE_TRANSPARENCY_GRID_SIZE: f32 = 12.0;
 enum EnvironmentBadge {
     Loading,
     NativeFlake,
+    Wsl,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -126,6 +127,7 @@ impl EnvironmentBadge {
     fn from_environment_marker(marker: Option<&str>) -> Option<Self> {
         match marker {
             Some("native-flake") => Some(Self::NativeFlake),
+            Some("wsl-remote-helper" | "wsl-shell") => Some(Self::Wsl),
             _ => None,
         }
     }
@@ -134,6 +136,7 @@ impl EnvironmentBadge {
         match self {
             Self::Loading => "direnv",
             Self::NativeFlake => "direnv",
+            Self::Wsl => "wsl",
         }
     }
 
@@ -141,6 +144,7 @@ impl EnvironmentBadge {
         match self {
             Self::Loading => "loading",
             Self::NativeFlake => "flake",
+            Self::Wsl => "remote",
         }
     }
 }
@@ -2444,6 +2448,12 @@ impl Workspace {
             cx.notify();
             return;
         };
+
+        if WslWorkspace::from_unc_path(&project_root).is_some() {
+            self.environment_badge = Some(EnvironmentBadge::Wsl);
+            cx.notify();
+            return;
+        }
 
         if !project_root.join(".envrc").is_file() {
             self.environment_badge = None;
@@ -16040,10 +16050,18 @@ mod tests {
     }
 
     #[test]
-    fn environment_badge_appears_for_native_flake_marker_only() {
+    fn environment_badge_appears_for_known_environment_markers() {
         assert_eq!(
             EnvironmentBadge::from_environment_marker(Some("native-flake")),
             Some(EnvironmentBadge::NativeFlake)
+        );
+        assert_eq!(
+            EnvironmentBadge::from_environment_marker(Some("wsl-remote-helper")),
+            Some(EnvironmentBadge::Wsl)
+        );
+        assert_eq!(
+            EnvironmentBadge::from_environment_marker(Some("wsl-shell")),
+            Some(EnvironmentBadge::Wsl)
         );
         assert_eq!(EnvironmentBadge::from_environment_marker(Some("cli")), None);
         assert_eq!(
@@ -16051,6 +16069,12 @@ mod tests {
             None
         );
         assert_eq!(EnvironmentBadge::from_environment_marker(None), None);
+    }
+
+    #[test]
+    fn environment_badge_labels_wsl_as_remote() {
+        assert_eq!(EnvironmentBadge::Wsl.label(), "wsl");
+        assert_eq!(EnvironmentBadge::Wsl.detail(), "remote");
     }
 
     #[test]
