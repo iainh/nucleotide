@@ -489,6 +489,7 @@ pub struct Application {
     pub shell_env_cache: Arc<tokio::sync::Mutex<nucleotide_env::ShellEnvironmentCache>>,
     pub project_environment: Arc<ProjectEnvironment>,
     project_env_overrides: HashMap<String, Option<String>>,
+    prewarmed_lsp_startups: HashSet<(PathBuf, String, String)>,
     // V2 Event System Core
     pub core: crate::application::ApplicationCore,
     // Event aggregator for dispatching integration events
@@ -1014,6 +1015,11 @@ impl Application {
             };
 
             commands_processed += 1;
+            let Some(lsp_command) = self.maybe_defer_lsp_start_for_environment(lsp_command, cx)
+            else {
+                continue;
+            };
+
             info!(
                 command_type = ?std::mem::discriminant(&lsp_command),
                 command_number = commands_processed,
@@ -1099,6 +1105,89 @@ impl Application {
         );
 
         commands_processed > 0
+    }
+
+    fn maybe_defer_lsp_start_for_environment(
+        &mut self,
+        command: ProjectLspCommand,
+        cx: &mut gpui::Context<crate::Core>,
+    ) -> Option<ProjectLspCommand> {
+        let (workspace_root, server_name, language_id) = match &command {
+            ProjectLspCommand::StartServer {
+                workspace_root,
+                server_name,
+                language_id,
+                ..
+            }
+            | ProjectLspCommand::LspServerStartupRequested {
+                workspace_root,
+                server_name,
+                language_id,
+            } => (
+                workspace_root.clone(),
+                server_name.clone(),
+                language_id.clone(),
+            ),
+            ProjectLspCommand::DetectAndStartProject { .. }
+            | ProjectLspCommand::StopServer { .. }
+            | ProjectLspCommand::RestartServersForWorkspaceChange { .. }
+            | ProjectLspCommand::GetProjectStatus { .. }
+            | ProjectLspCommand::EnsureDocumentTracked { .. } => return Some(command),
+        };
+
+        let key = (
+            workspace_root.clone(),
+            server_name.clone(),
+            language_id.clone(),
+        );
+        if !self.prewarmed_lsp_startups.insert(key.clone()) {
+            return Some(command);
+        }
+
+        let Some(command_tx) = self.project_lsp_command_tx.clone() else {
+            self.prewarmed_lsp_startups.remove(&key);
+            return Some(command);
+        };
+
+        self.set_editor_status_feedback(
+            cx,
+            format!("Preparing language server environment: {server_name}"),
+            crate::types::Severity::Info,
+        );
+
+        let project_environment = self.project_environment.clone();
+        tokio::spawn(async move {
+            match project_environment
+                .get_lsp_environment(&workspace_root)
+                .await
+            {
+                Ok(env) => {
+                    debug!(
+                        workspace_root = %workspace_root.display(),
+                        server_name = %server_name,
+                        env_var_count = env.len(),
+                        "Prepared language server environment"
+                    );
+                }
+                Err(error) => {
+                    warn!(
+                        workspace_root = %workspace_root.display(),
+                        server_name = %server_name,
+                        error = %error,
+                        "Failed to prepare language server environment; continuing with startup"
+                    );
+                }
+            }
+
+            if let Err(error) = command_tx.send(command) {
+                warn!(
+                    error = %error,
+                    "Failed to requeue LSP start command after environment preparation"
+                );
+            }
+        });
+
+        None
     }
     /// Dispatch a workspace event via the event aggregator if available
     pub fn dispatch_workspace_event(&self, event: nucleotide_events::v2::workspace::Event) {
@@ -6773,6 +6862,7 @@ pub fn init_editor(
         )),
         project_environment, // Already created above before LSP system initialization
         project_env_overrides: HashMap::new(),
+        prewarmed_lsp_startups: HashSet::new(),
         // V2 Event System Core
         core,
         // Event aggregator for UI and workspace events
@@ -7843,7 +7933,7 @@ mod tests {
     use nucleotide_events::completion::{CompletionItem, CompletionItemKind};
     use slotmap::{Key, KeyData};
     use std::cell::RefCell;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::rc::Rc;
@@ -8127,6 +8217,7 @@ mod tests {
                     cli_env,
                 ))),
                 project_env_overrides: HashMap::new(),
+                prewarmed_lsp_startups: HashSet::new(),
                 core,
                 event_aggregator: None,
                 maintenance_wake: None,
@@ -8326,6 +8417,17 @@ mod tests {
             )
             .expect("startup command");
 
+        run_event_driven_maintenance(cx, &app);
+
+        assert!(updates.borrow().iter().any(|update| matches!(
+            update,
+            CapturedUpdate::StatusChanged(message, crate::types::Severity::Info)
+                if message == "Preparing language server environment: test-language-server"
+        )));
+
+        TEST_RUNTIME.block_on(async {
+            tokio::task::yield_now().await;
+        });
         run_event_driven_maintenance(cx, &app);
 
         let updates = updates.borrow();
