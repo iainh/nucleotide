@@ -147,6 +147,11 @@ impl WindowsWindowInner {
                 self.state.display.set(WindowsDisplay::new(
                     WindowsDisplay::display_id_for_monitor(monitor),
                 )?);
+                self.state
+                    .renderer
+                    .borrow_mut()
+                    .refresh_font_info()
+                    .log_err();
             }
         }
         if let Some(mut callback) = self.state.callbacks.moved.take() {
@@ -814,6 +819,11 @@ impl WindowsWindowInner {
         let new_scale_factor = new_dpi / USER_DEFAULT_SCREEN_DPI as f32;
         self.state.scale_factor.set(new_scale_factor);
         self.state.border_offset.update(handle).log_err();
+        self.state
+            .renderer
+            .borrow_mut()
+            .refresh_font_info()
+            .log_err();
 
         self.state
             .direct_manipulation
@@ -884,6 +894,11 @@ impl WindowsWindowInner {
         }
         let new_display = WindowsDisplay::new(WindowsDisplay::display_id_for_monitor(new_monitor))?;
         self.state.display.set(new_display);
+        self.state
+            .renderer
+            .borrow_mut()
+            .refresh_font_info()
+            .log_err();
         Some(0)
     }
 
