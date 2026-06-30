@@ -377,6 +377,7 @@ const MAINTENANCE_ITERATION_WARN_THRESHOLD: Duration = Duration::from_millis(2);
 const MAINTENANCE_POLLER_WARN_THRESHOLD: Duration = Duration::from_millis(2);
 const MAINTENANCE_TURN_BUDGET: Duration = Duration::from_millis(6);
 const MAINTENANCE_BRIDGED_EVENT_BATCH: usize = 64;
+const MAINTENANCE_LSP_COMMAND_BATCH: usize = 1;
 
 fn bridged_event_needs_gpui_context(bridged_event: &event_bridge::BridgedEvent) -> bool {
     match bridged_event {
@@ -988,7 +989,7 @@ impl Application {
         }
 
         let mut commands_processed = 0;
-        loop {
+        for _ in 0..MAINTENANCE_LSP_COMMAND_BATCH {
             let (command, disconnected) = match self.project_lsp_command_rx.as_mut() {
                 Some(rx) => match rx.poll_recv(task_cx) {
                     Poll::Ready(Some(command)) => (Some(command), false),
@@ -1081,6 +1082,14 @@ impl Application {
             info!(
                 command_number = commands_processed,
                 "🔧 SYNC: LSP command processing completed"
+            );
+        }
+
+        if commands_processed >= MAINTENANCE_LSP_COMMAND_BATCH {
+            debug!(
+                commands_processed = commands_processed,
+                batch_limit = MAINTENANCE_LSP_COMMAND_BATCH,
+                "LSP command maintenance reached batch limit"
             );
         }
 
@@ -3029,21 +3038,49 @@ impl Application {
                     .with_warn_threshold(MAINTENANCE_POLLER_WARN_THRESHOLD);
                 self.poll_pending_helix_jobs(cx, &mut task_cx)
             };
+
+            if progressed && turn_started.elapsed() >= MAINTENANCE_TURN_BUDGET {
+                made_progress = true;
+                yielded_for_budget = true;
+                break;
+            }
+
             progressed |= {
                 let _timer = PerfTimer::new("Application::poll_pending_gpui_to_helix_events")
                     .with_warn_threshold(MAINTENANCE_POLLER_WARN_THRESHOLD);
                 self.poll_pending_gpui_to_helix_events(&mut task_cx)
             };
+
+            if progressed && turn_started.elapsed() >= MAINTENANCE_TURN_BUDGET {
+                made_progress = true;
+                yielded_for_budget = true;
+                break;
+            }
+
             progressed |= {
                 let _timer = PerfTimer::new("Application::poll_ready_editor_events")
                     .with_warn_threshold(MAINTENANCE_POLLER_WARN_THRESHOLD);
                 self.poll_ready_editor_events(cx, &handle, &mut task_cx)
             };
+
+            if progressed && turn_started.elapsed() >= MAINTENANCE_TURN_BUDGET {
+                made_progress = true;
+                yielded_for_budget = true;
+                break;
+            }
+
             progressed |= {
                 let _timer = PerfTimer::new("Application::poll_pending_bridged_events")
                     .with_warn_threshold(MAINTENANCE_POLLER_WARN_THRESHOLD);
                 self.poll_pending_bridged_events(cx, &handle, &mut task_cx)
             };
+
+            if progressed && turn_started.elapsed() >= MAINTENANCE_TURN_BUDGET {
+                made_progress = true;
+                yielded_for_budget = true;
+                break;
+            }
+
             progressed |= {
                 let _timer = PerfTimer::new("Application::poll_pending_lsp_commands")
                     .with_warn_threshold(MAINTENANCE_POLLER_WARN_THRESHOLD);
