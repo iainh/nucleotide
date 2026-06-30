@@ -391,18 +391,51 @@ pub mod session {
             env!("CARGO_PKG_VERSION").to_string(),
         );
 
-        restore_parent_env(&mut merged, parent_env, "HOME");
-        restore_parent_env(&mut merged, parent_env, "USER");
-        restore_parent_env(&mut merged, parent_env, "LOGNAME");
-        restore_parent_env(&mut merged, parent_env, "SHELL");
+        let is_wsl_remote = merged
+            .get("NUCLEOTIDE_REMOTE_KIND")
+            .is_some_and(|kind| kind == "wsl");
+
+        restore_session_env(&mut merged, parent_env, "HOME", is_wsl_remote);
+        restore_session_env(&mut merged, parent_env, "USER", is_wsl_remote);
+        restore_session_env(&mut merged, parent_env, "LOGNAME", is_wsl_remote);
+        restore_session_env(&mut merged, parent_env, "SHELL", is_wsl_remote);
         if let Some(cwd) = cwd {
             merged.insert("PWD".to_string(), cwd.to_string_lossy().into_owned());
+        } else if is_wsl_remote {
+            ensure_remote_pwd(&mut merged);
         } else {
             restore_parent_env(&mut merged, parent_env, "PWD");
         }
-        restore_parent_env(&mut merged, parent_env, "OLDPWD");
+        restore_session_env(&mut merged, parent_env, "OLDPWD", is_wsl_remote);
 
         merged.into_iter().collect()
+    }
+
+    fn restore_session_env(
+        merged: &mut BTreeMap<String, String>,
+        parent_env: &BTreeMap<String, String>,
+        key: &str,
+        preserve_existing: bool,
+    ) {
+        if preserve_existing && merged.get(key).is_some_and(|value| !value.is_empty()) {
+            return;
+        }
+
+        restore_parent_env(merged, parent_env, key);
+    }
+
+    fn ensure_remote_pwd(merged: &mut BTreeMap<String, String>) {
+        if merged.get("PWD").is_some_and(|value| !value.is_empty()) {
+            return;
+        }
+
+        if let Some(root) = merged
+            .get("NUCLEOTIDE_WSL_ROOT")
+            .filter(|value| !value.is_empty())
+            .cloned()
+        {
+            merged.insert("PWD".to_string(), root);
+        }
     }
 
     fn restore_parent_env(
@@ -532,6 +565,51 @@ pub mod session {
             assert_eq!(env.get("HOME").map(String::as_str), Some("/Users/test"));
             assert_eq!(env.get("USER").map(String::as_str), Some("test"));
             assert_eq!(env.get("SHELL").map(String::as_str), Some("/bin/zsh"));
+        }
+
+        #[test]
+        fn terminal_env_preserves_wsl_session_vars_from_project_environment() {
+            let parent = BTreeMap::from([
+                ("HOME".to_string(), r"C:\Users\iain".to_string()),
+                ("USER".to_string(), "iain-windows".to_string()),
+                ("SHELL".to_string(), "powershell.exe".to_string()),
+                ("PWD".to_string(), r"C:\Users\iain\project".to_string()),
+            ]);
+            let env = env_map(terminal_env_with_defaults_from(
+                &[
+                    pair("NUCLEOTIDE_REMOTE_KIND", "wsl"),
+                    pair("NUCLEOTIDE_WSL_ROOT", "/home/iain/project"),
+                    pair("HOME", "/home/iain"),
+                    pair("USER", "iain"),
+                    pair("SHELL", "/bin/bash"),
+                    pair("PWD", "/home/iain/project"),
+                ],
+                None,
+                &parent,
+            ));
+
+            assert_eq!(env.get("HOME").map(String::as_str), Some("/home/iain"));
+            assert_eq!(env.get("USER").map(String::as_str), Some("iain"));
+            assert_eq!(env.get("SHELL").map(String::as_str), Some("/bin/bash"));
+            assert_eq!(
+                env.get("PWD").map(String::as_str),
+                Some("/home/iain/project")
+            );
+        }
+
+        #[test]
+        fn terminal_env_uses_wsl_root_as_pwd_when_remote_pwd_is_missing() {
+            let parent = BTreeMap::from([("PWD".to_string(), r"C:\Users\iain".to_string())]);
+            let env = env_map(terminal_env_with_defaults_from(
+                &[
+                    pair("NUCLEOTIDE_REMOTE_KIND", "wsl"),
+                    pair("NUCLEOTIDE_WSL_ROOT", "/workspace"),
+                ],
+                None,
+                &parent,
+            ));
+
+            assert_eq!(env.get("PWD").map(String::as_str), Some("/workspace"));
         }
 
         #[test]
