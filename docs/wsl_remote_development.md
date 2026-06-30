@@ -79,6 +79,9 @@ editor backend into Linux:
   paths. Marker checks and manifest reads run inside the distro with a
   per-detection existence cache, while native paths keep the normal filesystem
   delegate.
+- Project type indicators use the helper-backed WSL directory listing when it is
+  available, turning several synchronous marker-file checks into one Linux-side
+  directory read.
 
 This means the first supported path is direct WSL LSP execution with path
 translation. The helper is currently an optional foundation for richer remote

@@ -5,9 +5,13 @@ use gpui::prelude::FluentBuilder;
 use gpui::{
     Context, Entity, EventEmitter, IntoElement, ParentElement, Render, Styled, Window, div,
 };
+use nucleotide_env::{WslWorkspace, load_wsl_remote_directory_listing_blocking};
 use nucleotide_ui::ThemedContext;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+const WSL_PROJECT_INDICATOR_TIMEOUT: Duration = Duration::from_millis(750);
 
 /// Information about detected project types
 #[derive(Clone, Debug, PartialEq)]
@@ -383,22 +387,70 @@ pub fn detect_project_types_for_path(path: &Path) -> Vec<ProjectType> {
         "Starting project type detection in path"
     );
 
-    if !path.exists() {
-        nucleotide_logging::warn!(
-            path = %path.display(),
-            "Project path does not exist"
-        );
-        return Vec::new();
-    }
+    let marker_source = if let Some(marker_names) = wsl_project_marker_names(path) {
+        ProjectMarkerSource::Remote(marker_names)
+    } else {
+        if !path.exists() {
+            nucleotide_logging::warn!(
+                path = %path.display(),
+                "Project path does not exist"
+            );
+            return Vec::new();
+        }
 
-    if !path.is_dir() {
-        nucleotide_logging::warn!(
-            path = %path.display(),
-            "Project path is not a directory"
-        );
-        return Vec::new();
-    }
+        if !path.is_dir() {
+            nucleotide_logging::warn!(
+                path = %path.display(),
+                "Project path is not a directory"
+            );
+            return Vec::new();
+        }
 
+        ProjectMarkerSource::Local(path)
+    };
+
+    detect_project_types_from_markers(path, &marker_source)
+}
+
+enum ProjectMarkerSource<'a> {
+    Local(&'a Path),
+    Remote(HashSet<String>),
+}
+
+impl ProjectMarkerSource<'_> {
+    fn contains(&self, file_name: &str) -> bool {
+        match self {
+            Self::Local(path) => path.join(file_name).exists(),
+            Self::Remote(marker_names) => marker_names.contains(file_name),
+        }
+    }
+}
+
+fn wsl_project_marker_names(path: &Path) -> Option<HashSet<String>> {
+    let workspace = WslWorkspace::from_unc_path(path)?;
+    match load_wsl_remote_directory_listing_blocking(&workspace, WSL_PROJECT_INDICATOR_TIMEOUT) {
+        Ok(response) => Some(
+            response
+                .entries
+                .into_iter()
+                .map(|entry| entry.name)
+                .collect(),
+        ),
+        Err(error) => {
+            nucleotide_logging::warn!(
+                path = %path.display(),
+                error = %error,
+                "Failed to load WSL project marker listing; falling back to local checks"
+            );
+            None
+        }
+    }
+}
+
+fn detect_project_types_from_markers(
+    path: &Path,
+    marker_source: &ProjectMarkerSource<'_>,
+) -> Vec<ProjectType> {
     let mut detected_types: Vec<ProjectType> = Vec::new();
     let mut confidence_map: HashMap<String, f32> = HashMap::new();
 
@@ -489,17 +541,16 @@ pub fn detect_project_types_for_path(path: &Path) -> Vec<ProjectType> {
     );
 
     for (file_name, project_type) in &detection_rules {
-        let file_path = path.join(file_name);
         nucleotide_logging::debug!(
-            file_path = %file_path.display(),
+            file_path = %path.join(file_name).display(),
             file_name = file_name,
             project_type = %project_type.name,
             "Checking for project marker file"
         );
 
-        if file_path.exists() {
+        if marker_source.contains(file_name) {
             nucleotide_logging::info!(
-                file_path = %file_path.display(),
+                file_path = %path.join(file_name).display(),
                 project_type = %project_type.name,
                 confidence = project_type.confidence,
                 "Found project marker file"
@@ -594,5 +645,31 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let detected = detect_project_types_for_path(temp_dir.path());
         assert_eq!(detected.len(), 0);
+    }
+
+    #[test]
+    fn test_remote_marker_detection() {
+        let markers = HashSet::from(["Cargo.toml".to_string(), "package.json".to_string()]);
+        let detected = detect_project_types_from_markers(
+            Path::new(r"\\wsl.localhost\Ubuntu\home\iain\repo"),
+            &ProjectMarkerSource::Remote(markers),
+        );
+
+        assert_eq!(detected.len(), 2);
+        assert_eq!(detected[0].name, "rust");
+        assert_eq!(detected[1].name, "nodejs");
+    }
+
+    #[test]
+    fn test_remote_marker_detection_keeps_highest_confidence() {
+        let markers = HashSet::from(["requirements.txt".to_string(), "pyproject.toml".to_string()]);
+        let detected = detect_project_types_from_markers(
+            Path::new(r"\\wsl.localhost\Ubuntu\home\iain\repo"),
+            &ProjectMarkerSource::Remote(markers),
+        );
+
+        assert_eq!(detected.len(), 1);
+        assert_eq!(detected[0].name, "python");
+        assert_eq!(detected[0].confidence, 0.9);
     }
 }
