@@ -306,18 +306,35 @@ where
     C: WslCommandArgs,
 {
     add_wsl_base_args(command, workspace);
+    let (flag, script) = wsl_shell_invocation(shell, script);
     command
         .push_arg(shell)
-        .push_arg(wsl_shell_command_flag(shell))
-        .push_arg(script);
+        .push_arg(flag)
+        .push_arg(script.as_str());
 }
 
-fn wsl_shell_command_flag(shell: &str) -> &'static str {
+fn wsl_shell_invocation(shell: &str, script: &str) -> (&'static str, String) {
     if shell.ends_with("/sh") || shell == "sh" {
-        "-c"
+        ("-c", wsl_user_login_shell_wrapper(script))
     } else {
-        "-lc"
+        ("-lc", script.to_string())
     }
+}
+
+fn wsl_user_login_shell_wrapper(script: &str) -> String {
+    let quoted_script = quote_posix_single(script);
+    format!(
+        r#"script={quoted_script}
+shell="${{SHELL:-/bin/sh}}"
+case "$shell" in
+  ""|sh|*/sh) exec /bin/sh -c "$script" ;;
+  *) if [ -x "$shell" ]; then exec "$shell" -lc "$script"; fi; exec /bin/sh -c "$script" ;;
+esac"#
+    )
+}
+
+fn quote_posix_single(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
 fn add_wsl_base_args<C>(command: &mut C, workspace: &WslWorkspace)
@@ -474,10 +491,21 @@ mod tests {
     }
 
     #[test]
-    fn wsl_shell_command_flag_uses_portable_sh_mode() {
-        assert_eq!(wsl_shell_command_flag("/bin/sh"), "-c");
-        assert_eq!(wsl_shell_command_flag("sh"), "-c");
-        assert_eq!(wsl_shell_command_flag("/bin/bash"), "-lc");
+    fn wsl_shell_invocation_uses_portable_wrapper_for_sh() {
+        let (flag, script) = wsl_shell_invocation("/bin/sh", "echo 'hello'");
+
+        assert_eq!(flag, "-c");
+        assert!(script.contains(r#"shell="${SHELL:-/bin/sh}""#));
+        assert!(script.contains(r#"exec "$shell" -lc "$script""#));
+        assert!(script.contains(r#"echo '"'"'hello'"'"#));
+    }
+
+    #[test]
+    fn wsl_shell_invocation_keeps_login_mode_for_explicit_login_shells() {
+        let (flag, script) = wsl_shell_invocation("/bin/bash", "env -0");
+
+        assert_eq!(flag, "-lc");
+        assert_eq!(script, "env -0");
     }
 
     #[test]

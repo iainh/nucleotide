@@ -45,7 +45,10 @@ editor backend into Linux:
   before falling back to `nucleotide-remote` on `PATH`. Helper success is logged;
   helper failure can bootstrap from `NUCLEOTIDE_REMOTE_HELPER_INSTALL_SOURCE`
   when that variable points at a Linux helper binary, then falls back to direct
-  WSL language server launch if the helper remains unavailable.
+  WSL language server launch if the helper remains unavailable. Helper and
+  environment commands use a portable `/bin/sh -c` wrapper that re-enters the
+  user's login shell when available, so common user PATH setup is preserved
+  without relying on non-portable `sh -l` behavior.
 - Workspace terminals and runnable commands opened from WSL roots are launched
   through `wsl.exe --distribution <distro> --cd <linux-path>`, so shells and
   commands start where the project files live.
