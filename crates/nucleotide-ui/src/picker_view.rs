@@ -15,7 +15,7 @@ use helix_view::DocumentId;
 use nucleo::Nucleo;
 use nucleotide_logging::warn;
 use nucleotide_types::VcsStatus;
-use std::{ops::Range, sync::Arc};
+use std::{ops::Range, path::Path, sync::Arc};
 
 #[derive(Clone, Debug)]
 pub enum ColumnData {
@@ -137,6 +137,39 @@ fn str_prefix_at_byte_limit(value: &str, max_bytes: usize) -> &str {
         .last()
         .unwrap_or(0);
     &value[..boundary]
+}
+
+fn path_is_wsl_unc(path: &Path) -> bool {
+    let path = path.as_os_str().to_string_lossy();
+    let without_verbatim = path
+        .strip_prefix(r"\\?\UNC\")
+        .map(|path| format!(r"\\{path}"));
+    let normalized = without_verbatim.as_deref().unwrap_or(&path);
+
+    let Some(rest) = normalized.strip_prefix(r"\\") else {
+        return false;
+    };
+    let mut parts = rest.split(['\\', '/']).filter(|part| !part.is_empty());
+    matches!(
+        parts.next(),
+        Some(server)
+            if server.eq_ignore_ascii_case("wsl.localhost")
+                || server.eq_ignore_ascii_case("wsl$")
+    ) && parts.next().is_some()
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FilePreviewFallback {
+    LocalFilesystem,
+    RemoteUnavailable,
+}
+
+fn file_preview_fallback(path: &Path) -> FilePreviewFallback {
+    if path_is_wsl_unc(path) {
+        FilePreviewFallback::RemoteUnavailable
+    } else {
+        FilePreviewFallback::LocalFilesystem
+    }
 }
 
 pub struct PickerView {
@@ -891,6 +924,14 @@ impl PickerView {
 
         // Clean up previous preview document if any
         self.cleanup_preview_document(cx);
+
+        if file_preview_fallback(&path) == FilePreviewFallback::RemoteUnavailable {
+            self.preview_loading = false;
+            self.preview_content =
+                Some("Remote preview unavailable without a remote preview provider".to_string());
+            cx.notify();
+            return;
+        }
 
         self.preview_loading = true;
         self.preview_content = Some("Loading...".to_string());
@@ -1722,6 +1763,33 @@ mod tests {
         assert!(exact > fuzzy);
         assert!(PickerView::fuzzy_score("swf", "Save workspace file").is_some());
         assert!(PickerView::fuzzy_score("fwz", "Save workspace file").is_none());
+    }
+
+    #[test]
+    fn detects_wsl_unc_picker_paths() {
+        assert!(path_is_wsl_unc(Path::new(
+            r"\\wsl.localhost\Ubuntu\home\iain\repo\src\main.rs"
+        )));
+        assert!(path_is_wsl_unc(Path::new(
+            r"\\?\UNC\wsl.localhost\Ubuntu\home\iain\repo"
+        )));
+        assert!(path_is_wsl_unc(Path::new(r"\\wsl$\Ubuntu\home\iain\repo")));
+        assert!(!path_is_wsl_unc(Path::new(r"\\server\share\repo")));
+        assert!(!path_is_wsl_unc(Path::new(r"C:\Users\iain\repo")));
+    }
+
+    #[test]
+    fn picker_preview_fallback_skips_wsl_unc_filesystem() {
+        assert_eq!(
+            file_preview_fallback(Path::new(
+                r"\\wsl.localhost\Ubuntu\home\iain\repo\src\main.rs"
+            )),
+            FilePreviewFallback::RemoteUnavailable
+        );
+        assert_eq!(
+            file_preview_fallback(Path::new(r"C:\Users\iain\repo\src\main.rs")),
+            FilePreviewFallback::LocalFilesystem
+        );
     }
 
     #[test]
