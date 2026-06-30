@@ -23,6 +23,13 @@ struct DirectXAtlasState {
     polychrome_textures: AtlasTextureList<DirectXAtlasTexture>,
     subpixel_textures: AtlasTextureList<DirectXAtlasTexture>,
     tiles_by_key: FxHashMap<AtlasKey, AtlasTile>,
+    pending_uploads: Vec<PendingAtlasUpload>,
+}
+
+struct PendingAtlasUpload {
+    texture_id: AtlasTextureId,
+    bounds: Bounds<DevicePixels>,
+    bytes: Vec<u8>,
 }
 
 struct DirectXAtlasTexture {
@@ -43,6 +50,7 @@ impl DirectXAtlas {
             polychrome_textures: Default::default(),
             subpixel_textures: Default::default(),
             tiles_by_key: Default::default(),
+            pending_uploads: Vec::new(),
         }))
     }
 
@@ -67,6 +75,11 @@ impl DirectXAtlas {
         lock.polychrome_textures = AtlasTextureList::default();
         lock.subpixel_textures = AtlasTextureList::default();
         lock.tiles_by_key.clear();
+        lock.pending_uploads.clear();
+    }
+
+    pub(crate) fn flush_uploads(&self) {
+        self.0.lock().flush_uploads();
     }
 }
 
@@ -88,8 +101,11 @@ impl PlatformAtlas for DirectXAtlas {
             let tile = lock
                 .allocate(size, key.texture_kind())
                 .ok_or_else(|| anyhow::anyhow!("failed to allocate"))?;
-            let texture = lock.texture(tile.texture_id);
-            texture.upload(&lock.device_context, tile.bounds, &bytes);
+            lock.pending_uploads.push(PendingAtlasUpload {
+                texture_id: tile.texture_id,
+                bounds: tile.bounds,
+                bytes: bytes.into_owned(),
+            });
             lock.tiles_by_key.insert(key.clone(), tile);
             Ok(Some(tile))
         }
@@ -130,10 +146,21 @@ impl PlatformAtlas for DirectXAtlas {
         lock.polychrome_textures = AtlasTextureList::default();
         lock.subpixel_textures = AtlasTextureList::default();
         lock.tiles_by_key.clear();
+        lock.pending_uploads.clear();
     }
 }
 
 impl DirectXAtlasState {
+    fn flush_uploads(&mut self) {
+        let pending_uploads = std::mem::take(&mut self.pending_uploads);
+        for upload in pending_uploads {
+            let Some(texture) = self.maybe_texture(upload.texture_id) else {
+                continue;
+            };
+            texture.upload(&self.device_context, upload.bounds, &upload.bytes);
+        }
+    }
+
     fn allocate(
         &mut self,
         size: Size<DevicePixels>,
@@ -254,16 +281,14 @@ impl DirectXAtlasState {
     }
 
     fn texture(&self, id: AtlasTextureId) -> &DirectXAtlasTexture {
+        self.maybe_texture(id).unwrap()
+    }
+
+    fn maybe_texture(&self, id: AtlasTextureId) -> Option<&DirectXAtlasTexture> {
         match id.kind {
-            AtlasTextureKind::Monochrome => &self.monochrome_textures[id.index as usize]
-                .as_ref()
-                .unwrap(),
-            AtlasTextureKind::Polychrome => &self.polychrome_textures[id.index as usize]
-                .as_ref()
-                .unwrap(),
-            AtlasTextureKind::Subpixel => {
-                &self.subpixel_textures[id.index as usize].as_ref().unwrap()
-            }
+            AtlasTextureKind::Monochrome => self.monochrome_textures[id.index as usize].as_ref(),
+            AtlasTextureKind::Polychrome => self.polychrome_textures[id.index as usize].as_ref(),
+            AtlasTextureKind::Subpixel => self.subpixel_textures[id.index as usize].as_ref(),
         }
     }
 }
