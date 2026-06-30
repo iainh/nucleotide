@@ -45,6 +45,31 @@ impl EnvironmentResponse {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceMetadataResponse {
+    pub protocol_version: u32,
+    pub helper_version: String,
+    pub os: String,
+    pub arch: String,
+    pub current_dir: PathBuf,
+    pub home_dir: Option<PathBuf>,
+    pub path_separator: String,
+}
+
+impl WorkspaceMetadataResponse {
+    pub fn current() -> std::io::Result<Self> {
+        Ok(Self {
+            protocol_version: PROTOCOL_VERSION,
+            helper_version: env!("CARGO_PKG_VERSION").to_string(),
+            os: std::env::consts::OS.to_string(),
+            arch: std::env::consts::ARCH.to_string(),
+            current_dir: std::env::current_dir()?,
+            home_dir: std::env::var_os("HOME").map(PathBuf::from),
+            path_separator: std::path::MAIN_SEPARATOR.to_string(),
+        })
+    }
+}
+
 pub fn encode_json_line<T: Serialize>(value: &T) -> serde_json::Result<String> {
     let mut line = serde_json::to_string(value)?;
     line.push('\n');
@@ -104,5 +129,24 @@ mod tests {
 
         assert!(path_index < zed_index);
         assert!(line.contains("\"variables\""));
+    }
+
+    #[test]
+    fn workspace_metadata_response_encodes_remote_shape() {
+        let response = WorkspaceMetadataResponse {
+            protocol_version: PROTOCOL_VERSION,
+            helper_version: "0.1.0".to_string(),
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+            current_dir: PathBuf::from("/workspace"),
+            home_dir: Some(PathBuf::from("/home/iain")),
+            path_separator: "/".to_string(),
+        };
+
+        let line = encode_json_line(&response).unwrap();
+
+        assert!(line.contains("\"helper_version\":\"0.1.0\""));
+        assert!(line.contains("\"home_dir\":\"/home/iain\""));
+        assert!(line.contains("\"path_separator\":\"/\""));
     }
 }

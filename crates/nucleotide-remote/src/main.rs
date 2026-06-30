@@ -2,7 +2,9 @@
 // ABOUTME: Runs inside remote environments such as WSL to expose workspace services
 
 use anyhow::{Context, Result, bail};
-use nucleotide_remote::{EnvironmentResponse, HelloResponse, encode_json_line};
+use nucleotide_remote::{
+    EnvironmentResponse, HelloResponse, WorkspaceMetadataResponse, encode_json_line,
+};
 
 fn main() -> Result<()> {
     let command = std::env::args()
@@ -19,9 +21,15 @@ fn main() -> Result<()> {
                 EnvironmentResponse::current().context("failed to build environment response")?;
             print!("{}", encode_json_line(&response)?);
         }
+        "metadata" => {
+            let response = WorkspaceMetadataResponse::current()
+                .context("failed to build workspace metadata response")?;
+            print!("{}", encode_json_line(&response)?);
+        }
         "--help" | "-h" => {
             println!("nucleotide-remote hello");
             println!("nucleotide-remote env");
+            println!("nucleotide-remote metadata");
         }
         other => bail!("unknown nucleotide-remote command: {other}"),
     }
