@@ -3,12 +3,14 @@
 
 pub mod shell_env;
 pub mod shell_env_focused_test;
+pub mod wsl;
 
 // Re-export main types for easy access
 pub use shell_env::{
     CachedEnvironment, EnvironmentOrigin, ProjectEnvironment, ShellEnvError, ShellEnvironmentCache,
     ShellEnvironmentError, detect_shell_type, parse_shell_environment, shell_command_builder,
 };
+pub use wsl::{WslWorkspace, build_wsl_environment_capture_command, build_wsl_shell_command};
 
 #[cfg(test)]
 #[allow(unused_imports)]

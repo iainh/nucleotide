@@ -12,6 +12,8 @@ use std::time::SystemTime;
 use tokio::sync::{RwLock, Semaphore};
 use tokio::time::{Duration, timeout};
 
+use crate::wsl::{WslWorkspace, build_wsl_environment_capture_tokio_command};
+
 const DIRECTORY_SHELL_CAPTURE_TIMEOUT_SECONDS: u64 = 10;
 const PROCESS_SHELL_CAPTURE_TIMEOUT_SECONDS: u64 = 10;
 
@@ -45,6 +47,7 @@ pub enum ShellEnvironmentError {
 pub enum EnvironmentOrigin {
     Cli,
     NativeFlake,
+    WslShell,
     DirectoryShell,
     Process,
 }
@@ -126,6 +129,14 @@ impl ProjectEnvironment {
         let canonical_dir = directory
             .canonicalize()
             .unwrap_or_else(|_| directory.to_path_buf());
+
+        if let Some(wsl_workspace) = WslWorkspace::from_unc_path(&canonical_dir)
+            .or_else(|| WslWorkspace::from_unc_path(directory))
+        {
+            return self
+                .load_wsl_directory_environment(directory, &canonical_dir, wsl_workspace)
+                .await;
+        }
 
         // Check cache first. Native flake environments are invalidated when any
         // watched input changes so project switches and lockfile updates reload.
@@ -256,6 +267,84 @@ impl ProjectEnvironment {
         }
 
         combined_env
+    }
+
+    async fn load_wsl_directory_environment(
+        &self,
+        requested_directory: &Path,
+        canonical_dir: &Path,
+        workspace: WslWorkspace,
+    ) -> Result<HashMap<String, String>, ShellEnvironmentError> {
+        let cache_key = canonical_dir.to_path_buf();
+        if let Some(cached) = {
+            let cache = self.directory_environments.read().await;
+            cache.get(&cache_key).cloned()
+        } {
+            if cached_environment_is_current(&cached) {
+                debug!("Using cached WSL directory environment");
+                return Ok(cached.environment);
+            }
+
+            let mut cache = self.directory_environments.write().await;
+            cache.remove(&cache_key);
+        }
+
+        let _permit = self
+            .shell_execution_semaphore
+            .acquire()
+            .await
+            .map_err(|_| {
+                ShellEnvironmentError::ShellExecutionFailed(
+                    "Failed to acquire execution semaphore".to_string(),
+                )
+            })?;
+
+        info!(
+            distro = %workspace.distro(),
+            linux_path = %workspace.linux_path(),
+            windows_path = %requested_directory.display(),
+            "Capturing WSL project environment"
+        );
+
+        let env = capture_wsl_environment_with_timeout(
+            &workspace,
+            DIRECTORY_SHELL_CAPTURE_TIMEOUT_SECONDS,
+        )
+        .await?;
+        let mut env = env;
+        env.insert("ZED_ENVIRONMENT".to_string(), "wsl-shell".to_string());
+        env.insert("NUCLEOTIDE_REMOTE_KIND".to_string(), "wsl".to_string());
+        env.insert(
+            "NUCLEOTIDE_WSL_DISTRO".to_string(),
+            workspace.distro().to_string(),
+        );
+        env.insert(
+            "NUCLEOTIDE_WSL_ROOT".to_string(),
+            workspace.linux_path().to_string(),
+        );
+
+        let cached_env = CachedEnvironment {
+            environment: env.clone(),
+            origin: EnvironmentOrigin::WslShell,
+            directory: cache_key.clone(),
+            native_watch_state: None,
+        };
+
+        {
+            let mut cache = self.directory_environments.write().await;
+            cache.insert(cache_key.clone(), cached_env.clone());
+            if requested_directory != cache_key {
+                cache.insert(requested_directory.to_path_buf(), cached_env);
+            }
+        }
+
+        {
+            let mut errors = self.environment_errors.write().await;
+            errors.remove(&cache_key);
+            errors.remove(requested_directory);
+        }
+
+        Ok(env)
     }
 
     async fn login_shell_process_environment(
@@ -588,9 +677,10 @@ fn cached_environment_is_current(cached: &CachedEnvironment) -> bool {
             .native_watch_state
             .as_deref()
             .is_some_and(watched_files_are_current),
-        EnvironmentOrigin::Cli | EnvironmentOrigin::DirectoryShell | EnvironmentOrigin::Process => {
-            true
-        }
+        EnvironmentOrigin::Cli
+        | EnvironmentOrigin::WslShell
+        | EnvironmentOrigin::DirectoryShell
+        | EnvironmentOrigin::Process => true,
     }
 }
 
@@ -1079,6 +1169,24 @@ async fn capture_shell_environment_with_timeout(
     }
 
     let result = timeout(Duration::from_secs(timeout_seconds), tokio_command.output()).await;
+
+    match result {
+        Ok(Ok(output)) if output.status.success() => parse_shell_environment(&output.stdout),
+        Ok(Ok(output)) => {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            Err(ShellEnvironmentError::ShellExecutionFailed(stderr))
+        }
+        Ok(Err(io_error)) => Err(ShellEnvironmentError::IoError(io_error)),
+        Err(_) => Err(ShellEnvironmentError::Timeout(timeout_seconds)),
+    }
+}
+
+async fn capture_wsl_environment_with_timeout(
+    workspace: &WslWorkspace,
+    timeout_seconds: u64,
+) -> Result<HashMap<String, String>, ShellEnvironmentError> {
+    let mut command = build_wsl_environment_capture_tokio_command(workspace);
+    let result = timeout(Duration::from_secs(timeout_seconds), command.output()).await;
 
     match result {
         Ok(Ok(output)) if output.status.success() => parse_shell_environment(&output.stdout),
