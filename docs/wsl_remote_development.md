@@ -73,6 +73,9 @@ editor backend into Linux:
 - Local path completion uses the same helper-backed directory listing for WSL
   paths with a short timeout, avoiding per-keystroke `\\wsl...` directory reads
   from the Windows side.
+- Command-prompt file and directory completions also use helper-backed WSL
+  directory listing, preserving native prompt behavior without walking UNC paths
+  from Windows.
 - The file picker uses helper-backed recursive file search for WSL roots, so the
   expensive ignore-aware walk runs in Linux rather than across the Windows UNC
   filesystem boundary.
@@ -108,6 +111,7 @@ flowchart LR
     Server["Language server in WSL"]
     Helper["nucleotide-remote in WSL"]
     FileTree["Project tree"]
+    Picker["Picker, search, and completions"]
     Terminal["Terminal or runnable in WSL"]
 
     UI --> Bridge
@@ -116,6 +120,7 @@ flowchart LR
     WSL --> Server
     UI -. "background health probe" .-> Helper
     FileTree --> Helper
+    Picker --> Helper
     UI --> Terminal
     Proxy <--> Server
 ```
