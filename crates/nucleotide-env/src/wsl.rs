@@ -4,6 +4,7 @@
 use nucleotide_remote::{EnvironmentResponse, HelloResponse, PROTOCOL_VERSION};
 use std::path::Path;
 use std::process::Command;
+use std::process::Stdio;
 use std::time::Duration;
 use tokio::time::timeout;
 
@@ -75,6 +76,15 @@ pub fn build_wsl_remote_env_tokio_command(workspace: &WslWorkspace) -> tokio::pr
     )
 }
 
+pub fn build_wsl_remote_helper_install_command(
+    workspace: &WslWorkspace,
+) -> tokio::process::Command {
+    let mut command =
+        build_wsl_tokio_shell_command(workspace, "/bin/sh", &wsl_remote_helper_install_script());
+    command.stdin(Stdio::piped());
+    command
+}
+
 pub fn wsl_remote_helper_cache_path() -> String {
     format!(
         "$HOME/{}/{}/nucleotide-remote",
@@ -88,6 +98,20 @@ pub fn wsl_remote_helper_hello_script() -> String {
 
 pub fn wsl_remote_helper_env_script() -> String {
     wsl_remote_helper_command_script("env")
+}
+
+pub fn wsl_remote_helper_install_script() -> String {
+    let helper_path = wsl_remote_helper_cache_path();
+    format!(
+        r#"helper="{helper_path}"
+dir="$(dirname "$helper")"
+tmp="$helper.tmp.$$"
+mkdir -p "$dir"
+cat > "$tmp"
+chmod 755 "$tmp"
+mv "$tmp" "$helper"
+"$helper" hello >/dev/null"#
+    )
 }
 
 fn wsl_remote_helper_command_script(command: &str) -> String {
@@ -151,6 +175,27 @@ pub async fn load_wsl_remote_environment(
     }
 
     parse_remote_environment_output(&output.stdout)
+}
+
+pub async fn install_wsl_remote_helper(
+    workspace: &WslWorkspace,
+    local_helper_path: &Path,
+    timeout_duration: Duration,
+) -> Result<(), WslRemoteHelperError> {
+    let helper_file = std::fs::File::open(local_helper_path)?;
+    let mut command = build_wsl_remote_helper_install_command(workspace);
+    command.stdin(Stdio::from(helper_file));
+
+    let output = timeout(timeout_duration, command.output())
+        .await
+        .map_err(|_| WslRemoteHelperError::Timeout(timeout_duration))??;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(WslRemoteHelperError::CommandFailed(stderr));
+    }
+
+    Ok(())
 }
 
 fn parse_remote_hello_output(output: &[u8]) -> Result<HelloResponse, WslRemoteHelperError> {
@@ -391,6 +436,21 @@ mod tests {
     }
 
     #[test]
+    fn remote_helper_install_script_writes_versioned_cache_path() {
+        let script = wsl_remote_helper_install_script();
+
+        assert!(
+            script
+                .contains(r#"helper="$HOME/.cache/nucleotide/remote-helper/1/nucleotide-remote""#)
+        );
+        assert!(script.contains(r#"mkdir -p "$dir""#));
+        assert!(script.contains(r#"cat > "$tmp""#));
+        assert!(script.contains(r#"chmod 755 "$tmp""#));
+        assert!(script.contains(r#"mv "$tmp" "$helper""#));
+        assert!(script.contains(r#""$helper" hello >/dev/null"#));
+    }
+
+    #[test]
     fn parses_remote_hello_response() {
         let output = br#"{"protocol_version":1,"helper_version":"0.1.0","os":"linux","arch":"x86_64","current_dir":"/home/iain/repo"}
 "#;
@@ -469,6 +529,45 @@ mod tests {
         assert!(debug.contains(".cache/nucleotide/remote-helper/1/nucleotide-remote"));
         assert!(debug.contains("nucleotide-remote"));
         assert!(debug.contains("env"));
+    }
+
+    #[test]
+    fn builds_wsl_remote_helper_install_command() {
+        let workspace = WslWorkspace {
+            distro: "Ubuntu".to_string(),
+            linux_path: "/home/iain/repo".to_string(),
+        };
+        let command = build_wsl_remote_helper_install_command(&workspace);
+        let debug = format!("{command:?}");
+
+        assert!(debug.contains("wsl.exe"));
+        assert!(debug.contains("--distribution"));
+        assert!(debug.contains("Ubuntu"));
+        assert!(debug.contains("--cd"));
+        assert!(debug.contains("/home/iain/repo"));
+        assert!(debug.contains("/bin/sh"));
+        assert!(debug.contains("-lc"));
+        assert!(debug.contains(".cache/nucleotide/remote-helper/1/nucleotide-remote"));
+        assert!(debug.contains("cat >"));
+        assert!(debug.contains("chmod 755"));
+    }
+
+    #[tokio::test]
+    async fn install_wsl_remote_helper_rejects_missing_local_binary_before_wsl() {
+        let workspace = WslWorkspace {
+            distro: "Ubuntu".to_string(),
+            linux_path: "/home/iain/repo".to_string(),
+        };
+
+        let error = install_wsl_remote_helper(
+            &workspace,
+            Path::new(r"C:\definitely\missing\nucleotide-remote.exe"),
+            Duration::from_millis(1),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(error, WslRemoteHelperError::Io(_)));
     }
 
     #[test]
