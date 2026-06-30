@@ -18,7 +18,7 @@ use crate::{
 type ScrollCallback = Rc<dyn Fn(&EditorViewport, ViewportScrollUpdate, &mut App)>;
 type PointerCallback = Rc<dyn Fn(EditorSurfacePointerEvent, &mut App)>;
 type PointerSelectionCallback =
-    Rc<dyn Fn(EditorPointerSelectionPhase, EditorSurfacePointerEvent, &mut App)>;
+    Rc<dyn Fn(EditorPointerSelectionPhase, EditorSurfacePointerEvent, &mut App) -> bool>;
 type CursorOverlayCallback = Rc<dyn Fn(Option<CursorOverlayPlan>, &mut App)>;
 type KeyDownCallback = Rc<dyn Fn(&KeyDownEvent, &mut Window, &mut App) -> bool>;
 
@@ -131,7 +131,8 @@ where
 
     pub fn on_pointer_selection(
         mut self,
-        callback: impl Fn(EditorPointerSelectionPhase, EditorSurfacePointerEvent, &mut App) + 'static,
+        callback: impl Fn(EditorPointerSelectionPhase, EditorSurfacePointerEvent, &mut App) -> bool
+        + 'static,
     ) -> Self {
         self.on_pointer_selection = Some(Rc::new(callback));
         self
@@ -267,35 +268,44 @@ where
         if on_pointer_selection.is_some() || on_mouse_down.is_some() {
             let on_pointer_selection = on_pointer_selection.clone();
             editor_surface = editor_surface.on_mouse_down(move |event, cx| {
+                let mut changed = false;
                 if let Some(on_pointer_selection) = &on_pointer_selection {
-                    on_pointer_selection(EditorPointerSelectionPhase::Begin, event, cx);
+                    changed |= on_pointer_selection(EditorPointerSelectionPhase::Begin, event, cx);
                 }
                 if let Some(on_mouse_down) = &on_mouse_down {
                     on_mouse_down(event, cx);
+                    changed = true;
                 }
+                changed
             });
         }
 
         if on_pointer_selection.is_some() || on_mouse_drag.is_some() {
             let on_pointer_selection = on_pointer_selection.clone();
             editor_surface = editor_surface.on_mouse_drag(move |event, cx| {
+                let mut changed = false;
                 if let Some(on_pointer_selection) = &on_pointer_selection {
-                    on_pointer_selection(EditorPointerSelectionPhase::Extend, event, cx);
+                    changed |= on_pointer_selection(EditorPointerSelectionPhase::Extend, event, cx);
                 }
                 if let Some(on_mouse_drag) = &on_mouse_drag {
                     on_mouse_drag(event, cx);
+                    changed = true;
                 }
+                changed
             });
         }
 
         if on_pointer_selection.is_some() || on_mouse_up.is_some() {
             editor_surface = editor_surface.on_mouse_up(move |event, cx| {
+                let mut changed = false;
                 if let Some(on_pointer_selection) = &on_pointer_selection {
-                    on_pointer_selection(EditorPointerSelectionPhase::End, event, cx);
+                    changed |= on_pointer_selection(EditorPointerSelectionPhase::End, event, cx);
                 }
                 if let Some(on_mouse_up) = &on_mouse_up {
                     on_mouse_up(event, cx);
+                    changed = true;
                 }
+                changed
             });
         }
 
@@ -413,7 +423,10 @@ mod tests {
                 })
                 .on_pointer_selection({
                     let phases = Rc::clone(&phases);
-                    move |phase, _, _| phases.borrow_mut().push(phase)
+                    move |phase, _, _| {
+                        phases.borrow_mut().push(phase);
+                        true
+                    }
                 })
                 .on_mouse_down({
                     let saw_down = Rc::clone(&saw_down);

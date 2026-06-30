@@ -32,7 +32,7 @@ fn handle_editor_pointer_selection(
     phase: EditorPointerSelectionPhase,
     event: EditorSurfacePointerEvent,
     cx: &mut App,
-) {
+) -> bool {
     let outcome = core.update(cx, |core, cx| {
         let outcome = editor_state.handle_pointer_selection_for_view_outcome(
             &mut core.editor,
@@ -49,7 +49,11 @@ fn handle_editor_pointer_selection(
     });
 
     if let Some(outcome) = outcome {
+        let changed = outcome.changed();
         log_pointer_selection_outcome(outcome);
+        changed
+    } else {
+        false
     }
 }
 
@@ -435,7 +439,7 @@ impl Render for DocumentView {
                                 .and_then(|line| runnable_tasks_by_line.get(&line).cloned())
                         {
                             run_gutter_task(&core, view_id, task, cx);
-                            return;
+                            return true;
                         }
 
                         handle_editor_pointer_selection(
@@ -445,7 +449,7 @@ impl Render for DocumentView {
                             phase,
                             event,
                             cx,
-                        );
+                        )
                     }
                 })
                 .on_mouse_down({

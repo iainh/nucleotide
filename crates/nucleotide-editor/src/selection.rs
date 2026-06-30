@@ -5,7 +5,7 @@ use std::{cell::Cell, rc::Rc};
 
 use helix_core::{Range, Selection, SmallVec};
 use helix_view::{Document, DocumentId, Editor, ViewId};
-use nucleotide_logging::debug;
+use nucleotide_logging::{debug, trace};
 
 use crate::{
     EditorHitTestResult, EditorSurfacePointerEvent, LineLayoutCache, hit_test_document_position,
@@ -55,6 +55,10 @@ pub enum EditorPointerSelectionOutcome {
         phase: EditorPointerSelectionPhase,
         update: EditorPointerSelectionUpdate,
     },
+    Unchanged {
+        phase: EditorPointerSelectionPhase,
+        update: EditorPointerSelectionUpdate,
+    },
     Missed {
         phase: EditorPointerSelectionPhase,
         event: EditorSurfacePointerEvent,
@@ -72,7 +76,7 @@ impl EditorPointerSelectionOutcome {
     pub fn update(self) -> Option<EditorPointerSelectionUpdate> {
         match self {
             Self::Applied { update, .. } => Some(update),
-            Self::Missed { .. } | Self::Ended { .. } => None,
+            Self::Unchanged { .. } | Self::Missed { .. } | Self::Ended { .. } => None,
         }
     }
 }
@@ -87,6 +91,16 @@ pub fn log_pointer_selection_outcome(outcome: EditorPointerSelectionOutcome) {
                 anchor = update.selection.anchor,
                 target_pos = update.selection.head,
                 "Applied editor pointer selection"
+            );
+        }
+        EditorPointerSelectionOutcome::Unchanged { phase, update } => {
+            trace!(
+                phase = ?phase,
+                line_idx = update.hit_test.line_idx,
+                char_offset = update.hit_test.char_offset,
+                anchor = update.selection.anchor,
+                target_pos = update.selection.head,
+                "Skipped unchanged editor pointer selection"
             );
         }
         EditorPointerSelectionOutcome::Missed { phase, event } => {
@@ -277,6 +291,38 @@ pub fn update_editor_pointer_selection_at_event(
         drag_state,
         event,
     )
+}
+
+pub fn update_editor_pointer_selection_at_event_outcome(
+    editor: &mut Editor,
+    doc_id: DocumentId,
+    view_id: ViewId,
+    extra_gutter_columns: u16,
+    line_cache: &LineLayoutCache,
+    drag_state: &EditorSelectionDragState,
+    event: EditorSurfacePointerEvent,
+) -> Option<(EditorPointerSelectionUpdate, bool)> {
+    let gutter_columns =
+        editor_gutter_columns(editor, doc_id, view_id)?.saturating_add(extra_gutter_columns);
+    let document = editor.document_mut(doc_id)?;
+    let hit_test = hit_test_document_position(event, gutter_columns, line_cache, document)?;
+    let anchor = drag_state.anchor()?;
+    let (selection, update) =
+        selection_for_range(document.text().len_chars(), anchor, hit_test.char_idx);
+    let selection = selection.ensure_invariants(document.text().slice(..));
+    let changed = document.selection(view_id) != &selection;
+
+    if changed {
+        document.set_selection(view_id, selection);
+    }
+
+    Some((
+        EditorPointerSelectionUpdate {
+            hit_test,
+            selection: update,
+        },
+        changed,
+    ))
 }
 
 #[cfg(test)]
