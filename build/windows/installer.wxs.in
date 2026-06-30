@@ -7,7 +7,10 @@
     Version="{{PRODUCT_VERSION}}"
     UpgradeCode="D70F1CD5-B0B3-5252-AA9E-CF8EF10392E6"
     Scope="perUser">
-    <MajorUpgrade DowngradeErrorMessage="A newer version of Nucleotide is already installed."/>
+    <MajorUpgrade
+      AllowSameVersionUpgrades="yes"
+      DowngradeErrorMessage="A newer version of Nucleotide is already installed."
+      Schedule="afterInstallValidate"/>
     <MediaTemplate EmbedCab="yes"/>
     <Feature Id="ProductFeature" Title="Nucleotide" Level="1">
       <ComponentGroupRef Id="ProductComponents"/>
