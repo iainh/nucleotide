@@ -70,12 +70,14 @@ use crate::utils;
 use crate::{Core, Input, InputEvent};
 use nucleotide_core::EventBus;
 use nucleotide_env::{
-    EnvironmentOrigin, WslWorkspace, load_wsl_remote_file_search_blocking,
-    load_wsl_remote_global_search_blocking,
+    EnvironmentOrigin, WslWorkspace, create_wsl_remote_file_blocking,
+    load_wsl_remote_file_search_blocking, load_wsl_remote_global_search_blocking,
 };
 use nucleotide_events::v2::run::{Event as RunEvent, ResolvedTask, RunId, RunStatus};
 use nucleotide_events::v2::terminal::{Event as TerminalEvent, TerminalId};
-use nucleotide_remote::{FileSearchResponse, GlobalSearchResponse};
+use nucleotide_remote::{
+    FileCreateResponse, FileSearchResponse, GlobalSearchResponse, RemoteFileKind,
+};
 use nucleotide_terminal::TerminalBounds;
 use slotmap::KeyData;
 // (no direct Workspace v2 items used here)
@@ -86,6 +88,7 @@ use smallvec::{SmallVec, smallvec};
 type FileTreeContextMenuHandler = fn(&mut Workspace, &mut Context<Workspace>);
 const WSL_REMOTE_FILE_PICKER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 const WSL_REMOTE_GLOBAL_SEARCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const WSL_REMOTE_FILE_OP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
 fn document_lsp_identifier(
     doc: &helix_view::Document,
@@ -2262,6 +2265,24 @@ fn workspace_path_from_remote_relative(root: &Path, relative_path: &Path) -> Pat
         }
     }
     path
+}
+
+fn wsl_created_file_path(parent: &Path, response: &FileCreateResponse) -> Option<PathBuf> {
+    if response.kind != RemoteFileKind::File {
+        return None;
+    }
+
+    let workspace = WslWorkspace::from_unc_path(parent)?;
+    workspace
+        .unc_path_for_linux_path(&response.path)
+        .map(PathBuf::from)
+}
+
+fn create_wsl_project_file(parent: &Path, name: &str) -> Result<PathBuf, String> {
+    let response = create_wsl_remote_file_blocking(parent, name, WSL_REMOTE_FILE_OP_TIMEOUT)
+        .map_err(|error| error.to_string())?;
+    wsl_created_file_path(parent, &response)
+        .ok_or_else(|| "remote helper returned an unmappable file path".to_string())
 }
 
 fn global_search_picker(root: &Path, matches: Vec<GlobalSearchMatch>) -> crate::picker::Picker {
@@ -8178,6 +8199,45 @@ impl Workspace {
         // If a file op is pending, treat the submitted text as the name and dispatch an intent
         if let Some(pending) = self.pending_file_op.take() {
             use nucleotide_events::v2::workspace::{Event as WsEvent, FileOpIntent};
+
+            if let PendingFileOp::NewFile { parent } = &pending
+                && WslWorkspace::from_unc_path(parent).is_some()
+            {
+                self.overlay
+                    .update(cx, |overlay, cx| overlay.dismiss_all(cx));
+
+                match create_wsl_project_file(parent, command) {
+                    Ok(path) => {
+                        self.dispatch_workspace_file_op_and_process(
+                            WsEvent::FileCreated {
+                                path: path.clone(),
+                                parent_directory: parent.clone(),
+                            },
+                            cx,
+                        );
+                        self.notify_lsp_file_operation(
+                            LspFileOperationNotification::Created {
+                                path,
+                                is_dir: false,
+                            },
+                            cx,
+                        );
+                        self.rescan_directory(parent, cx);
+                    }
+                    Err(error) => {
+                        let status = EditorStatus {
+                            status: format!("Failed to create WSL file: {error}"),
+                            severity: Severity::Error,
+                        };
+                        self.core.update(cx, |core, cx| {
+                            core.editor.set_error(status.status.clone());
+                            cx.notify();
+                        });
+                        self.push_editor_status_notification(status, cx);
+                    }
+                }
+                return;
+            }
 
             // Build event and decide which directory to rescan using references to avoid moves
             let (event, refresh_dir, lsp_file_operation): (
@@ -18970,6 +19030,24 @@ mod tests {
                 line: 0,
                 line_text: "unsaved needle".to_string(),
             }]
+        );
+    }
+
+    #[test]
+    fn wsl_created_file_paths_map_back_to_unc_paths() {
+        let parent = PathBuf::from(r"\\wsl.localhost\Ubuntu\home\iain\repo\src");
+        let response = FileCreateResponse {
+            protocol_version: nucleotide_remote::PROTOCOL_VERSION,
+            current_dir: PathBuf::from("/home/iain/repo/src"),
+            path: PathBuf::from("/home/iain/repo/src/main.rs"),
+            kind: RemoteFileKind::File,
+        };
+
+        assert_eq!(
+            wsl_created_file_path(&parent, &response),
+            Some(PathBuf::from(
+                r"\\wsl.localhost\Ubuntu\home\iain\repo\src\main.rs"
+            ))
         );
     }
 

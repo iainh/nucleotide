@@ -5,9 +5,10 @@ use anyhow::{Context, Result, bail};
 use nucleotide_remote::{
     DEFAULT_FILE_READ_LIMIT, DEFAULT_WORKSPACE_SYMBOL_FILE_BYTE_LIMIT,
     DEFAULT_WORKSPACE_SYMBOL_FILE_LIMIT, DEFAULT_WORKSPACE_SYMBOL_TOTAL_BYTE_LIMIT,
-    DirectoryListingResponse, EnvironmentResponse, FileReadResponse, FileSearchResponse,
-    GlobalSearchResponse, HelloResponse, WorkspaceMetadataResponse, WorkspaceRootResponse,
-    WorkspaceSymbolFilesOptions, WorkspaceSymbolFilesResponse, encode_json_line,
+    DirectoryListingResponse, EnvironmentResponse, FileCreateResponse, FileReadResponse,
+    FileSearchResponse, GlobalSearchResponse, HelloResponse, WorkspaceMetadataResponse,
+    WorkspaceRootResponse, WorkspaceSymbolFilesOptions, WorkspaceSymbolFilesResponse,
+    encode_json_line,
 };
 
 fn main() -> Result<()> {
@@ -38,6 +39,13 @@ fn main() -> Result<()> {
         "list" => {
             let response = DirectoryListingResponse::current()
                 .context("failed to build directory listing response")?;
+            print!("{}", encode_json_line(&response)?);
+        }
+        "create-file" => {
+            let name = std::env::var("NUCLEOTIDE_REMOTE_CREATE_NAME")
+                .context("NUCLEOTIDE_REMOTE_CREATE_NAME is required")?;
+            let response =
+                FileCreateResponse::current_file(&name).context("failed to create remote file")?;
             print!("{}", encode_json_line(&response)?);
         }
         "files" => {
@@ -82,6 +90,7 @@ fn main() -> Result<()> {
             println!("nucleotide-remote metadata");
             println!("nucleotide-remote root");
             println!("nucleotide-remote list");
+            println!("nucleotide-remote create-file");
             println!("nucleotide-remote files");
             println!("nucleotide-remote search");
             println!("nucleotide-remote read");

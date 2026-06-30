@@ -3,11 +3,12 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs::OpenOptions;
 use std::io::Read;
 use std::path::PathBuf;
 use std::time::UNIX_EPOCH;
 
-pub const PROTOCOL_VERSION: u32 = 7;
+pub const PROTOCOL_VERSION: u32 = 8;
 pub const DEFAULT_FILE_SEARCH_LIMIT: usize = 1_000;
 pub const DEFAULT_GLOBAL_SEARCH_LIMIT: usize = 1_000;
 pub const DEFAULT_FILE_READ_LIMIT: usize = 10_000;
@@ -201,6 +202,50 @@ impl DirectoryListingResponse {
             entries,
         })
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileCreateResponse {
+    pub protocol_version: u32,
+    pub current_dir: PathBuf,
+    pub path: PathBuf,
+    pub kind: RemoteFileKind,
+}
+
+impl FileCreateResponse {
+    pub fn current_file(name: &str) -> std::io::Result<Self> {
+        let name = sanitize_child_name(name)?;
+        let current_dir = std::env::current_dir()?;
+        let path = current_dir.join(name);
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)?;
+
+        Ok(Self {
+            protocol_version: PROTOCOL_VERSION,
+            current_dir,
+            path,
+            kind: RemoteFileKind::File,
+        })
+    }
+}
+
+fn sanitize_child_name(name: &str) -> std::io::Result<&str> {
+    if name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains('\0')
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "invalid child name",
+        ));
+    }
+
+    Ok(name)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -736,7 +781,7 @@ mod tests {
         let line = encode_json_line(&response).unwrap();
 
         assert!(line.ends_with('\n'));
-        assert!(line.contains("\"protocol_version\":7"));
+        assert!(line.contains(&format!("\"protocol_version\":{PROTOCOL_VERSION}")));
         assert!(line.contains("\"current_dir\":\"/workspace\""));
     }
 
@@ -915,6 +960,44 @@ mod tests {
         assert!(line.contains("\"content\":\"fn main() {}\\n\""));
         assert!(line.contains("\"size\":13"));
         assert!(line.contains("\"truncated\":false"));
+    }
+
+    #[test]
+    fn file_create_response_creates_new_file_in_current_dir() {
+        let _guard = CURRENT_DIR_LOCK.lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp.path()).unwrap();
+
+        let response = FileCreateResponse::current_file("created.rs").unwrap();
+
+        std::env::set_current_dir(original).unwrap();
+
+        assert_eq!(response.protocol_version, PROTOCOL_VERSION);
+        assert_eq!(response.path, temp.path().join("created.rs"));
+        assert_eq!(response.kind, RemoteFileKind::File);
+        assert!(temp.path().join("created.rs").is_file());
+    }
+
+    #[test]
+    fn file_create_response_rejects_existing_or_invalid_names() {
+        let _guard = CURRENT_DIR_LOCK.lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("exists.rs"), "").unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp.path()).unwrap();
+
+        let existing = FileCreateResponse::current_file("exists.rs").unwrap_err();
+        let nested = FileCreateResponse::current_file("src/main.rs").unwrap_err();
+        let windows_separator = FileCreateResponse::current_file(r"src\main.rs").unwrap_err();
+        let parent = FileCreateResponse::current_file("..").unwrap_err();
+
+        std::env::set_current_dir(original).unwrap();
+
+        assert_eq!(existing.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(nested.kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(windows_separator.kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(parent.kind(), std::io::ErrorKind::InvalidInput);
     }
 
     #[test]
