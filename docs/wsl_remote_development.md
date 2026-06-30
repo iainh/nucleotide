@@ -36,7 +36,9 @@ editor backend into Linux:
 - `HelixLspBridge` launches WSL language servers through the proxy via `wsl.exe`
   and keeps the Windows editor side talking normal LSP.
 - `nucleotide-remote` is a versioned helper binary with `hello`, `env`, and
-  `metadata` protocol commands.
+  `metadata` protocol commands. Metadata includes workspace marker and shallow
+  source-directory facts so project/LSP detection can avoid repeated Windows UNC
+  filesystem probes when the helper is available.
 - Application startup schedules a short, non-blocking WSL helper health probe for
   WSL roots. Probes prefer
   `~/.cache/nucleotide/remote-helper/<protocol-version>/nucleotide-remote`

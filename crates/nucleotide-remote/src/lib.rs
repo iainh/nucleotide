@@ -2,7 +2,7 @@
 // ABOUTME: Shared by the helper binary and future host-side remote clients
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 pub const PROTOCOL_VERSION: u32 = 1;
@@ -54,6 +54,12 @@ pub struct WorkspaceMetadataResponse {
     pub current_dir: PathBuf,
     pub home_dir: Option<PathBuf>,
     pub path_separator: String,
+    #[serde(default)]
+    pub workspace_markers: Option<BTreeSet<String>>,
+    #[serde(default)]
+    pub source_extensions: Option<BTreeSet<String>>,
+    #[serde(default)]
+    pub src_dir_exists: Option<bool>,
 }
 
 impl WorkspaceMetadataResponse {
@@ -66,8 +72,57 @@ impl WorkspaceMetadataResponse {
             current_dir: std::env::current_dir()?,
             home_dir: std::env::var_os("HOME").map(PathBuf::from),
             path_separator: std::path::MAIN_SEPARATOR.to_string(),
+            workspace_markers: Some(detect_workspace_markers()?),
+            source_extensions: Some(detect_source_extensions()?),
+            src_dir_exists: Some(std::env::current_dir()?.join("src").is_dir()),
         })
     }
+}
+
+const WORKSPACE_MARKERS: &[&str] = &[
+    "Cargo.toml",
+    "tsconfig.json",
+    "package.json",
+    "pyproject.toml",
+    "requirements.txt",
+    "setup.py",
+    "Pipfile",
+    "go.mod",
+    "go.sum",
+    "CMakeLists.txt",
+    "Makefile",
+];
+
+fn detect_workspace_markers() -> std::io::Result<BTreeSet<String>> {
+    let current_dir = std::env::current_dir()?;
+    let mut markers = BTreeSet::new();
+    for marker in WORKSPACE_MARKERS {
+        if current_dir.join(marker).exists() {
+            markers.insert((*marker).to_string());
+        }
+    }
+
+    Ok(markers)
+}
+
+fn detect_source_extensions() -> std::io::Result<BTreeSet<String>> {
+    let src_dir = std::env::current_dir()?.join("src");
+    let mut extensions = BTreeSet::new();
+    let Ok(entries) = std::fs::read_dir(src_dir) else {
+        return Ok(extensions);
+    };
+
+    for entry in entries.flatten() {
+        if let Some(extension) = entry
+            .path()
+            .extension()
+            .and_then(|extension| extension.to_str())
+        {
+            extensions.insert(extension.to_string());
+        }
+    }
+
+    Ok(extensions)
 }
 
 pub fn encode_json_line<T: Serialize>(value: &T) -> serde_json::Result<String> {
@@ -141,6 +196,9 @@ mod tests {
             current_dir: PathBuf::from("/workspace"),
             home_dir: Some(PathBuf::from("/home/iain")),
             path_separator: "/".to_string(),
+            workspace_markers: Some(BTreeSet::from(["Cargo.toml".to_string()])),
+            source_extensions: Some(BTreeSet::from(["rs".to_string()])),
+            src_dir_exists: Some(true),
         };
 
         let line = encode_json_line(&response).unwrap();
@@ -148,5 +206,8 @@ mod tests {
         assert!(line.contains("\"helper_version\":\"0.1.0\""));
         assert!(line.contains("\"home_dir\":\"/home/iain\""));
         assert!(line.contains("\"path_separator\":\"/\""));
+        assert!(line.contains("\"workspace_markers\":[\"Cargo.toml\"]"));
+        assert!(line.contains("\"source_extensions\":[\"rs\"]"));
+        assert!(line.contains("\"src_dir_exists\":true"));
     }
 }

@@ -57,11 +57,13 @@ use slotmap::Key;
 
 // Import our shell environment system
 use nucleotide_env::{
-    ProjectEnvironment, WslWorkspace, install_wsl_remote_helper, probe_wsl_remote_helper,
+    ProjectEnvironment, WslWorkspace, install_wsl_remote_helper, load_wsl_remote_metadata,
+    probe_wsl_remote_helper,
 };
 
 const WSL_REMOTE_HELPER_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 const WSL_REMOTE_HELPER_INSTALL_TIMEOUT: Duration = Duration::from_secs(15);
+const WSL_REMOTE_METADATA_TIMEOUT: Duration = Duration::from_secs(2);
 const WSL_REMOTE_HELPER_INSTALL_SOURCE_ENV: &str = "NUCLEOTIDE_REMOTE_HELPER_INSTALL_SOURCE";
 
 /// Implementation of EnvironmentProvider trait for our ProjectEnvironment
@@ -5506,9 +5508,11 @@ impl Application {
                 None
             };
 
-        let (project_type, language_servers) = manager_project_info
-            .map(|project| (project.project_type, project.language_servers))
-            .unwrap_or_else(|| detect_project_lsp_metadata(workspace_root));
+        let (project_type, language_servers) = if let Some(project) = manager_project_info {
+            (project.project_type, project.language_servers)
+        } else {
+            detect_project_lsp_metadata_for_workspace(workspace_root).await
+        };
 
         let servers_started = self
             .start_detected_project_servers(workspace_root, &project_type, &language_servers)
@@ -5564,11 +5568,17 @@ impl Application {
             None
         };
 
-        let project_type = manager_state
+        let project_info = manager_state
             .as_ref()
             .and_then(|(project_info, _)| project_info.as_ref())
-            .map(|project| project.project_type.clone())
-            .unwrap_or_else(|| detect_project_type_from_workspace(workspace_root));
+            .map(|project| project.project_type.clone());
+        let project_type = if let Some(project_type) = project_info {
+            project_type
+        } else {
+            detect_project_lsp_metadata_for_workspace(workspace_root)
+                .await
+                .0
+        };
 
         let active_servers = manager_state
             .map(|(_, servers)| {
@@ -7866,6 +7876,58 @@ fn detect_project_lsp_metadata(
     (project_type, language_servers)
 }
 
+async fn detect_project_lsp_metadata_for_workspace(
+    workspace_root: &Path,
+) -> (nucleotide_events::ProjectType, Vec<String>) {
+    let project_type = detect_project_type_from_wsl_metadata(workspace_root)
+        .await
+        .unwrap_or_else(|| detect_project_type_from_workspace(workspace_root));
+    let language_servers = language_servers_for_project_type(&project_type);
+    (project_type, language_servers)
+}
+
+async fn detect_project_type_from_wsl_metadata(
+    workspace_root: &Path,
+) -> Option<nucleotide_events::ProjectType> {
+    let workspace = WslWorkspace::from_unc_path(workspace_root)?;
+
+    match load_wsl_remote_metadata(&workspace, WSL_REMOTE_METADATA_TIMEOUT).await {
+        Ok(metadata) => {
+            let Some(markers) = metadata.workspace_markers else {
+                nucleotide_logging::debug!(
+                    distro = %workspace.distro(),
+                    linux_path = %workspace.linux_path(),
+                    "WSL remote helper metadata did not include workspace markers"
+                );
+                return None;
+            };
+
+            let project_type = project_type_from_remote_workspace_metadata(
+                &markers,
+                metadata.source_extensions.as_ref(),
+                metadata.src_dir_exists,
+            )?;
+            nucleotide_logging::info!(
+                distro = %workspace.distro(),
+                linux_path = %workspace.linux_path(),
+                project_type = ?project_type,
+                markers = ?markers,
+                "Detected WSL project type from remote helper metadata"
+            );
+            Some(project_type)
+        }
+        Err(error) => {
+            nucleotide_logging::warn!(
+                distro = %workspace.distro(),
+                linux_path = %workspace.linux_path(),
+                error = %error,
+                "WSL remote helper metadata unavailable; falling back to UNC project detection"
+            );
+            None
+        }
+    }
+}
+
 fn detect_project_type_from_workspace(workspace_root: &Path) -> nucleotide_events::ProjectType {
     use nucleotide_events::ProjectType;
 
@@ -7902,6 +7964,58 @@ fn detect_project_type_from_workspace(workspace_root: &Path) -> nucleotide_event
     }
 
     ProjectType::Unknown
+}
+
+fn project_type_from_remote_workspace_metadata(
+    markers: &BTreeSet<String>,
+    source_extensions: Option<&BTreeSet<String>>,
+    src_dir_exists: Option<bool>,
+) -> Option<nucleotide_events::ProjectType> {
+    use nucleotide_events::ProjectType;
+
+    if markers.contains("Cargo.toml") {
+        return Some(ProjectType::Rust);
+    }
+
+    if markers.contains("tsconfig.json") {
+        return Some(ProjectType::TypeScript);
+    }
+
+    if markers.contains("package.json") {
+        let Some(source_extensions) = source_extensions else {
+            return None;
+        };
+
+        if source_extensions.contains("ts") || source_extensions.contains("tsx") {
+            return Some(ProjectType::TypeScript);
+        }
+
+        return Some(ProjectType::JavaScript);
+    }
+
+    if markers.contains("pyproject.toml")
+        || markers.contains("requirements.txt")
+        || markers.contains("setup.py")
+        || markers.contains("Pipfile")
+    {
+        return Some(ProjectType::Python);
+    }
+
+    if markers.contains("go.mod") || markers.contains("go.sum") {
+        return Some(ProjectType::Go);
+    }
+
+    if markers.contains("CMakeLists.txt") || markers.contains("Makefile") {
+        let src_dir_exists = src_dir_exists?;
+
+        if src_dir_exists {
+            return Some(ProjectType::Cpp);
+        }
+
+        return Some(ProjectType::C);
+    }
+
+    Some(ProjectType::Unknown)
 }
 
 fn language_servers_for_project_type(project_type: &nucleotide_events::ProjectType) -> Vec<String> {
@@ -8065,10 +8179,11 @@ mod tests {
         lsp_completion_items_from_response, lsp_completion_items_from_response_for_server,
         lsp_completion_resolve_supported, lsp_completion_response_is_incomplete, lsp_symbol_picker,
         native_symbol_item_from_lsp, path_completion_items, project_health_status,
-        project_server_language_id, str_prefix_at_byte_limit,
-        suppress_shadowed_buffer_word_completion_items, syntax_symbol_kind_from_capture_name,
-        workspace_diagnostic_refresh_reply, wsl_remote_helper_install_source_from_value,
-        wsl_remote_helper_unavailable_message, wsl_workspace_for_project_directory,
+        project_server_language_id, project_type_from_remote_workspace_metadata,
+        str_prefix_at_byte_limit, suppress_shadowed_buffer_word_completion_items,
+        syntax_symbol_kind_from_capture_name, workspace_diagnostic_refresh_reply,
+        wsl_remote_helper_install_source_from_value, wsl_remote_helper_unavailable_message,
+        wsl_workspace_for_project_directory,
     };
     use crate::test_utils::test_support::{
         TestUpdate, create_counting_channel, create_test_diagnostic_events,
@@ -8087,7 +8202,7 @@ mod tests {
     use nucleotide_events::completion::{CompletionItem, CompletionItemKind};
     use slotmap::{Key, KeyData};
     use std::cell::RefCell;
-    use std::collections::{HashMap, HashSet};
+    use std::collections::{BTreeSet, HashMap, HashSet};
     use std::ffi::OsString;
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -8823,6 +8938,90 @@ mod tests {
             nucleotide_events::ProjectType::Unknown
         ));
         assert!(language_servers.is_empty());
+    }
+
+    #[test]
+    fn remote_workspace_metadata_detection_matches_project_lsp_metadata() {
+        assert!(matches!(
+            project_type_from_remote_workspace_metadata(
+                &BTreeSet::from(["Cargo.toml".to_string()]),
+                Some(&BTreeSet::new()),
+                Some(false),
+            ),
+            Some(nucleotide_events::ProjectType::Rust)
+        ));
+        assert!(matches!(
+            project_type_from_remote_workspace_metadata(
+                &BTreeSet::from(["package.json".to_string(), "tsconfig.json".to_string(),]),
+                Some(&BTreeSet::new()),
+                Some(false),
+            ),
+            Some(nucleotide_events::ProjectType::TypeScript)
+        ));
+        assert!(matches!(
+            project_type_from_remote_workspace_metadata(
+                &BTreeSet::from(["package.json".to_string()]),
+                Some(&BTreeSet::from(["ts".to_string()])),
+                Some(true),
+            ),
+            Some(nucleotide_events::ProjectType::TypeScript)
+        ));
+        assert!(matches!(
+            project_type_from_remote_workspace_metadata(
+                &BTreeSet::from(["package.json".to_string()]),
+                Some(&BTreeSet::from(["js".to_string()])),
+                Some(true),
+            ),
+            Some(nucleotide_events::ProjectType::JavaScript)
+        ));
+        assert!(matches!(
+            project_type_from_remote_workspace_metadata(
+                &BTreeSet::from(["pyproject.toml".to_string()]),
+                Some(&BTreeSet::new()),
+                Some(false),
+            ),
+            Some(nucleotide_events::ProjectType::Python)
+        ));
+        assert!(matches!(
+            project_type_from_remote_workspace_metadata(
+                &BTreeSet::from(["go.sum".to_string()]),
+                Some(&BTreeSet::new()),
+                Some(false),
+            ),
+            Some(nucleotide_events::ProjectType::Go)
+        ));
+        assert!(matches!(
+            project_type_from_remote_workspace_metadata(
+                &BTreeSet::from(["CMakeLists.txt".to_string()]),
+                Some(&BTreeSet::new()),
+                Some(true),
+            ),
+            Some(nucleotide_events::ProjectType::Cpp)
+        ));
+        assert!(matches!(
+            project_type_from_remote_workspace_metadata(
+                &BTreeSet::from(["Makefile".to_string()]),
+                Some(&BTreeSet::new()),
+                Some(false),
+            ),
+            Some(nucleotide_events::ProjectType::C)
+        ));
+        assert!(matches!(
+            project_type_from_remote_workspace_metadata(
+                &BTreeSet::new(),
+                Some(&BTreeSet::new()),
+                Some(false),
+            ),
+            Some(nucleotide_events::ProjectType::Unknown)
+        ));
+        assert!(
+            project_type_from_remote_workspace_metadata(
+                &BTreeSet::from(["package.json".to_string()]),
+                None,
+                Some(true),
+            )
+            .is_none()
+        );
     }
 
     #[test]

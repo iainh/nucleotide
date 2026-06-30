@@ -1,17 +1,20 @@
 // ABOUTME: Project-level LSP management for proactive server startup and lifecycle
 // ABOUTME: Coordinates between project detection and Helix's LSP system
 
-use std::collections::HashMap;
-use std::path::PathBuf;
+use std::collections::{BTreeSet, HashMap};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use helix_lsp::LanguageServerId;
+use nucleotide_env::{WslWorkspace, load_wsl_remote_metadata};
 use nucleotide_events::{ProjectLspCommand, ProjectLspEvent, ProjectType, ServerHealthStatus};
 use nucleotide_logging::{debug, error, info, instrument, warn};
 use tokio::sync::{RwLock, broadcast};
 
 use crate::HelixLspBridge;
+
+const WSL_REMOTE_METADATA_TIMEOUT: Duration = Duration::from_secs(2);
 
 // Re-export configuration types for easier access
 pub use nucleotide_types::{ProjectMarker, ProjectMarkersConfig, RootStrategy};
@@ -535,10 +538,54 @@ impl ProjectDetector {
 
         // Fall back to builtin detection if enabled or no custom markers found
         if self.project_markers_config.enable_builtin_fallback {
+            if let Some(project_type) = self.detect_wsl_builtin_patterns(workspace_root).await {
+                return Ok(project_type);
+            }
+
             return self.detect_with_builtin_patterns(workspace_root).await;
         }
 
         Ok(ProjectType::Unknown)
+    }
+
+    async fn detect_wsl_builtin_patterns(&self, workspace_root: &Path) -> Option<ProjectType> {
+        let workspace = WslWorkspace::from_unc_path(workspace_root)?;
+
+        match load_wsl_remote_metadata(&workspace, WSL_REMOTE_METADATA_TIMEOUT).await {
+            Ok(metadata) => {
+                let Some(markers) = metadata.workspace_markers else {
+                    debug!(
+                        distro = %workspace.distro(),
+                        linux_path = %workspace.linux_path(),
+                        "WSL remote helper metadata did not include workspace markers"
+                    );
+                    return None;
+                };
+
+                let project_type = project_type_from_remote_workspace_metadata(
+                    &markers,
+                    metadata.source_extensions.as_ref(),
+                    metadata.src_dir_exists,
+                )?;
+                info!(
+                    distro = %workspace.distro(),
+                    linux_path = %workspace.linux_path(),
+                    project_type = ?project_type,
+                    markers = ?markers,
+                    "Detected WSL project type from remote helper metadata"
+                );
+                Some(project_type)
+            }
+            Err(error) => {
+                warn!(
+                    distro = %workspace.distro(),
+                    linux_path = %workspace.linux_path(),
+                    error = %error,
+                    "WSL remote helper metadata unavailable; falling back to UNC project detection"
+                );
+                None
+            }
+        }
     }
 
     /// Detect project type using custom markers configuration
@@ -783,6 +830,56 @@ impl ProjectDetector {
     }
 }
 
+fn project_type_from_remote_workspace_metadata(
+    markers: &BTreeSet<String>,
+    source_extensions: Option<&BTreeSet<String>>,
+    src_dir_exists: Option<bool>,
+) -> Option<ProjectType> {
+    if markers.contains("Cargo.toml") {
+        return Some(ProjectType::Rust);
+    }
+
+    if markers.contains("tsconfig.json") {
+        return Some(ProjectType::TypeScript);
+    }
+
+    if markers.contains("package.json") {
+        let Some(source_extensions) = source_extensions else {
+            return None;
+        };
+
+        if source_extensions.contains("ts") || source_extensions.contains("tsx") {
+            return Some(ProjectType::TypeScript);
+        }
+
+        return Some(ProjectType::JavaScript);
+    }
+
+    if markers.contains("pyproject.toml")
+        || markers.contains("requirements.txt")
+        || markers.contains("setup.py")
+        || markers.contains("Pipfile")
+    {
+        return Some(ProjectType::Python);
+    }
+
+    if markers.contains("go.mod") || markers.contains("go.sum") {
+        return Some(ProjectType::Go);
+    }
+
+    if markers.contains("CMakeLists.txt") || markers.contains("Makefile") {
+        let src_dir_exists = src_dir_exists?;
+
+        if src_dir_exists {
+            return Some(ProjectType::Cpp);
+        }
+
+        return Some(ProjectType::C);
+    }
+
+    Some(ProjectType::Unknown)
+}
+
 fn custom_project_name_has_token(project_name: &str, token: &str) -> bool {
     project_name
         .split(|ch: char| !ch.is_ascii_alphanumeric())
@@ -1020,6 +1117,98 @@ mod tests {
         assert_eq!(
             detector.map_custom_project_to_builtin_type("bespoke-toolchain"),
             ProjectType::Other("bespoke-toolchain".to_string())
+        );
+    }
+
+    #[test]
+    fn test_remote_workspace_metadata_detection_matches_builtin_project_order() {
+        assert!(matches!(
+            project_type_from_remote_workspace_metadata(
+                &BTreeSet::from(["Cargo.toml".to_string()]),
+                Some(&BTreeSet::new()),
+                Some(false),
+            ),
+            Some(ProjectType::Rust)
+        ));
+        assert!(matches!(
+            project_type_from_remote_workspace_metadata(
+                &BTreeSet::from(["package.json".to_string(), "tsconfig.json".to_string(),]),
+                Some(&BTreeSet::new()),
+                Some(false),
+            ),
+            Some(ProjectType::TypeScript)
+        ));
+        assert!(matches!(
+            project_type_from_remote_workspace_metadata(
+                &BTreeSet::from(["package.json".to_string()]),
+                Some(&BTreeSet::from(["tsx".to_string()])),
+                Some(true),
+            ),
+            Some(ProjectType::TypeScript)
+        ));
+        assert!(matches!(
+            project_type_from_remote_workspace_metadata(
+                &BTreeSet::from(["package.json".to_string()]),
+                Some(&BTreeSet::from(["js".to_string()])),
+                Some(true),
+            ),
+            Some(ProjectType::JavaScript)
+        ));
+        assert!(matches!(
+            project_type_from_remote_workspace_metadata(
+                &BTreeSet::from(["pyproject.toml".to_string()]),
+                Some(&BTreeSet::new()),
+                Some(false),
+            ),
+            Some(ProjectType::Python)
+        ));
+        assert!(matches!(
+            project_type_from_remote_workspace_metadata(
+                &BTreeSet::from(["go.mod".to_string()]),
+                Some(&BTreeSet::new()),
+                Some(false),
+            ),
+            Some(ProjectType::Go)
+        ));
+        assert!(matches!(
+            project_type_from_remote_workspace_metadata(
+                &BTreeSet::from(["CMakeLists.txt".to_string()]),
+                Some(&BTreeSet::new()),
+                Some(true),
+            ),
+            Some(ProjectType::Cpp)
+        ));
+        assert!(matches!(
+            project_type_from_remote_workspace_metadata(
+                &BTreeSet::from(["Makefile".to_string()]),
+                Some(&BTreeSet::new()),
+                Some(false),
+            ),
+            Some(ProjectType::C)
+        ));
+        assert!(matches!(
+            project_type_from_remote_workspace_metadata(
+                &BTreeSet::new(),
+                Some(&BTreeSet::new()),
+                Some(false),
+            ),
+            Some(ProjectType::Unknown)
+        ));
+        assert!(
+            project_type_from_remote_workspace_metadata(
+                &BTreeSet::from(["package.json".to_string()]),
+                None,
+                Some(true),
+            )
+            .is_none()
+        );
+        assert!(
+            project_type_from_remote_workspace_metadata(
+                &BTreeSet::from(["Makefile".to_string()]),
+                Some(&BTreeSet::new()),
+                None,
+            )
+            .is_none()
         );
     }
 
