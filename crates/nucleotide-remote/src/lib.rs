@@ -2,6 +2,7 @@
 // ABOUTME: Shared by the helper binary and future host-side remote clients
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 pub const PROTOCOL_VERSION: u32 = 1;
@@ -23,6 +24,23 @@ impl HelloResponse {
             os: std::env::consts::OS.to_string(),
             arch: std::env::consts::ARCH.to_string(),
             current_dir: std::env::current_dir()?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnvironmentResponse {
+    pub protocol_version: u32,
+    pub current_dir: PathBuf,
+    pub variables: BTreeMap<String, String>,
+}
+
+impl EnvironmentResponse {
+    pub fn current() -> std::io::Result<Self> {
+        Ok(Self {
+            protocol_version: PROTOCOL_VERSION,
+            current_dir: std::env::current_dir()?,
+            variables: std::env::vars().collect(),
         })
     }
 }
@@ -65,5 +83,26 @@ mod tests {
         assert!(line.ends_with('\n'));
         assert!(line.contains("\"protocol_version\":1"));
         assert!(line.contains("\"current_dir\":\"/workspace\""));
+    }
+
+    #[test]
+    fn environment_response_uses_sorted_variables() {
+        let response = EnvironmentResponse {
+            protocol_version: PROTOCOL_VERSION,
+            current_dir: PathBuf::from("/workspace"),
+            variables: BTreeMap::from([
+                ("ZED_ENVIRONMENT".to_string(), "wsl-shell".to_string()),
+                ("PATH".to_string(), "/usr/bin".to_string()),
+            ]),
+        };
+
+        let line = encode_json_line(&response).unwrap();
+        let path_index = line.find("\"PATH\"").expect("PATH key");
+        let zed_index = line
+            .find("\"ZED_ENVIRONMENT\"")
+            .expect("ZED_ENVIRONMENT key");
+
+        assert!(path_index < zed_index);
+        assert!(line.contains("\"variables\""));
     }
 }
