@@ -1,7 +1,10 @@
 use std::{
     collections::HashMap,
     slice,
-    sync::{Arc, LazyLock},
+    sync::{
+        Arc, LazyLock,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use anyhow::{Context, Result};
@@ -41,6 +44,7 @@ pub(crate) struct FontInfo {
 
 static CACHED_FONT_INFO: LazyLock<RwLock<HashMap<Option<u64>, FontInfo>>> =
     LazyLock::new(|| RwLock::new(HashMap::default()));
+static CACHED_FONT_INFO_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 fn font_info_cache_key(monitor: Option<HMONITOR>) -> Option<u64> {
     monitor
@@ -59,6 +63,7 @@ pub(crate) struct DirectXRenderer {
 
     width: u32,
     height: u32,
+    cached_font_info: Option<(u64, FontInfo)>,
 
     /// Whether we want to skip drwaing due to device lost events.
     ///
@@ -184,6 +189,7 @@ impl DirectXRenderer {
             direct_composition,
             width: 1,
             height: 1,
+            cached_font_info: None,
             skip_draws: false,
         })
     }
@@ -192,15 +198,16 @@ impl DirectXRenderer {
         self.atlas.clone()
     }
 
-    fn pre_draw(&self, clear_color: &[f32; 4]) -> Result<()> {
+    fn pre_draw(&mut self, clear_color: &[f32; 4]) -> Result<()> {
+        let font_info = self
+            .font_info()
+            .context("Getting DirectWrite font information")?;
         let resources = self.resources.as_ref().expect("resources missing");
         let device_context = &self
             .devices
             .as_ref()
             .expect("devices missing")
             .device_context;
-        let font_info = Self::get_font_info_for_monitor(self.monitor())
-            .context("Getting DirectWrite font information")?;
         update_buffer(
             device_context,
             self.globals.global_params_buffer.as_ref().unwrap(),
@@ -226,6 +233,28 @@ impl DirectXRenderer {
             device_context.RSSetViewports(Some(slice::from_ref(&resources.viewport)));
         }
         Ok(())
+    }
+
+    pub(crate) fn refresh_font_info(&mut self) -> Result<()> {
+        let generation = CACHED_FONT_INFO_GENERATION.load(Ordering::Relaxed);
+        let font_info = Self::get_font_info_for_monitor(self.monitor())?;
+        self.cached_font_info = Some((generation, font_info));
+        Ok(())
+    }
+
+    fn font_info(&mut self) -> Result<FontInfo> {
+        let generation = CACHED_FONT_INFO_GENERATION.load(Ordering::Relaxed);
+        if let Some((cached_generation, font_info)) = self.cached_font_info
+            && cached_generation == generation
+        {
+            return Ok(font_info);
+        }
+
+        self.refresh_font_info()?;
+        Ok(self
+            .cached_font_info
+            .expect("font info should be cached after refresh")
+            .1)
     }
 
     #[inline]
@@ -771,6 +800,7 @@ impl DirectXRenderer {
 
     pub(crate) fn invalidate_font_info() {
         CACHED_FONT_INFO.write().clear();
+        CACHED_FONT_INFO_GENERATION.fetch_add(1, Ordering::Relaxed);
     }
 
     pub(crate) fn mark_drawable(&mut self) {
