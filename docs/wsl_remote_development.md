@@ -36,7 +36,9 @@ editor backend into Linux:
 - `nucleotide-lsp-proxy` maps file URIs between Windows WSL UNC URLs and Linux
   file URLs in both directions.
 - `HelixLspBridge` launches WSL language servers through the proxy via `wsl.exe`
-  and keeps the Windows editor side talking normal LSP.
+  and keeps the Windows editor side talking normal LSP. WSL LSP startup does
+  not inject Linux environment snapshots into the Windows process; the remote
+  launch boundary owns those values.
 - `nucleotide-remote` is a versioned helper binary with `hello`, `env`, and
   `metadata` protocol commands. Metadata includes workspace marker and shallow
   source-directory facts so project/LSP detection can avoid repeated Windows UNC

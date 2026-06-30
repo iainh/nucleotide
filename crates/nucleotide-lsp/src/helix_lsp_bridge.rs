@@ -252,6 +252,8 @@ impl HelixLspBridge {
                 ))
             })?;
 
+        let wsl_workspace = WslWorkspace::from_unc_path(workspace_root);
+
         // Inject environment variables if environment provider is available
         let mut original_env_vars = Vec::new();
 
@@ -272,40 +274,47 @@ impl HelixLspBridge {
                         "Successfully retrieved project environment for LSP server"
                     );
 
-                    // TEMPORARY SOLUTION: Set environment variables in the current process
-                    // This works because Helix will inherit the environment when starting servers
-                    // TODO: This is not ideal as it affects the entire process, but it's a working solution
-                    for (key, value) in &project_env {
-                        // Store original value for restoration
-                        let original = std::env::var(key).ok();
-                        original_env_vars.push((key.clone(), original));
+                    if should_inject_project_env_into_process(wsl_workspace.as_ref(), &project_env)
+                    {
+                        // TEMPORARY SOLUTION: Set environment variables in the current process
+                        // This works because Helix will inherit the environment when starting native servers
+                        for (key, value) in &project_env {
+                            // Store original value for restoration
+                            let original = std::env::var(key).ok();
+                            original_env_vars.push((key.clone(), original));
 
-                        // Set the new environment variable
-                        // SAFETY: This is safe because we're setting environment variables
-                        // in a single-threaded context during server startup
-                        unsafe {
-                            std::env::set_var(key, value);
+                            // Set the new environment variable
+                            // SAFETY: This is safe because we're setting environment variables
+                            // in a single-threaded context during server startup
+                            unsafe {
+                                std::env::set_var(key, value);
+                            }
+
+                            // Log key variables for debugging
+                            if key == "PATH"
+                                || key == "HOME"
+                                || key == "CARGO_HOME"
+                                || key == "XDG_CACHE_HOME"
+                                || key == "XDG_CONFIG_HOME"
+                                || key == "XDG_DATA_HOME"
+                                || key == "XDG_STATE_HOME"
+                                || key == "RUSTC"
+                                || key == "CARGO"
+                            {
+                                debug!(key = %key, value = %value, "Set environment variable for LSP server");
+                            }
                         }
 
-                        // Log key variables for debugging
-                        if key == "PATH"
-                            || key == "HOME"
-                            || key == "CARGO_HOME"
-                            || key == "XDG_CACHE_HOME"
-                            || key == "XDG_CONFIG_HOME"
-                            || key == "XDG_DATA_HOME"
-                            || key == "XDG_STATE_HOME"
-                            || key == "RUSTC"
-                            || key == "CARGO"
-                        {
-                            debug!(key = %key, value = %value, "Set environment variable for LSP server");
-                        }
+                        info!(
+                            "Temporarily set {} environment variables for LSP server startup",
+                            project_env.len()
+                        );
+                    } else {
+                        info!(
+                            workspace_root = %workspace_root.display(),
+                            "Skipping process environment injection for remote LSP startup"
+                        );
                     }
-
-                    info!(
-                        "Temporarily set {} environment variables for LSP server startup",
-                        project_env.len()
-                    );
                 }
                 Err(e) => {
                     warn!(
@@ -331,7 +340,6 @@ impl HelixLspBridge {
         // Controlled via env var NUCLEOTIDE_LSP_USE_PROXY=1 for native servers.
         // WSL workspaces use the proxy automatically so URI/path mapping is transparent.
         let mut shim_dir_to_cleanup: Option<std::path::PathBuf> = None;
-        let wsl_workspace = WslWorkspace::from_unc_path(workspace_root);
         let proxy_requested = std::env::var("NUCLEOTIDE_LSP_USE_PROXY")
             .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
         if proxy_requested || wsl_workspace.is_some() {
@@ -789,6 +797,19 @@ fn shim_path_for_server(shim_dir: &std::path::Path, server_name: &str) -> std::p
     }
 }
 
+fn should_inject_project_env_into_process(
+    wsl_workspace: Option<&WslWorkspace>,
+    project_env: &HashMap<String, String>,
+) -> bool {
+    wsl_workspace.is_none()
+        && !matches!(
+            project_env
+                .get("NUCLEOTIDE_REMOTE_KIND")
+                .map(String::as_str),
+            Some("wsl")
+        )
+}
+
 fn native_proxy_shim_script(real_path: &std::path::Path, log_file: &std::path::Path) -> String {
     #[cfg(windows)]
     {
@@ -1019,6 +1040,36 @@ mod tests {
         assert!(script.contains("/home/iain/repo"));
         assert!(script.contains("--wsl-windows-root"));
         assert!(script.contains("rust-analyzer"));
+    }
+
+    #[test]
+    fn lsp_process_env_injection_skips_wsl_workspaces() {
+        let workspace =
+            WslWorkspace::from_unc_path(Path::new(r"\\wsl.localhost\Ubuntu\home\iain\repo"))
+                .expect("expected WSL workspace");
+        let env = HashMap::from([("PATH".to_string(), "/usr/bin".to_string())]);
+
+        assert!(!should_inject_project_env_into_process(
+            Some(&workspace),
+            &env
+        ));
+    }
+
+    #[test]
+    fn lsp_process_env_injection_skips_wsl_tagged_snapshots() {
+        let env = HashMap::from([
+            ("NUCLEOTIDE_REMOTE_KIND".to_string(), "wsl".to_string()),
+            ("PATH".to_string(), "/usr/bin".to_string()),
+        ]);
+
+        assert!(!should_inject_project_env_into_process(None, &env));
+    }
+
+    #[test]
+    fn lsp_process_env_injection_keeps_native_snapshots() {
+        let env = HashMap::from([("PATH".to_string(), "/usr/bin".to_string())]);
+
+        assert!(should_inject_project_env_into_process(None, &env));
     }
 
     #[test]
