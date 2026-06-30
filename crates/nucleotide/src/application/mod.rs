@@ -55,7 +55,7 @@ use nucleotide_lsp::{HelixLspBridge, ProjectLspManager, ServerStatus};
 use slotmap::Key;
 
 // Import our shell environment system
-use nucleotide_env::ProjectEnvironment;
+use nucleotide_env::{ProjectEnvironment, WslWorkspace};
 
 /// Implementation of EnvironmentProvider trait for our ProjectEnvironment
 /// This bridges our environment system with the LSP system
@@ -6440,6 +6440,31 @@ fn detect_and_create_project_environment() -> ProjectEnvironment {
     ProjectEnvironment::new(Some(cli_env))
 }
 
+fn apply_remote_workspace_config_overrides(
+    mut config: crate::config::Config,
+    project_directory: Option<&Path>,
+) -> crate::config::Config {
+    let Some(project_directory) = project_directory else {
+        return config;
+    };
+
+    if let Some(wsl_workspace) = WslWorkspace::from_unc_path(project_directory) {
+        if !config.gui.lsp.project_lsp_startup {
+            nucleotide_logging::info!(
+                distro = %wsl_workspace.distro(),
+                linux_path = %wsl_workspace.linux_path(),
+                windows_path = %project_directory.display(),
+                "Enabling project LSP startup for WSL workspace"
+            );
+        }
+
+        config.gui.lsp.project_lsp_startup = true;
+        config.gui.lsp.enable_fallback = true;
+    }
+
+    config
+}
+
 pub fn init_editor(
     args: Args,
     helix_config: Config,
@@ -6489,6 +6514,9 @@ pub fn init_editor(
             None
         }
     };
+
+    let gui_config =
+        apply_remote_workspace_config_overrides(gui_config, project_directory.as_deref());
 
     let mut theme_parent_dirs = vec![helix_loader::config_dir()];
     theme_parent_dirs.extend(helix_loader::runtime_dirs().iter().cloned());
@@ -7903,10 +7931,11 @@ mod tests {
     use super::{
         Application, ApplicationCore, EditorInputBridge, LspCompletionTrigger, MaintenanceWake,
         NativeSymbolItem, NativeSymbolTarget, PendingCompletionRequest,
-        bridged_event_needs_gpui_context, buffer_text_matches_path, buffer_word_completion_items,
-        char_index_for_line_col, coalesce_bridged_events, completion_context_for_trigger,
-        current_dir_is_executable_dir, dedupe_completion_items, detect_project_lsp_metadata,
-        diagnostic_picker_path_label, diagnostic_severity_label, home_requires_login_shell_capture,
+        apply_remote_workspace_config_overrides, bridged_event_needs_gpui_context,
+        buffer_text_matches_path, buffer_word_completion_items, char_index_for_line_col,
+        coalesce_bridged_events, completion_context_for_trigger, current_dir_is_executable_dir,
+        dedupe_completion_items, detect_project_lsp_metadata, diagnostic_picker_path_label,
+        diagnostic_severity_label, home_requires_login_shell_capture,
         is_workspace_diagnostic_refresh_method, local_path_completion_context,
         lsp_completion_insert_text, lsp_completion_insert_text_format,
         lsp_completion_items_from_response, lsp_completion_items_from_response_for_server,
@@ -8137,6 +8166,34 @@ mod tests {
             helix: HelixConfig::default(),
             gui,
         }
+    }
+
+    #[test]
+    fn remote_workspace_config_enables_project_lsp_for_wsl_roots() {
+        let mut config = test_gui_config();
+        config.gui.lsp.project_lsp_startup = false;
+        config.gui.lsp.enable_fallback = false;
+
+        let effective = apply_remote_workspace_config_overrides(
+            config,
+            Some(Path::new(r"\\wsl.localhost\Ubuntu\home\iain\repo")),
+        );
+
+        assert!(effective.gui.lsp.project_lsp_startup);
+        assert!(effective.gui.lsp.enable_fallback);
+    }
+
+    #[test]
+    fn remote_workspace_config_preserves_non_wsl_lsp_settings() {
+        let mut config = test_gui_config();
+        config.gui.lsp.project_lsp_startup = false;
+        config.gui.lsp.enable_fallback = false;
+
+        let effective =
+            apply_remote_workspace_config_overrides(config, Some(Path::new(r"C:\Users\iain\repo")));
+
+        assert!(!effective.gui.lsp.project_lsp_startup);
+        assert!(!effective.gui.lsp.enable_fallback);
     }
 
     fn test_handlers() -> Handlers {
