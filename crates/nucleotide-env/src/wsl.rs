@@ -39,6 +39,13 @@ pub fn build_wsl_environment_capture_command(workspace: &WslWorkspace) -> Comman
     build_wsl_shell_command(workspace, "/bin/sh", "env -0")
 }
 
+pub fn build_wsl_remote_hello_command(workspace: &WslWorkspace) -> Command {
+    let mut command = nucleotide_process::command("wsl.exe");
+    add_wsl_base_args(&mut command, workspace);
+    command.arg("nucleotide-remote").arg("hello");
+    command
+}
+
 pub fn build_wsl_environment_capture_tokio_command(
     workspace: &WslWorkspace,
 ) -> tokio::process::Command {
@@ -65,15 +72,20 @@ fn add_wsl_shell_args<C>(command: &mut C, workspace: &WslWorkspace, shell: &str,
 where
     C: WslCommandArgs,
 {
+    add_wsl_base_args(command, workspace);
+    command.push_arg(shell).push_arg("-lc").push_arg(script);
+}
+
+fn add_wsl_base_args<C>(command: &mut C, workspace: &WslWorkspace)
+where
+    C: WslCommandArgs,
+{
     command
         .push_arg("--distribution")
         .push_arg(workspace.distro())
         .push_arg("--cd")
         .push_arg(workspace.linux_path())
-        .push_arg("--")
-        .push_arg(shell)
-        .push_arg("-lc")
-        .push_arg(script);
+        .push_arg("--");
 }
 
 trait WslCommandArgs {
@@ -193,5 +205,23 @@ mod tests {
         assert!(debug.contains("--cd"));
         assert!(debug.contains("/home/iain/repo"));
         assert!(debug.contains("env -0"));
+    }
+
+    #[test]
+    fn builds_wsl_remote_hello_command() {
+        let workspace = WslWorkspace {
+            distro: "Ubuntu".to_string(),
+            linux_path: "/home/iain/repo".to_string(),
+        };
+        let command = build_wsl_remote_hello_command(&workspace);
+        let debug = format!("{command:?}");
+
+        assert_eq!(command.get_program(), "wsl.exe");
+        assert!(debug.contains("--distribution"));
+        assert!(debug.contains("Ubuntu"));
+        assert!(debug.contains("--cd"));
+        assert!(debug.contains("/home/iain/repo"));
+        assert!(debug.contains("nucleotide-remote"));
+        assert!(debug.contains("hello"));
     }
 }
