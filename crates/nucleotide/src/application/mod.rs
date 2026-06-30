@@ -5622,6 +5622,11 @@ impl Application {
     fn apply_project_environment_overrides(&mut self, env: &HashMap<String, String>) -> usize {
         self.restore_project_environment_overrides();
 
+        if !should_apply_project_environment_overrides(env) {
+            debug!("Skipping process environment overrides for remote project environment");
+            return 0;
+        }
+
         let mut env_updates = 0;
         for (key, value) in env {
             if should_update_env_var(key) {
@@ -8159,6 +8164,13 @@ fn should_update_env_var(key: &str) -> bool {
     }
 }
 
+fn should_apply_project_environment_overrides(env: &HashMap<String, String>) -> bool {
+    !matches!(
+        env.get("NUCLEOTIDE_REMOTE_KIND").map(String::as_str),
+        Some("wsl")
+    )
+}
+
 // Tests moved to tests/integration_test.rs to avoid GPUI proc macro compilation issues
 // The issue: When compiling with --test, GPUI proc macros cause stack overflow
 // when processing certain patterns in our codebase
@@ -8180,10 +8192,10 @@ mod tests {
         lsp_completion_resolve_supported, lsp_completion_response_is_incomplete, lsp_symbol_picker,
         native_symbol_item_from_lsp, path_completion_items, project_health_status,
         project_server_language_id, project_type_from_remote_workspace_metadata,
-        str_prefix_at_byte_limit, suppress_shadowed_buffer_word_completion_items,
-        syntax_symbol_kind_from_capture_name, workspace_diagnostic_refresh_reply,
-        wsl_remote_helper_install_source_from_value, wsl_remote_helper_unavailable_message,
-        wsl_workspace_for_project_directory,
+        should_apply_project_environment_overrides, str_prefix_at_byte_limit,
+        suppress_shadowed_buffer_word_completion_items, syntax_symbol_kind_from_capture_name,
+        workspace_diagnostic_refresh_reply, wsl_remote_helper_install_source_from_value,
+        wsl_remote_helper_unavailable_message, wsl_workspace_for_project_directory,
     };
     use crate::test_utils::test_support::{
         TestUpdate, create_counting_channel, create_test_diagnostic_events,
@@ -8811,6 +8823,21 @@ mod tests {
             "/homeless-shelter/.cargo"
         )));
         assert!(!home_requires_login_shell_capture(Some("/Users/test")));
+    }
+
+    #[test]
+    fn process_environment_overrides_skip_wsl_remote_snapshots() {
+        let native_env = HashMap::from([("PATH".to_string(), "/usr/bin".to_string())]);
+        assert!(should_apply_project_environment_overrides(&native_env));
+
+        let wsl_env = HashMap::from([
+            ("NUCLEOTIDE_REMOTE_KIND".to_string(), "wsl".to_string()),
+            (
+                "PATH".to_string(),
+                "/usr/bin:/home/iain/.cargo/bin".to_string(),
+            ),
+        ]);
+        assert!(!should_apply_project_environment_overrides(&wsl_env));
     }
 
     #[test]
