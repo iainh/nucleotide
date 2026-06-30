@@ -846,7 +846,7 @@ fn wsl_proxy_shim_script(
 
 #[cfg(windows)]
 fn quote_cmd_arg(value: &str) -> String {
-    format!("\"{}\"", value.replace('"', "\"\""))
+    format!("\"{}\"", value.replace('%', "%%").replace('"', "\"\""))
 }
 
 #[cfg(not(windows))]
@@ -1036,5 +1036,17 @@ mod tests {
 
         #[cfg(not(windows))]
         assert!(script.contains("\"$@\""));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_proxy_shim_escapes_percent_literals() {
+        let script = native_proxy_shim_script(
+            Path::new(r"C:\Tools\%LSP_HOME%\rust-analyzer.exe"),
+            Path::new(r"logs\lsp\proxy-%USERNAME%.jsonl"),
+        );
+
+        assert!(script.contains(r"C:\Tools\%%LSP_HOME%%\rust-analyzer.exe"));
+        assert!(script.contains(r"logs\lsp\proxy-%%USERNAME%%.jsonl"));
     }
 }
