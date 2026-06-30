@@ -1,14 +1,16 @@
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use helix_lsp::LanguageServerId;
 use once_cell::sync::Lazy;
 use serde_json::Value as JsonValue;
 
 static LOGGER_STATE: Lazy<LoggerState> = Lazy::new(LoggerState::new);
+const LOG_FLUSH_INTERVAL: Duration = Duration::from_secs(1);
 
 struct LoggerState {
     enabled: bool,
@@ -17,7 +19,12 @@ struct LoggerState {
 
 struct Inner {
     dir: PathBuf,
-    files: HashMap<LanguageServerId, File>,
+    files: HashMap<LanguageServerId, BufferedLogFile>,
+}
+
+struct BufferedLogFile {
+    writer: BufWriter<File>,
+    last_flush: Instant,
 }
 
 impl LoggerState {
@@ -71,7 +78,13 @@ fn open_file_if_needed(inner: &mut Inner, server_id: LanguageServerId, server_na
     let path = inner.dir.join(fname);
     match OpenOptions::new().create(true).append(true).open(&path) {
         Ok(file) => {
-            inner.files.insert(server_id, file);
+            inner.files.insert(
+                server_id,
+                BufferedLogFile {
+                    writer: BufWriter::new(file),
+                    last_flush: Instant::now(),
+                },
+            );
         }
         Err(e) => {
             nucleotide_logging::warn!(
@@ -83,11 +96,15 @@ fn open_file_if_needed(inner: &mut Inner, server_id: LanguageServerId, server_na
     }
 }
 
-fn write_json_line(file: &mut File, value: &serde_json::Value) {
+fn write_json_line(file: &mut BufferedLogFile, value: &serde_json::Value) {
     if let Ok(mut s) = serde_json::to_string(value) {
         s.push('\n');
-        let _ = file.write_all(s.as_bytes());
-        let _ = file.flush();
+        let _ = file.writer.write_all(s.as_bytes());
+
+        if file.last_flush.elapsed() >= LOG_FLUSH_INTERVAL {
+            let _ = file.writer.flush();
+            file.last_flush = Instant::now();
+        }
     }
 }
 
