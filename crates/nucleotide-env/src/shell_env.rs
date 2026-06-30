@@ -105,6 +105,24 @@ impl ProjectEnvironment {
         let baseline_env = self.baseline_environment().await;
 
         // Priority 1: Directory-specific environment (cached)
+        if let Some(cached) = {
+            let cache = self.directory_environments.read().await;
+            cache.get(directory).cloned()
+        } {
+            if cached_environment_is_current(&cached) {
+                debug!("Using cached directory environment");
+                return Ok(cached.environment);
+            }
+
+            debug!(
+                directory = %directory.display(),
+                origin = ?cached.origin,
+                "Cached directory environment is stale"
+            );
+            let mut cache = self.directory_environments.write().await;
+            cache.remove(directory);
+        }
+
         let canonical_dir = directory
             .canonicalize()
             .unwrap_or_else(|_| directory.to_path_buf());
@@ -144,7 +162,10 @@ impl ProjectEnvironment {
 
                 {
                     let mut cache = self.directory_environments.write().await;
-                    cache.insert(canonical_dir.clone(), cached_env);
+                    cache.insert(canonical_dir.clone(), cached_env.clone());
+                    if directory != canonical_dir {
+                        cache.insert(directory.to_path_buf(), cached_env);
+                    }
                 }
 
                 {
@@ -181,8 +202,30 @@ impl ProjectEnvironment {
 
         // Priority 3: Directory shell environment.
         debug!("Loading directory-specific shell environment");
-        self.load_directory_environment(&canonical_dir, baseline_env)
-            .await
+        let env = self
+            .load_directory_environment(&canonical_dir, baseline_env)
+            .await?;
+
+        if directory != canonical_dir {
+            let cached_env = CachedEnvironment {
+                environment: env.clone(),
+                origin: EnvironmentOrigin::DirectoryShell,
+                directory: directory.to_path_buf(),
+                native_watch_state: None,
+            };
+
+            {
+                let mut cache = self.directory_environments.write().await;
+                cache.insert(directory.to_path_buf(), cached_env);
+            }
+
+            {
+                let mut errors = self.environment_errors.write().await;
+                errors.remove(directory);
+            }
+        }
+
+        Ok(env)
     }
 
     async fn baseline_environment(&self) -> HashMap<String, String> {
@@ -454,6 +497,16 @@ impl ProjectEnvironment {
 
     /// Get the cached origin for a directory if its environment is current.
     pub async fn get_cached_origin(&self, directory: &Path) -> Option<EnvironmentOrigin> {
+        if let Some(origin) = {
+            let cache = self.directory_environments.read().await;
+            cache
+                .get(directory)
+                .filter(|cached| cached_environment_is_current(cached))
+                .map(|cached| cached.origin.clone())
+        } {
+            return Some(origin);
+        }
+
         let canonical_dir = directory
             .canonicalize()
             .unwrap_or_else(|_| directory.to_path_buf());
@@ -475,11 +528,13 @@ impl ProjectEnvironment {
 
         {
             let mut cache = self.directory_environments.write().await;
+            cache.remove(directory);
             cache.remove(&canonical_dir);
         }
 
         {
             let mut errors = self.environment_errors.write().await;
+            errors.remove(directory);
             errors.remove(&canonical_dir);
         }
     }
@@ -1912,6 +1967,35 @@ mod tests {
             project_env.get_cached_origin(temp_dir.path()).await,
             Some(EnvironmentOrigin::NativeFlake)
         );
+    }
+
+    #[tokio::test]
+    async fn test_get_environment_uses_raw_directory_cache_before_canonicalizing() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let raw_dir = temp_dir.path().join(".");
+        let project_env = ProjectEnvironment::new(Some(HashMap::from([(
+            "PATH".to_string(),
+            "/cli/bin".to_string(),
+        )])));
+        let cached = CachedEnvironment {
+            environment: HashMap::from([("FROM_CACHE".to_string(), "yes".to_string())]),
+            origin: EnvironmentOrigin::Process,
+            directory: raw_dir.clone(),
+            native_watch_state: None,
+        };
+
+        project_env
+            .directory_environments
+            .write()
+            .await
+            .insert(raw_dir.clone(), cached);
+
+        let env = project_env
+            .get_environment_for_directory(&raw_dir)
+            .await
+            .unwrap();
+
+        assert_eq!(env.get("FROM_CACHE"), Some(&"yes".to_string()));
     }
 
     #[cfg(unix)]
