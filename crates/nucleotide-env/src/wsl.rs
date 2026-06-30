@@ -1,8 +1,11 @@
 // ABOUTME: WSL workspace detection and command construction helpers
 // ABOUTME: Converts Windows WSL UNC paths into Linux paths for remote tooling
 
+use nucleotide_remote::{HelloResponse, PROTOCOL_VERSION};
 use std::path::Path;
 use std::process::Command;
+use std::time::Duration;
+use tokio::time::timeout;
 
 const WSL_LOCALHOST_PREFIX: &str = "wsl.localhost";
 const WSL_LEGACY_PREFIX: &str = "wsl$";
@@ -44,6 +47,60 @@ pub fn build_wsl_remote_hello_command(workspace: &WslWorkspace) -> Command {
     add_wsl_base_args(&mut command, workspace);
     command.arg("nucleotide-remote").arg("hello");
     command
+}
+
+pub fn build_wsl_remote_hello_tokio_command(workspace: &WslWorkspace) -> tokio::process::Command {
+    let mut command = nucleotide_process::tokio_command("wsl.exe");
+    add_wsl_base_args(&mut command, workspace);
+    command.arg("nucleotide-remote").arg("hello");
+    command
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum WslRemoteHelperError {
+    #[error("WSL remote helper probe timed out after {0:?}")]
+    Timeout(Duration),
+
+    #[error("failed to run WSL remote helper probe: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("WSL remote helper probe failed: {0}")]
+    CommandFailed(String),
+
+    #[error("failed to parse WSL remote helper response: {0}")]
+    Parse(#[from] serde_json::Error),
+
+    #[error("WSL remote helper protocol mismatch: expected {expected}, got {actual}")]
+    ProtocolMismatch { expected: u32, actual: u32 },
+}
+
+pub async fn probe_wsl_remote_helper(
+    workspace: &WslWorkspace,
+    timeout_duration: Duration,
+) -> Result<HelloResponse, WslRemoteHelperError> {
+    let mut command = build_wsl_remote_hello_tokio_command(workspace);
+    let output = timeout(timeout_duration, command.output())
+        .await
+        .map_err(|_| WslRemoteHelperError::Timeout(timeout_duration))??;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(WslRemoteHelperError::CommandFailed(stderr));
+    }
+
+    parse_remote_hello_output(&output.stdout)
+}
+
+fn parse_remote_hello_output(output: &[u8]) -> Result<HelloResponse, WslRemoteHelperError> {
+    let response: HelloResponse = serde_json::from_slice(output)?;
+    if response.protocol_version != PROTOCOL_VERSION {
+        return Err(WslRemoteHelperError::ProtocolMismatch {
+            expected: PROTOCOL_VERSION,
+            actual: response.protocol_version,
+        });
+    }
+
+    Ok(response)
 }
 
 pub fn build_wsl_environment_capture_tokio_command(
@@ -221,6 +278,49 @@ mod tests {
         assert!(debug.contains("Ubuntu"));
         assert!(debug.contains("--cd"));
         assert!(debug.contains("/home/iain/repo"));
+        assert!(debug.contains("nucleotide-remote"));
+        assert!(debug.contains("hello"));
+    }
+
+    #[test]
+    fn parses_remote_hello_response() {
+        let output = br#"{"protocol_version":1,"helper_version":"0.1.0","os":"linux","arch":"x86_64","current_dir":"/home/iain/repo"}
+"#;
+
+        let response = parse_remote_hello_output(output).unwrap();
+
+        assert_eq!(response.protocol_version, PROTOCOL_VERSION);
+        assert_eq!(response.os, "linux");
+        assert_eq!(response.current_dir, Path::new("/home/iain/repo"));
+    }
+
+    #[test]
+    fn rejects_remote_hello_protocol_mismatch() {
+        let output = br#"{"protocol_version":999,"helper_version":"0.1.0","os":"linux","arch":"x86_64","current_dir":"/home/iain/repo"}"#;
+
+        let error = parse_remote_hello_output(output).unwrap_err();
+
+        assert!(matches!(
+            error,
+            WslRemoteHelperError::ProtocolMismatch {
+                expected: PROTOCOL_VERSION,
+                actual: 999
+            }
+        ));
+    }
+
+    #[test]
+    fn builds_wsl_remote_hello_tokio_command() {
+        let workspace = WslWorkspace {
+            distro: "Ubuntu".to_string(),
+            linux_path: "/home/iain/repo".to_string(),
+        };
+        let command = build_wsl_remote_hello_tokio_command(&workspace);
+        let debug = format!("{command:?}");
+
+        assert!(debug.contains("wsl.exe"));
+        assert!(debug.contains("--distribution"));
+        assert!(debug.contains("Ubuntu"));
         assert!(debug.contains("nucleotide-remote"));
         assert!(debug.contains("hello"));
     }

@@ -5059,6 +5059,7 @@ dependencies = [
  "dirs",
  "nucleotide-logging",
  "nucleotide-process",
+ "nucleotide-remote",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
