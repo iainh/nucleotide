@@ -69,9 +69,10 @@ use crate::types::{
 use crate::utils;
 use crate::{Core, Input, InputEvent};
 use nucleotide_core::EventBus;
-use nucleotide_env::{EnvironmentOrigin, WslWorkspace};
+use nucleotide_env::{EnvironmentOrigin, WslWorkspace, load_wsl_remote_file_search_blocking};
 use nucleotide_events::v2::run::{Event as RunEvent, ResolvedTask, RunId, RunStatus};
 use nucleotide_events::v2::terminal::{Event as TerminalEvent, TerminalId};
+use nucleotide_remote::FileSearchResponse;
 use nucleotide_terminal::TerminalBounds;
 use slotmap::KeyData;
 // (no direct Workspace v2 items used here)
@@ -80,6 +81,7 @@ use nucleotide_vcs::{VcsEvent, VcsServiceHandle};
 use smallvec::{SmallVec, smallvec};
 
 type FileTreeContextMenuHandler = fn(&mut Workspace, &mut Context<Workspace>);
+const WSL_REMOTE_FILE_PICKER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 fn document_lsp_identifier(
     doc: &helix_view::Document,
@@ -15121,78 +15123,32 @@ fn open_at(
     base_dir: std::path::PathBuf,
     cx: &mut Context<Workspace>,
 ) {
-    use crate::picker_view::PickerItem;
-    use ignore::WalkBuilder;
-    use std::sync::Arc;
-
     debug!("Opening file picker");
-
-    // Get all files in the current directory using ignore crate (respects .gitignore)
-    let mut items = Vec::new();
 
     debug!("Base directory for file picker: {:?}", base_dir);
 
-    // Use ignore::Walk to get files, respecting .gitignore and other VCS ignore files
-    // Configure WalkBuilder like Helix does to properly respect all ignore files
-    let mut walker = WalkBuilder::new(&base_dir);
-
-    // Enable all ignore file types that Helix uses by default
-    walker.git_ignore(true); // Respect .gitignore files
-    walker.git_global(true); // Respect global gitignore
-    walker.git_exclude(true); // Respect .git/info/exclude
-    walker.ignore(true); // Respect .ignore files
-    walker.parents(true); // Check parent directories for ignore files
-    walker.hidden(true); // Hide hidden files (files starting with .)
-
-    // Add Helix-specific ignore files
-    walker.add_custom_ignore_filename(".helix/ignore");
-
-    // Add standard editor ignore patterns
-    walker.filter_entry(|entry| {
-        let path = entry.path();
-        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-
-        // Skip common VCS directories that might not be caught by ignore files
-        if path.is_dir() {
-            match file_name {
-                ".git" | ".svn" | ".hg" | ".bzr" => return false,
-                _ => {}
+    let mut items = if let Some(workspace) = WslWorkspace::from_unc_path(&base_dir) {
+        match load_wsl_remote_file_search_blocking(&workspace, WSL_REMOTE_FILE_PICKER_TIMEOUT) {
+            Ok(response) => {
+                debug!(
+                    file_count = response.files.len(),
+                    truncated = response.truncated,
+                    "Loaded WSL file picker items from remote helper"
+                );
+                file_picker_items_from_remote_search(&base_dir, response)
+            }
+            Err(error) => {
+                warn!(
+                    base_dir = %base_dir.display(),
+                    error = %error,
+                    "Failed to load WSL file picker items from remote helper"
+                );
+                Vec::new()
             }
         }
-
-        true
-    });
-
-    for entry in walker.build().filter_map(std::result::Result::ok) {
-        let path = entry.path().to_path_buf();
-
-        // Skip directories
-        if path.is_dir() {
-            continue;
-        }
-
-        // Get relative path from base directory
-        let relative_path = path.strip_prefix(&base_dir).unwrap_or(&path);
-        if relative_path.starts_with("zed-source") {
-            continue;
-        }
-        let path_str = relative_path.to_string_lossy().into_owned();
-
-        // For project files, use path as label for better visibility
-        items.push(PickerItem {
-            label: path_str.clone().into(),
-            sublabel: None,
-            data: Arc::new(path.clone()) as Arc<dyn std::any::Any + Send + Sync>,
-            file_path: Some(path.clone()),
-            vcs_status: None, // Will be populated using global VCS service
-            columns: None,    // File picker uses simple label display
-        });
-
-        // Limit to 1000 files to prevent hanging on large projects
-        if items.len() >= 1000 {
-            break;
-        }
-    }
+    } else {
+        file_picker_items_from_local_walk(&base_dir)
+    };
 
     // Sort items by label (path) for consistent ordering
     items.sort_by_key(|item| item.label.clone());
@@ -15233,6 +15189,109 @@ fn open_at(
     debug!("Emitting file picker to overlay");
 
     emit_picker_update(file_picker, &overlay, cx);
+}
+
+fn file_picker_items_from_local_walk(base_dir: &Path) -> Vec<crate::picker_view::PickerItem> {
+    use crate::picker_view::PickerItem;
+    use ignore::WalkBuilder;
+    use std::sync::Arc;
+
+    let mut items = Vec::new();
+
+    // Use ignore::Walk to get files, respecting .gitignore and other VCS ignore files
+    // Configure WalkBuilder like Helix does to properly respect all ignore files
+    let mut walker = WalkBuilder::new(base_dir);
+
+    // Enable all ignore file types that Helix uses by default
+    walker.git_ignore(true); // Respect .gitignore files
+    walker.git_global(true); // Respect global gitignore
+    walker.git_exclude(true); // Respect .git/info/exclude
+    walker.ignore(true); // Respect .ignore files
+    walker.parents(true); // Check parent directories for ignore files
+    walker.hidden(true); // Hide hidden files (files starting with .)
+
+    // Add Helix-specific ignore files
+    walker.add_custom_ignore_filename(".helix/ignore");
+
+    // Add standard editor ignore patterns
+    walker.filter_entry(|entry| {
+        let path = entry.path();
+        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+
+        // Skip common VCS directories that might not be caught by ignore files
+        if path.is_dir() {
+            match file_name {
+                ".git" | ".svn" | ".hg" | ".bzr" => return false,
+                _ => {}
+            }
+        }
+
+        true
+    });
+
+    for entry in walker.build().filter_map(std::result::Result::ok) {
+        let path = entry.path().to_path_buf();
+
+        // Skip directories
+        if path.is_dir() {
+            continue;
+        }
+
+        // Get relative path from base directory
+        let relative_path = path.strip_prefix(base_dir).unwrap_or(&path);
+        if relative_path.starts_with("zed-source") {
+            continue;
+        }
+        let path_str = relative_path.to_string_lossy().into_owned();
+
+        // For project files, use path as label for better visibility
+        items.push(PickerItem {
+            label: path_str.clone().into(),
+            sublabel: None,
+            data: Arc::new(path.clone()) as Arc<dyn std::any::Any + Send + Sync>,
+            file_path: Some(path.clone()),
+            vcs_status: None, // Will be populated using global VCS service
+            columns: None,    // File picker uses simple label display
+        });
+
+        // Limit to 1000 files to prevent hanging on large projects
+        if items.len() >= 1000 {
+            break;
+        }
+    }
+
+    items
+}
+
+fn file_picker_items_from_remote_search(
+    base_dir: &Path,
+    response: FileSearchResponse,
+) -> Vec<crate::picker_view::PickerItem> {
+    use crate::picker_view::PickerItem;
+    use std::sync::Arc;
+
+    response
+        .files
+        .into_iter()
+        .take(1_000)
+        .filter_map(|file| {
+            if file.relative_path.starts_with("zed-source") {
+                return None;
+            }
+
+            let label = file.relative_path.to_string_lossy().into_owned();
+            let path = base_dir.join(&file.relative_path);
+
+            Some(PickerItem {
+                label: label.into(),
+                sublabel: None,
+                data: Arc::new(path.clone()) as Arc<dyn std::any::Any + Send + Sync>,
+                file_path: Some(path),
+                vcs_status: None,
+                columns: None,
+            })
+        })
+        .collect()
 }
 
 fn open_directory(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &mut App) {
@@ -16022,6 +16081,33 @@ mod tests {
 
     fn default_file_picker_config() -> helix_view::editor::FilePickerConfig {
         helix_view::editor::Config::default().file_picker
+    }
+
+    #[test]
+    fn remote_file_search_maps_to_file_picker_items() {
+        let base_dir = PathBuf::from(r"\\wsl.localhost\Ubuntu\home\iain\repo");
+        let response = FileSearchResponse {
+            protocol_version: nucleotide_remote::PROTOCOL_VERSION,
+            current_dir: PathBuf::from("/home/iain/repo"),
+            files: vec![
+                nucleotide_remote::FileSearchEntryResponse {
+                    relative_path: PathBuf::from("src/main.rs"),
+                },
+                nucleotide_remote::FileSearchEntryResponse {
+                    relative_path: PathBuf::from("zed-source/generated.rs"),
+                },
+            ],
+            truncated: false,
+        };
+
+        let items = file_picker_items_from_remote_search(&base_dir, response);
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].label.as_ref(), "src/main.rs");
+        assert_eq!(
+            items[0].file_path.as_deref(),
+            Some(base_dir.join("src/main.rs").as_path())
+        );
     }
 
     fn test_code_action(

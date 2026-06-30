@@ -3,8 +3,8 @@
 
 use anyhow::{Context, Result, bail};
 use nucleotide_remote::{
-    DirectoryListingResponse, EnvironmentResponse, HelloResponse, WorkspaceMetadataResponse,
-    encode_json_line,
+    DirectoryListingResponse, EnvironmentResponse, FileSearchResponse, HelloResponse,
+    WorkspaceMetadataResponse, encode_json_line,
 };
 
 fn main() -> Result<()> {
@@ -32,11 +32,17 @@ fn main() -> Result<()> {
                 .context("failed to build directory listing response")?;
             print!("{}", encode_json_line(&response)?);
         }
+        "files" => {
+            let response =
+                FileSearchResponse::current().context("failed to build file search response")?;
+            print!("{}", encode_json_line(&response)?);
+        }
         "--help" | "-h" => {
             println!("nucleotide-remote hello");
             println!("nucleotide-remote env");
             println!("nucleotide-remote metadata");
             println!("nucleotide-remote list");
+            println!("nucleotide-remote files");
         }
         other => bail!("unknown nucleotide-remote command: {other}"),
     }

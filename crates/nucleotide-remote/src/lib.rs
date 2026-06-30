@@ -6,7 +6,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::time::UNIX_EPOCH;
 
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
+pub const DEFAULT_FILE_SEARCH_LIMIT: usize = 1_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HelloResponse {
@@ -169,6 +170,92 @@ impl DirectoryListingResponse {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileSearchEntryResponse {
+    pub relative_path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileSearchResponse {
+    pub protocol_version: u32,
+    pub current_dir: PathBuf,
+    pub files: Vec<FileSearchEntryResponse>,
+    pub truncated: bool,
+}
+
+impl FileSearchResponse {
+    pub fn current() -> anyhow::Result<Self> {
+        Self::current_with_limit(DEFAULT_FILE_SEARCH_LIMIT)
+    }
+
+    pub fn current_with_limit(limit: usize) -> anyhow::Result<Self> {
+        let current_dir = std::env::current_dir()?;
+        let mut walker = ignore::WalkBuilder::new(&current_dir);
+        walker
+            .git_ignore(true)
+            .git_global(true)
+            .git_exclude(true)
+            .ignore(true)
+            .parents(true)
+            .hidden(true)
+            .add_custom_ignore_filename(".helix/ignore")
+            .filter_entry(|entry| {
+                let file_name = entry
+                    .path()
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("");
+
+                if entry.path().is_dir() {
+                    return !matches!(
+                        file_name,
+                        ".git" | ".svn" | ".hg" | ".bzr" | ".jj" | "target" | "node_modules"
+                    );
+                }
+
+                true
+            });
+
+        let mut files = Vec::new();
+        let mut truncated = false;
+        for entry in walker.build() {
+            let entry = entry?;
+            if !entry
+                .file_type()
+                .is_some_and(|file_type| file_type.is_file())
+            {
+                continue;
+            }
+
+            let relative_path = entry
+                .path()
+                .strip_prefix(&current_dir)
+                .unwrap_or(entry.path())
+                .to_path_buf();
+
+            if relative_path.as_os_str().is_empty() || relative_path.starts_with("zed-source") {
+                continue;
+            }
+
+            if files.len() >= limit {
+                truncated = true;
+                break;
+            }
+
+            files.push(FileSearchEntryResponse { relative_path });
+        }
+
+        files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+
+        Ok(Self {
+            protocol_version: PROTOCOL_VERSION,
+            current_dir,
+            files,
+            truncated,
+        })
+    }
+}
+
 const WORKSPACE_MARKERS: &[&str] = &[
     "Cargo.toml",
     "tsconfig.json",
@@ -251,7 +338,7 @@ mod tests {
         let line = encode_json_line(&response).unwrap();
 
         assert!(line.ends_with('\n'));
-        assert!(line.contains("\"protocol_version\":2"));
+        assert!(line.contains("\"protocol_version\":3"));
         assert!(line.contains("\"current_dir\":\"/workspace\""));
     }
 
@@ -322,5 +409,23 @@ mod tests {
         assert!(line.contains("\"name\":\"src\""));
         assert!(line.contains("\"kind\":\"directory\""));
         assert!(line.contains("\"modified_unix_millis\":1700000000000"));
+    }
+
+    #[test]
+    fn file_search_response_encodes_relative_paths() {
+        let response = FileSearchResponse {
+            protocol_version: PROTOCOL_VERSION,
+            current_dir: PathBuf::from("/workspace"),
+            files: vec![FileSearchEntryResponse {
+                relative_path: PathBuf::from("src/main.rs"),
+            }],
+            truncated: false,
+        };
+
+        let line = encode_json_line(&response).unwrap();
+
+        assert!(line.contains("\"current_dir\":\"/workspace\""));
+        assert!(line.contains("\"relative_path\":\"src/main.rs\""));
+        assert!(line.contains("\"truncated\":false"));
     }
 }

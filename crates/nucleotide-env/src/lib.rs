@@ -13,12 +13,14 @@ pub use shell_env::{
 pub use wsl::{
     WslRemoteHelperError, WslWorkspace, build_wsl_environment_capture_command,
     build_wsl_remote_directory_listing_command, build_wsl_remote_env_command,
-    build_wsl_remote_hello_command, build_wsl_remote_helper_install_command,
-    build_wsl_remote_metadata_command, build_wsl_shell_command, install_wsl_remote_helper,
-    load_wsl_remote_directory_listing, load_wsl_remote_directory_listing_blocking,
-    load_wsl_remote_environment, load_wsl_remote_metadata, probe_wsl_remote_helper,
+    build_wsl_remote_file_search_command, build_wsl_remote_hello_command,
+    build_wsl_remote_helper_install_command, build_wsl_remote_metadata_command,
+    build_wsl_shell_command, install_wsl_remote_helper, load_wsl_remote_directory_listing,
+    load_wsl_remote_directory_listing_blocking, load_wsl_remote_environment,
+    load_wsl_remote_file_search_blocking, load_wsl_remote_metadata, probe_wsl_remote_helper,
     wsl_remote_helper_cache_path, wsl_remote_helper_directory_listing_script,
-    wsl_remote_helper_env_script, wsl_remote_helper_hello_script, wsl_remote_helper_install_script,
+    wsl_remote_helper_env_script, wsl_remote_helper_file_search_script,
+    wsl_remote_helper_hello_script, wsl_remote_helper_install_script,
     wsl_remote_helper_metadata_script,
 };
 

@@ -40,13 +40,14 @@ editor backend into Linux:
   not inject Linux environment snapshots into the Windows process; the remote
   launch boundary owns those values.
 - `nucleotide-remote` is a versioned helper binary with `hello`, `env`,
-  `metadata`, and `list` protocol commands. Metadata includes workspace marker
-  and shallow source-directory facts so project/LSP detection can avoid repeated
-  Windows UNC filesystem probes when the helper is available. Directory listing
-  returns compact file metadata from inside WSL so the project tree can populate
-  rows without enumerating `\\wsl...` paths through Windows. The `list` command
-  is part of helper protocol version 2, so older cached helpers are bypassed by
-  the versioned cache path.
+  `metadata`, `list`, and `files` protocol commands. Metadata includes workspace
+  marker and shallow source-directory facts so project/LSP detection can avoid
+  repeated Windows UNC filesystem probes when the helper is available. Directory
+  listing returns compact file metadata from inside WSL so the project tree can
+  populate rows without enumerating `\\wsl...` paths through Windows. Recursive
+  file search returns picker-ready relative paths from inside WSL. The `list`
+  and `files` commands are part of helper protocol version 3, so older cached
+  helpers are bypassed by the versioned cache path.
 - Application startup schedules a short, non-blocking WSL helper health probe for
   WSL roots. Probes prefer
   `~/.cache/nucleotide/remote-helper/<protocol-version>/nucleotide-remote`
@@ -68,6 +69,9 @@ editor backend into Linux:
 - Local path completion uses the same helper-backed directory listing for WSL
   paths with a short timeout, avoiding per-keystroke `\\wsl...` directory reads
   from the Windows side.
+- The file picker uses helper-backed recursive file search for WSL roots, so the
+  expensive ignore-aware walk runs in Linux rather than across the Windows UNC
+  filesystem boundary.
 
 This means the first supported path is direct WSL LSP execution with path
 translation. The helper is currently an optional foundation for richer remote
@@ -114,8 +118,8 @@ The next step toward a more native-feeling remote experience is to make
    `NUCLEOTIDE_REMOTE_HELPER_INSTALL_SOURCE`, because WSL must receive a Linux
    helper binary rather than the Windows GUI binary.
 4. Move remote services behind helper commands where that improves latency or
-   correctness, starting with environment, workspace metadata, and directory
-   listing.
+   correctness, starting with environment, workspace metadata, directory listing,
+   and file search.
 5. Keep direct WSL LSP launch as the fallback path so helper bootstrap problems
    do not block editing.
 
