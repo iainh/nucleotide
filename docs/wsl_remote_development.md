@@ -1,0 +1,92 @@
+# WSL Remote Development
+
+Nucleotide can open projects through Windows WSL UNC paths such as
+`\\wsl.localhost\Ubuntu\home\iain\project`. For these workspaces the editor UI
+continues to run on Windows, while project tools should run inside the WSL
+distribution that owns the files.
+
+## Product Model
+
+The target experience follows the same broad shape used by VS Code Remote WSL,
+Zed remote development, and JetBrains remote development:
+
+- Keep rendering and input local so the editor feels native.
+- Run language servers, terminals, project scanning, and workspace commands where
+  the project files live.
+- Install or discover a small remote helper by version, then reuse it from a
+  remote cache instead of doing expensive setup on every window open.
+- Translate paths at the client boundary so Windows UI code sees WSL UNC paths
+  while remote tools see Linux paths.
+- Treat remote support as project-local state, not a global mode that changes
+  native Windows projects.
+
+## Current Implementation
+
+The initial WSL path supports WSL language servers without moving the full
+editor backend into Linux:
+
+- `nucleotide-env` detects WSL UNC roots and converts them to distro plus Linux
+  path metadata.
+- `ProjectEnvironment` captures project environment through `wsl.exe` for WSL
+  roots and tags it with `NUCLEOTIDE_REMOTE_KIND=wsl`.
+- WSL workspaces force project LSP startup with fallback enabled, because
+  project-level startup gives us one remote command boundary per language server.
+- `nucleotide-lsp-proxy` maps file URIs between Windows WSL UNC URLs and Linux
+  file URLs in both directions.
+- `HelixLspBridge` launches WSL language servers through the proxy via `wsl.exe`
+  and keeps the Windows editor side talking normal LSP.
+- `nucleotide-remote` is a versioned helper binary with a `hello` protocol.
+- Application startup schedules a short, non-blocking WSL helper health probe for
+  WSL roots. Helper success is logged; helper failure falls back to direct WSL
+  language server launch.
+
+This means the first supported path is direct WSL LSP execution with path
+translation. The helper is currently an optional foundation for richer remote
+services rather than a hard dependency.
+
+## Runtime Flow
+
+```mermaid
+flowchart LR
+    UI["Windows Nucleotide UI"]
+    Bridge["HelixLspBridge"]
+    Proxy["nucleotide-lsp-proxy on Windows"]
+    WSL["wsl.exe"]
+    Server["Language server in WSL"]
+    Helper["nucleotide-remote in WSL"]
+
+    UI --> Bridge
+    Bridge --> Proxy
+    Proxy --> WSL
+    WSL --> Server
+    UI -. "background health probe" .-> Helper
+    Proxy <--> Server
+```
+
+The proxy is deliberately the compatibility layer. It keeps existing editor and
+Helix integration code mostly native while only translating the file URI shapes
+that cross the process boundary.
+
+## Remote Helper Direction
+
+The next step toward a more native-feeling remote experience is to make
+`nucleotide-remote` self-managing:
+
+1. Resolve a per-distro helper path such as
+   `~/.cache/nucleotide/remote-helper/<protocol-version>/nucleotide-remote`.
+2. Probe that exact path before falling back to `PATH`.
+3. Bootstrap or update the helper when the cached binary is missing or reports a
+   protocol mismatch.
+4. Move remote services behind helper commands where that improves latency or
+   correctness, starting with environment and workspace metadata.
+5. Keep direct WSL LSP launch as the fallback path so helper bootstrap problems
+   do not block editing.
+
+## References
+
+- VS Code Remote WSL documentation:
+  https://code.visualstudio.com/docs/remote/wsl
+- Zed remote development documentation:
+  https://zed.dev/docs/remote-development
+- JetBrains remote development documentation:
+  https://www.jetbrains.com/help/idea/remote-development-overview.html
