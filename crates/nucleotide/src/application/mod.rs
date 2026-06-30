@@ -300,8 +300,9 @@ pub fn find_workspace_root_from(start_dir: &Path) -> PathBuf {
                 debug!(
                     path = %start_dir.display(),
                     error = %error,
-                    "Failed to load WSL workspace root from remote helper; falling back to local detection"
+                    "Failed to load WSL workspace root from remote helper; using WSL path without local detection"
                 );
+                return start_dir.to_path_buf();
             }
         }
     }
@@ -386,6 +387,10 @@ fn current_dir_is_executable_dir(current_dir: &Path, current_exe: &Path) -> bool
 }
 
 fn workspace_marker_exists(path: &Path) -> bool {
+    if WslWorkspace::from_unc_path(path).is_some() {
+        return false;
+    }
+
     path.join(".git").exists()
         || path.join(".svn").exists()
         || path.join(".hg").exists()
@@ -8512,7 +8517,7 @@ mod tests {
         remote_path_completion_items, should_apply_project_environment_overrides,
         str_prefix_at_byte_limit, suppress_shadowed_buffer_word_completion_items,
         syntax_symbol_kind_from_capture_name, workspace_diagnostic_refresh_reply,
-        workspace_symbol_files_options_from_picker_config,
+        workspace_marker_exists, workspace_symbol_files_options_from_picker_config,
         wsl_remote_helper_install_source_from_value, wsl_remote_helper_unavailable_message,
         wsl_unc_path_for_remote_path, wsl_workspace_for_project_directory,
         wsl_workspace_path_from_remote_relative,
@@ -9812,6 +9817,13 @@ mod tests {
                 .expect("wsl workspace");
 
         assert!(wsl_unc_path_for_remote_path(&workspace, Path::new("repo")).is_none());
+    }
+
+    #[test]
+    fn workspace_marker_detection_skips_wsl_unc_paths() {
+        assert!(!workspace_marker_exists(Path::new(
+            r"\\wsl.localhost\Ubuntu\home\iain\repo"
+        )));
     }
 
     #[test]
