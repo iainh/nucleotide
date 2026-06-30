@@ -294,35 +294,77 @@ pub fn decorate_soft_wrap_line_runs(
         return line_runs;
     }
 
-    if visual.line_start_col > 0 {
-        line_runs.insert(
-            0,
-            TextRun {
-                len: visual.line_start_col,
-                font: font.clone(),
-                color: fg_color,
-                background_color: None,
-                underline: None,
-                strikethrough: None,
-            },
-        );
+    let text_len = visual.text.len();
+    if text_len == 0 {
+        return line_runs;
     }
 
-    if visual.wrap_indicator_len > 0 {
-        line_runs.insert(
-            if visual.line_start_col > 0 { 1 } else { 0 },
-            TextRun {
-                len: visual.wrap_indicator_len,
-                font: font.clone(),
-                color: wrap_indicator_color.unwrap_or(fg_color),
-                background_color: None,
-                underline: None,
-                strikethrough: None,
-            },
-        );
+    let prefix_end = visual.line_start_col.min(text_len);
+    let wrap_start = prefix_end;
+    let wrap_end = wrap_start
+        .saturating_add(visual.wrap_indicator_len)
+        .min(text_len);
+    if prefix_end == 0 && wrap_start == wrap_end {
+        return line_runs;
     }
 
-    line_runs
+    let mut run_segments = Vec::with_capacity(line_runs.len());
+    let mut offset = 0usize;
+    for run in line_runs.drain(..) {
+        let start = offset.min(text_len);
+        offset = offset.saturating_add(run.len);
+        let end = offset.min(text_len);
+        if start < end {
+            run_segments.push((start, end, run));
+        }
+    }
+
+    let mut boundaries = vec![0, text_len, prefix_end, wrap_start, wrap_end];
+    for (start, end, _) in &run_segments {
+        boundaries.push(*start);
+        boundaries.push(*end);
+    }
+    boundaries.sort_unstable();
+    boundaries.dedup();
+
+    let fallback = TextRun {
+        len: 0,
+        font: font.clone(),
+        color: fg_color,
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let mut decorated = Vec::with_capacity(boundaries.len().saturating_sub(1));
+    for window in boundaries.windows(2) {
+        let start = window[0];
+        let end = window[1];
+        if start >= end {
+            continue;
+        }
+
+        let mut run = run_segments
+            .iter()
+            .find(|(run_start, run_end, _)| start >= *run_start && start < *run_end)
+            .map(|(_, _, run)| run.clone())
+            .unwrap_or_else(|| fallback.clone());
+
+        if start < prefix_end {
+            run.color = fg_color;
+            run.background_color = None;
+            run.underline = None;
+            run.strikethrough = None;
+        } else if start >= wrap_start && start < wrap_end {
+            run.color = wrap_indicator_color.unwrap_or(fg_color);
+            run.background_color = None;
+            run.underline = None;
+            run.strikethrough = None;
+        }
+        run.len = end - start;
+        decorated.push(run);
+    }
+
+    decorated
 }
 
 pub fn soft_wrap_viewport_height(
@@ -769,9 +811,10 @@ mod tests {
 
     #[test]
     fn decorated_runs_prefix_indent_and_wrap_indicator() {
+        let visual = visual_line(4, 1);
         let runs = decorate_soft_wrap_line_runs(
-            vec![run(7, white())],
-            &visual_line(4, 1),
+            vec![run(visual.text.len(), white())],
+            &visual,
             &test_font(),
             black(),
             Some(blue()),
@@ -784,13 +827,18 @@ mod tests {
         assert_eq!(runs[1].color, blue());
         assert_eq!(runs[2].len, 7);
         assert_eq!(runs[2].color, white());
+        assert_eq!(
+            runs.iter().map(|run| run.len).sum::<usize>(),
+            visual.text.len()
+        );
     }
 
     #[test]
     fn decorated_runs_prefix_wrap_indicator_without_indent() {
+        let visual = visual_line(0, 2);
         let runs = decorate_soft_wrap_line_runs(
-            vec![run(7, white())],
-            &visual_line(0, 2),
+            vec![run(visual.text.len(), white())],
+            &visual,
             &test_font(),
             black(),
             Some(blue()),
@@ -799,7 +847,47 @@ mod tests {
         assert_eq!(runs.len(), 2);
         assert_eq!(runs[0].len, 2);
         assert_eq!(runs[0].color, blue());
-        assert_eq!(runs[1].len, 7);
+        assert_eq!(runs[1].len, visual.text.len() - 2);
+        assert_eq!(
+            runs.iter().map(|run| run.len).sum::<usize>(),
+            visual.text.len()
+        );
+    }
+
+    #[test]
+    fn decorated_runs_do_not_add_prefix_bytes_twice() {
+        let visual = SoftWrapVisualLine {
+            visual_line: 1,
+            doc_line: 0,
+            text: "                 wrapped".into(),
+            line_start_col: 17,
+            wrap_indicator_len: 0,
+            line_start_char: Some(17),
+            line_end_char: Some(24),
+            segment_char_offset: 17,
+            text_start_byte_offset: 17,
+            is_phantom_line: false,
+            display_map: DisplayTextMap::identity("                 wrapped".len()),
+            virtual_text_ranges: Vec::new(),
+            whitespace_ranges: Vec::new(),
+        };
+        let runs = decorate_soft_wrap_line_runs(
+            vec![run(visual.text.len(), white())],
+            &visual,
+            &test_font(),
+            black(),
+            Some(blue()),
+        );
+
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].len, 17);
+        assert_eq!(runs[0].color, black());
+        assert_eq!(runs[1].len, "wrapped".len());
+        assert_eq!(runs[1].color, white());
+        assert_eq!(
+            runs.iter().map(|run| run.len).sum::<usize>(),
+            visual.text.len()
+        );
     }
 
     #[test]
