@@ -22,7 +22,7 @@ pub struct FileIcon {
 impl FileIcon {
     /// Create a new file icon from a file path
     pub fn from_path(path: &Path, is_expanded: bool) -> Self {
-        let is_directory = path.is_dir();
+        let is_directory = !path_is_wsl_unc(path) && path.is_dir();
         let extension = if is_directory {
             None
         } else {
@@ -152,6 +152,25 @@ impl FileIcon {
     }
 }
 
+fn path_is_wsl_unc(path: &Path) -> bool {
+    let path = path.as_os_str().to_string_lossy();
+    let without_verbatim = path
+        .strip_prefix(r"\\?\UNC\")
+        .map(|path| format!(r"\\{path}"));
+    let normalized = without_verbatim.as_deref().unwrap_or(&path);
+
+    let Some(rest) = normalized.strip_prefix(r"\\") else {
+        return false;
+    };
+    let mut parts = rest.split(['\\', '/']).filter(|part| !part.is_empty());
+    matches!(
+        parts.next(),
+        Some(server)
+            if server.eq_ignore_ascii_case("wsl.localhost")
+                || server.eq_ignore_ascii_case("wsl$")
+    ) && parts.next().is_some()
+}
+
 impl IntoElement for FileIcon {
     type Element = Svg;
 
@@ -163,5 +182,34 @@ impl IntoElement for FileIcon {
         }
 
         svg
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_wsl_unc_paths() {
+        assert!(path_is_wsl_unc(Path::new(
+            r"\\wsl.localhost\Ubuntu\home\iain\repo\src\main.rs"
+        )));
+        assert!(path_is_wsl_unc(Path::new(
+            r"\\?\UNC\wsl.localhost\Ubuntu\home\iain\repo"
+        )));
+        assert!(path_is_wsl_unc(Path::new(r"\\wsl$\Ubuntu\home\iain\repo")));
+        assert!(!path_is_wsl_unc(Path::new(r"\\server\share\repo")));
+        assert!(!path_is_wsl_unc(Path::new(r"C:\Users\iain\repo")));
+    }
+
+    #[test]
+    fn wsl_file_icons_do_not_probe_directory_metadata() {
+        let icon = FileIcon::from_path(
+            Path::new(r"\\wsl.localhost\Ubuntu\home\iain\repo\src\main.rs"),
+            false,
+        );
+
+        assert!(!icon.is_directory);
+        assert_eq!(icon.extension.as_deref(), Some("rs"));
     }
 }
