@@ -1441,6 +1441,10 @@ fn file_operation_notification_succeeded(notification: &LspFileOperationNotifica
     }
 }
 
+fn local_path_is_directory_without_wsl_probe(path: &Path) -> bool {
+    WslWorkspace::from_unc_path(path).is_none() && path.is_dir()
+}
+
 #[derive(Clone)]
 struct DraggedFileTreeResize;
 
@@ -4103,6 +4107,32 @@ impl Workspace {
             .is_some_and(|file_tree| file_tree.read(cx).contains_path(path))
     }
 
+    fn project_tree_path_is_directory(&self, path: &Path, cx: &mut Context<Self>) -> Option<bool> {
+        self.file_tree
+            .as_ref()
+            .and_then(|file_tree| file_tree.read(cx).path_is_directory(path))
+    }
+
+    fn cached_or_local_path_is_directory(&self, path: &Path, cx: &mut Context<Self>) -> bool {
+        self.project_tree_path_is_directory(path, cx)
+            .unwrap_or_else(|| local_path_is_directory_without_wsl_probe(path))
+    }
+
+    fn parent_for_new_project_tree_item(
+        &self,
+        clicked: PathBuf,
+        cx: &mut Context<Self>,
+    ) -> PathBuf {
+        if self.cached_or_local_path_is_directory(&clicked, cx) {
+            clicked
+        } else {
+            clicked
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .to_path_buf()
+        }
+    }
+
     fn start_rename_file(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         let current_name = path
             .file_name()
@@ -5602,14 +5632,7 @@ impl Workspace {
 
     fn cm_action_new_file(this: &mut Workspace, cx: &mut Context<Workspace>) {
         if let Some(clicked) = this.context_menu_path.clone() {
-            let parent = if clicked.is_dir() {
-                clicked
-            } else {
-                clicked
-                    .parent()
-                    .unwrap_or_else(|| std::path::Path::new("."))
-                    .to_path_buf()
-            };
+            let parent = this.parent_for_new_project_tree_item(clicked, cx);
             // Queue pending op and show prompt (overlay will emit CommandSubmitted)
             this.pending_file_op = Some(PendingFileOp::NewFile { parent });
             this.core.update(cx, |_core, cx| {
@@ -5622,14 +5645,7 @@ impl Workspace {
 
     fn cm_action_new_folder(this: &mut Workspace, cx: &mut Context<Workspace>) {
         if let Some(clicked) = this.context_menu_path.clone() {
-            let parent = if clicked.is_dir() {
-                clicked
-            } else {
-                clicked
-                    .parent()
-                    .unwrap_or_else(|| std::path::Path::new("."))
-                    .to_path_buf()
-            };
+            let parent = this.parent_for_new_project_tree_item(clicked, cx);
             this.pending_file_op = Some(PendingFileOp::NewFolder { parent });
             this.core.update(cx, |_core, cx| {
                 let prompt = crate::prompt::Prompt::native("New folder name", "", |_input| {});
@@ -8184,7 +8200,7 @@ impl Workspace {
                     }),
                 ),
                 PendingFileOp::Rename { path } => {
-                    let was_dir = path.is_dir();
+                    let was_dir = self.cached_or_local_path_is_directory(path, cx);
                     let new_path = path
                         .parent()
                         .unwrap_or_else(|| std::path::Path::new("."))
@@ -8205,7 +8221,7 @@ impl Workspace {
                     )
                 }
                 PendingFileOp::Duplicate { path } => {
-                    let is_dir = path.is_dir();
+                    let is_dir = self.cached_or_local_path_is_directory(path, cx);
                     let target_path = path
                         .parent()
                         .unwrap_or_else(|| std::path::Path::new("."))
@@ -16169,6 +16185,16 @@ mod tests {
 
     fn default_file_picker_config() -> helix_view::editor::FilePickerConfig {
         helix_view::editor::Config::default().file_picker
+    }
+
+    #[test]
+    fn local_directory_probe_skips_wsl_unc_paths() {
+        let temp = tempfile::tempdir().unwrap();
+
+        assert!(local_path_is_directory_without_wsl_probe(temp.path()));
+        assert!(!local_path_is_directory_without_wsl_probe(Path::new(
+            r"\\wsl.localhost\Ubuntu\home\iain\repo\src"
+        )));
     }
 
     #[test]

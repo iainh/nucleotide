@@ -473,6 +473,13 @@ impl FileTreeView {
         self.tree.entry_by_path(path).is_some()
     }
 
+    /// Return the cached directory state for a known tree path.
+    pub fn path_is_directory(&self, path: &Path) -> Option<bool> {
+        self.tree
+            .entry_by_path(path)
+            .map(|entry| entry.is_directory())
+    }
+
     /// Set the selection
     pub fn select_path(&mut self, path: Option<PathBuf>, cx: &mut Context<Self>) {
         let path = path.map(|path| self.canonical_selection_path(path));
