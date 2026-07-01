@@ -6,7 +6,9 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use helix_term::args::Args;
+use nucleotide_env::{WslWorkspace, load_wsl_remote_directory_listing_blocking};
 use nucleotide_logging::{error, info, instrument, warn};
+use nucleotide_remote::RemoteFileKind;
 
 use gpui::{
     AppContext, Menu, MenuItem, TitlebarOptions, WindowBounds, WindowKind, WindowOptions, px,
@@ -19,6 +21,8 @@ use nucleotide::{self, ThemeManager, config, info_box, notification, overlay, ty
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use url::Url;
+
+const WSL_STARTUP_PATH_CLASSIFICATION_TIMEOUT: Duration = Duration::from_millis(750);
 
 // Import nucleotide-ui enhanced components
 // Note: These traits will be used in the workspace and component integration
@@ -160,23 +164,16 @@ fn determine_workspace_root(args: &Args) -> Result<Option<PathBuf>> {
         return Ok(Some(dir.clone()));
     }
 
-    // Priority 2: If first file is a directory, use it
-    if let Some((path, _)) = args.files.first().filter(|p| p.0.is_dir()) {
-        info!(directory = ?path, "Using directory argument as workspace root");
-        return Ok(Some(path.clone()));
-    }
-
-    // Priority 3: For file arguments, find the workspace root of the first file's parent
-    if let Some((first_file, _)) = args.files.first()
-        && let Some(parent) = first_file.parent()
-        && parent.exists()
+    // Priority 2/3: Use the first path argument, avoiding local WSL UNC probes.
+    if let Some((first_path, _)) = args.files.first()
+        && let Some(start_dir) = workspace_start_dir_for_argument(first_path)
     {
-        let workspace_root = nucleotide::application::find_workspace_root_from(parent);
+        let workspace_root = nucleotide::application::find_workspace_root_from(&start_dir);
         info!(
-            file = ?first_file,
-            parent = ?parent,
+            path = ?first_path,
+            start_dir = ?start_dir,
             workspace_root = ?workspace_root,
-            "Found workspace root from file parent"
+            "Found workspace root from path argument"
         );
         return Ok(Some(workspace_root));
     }
@@ -195,6 +192,83 @@ fn determine_workspace_root(args: &Args) -> Result<Option<PathBuf>> {
     // No specific workspace root found
     info!("No specific workspace root detected, using default working directory logic");
     Ok(None)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartupPathKind {
+    File,
+    Directory,
+    Unknown,
+}
+
+fn workspace_start_dir_for_argument(path: &Path) -> Option<PathBuf> {
+    if WslWorkspace::from_unc_path(path).is_none() {
+        return if path.is_dir() {
+            Some(path.to_path_buf())
+        } else {
+            path.parent()
+                .filter(|parent| parent.exists())
+                .map(Path::to_path_buf)
+        };
+    }
+
+    workspace_start_dir_for_kind(path, startup_path_kind(path))
+}
+
+fn workspace_start_dir_for_kind(path: &Path, kind: StartupPathKind) -> Option<PathBuf> {
+    match kind {
+        StartupPathKind::Directory => Some(path.to_path_buf()),
+        StartupPathKind::File => path.parent().map(Path::to_path_buf),
+        StartupPathKind::Unknown => {
+            if path.extension().is_some() {
+                path.parent().map(Path::to_path_buf)
+            } else {
+                Some(path.to_path_buf())
+            }
+        }
+    }
+}
+
+fn startup_path_kind(path: &Path) -> StartupPathKind {
+    if WslWorkspace::from_unc_path(path).is_some() {
+        return wsl_startup_path_kind(path).unwrap_or(StartupPathKind::Unknown);
+    }
+
+    if path.is_dir() {
+        StartupPathKind::Directory
+    } else {
+        StartupPathKind::File
+    }
+}
+
+fn wsl_startup_path_kind(path: &Path) -> Option<StartupPathKind> {
+    let parent = path.parent()?;
+    let file_name = path.file_name()?.to_str()?;
+    let workspace = WslWorkspace::from_unc_path(parent)?;
+    match load_wsl_remote_directory_listing_blocking(
+        &workspace,
+        WSL_STARTUP_PATH_CLASSIFICATION_TIMEOUT,
+    ) {
+        Ok(listing) => listing
+            .entries
+            .into_iter()
+            .find(|entry| entry.name == file_name)
+            .map(|entry| {
+                if matches!(entry.kind, RemoteFileKind::Directory) {
+                    StartupPathKind::Directory
+                } else {
+                    StartupPathKind::File
+                }
+            }),
+        Err(error) => {
+            warn!(
+                path = %path.display(),
+                error = %error,
+                "Failed to classify WSL startup path through remote helper; using path-shape fallback"
+            );
+            None
+        }
+    }
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -435,7 +509,10 @@ fn main() -> Result<()> {
         // Application::new() depends on this logic so it must be updated if this changes.
         if let Some(path) = &args.working_directory {
             helix_stdx::env::set_current_working_dir(path)?;
-        } else if let Some((path, _)) = args.files.first().filter(|p| p.0.is_dir()) {
+        } else if let Some((path, _)) = args.files.first()
+            && WslWorkspace::from_unc_path(path).is_none()
+            && path.is_dir()
+        {
             // If the first file is a directory, it will be the working directory unless -w was specified
             helix_stdx::env::set_current_working_dir(path)?;
         }
@@ -630,6 +707,10 @@ fn parse_nucleotide_url(url_str: &str) -> Option<ProtocolOpenRequest> {
 }
 
 fn open_request_workspace_dir(path: &Path) -> Option<PathBuf> {
+    if WslWorkspace::from_unc_path(path).is_some() {
+        return workspace_start_dir_for_kind(path, startup_path_kind(path));
+    }
+
     if path.is_dir() {
         Some(path.to_path_buf())
     } else {
@@ -1599,6 +1680,61 @@ fn gui_main(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workspace_start_dir_for_kind_uses_directory_itself() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("project");
+
+        assert_eq!(
+            workspace_start_dir_for_kind(&path, StartupPathKind::Directory),
+            Some(path)
+        );
+    }
+
+    #[test]
+    fn workspace_start_dir_for_kind_uses_file_parent() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("src").join("main.rs");
+
+        assert_eq!(
+            workspace_start_dir_for_kind(&path, StartupPathKind::File),
+            path.parent().map(Path::to_path_buf)
+        );
+    }
+
+    #[test]
+    fn workspace_start_dir_for_kind_treats_unknown_extension_as_file() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("missing.rs");
+
+        assert_eq!(
+            workspace_start_dir_for_kind(&path, StartupPathKind::Unknown),
+            Some(temp_dir.path().to_path_buf())
+        );
+    }
+
+    #[test]
+    fn workspace_start_dir_for_kind_treats_unknown_extensionless_path_as_directory() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("project");
+
+        assert_eq!(
+            workspace_start_dir_for_kind(&path, StartupPathKind::Unknown),
+            Some(path)
+        );
+    }
+
+    #[test]
+    fn workspace_start_dir_for_argument_ignores_missing_native_parent() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir
+            .path()
+            .join("missing-parent")
+            .join("missing-file.rs");
+
+        assert_eq!(workspace_start_dir_for_argument(&path), None);
+    }
 
     #[test]
     fn open_request_workspace_dir_uses_directory_itself() {
