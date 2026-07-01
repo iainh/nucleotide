@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use ignore::WalkBuilder;
 use regex::RegexBuilder;
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -452,6 +452,16 @@ pub trait WorkspaceBackend: Send + Sync {
 
     async fn list_dir(&self, path: &Path) -> Result<DirectoryListing>;
 
+    async fn create_file(&self, path: &Path) -> Result<FileStat>;
+
+    async fn create_dir(&self, path: &Path) -> Result<FileStat>;
+
+    async fn rename_path(&self, from: &Path, to: &Path) -> Result<FileStat>;
+
+    async fn delete_path(&self, path: &Path) -> Result<FileStat>;
+
+    async fn copy_path(&self, from: &Path, to: &Path) -> Result<FileStat>;
+
     async fn read_file(&self, path: &Path, options: ReadOptions) -> Result<FileRead>;
 
     async fn write_file(
@@ -628,6 +638,48 @@ impl WorkspaceBackend for PathMappedWorkspaceBackend {
             .map(|listing| self.map_directory_listing_to_display(listing))
     }
 
+    async fn create_file(&self, path: &Path) -> Result<FileStat> {
+        let native_path = self.mapping.to_native_path(path);
+        self.inner
+            .create_file(&native_path)
+            .await
+            .map(|stat| self.map_file_stat_to_display(stat))
+    }
+
+    async fn create_dir(&self, path: &Path) -> Result<FileStat> {
+        let native_path = self.mapping.to_native_path(path);
+        self.inner
+            .create_dir(&native_path)
+            .await
+            .map(|stat| self.map_file_stat_to_display(stat))
+    }
+
+    async fn rename_path(&self, from: &Path, to: &Path) -> Result<FileStat> {
+        let native_from = self.mapping.to_native_path(from);
+        let native_to = self.mapping.to_native_path(to);
+        self.inner
+            .rename_path(&native_from, &native_to)
+            .await
+            .map(|stat| self.map_file_stat_to_display(stat))
+    }
+
+    async fn delete_path(&self, path: &Path) -> Result<FileStat> {
+        let native_path = self.mapping.to_native_path(path);
+        self.inner
+            .delete_path(&native_path)
+            .await
+            .map(|stat| self.map_file_stat_to_display(stat))
+    }
+
+    async fn copy_path(&self, from: &Path, to: &Path) -> Result<FileStat> {
+        let native_from = self.mapping.to_native_path(from);
+        let native_to = self.mapping.to_native_path(to);
+        self.inner
+            .copy_path(&native_from, &native_to)
+            .await
+            .map(|stat| self.map_file_stat_to_display(stat))
+    }
+
     async fn read_file(&self, path: &Path, options: ReadOptions) -> Result<FileRead> {
         let native_path = self.mapping.to_native_path(path);
         self.inner
@@ -708,6 +760,26 @@ impl WorkspaceBackend for LocalWorkspaceBackend {
 
     async fn list_dir(&self, path: &Path) -> Result<DirectoryListing> {
         local_list_dir(path)
+    }
+
+    async fn create_file(&self, path: &Path) -> Result<FileStat> {
+        local_create_file(path)
+    }
+
+    async fn create_dir(&self, path: &Path) -> Result<FileStat> {
+        local_create_dir(path)
+    }
+
+    async fn rename_path(&self, from: &Path, to: &Path) -> Result<FileStat> {
+        local_rename_path(from, to)
+    }
+
+    async fn delete_path(&self, path: &Path) -> Result<FileStat> {
+        local_delete_path(path)
+    }
+
+    async fn copy_path(&self, from: &Path, to: &Path) -> Result<FileStat> {
+        local_copy_path(from, to)
     }
 
     async fn read_file(&self, path: &Path, options: ReadOptions) -> Result<FileRead> {
@@ -816,6 +888,297 @@ fn local_list_dir(path: &Path) -> Result<DirectoryListing> {
         path: path.to_path_buf(),
         entries,
     })
+}
+
+fn ensure_not_exists(path: &Path, operation: &'static str) -> Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Err(WorkspaceError::Io {
+            operation,
+            path: path.to_path_buf(),
+            source: std::io::Error::new(std::io::ErrorKind::AlreadyExists, "path already exists"),
+        }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(WorkspaceError::Io {
+            operation,
+            path: path.to_path_buf(),
+            source,
+        }),
+    }
+}
+
+fn is_case_only_name_change(from: &Path, to: &Path) -> bool {
+    let same_parent = from.parent() == to.parent();
+    let from_name = from.file_name().and_then(|name| name.to_str());
+    let to_name = to.file_name().and_then(|name| name.to_str());
+
+    same_parent
+        && matches!(
+            (from_name, to_name),
+            (Some(from_name), Some(to_name))
+                if from_name.eq_ignore_ascii_case(to_name) && from_name != to_name
+        )
+}
+
+fn rename_target_is_source(from: &Path, to: &Path) -> Result<bool> {
+    let to_metadata = match fs::symlink_metadata(to) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(source) => {
+            return Err(WorkspaceError::Io {
+                operation: "stat rename target",
+                path: to.to_path_buf(),
+                source,
+            });
+        }
+    };
+
+    let from_metadata = fs::symlink_metadata(from).map_err(|source| WorkspaceError::Io {
+        operation: "stat rename source",
+        path: from.to_path_buf(),
+        source,
+    })?;
+
+    Ok(same_file_metadata(&from_metadata, &to_metadata))
+}
+
+#[cfg(unix)]
+fn same_file_metadata(left: &fs::Metadata, right: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+
+    left.dev() == right.dev() && left.ino() == right.ino()
+}
+
+#[cfg(windows)]
+fn same_file_metadata(left: &fs::Metadata, right: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+
+    left.volume_serial_number().is_some()
+        && left.volume_serial_number() == right.volume_serial_number()
+        && left.file_index().is_some()
+        && left.file_index() == right.file_index()
+}
+
+#[cfg(not(any(unix, windows)))]
+fn same_file_metadata(_left: &fs::Metadata, _right: &fs::Metadata) -> bool {
+    false
+}
+
+fn lexical_absolute(path: &Path) -> Result<PathBuf> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|source| WorkspaceError::Io {
+                operation: "resolve current directory",
+                path: path.to_path_buf(),
+                source,
+            })?
+            .join(path)
+    };
+
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+
+    Ok(normalized)
+}
+
+fn path_is_self_or_descendant(path: &Path, ancestor: &Path) -> Result<bool> {
+    let path = lexical_absolute(path)?;
+    let ancestor = lexical_absolute(ancestor)?;
+    Ok(path == ancestor || path.starts_with(ancestor))
+}
+
+fn local_create_file(path: &Path) -> Result<FileStat> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|source| WorkspaceError::Io {
+            operation: "create parent directories",
+            path: parent.to_path_buf(),
+            source,
+        })?;
+    }
+
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|source| WorkspaceError::Io {
+            operation: "create file",
+            path: path.to_path_buf(),
+            source,
+        })?;
+
+    local_stat(path)
+}
+
+fn local_create_dir(path: &Path) -> Result<FileStat> {
+    ensure_not_exists(path, "create directory")?;
+    fs::create_dir_all(path).map_err(|source| WorkspaceError::Io {
+        operation: "create directory",
+        path: path.to_path_buf(),
+        source,
+    })?;
+
+    local_stat(path)
+}
+
+fn local_rename_path(from: &Path, to: &Path) -> Result<FileStat> {
+    let case_only_name_change = is_case_only_name_change(from, to);
+    let target_is_source = case_only_name_change && rename_target_is_source(from, to)?;
+    if !target_is_source {
+        ensure_not_exists(to, "rename path")?;
+    }
+
+    let rename = |source_path: &Path, target_path: &Path| {
+        fs::rename(source_path, target_path).map_err(|source| WorkspaceError::Io {
+            operation: "rename path",
+            path: source_path.to_path_buf(),
+            source,
+        })
+    };
+
+    match rename(from, to) {
+        Ok(()) => local_stat(to),
+        Err(first_error) => {
+            if case_only_name_change
+                && let (Some(to_name), Some(parent)) =
+                    (to.file_name().and_then(|name| name.to_str()), from.parent())
+            {
+                let temp_path = parent.join(format!(
+                    ".nucleotide-rename-{}-{to_name}",
+                    std::process::id()
+                ));
+                ensure_not_exists(&temp_path, "rename path")?;
+                rename(from, &temp_path)?;
+                rename(&temp_path, to)?;
+                return local_stat(to);
+            }
+
+            Err(first_error)
+        }
+    }
+}
+
+fn local_delete_path(path: &Path) -> Result<FileStat> {
+    let stat = local_stat(path)?;
+    match stat.kind {
+        FileKind::Directory => fs::remove_dir_all(path).map_err(|source| WorkspaceError::Io {
+            operation: "delete directory",
+            path: path.to_path_buf(),
+            source,
+        })?,
+        FileKind::File | FileKind::Symlink | FileKind::Other => {
+            fs::remove_file(path).map_err(|source| WorkspaceError::Io {
+                operation: "delete file",
+                path: path.to_path_buf(),
+                source,
+            })?;
+        }
+    }
+
+    Ok(stat)
+}
+
+fn local_copy_path(from: &Path, to: &Path) -> Result<FileStat> {
+    ensure_not_exists(to, "copy path")?;
+    let from_stat = local_stat(from)?;
+    match from_stat.kind {
+        FileKind::Directory => {
+            if path_is_self_or_descendant(to, from)? {
+                return Err(WorkspaceError::CommandFailed {
+                    operation: "copy path",
+                    path: from.to_path_buf(),
+                    message: "cannot copy a directory into itself".to_string(),
+                });
+            }
+            copy_dir_recursive(from, to)?;
+        }
+        FileKind::File => {
+            fs::copy(from, to).map_err(|source| WorkspaceError::Io {
+                operation: "copy file",
+                path: from.to_path_buf(),
+                source,
+            })?;
+        }
+        FileKind::Symlink => copy_symlink_target(from, to)?,
+        FileKind::Other => {
+            return Err(WorkspaceError::NotFile {
+                path: from.to_path_buf(),
+            });
+        }
+    }
+
+    local_stat(to)
+}
+
+fn copy_dir_recursive(from: &Path, to: &Path) -> Result<()> {
+    fs::create_dir_all(to).map_err(|source| WorkspaceError::Io {
+        operation: "create copied directory",
+        path: to.to_path_buf(),
+        source,
+    })?;
+
+    for entry in fs::read_dir(from).map_err(|source| WorkspaceError::Io {
+        operation: "read directory for copy",
+        path: from.to_path_buf(),
+        source,
+    })? {
+        let entry = entry.map_err(|source| WorkspaceError::Io {
+            operation: "read directory entry for copy",
+            path: from.to_path_buf(),
+            source,
+        })?;
+        let entry_from = entry.path();
+        let entry_to = to.join(entry.file_name());
+        let entry_stat = local_stat(&entry_from)?;
+        match entry_stat.kind {
+            FileKind::Directory => copy_dir_recursive(&entry_from, &entry_to)?,
+            FileKind::File => {
+                fs::copy(&entry_from, &entry_to).map_err(|source| WorkspaceError::Io {
+                    operation: "copy file",
+                    path: entry_from,
+                    source,
+                })?;
+            }
+            FileKind::Symlink => copy_symlink_target(&entry_from, &entry_to)?,
+            FileKind::Other => {}
+        }
+    }
+
+    Ok(())
+}
+
+fn copy_symlink_target(from: &Path, to: &Path) -> Result<()> {
+    let target = fs::read_link(from).map_err(|source| WorkspaceError::Io {
+        operation: "read symlink for copy",
+        path: from.to_path_buf(),
+        source,
+    })?;
+    let target = if target.is_absolute() {
+        target
+    } else {
+        from.parent().unwrap_or_else(|| Path::new(".")).join(target)
+    };
+    let target_stat = local_stat(&target)?;
+    match target_stat.kind {
+        FileKind::Directory => copy_dir_recursive(&target, to),
+        FileKind::File | FileKind::Symlink => {
+            fs::copy(&target, to).map_err(|source| WorkspaceError::Io {
+                operation: "copy symlink target",
+                path: target,
+                source,
+            })?;
+            Ok(())
+        }
+        FileKind::Other => Err(WorkspaceError::NotFile { path: target }),
+    }
 }
 
 fn local_read_file(path: &Path, options: ReadOptions) -> Result<FileRead> {
@@ -1462,6 +1825,94 @@ mod tests {
             std::fs::read_to_string(native_path).unwrap(),
             "fn main() {}\n"
         );
+    }
+
+    #[test]
+    fn local_backend_file_operations_return_affected_stats() {
+        let temp = tempfile::tempdir().unwrap();
+        let backend = LocalWorkspaceBackend;
+        let file = temp.path().join("src").join("main.rs");
+        let renamed = temp.path().join("src").join("lib.rs");
+        let copied = temp.path().join("src").join("lib-copy.rs");
+        let dir = temp.path().join("src").join("nested");
+
+        let created_file = block_on(backend.create_file(&file)).unwrap();
+        let created_dir = block_on(backend.create_dir(&dir)).unwrap();
+        fs::write(&file, "fn main() {}\n").unwrap();
+        let renamed_stat = block_on(backend.rename_path(&file, &renamed)).unwrap();
+        let copied_stat = block_on(backend.copy_path(&renamed, &copied)).unwrap();
+        let deleted_file = block_on(backend.delete_path(&renamed)).unwrap();
+        let deleted_dir = block_on(backend.delete_path(&dir)).unwrap();
+
+        assert_eq!(created_file.path, file);
+        assert_eq!(created_file.kind, FileKind::File);
+        assert_eq!(created_dir.path, dir);
+        assert_eq!(created_dir.kind, FileKind::Directory);
+        assert_eq!(renamed_stat.path, renamed);
+        assert_eq!(copied_stat.path, copied);
+        assert_eq!(deleted_file.path, renamed);
+        assert_eq!(deleted_file.kind, FileKind::File);
+        assert_eq!(deleted_dir.path, dir);
+        assert_eq!(deleted_dir.kind, FileKind::Directory);
+        assert!(!renamed.exists());
+        assert!(!dir.exists());
+        assert_eq!(fs::read_to_string(copied).unwrap(), "fn main() {}\n");
+    }
+
+    #[test]
+    fn local_backend_supports_case_only_rename() {
+        let temp = tempfile::tempdir().unwrap();
+        let backend = LocalWorkspaceBackend;
+        let file = temp.path().join("readme.md");
+        let renamed = temp.path().join("README.md");
+
+        fs::write(&file, "hello\n").unwrap();
+
+        let renamed_stat = block_on(backend.rename_path(&file, &renamed)).unwrap();
+
+        assert_eq!(renamed_stat.path, renamed);
+        assert_eq!(renamed_stat.kind, FileKind::File);
+        assert!(renamed.exists());
+        assert_eq!(fs::read_to_string(renamed).unwrap(), "hello\n");
+    }
+
+    #[test]
+    fn local_backend_rejects_copying_directory_into_itself() {
+        let temp = tempfile::tempdir().unwrap();
+        let backend = LocalWorkspaceBackend;
+        let source = temp.path().join("source");
+        let descendant = source.join("nested").join("copy");
+
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("file.txt"), "hello\n").unwrap();
+
+        let result = block_on(backend.copy_path(&source, &descendant));
+
+        assert!(matches!(result, Err(WorkspaceError::CommandFailed { .. })));
+        assert!(!descendant.exists());
+    }
+
+    #[test]
+    fn path_mapped_backend_maps_file_operations_to_display_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let display_root = PathBuf::from("/remote/project");
+        let display_src = display_root.join("src");
+        let display_file = display_src.join("main.rs");
+        let display_renamed = display_src.join("lib.rs");
+        let native_renamed = temp.path().join("src").join("lib.rs");
+        let backend = path_mapped_workspace_backend(
+            local_workspace_backend(),
+            WorkspacePathMapping::new(display_root.clone(), temp.path()),
+        );
+
+        let dir = block_on(backend.create_dir(&display_src)).unwrap();
+        let file = block_on(backend.create_file(&display_file)).unwrap();
+        let renamed = block_on(backend.rename_path(&display_file, &display_renamed)).unwrap();
+
+        assert_eq!(dir.path, display_src);
+        assert_eq!(file.path, display_file);
+        assert_eq!(renamed.path, display_renamed);
+        assert!(native_renamed.exists());
     }
 
     #[test]

@@ -1475,21 +1475,41 @@ enum LspFileOperationNotification {
     },
 }
 
+#[cfg(test)]
 fn file_operation_notification_succeeded(notification: &LspFileOperationNotification) -> bool {
+    let backend = local_workspace_backend();
+    file_operation_notification_succeeded_with_backend(backend.as_ref(), notification)
+}
+
+fn file_kind_matches_dir(kind: FileKind, is_dir: bool) -> bool {
+    (kind == FileKind::Directory) == is_dir
+}
+
+fn file_kind_for_path(backend: &(impl WorkspaceBackend + ?Sized), path: &Path) -> Option<FileKind> {
+    futures_executor::block_on(backend.stat(path))
+        .ok()
+        .map(|stat| stat.kind)
+}
+
+fn file_operation_notification_succeeded_with_backend(
+    backend: &(impl WorkspaceBackend + ?Sized),
+    notification: &LspFileOperationNotification,
+) -> bool {
     match notification {
-        LspFileOperationNotification::Created { path, is_dir } => {
-            path.exists() && path.is_dir() == *is_dir
+        LspFileOperationNotification::Created { path, is_dir } => file_kind_for_path(backend, path)
+            .is_some_and(|kind| file_kind_matches_dir(kind, *is_dir)),
+        LspFileOperationNotification::Deleted { path, .. } => {
+            file_kind_for_path(backend, path).is_none()
         }
-        LspFileOperationNotification::Deleted { path, .. } => !path.exists(),
         LspFileOperationNotification::Renamed {
             old_path,
             new_path,
             was_dir,
         } => {
             old_path != new_path
-                && !old_path.exists()
-                && new_path.exists()
-                && new_path.is_dir() == *was_dir
+                && file_kind_for_path(backend, old_path).is_none()
+                && file_kind_for_path(backend, new_path)
+                    .is_some_and(|kind| file_kind_matches_dir(kind, *was_dir))
         }
     }
 }
@@ -5009,8 +5029,10 @@ impl Workspace {
     /// Execute the delete after confirmation
     fn perform_delete_confirm(&mut self, cx: &mut Context<Self>) {
         if let Some(path) = self.delete_confirm_path.clone() {
-            let existed_before = path.exists();
-            let was_dir = path.is_dir();
+            let workspace_backend = self.core.read(cx).workspace_backend.clone();
+            let before_kind = file_kind_for_path(workspace_backend.as_ref(), &path);
+            let existed_before = before_kind.is_some();
+            let was_dir = before_kind == Some(FileKind::Directory);
             let mode = match self.core.read(cx).config.gui.file_ops.delete_behavior {
                 crate::config::DeleteBehavior::Trash => {
                     nucleotide_events::v2::workspace::DeleteMode::Trash
@@ -5030,7 +5052,12 @@ impl Workspace {
                 path: path.clone(),
                 was_dir,
             };
-            if existed_before && file_operation_notification_succeeded(&notification) {
+            if existed_before
+                && file_operation_notification_succeeded_with_backend(
+                    workspace_backend.as_ref(),
+                    &notification,
+                )
+            {
                 self.notify_lsp_file_operation(notification, cx);
             }
             if let Some(parent) = path.parent() {
@@ -8201,6 +8228,7 @@ impl Workspace {
         if let Some(pending) = self.pending_file_op.take() {
             use nucleotide_events::v2::workspace::{Event as WsEvent, FileOpIntent};
 
+            let workspace_backend = self.core.read(cx).workspace_backend.clone();
             // Build event and decide which directory to rescan using references to avoid moves
             let (event, refresh_dir, lsp_file_operation): (
                 WsEvent,
@@ -8234,7 +8262,8 @@ impl Workspace {
                     }),
                 ),
                 PendingFileOp::Rename { path } => {
-                    let was_dir = path.is_dir();
+                    let was_dir = file_kind_for_path(workspace_backend.as_ref(), path)
+                        == Some(FileKind::Directory);
                     let new_path = path
                         .parent()
                         .unwrap_or_else(|| std::path::Path::new("."))
@@ -8255,7 +8284,8 @@ impl Workspace {
                     )
                 }
                 PendingFileOp::Duplicate { path } => {
-                    let is_dir = path.is_dir();
+                    let is_dir = file_kind_for_path(workspace_backend.as_ref(), path)
+                        == Some(FileKind::Directory);
                     let target_path = path
                         .parent()
                         .unwrap_or_else(|| std::path::Path::new("."))
@@ -8282,7 +8312,10 @@ impl Workspace {
             self.dispatch_workspace_file_op_and_process(event, cx);
 
             if let Some(notification) = lsp_file_operation
-                && file_operation_notification_succeeded(&notification)
+                && file_operation_notification_succeeded_with_backend(
+                    workspace_backend.as_ref(),
+                    &notification,
+                )
             {
                 self.notify_lsp_file_operation(notification, cx);
             }

@@ -428,6 +428,23 @@ pub enum RemoteRequest {
     ListDir {
         path: PathBuf,
     },
+    CreateFile {
+        path: PathBuf,
+    },
+    CreateDir {
+        path: PathBuf,
+    },
+    RenamePath {
+        from: PathBuf,
+        to: PathBuf,
+    },
+    DeletePath {
+        path: PathBuf,
+    },
+    CopyPath {
+        from: PathBuf,
+        to: PathBuf,
+    },
     ReadFile {
         path: PathBuf,
         max_bytes: Option<u64>,
@@ -474,6 +491,11 @@ pub enum RemoteResponse {
     Hello(HelloResponse),
     Stat(FileStatResponse),
     ListDir(DirectoryListingResponse),
+    CreateFile(FileStatResponse),
+    CreateDir(FileStatResponse),
+    RenamePath(FileStatResponse),
+    DeletePath(FileStatResponse),
+    CopyPath(FileStatResponse),
     ReadFile(FileReadResponse),
     WriteFile(WriteResultResponse),
     FileSearch(FileSearchResponse),
@@ -525,6 +547,11 @@ impl HelloResponse {
             capabilities: vec![
                 "stat".to_string(),
                 "list_dir".to_string(),
+                "create_file".to_string(),
+                "create_dir".to_string(),
+                "rename_path".to_string(),
+                "delete_path".to_string(),
+                "copy_path".to_string(),
                 "read_file".to_string(),
                 "write_file".to_string(),
                 "file_search".to_string(),
@@ -1151,6 +1178,83 @@ where
         }
     }
 
+    async fn create_file(&self, path: &Path) -> nucleotide_workspace::Result<FileStat> {
+        let (response, _) = self.request(
+            "create file",
+            path,
+            RemoteRequest::CreateFile {
+                path: path.to_path_buf(),
+            },
+            Vec::new(),
+        )?;
+        match response {
+            RemoteResponse::CreateFile(stat) => Ok(file_stat_from_response(stat)),
+            other => Err(unexpected_response_error("create file", path, other)),
+        }
+    }
+
+    async fn create_dir(&self, path: &Path) -> nucleotide_workspace::Result<FileStat> {
+        let (response, _) = self.request(
+            "create directory",
+            path,
+            RemoteRequest::CreateDir {
+                path: path.to_path_buf(),
+            },
+            Vec::new(),
+        )?;
+        match response {
+            RemoteResponse::CreateDir(stat) => Ok(file_stat_from_response(stat)),
+            other => Err(unexpected_response_error("create directory", path, other)),
+        }
+    }
+
+    async fn rename_path(&self, from: &Path, to: &Path) -> nucleotide_workspace::Result<FileStat> {
+        let (response, _) = self.request(
+            "rename path",
+            from,
+            RemoteRequest::RenamePath {
+                from: from.to_path_buf(),
+                to: to.to_path_buf(),
+            },
+            Vec::new(),
+        )?;
+        match response {
+            RemoteResponse::RenamePath(stat) => Ok(file_stat_from_response(stat)),
+            other => Err(unexpected_response_error("rename path", from, other)),
+        }
+    }
+
+    async fn delete_path(&self, path: &Path) -> nucleotide_workspace::Result<FileStat> {
+        let (response, _) = self.request(
+            "delete path",
+            path,
+            RemoteRequest::DeletePath {
+                path: path.to_path_buf(),
+            },
+            Vec::new(),
+        )?;
+        match response {
+            RemoteResponse::DeletePath(stat) => Ok(file_stat_from_response(stat)),
+            other => Err(unexpected_response_error("delete path", path, other)),
+        }
+    }
+
+    async fn copy_path(&self, from: &Path, to: &Path) -> nucleotide_workspace::Result<FileStat> {
+        let (response, _) = self.request(
+            "copy path",
+            from,
+            RemoteRequest::CopyPath {
+                from: from.to_path_buf(),
+                to: to.to_path_buf(),
+            },
+            Vec::new(),
+        )?;
+        match response {
+            RemoteResponse::CopyPath(stat) => Ok(file_stat_from_response(stat)),
+            other => Err(unexpected_response_error("copy path", from, other)),
+        }
+    }
+
     async fn read_file(
         &self,
         path: &Path,
@@ -1468,6 +1572,53 @@ where
                     block_on(self.backend.list_dir(&path)).map_err(remote_error_from_workspace)?;
                 Ok(ServiceOutcome::Continue(
                     RemoteResponse::ListDir(directory_listing_response(listing)),
+                    Vec::new(),
+                ))
+            }
+            RemoteRequest::CreateFile { path } => {
+                let path = self.resolve_path(&path);
+                let stat = block_on(self.backend.create_file(&path))
+                    .map_err(remote_error_from_workspace)?;
+                Ok(ServiceOutcome::Continue(
+                    RemoteResponse::CreateFile(file_stat_response(stat)),
+                    Vec::new(),
+                ))
+            }
+            RemoteRequest::CreateDir { path } => {
+                let path = self.resolve_path(&path);
+                let stat = block_on(self.backend.create_dir(&path))
+                    .map_err(remote_error_from_workspace)?;
+                Ok(ServiceOutcome::Continue(
+                    RemoteResponse::CreateDir(file_stat_response(stat)),
+                    Vec::new(),
+                ))
+            }
+            RemoteRequest::RenamePath { from, to } => {
+                let from = self.resolve_path(&from);
+                let to = self.resolve_path(&to);
+                let stat = block_on(self.backend.rename_path(&from, &to))
+                    .map_err(remote_error_from_workspace)?;
+                Ok(ServiceOutcome::Continue(
+                    RemoteResponse::RenamePath(file_stat_response(stat)),
+                    Vec::new(),
+                ))
+            }
+            RemoteRequest::DeletePath { path } => {
+                let path = self.resolve_path(&path);
+                let stat = block_on(self.backend.delete_path(&path))
+                    .map_err(remote_error_from_workspace)?;
+                Ok(ServiceOutcome::Continue(
+                    RemoteResponse::DeletePath(file_stat_response(stat)),
+                    Vec::new(),
+                ))
+            }
+            RemoteRequest::CopyPath { from, to } => {
+                let from = self.resolve_path(&from);
+                let to = self.resolve_path(&to);
+                let stat = block_on(self.backend.copy_path(&from, &to))
+                    .map_err(remote_error_from_workspace)?;
+                Ok(ServiceOutcome::Continue(
+                    RemoteResponse::CopyPath(file_stat_response(stat)),
                     Vec::new(),
                 ))
             }
@@ -2323,6 +2474,36 @@ mod tests {
         drop(backend);
 
         assert!(saw_shutdown.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn remote_backend_file_operations_round_trip() {
+        let temp = tempfile::tempdir().unwrap();
+        let backend = remote_backend(temp.path());
+        let dir = temp.path().join("src");
+        let file = dir.join("main.rs");
+        let renamed = dir.join("lib.rs");
+        let copied = dir.join("lib-copy.rs");
+
+        let dir_stat = block_on(backend.create_dir(&dir)).unwrap();
+        let file_stat = block_on(backend.create_file(&file)).unwrap();
+        std::fs::write(&file, "pub fn lib() {}\n").unwrap();
+        let renamed_stat = block_on(backend.rename_path(&file, &renamed)).unwrap();
+        let copied_stat = block_on(backend.copy_path(&renamed, &copied)).unwrap();
+        let deleted_stat = block_on(backend.delete_path(&renamed)).unwrap();
+
+        assert_eq!(dir_stat.path, dir);
+        assert_eq!(dir_stat.kind, FileKind::Directory);
+        assert_eq!(file_stat.path, file);
+        assert_eq!(file_stat.kind, FileKind::File);
+        assert_eq!(renamed_stat.path, renamed);
+        assert_eq!(copied_stat.path, copied);
+        assert_eq!(deleted_stat.path, renamed);
+        assert!(!renamed.exists());
+        assert_eq!(
+            std::fs::read_to_string(copied).unwrap(),
+            "pub fn lib() {}\n"
+        );
     }
 
     fn request_frame(id: u64, request: RemoteRequest, body: Vec<u8>) -> Frame {

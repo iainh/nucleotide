@@ -10,6 +10,7 @@ pub mod lsp_handler;
 #[cfg(feature = "terminal-emulator")]
 pub mod terminal_handler;
 pub mod view_handler;
+pub mod workspace_file_ops;
 pub mod workspace_handler;
 
 pub use app_core::ApplicationCore;
@@ -20,6 +21,7 @@ pub use lsp_handler::LspHandler;
 #[cfg(feature = "terminal-emulator")]
 pub use terminal_handler::{TerminalInputSenders, TerminalRuntimeHandler};
 pub use view_handler::ViewHandler;
+pub use workspace_file_ops::WorkspaceFileOpHandler;
 pub use workspace_handler::WorkspaceHandler;
 
 use std::{
@@ -6996,8 +6998,8 @@ pub fn init_editor(
     let event_aggregator = {
         let agg = nucleotide_core::EventAggregator::new();
         let handle = nucleotide_core::EventAggregatorHandle::new(agg);
-        // Register FS operation handler
-        let fs_handler = nucleotide_core::fs::FsOpHandler::new(handle.clone());
+        // Register workspace file operations through the active backend.
+        let fs_handler = WorkspaceFileOpHandler::new(handle.clone(), workspace_backend.clone());
         handle.register_handler(fs_handler);
         // Register Terminal runtime handler (behind feature)
         #[cfg(feature = "terminal-emulator")]
