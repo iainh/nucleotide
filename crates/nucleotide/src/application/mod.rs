@@ -122,6 +122,13 @@ impl nucleotide_lsp::EnvironmentProvider for ProjectEnvironmentProvider {
     }
 }
 
+const REMOTE_LSP_PROCESS_LAUNCH_UNAVAILABLE: &str =
+    "Remote LSP process launch is not implemented yet; skipping local language server startup";
+
+fn should_launch_lsp_on_local_host(identity: &WorkspaceIdentity) -> bool {
+    matches!(identity, WorkspaceIdentity::Local)
+}
+
 type CompletionServerResult = anyhow::Result<(
     LanguageServerId,
     OffsetEncoding,
@@ -2205,6 +2212,19 @@ impl Application {
         &mut self,
         doc_id: DocumentId,
     ) -> nucleotide_lsp::LspStartupResult {
+        let workspace_identity = self.workspace_backend.identity();
+        if !should_launch_lsp_on_local_host(&workspace_identity) {
+            info!(
+                doc_id = ?doc_id,
+                backend = ?workspace_identity,
+                reason = REMOTE_LSP_PROCESS_LAUNCH_UNAVAILABLE,
+                "Skipping local LSP startup for remote workspace"
+            );
+            return nucleotide_lsp::LspStartupResult::Skipped {
+                reason: REMOTE_LSP_PROCESS_LAUNCH_UNAVAILABLE.to_string(),
+            };
+        }
+
         info!(
             doc_id = ?doc_id,
             project_lsp_enabled = self.config.gui.lsp.project_lsp_startup,
@@ -4236,6 +4256,21 @@ impl Application {
         language_id: &str,
     ) -> Result<nucleotide_events::ServerStartResult, nucleotide_events::ProjectLspCommandError>
     {
+        let workspace_identity = self.workspace_backend.identity();
+        if !should_launch_lsp_on_local_host(&workspace_identity) {
+            warn!(
+                workspace_root = %workspace_root.display(),
+                server_name = %server_name,
+                language_id = %language_id,
+                backend = ?workspace_identity,
+                reason = REMOTE_LSP_PROCESS_LAUNCH_UNAVAILABLE,
+                "Skipping local LSP server start for remote workspace"
+            );
+            return Err(nucleotide_events::ProjectLspCommandError::ServerStartup(
+                REMOTE_LSP_PROCESS_LAUNCH_UNAVAILABLE.to_string(),
+            ));
+        }
+
         info!(
             workspace_root = %workspace_root.display(),
             server_name = %server_name,
@@ -4338,8 +4373,7 @@ impl Application {
         // Now start the project manager and detect projects using the stored manager
         let project_directory = self.project_directory.clone();
         let workspace_backend = self.workspace_backend.clone();
-        let use_manager_detection =
-            matches!(workspace_backend.identity(), WorkspaceIdentity::Local);
+        let use_manager_detection = should_launch_lsp_on_local_host(&workspace_backend.identity());
         {
             let manager_guard = self.project_lsp_manager.read().await;
             if let Some(ref manager) = *manager_guard {
@@ -4485,6 +4519,17 @@ impl Application {
 
         // Use existing LspManager for fallback or primary startup
         // This handles both file-based startup and fallback scenarios
+        let workspace_identity = self.workspace_backend.identity();
+        if !should_launch_lsp_on_local_host(&workspace_identity) {
+            info!(
+                doc_id = ?doc_id,
+                backend = ?workspace_identity,
+                reason = REMOTE_LSP_PROCESS_LAUNCH_UNAVAILABLE,
+                "Skipping file-based LSP startup for remote workspace"
+            );
+            return Ok(());
+        }
+
         let startup_result = self
             .lsp_manager
             .start_lsp_for_document(doc_id, &mut self.editor);
@@ -5876,6 +5921,19 @@ impl Application {
         language_servers: &[String],
     ) -> Vec<nucleotide_events::ServerStartResult> {
         let mut results = Vec::new();
+
+        let workspace_identity = self.workspace_backend.identity();
+        if !should_launch_lsp_on_local_host(&workspace_identity) {
+            warn!(
+                workspace_root = %workspace_root.display(),
+                project_type = ?project_type,
+                language_servers = ?language_servers,
+                backend = ?workspace_identity,
+                reason = REMOTE_LSP_PROCESS_LAUNCH_UNAVAILABLE,
+                "Skipping detected LSP server startup for remote workspace"
+            );
+            return results;
+        }
 
         info!(
             workspace_root = %workspace_root.display(),
@@ -8241,7 +8299,7 @@ mod tests {
         lsp_completion_items_from_response, lsp_completion_items_from_response_for_server,
         lsp_completion_resolve_supported, lsp_completion_response_is_incomplete, lsp_symbol_picker,
         native_symbol_item_from_lsp, path_completion_items, path_completion_items_from_listing,
-        project_health_status, project_server_language_id,
+        project_health_status, project_server_language_id, should_launch_lsp_on_local_host,
         should_use_workspace_syntax_symbol_fallback, str_prefix_at_byte_limit,
         suppress_shadowed_buffer_word_completion_items, syntax_symbol_kind_from_capture_name,
         workspace_diagnostic_refresh_reply,
@@ -8856,6 +8914,17 @@ mod tests {
             &WorkspaceIdentity::Remote(RemoteWorkspaceIdentity {
                 kind: RemoteWorkspaceKind::Ssh,
                 name: "devbox".to_string(),
+            })
+        ));
+    }
+
+    #[test]
+    fn lsp_process_launch_is_local_only_until_remote_spawn_exists() {
+        assert!(should_launch_lsp_on_local_host(&WorkspaceIdentity::Local));
+        assert!(!should_launch_lsp_on_local_host(
+            &WorkspaceIdentity::Remote(RemoteWorkspaceIdentity {
+                kind: RemoteWorkspaceKind::Wsl,
+                name: "Ubuntu".to_string(),
             })
         ));
     }
