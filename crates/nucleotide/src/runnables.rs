@@ -4,18 +4,22 @@
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 use std::sync::LazyLock;
+use std::time::Duration;
 
 use helix_lsp::lsp;
-use nucleotide_env::WslWorkspace;
+use nucleotide_env::{WslWorkspace, load_wsl_remote_directory_listing_blocking};
 use nucleotide_events::v2::run::{
     CommandSpec, ResolvedTask, RunKind, SourceLocation, TaskTemplate,
 };
+use nucleotide_remote::RemoteFileKind;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 const TAG_FILE_TESTS: &str = "file-tests";
 const TAG_LOCAL_DISCOVERY: &str = "local-rust";
 const TAG_RUST_ANALYZER: &str = "rust-analyzer";
+const WSL_RUNNABLE_CARGO_ROOT_TIMEOUT: Duration = Duration::from_millis(750);
+const WSL_RUNNABLE_CARGO_ROOT_ANCESTOR_LIMIT: usize = 16;
 
 static FN_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)\b")
@@ -36,26 +40,18 @@ pub struct RunnableDocument {
 }
 
 pub fn discover_local_rust_runnables(document: &RunnableDocument) -> Vec<ResolvedTask> {
+    discover_rust_runnables_with_probe(document, &RuntimeCargoRootProbe)
+}
+
+fn discover_rust_runnables_with_probe(
+    document: &RunnableDocument,
+    probe: &impl CargoRootProbe,
+) -> Vec<ResolvedTask> {
     if document.path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
         return Vec::new();
     }
 
-    if WslWorkspace::from_unc_path(&document.path).is_some()
-        || document
-            .project_root
-            .as_deref()
-            .is_some_and(|root| WslWorkspace::from_unc_path(root).is_some())
-    {
-        return Vec::new();
-    }
-
-    let Some(cargo_root) = document
-        .project_root
-        .as_deref()
-        .filter(|root| root.join("Cargo.toml").is_file())
-        .map(Path::to_path_buf)
-        .or_else(|| find_cargo_root(&document.path))
-    else {
+    let Some(cargo_root) = cargo_root_for_document(document, probe) else {
         return Vec::new();
     };
 
@@ -159,6 +155,95 @@ pub fn discover_local_rust_runnables(document: &RunnableDocument) -> Vec<Resolve
     }
 
     dedupe_tasks(tasks)
+}
+
+trait CargoRootProbe {
+    fn local_cargo_manifest_exists(&self, root: &Path) -> bool;
+    fn wsl_cargo_manifest_exists(&self, root: &Path) -> bool;
+}
+
+struct RuntimeCargoRootProbe;
+
+impl CargoRootProbe for RuntimeCargoRootProbe {
+    fn local_cargo_manifest_exists(&self, root: &Path) -> bool {
+        root.join("Cargo.toml").is_file()
+    }
+
+    fn wsl_cargo_manifest_exists(&self, root: &Path) -> bool {
+        wsl_directory_contains_cargo_manifest(root)
+    }
+}
+
+fn cargo_root_for_document(
+    document: &RunnableDocument,
+    probe: &impl CargoRootProbe,
+) -> Option<PathBuf> {
+    let document_is_wsl = WslWorkspace::from_unc_path(&document.path).is_some();
+    let project_root_is_wsl = document
+        .project_root
+        .as_deref()
+        .is_some_and(|root| WslWorkspace::from_unc_path(root).is_some());
+
+    if document_is_wsl || project_root_is_wsl {
+        return wsl_cargo_root_for_document(document, probe);
+    }
+
+    document
+        .project_root
+        .as_deref()
+        .filter(|root| probe.local_cargo_manifest_exists(root))
+        .map(Path::to_path_buf)
+        .or_else(|| find_local_cargo_root(&document.path, probe))
+}
+
+fn wsl_cargo_root_for_document(
+    document: &RunnableDocument,
+    probe: &impl CargoRootProbe,
+) -> Option<PathBuf> {
+    if let Some(project_root) = document
+        .project_root
+        .as_deref()
+        .filter(|root| WslWorkspace::from_unc_path(root).is_some())
+        && probe.wsl_cargo_manifest_exists(project_root)
+    {
+        return Some(project_root.to_path_buf());
+    }
+
+    for current in document
+        .path
+        .parent()?
+        .ancestors()
+        .take(WSL_RUNNABLE_CARGO_ROOT_ANCESTOR_LIMIT)
+    {
+        if WslWorkspace::from_unc_path(current).is_some()
+            && probe.wsl_cargo_manifest_exists(current)
+        {
+            return Some(current.to_path_buf());
+        }
+    }
+
+    None
+}
+
+fn wsl_directory_contains_cargo_manifest(root: &Path) -> bool {
+    let Some(workspace) = WslWorkspace::from_unc_path(root) else {
+        return false;
+    };
+
+    match load_wsl_remote_directory_listing_blocking(&workspace, WSL_RUNNABLE_CARGO_ROOT_TIMEOUT) {
+        Ok(listing) => listing.entries.into_iter().any(|entry| {
+            entry.name == "Cargo.toml"
+                && matches!(entry.kind, RemoteFileKind::File | RemoteFileKind::Symlink)
+        }),
+        Err(error) => {
+            tracing::debug!(
+                root = %root.display(),
+                error = %error,
+                "Failed to probe WSL Cargo root for runnable fallback"
+            );
+            false
+        }
+    }
 }
 
 pub fn nearest_runnable(
@@ -439,11 +524,11 @@ fn is_test_attribute(trimmed: &str) -> bool {
         || trimmed.starts_with("#[rstest")
 }
 
-fn find_cargo_root(path: &Path) -> Option<PathBuf> {
+fn find_local_cargo_root(path: &Path, probe: &impl CargoRootProbe) -> Option<PathBuf> {
     let mut current = if path.is_dir() { path } else { path.parent()? };
 
     loop {
-        if current.join("Cargo.toml").is_file() {
+        if probe.local_cargo_manifest_exists(current) {
             return Some(current.to_path_buf());
         }
         current = current.parent()?;
@@ -648,6 +733,30 @@ fn run_kind_from_label(label: &str) -> RunKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
+
+    #[derive(Default)]
+    struct TestCargoRootProbe {
+        local_roots: HashSet<PathBuf>,
+        wsl_roots: HashSet<PathBuf>,
+    }
+
+    impl TestCargoRootProbe {
+        fn with_wsl_root(mut self, root: impl Into<PathBuf>) -> Self {
+            self.wsl_roots.insert(root.into());
+            self
+        }
+    }
+
+    impl CargoRootProbe for TestCargoRootProbe {
+        fn local_cargo_manifest_exists(&self, root: &Path) -> bool {
+            self.local_roots.contains(root)
+        }
+
+        fn wsl_cargo_manifest_exists(&self, root: &Path) -> bool {
+            self.wsl_roots.contains(root)
+        }
+    }
 
     fn doc(path: &str, text: &str, cursor_line: usize, root: &str) -> RunnableDocument {
         RunnableDocument {
@@ -699,15 +808,71 @@ fn parses_input() {}
     }
 
     #[test]
-    fn local_discovery_skips_wsl_paths() {
-        let tasks = discover_local_rust_runnables(&doc(
+    fn local_discovery_builds_wsl_runnables_from_helper_cargo_root() {
+        let root = PathBuf::from(r"\\wsl.localhost\Ubuntu\home\iain\repo");
+        let probe = TestCargoRootProbe::default().with_wsl_root(root.clone());
+        let tasks = discover_rust_runnables_with_probe(
+            &doc(
+                r"\\wsl.localhost\Ubuntu\home\iain\repo\src\main.rs",
+                "fn main() {}\n\n#[test]\nfn parses_input() {}\n",
+                3,
+                r"\\wsl.localhost\Ubuntu\home\iain\repo",
+            ),
+            &probe,
+        );
+
+        assert!(tasks.iter().any(|task| task.label() == "Run Binary"));
+        assert!(
+            tasks
+                .iter()
+                .any(|task| task.label() == "Run Test parses_input")
+        );
+        assert!(
+            tasks
+                .iter()
+                .all(|task| task.command.cwd == Some(root.clone()))
+        );
+    }
+
+    #[test]
+    fn local_discovery_skips_wsl_paths_without_cargo_manifest() {
+        let tasks = discover_rust_runnables_with_probe(
+            &doc(
+                r"\\wsl.localhost\Ubuntu\home\iain\repo\src\lib.rs",
+                "#[test]\nfn parses_input() {}\n",
+                1,
+                r"\\wsl.localhost\Ubuntu\home\iain\repo",
+            ),
+            &TestCargoRootProbe::default(),
+        );
+
+        assert!(tasks.is_empty());
+    }
+
+    #[test]
+    fn local_discovery_finds_wsl_cargo_root_from_ancestor_when_project_root_is_missing() {
+        let root = PathBuf::from(r"\\wsl.localhost\Ubuntu\home\iain\repo");
+        let probe = TestCargoRootProbe::default().with_wsl_root(root.clone());
+        let mut document = doc(
             r"\\wsl.localhost\Ubuntu\home\iain\repo\src\lib.rs",
             "#[test]\nfn parses_input() {}\n",
             1,
             r"\\wsl.localhost\Ubuntu\home\iain\repo",
-        ));
+        );
+        document.project_root = None;
 
-        assert!(tasks.is_empty());
+        let tasks = discover_rust_runnables_with_probe(&document, &probe);
+
+        assert!(
+            tasks
+                .iter()
+                .any(|task| task.label() == "Run Test parses_input")
+        );
+        assert!(
+            tasks
+                .iter()
+                .all(|task| task.command.cwd == Some(root.clone()))
+        );
     }
 
     #[test]

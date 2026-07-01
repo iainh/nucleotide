@@ -88,7 +88,10 @@ editor backend into Linux:
   commands start where the project files live. Rust-analyzer runnable payloads
   from WSL language servers normalize Linux `cwd`, `workspaceRoot`, and source
   locations back to same-distro WSL UNC paths before terminal dispatch, so
-  extension-provided commands also route through the WSL terminal adapter.
+  extension-provided commands also route through the WSL terminal adapter. The
+  local Rust fallback runnable discovery path also supports WSL files by probing
+  Cargo roots through helper-backed directory listings instead of checking for
+  `Cargo.toml` through the Windows UNC filesystem path.
 - The file tree uses the remote helper for WSL initial root population,
   directory expansion, and directory refresh when a Tokio runtime is available.
   Native workspaces keep the existing local filesystem path. WSL file watching is
