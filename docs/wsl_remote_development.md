@@ -30,7 +30,8 @@ editor backend into Linux:
 - `ProjectEnvironment` captures project environment through `wsl.exe` for WSL
   roots and tags it with `NUCLEOTIDE_REMOTE_KIND=wsl`. These snapshots stay
   scoped to WSL launch paths instead of being applied to the Windows host
-  process environment.
+  process environment. WSL environment cache keys preserve the UNC path shape
+  directly instead of canonicalizing through the Windows filesystem boundary.
 - WSL workspaces force project LSP startup with fallback enabled, because
   project-level startup gives us one remote command boundary per language server.
 - `nucleotide-lsp-proxy` maps file URIs between Windows WSL UNC URLs and Linux

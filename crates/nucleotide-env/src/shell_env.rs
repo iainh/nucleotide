@@ -129,9 +129,7 @@ impl ProjectEnvironment {
             cache.remove(directory);
         }
 
-        let canonical_dir = directory
-            .canonicalize()
-            .unwrap_or_else(|_| directory.to_path_buf());
+        let canonical_dir = environment_cache_directory(directory);
 
         if let Some(wsl_workspace) = WslWorkspace::from_unc_path(&canonical_dir)
             .or_else(|| WslWorkspace::from_unc_path(directory))
@@ -626,9 +624,7 @@ impl ProjectEnvironment {
             return Some(origin);
         }
 
-        let canonical_dir = directory
-            .canonicalize()
-            .unwrap_or_else(|_| directory.to_path_buf());
+        let canonical_dir = environment_cache_directory(directory);
 
         let cache = self.directory_environments.read().await;
         cache
@@ -639,9 +635,7 @@ impl ProjectEnvironment {
 
     /// Invalidate cache for specific directory
     pub async fn invalidate_directory_cache(&self, directory: &Path) {
-        let canonical_dir = directory
-            .canonicalize()
-            .unwrap_or_else(|_| directory.to_path_buf());
+        let canonical_dir = environment_cache_directory(directory);
 
         debug!(directory = %canonical_dir.display(), "Invalidating directory environment cache");
 
@@ -712,6 +706,16 @@ fn cached_environment_is_current(cached: &CachedEnvironment) -> bool {
         | EnvironmentOrigin::WslShell
         | EnvironmentOrigin::DirectoryShell
         | EnvironmentOrigin::Process => true,
+    }
+}
+
+fn environment_cache_directory(directory: &Path) -> PathBuf {
+    if WslWorkspace::from_unc_path(directory).is_some() {
+        directory.to_path_buf()
+    } else {
+        directory
+            .canonicalize()
+            .unwrap_or_else(|_| directory.to_path_buf())
     }
 }
 
@@ -2089,6 +2093,13 @@ mod tests {
         };
 
         assert!(cached_environment_is_current(&cached));
+    }
+
+    #[test]
+    fn test_environment_cache_directory_preserves_wsl_unc_without_canonicalize() {
+        let path = PathBuf::from(r"\\wsl.localhost\MissingDistro\home\iain\repo");
+
+        assert_eq!(environment_cache_directory(&path), path);
     }
 
     #[test]
