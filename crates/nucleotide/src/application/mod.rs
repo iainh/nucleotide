@@ -402,6 +402,10 @@ fn buffer_text_matches_path(text: &Rope, path: &Path) -> bool {
     std::fs::read_to_string(path).is_ok_and(|file_text| file_text == text.to_string())
 }
 
+fn file_picker_path_exists_without_wsl_probe(path: &Path) -> bool {
+    WslWorkspace::from_unc_path(path).is_some() || path.exists()
+}
+
 pub fn implicit_workspace_root_from_current_dir() -> Option<PathBuf> {
     let current_dir = std::env::current_dir().ok()?;
 
@@ -2903,7 +2907,7 @@ impl Application {
                             cx.emit(crate::Update::ShowFilePicker);
                         }
                         editor_input::NativePickerRequest::FileAt(path) => {
-                            if path.exists() {
+                            if file_picker_path_exists_without_wsl_probe(&path) {
                                 cx.emit(crate::Update::ShowFilePickerAt(path));
                             } else {
                                 self.editor.set_error(format!(
@@ -2914,7 +2918,7 @@ impl Application {
                         }
                         editor_input::NativePickerRequest::FileCurrentDirectory => {
                             let cwd = helix_stdx::env::current_working_dir();
-                            if cwd.exists() {
+                            if file_picker_path_exists_without_wsl_probe(&cwd) {
                                 cx.emit(crate::Update::ShowFilePickerAt(cwd));
                             } else {
                                 self.editor
@@ -8515,7 +8519,8 @@ mod tests {
         bridged_event_needs_gpui_context, buffer_text_matches_path, buffer_word_completion_items,
         char_index_for_line_col, coalesce_bridged_events, completion_context_for_trigger,
         current_dir_is_executable_dir, dedupe_completion_items, detect_project_lsp_metadata,
-        diagnostic_picker_path_label, diagnostic_severity_label, home_requires_login_shell_capture,
+        diagnostic_picker_path_label, diagnostic_severity_label,
+        file_picker_path_exists_without_wsl_probe, home_requires_login_shell_capture,
         is_workspace_diagnostic_refresh_method, local_path_completion_context,
         lsp_completion_insert_text, lsp_completion_insert_text_format,
         lsp_completion_items_from_response, lsp_completion_items_from_response_for_server,
@@ -9831,6 +9836,22 @@ mod tests {
     #[test]
     fn workspace_marker_detection_skips_wsl_unc_paths() {
         assert!(!workspace_marker_exists(Path::new(
+            r"\\wsl.localhost\Ubuntu\home\iain\repo"
+        )));
+    }
+
+    #[test]
+    fn file_picker_path_exists_keeps_native_missing_paths_false() {
+        let temp = tempdir().unwrap();
+        let missing = temp.path().join("missing");
+
+        assert!(file_picker_path_exists_without_wsl_probe(temp.path()));
+        assert!(!file_picker_path_exists_without_wsl_probe(&missing));
+    }
+
+    #[test]
+    fn file_picker_path_exists_accepts_wsl_unc_without_local_probe() {
+        assert!(file_picker_path_exists_without_wsl_probe(Path::new(
             r"\\wsl.localhost\Ubuntu\home\iain\repo"
         )));
     }
