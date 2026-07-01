@@ -103,6 +103,10 @@ const WSL_REMOTE_FILE_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::
 static WSL_REMOTE_DOCUMENT_MTIMES: LazyLock<Mutex<HashMap<PathBuf, i64>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+#[cfg(target_os = "windows")]
+static WSL_REMOTE_DOCUMENT_BOMS: LazyLock<Mutex<HashMap<PathBuf, bool>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
 fn document_lsp_identifier(
     doc: &helix_view::Document,
 ) -> Option<helix_lsp::lsp::TextDocumentIdentifier> {
@@ -2174,6 +2178,32 @@ fn wsl_remote_document_mtime(path: &Path) -> Option<i64> {
     }
 }
 
+fn record_wsl_remote_document_bom(path: &Path, has_bom: bool) {
+    #[cfg(target_os = "windows")]
+    if let Ok(mut boms) = WSL_REMOTE_DOCUMENT_BOMS.lock() {
+        boms.insert(path.to_path_buf(), has_bom);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    let _ = (path, has_bom);
+}
+
+fn wsl_remote_document_has_bom(path: &Path) -> Option<bool> {
+    #[cfg(target_os = "windows")]
+    {
+        return WSL_REMOTE_DOCUMENT_BOMS
+            .lock()
+            .ok()
+            .and_then(|boms| boms.get(path).copied());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = path;
+        None
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct WslWriteCommand {
     force: bool,
@@ -2367,6 +2397,7 @@ struct PreparedWslRemoteSave {
     revision: usize,
     text: Rope,
     bytes: Vec<u8>,
+    has_bom: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2444,8 +2475,12 @@ fn prepare_wsl_remote_save_for_doc(
     doc.append_changes_to_history(view);
 
     let text = doc.text().clone();
+    let has_bom = doc
+        .path()
+        .and_then(|path| wsl_remote_document_has_bom(path))
+        .unwrap_or(false);
     let mut bytes = Vec::new();
-    helix_lsp::block_on(to_writer(&mut bytes, (doc.encoding(), false), &text))?;
+    helix_lsp::block_on(to_writer(&mut bytes, (doc.encoding(), has_bom), &text))?;
 
     Ok(Some(PreparedWslRemoteSave {
         doc_id,
@@ -2453,6 +2488,7 @@ fn prepare_wsl_remote_save_for_doc(
         revision: doc.get_current_revision(),
         text,
         bytes,
+        has_bom,
     }))
 }
 
@@ -2497,6 +2533,7 @@ fn enqueue_wsl_remote_save(
     let path = prepared.path;
     let text = prepared.text;
     let bytes = prepared.bytes;
+    let has_bom = prepared.has_bom;
     let create_parent_dirs = force;
     let file_event_handler = editor.language_servers.file_event_handler.clone();
     let status_path = path.clone();
@@ -2520,6 +2557,7 @@ fn enqueue_wsl_remote_save(
 
         let save_time = remote_modified_unix_millis_to_system_time(response.modified_unix_millis);
         record_wsl_remote_document_mtime(&path, response.modified_unix_millis);
+        record_wsl_remote_document_bom(&path, has_bom);
         file_event_handler.file_changed(path.clone());
 
         Ok(DocumentSavedEvent {
@@ -2749,7 +2787,7 @@ fn open_wsl_remote_file(
     let bytes = decode_base64(&response.content_base64)
         .map_err(|error| anyhow::anyhow!("failed to decode WSL file content: {error}"))?;
     let mut reader = std::io::Cursor::new(bytes);
-    let (rope, encoding, _has_bom) =
+    let (rope, encoding, has_bom) =
         from_reader(&mut reader, None).map_err(|error| anyhow::anyhow!(error))?;
 
     let doc_id = editor.new_file(action);
@@ -2782,6 +2820,7 @@ fn open_wsl_remote_file(
     let revision = doc.get_current_revision();
     doc.set_last_saved_revision(revision, save_time);
     record_wsl_remote_document_mtime(path, response.modified_unix_millis);
+    record_wsl_remote_document_bom(path, has_bom);
 
     Ok(doc_id)
 }
@@ -17624,6 +17663,18 @@ mod tests {
 
         record_wsl_remote_document_mtime(path, Some(-1));
         assert_eq!(wsl_remote_document_mtime(path), Some(1234));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn wsl_remote_document_bom_tracks_opened_files() {
+        let path = Path::new(r"\\wsl.localhost\Ubuntu\home\iain\repo\bom.rs");
+
+        record_wsl_remote_document_bom(path, true);
+        assert_eq!(wsl_remote_document_has_bom(path), Some(true));
+
+        record_wsl_remote_document_bom(path, false);
+        assert_eq!(wsl_remote_document_has_bom(path), Some(false));
     }
 
     #[test]
