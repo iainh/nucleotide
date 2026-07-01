@@ -73,8 +73,10 @@ use nucleotide_env::EnvironmentOrigin;
 use nucleotide_events::v2::run::{Event as RunEvent, ResolvedTask, RunId, RunStatus};
 use nucleotide_events::v2::terminal::{Event as TerminalEvent, TerminalId};
 use nucleotide_terminal::TerminalBounds;
+#[cfg(test)]
+use nucleotide_workspace::local_workspace_backend;
 use nucleotide_workspace::{
-    FileKind, FileSearchQuery, LocalWorkspaceBackend, TextSearchQuery, WorkspaceBackend,
+    FileKind, FileSearchQuery, TextSearchQuery, WorkspaceBackend, WorkspaceBackendHandle,
 };
 use slotmap::KeyData;
 // (no direct Workspace v2 items used here)
@@ -2093,6 +2095,7 @@ fn push_global_search_matches(
     false
 }
 
+#[cfg(test)]
 fn global_search_matches(
     root: &Path,
     query: &str,
@@ -2101,9 +2104,9 @@ fn global_search_matches(
     open_documents: &[(PathBuf, Rope)],
     limit: usize,
 ) -> Result<Vec<GlobalSearchMatch>, String> {
-    let backend = LocalWorkspaceBackend;
+    let backend = local_workspace_backend();
     global_search_matches_with_backend(
-        &backend,
+        backend.as_ref(),
         root,
         query,
         smart_case,
@@ -7907,7 +7910,7 @@ impl Workspace {
             return;
         }
 
-        let (search_root, smart_case, file_picker_config, open_documents) = {
+        let (search_root, smart_case, file_picker_config, open_documents, workspace_backend) = {
             let core = self.core.read(cx);
             let search_root = core
                 .project_directory
@@ -7927,7 +7930,13 @@ impl Workspace {
                 })
                 .collect::<Vec<_>>();
 
-            (search_root, smart_case, file_picker_config, open_documents)
+            (
+                search_root,
+                smart_case,
+                file_picker_config,
+                open_documents,
+                core.workspace_backend.clone(),
+            )
         };
 
         self.core.update(cx, |core, _cx| {
@@ -7935,7 +7944,8 @@ impl Workspace {
             let _ = core.editor.registers.push('/', query.to_string());
         });
 
-        let matches = match global_search_matches(
+        let matches = match global_search_matches_with_backend(
+            workspace_backend.as_ref(),
             &search_root,
             query,
             smart_case,
@@ -8980,7 +8990,8 @@ impl Workspace {
                 let handle = self.handle.clone();
                 let core = self.core.clone();
                 let overlay = self.overlay.clone();
-                open_at(core, handle, overlay, path.clone(), cx);
+                let workspace_backend = core.read(cx).workspace_backend.clone();
+                open_at(core, handle, overlay, path.clone(), workspace_backend, cx);
             }
             crate::Update::ShowBufferPicker => {
                 nucleotide_logging::debug!("DIAG: Workspace received ShowBufferPicker");
@@ -15125,13 +15136,16 @@ fn open(
     overlay: Entity<OverlayView>,
     cx: &mut Context<Workspace>,
 ) {
-    let base_dir = core.update(cx, |core, _| {
-        core.project_directory
-            .clone()
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
+    let (base_dir, workspace_backend) = core.update(cx, |core, _| {
+        (
+            core.project_directory
+                .clone()
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_default()),
+            core.workspace_backend.clone(),
+        )
     });
 
-    open_at(core, handle, overlay, base_dir, cx);
+    open_at(core, handle, overlay, base_dir, workspace_backend, cx);
 }
 
 fn open_at(
@@ -15139,20 +15153,21 @@ fn open_at(
     _handle: tokio::runtime::Handle,
     overlay: Entity<OverlayView>,
     base_dir: std::path::PathBuf,
+    workspace_backend: WorkspaceBackendHandle,
     cx: &mut Context<Workspace>,
 ) {
     debug!("Opening file picker");
 
     debug!("Base directory for file picker: {:?}", base_dir);
 
-    let backend = LocalWorkspaceBackend;
-    let mut items = match file_picker_items_from_backend(&backend, &base_dir, 1000) {
-        Ok(items) => items,
-        Err(err) => {
-            warn!(error = %err, "Failed to build file picker items");
-            Vec::new()
-        }
-    };
+    let mut items =
+        match file_picker_items_from_backend(workspace_backend.as_ref(), &base_dir, 1000) {
+            Ok(items) => items,
+            Err(err) => {
+                warn!(error = %err, "Failed to build file picker items");
+                Vec::new()
+            }
+        };
 
     // Sort items by label (path) for consistent ordering
     items.sort_by_key(|item| item.label.clone());
@@ -18719,8 +18734,8 @@ mod tests {
         std::fs::write(temp_dir.path().join(".hidden"), "").unwrap();
         std::fs::write(temp_dir.path().join("zed-source").join("skip.rs"), "").unwrap();
 
-        let backend = LocalWorkspaceBackend;
-        let items = file_picker_items_from_backend(&backend, temp_dir.path(), 100).unwrap();
+        let backend = local_workspace_backend();
+        let items = file_picker_items_from_backend(backend.as_ref(), temp_dir.path(), 100).unwrap();
         let labels = items
             .iter()
             .map(|item| item.label.to_string())

@@ -9,6 +9,7 @@ use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
 use std::time::SystemTime;
 use thiserror::Error;
 
@@ -334,6 +335,12 @@ pub trait WorkspaceBackend: Send + Sync {
 
 #[derive(Debug, Default, Clone)]
 pub struct LocalWorkspaceBackend;
+
+pub type WorkspaceBackendHandle = Arc<dyn WorkspaceBackend>;
+
+pub fn local_workspace_backend() -> WorkspaceBackendHandle {
+    Arc::new(LocalWorkspaceBackend)
+}
 
 #[async_trait]
 impl WorkspaceBackend for LocalWorkspaceBackend {
@@ -965,6 +972,13 @@ fn write_target_for_path(path: &Path) -> Result<PathBuf> {
 mod tests {
     use super::*;
     use futures::executor::block_on;
+
+    #[test]
+    fn local_workspace_backend_handle_identifies_as_local() {
+        let backend = local_workspace_backend();
+
+        assert_eq!(backend.identity(), WorkspaceIdentity::Local);
+    }
 
     #[test]
     fn local_backend_lists_directory_entries_sorted_by_name() {
