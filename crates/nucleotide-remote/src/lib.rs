@@ -1932,6 +1932,10 @@ where
             let origin = cached_origin
                 .map(project_environment_origin_from_cached)
                 .unwrap_or(ProjectEnvironmentOrigin::ProcessBaseline);
+            let diagnostics = self
+                .project_environment
+                .get_environment_diagnostics(root)
+                .await;
 
             if origin == ProjectEnvironmentOrigin::ProcessBaseline {
                 variables.insert(
@@ -1944,7 +1948,7 @@ where
                 root: root.to_path_buf(),
                 variables: variables.into_iter().collect(),
                 origin,
-                diagnostics: Vec::new(),
+                diagnostics,
             })
         })
     }
@@ -3232,6 +3236,36 @@ mod tests {
             Some(&"process-baseline".to_string())
         );
         assert!(snapshot.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn service_project_environment_reports_envrc_fallback_diagnostic() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join(".envrc"), "export FOO=bar\n").unwrap();
+
+        let frame = read_first_output_frame(single_request_output(
+            temp.path(),
+            RemoteRequest::ProjectEnvironment {
+                root: PathBuf::new(),
+            },
+            Vec::new(),
+        ));
+
+        let response = frame.decode_json_header::<ResponseEnvelope>().unwrap();
+        let RemoteResponse::ProjectEnvironment(snapshot) = response.response else {
+            panic!("expected project environment response");
+        };
+        assert_eq!(
+            snapshot.origin,
+            RemoteProjectEnvironmentOrigin::ProcessBaseline
+        );
+        assert!(
+            snapshot
+                .diagnostics
+                .iter()
+                .any(|message| message.contains("Unsupported .envrc"))
+        );
+        assert!(!snapshot.variables.contains_key("FOO"));
     }
 
     #[test]
