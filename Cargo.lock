@@ -5165,10 +5165,12 @@ dependencies = [
  "anyhow",
  "async-trait",
  "futures",
+ "nucleotide-env",
  "nucleotide-workspace",
  "serde",
  "serde_json",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]

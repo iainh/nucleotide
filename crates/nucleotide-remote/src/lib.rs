@@ -4,12 +4,15 @@
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use futures::executor::block_on;
+use nucleotide_env::{EnvironmentOrigin, ProjectEnvironment, ShellEnvironmentError};
 use nucleotide_workspace::{
     DirectoryListing, FileKind, FileRead, FileSearchQuery, FileSearchResult, FileStat,
-    LocalWorkspaceBackend, ReadOptions, RemoteWorkspaceIdentity, WorkspaceBackend, WorkspaceError,
-    WorkspaceIdentity, WriteOptions, WriteResult,
+    LocalWorkspaceBackend, ProjectEnvironmentOrigin, ProjectEnvironmentSnapshot, ReadOptions,
+    RemoteWorkspaceIdentity, WorkspaceBackend, WorkspaceError, WorkspaceIdentity, WriteOptions,
+    WriteResult,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use std::collections::{BTreeMap, HashMap};
 use std::error::Error;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
@@ -432,6 +435,9 @@ pub enum RemoteRequest {
         expected_modified_unix_millis: Option<i64>,
     },
     FileSearch(FileSearchRequest),
+    ProjectEnvironment {
+        root: PathBuf,
+    },
     Shutdown,
 }
 
@@ -459,6 +465,7 @@ pub enum RemoteResponse {
     ReadFile(FileReadResponse),
     WriteFile(WriteResultResponse),
     FileSearch(FileSearchResponse),
+    ProjectEnvironment(ProjectEnvironmentResponse),
     Shutdown,
 }
 
@@ -506,6 +513,7 @@ impl HelloResponse {
                 "read_file".to_string(),
                 "write_file".to_string(),
                 "file_search".to_string(),
+                "project_environment".to_string(),
                 "binary_body_frames".to_string(),
             ],
         }
@@ -600,6 +608,24 @@ pub struct FileSearchResponse {
     pub root: PathBuf,
     pub files: Vec<PathBuf>,
     pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteProjectEnvironmentOrigin {
+    NativeFlake,
+    DirectoryShell,
+    ProcessBaseline,
+    Cli,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectEnvironmentResponse {
+    pub root: PathBuf,
+    pub variables: BTreeMap<String, String>,
+    pub origin: RemoteProjectEnvironmentOrigin,
+    pub diagnostics: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -876,22 +902,62 @@ where
             other => Err(unexpected_response_error("file search", &root, other)),
         }
     }
+
+    async fn project_environment(
+        &self,
+        root: &Path,
+    ) -> nucleotide_workspace::Result<ProjectEnvironmentSnapshot> {
+        let (response, _) = self.request(
+            "project environment",
+            root,
+            RemoteRequest::ProjectEnvironment {
+                root: root.to_path_buf(),
+            },
+            Vec::new(),
+        )?;
+        match response {
+            RemoteResponse::ProjectEnvironment(snapshot) => {
+                Ok(project_environment_from_response(snapshot))
+            }
+            other => Err(unexpected_response_error(
+                "project environment",
+                root,
+                other,
+            )),
+        }
+    }
 }
 
 pub struct WorkspaceService<B> {
     backend: B,
     workspace_root: PathBuf,
+    project_environment: ProjectEnvironment,
+    runtime: tokio::runtime::Runtime,
 }
 
 impl<B> WorkspaceService<B>
 where
     B: WorkspaceBackend,
 {
-    pub fn new(backend: B, workspace_root: PathBuf) -> Self {
-        Self {
+    pub fn new(backend: B, workspace_root: PathBuf) -> Result<Self> {
+        Self::with_environment_baseline(backend, workspace_root, std::env::vars().collect())
+    }
+
+    pub fn with_environment_baseline(
+        backend: B,
+        workspace_root: PathBuf,
+        environment_baseline: HashMap<String, String>,
+    ) -> Result<Self> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .context("failed to create remote workspace runtime")?;
+        Ok(Self {
             backend,
             workspace_root,
-        }
+            project_environment: ProjectEnvironment::new(Some(environment_baseline)),
+            runtime,
+        })
     }
 
     pub fn serve<R: Read, W: Write>(&self, reader: &mut R, writer: &mut W) -> Result<()> {
@@ -1071,8 +1137,48 @@ where
                     Vec::new(),
                 ))
             }
+            RemoteRequest::ProjectEnvironment { root } => {
+                let root = self.resolve_search_root(&root);
+                let snapshot = self
+                    .load_project_environment(&root)
+                    .map_err(remote_error_from_environment)?;
+                Ok(ServiceOutcome::Continue(
+                    RemoteResponse::ProjectEnvironment(project_environment_response(snapshot)),
+                    Vec::new(),
+                ))
+            }
             RemoteRequest::Shutdown => Ok(ServiceOutcome::Shutdown),
         }
+    }
+
+    fn load_project_environment(
+        &self,
+        root: &Path,
+    ) -> std::result::Result<ProjectEnvironmentSnapshot, ShellEnvironmentError> {
+        self.runtime.block_on(async {
+            let mut variables = self
+                .project_environment
+                .get_environment_for_directory(root)
+                .await?;
+            let cached_origin = self.project_environment.get_cached_origin(root).await;
+            let origin = cached_origin
+                .map(project_environment_origin_from_cached)
+                .unwrap_or(ProjectEnvironmentOrigin::ProcessBaseline);
+
+            if origin == ProjectEnvironmentOrigin::ProcessBaseline {
+                variables.insert(
+                    "ZED_ENVIRONMENT".to_string(),
+                    "process-baseline".to_string(),
+                );
+            }
+
+            Ok(ProjectEnvironmentSnapshot {
+                root: root.to_path_buf(),
+                variables: variables.into_iter().collect(),
+                origin,
+                diagnostics: Vec::new(),
+            })
+        })
     }
 
     fn resolve_path(&self, path: &Path) -> PathBuf {
@@ -1128,7 +1234,7 @@ pub fn serve_local_workspace<R: Read, W: Write>(
     reader: &mut R,
     writer: &mut W,
 ) -> Result<()> {
-    WorkspaceService::new(LocalWorkspaceBackend, workspace_root).serve(reader, writer)
+    WorkspaceService::new(LocalWorkspaceBackend, workspace_root)?.serve(reader, writer)
 }
 
 enum ServiceOutcome {
@@ -1186,6 +1292,17 @@ fn file_search_response(result: FileSearchResult) -> FileSearchResponse {
         root: result.root,
         files: result.files,
         truncated: result.truncated,
+    }
+}
+
+fn project_environment_response(
+    snapshot: ProjectEnvironmentSnapshot,
+) -> ProjectEnvironmentResponse {
+    ProjectEnvironmentResponse {
+        root: snapshot.root,
+        variables: snapshot.variables,
+        origin: remote_project_environment_origin(snapshot.origin),
+        diagnostics: snapshot.diagnostics,
     }
 }
 
@@ -1249,6 +1366,17 @@ fn file_search_from_response(result: FileSearchResponse) -> FileSearchResult {
     }
 }
 
+fn project_environment_from_response(
+    snapshot: ProjectEnvironmentResponse,
+) -> ProjectEnvironmentSnapshot {
+    ProjectEnvironmentSnapshot {
+        root: snapshot.root,
+        variables: snapshot.variables,
+        origin: project_environment_origin_from_response(snapshot.origin),
+        diagnostics: snapshot.diagnostics,
+    }
+}
+
 fn file_kind_from_response(kind: RemoteFileKind) -> FileKind {
     match kind {
         RemoteFileKind::File => FileKind::File,
@@ -1267,6 +1395,43 @@ fn remote_file_kind(kind: FileKind) -> RemoteFileKind {
     }
 }
 
+fn remote_project_environment_origin(
+    origin: ProjectEnvironmentOrigin,
+) -> RemoteProjectEnvironmentOrigin {
+    match origin {
+        ProjectEnvironmentOrigin::NativeFlake => RemoteProjectEnvironmentOrigin::NativeFlake,
+        ProjectEnvironmentOrigin::DirectoryShell => RemoteProjectEnvironmentOrigin::DirectoryShell,
+        ProjectEnvironmentOrigin::ProcessBaseline => {
+            RemoteProjectEnvironmentOrigin::ProcessBaseline
+        }
+        ProjectEnvironmentOrigin::Cli => RemoteProjectEnvironmentOrigin::Cli,
+        ProjectEnvironmentOrigin::Unknown => RemoteProjectEnvironmentOrigin::Unknown,
+    }
+}
+
+fn project_environment_origin_from_response(
+    origin: RemoteProjectEnvironmentOrigin,
+) -> ProjectEnvironmentOrigin {
+    match origin {
+        RemoteProjectEnvironmentOrigin::NativeFlake => ProjectEnvironmentOrigin::NativeFlake,
+        RemoteProjectEnvironmentOrigin::DirectoryShell => ProjectEnvironmentOrigin::DirectoryShell,
+        RemoteProjectEnvironmentOrigin::ProcessBaseline => {
+            ProjectEnvironmentOrigin::ProcessBaseline
+        }
+        RemoteProjectEnvironmentOrigin::Cli => ProjectEnvironmentOrigin::Cli,
+        RemoteProjectEnvironmentOrigin::Unknown => ProjectEnvironmentOrigin::Unknown,
+    }
+}
+
+fn project_environment_origin_from_cached(origin: EnvironmentOrigin) -> ProjectEnvironmentOrigin {
+    match origin {
+        EnvironmentOrigin::Cli => ProjectEnvironmentOrigin::Cli,
+        EnvironmentOrigin::NativeFlake => ProjectEnvironmentOrigin::NativeFlake,
+        EnvironmentOrigin::DirectoryShell => ProjectEnvironmentOrigin::DirectoryShell,
+        EnvironmentOrigin::Process => ProjectEnvironmentOrigin::ProcessBaseline,
+    }
+}
+
 fn remote_error_from_workspace(error: WorkspaceError) -> RemoteError {
     let code = match &error {
         WorkspaceError::Io { .. } => "io",
@@ -1278,6 +1443,14 @@ fn remote_error_from_workspace(error: WorkspaceError) -> RemoteError {
 
     RemoteError {
         code: code.to_string(),
+        message: error.to_string(),
+        diagnostic: Some(format!("{error:?}")),
+    }
+}
+
+fn remote_error_from_environment(error: ShellEnvironmentError) -> RemoteError {
+    RemoteError {
+        code: "project_environment".to_string(),
         message: error.to_string(),
         diagnostic: Some(format!("{error:?}")),
     }
@@ -1438,7 +1611,7 @@ mod tests {
             write_frame(&mut input, frame)?;
             let root = self.root.clone();
             let output = std::thread::spawn(move || {
-                let service = WorkspaceService::new(LocalWorkspaceBackend, root);
+                let service = WorkspaceService::new(LocalWorkspaceBackend, root)?;
                 let mut output = Vec::new();
                 service
                     .serve(&mut Cursor::new(input), &mut output)
@@ -1490,7 +1663,7 @@ mod tests {
         )
         .unwrap();
 
-        let service = WorkspaceService::new(LocalWorkspaceBackend, root.to_path_buf());
+        let service = WorkspaceService::new(LocalWorkspaceBackend, root.to_path_buf()).unwrap();
         let mut reader = Cursor::new(input);
         let mut output = Vec::new();
         service.serve(&mut reader, &mut output).unwrap();
@@ -1610,6 +1783,11 @@ mod tests {
                 .capabilities
                 .contains(&"binary_body_frames".to_string())
         );
+        assert!(
+            hello
+                .capabilities
+                .contains(&"project_environment".to_string())
+        );
     }
 
     #[test]
@@ -1685,6 +1863,120 @@ mod tests {
     }
 
     #[test]
+    fn service_project_environment_returns_process_baseline() {
+        let temp = tempfile::tempdir().unwrap();
+        let frame = read_first_output_frame(single_request_output(
+            temp.path(),
+            RemoteRequest::ProjectEnvironment {
+                root: PathBuf::new(),
+            },
+            Vec::new(),
+        ));
+
+        let response = frame.decode_json_header::<ResponseEnvelope>().unwrap();
+        let RemoteResponse::ProjectEnvironment(snapshot) = response.response else {
+            panic!("expected project environment response");
+        };
+        assert_eq!(snapshot.root, temp.path());
+        assert_eq!(
+            snapshot.origin,
+            RemoteProjectEnvironmentOrigin::ProcessBaseline
+        );
+        assert_eq!(
+            snapshot.variables.get("ZED_ENVIRONMENT"),
+            Some(&"process-baseline".to_string())
+        );
+        assert!(snapshot.diagnostics.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn service_project_environment_loads_native_flake_envrc() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join(".envrc"), "use flake\n").unwrap();
+
+        let fake_bin = tempfile::tempdir().unwrap();
+        let fake_nix = fake_bin.path().join("nix");
+        std::fs::write(
+            &fake_nix,
+            r#"#!/bin/sh
+case "$*" in
+  *"print-dev-env"*)
+    printf '{"variables":{"PATH":{"type":"exported","value":"/nix/dev/bin"},"REMOTE_FLAG":{"type":"exported","value":"loaded"}}}\n'
+    ;;
+  *"profile wipe-history"*)
+    exit 0
+    ;;
+  *)
+    exit 2
+    ;;
+esac
+"#,
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&fake_nix).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&fake_nix, permissions).unwrap();
+
+        let baseline = HashMap::from([
+            (
+                "PATH".to_string(),
+                format!("{}:/usr/bin:/bin", fake_bin.path().display()),
+            ),
+            (
+                "HOME".to_string(),
+                temp.path().join("home").display().to_string(),
+            ),
+            (
+                "NUCLEOTIDE_CACHE_DIR".to_string(),
+                temp.path().join("cache").display().to_string(),
+            ),
+        ]);
+
+        let request = request_frame(
+            10,
+            RemoteRequest::ProjectEnvironment {
+                root: PathBuf::new(),
+            },
+            Vec::new(),
+        );
+        let mut input = Vec::new();
+        write_frame(&mut input, &request).unwrap();
+
+        let service = WorkspaceService::with_environment_baseline(
+            LocalWorkspaceBackend,
+            temp.path().to_path_buf(),
+            baseline,
+        )
+        .unwrap();
+        let mut output = Vec::new();
+        service.serve(&mut Cursor::new(input), &mut output).unwrap();
+
+        let frame = read_first_output_frame(output);
+        let response = frame.decode_json_header::<ResponseEnvelope>().unwrap();
+        let RemoteResponse::ProjectEnvironment(snapshot) = response.response else {
+            panic!("expected project environment response");
+        };
+        assert_eq!(snapshot.origin, RemoteProjectEnvironmentOrigin::NativeFlake);
+        assert_eq!(
+            snapshot.variables.get("REMOTE_FLAG"),
+            Some(&"loaded".to_string())
+        );
+        assert_eq!(
+            snapshot.variables.get("ZED_ENVIRONMENT"),
+            Some(&"native-flake".to_string())
+        );
+        assert!(
+            snapshot
+                .variables
+                .get("PATH")
+                .is_some_and(|path| path.starts_with("/nix/dev/bin"))
+        );
+    }
+
+    #[test]
     fn service_reports_protocol_mismatch_as_error_frame() {
         let temp = tempfile::tempdir().unwrap();
         let request = RequestEnvelope {
@@ -1696,7 +1988,8 @@ mod tests {
         let mut input = Vec::new();
         write_frame(&mut input, &frame).unwrap();
 
-        let service = WorkspaceService::new(LocalWorkspaceBackend, temp.path().to_path_buf());
+        let service =
+            WorkspaceService::new(LocalWorkspaceBackend, temp.path().to_path_buf()).unwrap();
         let mut reader = Cursor::new(input);
         let mut output = Vec::new();
         service.serve(&mut reader, &mut output).unwrap();
@@ -1763,6 +2056,21 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(temp.path().join("main.rs")).unwrap(),
             "old"
+        );
+    }
+
+    #[test]
+    fn remote_workspace_backend_loads_project_environment_through_service() {
+        let temp = tempfile::tempdir().unwrap();
+        let backend = remote_backend(temp.path());
+
+        let snapshot = block_on(backend.project_environment(Path::new(""))).unwrap();
+
+        assert_eq!(snapshot.root, temp.path());
+        assert_eq!(snapshot.origin, ProjectEnvironmentOrigin::ProcessBaseline);
+        assert_eq!(
+            snapshot.variables.get("ZED_ENVIRONMENT"),
+            Some(&"process-baseline".to_string())
         );
     }
 }

@@ -4,6 +4,7 @@
 use async_trait::async_trait;
 use ignore::WalkBuilder;
 use regex::RegexBuilder;
+use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -159,6 +160,23 @@ pub struct FileSearchResult {
     pub truncated: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectEnvironmentOrigin {
+    NativeFlake,
+    DirectoryShell,
+    ProcessBaseline,
+    Cli,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectEnvironmentSnapshot {
+    pub root: PathBuf,
+    pub variables: BTreeMap<String, String>,
+    pub origin: ProjectEnvironmentOrigin,
+    pub diagnostics: Vec<String>,
+}
+
 #[async_trait]
 pub trait WorkspaceBackend: Send + Sync {
     fn identity(&self) -> WorkspaceIdentity;
@@ -177,6 +195,8 @@ pub trait WorkspaceBackend: Send + Sync {
     ) -> Result<WriteResult>;
 
     async fn file_search(&self, query: FileSearchQuery) -> Result<FileSearchResult>;
+
+    async fn project_environment(&self, root: &Path) -> Result<ProjectEnvironmentSnapshot>;
 }
 
 #[derive(Debug, Default, Clone)]
@@ -211,6 +231,10 @@ impl WorkspaceBackend for LocalWorkspaceBackend {
 
     async fn file_search(&self, query: FileSearchQuery) -> Result<FileSearchResult> {
         local_file_search(query)
+    }
+
+    async fn project_environment(&self, root: &Path) -> Result<ProjectEnvironmentSnapshot> {
+        local_project_environment(root)
     }
 }
 
@@ -489,6 +513,15 @@ fn local_file_search(query: FileSearchQuery) -> Result<FileSearchResult> {
     })
 }
 
+fn local_project_environment(root: &Path) -> Result<ProjectEnvironmentSnapshot> {
+    Ok(ProjectEnvironmentSnapshot {
+        root: root.to_path_buf(),
+        variables: std::env::vars().collect(),
+        origin: ProjectEnvironmentOrigin::ProcessBaseline,
+        diagnostics: Vec::new(),
+    })
+}
+
 fn file_stat_from_metadata(path: PathBuf, metadata: fs::Metadata) -> FileStat {
     let file_type = metadata.file_type();
     let kind = if file_type.is_file() {
@@ -677,5 +710,16 @@ mod tests {
         assert_eq!(result.files.len(), 1);
         assert!(result.truncated);
         assert!(result.files[0].to_string_lossy().ends_with(".rs"));
+    }
+
+    #[test]
+    fn local_backend_project_environment_returns_process_baseline() {
+        let temp = tempfile::tempdir().unwrap();
+        let backend = LocalWorkspaceBackend;
+        let snapshot = block_on(backend.project_environment(temp.path())).unwrap();
+
+        assert_eq!(snapshot.root, temp.path());
+        assert_eq!(snapshot.origin, ProjectEnvironmentOrigin::ProcessBaseline);
+        assert!(snapshot.diagnostics.is_empty());
     }
 }
