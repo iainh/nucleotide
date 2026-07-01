@@ -1677,6 +1677,7 @@ fn local_run_process(spec: ProcessSpec) -> Result<ProcessOutput> {
         command.env_clear();
     }
     command.envs(&spec.env);
+    configure_workspace_process(&mut command);
 
     let mut child = command.spawn().map_err(|source| WorkspaceError::Io {
         operation: "spawn process",
@@ -1764,11 +1765,7 @@ fn wait_for_process(
 
         let elapsed = started.elapsed();
         if elapsed >= timeout {
-            child.kill().map_err(|source| WorkspaceError::Io {
-                operation: "kill timed out process",
-                path: path.to_path_buf(),
-                source,
-            })?;
+            kill_timed_out_process(child, path)?;
             return child.wait().map(|status| (status, true)).map_err(|source| {
                 WorkspaceError::Io {
                     operation: "wait for killed process",
@@ -1780,6 +1777,46 @@ fn wait_for_process(
 
         let remaining = timeout.saturating_sub(elapsed);
         std::thread::sleep(remaining.min(Duration::from_millis(10)));
+    }
+}
+
+#[cfg(unix)]
+fn configure_workspace_process(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    command.process_group(0);
+}
+
+#[cfg(not(unix))]
+fn configure_workspace_process(_command: &mut Command) {}
+
+fn kill_timed_out_process(child: &mut Child, path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        if kill_process_group(child.id()).is_ok() {
+            return Ok(());
+        }
+    }
+
+    child.kill().map_err(|source| WorkspaceError::Io {
+        operation: "kill timed out process",
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
+#[cfg(unix)]
+fn kill_process_group(process_id: u32) -> std::io::Result<()> {
+    let status = Command::new("kill")
+        .arg("-KILL")
+        .arg(format!("-{process_id}"))
+        .status()?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!(
+            "kill process group exited with {status}"
+        )))
     }
 }
 
@@ -2117,6 +2154,33 @@ mod tests {
 
         assert!(!output.success);
         assert!(output.timed_out);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_backend_run_process_kills_timed_out_process_group() {
+        let temp = tempfile::tempdir().unwrap();
+        let backend = LocalWorkspaceBackend;
+        let started = Instant::now();
+
+        let output = block_on(backend.run_process(ProcessSpec {
+            program: "/bin/sh".to_string(),
+            args: vec!["-c".to_string(), "sleep 2 & wait".to_string()],
+            cwd: temp.path().to_path_buf(),
+            env: BTreeMap::new(),
+            clear_env: false,
+            stdin: Vec::new(),
+            max_output_bytes: None,
+            timeout_ms: Some(20),
+        }))
+        .unwrap();
+
+        assert!(!output.success);
+        assert!(output.timed_out);
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "timed-out descendant kept process pipes open"
+        );
     }
 
     #[test]
