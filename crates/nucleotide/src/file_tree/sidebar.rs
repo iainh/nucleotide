@@ -80,6 +80,7 @@ pub enum ProjectTreeRowEvent {
     },
     ContextMenuRequested {
         path: PathBuf,
+        is_directory: bool,
     },
     MoveRequested {
         from: PathBuf,
@@ -88,8 +89,8 @@ pub enum ProjectTreeRowEvent {
 }
 
 impl ProjectTreeRowEvent {
-    pub fn context_menu_for_path(path: PathBuf) -> Self {
-        Self::ContextMenuRequested { path }
+    pub fn context_menu_for_path(path: PathBuf, is_directory: bool) -> Self {
+        Self::ContextMenuRequested { path, is_directory }
     }
 }
 
@@ -248,6 +249,7 @@ impl ProjectTreeRow {
     pub fn context_menu_event(&self) -> ProjectTreeRowEvent {
         ProjectTreeRowEvent::ContextMenuRequested {
             path: self.path.clone(),
+            is_directory: self.is_directory(),
         }
     }
 
@@ -979,6 +981,7 @@ mod tests {
             row.click_event(true),
             ProjectTreeRowEvent::ContextMenuRequested {
                 path: PathBuf::from("/workspace/src"),
+                is_directory: true,
             }
         );
     }
@@ -986,9 +989,10 @@ mod tests {
     #[test]
     fn context_menu_event_can_target_project_root() {
         assert_eq!(
-            ProjectTreeRowEvent::context_menu_for_path(PathBuf::from("/workspace")),
+            ProjectTreeRowEvent::context_menu_for_path(PathBuf::from("/workspace"), true),
             ProjectTreeRowEvent::ContextMenuRequested {
                 path: PathBuf::from("/workspace"),
+                is_directory: true,
             }
         );
     }

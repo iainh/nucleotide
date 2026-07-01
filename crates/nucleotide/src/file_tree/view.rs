@@ -1536,11 +1536,11 @@ impl FileTreeView {
                 debug!("File tree entry clicked");
                 self.activate_entry(path, action, click_count, cx);
             }
-            ProjectTreeRowEvent::ContextMenuRequested { path } => {
+            ProjectTreeRowEvent::ContextMenuRequested { path, is_directory } => {
                 let Some(position) = position else {
                     return;
                 };
-                self.request_entry_context_menu(path, position, window, cx);
+                self.request_entry_context_menu(path, is_directory, position, window, cx);
                 window.prevent_default();
             }
             ProjectTreeRowEvent::MoveRequested { from, target_dir } => {
@@ -1679,6 +1679,7 @@ impl FileTreeView {
     fn request_entry_context_menu(
         &mut self,
         path: PathBuf,
+        is_directory: bool,
         position: gpui::Point<gpui::Pixels>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -1687,6 +1688,7 @@ impl FileTreeView {
         self.select_path(Some(path.clone()), cx);
         cx.emit(FileTreeEvent::ContextMenuRequested {
             path,
+            is_directory,
             x: f32::from(position.x),
             y: f32::from(position.y),
         });
@@ -2476,7 +2478,7 @@ impl Render for FileTreeView {
                 cx.listener(|view, event: &MouseDownEvent, window, cx| {
                     let root_path = view.tree.root_path().to_path_buf();
                     view.handle_project_tree_row_event(
-                        ProjectTreeRowEvent::context_menu_for_path(root_path),
+                        ProjectTreeRowEvent::context_menu_for_path(root_path, true),
                         Some(event.position),
                         event.click_count,
                         window,
