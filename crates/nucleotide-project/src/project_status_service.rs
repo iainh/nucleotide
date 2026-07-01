@@ -37,6 +37,15 @@ impl ProjectStatusHandle {
         service.set_project_root_without_detection(path);
     }
 
+    /// Replace detected project types with results from an external detector.
+    pub fn set_detected_project_types(
+        &self,
+        detected_types: Vec<crate::project_indicator::ProjectType>,
+    ) {
+        let mut service = self.inner.write();
+        service.set_detected_project_types(detected_types);
+    }
+
     /// Update LSP state and refresh project status
     pub fn update_lsp_state(&self, lsp_state: &nucleotide_lsp::LspState) {
         let mut service = self.inner.write();
@@ -158,6 +167,22 @@ impl ProjectStatusService {
         self.project_root = path.clone();
         self.project_info.root_path = path;
         self.project_info.detected_types.clear();
+        self.project_info.last_updated = Instant::now();
+        self.last_detection_update = Some(Instant::now());
+    }
+
+    /// Update project types using results from a backend-aware detector.
+    pub fn set_detected_project_types(
+        &mut self,
+        detected_types: Vec<crate::project_indicator::ProjectType>,
+    ) {
+        info!(
+            detected_count = detected_types.len(),
+            detected_types = ?detected_types.iter().map(|project_type| &project_type.name).collect::<Vec<_>>(),
+            "Setting externally detected project types"
+        );
+
+        self.project_info.detected_types = detected_types;
         self.project_info.last_updated = Instant::now();
         self.last_detection_update = Some(Instant::now());
     }
@@ -326,6 +351,22 @@ mod tests {
 
         assert_eq!(service.project_root(), Some(temp_dir.path()));
         assert!(service.get_project_info().detected_types.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_set_detected_project_types_updates_project_info() {
+        let mut service = ProjectStatusService::new();
+        service.set_detected_project_types(vec![crate::project_indicator::ProjectType {
+            name: "rust".to_string(),
+            display_name: "Rust".to_string(),
+            icon: "R".to_string(),
+            color: None,
+            confidence: 0.95,
+        }]);
+
+        let detected_types = &service.get_project_info().detected_types;
+        assert_eq!(detected_types.len(), 1);
+        assert_eq!(detected_types[0].name, "rust");
     }
 
     #[tokio::test]

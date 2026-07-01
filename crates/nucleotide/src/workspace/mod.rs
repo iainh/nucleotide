@@ -87,6 +87,64 @@ use smallvec::{SmallVec, smallvec};
 
 type FileTreeContextMenuHandler = fn(&mut Workspace, &mut Context<Workspace>);
 
+fn project_status_types_from_lsp_project_type(
+    project_type: &nucleotide_events::ProjectType,
+) -> Vec<nucleotide_project::ProjectType> {
+    match project_type {
+        nucleotide_events::ProjectType::Rust => {
+            vec![project_status_type("rust", "Rust", "R", 0.95)]
+        }
+        nucleotide_events::ProjectType::TypeScript => {
+            vec![project_status_type("typescript", "TypeScript", "TS", 0.9)]
+        }
+        nucleotide_events::ProjectType::JavaScript => {
+            vec![project_status_type("javascript", "JavaScript", "JS", 0.85)]
+        }
+        nucleotide_events::ProjectType::Python => {
+            vec![project_status_type("python", "Python", "Py", 0.9)]
+        }
+        nucleotide_events::ProjectType::Go => vec![project_status_type("go", "Go", "Go", 0.95)],
+        nucleotide_events::ProjectType::C => vec![project_status_type("c", "C", "C", 0.85)],
+        nucleotide_events::ProjectType::Cpp => {
+            vec![project_status_type("cpp", "C++", "C++", 0.85)]
+        }
+        nucleotide_events::ProjectType::Mixed(project_types) => {
+            let mut detected_types = Vec::new();
+            let mut seen_names = HashSet::new();
+            for nested_type in project_types {
+                for detected_type in project_status_types_from_lsp_project_type(nested_type) {
+                    if seen_names.insert(detected_type.name.clone()) {
+                        detected_types.push(detected_type);
+                    }
+                }
+            }
+            detected_types
+        }
+        nucleotide_events::ProjectType::Other(name) => vec![project_status_type(
+            &name.to_ascii_lowercase().replace(' ', "_"),
+            name,
+            "",
+            0.5,
+        )],
+        nucleotide_events::ProjectType::Unknown => Vec::new(),
+    }
+}
+
+fn project_status_type(
+    name: &str,
+    display_name: &str,
+    icon: &str,
+    confidence: f32,
+) -> nucleotide_project::ProjectType {
+    nucleotide_project::ProjectType {
+        name: name.to_string(),
+        display_name: display_name.to_string(),
+        icon: icon.to_string(),
+        color: None,
+        confidence,
+    }
+}
+
 fn document_lsp_identifier(
     doc: &helix_view::Document,
 ) -> Option<helix_lsp::lsp::TextDocumentIdentifier> {
@@ -6668,10 +6726,15 @@ impl Workspace {
                 );
             } else {
                 let project_root_display = project_root.display().to_string();
-                self.handle.spawn(async move {
+                let project_status = project_status.clone();
+                cx.spawn(async move |this, cx| {
                     let timeout = tokio::time::Duration::from_secs(30);
                     match tokio::time::timeout(timeout, response_rx).await {
                         Ok(Ok(Ok(result))) => {
+                            let detected_types =
+                                project_status_types_from_lsp_project_type(&result.project_type);
+                            project_status.set_detected_project_types(detected_types);
+
                             info!(
                                 project_root = %project_root_display,
                                 project_type = ?result.project_type,
@@ -6679,6 +6742,12 @@ impl Workspace {
                                 servers_started = result.servers_started.len(),
                                 "Project detection and LSP startup completed"
                             );
+
+                            if let Some(this) = this.upgrade() {
+                                this.update(cx, |workspace, cx| {
+                                    workspace.refresh_project_indicators(cx);
+                                });
+                            }
                         }
                         Ok(Ok(Err(error))) => {
                             error!(
@@ -6701,7 +6770,8 @@ impl Workspace {
                             );
                         }
                     }
-                });
+                })
+                .detach();
             }
         } else {
             warn!("No LSP command sender available - skipping project LSP coordination");
@@ -16154,6 +16224,23 @@ mod tests {
             None
         );
         assert_eq!(EnvironmentBadge::from_environment_marker(None), None);
+    }
+
+    #[test]
+    fn project_status_types_from_lsp_project_type_dedupes_mixed_types() {
+        let detected_types = project_status_types_from_lsp_project_type(
+            &nucleotide_events::ProjectType::Mixed(vec![
+                nucleotide_events::ProjectType::Rust,
+                nucleotide_events::ProjectType::Rust,
+                nucleotide_events::ProjectType::TypeScript,
+            ]),
+        );
+
+        let names = detected_types
+            .iter()
+            .map(|project_type| project_type.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["rust", "typescript"]);
     }
 
     #[test]
