@@ -1043,7 +1043,7 @@ where
     }
 }
 
-pub struct RemoteWorkspaceBackend<T> {
+pub struct RemoteWorkspaceBackend<T: RemoteTransport> {
     identity: RemoteWorkspaceIdentity,
     client: Mutex<RemoteWorkspaceClient<T>>,
 }
@@ -1081,6 +1081,17 @@ where
         client
             .request(request, body)
             .map_err(|error| client_error_to_workspace(operation, path, error))
+    }
+}
+
+impl<T> Drop for RemoteWorkspaceBackend<T>
+where
+    T: RemoteTransport,
+{
+    fn drop(&mut self) {
+        if let Ok(mut client) = self.client.lock() {
+            let _ = client.shutdown();
+        }
     }
 }
 
@@ -2141,6 +2152,10 @@ mod tests {
     use nucleotide_workspace::RemoteWorkspaceKind;
     use std::collections::VecDeque;
     use std::io::Cursor;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
 
     fn executable_tempdir() -> tempfile::TempDir {
         let base = std::env::current_dir()
@@ -2210,6 +2225,53 @@ mod tests {
         }
     }
 
+    struct ShutdownRecordingTransport {
+        saw_shutdown: Arc<AtomicBool>,
+        pending: VecDeque<Frame>,
+    }
+
+    impl ShutdownRecordingTransport {
+        fn new(saw_shutdown: Arc<AtomicBool>) -> Self {
+            Self {
+                saw_shutdown,
+                pending: VecDeque::new(),
+            }
+        }
+    }
+
+    impl RemoteTransport for ShutdownRecordingTransport {
+        fn write_frame(&mut self, frame: &Frame) -> io::Result<()> {
+            let envelope = frame
+                .decode_json_header::<RequestEnvelope>()
+                .map_err(io::Error::other)?;
+            let response = match envelope.request {
+                RemoteRequest::Shutdown => {
+                    self.saw_shutdown.store(true, Ordering::SeqCst);
+                    RemoteResponse::Shutdown
+                }
+                other => {
+                    return Err(io::Error::other(format!("unexpected request: {other:?}")));
+                }
+            };
+
+            self.pending.push_back(
+                Frame::from_json_header(
+                    FrameKind::Response,
+                    frame.request_id,
+                    0,
+                    &ResponseEnvelope::new(response),
+                    Vec::new(),
+                )
+                .map_err(io::Error::other)?,
+            );
+            Ok(())
+        }
+
+        fn read_frame(&mut self) -> io::Result<Option<Frame>> {
+            Ok(self.pending.pop_front())
+        }
+    }
+
     fn loopback_identity() -> RemoteWorkspaceIdentity {
         RemoteWorkspaceIdentity {
             kind: RemoteWorkspaceKind::Other("loopback".to_string()),
@@ -2249,6 +2311,18 @@ mod tests {
             backend.identity(),
             WorkspaceIdentity::Remote(loopback_identity())
         );
+    }
+
+    #[test]
+    fn remote_backend_drop_sends_shutdown() {
+        let saw_shutdown = Arc::new(AtomicBool::new(false));
+        let transport = ShutdownRecordingTransport::new(saw_shutdown.clone());
+        let backend =
+            RemoteWorkspaceBackend::new(loopback_identity(), RemoteWorkspaceClient::new(transport));
+
+        drop(backend);
+
+        assert!(saw_shutdown.load(Ordering::SeqCst));
     }
 
     fn request_frame(id: u64, request: RemoteRequest, body: Vec<u8>) -> Frame {
