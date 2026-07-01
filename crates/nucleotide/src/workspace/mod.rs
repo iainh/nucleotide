@@ -2123,6 +2123,25 @@ fn push_global_search_matches(
     false
 }
 
+fn open_document_global_search_matches(
+    root: &Path,
+    open_documents: &[(PathBuf, Rope)],
+    regex: &helix_stdx::rope::Regex,
+    limit: usize,
+) -> Vec<GlobalSearchMatch> {
+    let mut matches = Vec::new();
+    for (path, text) in open_documents {
+        if !path.starts_with(root) {
+            continue;
+        }
+
+        if push_global_search_matches(&mut matches, path, text.slice(..), regex, limit) {
+            break;
+        }
+    }
+    matches
+}
+
 fn global_search_matches(
     root: &Path,
     query: &str,
@@ -2164,8 +2183,14 @@ fn global_search_matches(
                 warn!(
                     root = %root.display(),
                     error = %error,
-                    "Failed to load WSL global search matches from remote helper; falling back to local search"
+                    "Failed to load WSL global search matches from remote helper; returning open-buffer matches only"
                 );
+                return Ok(open_document_global_search_matches(
+                    root,
+                    open_documents,
+                    &regex,
+                    limit,
+                ));
             }
         }
     }
@@ -2226,18 +2251,19 @@ fn global_search_matches_from_remote_response(
     regex: &helix_stdx::rope::Regex,
     limit: usize,
 ) -> Vec<GlobalSearchMatch> {
-    let mut matches = Vec::new();
+    let mut matches = open_document_global_search_matches(root, open_documents, regex, limit);
     let mut open_paths = HashSet::new();
 
-    for (path, text) in open_documents {
+    for (path, _) in open_documents {
         if !path.starts_with(root) {
             continue;
         }
 
         open_paths.insert(path.clone());
-        if push_global_search_matches(&mut matches, path, text.slice(..), regex, limit) {
-            return matches;
-        }
+    }
+
+    if matches.len() >= limit {
+        return matches;
     }
 
     for remote_match in response.matches {
@@ -19220,6 +19246,29 @@ mod tests {
             matches,
             vec![GlobalSearchMatch {
                 path,
+                line: 0,
+                line_text: "unsaved needle".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn open_document_global_search_matches_skips_disk_paths() {
+        let root = PathBuf::from(r"\\wsl.localhost\Ubuntu\home\iain\repo");
+        let open_path = workspace_path_from_remote_relative(&root, Path::new("src/main.rs"));
+        let outside_path = PathBuf::from(r"\\wsl.localhost\Ubuntu\home\iain\other\main.rs");
+        let regex = compile_global_search_regex("needle", true).unwrap();
+        let open_documents = vec![
+            (open_path.clone(), Rope::from("unsaved needle\n")),
+            (outside_path, Rope::from("outside needle\n")),
+        ];
+
+        let matches = open_document_global_search_matches(&root, &open_documents, &regex, 10);
+
+        assert_eq!(
+            matches,
+            vec![GlobalSearchMatch {
+                path: open_path,
                 line: 0,
                 line_text: "unsaved needle".to_string(),
             }]
