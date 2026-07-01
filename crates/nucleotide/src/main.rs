@@ -511,18 +511,18 @@ fn main() -> Result<()> {
     // Set the working directory based on workspace root determination
     if let Some(root) = &workspace_root {
         info!(workspace_root = ?root, "Setting workspace root before Editor/LSP initialization");
-        helix_stdx::env::set_current_working_dir(root)?;
+        set_startup_working_directory(root)?;
     } else {
         // NOTE: Set the working directory early so the correct configuration is loaded. Be aware that
         // Application::new() depends on this logic so it must be updated if this changes.
         if let Some(path) = &args.working_directory {
-            helix_stdx::env::set_current_working_dir(path)?;
+            set_startup_working_directory(path)?;
         } else if let Some((path, _)) = args.files.first()
             && WslWorkspace::from_unc_path(path).is_none()
             && path.is_dir()
         {
             // If the first file is a directory, it will be the working directory unless -w was specified
-            helix_stdx::env::set_current_working_dir(path)?;
+            set_startup_working_directory(path)?;
         }
     }
 
@@ -747,6 +747,23 @@ fn open_request_path_kind(path: &Path) -> Option<StartupPathKind> {
 
 fn forwarded_working_directory_exists(path: &Path) -> bool {
     WslWorkspace::from_unc_path(path).is_some() || path.exists()
+}
+
+fn should_update_local_working_directory(path: &Path) -> bool {
+    WslWorkspace::from_unc_path(path).is_none()
+}
+
+fn set_startup_working_directory(path: &Path) -> Result<()> {
+    if should_update_local_working_directory(path) {
+        helix_stdx::env::set_current_working_dir(path)?;
+    } else {
+        info!(
+            directory = %path.display(),
+            "Skipping local working directory update for WSL workspace"
+        );
+    }
+
+    Ok(())
 }
 
 fn open_request_is_file_kind(path: &Path, kind: StartupPathKind) -> bool {
@@ -1629,15 +1646,27 @@ fn gui_main(
                         // Change working directory if needed
                         if let Some(dir) = new_working_dir.clone() {
                             if forwarded_working_directory_exists(&dir) {
-                                if let Err(e) = helix_stdx::env::set_current_working_dir(&dir) {
-                                    error!(
-                                        directory = ?dir,
-                                        error = %e,
-                                        "Failed to change working directory"
-                                    );
+                                let directory_ready = if should_update_local_working_directory(&dir) {
+                                    if let Err(e) = helix_stdx::env::set_current_working_dir(&dir) {
+                                        error!(
+                                            directory = ?dir,
+                                            error = %e,
+                                            "Failed to change working directory"
+                                        );
+                                        false
+                                    } else {
+                                        info!(directory = ?dir, "Changed working directory");
+                                        true
+                                    }
                                 } else {
-                                    info!(directory = ?dir, "Changed working directory");
+                                    info!(
+                                        directory = ?dir,
+                                        "Skipping local working directory update for WSL open request"
+                                    );
+                                    true
+                                };
 
+                                if directory_ready {
                                     // Update the core's project directory and emit OpenDirectory event
                                     cx.update(|cx| {
                                         workspace_clone.update(cx, |workspace, cx| {
@@ -1921,6 +1950,15 @@ mod tests {
         let path = Path::new(r"\\wsl.localhost\Ubuntu\home\iain\repo");
 
         assert!(forwarded_working_directory_exists(path));
+    }
+
+    #[test]
+    fn local_working_directory_updates_skip_wsl_paths() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let wsl_path = Path::new(r"\\wsl.localhost\Ubuntu\home\iain\repo");
+
+        assert!(should_update_local_working_directory(temp_dir.path()));
+        assert!(!should_update_local_working_directory(wsl_path));
     }
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]

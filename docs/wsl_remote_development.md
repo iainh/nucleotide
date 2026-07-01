@@ -94,13 +94,16 @@ editor backend into Linux:
   commands start where the project files live. Runnable/task environment
   variables are injected through Linux `env` after the `wsl.exe` boundary, so
   task-specific values are visible to the remote command instead of only the
-  Windows launcher process. Rust-analyzer runnable payloads from WSL language
-  servers normalize Linux `cwd`, `workspaceRoot`, and source locations back to
-  same-distro WSL UNC paths before terminal dispatch, so extension-provided
-  commands also route through the WSL terminal adapter. The local Rust fallback
-  runnable discovery path also supports WSL files by probing Cargo roots through
-  helper-backed directory listings instead of checking for `Cargo.toml` through
-  the Windows UNC filesystem path.
+  Windows launcher process. Startup, forwarded open requests, and directory
+  opens keep the Windows-local process working directory unchanged for WSL roots
+  while updating Nucleotide's project state to the WSL UNC root. Rust-analyzer
+  runnable payloads from WSL language servers normalize Linux `cwd`,
+  `workspaceRoot`, and source locations back to same-distro WSL UNC paths before
+  terminal dispatch, so extension-provided commands also route through the WSL
+  terminal adapter. The local Rust fallback runnable discovery path also
+  supports WSL files by probing Cargo roots through helper-backed directory
+  listings instead of checking for `Cargo.toml` through the Windows UNC
+  filesystem path.
 - The file tree uses the remote helper for WSL initial root population,
   directory expansion, and directory refresh when a Tokio runtime is available.
   Native workspaces keep the existing local filesystem path. WSL file watching is

@@ -1483,6 +1483,10 @@ fn local_path_is_directory_without_wsl_probe(path: &Path) -> bool {
     WslWorkspace::from_unc_path(path).is_none() && path.is_dir()
 }
 
+fn should_update_local_working_directory(path: &Path) -> bool {
+    WslWorkspace::from_unc_path(path).is_none()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SelectedPathKind {
     File,
@@ -10144,29 +10148,36 @@ impl Workspace {
             "🗂️ OPEN_DIR: Opening directory"
         );
 
-        // Update the editor's working directory FIRST
-        // This is critical for LSP servers to start with correct workspace
-        info!(
-            old_cwd = ?std::env::current_dir().ok(),
-            new_cwd = %workspace_root.display(),
-            "🗂️ OPEN_DIR: Changing working directory before LSP restart"
-        );
+        if should_update_local_working_directory(&workspace_root) {
+            // Update the editor's working directory FIRST
+            // This is critical for LSP servers to start with correct workspace
+            info!(
+                old_cwd = ?std::env::current_dir().ok(),
+                new_cwd = %workspace_root.display(),
+                "🗂️ OPEN_DIR: Changing working directory before LSP restart"
+            );
 
-        if let Err(e) = std::env::set_current_dir(&workspace_root) {
-            error!("🗂️ OPEN_DIR: Failed to change working directory: {}", e);
+            if let Err(e) = std::env::set_current_dir(&workspace_root) {
+                error!("🗂️ OPEN_DIR: Failed to change working directory: {}", e);
+            } else {
+                info!(
+                    confirmed_cwd = ?std::env::current_dir().ok(),
+                    "🗂️ OPEN_DIR: Working directory successfully changed"
+                );
+            }
+
+            // CRITICAL: Use helix_stdx to set working directory for consistency
+            // This ensures Helix's internal working directory is also updated
+            if let Err(e) = helix_stdx::env::set_current_working_dir(&workspace_root) {
+                error!("🗂️ OPEN_DIR: Failed to set Helix working directory: {}", e);
+            } else {
+                info!("🗂️ OPEN_DIR: Helix working directory updated successfully");
+            }
         } else {
             info!(
-                confirmed_cwd = ?std::env::current_dir().ok(),
-                "🗂️ OPEN_DIR: Working directory successfully changed"
+                workspace_root = %workspace_root.display(),
+                "OPEN_DIR: Skipping local working directory updates for WSL workspace"
             );
-        }
-
-        // CRITICAL: Use helix_stdx to set working directory for consistency
-        // This ensures Helix's internal working directory is also updated
-        if let Err(e) = helix_stdx::env::set_current_working_dir(&workspace_root) {
-            error!("🗂️ OPEN_DIR: Failed to set Helix working directory: {}", e);
-        } else {
-            info!("🗂️ OPEN_DIR: Helix working directory updated successfully");
         }
 
         // Use set_project_directory to properly initialize LSP and project management
@@ -18254,6 +18265,15 @@ mod tests {
             selected_path_kind_without_wsl_probe(path, Some(false)),
             Some(SelectedPathKind::File)
         );
+    }
+
+    #[test]
+    fn local_working_directory_updates_skip_wsl_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let wsl_path = Path::new(r"\\wsl.localhost\Ubuntu\home\iain\repo");
+
+        assert!(should_update_local_working_directory(temp.path()));
+        assert!(!should_update_local_working_directory(wsl_path));
     }
 
     #[test]
