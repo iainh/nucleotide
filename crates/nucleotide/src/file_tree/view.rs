@@ -19,7 +19,7 @@ use gpui::{
     StatefulInteractiveElement, Styled, UniformListScrollHandle, Window, div, px, uniform_list,
 };
 use nucleotide_env::{
-    WslWorkspace, load_wsl_remote_directory_listing, move_wsl_remote_path_blocking,
+    WslWorkspace, load_wsl_remote_directory_listing_bootstrapping, move_wsl_remote_path_blocking,
 };
 use nucleotide_logging::{debug, error, warn};
 use nucleotide_remote::{DirectoryListingResponse, FileMoveResponse, RemoteFileKind};
@@ -99,8 +99,11 @@ async fn read_directory_entries(
         let path_for_mapping = path.clone();
         let listing = tokio_handle
             .spawn(async move {
-                load_wsl_remote_directory_listing(&workspace, WSL_REMOTE_DIRECTORY_LIST_TIMEOUT)
-                    .await
+                load_wsl_remote_directory_listing_bootstrapping(
+                    &workspace,
+                    WSL_REMOTE_DIRECTORY_LIST_TIMEOUT,
+                )
+                .await
             })
             .await
             .map_err(|error| format!("WSL directory listing task failed: {error}"))?

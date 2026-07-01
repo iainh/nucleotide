@@ -728,6 +728,29 @@ pub async fn load_wsl_remote_directory_listing(
     parse_remote_directory_listing_output(&output.stdout)
 }
 
+pub async fn load_wsl_remote_directory_listing_bootstrapping(
+    workspace: &WslWorkspace,
+    timeout_duration: Duration,
+) -> Result<DirectoryListingResponse, WslRemoteHelperError> {
+    match load_wsl_remote_directory_listing(workspace, timeout_duration).await {
+        Ok(response) => Ok(response),
+        Err(initial_error) => {
+            let Some(source_path) = wsl_remote_helper_install_source() else {
+                return Err(initial_error);
+            };
+
+            install_wsl_remote_helper(
+                workspace,
+                &source_path,
+                Duration::from_secs(WSL_REMOTE_HELPER_INSTALL_TIMEOUT_SECONDS),
+            )
+            .await?;
+
+            load_wsl_remote_directory_listing(workspace, timeout_duration).await
+        }
+    }
+}
+
 pub fn load_wsl_remote_directory_listing_blocking(
     workspace: &WslWorkspace,
     timeout_duration: Duration,
