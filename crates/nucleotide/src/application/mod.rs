@@ -52,6 +52,7 @@ use helix_view::{
 };
 use nucleotide_events::{ProjectLspCommand, ProjectLspCommandError};
 use nucleotide_lsp::{HelixLspBridge, ProjectLspManager, ServerStatus};
+use nucleotide_workspace::{WorkspaceBackendHandle, local_workspace_backend};
 use slotmap::Key;
 
 // Import our shell environment system
@@ -473,6 +474,7 @@ pub struct Application {
     pub lsp_progress: LspProgressMap,
     pub lsp_state: Option<gpui::Entity<nucleotide_lsp::LspState>>,
     pub project_directory: Option<PathBuf>,
+    pub workspace_backend: WorkspaceBackendHandle,
     pub event_bridge_rx: Option<event_bridge::BridgedEventReceiver>,
     pub gpui_to_helix_rx: Option<gpui_to_helix_bridge::GpuiToHelixEventReceiver>,
     pub config: crate::config::Config,
@@ -6846,6 +6848,7 @@ pub fn init_editor(
         lsp_progress: LspProgressMap::new(),
         lsp_state: None, // Will be initialized when Application is wrapped in a GPUI entity
         project_directory,
+        workspace_backend: local_workspace_backend(),
         event_bridge_rx: Some(bridge_rx),
         gpui_to_helix_rx: Some(gpui_to_helix_rx),
         config: gui_config,
@@ -7931,6 +7934,7 @@ mod tests {
     use helix_view::{graphics::Rect, handlers::Handlers, theme};
     use nucleotide_core::event_bridge;
     use nucleotide_events::completion::{CompletionItem, CompletionItemKind};
+    use nucleotide_workspace::local_workspace_backend;
     use slotmap::{Key, KeyData};
     use std::cell::RefCell;
     use std::collections::{HashMap, HashSet};
@@ -8199,6 +8203,7 @@ mod tests {
                 lsp_progress: LspProgressMap::new(),
                 lsp_state: None,
                 project_directory: None,
+                workspace_backend: local_workspace_backend(),
                 event_bridge_rx: None,
                 gpui_to_helix_rx: None,
                 config: gui_config,
