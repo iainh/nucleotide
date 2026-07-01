@@ -690,14 +690,32 @@ impl Default for RemoteWorkspaceBackendOptions {
 
 impl RemoteWorkspaceBackendOptions {
     pub fn from_environment() -> Self {
-        let mut options = Self::default();
-        if let Some(path) = std::env::var_os("NUCLEOTIDE_REMOTE_HELPER") {
+        let current_exe = std::env::current_exe().ok();
+        Self::from_environment_values(
+            std::env::var_os("NUCLEOTIDE_REMOTE_HELPER"),
+            std::env::var_os("NUCLEOTIDE_LOCAL_REMOTE_HELPER"),
+            env_flag_enabled("NUCLEOTIDE_LOCAL_REMOTE_SERVICE"),
+            current_exe.as_deref(),
+        )
+    }
+
+    fn from_environment_values(
+        remote_helper_path: Option<OsString>,
+        local_helper_path: Option<OsString>,
+        use_local_service: bool,
+        current_exe: Option<&Path>,
+    ) -> Self {
+        let mut options = Self {
+            use_local_service,
+            ..Self::default()
+        };
+
+        if let Some(path) = remote_helper_path {
             options.remote_helper_path = PathBuf::from(path);
         }
-        if let Some(path) = std::env::var_os("NUCLEOTIDE_LOCAL_REMOTE_HELPER") {
-            options.local_helper_path = Some(PathBuf::from(path));
-        }
-        options.use_local_service = env_flag_enabled("NUCLEOTIDE_LOCAL_REMOTE_SERVICE");
+        options.local_helper_path = local_helper_path
+            .map(PathBuf::from)
+            .or_else(|| current_exe.and_then(bundled_local_helper_path));
         options
     }
 }
@@ -786,8 +804,9 @@ pub fn connect_workspace_backend_for_location(
             )
             .with_context(|| {
                 format!(
-                    "failed to initialize local workspace service for {}",
-                    path.display()
+                    "failed to initialize local workspace service for {}. {}",
+                    path.display(),
+                    local_helper_setup_hint(helper_path)
                 )
             })?;
 
@@ -814,8 +833,9 @@ pub fn connect_workspace_backend_for_location(
     let (backend, hello) =
         spawn_child_process_workspace_backend(identity, &command).with_context(|| {
             format!(
-                "failed to initialize remote workspace service for {}",
-                display_root.display()
+                "failed to initialize remote workspace service for {}. {}",
+                display_root.display(),
+                remote_helper_setup_hint(&location, &options.remote_helper_path)
             )
         })?;
 
@@ -835,6 +855,43 @@ fn env_flag_enabled(name: &str) -> bool {
             )
         })
         .unwrap_or(false)
+}
+
+fn bundled_local_helper_path(current_exe: &Path) -> Option<PathBuf> {
+    let executable_dir = current_exe.parent()?;
+    let helper_path = executable_dir.join(local_helper_binary_name());
+    helper_path.is_file().then_some(helper_path)
+}
+
+fn local_helper_binary_name() -> &'static str {
+    if cfg!(windows) {
+        "nucleotide-remote.exe"
+    } else {
+        "nucleotide-remote"
+    }
+}
+
+fn local_helper_setup_hint(helper_path: &Path) -> String {
+    format!(
+        "Local service mode needs nucleotide-remote at {}. Set NUCLEOTIDE_LOCAL_REMOTE_HELPER or place {} next to the nucl executable.",
+        helper_path.display(),
+        local_helper_binary_name()
+    )
+}
+
+fn remote_helper_setup_hint(location: &WorkspaceLocation, helper_path: &Path) -> String {
+    match location {
+        WorkspaceLocation::Wsl { distro, .. } => format!(
+            "Install nucleotide-remote inside WSL distro {distro} at {} or set NUCLEOTIDE_REMOTE_HELPER to a Linux path visible in that distro.",
+            helper_path.display()
+        ),
+        WorkspaceLocation::Ssh { target, .. } => format!(
+            "Install nucleotide-remote on SSH target {} at {} or set NUCLEOTIDE_REMOTE_HELPER to a remote path visible after login.",
+            ssh_target_display_name(target),
+            helper_path.display()
+        ),
+        WorkspaceLocation::Local { .. } => local_helper_setup_hint(helper_path),
+    }
 }
 
 fn ssh_target_from_workspace_target(target: &SshWorkspaceTarget) -> SshTarget {
@@ -3664,6 +3721,73 @@ mod tests {
 
         assert_eq!(connection.backend.identity(), WorkspaceIdentity::Local);
         assert_eq!(connection.hello, None);
+    }
+
+    #[test]
+    fn backend_options_discover_bundled_local_helper() {
+        let temp = tempfile::tempdir().unwrap();
+        let executable = temp.path().join("nucl");
+        let helper = temp.path().join(local_helper_binary_name());
+        std::fs::write(&executable, "").unwrap();
+        std::fs::write(&helper, "").unwrap();
+
+        let options = RemoteWorkspaceBackendOptions::from_environment_values(
+            None,
+            None,
+            true,
+            Some(&executable),
+        );
+
+        assert_eq!(options.local_helper_path.as_deref(), Some(helper.as_path()));
+        assert!(options.use_local_service);
+    }
+
+    #[test]
+    fn backend_options_prefer_local_helper_env_over_bundled_helper() {
+        let temp = tempfile::tempdir().unwrap();
+        let executable = temp.path().join("nucl");
+        let bundled_helper = temp.path().join(local_helper_binary_name());
+        let env_helper = temp.path().join("custom-helper");
+        std::fs::write(&executable, "").unwrap();
+        std::fs::write(&bundled_helper, "").unwrap();
+
+        let options = RemoteWorkspaceBackendOptions::from_environment_values(
+            None,
+            Some(env_helper.clone().into_os_string()),
+            true,
+            Some(&executable),
+        );
+
+        assert_eq!(
+            options.local_helper_path.as_deref(),
+            Some(env_helper.as_path())
+        );
+    }
+
+    #[test]
+    fn remote_helper_hints_name_transport_and_env_var() {
+        let wsl_location = WorkspaceLocation::Wsl {
+            original_path: PathBuf::from(r"\\wsl.localhost\Ubuntu\home\me\project"),
+            distro: "Ubuntu".to_string(),
+            linux_path: PathBuf::from("/home/me/project"),
+        };
+        let ssh_location = WorkspaceLocation::Ssh {
+            original_path: PathBuf::from("ssh://me@example.com/home/me/project"),
+            target: SshWorkspaceTarget {
+                host: "example.com".to_string(),
+                user: Some("me".to_string()),
+                port: None,
+            },
+            path: PathBuf::from("/home/me/project"),
+        };
+
+        let wsl_hint = remote_helper_setup_hint(&wsl_location, Path::new("/remote/nucl"));
+        let ssh_hint = remote_helper_setup_hint(&ssh_location, Path::new("/remote/nucl"));
+
+        assert!(wsl_hint.contains("WSL distro Ubuntu"));
+        assert!(wsl_hint.contains("NUCLEOTIDE_REMOTE_HELPER"));
+        assert!(ssh_hint.contains("SSH target me@example.com"));
+        assert!(ssh_hint.contains("NUCLEOTIDE_REMOTE_HELPER"));
     }
 
     #[test]
