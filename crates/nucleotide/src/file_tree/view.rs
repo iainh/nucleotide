@@ -22,6 +22,7 @@ use nucleotide_types::{VcsStatus, scrollbar::SCROLLBAR_THICKNESS};
 use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::scrollbar::{Scrollbar, ScrollbarState};
 use nucleotide_vcs::VcsServiceHandle;
+use nucleotide_workspace::{WorkspaceBackendHandle, WorkspaceIdentity, local_workspace_backend};
 use std::{
     collections::BTreeSet,
     path::{Path, PathBuf},
@@ -149,6 +150,8 @@ pub struct FileTreeView {
     _tokio_handle: Option<tokio::runtime::Handle>,
     /// File system watcher for detecting changes
     file_watcher: Option<FileTreeWatcher>,
+    /// Workspace backend used for directory listing and initial tree load.
+    workspace_backend: WorkspaceBackendHandle,
     /// Pending file system events for debouncing
     pending_fs_events: std::collections::HashMap<PathBuf, FileTreeEvent>,
     /// Last file system event time for debouncing
@@ -162,10 +165,11 @@ pub struct FileTreeView {
 impl FileTreeView {
     /// Create a new file tree view
     pub fn new(root_path: PathBuf, config: FileTreeConfig, cx: &mut Context<Self>) -> Self {
-        let mut tree = FileTree::new(root_path, config);
+        let workspace_backend = local_workspace_backend();
+        let mut tree = FileTree::new_for_backend(root_path, config, workspace_backend.identity());
 
         // Load initial tree structure
-        if let Err(e) = tree.load() {
+        if let Err(e) = tree.load_with_backend(workspace_backend.as_ref()) {
             error!(error = %e, "Failed to load file tree");
         }
 
@@ -189,6 +193,7 @@ impl FileTreeView {
             horizontal_scrollbar_state,
             _tokio_handle: None,
             file_watcher: None,
+            workspace_backend,
             pending_fs_events: std::collections::HashMap::new(),
             last_fs_event_time: None,
             initial_load_in_flight: false,
@@ -211,7 +216,25 @@ impl FileTreeView {
         tokio_handle: Option<tokio::runtime::Handle>,
         cx: &mut Context<Self>,
     ) -> Self {
-        let tree = FileTree::new(root_path.clone(), config);
+        Self::new_with_runtime_and_backend(
+            root_path,
+            config,
+            tokio_handle,
+            local_workspace_backend(),
+            cx,
+        )
+    }
+
+    /// Create a new file tree view with a workspace backend.
+    pub fn new_with_runtime_and_backend(
+        root_path: PathBuf,
+        config: FileTreeConfig,
+        tokio_handle: Option<tokio::runtime::Handle>,
+        workspace_backend: WorkspaceBackendHandle,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let tree =
+            FileTree::new_for_backend(root_path.clone(), config, workspace_backend.identity());
 
         let scroll_handle = UniformListScrollHandle::new();
         let horizontal_scroll_handle = ScrollHandle::new();
@@ -233,6 +256,7 @@ impl FileTreeView {
             horizontal_scrollbar_state,
             _tokio_handle: tokio_handle,
             file_watcher: None,
+            workspace_backend,
             pending_fs_events: std::collections::HashMap::new(),
             last_fs_event_time: None,
             initial_load_in_flight: false,
@@ -266,13 +290,16 @@ impl FileTreeView {
         let load_revision = self.tree_revision;
         let root_path = self.tree.root_path().to_path_buf();
         let config = self.tree.config().clone();
+        let workspace_backend = self.workspace_backend.clone();
 
         cx.spawn(async move |this, cx| {
             let load_result = cx
                 .background_executor()
                 .spawn(async move {
-                    let mut tree = FileTree::new(root_path, config);
-                    tree.load().map(|_| tree)
+                    let mut tree =
+                        FileTree::new_for_backend(root_path, config, workspace_backend.identity());
+                    tree.load_with_backend(workspace_backend.as_ref())
+                        .map(|_| tree)
                 })
                 .await;
 
@@ -302,7 +329,9 @@ impl FileTreeView {
                                 previous_selected_paths,
                             );
 
-                            if watch_filesystem {
+                            if watch_filesystem
+                                && matches!(view.workspace_backend.identity(), WorkspaceIdentity::Local)
+                            {
                                 debug!(root_path = ?root_path, "Attempting to create file system watcher");
                                 match FileTreeWatcher::new(root_path.clone()) {
                                     Ok(watcher) => {
@@ -319,7 +348,11 @@ impl FileTreeView {
                                     }
                                 }
                             } else {
-                                debug!("File system watching disabled in config");
+                                debug!(
+                                    backend = ?view.workspace_backend.identity(),
+                                    watch_filesystem,
+                                    "File system watching disabled for file tree"
+                                );
                             }
                         }
                         Err(error) => {
@@ -709,33 +742,20 @@ impl FileTreeView {
 
             // Expand is asynchronous - spawn background task
             let path_for_io = path_buf.clone();
+            let workspace_backend = self.workspace_backend.clone();
             cx.spawn(async move |this, cx| {
-                // Do the file I/O in a blocking task to avoid blocking the executor
-                let entries = cx
+                let listing = cx
                     .background_executor()
-                    .spawn(async move {
-                        match std::fs::read_dir(&path_for_io) {
-                            Ok(read_dir) => {
-                                let mut entries = Vec::new();
-                                for entry in read_dir.flatten() {
-                                    if let Ok(metadata) = entry.metadata() {
-                                        entries.push((entry.path(), metadata));
-                                    }
-                                }
-                                Ok(entries)
-                            }
-                            Err(e) => Err(e),
-                        }
-                    })
+                    .spawn(async move { workspace_backend.list_dir(&path_for_io).await })
                     .await;
 
                 // Update the UI on the main thread
                 if let Some(this) = this.upgrade() {
                     this.update(cx, |view, cx| {
-                        match entries {
-                            Ok(entries) => {
+                        match listing {
+                            Ok(listing) => {
                                 if let Err(e) =
-                                    view.tree.expand_directory_with_entries(&path_buf, entries)
+                                    view.tree.expand_directory_with_listing(&path_buf, listing)
                                 {
                                     error!(
                                         directory = %path_buf.display(),
@@ -902,37 +922,40 @@ impl FileTreeView {
 
     /// Refresh the tree
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
-        if let Err(e) = self.tree.refresh() {
-            error!(error = %e, "Failed to refresh file tree");
-        } else {
-            self.tree_revision = self.tree_revision.wrapping_add(1);
-            // Apply test VCS statuses for demonstration
-            self.apply_test_statuses(cx);
-            cx.notify();
-        }
+        self.start_initial_load(cx);
     }
 
     /// Refresh a single directory by rescanning its entries and expanding it
     pub fn refresh_directory(&mut self, dir: &Path, cx: &mut Context<Self>) {
-        match std::fs::read_dir(dir) {
-            Ok(read_dir) => {
-                let mut entries = Vec::new();
-                for entry in read_dir.flatten() {
-                    if let Ok(metadata) = entry.metadata() {
-                        entries.push((entry.path(), metadata));
+        let dir = dir.to_path_buf();
+        let workspace_backend = self.workspace_backend.clone();
+
+        cx.spawn(async move |this, cx| {
+            let dir_for_io = dir.clone();
+            let listing = cx
+                .background_executor()
+                .spawn(async move { workspace_backend.list_dir(&dir_for_io).await })
+                .await;
+
+            if let Some(this) = this.upgrade() {
+                this.update(cx, |view, cx| {
+                    match listing {
+                        Ok(listing) => {
+                            if let Err(e) = view.tree.expand_directory_with_listing(&dir, listing) {
+                                error!(path=%dir.display(), error=%e, "Failed to refresh directory entries");
+                            } else {
+                                view.tree_revision = view.tree_revision.wrapping_add(1);
+                            }
+                        }
+                        Err(e) => {
+                            error!(path=%dir.display(), error=%e, "Failed to read directory during refresh");
+                        }
                     }
-                }
-                if let Err(e) = self.tree.expand_directory_with_entries(dir, entries) {
-                    error!(path=%dir.display(), error=%e, "Failed to refresh directory entries");
-                } else {
-                    self.tree_revision = self.tree_revision.wrapping_add(1);
-                }
-                cx.notify();
+                    cx.notify();
+                });
             }
-            Err(e) => {
-                error!(path=%dir.display(), error=%e, "Failed to read directory during refresh");
-            }
-        }
+        })
+        .detach();
     }
 
     /// Handle VCS refresh request - now uses centralized VCS service
