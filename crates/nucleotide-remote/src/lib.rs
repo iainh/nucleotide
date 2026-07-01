@@ -290,6 +290,34 @@ pub fn wsl_service_command(
     }
 }
 
+pub fn wsl_lsp_proxy_command(
+    distro: impl AsRef<OsStr>,
+    linux_root: impl AsRef<Path>,
+    helper_path: impl AsRef<Path>,
+    server: impl AsRef<OsStr>,
+) -> RemoteServiceCommand {
+    let linux_root = linux_root.as_ref();
+    let helper_path = helper_path.as_ref();
+    RemoteServiceCommand {
+        program: OsString::from("wsl.exe"),
+        args: vec![
+            OsString::from("--distribution"),
+            distro.as_ref().to_os_string(),
+            OsString::from("--cd"),
+            linux_root.as_os_str().to_os_string(),
+            OsString::from("--exec"),
+            helper_path.as_os_str().to_os_string(),
+            OsString::from("lsp-proxy"),
+            OsString::from("--workspace"),
+            linux_root.as_os_str().to_os_string(),
+            OsString::from("--server"),
+            server.as_ref().to_os_string(),
+            OsString::from("--"),
+        ],
+        current_dir: None,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SshTarget {
     pub host: String,
@@ -325,6 +353,37 @@ pub fn ssh_service_command(
         "exec {} serve --workspace {}",
         quote_posix_shell(&helper_path),
         quote_posix_shell(&remote_root)
+    );
+    let mut args = Vec::new();
+    if let Some(port) = target.port {
+        args.push(OsString::from("-p"));
+        args.push(OsString::from(port.to_string()));
+    }
+    args.push(OsString::from(target.target_arg()));
+    args.push(OsString::from("--"));
+    args.push(OsString::from(remote_command));
+
+    RemoteServiceCommand {
+        program: OsString::from("ssh"),
+        args,
+        current_dir: None,
+    }
+}
+
+pub fn ssh_lsp_proxy_command(
+    target: SshTarget,
+    remote_root: impl AsRef<Path>,
+    helper_path: impl AsRef<Path>,
+    server: impl AsRef<OsStr>,
+) -> RemoteServiceCommand {
+    let remote_root = remote_root.as_ref().to_string_lossy();
+    let helper_path = helper_path.as_ref().to_string_lossy();
+    let server = server.as_ref().to_string_lossy();
+    let remote_command = format!(
+        "exec {} lsp-proxy --workspace {} --server {} --",
+        quote_posix_shell(&helper_path),
+        quote_posix_shell(&remote_root),
+        quote_posix_shell(&server)
     );
     let mut args = Vec::new();
     if let Some(port) = target.port {
@@ -679,6 +738,30 @@ pub fn remote_service_command_for_location(
             ssh_target_from_workspace_target(target),
             path,
             helper_path,
+        )),
+    }
+}
+
+pub fn remote_lsp_proxy_command_for_location(
+    location: &WorkspaceLocation,
+    helper_path: impl AsRef<Path>,
+    server: impl AsRef<OsStr>,
+) -> Option<RemoteServiceCommand> {
+    match location {
+        WorkspaceLocation::Local { .. } => None,
+        WorkspaceLocation::Wsl {
+            distro, linux_path, ..
+        } => Some(wsl_lsp_proxy_command(
+            distro,
+            linux_path,
+            helper_path,
+            server,
+        )),
+        WorkspaceLocation::Ssh { target, path, .. } => Some(ssh_lsp_proxy_command(
+            ssh_target_from_workspace_target(target),
+            path,
+            helper_path,
+            server,
         )),
     }
 }
@@ -3171,6 +3254,36 @@ mod tests {
     }
 
     #[test]
+    fn wsl_lsp_proxy_command_uses_remote_helper() {
+        let spec = wsl_lsp_proxy_command(
+            "Ubuntu",
+            "/home/me/project",
+            "/home/me/.cache/nucl/remote",
+            "rust-analyzer",
+        );
+
+        assert_eq!(spec.program, OsString::from("wsl.exe"));
+        assert_eq!(
+            spec.args,
+            vec![
+                OsString::from("--distribution"),
+                OsString::from("Ubuntu"),
+                OsString::from("--cd"),
+                OsString::from("/home/me/project"),
+                OsString::from("--exec"),
+                OsString::from("/home/me/.cache/nucl/remote"),
+                OsString::from("lsp-proxy"),
+                OsString::from("--workspace"),
+                OsString::from("/home/me/project"),
+                OsString::from("--server"),
+                OsString::from("rust-analyzer"),
+                OsString::from("--"),
+            ]
+        );
+        assert_eq!(spec.current_dir, None);
+    }
+
+    #[test]
     fn ssh_service_command_quotes_remote_paths() {
         let mut target = SshTarget::new("devbox");
         target.user = Some("me".to_string());
@@ -3191,6 +3304,33 @@ mod tests {
         assert!(command.starts_with("exec "));
         assert!(command.contains("'/home/me/.cache/nucleotide remote/bin'"));
         assert!(command.contains("'/home/me/project with spaces/it'\"'\"'s'"));
+    }
+
+    #[test]
+    fn ssh_lsp_proxy_command_quotes_remote_paths_and_server() {
+        let mut target = SshTarget::new("devbox");
+        target.user = Some("me".to_string());
+        target.port = Some(2222);
+
+        let spec = ssh_lsp_proxy_command(
+            target,
+            "/home/me/project with spaces/it's",
+            "/home/me/.cache/nucleotide remote/bin",
+            "typescript-language-server",
+        );
+
+        assert_eq!(spec.program, OsString::from("ssh"));
+        assert_eq!(spec.args[0], OsString::from("-p"));
+        assert_eq!(spec.args[1], OsString::from("2222"));
+        assert_eq!(spec.args[2], OsString::from("me@devbox"));
+        assert_eq!(spec.args[3], OsString::from("--"));
+        let command = spec.args[4].to_string_lossy();
+        assert!(command.starts_with("exec "));
+        assert!(command.contains("'/home/me/.cache/nucleotide remote/bin'"));
+        assert!(command.contains(" lsp-proxy "));
+        assert!(command.contains("'/home/me/project with spaces/it'\"'\"'s'"));
+        assert!(command.contains("typescript-language-server"));
+        assert!(command.ends_with(" --"));
     }
 
     #[test]
@@ -3246,6 +3386,32 @@ mod tests {
     }
 
     #[test]
+    fn remote_lsp_proxy_command_for_wsl_uses_native_root() {
+        let location = WorkspaceLocation::Wsl {
+            original_path: PathBuf::from(r"\\wsl.localhost\Ubuntu\home\me\project"),
+            distro: "Ubuntu".to_string(),
+            linux_path: PathBuf::from("/home/me/project"),
+        };
+
+        let spec = remote_lsp_proxy_command_for_location(
+            &location,
+            "/remote/bin/nucleotide-remote",
+            "rust-analyzer",
+        )
+        .unwrap();
+
+        assert_eq!(spec.program, OsString::from("wsl.exe"));
+        assert_eq!(spec.args[3], OsString::from("/home/me/project"));
+        assert_eq!(
+            spec.args[5],
+            OsString::from("/remote/bin/nucleotide-remote")
+        );
+        assert_eq!(spec.args[6], OsString::from("lsp-proxy"));
+        assert_eq!(spec.args[8], OsString::from("/home/me/project"));
+        assert_eq!(spec.args[10], OsString::from("rust-analyzer"));
+    }
+
+    #[test]
     fn remote_service_command_for_ssh_uses_target_and_native_root() {
         let location = WorkspaceLocation::Ssh {
             original_path: PathBuf::from("ssh://me@example.com:2222/home/me/project"),
@@ -3268,6 +3434,37 @@ mod tests {
         let command = spec.args[4].to_string_lossy();
         assert!(command.contains("/remote/bin/nucleotide-remote"));
         assert!(command.contains("/home/me/project"));
+    }
+
+    #[test]
+    fn remote_lsp_proxy_command_for_ssh_uses_target_and_native_root() {
+        let location = WorkspaceLocation::Ssh {
+            original_path: PathBuf::from("ssh://me@example.com:2222/home/me/project"),
+            target: SshWorkspaceTarget {
+                host: "example.com".to_string(),
+                user: Some("me".to_string()),
+                port: Some(2222),
+            },
+            path: PathBuf::from("/home/me/project"),
+        };
+
+        let spec = remote_lsp_proxy_command_for_location(
+            &location,
+            "/remote/bin/nucleotide-remote",
+            "rust-analyzer",
+        )
+        .unwrap();
+
+        assert_eq!(spec.program, OsString::from("ssh"));
+        assert_eq!(spec.args[0], OsString::from("-p"));
+        assert_eq!(spec.args[1], OsString::from("2222"));
+        assert_eq!(spec.args[2], OsString::from("me@example.com"));
+        assert_eq!(spec.args[3], OsString::from("--"));
+        let command = spec.args[4].to_string_lossy();
+        assert!(command.contains("/remote/bin/nucleotide-remote"));
+        assert!(command.contains("lsp-proxy"));
+        assert!(command.contains("/home/me/project"));
+        assert!(command.contains("rust-analyzer"));
     }
 
     #[test]
