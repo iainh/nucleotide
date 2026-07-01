@@ -4,6 +4,7 @@
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use futures::executor::block_on;
+use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use nucleotide_env::{EnvironmentOrigin, ProjectEnvironment, ShellEnvironmentError};
 use nucleotide_workspace::{
     DirectoryListing, FileKind, FileRead, FileSearchQuery, FileSearchResult, FileStat,
@@ -20,7 +21,7 @@ use std::error::Error;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::io::{self, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -667,6 +668,7 @@ impl HelloResponse {
                 "git_status".to_string(),
                 "run_process".to_string(),
                 "binary_body_frames".to_string(),
+                "directory_entry_ignored".to_string(),
             ],
         }
     }
@@ -940,6 +942,8 @@ pub struct DirectoryEntryResponse {
     pub stat: FileStatResponse,
     pub symlink_target: Option<PathBuf>,
     pub target_exists: Option<bool>,
+    #[serde(default)]
+    pub ignored: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1702,6 +1706,7 @@ where
 pub struct WorkspaceService<B> {
     backend: B,
     workspace_root: PathBuf,
+    ignore_matcher: Option<Gitignore>,
     project_environment: ProjectEnvironment,
     runtime: tokio::runtime::Runtime,
 }
@@ -1720,6 +1725,7 @@ where
         environment_baseline: HashMap<String, String>,
     ) -> Result<Self> {
         let workspace_root = normalize_path_lexically(&workspace_root);
+        let ignore_matcher = build_service_ignore_matcher(&workspace_root);
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -1727,6 +1733,7 @@ where
         Ok(Self {
             backend,
             workspace_root,
+            ignore_matcher,
             project_environment: ProjectEnvironment::new(Some(environment_baseline)),
             runtime,
         })
@@ -1845,6 +1852,11 @@ where
                 let path = self.resolve_path(&path)?;
                 let listing =
                     block_on(self.backend.list_dir(&path)).map_err(remote_error_from_workspace)?;
+                let listing = annotate_directory_listing_ignored(
+                    listing,
+                    &self.workspace_root,
+                    self.ignore_matcher.as_ref(),
+                );
                 Ok(ServiceOutcome::Continue(
                     RemoteResponse::ListDir(directory_listing_response(listing)),
                     Vec::new(),
@@ -2247,6 +2259,7 @@ fn directory_listing_response(listing: DirectoryListing) -> DirectoryListingResp
                 stat: file_stat_response(entry.stat),
                 symlink_target: entry.symlink_target,
                 target_exists: entry.target_exists,
+                ignored: entry.ignored,
             })
             .collect(),
     }
@@ -2343,6 +2356,81 @@ fn process_output_response(output: &ProcessOutput) -> ProcessOutputResponse {
     }
 }
 
+fn build_service_ignore_matcher(root_path: &Path) -> Option<Gitignore> {
+    let mut builder = GitignoreBuilder::new(root_path);
+
+    if let Ok(gitignore_path) = root_path.join(".gitignore").canonicalize()
+        && gitignore_path.exists()
+    {
+        let _ = builder.add(&gitignore_path);
+    }
+
+    if let Some(git_config_dir) = dirs::config_dir() {
+        let global_gitignore = git_config_dir.join("git").join("ignore");
+        if global_gitignore.exists() {
+            let _ = builder.add(&global_gitignore);
+        }
+    }
+
+    let git_exclude = root_path.join(".git").join("info").join("exclude");
+    if git_exclude.exists() {
+        let _ = builder.add(&git_exclude);
+    }
+
+    let ignore_file = root_path.join(".ignore");
+    if ignore_file.exists() {
+        let _ = builder.add(&ignore_file);
+    }
+
+    let helix_ignore = root_path.join(".helix").join("ignore");
+    if helix_ignore.exists() {
+        let _ = builder.add(&helix_ignore);
+    }
+
+    builder.build().ok()
+}
+
+fn service_path_is_ignored(
+    root_path: &Path,
+    matcher: Option<&Gitignore>,
+    path: &Path,
+    kind: FileKind,
+) -> bool {
+    for component in path.components() {
+        if let Component::Normal(name) = component
+            && let Some(name_str) = name.to_str()
+            && matches!(name_str, ".git" | ".svn" | ".hg" | ".bzr")
+        {
+            return true;
+        }
+    }
+
+    if let Some(matcher) = matcher
+        && let Ok(relative_path) = path.strip_prefix(root_path)
+    {
+        let matched = matcher.matched(relative_path, kind == FileKind::Directory);
+        return matched.is_ignore();
+    }
+
+    false
+}
+
+fn annotate_directory_listing_ignored(
+    mut listing: DirectoryListing,
+    root_path: &Path,
+    matcher: Option<&Gitignore>,
+) -> DirectoryListing {
+    for entry in &mut listing.entries {
+        entry.ignored = Some(service_path_is_ignored(
+            root_path,
+            matcher,
+            &entry.path,
+            entry.stat.kind,
+        ));
+    }
+    listing
+}
+
 fn file_stat_from_response(stat: FileStatResponse) -> FileStat {
     FileStat {
         path: stat.path,
@@ -2367,6 +2455,7 @@ fn directory_listing_from_response(listing: DirectoryListingResponse) -> Directo
                 stat: file_stat_from_response(entry.stat),
                 symlink_target: entry.symlink_target,
                 target_exists: entry.target_exists,
+                ignored: entry.ignored,
             })
             .collect(),
     }
@@ -3194,6 +3283,11 @@ mod tests {
         assert_eq!(hello.workspace_root, temp.path());
         assert_eq!(hello.helper_version, env!("CARGO_PKG_VERSION"));
         assert!(hello.capabilities.contains(&"list_dir".to_string()));
+        assert!(
+            hello
+                .capabilities
+                .contains(&"directory_entry_ignored".to_string())
+        );
     }
 
     #[test]
@@ -4425,6 +4519,30 @@ esac
             snapshot.variables.get("ZED_ENVIRONMENT"),
             Some(&"process-baseline".to_string())
         );
+    }
+
+    #[test]
+    fn remote_workspace_backend_marks_ignored_directory_entries() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join(".gitignore"), "ignored.log\n").unwrap();
+        std::fs::write(temp.path().join("visible.rs"), "").unwrap();
+        std::fs::write(temp.path().join("ignored.log"), "").unwrap();
+        let backend = remote_backend(temp.path());
+
+        let listing = block_on(backend.list_dir(Path::new(""))).unwrap();
+
+        let visible = listing
+            .entries
+            .iter()
+            .find(|entry| entry.name == "visible.rs")
+            .expect("visible entry");
+        let ignored = listing
+            .entries
+            .iter()
+            .find(|entry| entry.name == "ignored.log")
+            .expect("ignored entry");
+        assert_eq!(visible.ignored, Some(false));
+        assert_eq!(ignored.ignored, Some(true));
     }
 
     #[test]
