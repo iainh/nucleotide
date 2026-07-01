@@ -598,6 +598,7 @@ pub struct FileSearchRequest {
     pub git_exclude: bool,
     pub follow_links: bool,
     pub max_depth: Option<usize>,
+    pub excluded_relative_prefixes: Vec<PathBuf>,
 }
 
 impl Default for FileSearchRequest {
@@ -615,6 +616,7 @@ impl Default for FileSearchRequest {
             git_exclude: query.git_exclude,
             follow_links: query.follow_links,
             max_depth: query.max_depth,
+            excluded_relative_prefixes: query.excluded_relative_prefixes,
         }
     }
 }
@@ -1000,6 +1002,7 @@ where
             git_exclude: query.git_exclude,
             follow_links: query.follow_links,
             max_depth: query.max_depth,
+            excluded_relative_prefixes: query.excluded_relative_prefixes,
         };
         let (response, _) = self.request(
             "file search",
@@ -1309,6 +1312,7 @@ where
                     git_exclude: request.git_exclude,
                     follow_links: request.follow_links,
                     max_depth: request.max_depth,
+                    excluded_relative_prefixes: request.excluded_relative_prefixes,
                 };
                 let result = block_on(self.backend.file_search(query))
                     .map_err(remote_error_from_workspace)?;
@@ -2210,6 +2214,32 @@ mod tests {
             panic!("expected file search response");
         };
         assert_eq!(search.files, vec![PathBuf::from("src/main.rs")]);
+        assert!(!search.truncated);
+    }
+
+    #[test]
+    fn service_file_search_excludes_relative_prefixes_before_limit() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(temp.path().join("skip")).unwrap();
+        std::fs::write(temp.path().join("skip").join("a.rs"), "").unwrap();
+        std::fs::write(temp.path().join("skip").join("b.rs"), "").unwrap();
+        std::fs::write(temp.path().join("main.rs"), "").unwrap();
+
+        let frame = read_first_output_frame(single_request_output(
+            temp.path(),
+            RemoteRequest::FileSearch(FileSearchRequest {
+                limit: 1,
+                excluded_relative_prefixes: vec![PathBuf::from("skip")],
+                ..FileSearchRequest::default()
+            }),
+            Vec::new(),
+        ));
+
+        let response = frame.decode_json_header::<ResponseEnvelope>().unwrap();
+        let RemoteResponse::FileSearch(search) = response.response else {
+            panic!("expected file search response");
+        };
+        assert_eq!(search.files, vec![PathBuf::from("main.rs")]);
         assert!(!search.truncated);
     }
 

@@ -73,7 +73,9 @@ use nucleotide_env::EnvironmentOrigin;
 use nucleotide_events::v2::run::{Event as RunEvent, ResolvedTask, RunId, RunStatus};
 use nucleotide_events::v2::terminal::{Event as TerminalEvent, TerminalId};
 use nucleotide_terminal::TerminalBounds;
-use nucleotide_workspace::{FileKind, LocalWorkspaceBackend, TextSearchQuery, WorkspaceBackend};
+use nucleotide_workspace::{
+    FileKind, FileSearchQuery, LocalWorkspaceBackend, TextSearchQuery, WorkspaceBackend,
+};
 use slotmap::KeyData;
 // (no direct Workspace v2 items used here)
 use nucleotide_vcs::{VcsEvent, VcsServiceHandle};
@@ -15139,78 +15141,18 @@ fn open_at(
     base_dir: std::path::PathBuf,
     cx: &mut Context<Workspace>,
 ) {
-    use crate::picker_view::PickerItem;
-    use ignore::WalkBuilder;
-    use std::sync::Arc;
-
     debug!("Opening file picker");
-
-    // Get all files in the current directory using ignore crate (respects .gitignore)
-    let mut items = Vec::new();
 
     debug!("Base directory for file picker: {:?}", base_dir);
 
-    // Use ignore::Walk to get files, respecting .gitignore and other VCS ignore files
-    // Configure WalkBuilder like Helix does to properly respect all ignore files
-    let mut walker = WalkBuilder::new(&base_dir);
-
-    // Enable all ignore file types that Helix uses by default
-    walker.git_ignore(true); // Respect .gitignore files
-    walker.git_global(true); // Respect global gitignore
-    walker.git_exclude(true); // Respect .git/info/exclude
-    walker.ignore(true); // Respect .ignore files
-    walker.parents(true); // Check parent directories for ignore files
-    walker.hidden(true); // Hide hidden files (files starting with .)
-
-    // Add Helix-specific ignore files
-    walker.add_custom_ignore_filename(".helix/ignore");
-
-    // Add standard editor ignore patterns
-    walker.filter_entry(|entry| {
-        let path = entry.path();
-        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-
-        // Skip common VCS directories that might not be caught by ignore files
-        if path.is_dir() {
-            match file_name {
-                ".git" | ".svn" | ".hg" | ".bzr" => return false,
-                _ => {}
-            }
+    let backend = LocalWorkspaceBackend;
+    let mut items = match file_picker_items_from_backend(&backend, &base_dir, 1000) {
+        Ok(items) => items,
+        Err(err) => {
+            warn!(error = %err, "Failed to build file picker items");
+            Vec::new()
         }
-
-        true
-    });
-
-    for entry in walker.build().filter_map(std::result::Result::ok) {
-        let path = entry.path().to_path_buf();
-
-        // Skip directories
-        if path.is_dir() {
-            continue;
-        }
-
-        // Get relative path from base directory
-        let relative_path = path.strip_prefix(&base_dir).unwrap_or(&path);
-        if relative_path.starts_with("zed-source") {
-            continue;
-        }
-        let path_str = relative_path.to_string_lossy().into_owned();
-
-        // For project files, use path as label for better visibility
-        items.push(PickerItem {
-            label: path_str.clone().into(),
-            sublabel: None,
-            data: Arc::new(path.clone()) as Arc<dyn std::any::Any + Send + Sync>,
-            file_path: Some(path.clone()),
-            vcs_status: None, // Will be populated using global VCS service
-            columns: None,    // File picker uses simple label display
-        });
-
-        // Limit to 1000 files to prevent hanging on large projects
-        if items.len() >= 1000 {
-            break;
-        }
-    }
+    };
 
     // Sort items by label (path) for consistent ordering
     items.sort_by_key(|item| item.label.clone());
@@ -15251,6 +15193,48 @@ fn open_at(
     debug!("Emitting file picker to overlay");
 
     emit_picker_update(file_picker, &overlay, cx);
+}
+
+fn file_picker_items_from_backend(
+    backend: &(impl WorkspaceBackend + ?Sized),
+    base_dir: &Path,
+    limit: usize,
+) -> Result<Vec<crate::picker_view::PickerItem>, String> {
+    use crate::picker_view::PickerItem;
+    use std::sync::Arc;
+
+    let result = futures_executor::block_on(backend.file_search(FileSearchQuery {
+        root: base_dir.to_path_buf(),
+        pattern: None,
+        limit,
+        hidden: false,
+        parents: true,
+        ignore: true,
+        git_ignore: true,
+        git_global: true,
+        git_exclude: true,
+        follow_links: false,
+        max_depth: None,
+        excluded_relative_prefixes: vec![PathBuf::from("zed-source")],
+    }))
+    .map_err(|err| err.to_string())?;
+
+    Ok(result
+        .files
+        .into_iter()
+        .map(|relative_path| {
+            let path = base_dir.join(&relative_path);
+            let label = relative_path.to_string_lossy().into_owned();
+            PickerItem {
+                label: label.into(),
+                sublabel: None,
+                data: Arc::new(path.clone()) as Arc<dyn std::any::Any + Send + Sync>,
+                file_path: Some(path),
+                vcs_status: None,
+                columns: None,
+            }
+        })
+        .collect())
 }
 
 fn open_directory(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &mut App) {
@@ -18724,6 +18708,29 @@ mod tests {
         .unwrap();
 
         assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn file_picker_items_from_backend_uses_workspace_file_search() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(temp_dir.path().join("src")).unwrap();
+        std::fs::create_dir(temp_dir.path().join("zed-source")).unwrap();
+        std::fs::write(temp_dir.path().join("src").join("main.rs"), "").unwrap();
+        std::fs::write(temp_dir.path().join(".hidden"), "").unwrap();
+        std::fs::write(temp_dir.path().join("zed-source").join("skip.rs"), "").unwrap();
+
+        let backend = LocalWorkspaceBackend;
+        let items = file_picker_items_from_backend(&backend, temp_dir.path(), 100).unwrap();
+        let labels = items
+            .iter()
+            .map(|item| item.label.to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(labels, vec!["src/main.rs"]);
+        assert_eq!(
+            items[0].file_path.as_ref(),
+            Some(&temp_dir.path().join("src").join("main.rs"))
+        );
     }
 
     // Helper struct for testing workspace functionality
