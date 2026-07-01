@@ -7,6 +7,7 @@ use futures::executor::block_on;
 use nucleotide_env::{EnvironmentOrigin, ProjectEnvironment, ShellEnvironmentError};
 use nucleotide_workspace::{
     DirectoryListing, FileKind, FileRead, FileSearchQuery, FileSearchResult, FileStat,
+    GitHeadResult, GitStatusEntry, GitStatusKind, GitStatusOptions, GitStatusResult,
     LocalWorkspaceBackend, ProjectEnvironmentOrigin, ProjectEnvironmentSnapshot, ReadOptions,
     RemoteWorkspaceIdentity, TextSearchMatch, TextSearchQuery, TextSearchResult, WorkspaceBackend,
     WorkspaceError, WorkspaceIdentity, WriteOptions, WriteResult,
@@ -439,6 +440,14 @@ pub enum RemoteRequest {
     ProjectEnvironment {
         root: PathBuf,
     },
+    GitHead {
+        root: PathBuf,
+    },
+    GitStatus {
+        root: PathBuf,
+        include_untracked: bool,
+        limit: usize,
+    },
     Shutdown,
 }
 
@@ -468,6 +477,8 @@ pub enum RemoteResponse {
     FileSearch(FileSearchResponse),
     TextSearch(TextSearchResponse),
     ProjectEnvironment(ProjectEnvironmentResponse),
+    GitHead(GitHeadResponse),
+    GitStatus(GitStatusResponse),
     Shutdown,
 }
 
@@ -517,6 +528,8 @@ impl HelloResponse {
                 "file_search".to_string(),
                 "text_search".to_string(),
                 "project_environment".to_string(),
+                "git_head".to_string(),
+                "git_status".to_string(),
                 "binary_body_frames".to_string(),
             ],
         }
@@ -683,6 +696,42 @@ pub struct ProjectEnvironmentResponse {
     pub variables: BTreeMap<String, String>,
     pub origin: RemoteProjectEnvironmentOrigin,
     pub diagnostics: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteGitStatusKind {
+    Unmodified,
+    Modified,
+    Added,
+    Deleted,
+    Renamed,
+    Copied,
+    TypeChanged,
+    Untracked,
+    Conflicted,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitStatusEntryResponse {
+    pub relative_path: PathBuf,
+    pub original_relative_path: Option<PathBuf>,
+    pub index_status: RemoteGitStatusKind,
+    pub working_tree_status: RemoteGitStatusKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitStatusResponse {
+    pub root: PathBuf,
+    pub entries: Vec<GitStatusEntryResponse>,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitHeadResponse {
+    pub root: PathBuf,
+    pub head: Option<String>,
 }
 
 #[derive(Debug)]
@@ -1015,6 +1064,42 @@ where
             )),
         }
     }
+
+    async fn git_head(&self, root: &Path) -> nucleotide_workspace::Result<GitHeadResult> {
+        let (response, _) = self.request(
+            "git head",
+            root,
+            RemoteRequest::GitHead {
+                root: root.to_path_buf(),
+            },
+            Vec::new(),
+        )?;
+        match response {
+            RemoteResponse::GitHead(result) => Ok(git_head_from_response(result)),
+            other => Err(unexpected_response_error("git head", root, other)),
+        }
+    }
+
+    async fn git_status(
+        &self,
+        root: &Path,
+        options: GitStatusOptions,
+    ) -> nucleotide_workspace::Result<GitStatusResult> {
+        let (response, _) = self.request(
+            "git status",
+            root,
+            RemoteRequest::GitStatus {
+                root: root.to_path_buf(),
+                include_untracked: options.include_untracked,
+                limit: options.limit,
+            },
+            Vec::new(),
+        )?;
+        match response {
+            RemoteResponse::GitStatus(result) => Ok(git_status_from_response(result)),
+            other => Err(unexpected_response_error("git status", root, other)),
+        }
+    }
 }
 
 pub struct WorkspaceService<B> {
@@ -1259,6 +1344,34 @@ where
                     Vec::new(),
                 ))
             }
+            RemoteRequest::GitHead { root } => {
+                let root = self.resolve_search_root(&root);
+                let result =
+                    block_on(self.backend.git_head(&root)).map_err(remote_error_from_workspace)?;
+                Ok(ServiceOutcome::Continue(
+                    RemoteResponse::GitHead(git_head_response(result)),
+                    Vec::new(),
+                ))
+            }
+            RemoteRequest::GitStatus {
+                root,
+                include_untracked,
+                limit,
+            } => {
+                let root = self.resolve_search_root(&root);
+                let result = block_on(self.backend.git_status(
+                    &root,
+                    GitStatusOptions {
+                        include_untracked,
+                        limit,
+                    },
+                ))
+                .map_err(remote_error_from_workspace)?;
+                Ok(ServiceOutcome::Continue(
+                    RemoteResponse::GitStatus(git_status_response(result)),
+                    Vec::new(),
+                ))
+            }
             RemoteRequest::Shutdown => Ok(ServiceOutcome::Shutdown),
         }
     }
@@ -1436,6 +1549,30 @@ fn project_environment_response(
     }
 }
 
+fn git_head_response(result: GitHeadResult) -> GitHeadResponse {
+    GitHeadResponse {
+        root: result.root,
+        head: result.head,
+    }
+}
+
+fn git_status_response(result: GitStatusResult) -> GitStatusResponse {
+    GitStatusResponse {
+        root: result.root,
+        entries: result
+            .entries
+            .into_iter()
+            .map(|entry| GitStatusEntryResponse {
+                relative_path: entry.relative_path,
+                original_relative_path: entry.original_relative_path,
+                index_status: remote_git_status_kind(entry.index_status),
+                working_tree_status: remote_git_status_kind(entry.working_tree_status),
+            })
+            .collect(),
+        truncated: result.truncated,
+    }
+}
+
 fn file_stat_from_response(stat: FileStatResponse) -> FileStat {
     FileStat {
         path: stat.path,
@@ -1525,6 +1662,30 @@ fn project_environment_from_response(
     }
 }
 
+fn git_head_from_response(result: GitHeadResponse) -> GitHeadResult {
+    GitHeadResult {
+        root: result.root,
+        head: result.head,
+    }
+}
+
+fn git_status_from_response(result: GitStatusResponse) -> GitStatusResult {
+    GitStatusResult {
+        root: result.root,
+        entries: result
+            .entries
+            .into_iter()
+            .map(|entry| GitStatusEntry {
+                relative_path: entry.relative_path,
+                original_relative_path: entry.original_relative_path,
+                index_status: git_status_kind_from_response(entry.index_status),
+                working_tree_status: git_status_kind_from_response(entry.working_tree_status),
+            })
+            .collect(),
+        truncated: result.truncated,
+    }
+}
+
 fn file_kind_from_response(kind: RemoteFileKind) -> FileKind {
     match kind {
         RemoteFileKind::File => FileKind::File,
@@ -1580,12 +1741,43 @@ fn project_environment_origin_from_cached(origin: EnvironmentOrigin) -> ProjectE
     }
 }
 
+fn remote_git_status_kind(kind: GitStatusKind) -> RemoteGitStatusKind {
+    match kind {
+        GitStatusKind::Unmodified => RemoteGitStatusKind::Unmodified,
+        GitStatusKind::Modified => RemoteGitStatusKind::Modified,
+        GitStatusKind::Added => RemoteGitStatusKind::Added,
+        GitStatusKind::Deleted => RemoteGitStatusKind::Deleted,
+        GitStatusKind::Renamed => RemoteGitStatusKind::Renamed,
+        GitStatusKind::Copied => RemoteGitStatusKind::Copied,
+        GitStatusKind::TypeChanged => RemoteGitStatusKind::TypeChanged,
+        GitStatusKind::Untracked => RemoteGitStatusKind::Untracked,
+        GitStatusKind::Conflicted => RemoteGitStatusKind::Conflicted,
+        GitStatusKind::Unknown => RemoteGitStatusKind::Unknown,
+    }
+}
+
+fn git_status_kind_from_response(kind: RemoteGitStatusKind) -> GitStatusKind {
+    match kind {
+        RemoteGitStatusKind::Unmodified => GitStatusKind::Unmodified,
+        RemoteGitStatusKind::Modified => GitStatusKind::Modified,
+        RemoteGitStatusKind::Added => GitStatusKind::Added,
+        RemoteGitStatusKind::Deleted => GitStatusKind::Deleted,
+        RemoteGitStatusKind::Renamed => GitStatusKind::Renamed,
+        RemoteGitStatusKind::Copied => GitStatusKind::Copied,
+        RemoteGitStatusKind::TypeChanged => GitStatusKind::TypeChanged,
+        RemoteGitStatusKind::Untracked => GitStatusKind::Untracked,
+        RemoteGitStatusKind::Conflicted => GitStatusKind::Conflicted,
+        RemoteGitStatusKind::Unknown => GitStatusKind::Unknown,
+    }
+}
+
 fn remote_error_from_workspace(error: WorkspaceError) -> RemoteError {
     let code = match &error {
         WorkspaceError::Io { .. } => "io",
         WorkspaceError::Modified { .. } => "modified",
         WorkspaceError::NotFile { .. } => "not_file",
         WorkspaceError::InvalidSearchPattern(_) => "invalid_search_pattern",
+        WorkspaceError::CommandFailed { .. } => "command_failed",
         WorkspaceError::Remote { .. } => "remote",
     };
 
@@ -1937,6 +2129,8 @@ mod tests {
                 .capabilities
                 .contains(&"project_environment".to_string())
         );
+        assert!(hello.capabilities.contains(&"git_head".to_string()));
+        assert!(hello.capabilities.contains(&"git_status".to_string()));
     }
 
     #[test]
@@ -2062,6 +2256,42 @@ mod tests {
             Some(&"process-baseline".to_string())
         );
         assert!(snapshot.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn service_git_status_uses_workspace_root_for_empty_root() {
+        let temp = tempfile::tempdir().unwrap();
+        init_git_repo(temp.path());
+        std::fs::write(temp.path().join("tracked.txt"), "initial\n").unwrap();
+        run_git(temp.path(), &["add", "tracked.txt"]);
+        run_git(temp.path(), &["commit", "-m", "initial"]);
+        std::fs::write(temp.path().join("tracked.txt"), "changed\n").unwrap();
+        std::fs::write(temp.path().join("notes.md"), "untracked\n").unwrap();
+
+        let frame = read_first_output_frame(single_request_output(
+            temp.path(),
+            RemoteRequest::GitStatus {
+                root: PathBuf::new(),
+                include_untracked: true,
+                limit: 10,
+            },
+            Vec::new(),
+        ));
+
+        let response = frame.decode_json_header::<ResponseEnvelope>().unwrap();
+        let RemoteResponse::GitStatus(status) = response.response else {
+            panic!("expected git status response");
+        };
+        assert_eq!(status.root, temp.path());
+        assert!(status.entries.iter().any(|entry| {
+            entry.relative_path == PathBuf::from("tracked.txt")
+                && entry.working_tree_status == RemoteGitStatusKind::Modified
+        }));
+        assert!(status.entries.iter().any(|entry| {
+            entry.relative_path == PathBuf::from("notes.md")
+                && entry.index_status == RemoteGitStatusKind::Untracked
+        }));
+        assert!(!status.truncated);
     }
 
     #[cfg(unix)]
@@ -2266,5 +2496,60 @@ esac
         assert_eq!(result.matches.len(), 1);
         assert_eq!(result.matches[0].relative_path, PathBuf::from("main.rs"));
         assert_eq!(result.matches[0].line_number, 1);
+    }
+
+    #[test]
+    fn remote_workspace_backend_reads_git_head_and_status_through_service() {
+        let temp = tempfile::tempdir().unwrap();
+        init_git_repo(temp.path());
+        std::fs::write(temp.path().join("tracked.txt"), "initial\n").unwrap();
+        run_git(temp.path(), &["add", "tracked.txt"]);
+        run_git(temp.path(), &["commit", "-m", "initial"]);
+        let expected_head = git_output(temp.path(), &["rev-parse", "--verify", "HEAD"]);
+        std::fs::write(temp.path().join("tracked.txt"), "changed\n").unwrap();
+
+        let backend = remote_backend(temp.path());
+        let head = block_on(backend.git_head(Path::new(""))).unwrap();
+        let status =
+            block_on(backend.git_status(Path::new(""), GitStatusOptions::default())).unwrap();
+
+        assert_eq!(head.head, Some(expected_head.trim().to_string()));
+        assert!(status.entries.iter().any(|entry| {
+            entry.relative_path == PathBuf::from("tracked.txt")
+                && entry.working_tree_status == GitStatusKind::Modified
+        }));
+    }
+
+    fn init_git_repo(root: &Path) {
+        run_git(root, &["init"]);
+        run_git(root, &["config", "user.email", "nucleotide@example.test"]);
+        run_git(root, &["config", "user.name", "Nucleotide Tests"]);
+    }
+
+    fn run_git(root: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .output()
+            .unwrap_or_else(|error| panic!("failed to run git {args:?}: {error}"));
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn git_output(root: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .output()
+            .unwrap_or_else(|error| panic!("failed to run git {args:?}: {error}"));
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap()
     }
 }
