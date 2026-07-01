@@ -452,6 +452,13 @@ pub trait WorkspaceBackend: Send + Sync {
 
     async fn list_dir(&self, path: &Path) -> Result<DirectoryListing>;
 
+    async fn find_ancestor_file(
+        &self,
+        start: &Path,
+        file_name: &str,
+        limit: usize,
+    ) -> Result<Option<PathBuf>>;
+
     async fn create_file(&self, path: &Path) -> Result<FileStat>;
 
     async fn create_dir(&self, path: &Path) -> Result<FileStat>;
@@ -638,6 +645,19 @@ impl WorkspaceBackend for PathMappedWorkspaceBackend {
             .map(|listing| self.map_directory_listing_to_display(listing))
     }
 
+    async fn find_ancestor_file(
+        &self,
+        start: &Path,
+        file_name: &str,
+        limit: usize,
+    ) -> Result<Option<PathBuf>> {
+        let native_start = self.mapping.to_native_path(start);
+        self.inner
+            .find_ancestor_file(&native_start, file_name, limit)
+            .await
+            .map(|path| path.map(|path| self.mapping.to_display_path(&path)))
+    }
+
     async fn create_file(&self, path: &Path) -> Result<FileStat> {
         let native_path = self.mapping.to_native_path(path);
         self.inner
@@ -760,6 +780,15 @@ impl WorkspaceBackend for LocalWorkspaceBackend {
 
     async fn list_dir(&self, path: &Path) -> Result<DirectoryListing> {
         local_list_dir(path)
+    }
+
+    async fn find_ancestor_file(
+        &self,
+        start: &Path,
+        file_name: &str,
+        limit: usize,
+    ) -> Result<Option<PathBuf>> {
+        local_find_ancestor_file(start, file_name, limit)
     }
 
     async fn create_file(&self, path: &Path) -> Result<FileStat> {
@@ -994,6 +1023,66 @@ fn path_is_self_or_descendant(path: &Path, ancestor: &Path) -> Result<bool> {
     let path = lexical_absolute(path)?;
     let ancestor = lexical_absolute(ancestor)?;
     Ok(path == ancestor || path.starts_with(ancestor))
+}
+
+fn validate_ancestor_file_name(file_name: &str) -> Result<()> {
+    if file_name.is_empty()
+        || file_name == "."
+        || file_name == ".."
+        || file_name.contains(std::path::MAIN_SEPARATOR)
+        || file_name.contains('/')
+        || file_name.contains('\\')
+    {
+        return Err(WorkspaceError::CommandFailed {
+            operation: "find ancestor file",
+            path: PathBuf::from(file_name),
+            message: "file name must not contain path separators".to_string(),
+        });
+    }
+
+    Ok(())
+}
+
+fn local_find_ancestor_file(
+    start: &Path,
+    file_name: &str,
+    limit: usize,
+) -> Result<Option<PathBuf>> {
+    validate_ancestor_file_name(file_name)?;
+
+    let start_stat = local_stat(start)?;
+    let mut current = if start_stat.kind == FileKind::Directory {
+        start.to_path_buf()
+    } else {
+        match start.parent() {
+            Some(parent) => parent.to_path_buf(),
+            None => return Ok(None),
+        }
+    };
+
+    for _ in 0..=limit {
+        let candidate = current.join(file_name);
+        match fs::symlink_metadata(&candidate) {
+            Ok(metadata) if metadata.is_file() || metadata.file_type().is_symlink() => {
+                return Ok(Some(candidate));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(source) => {
+                return Err(WorkspaceError::Io {
+                    operation: "find ancestor file",
+                    path: candidate,
+                    source,
+                });
+            }
+        }
+
+        if !current.pop() {
+            break;
+        }
+    }
+
+    Ok(None)
 }
 
 fn local_create_file(path: &Path) -> Result<FileStat> {
@@ -1893,6 +1982,21 @@ mod tests {
     }
 
     #[test]
+    fn local_backend_finds_ancestor_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let backend = LocalWorkspaceBackend;
+        let manifest = temp.path().join("Cargo.toml");
+        let file = temp.path().join("src").join("bin").join("main.rs");
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(&manifest, "[package]\n").unwrap();
+        fs::write(&file, "fn main() {}\n").unwrap();
+
+        let found = block_on(backend.find_ancestor_file(&file, "Cargo.toml", 8)).unwrap();
+
+        assert_eq!(found, Some(manifest));
+    }
+
+    #[test]
     fn path_mapped_backend_maps_file_operations_to_display_paths() {
         let temp = tempfile::tempdir().unwrap();
         let display_root = PathBuf::from("/remote/project");
@@ -1913,6 +2017,28 @@ mod tests {
         assert_eq!(file.path, display_file);
         assert_eq!(renamed.path, display_renamed);
         assert!(native_renamed.exists());
+    }
+
+    #[test]
+    fn path_mapped_backend_maps_ancestor_file_to_display_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let native_manifest = temp.path().join("Cargo.toml");
+        let native_file = temp.path().join("src").join("main.rs");
+        fs::create_dir_all(native_file.parent().unwrap()).unwrap();
+        fs::write(&native_manifest, "[package]\n").unwrap();
+        fs::write(&native_file, "fn main() {}\n").unwrap();
+
+        let display_root = PathBuf::from("/remote/project");
+        let display_file = display_root.join("src").join("main.rs");
+        let display_manifest = display_root.join("Cargo.toml");
+        let backend = path_mapped_workspace_backend(
+            local_workspace_backend(),
+            WorkspacePathMapping::new(display_root, temp.path()),
+        );
+
+        let found = block_on(backend.find_ancestor_file(&display_file, "Cargo.toml", 8)).unwrap();
+
+        assert_eq!(found, Some(display_manifest));
     }
 
     #[test]

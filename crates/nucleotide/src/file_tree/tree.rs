@@ -1414,6 +1414,15 @@ mod tests {
                 .ok_or_else(|| workspace_test_error("list directory", path))
         }
 
+        async fn find_ancestor_file(
+            &self,
+            start: &Path,
+            _file_name: &str,
+            _limit: usize,
+        ) -> nucleotide_workspace::Result<Option<PathBuf>> {
+            Err(workspace_test_error("find ancestor file", start))
+        }
+
         async fn create_file(
             &self,
             path: &Path,

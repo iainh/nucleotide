@@ -2697,12 +2697,28 @@ impl Workspace {
         })
     }
 
-    fn discover_local_focused_runnables(
+    fn discover_focused_runnables(
         &self,
         cx: &mut Context<Self>,
     ) -> Result<(crate::runnables::RunnableDocument, Vec<ResolvedTask>), String> {
         let document = self.focused_runnable_document(cx)?;
-        let tasks = crate::runnables::discover_local_rust_runnables(&document);
+        let workspace_backend = self.core.read(cx).workspace_backend.clone();
+        let tasks = if matches!(workspace_backend.identity(), WorkspaceIdentity::Local) {
+            crate::runnables::discover_local_rust_runnables(&document)
+        } else {
+            futures_executor::block_on(workspace_backend.find_ancestor_file(
+                &document.path,
+                "Cargo.toml",
+                64,
+            ))
+            .ok()
+            .flatten()
+            .and_then(|manifest| manifest.parent().map(Path::to_path_buf))
+            .map(|cargo_root| {
+                crate::runnables::discover_rust_runnables_with_cargo_root(&document, cargo_root)
+            })
+            .unwrap_or_default()
+        };
         Ok((document, tasks))
     }
 
@@ -2721,7 +2737,7 @@ impl Workspace {
     fn request_focused_runnables(&mut self, action: RunnableAction, cx: &mut Context<Self>) {
         use futures_util::stream::{FuturesOrdered, StreamExt};
 
-        let (document, local_tasks) = match self.discover_local_focused_runnables(cx) {
+        let (document, local_tasks) = match self.discover_focused_runnables(cx) {
             Ok(discovery) => discovery,
             Err(message) => {
                 self.set_run_status(message, Severity::Error, cx);

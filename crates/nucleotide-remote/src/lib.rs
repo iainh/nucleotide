@@ -428,6 +428,11 @@ pub enum RemoteRequest {
     ListDir {
         path: PathBuf,
     },
+    FindAncestorFile {
+        start: PathBuf,
+        file_name: String,
+        limit: usize,
+    },
     CreateFile {
         path: PathBuf,
     },
@@ -491,6 +496,7 @@ pub enum RemoteResponse {
     Hello(HelloResponse),
     Stat(FileStatResponse),
     ListDir(DirectoryListingResponse),
+    FindAncestorFile(Option<PathBuf>),
     CreateFile(FileStatResponse),
     CreateDir(FileStatResponse),
     RenamePath(FileStatResponse),
@@ -547,6 +553,7 @@ impl HelloResponse {
             capabilities: vec![
                 "stat".to_string(),
                 "list_dir".to_string(),
+                "find_ancestor_file".to_string(),
                 "create_file".to_string(),
                 "create_dir".to_string(),
                 "rename_path".to_string(),
@@ -1178,6 +1185,32 @@ where
         }
     }
 
+    async fn find_ancestor_file(
+        &self,
+        start: &Path,
+        file_name: &str,
+        limit: usize,
+    ) -> nucleotide_workspace::Result<Option<PathBuf>> {
+        let (response, _) = self.request(
+            "find ancestor file",
+            start,
+            RemoteRequest::FindAncestorFile {
+                start: start.to_path_buf(),
+                file_name: file_name.to_string(),
+                limit,
+            },
+            Vec::new(),
+        )?;
+        match response {
+            RemoteResponse::FindAncestorFile(path) => Ok(path),
+            other => Err(unexpected_response_error(
+                "find ancestor file",
+                start,
+                other,
+            )),
+        }
+    }
+
     async fn create_file(&self, path: &Path) -> nucleotide_workspace::Result<FileStat> {
         let (response, _) = self.request(
             "create file",
@@ -1572,6 +1605,23 @@ where
                     block_on(self.backend.list_dir(&path)).map_err(remote_error_from_workspace)?;
                 Ok(ServiceOutcome::Continue(
                     RemoteResponse::ListDir(directory_listing_response(listing)),
+                    Vec::new(),
+                ))
+            }
+            RemoteRequest::FindAncestorFile {
+                start,
+                file_name,
+                limit,
+            } => {
+                let start = self.resolve_path(&start);
+                let path = block_on(self.backend.find_ancestor_file(
+                    &start,
+                    file_name.as_str(),
+                    limit,
+                ))
+                .map_err(remote_error_from_workspace)?;
+                Ok(ServiceOutcome::Continue(
+                    RemoteResponse::FindAncestorFile(path),
                     Vec::new(),
                 ))
             }
@@ -2504,6 +2554,21 @@ mod tests {
             std::fs::read_to_string(copied).unwrap(),
             "pub fn lib() {}\n"
         );
+    }
+
+    #[test]
+    fn remote_backend_find_ancestor_file_round_trip() {
+        let temp = tempfile::tempdir().unwrap();
+        let backend = remote_backend(temp.path());
+        let manifest = temp.path().join("Cargo.toml");
+        let file = temp.path().join("src").join("main.rs");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&manifest, "[package]\n").unwrap();
+        std::fs::write(&file, "fn main() {}\n").unwrap();
+
+        let found = block_on(backend.find_ancestor_file(&file, "Cargo.toml", 8)).unwrap();
+
+        assert_eq!(found, Some(manifest));
     }
 
     fn request_frame(id: u64, request: RemoteRequest, body: Vec<u8>) -> Frame {
