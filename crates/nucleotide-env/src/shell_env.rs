@@ -189,6 +189,13 @@ impl ProjectEnvironment {
                     error = %error,
                     "Native flake environment loading skipped"
                 );
+
+                let message = error.to_string();
+                let mut errors = self.environment_errors.write().await;
+                errors.insert(canonical_dir.clone(), message.clone());
+                if directory != canonical_dir {
+                    errors.insert(directory.to_path_buf(), message);
+                }
             }
         }
 
@@ -516,6 +523,23 @@ impl ProjectEnvironment {
             .get(&canonical_dir)
             .filter(|cached| cached_environment_is_current(cached))
             .map(|cached| cached.origin.clone())
+    }
+
+    /// Get any cached diagnostics for the last environment load attempt.
+    pub async fn get_environment_diagnostics(&self, directory: &Path) -> Vec<String> {
+        if let Some(error) = {
+            let errors = self.environment_errors.read().await;
+            errors.get(directory).cloned()
+        } {
+            return vec![error];
+        }
+
+        let canonical_dir = directory
+            .canonicalize()
+            .unwrap_or_else(|_| directory.to_path_buf());
+
+        let errors = self.environment_errors.read().await;
+        errors.get(&canonical_dir).cloned().into_iter().collect()
     }
 
     /// Invalidate cache for specific directory
@@ -1979,6 +2003,31 @@ mod tests {
         assert_eq!(env.get("PATH"), Some(&"/cli/bin".to_string()));
         assert_eq!(env.get("FROM_CLI"), Some(&"yes".to_string()));
         assert!(!env.contains_key("FOO"));
+    }
+
+    #[tokio::test]
+    async fn test_native_flake_fallback_records_environment_diagnostic() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        std::fs::write(temp_dir.path().join(".envrc"), "export FOO=bar\n").unwrap();
+        let project_env = ProjectEnvironment::new(Some(HashMap::from([(
+            "PATH".to_string(),
+            "/cli/bin".to_string(),
+        )])));
+
+        let env = project_env
+            .get_environment_for_directory(temp_dir.path())
+            .await
+            .unwrap();
+        let diagnostics = project_env
+            .get_environment_diagnostics(temp_dir.path())
+            .await;
+
+        assert_eq!(env.get("PATH"), Some(&"/cli/bin".to_string()));
+        assert!(
+            diagnostics
+                .first()
+                .is_some_and(|message| message.contains("Unsupported .envrc"))
+        );
     }
 
     #[tokio::test]
