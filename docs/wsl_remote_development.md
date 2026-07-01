@@ -146,7 +146,10 @@ editor backend into Linux:
   Linux file permissions instead of only local UI state.
 - Git status and repository HEAD checks run through `wsl.exe` for WSL roots, so
   file decorations and VCS events use Linux Git against local Linux paths while
-  still mapping results back to Windows WSL UNC paths for the UI.
+  still mapping results back to Windows WSL UNC paths for the UI. When file
+  watcher events ask VCS to refresh diff hunks for WSL files, the current file
+  contents are read through the helper-backed `read-full` command instead of
+  through the Windows UNC filesystem path.
 - Manifest-based project detection uses a WSL manifest delegate for WSL UNC
   paths. Marker checks and manifest reads run inside the distro with a
   per-detection existence cache, while native paths keep the normal filesystem

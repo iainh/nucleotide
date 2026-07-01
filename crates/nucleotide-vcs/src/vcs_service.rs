@@ -4,7 +4,9 @@
 use gpui::{App, AppContext, Context, Entity, EventEmitter};
 use helix_core::Rope;
 use helix_vcs::{DiffHandle, DiffProviderRegistry, Hunk};
-use nucleotide_env::{WslWorkspace, build_wsl_shell_command};
+use nucleotide_env::{
+    WslWorkspace, build_wsl_shell_command, load_wsl_remote_file_content_blocking,
+};
 use nucleotide_events::{
     EventBus,
     v2::vcs::{
@@ -13,6 +15,7 @@ use nucleotide_events::{
     },
 };
 use nucleotide_logging::{debug, error, info, warn};
+use nucleotide_remote::{FileContentResponse, decode_base64};
 use nucleotide_types::{DiffChangeType, DiffHunkInfo, VcsStatus};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -257,6 +260,52 @@ pub struct VcsService {
 }
 
 const DIFF_CACHE_CAPACITY: usize = 128;
+const WSL_DIFF_CONTENT_TIMEOUT: Duration = Duration::from_secs(10);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DiffContentSource {
+    Local,
+    WslRemote,
+}
+
+fn diff_content_source_for_path(path: &Path) -> DiffContentSource {
+    if WslWorkspace::from_unc_path(path).is_some() {
+        DiffContentSource::WslRemote
+    } else {
+        DiffContentSource::Local
+    }
+}
+
+fn diff_content_from_disk(abs_path: &Path) -> Result<Option<Rope>, String> {
+    match diff_content_source_for_path(abs_path) {
+        DiffContentSource::Local => local_diff_content_from_disk(abs_path),
+        DiffContentSource::WslRemote => wsl_remote_diff_content_from_disk(abs_path),
+    }
+}
+
+fn local_diff_content_from_disk(abs_path: &Path) -> Result<Option<Rope>, String> {
+    if !abs_path.is_file() {
+        return Ok(None);
+    }
+
+    std::fs::read_to_string(abs_path)
+        .map(|content| Some(Rope::from_str(&content)))
+        .map_err(|error| error.to_string())
+}
+
+fn wsl_remote_diff_content_from_disk(abs_path: &Path) -> Result<Option<Rope>, String> {
+    let response = load_wsl_remote_file_content_blocking(abs_path, WSL_DIFF_CONTENT_TIMEOUT)
+        .map_err(|error| error.to_string())?;
+
+    wsl_remote_diff_rope_from_response(response).map(Some)
+}
+
+fn wsl_remote_diff_rope_from_response(response: FileContentResponse) -> Result<Rope, String> {
+    let bytes = decode_base64(&response.content_base64).map_err(|error| error.to_string())?;
+    let content = String::from_utf8(bytes).map_err(|error| error.to_string())?;
+
+    Ok(Rope::from_str(&content))
+}
 
 impl VcsService {
     /// Create a new VCS service
@@ -498,17 +547,13 @@ impl VcsService {
     }
 
     fn refresh_diff_metadata_from_disk(&mut self, abs_path: &Path, cx: &mut Context<Self>) {
-        if !abs_path.is_file() {
-            self.clear_file_diff(abs_path, cx);
-            return;
-        }
-
-        match std::fs::read_to_string(abs_path) {
-            Ok(content) => self.update_file_diff(abs_path, Rope::from_str(&content), cx),
+        match diff_content_from_disk(abs_path) {
+            Ok(Some(content)) => self.update_file_diff(abs_path, content, cx),
+            Ok(None) => self.clear_file_diff(abs_path, cx),
             Err(error) => {
                 debug!(
                     file_path = %abs_path.display(),
-                    error = %error,
+                    error,
                     "VCS: Could not refresh diff metadata from disk"
                 );
                 self.clear_file_diff(abs_path, cx);
@@ -1191,6 +1236,55 @@ mod tests {
     #[test]
     fn parse_git_head_output_rejects_empty_output() {
         assert_eq!(parse_git_head_output(b"\n"), None);
+    }
+
+    #[test]
+    fn diff_content_source_uses_remote_helper_for_wsl_unc_paths() {
+        assert_eq!(
+            diff_content_source_for_path(Path::new(
+                r"\\wsl.localhost\Ubuntu\home\iain\repo\src\lib.rs"
+            )),
+            DiffContentSource::WslRemote
+        );
+        assert_eq!(
+            diff_content_source_for_path(Path::new(r"C:\Users\iain\repo\src\lib.rs")),
+            DiffContentSource::Local
+        );
+    }
+
+    #[test]
+    fn local_diff_content_reads_utf8_files_and_skips_directories() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let file_path = temp.path().join("lib.rs");
+        std::fs::write(&file_path, "pub fn answer() -> u8 { 42 }\n").expect("write file");
+
+        let content = local_diff_content_from_disk(&file_path)
+            .expect("read local diff content")
+            .expect("file content");
+        assert_eq!(content.to_string(), "pub fn answer() -> u8 { 42 }\n");
+
+        assert!(
+            local_diff_content_from_disk(temp.path())
+                .expect("directory should not error")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn wsl_remote_diff_rope_decodes_helper_content() {
+        let response = FileContentResponse {
+            protocol_version: nucleotide_remote::PROTOCOL_VERSION,
+            current_dir: PathBuf::from("/home/iain/repo"),
+            path: PathBuf::from("/home/iain/repo/src/lib.rs"),
+            content_base64: nucleotide_remote::encode_base64(b"fn main() {}\n"),
+            size: 13,
+            modified_unix_millis: Some(1_234),
+            readonly: false,
+        };
+
+        let content = wsl_remote_diff_rope_from_response(response).expect("decode content");
+
+        assert_eq!(content.to_string(), "fn main() {}\n");
     }
 
     #[test]

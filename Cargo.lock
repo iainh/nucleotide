@@ -5254,6 +5254,7 @@ dependencies = [
  "nucleotide-events",
  "nucleotide-logging",
  "nucleotide-process",
+ "nucleotide-remote",
  "nucleotide-types",
  "tempfile",
  "tokio",

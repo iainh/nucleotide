@@ -12,6 +12,7 @@ nucleotide-process.workspace = true
 nucleotide-types.workspace = true
 nucleotide-events.workspace = true
 nucleotide-env.workspace = true
+nucleotide-remote.workspace = true
 helix-vcs.workspace = true
 helix-core.workspace = true
 helix-view.workspace = true
