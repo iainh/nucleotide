@@ -2187,20 +2187,25 @@ struct WslWriteAllCommand {
     auto_format: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WslWriteCloseAction {
+    CloseBuffer,
+    CloseView,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WslWriteCloseCommand {
+    write: WslWriteCommand,
+    action: WslWriteCloseAction,
+}
+
 const WSL_WRITE_NO_FORMAT_FLAG: Flag = Flag {
     name: "no-format",
     doc: "skip auto-formatting",
     ..Flag::DEFAULT
 };
 
-fn wsl_write_current_buffer_command(command: &str) -> Option<WslWriteCommand> {
-    let (name, args, _) = helix_core::command_line::split(command);
-    let force = match name {
-        "write" | "w" => false,
-        "write!" | "w!" => true,
-        _ => return None,
-    };
-
+fn parse_wsl_write_args(args: &str, force: bool) -> Option<WslWriteCommand> {
     let signature = Signature {
         positionals: (0, Some(1)),
         flags: &[WSL_WRITE_NO_FORMAT_FLAG],
@@ -2212,6 +2217,33 @@ fn wsl_write_current_buffer_command(command: &str) -> Option<WslWriteCommand> {
         force,
         auto_format: !args.has_flag(WSL_WRITE_NO_FORMAT_FLAG.name),
         path: args.first().map(str::to_string),
+    })
+}
+
+fn wsl_write_current_buffer_command(command: &str) -> Option<WslWriteCommand> {
+    let (name, args, _) = helix_core::command_line::split(command);
+    let force = match name {
+        "write" | "w" => false,
+        "write!" | "w!" => true,
+        _ => return None,
+    };
+
+    parse_wsl_write_args(args, force)
+}
+
+fn wsl_write_close_command(command: &str) -> Option<WslWriteCloseCommand> {
+    let (name, args, _) = helix_core::command_line::split(command);
+    let (force, action) = match name {
+        "write-buffer-close" | "wbc" => (false, WslWriteCloseAction::CloseBuffer),
+        "write-buffer-close!" | "wbc!" => (true, WslWriteCloseAction::CloseBuffer),
+        "write-quit" | "wq" | "x" => (false, WslWriteCloseAction::CloseView),
+        "write-quit!" | "wq!" | "x!" => (true, WslWriteCloseAction::CloseView),
+        _ => return None,
+    };
+
+    Some(WslWriteCloseCommand {
+        write: parse_wsl_write_args(args, force)?,
+        action,
     })
 }
 
@@ -2313,6 +2345,12 @@ struct PreparedWslRemoteSave {
     revision: usize,
     text: Rope,
     bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct QueuedWslRemoteSave {
+    doc_id: DocumentId,
+    path: PathBuf,
 }
 
 fn prepare_wsl_remote_save(
@@ -2428,7 +2466,7 @@ fn enqueue_wsl_remote_save(
     editor: &mut helix_view::editor::Editor,
     prepared: PreparedWslRemoteSave,
     force: bool,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<QueuedWslRemoteSave> {
     let expected_mtime = (!force)
         .then(|| wsl_remote_document_mtime(&prepared.path))
         .flatten();
@@ -2440,6 +2478,10 @@ fn enqueue_wsl_remote_save(
     let create_parent_dirs = force;
     let file_event_handler = editor.language_servers.file_event_handler.clone();
     let status_path = path.clone();
+    let queued_save = QueuedWslRemoteSave {
+        doc_id,
+        path: path.clone(),
+    };
 
     let future = async move {
         let write_path = path.clone();
@@ -2477,19 +2519,61 @@ fn enqueue_wsl_remote_save(
     editor.write_count += 1;
     editor.set_status(format!("Writing {}", status_path.display()));
 
-    Ok(())
+    Ok(queued_save)
 }
 
 fn save_wsl_remote_current_buffer(
     editor: &mut helix_view::editor::Editor,
     command: WslWriteCommand,
-) -> anyhow::Result<bool> {
+) -> anyhow::Result<Option<QueuedWslRemoteSave>> {
     let Some(prepared) = prepare_wsl_remote_save(editor, &command)? else {
-        return Ok(false);
+        return Ok(None);
     };
 
-    enqueue_wsl_remote_save(editor, prepared, command.force)?;
-    Ok(true)
+    enqueue_wsl_remote_save(editor, prepared, command.force).map(Some)
+}
+
+fn flush_queued_wsl_save_and_close(
+    editor: &mut helix_view::editor::Editor,
+    queued: QueuedWslRemoteSave,
+    action: WslWriteCloseAction,
+    runtime: &tokio::runtime::Handle,
+) -> anyhow::Result<()> {
+    runtime.block_on(async { editor.flush_writes().await })?;
+
+    if editor.document(queued.doc_id).is_some() {
+        editor.set_doc_path(queued.doc_id, &queued.path);
+    }
+
+    if let Some(doc) = editor.document(queued.doc_id)
+        && let Some(identifier) = document_lsp_identifier(doc)
+    {
+        for language_server in doc.language_servers() {
+            language_server.text_document_did_save(identifier.clone(), doc.text());
+        }
+    }
+
+    match action {
+        WslWriteCloseAction::CloseView => {
+            let view_id = editor.tree.focus;
+            editor.close(view_id);
+        }
+        WslWriteCloseAction::CloseBuffer => {
+            editor
+                .close_document(queued.doc_id, false)
+                .map_err(|error| match error {
+                    helix_view::editor::CloseError::DoesNotExist => {
+                        anyhow::anyhow!("document does not exist")
+                    }
+                    helix_view::editor::CloseError::BufferModified(name) => {
+                        anyhow::anyhow!("buffer modified: {name}")
+                    }
+                    helix_view::editor::CloseError::SaveError(error) => error,
+                })?;
+        }
+    }
+
+    Ok(())
 }
 
 fn save_wsl_remote_modified_buffers(
@@ -2547,7 +2631,7 @@ fn save_wsl_remote_modified_buffers(
         else {
             continue;
         };
-        enqueue_wsl_remote_save(editor, prepared, command.force)?;
+        let _ = enqueue_wsl_remote_save(editor, prepared, command.force)?;
     }
 
     editor.set_status(format!("Writing {save_count} WSL buffers"));
@@ -9286,6 +9370,35 @@ impl Workspace {
             let _guard = handle_for_command.enter();
 
             core.editor.clear_status();
+            if let Some(wsl_command) = wsl_write_close_command(command) {
+                match save_wsl_remote_current_buffer(&mut core.editor, wsl_command.write).and_then(
+                    |queued| {
+                        if let Some(queued) = queued {
+                            flush_queued_wsl_save_and_close(
+                                &mut core.editor,
+                                queued,
+                                wsl_command.action,
+                                &handle_for_command,
+                            )?;
+                            Ok(true)
+                        } else {
+                            Ok(false)
+                        }
+                    },
+                ) {
+                    Ok(true) => {
+                        cx.emit(crate::Update::Redraw);
+                        return current_editor_status(&core.editor);
+                    }
+                    Ok(false) => {}
+                    Err(error) => {
+                        core.editor.set_error(error.to_string());
+                        cx.emit(crate::Update::Redraw);
+                        return current_editor_status(&core.editor);
+                    }
+                }
+            }
+
             if let Some(wsl_command) = wsl_write_all_command(command) {
                 match save_wsl_remote_modified_buffers(&mut core.editor, wsl_command) {
                     Ok(true) => {
@@ -9303,11 +9416,11 @@ impl Workspace {
 
             if let Some(wsl_command) = wsl_write_current_buffer_command(command) {
                 match save_wsl_remote_current_buffer(&mut core.editor, wsl_command) {
-                    Ok(true) => {
+                    Ok(Some(_)) => {
                         cx.emit(crate::Update::Redraw);
                         return current_editor_status(&core.editor);
                     }
-                    Ok(false) => {}
+                    Ok(None) => {}
                     Err(error) => {
                         core.editor.set_error(error.to_string());
                         cx.emit(crate::Update::Redraw);
@@ -17206,6 +17319,62 @@ mod tests {
         assert_eq!(wsl_write_current_buffer_command("wq"), None);
         assert_eq!(wsl_write_current_buffer_command("write --unknown"), None);
         assert_eq!(wsl_write_current_buffer_command("write one two"), None);
+    }
+
+    #[test]
+    fn wsl_write_close_command_classifies_close_after_save_forms() {
+        assert_eq!(
+            wsl_write_close_command("wq"),
+            Some(WslWriteCloseCommand {
+                write: WslWriteCommand {
+                    force: false,
+                    auto_format: true,
+                    path: None,
+                },
+                action: WslWriteCloseAction::CloseView,
+            })
+        );
+        assert_eq!(
+            wsl_write_close_command("x! --no-format /tmp/new.rs"),
+            Some(WslWriteCloseCommand {
+                write: WslWriteCommand {
+                    force: true,
+                    auto_format: false,
+                    path: Some("/tmp/new.rs".to_string()),
+                },
+                action: WslWriteCloseAction::CloseView,
+            })
+        );
+        assert_eq!(
+            wsl_write_close_command("write-buffer-close other.rs"),
+            Some(WslWriteCloseCommand {
+                write: WslWriteCommand {
+                    force: false,
+                    auto_format: true,
+                    path: Some("other.rs".to_string()),
+                },
+                action: WslWriteCloseAction::CloseBuffer,
+            })
+        );
+        assert_eq!(
+            wsl_write_close_command("wbc! --no-format"),
+            Some(WslWriteCloseCommand {
+                write: WslWriteCommand {
+                    force: true,
+                    auto_format: false,
+                    path: None,
+                },
+                action: WslWriteCloseAction::CloseBuffer,
+            })
+        );
+    }
+
+    #[test]
+    fn wsl_write_close_command_rejects_other_write_commands_and_invalid_args() {
+        assert_eq!(wsl_write_close_command("write"), None);
+        assert_eq!(wsl_write_close_command("write-all"), None);
+        assert_eq!(wsl_write_close_command("wq one two"), None);
+        assert_eq!(wsl_write_close_command("wbc --unknown"), None);
     }
 
     #[test]

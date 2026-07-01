@@ -121,6 +121,9 @@ editor backend into Linux:
   write path, and can save mixed local/WSL modified buffers when auto-format is
   disabled or `--no-format` is supplied. This avoids a fallback through the
   Windows UNC filesystem for bulk saves.
+- `:write-quit`/`:wq`/`:x` and `:write-buffer-close`/`:wbc` use the remote
+  write path for WSL buffers before closing. These commands flush the queued
+  save before closing, matching Helix's close-after-save sequencing.
 - Git status and repository HEAD checks run through `wsl.exe` for WSL roots, so
   file decorations and VCS events use Linux Git against local Linux paths while
   still mapping results back to Windows WSL UNC paths for the UI.
@@ -153,11 +156,11 @@ memory for external-modification protection, mark the document clean on success,
 notify Helix's file-event handler, and emit LSP `didSave`.
 
 The remaining document I/O work is to make this a first-class file-provider
-boundary rather than a command interception. Auto-format-on-save,
-write-and-close/write-and-quit sequencing, symlink and readonly metadata parity,
-and BOM preservation still need dedicated plumbing. The current Helix
-`Document` API keeps the BOM flag private, so WSL saves encode with the document
-charset but do not yet preserve BOM state for remote-opened files.
+boundary rather than a command interception. Auto-format-on-save, write-quit-all
+sequencing, symlink and readonly metadata parity, and BOM preservation still
+need dedicated plumbing. The current Helix `Document` API keeps the BOM flag
+private, so WSL saves encode with the document charset but do not yet preserve
+BOM state for remote-opened files.
 
 ## Runtime Flow
 
