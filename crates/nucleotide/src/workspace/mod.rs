@@ -1202,6 +1202,7 @@ pub struct Workspace {
     context_menu_open: bool,
     context_menu_pos: (f32, f32),
     context_menu_path: Option<std::path::PathBuf>,
+    context_menu_is_directory: bool,
     context_menu_index: usize,
     // Tab context menu state
     tab_context_menu_open: bool,
@@ -1512,6 +1513,18 @@ fn file_kind_for_path(backend: &(impl WorkspaceBackend + ?Sized), path: &Path) -
     futures_executor::block_on(backend.stat(path))
         .ok()
         .map(|stat| stat.kind)
+}
+
+fn context_menu_target_parent_path(clicked: &Path, is_directory: bool) -> PathBuf {
+    if is_directory {
+        clicked.to_path_buf()
+    } else {
+        clicked
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .to_path_buf()
+    }
 }
 
 fn file_operation_notification_succeeded_with_backend(
@@ -4700,6 +4713,7 @@ impl Workspace {
             context_menu_open: false,
             context_menu_pos: (0.0, 0.0),
             context_menu_path: None,
+            context_menu_is_directory: false,
             context_menu_index: 0,
             tab_context_menu_open: false,
             tab_context_menu_pos: (0.0, 0.0),
@@ -5401,6 +5415,12 @@ impl Workspace {
         cx.notify();
     }
 
+    fn context_menu_target_parent(&self) -> Option<PathBuf> {
+        self.context_menu_path
+            .as_ref()
+            .map(|clicked| context_menu_target_parent_path(clicked, self.context_menu_is_directory))
+    }
+
     fn dismiss_file_tree_context_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.context_menu_open {
             return;
@@ -5710,15 +5730,7 @@ impl Workspace {
     }
 
     fn cm_action_new_file(this: &mut Workspace, cx: &mut Context<Workspace>) {
-        if let Some(clicked) = this.context_menu_path.clone() {
-            let parent = if clicked.is_dir() {
-                clicked
-            } else {
-                clicked
-                    .parent()
-                    .unwrap_or_else(|| std::path::Path::new("."))
-                    .to_path_buf()
-            };
+        if let Some(parent) = this.context_menu_target_parent() {
             // Queue pending op and show prompt (overlay will emit CommandSubmitted)
             this.pending_file_op = Some(PendingFileOp::NewFile { parent });
             this.core.update(cx, |_core, cx| {
@@ -5730,15 +5742,7 @@ impl Workspace {
     }
 
     fn cm_action_new_folder(this: &mut Workspace, cx: &mut Context<Workspace>) {
-        if let Some(clicked) = this.context_menu_path.clone() {
-            let parent = if clicked.is_dir() {
-                clicked
-            } else {
-                clicked
-                    .parent()
-                    .unwrap_or_else(|| std::path::Path::new("."))
-                    .to_path_buf()
-            };
+        if let Some(parent) = this.context_menu_target_parent() {
             this.pending_file_op = Some(PendingFileOp::NewFolder { parent });
             this.core.update(cx, |_core, cx| {
                 let prompt = crate::prompt::Prompt::native("New folder name", "", |_input| {});
@@ -10468,7 +10472,12 @@ impl Workspace {
                 // Update UI for directory expansion/collapse
                 cx.notify();
             }
-            FileTreeEvent::ContextMenuRequested { path, x, y } => {
+            FileTreeEvent::ContextMenuRequested {
+                path,
+                is_directory,
+                x,
+                y,
+            } => {
                 info!(
                     "FileTreeEvent::ContextMenuRequested at ({}, {}): {:?}",
                     x, y, path
@@ -10476,6 +10485,7 @@ impl Workspace {
                 self.context_menu_open = true;
                 self.context_menu_pos = (*x, *y);
                 self.context_menu_path = Some(path.clone());
+                self.context_menu_is_directory = *is_directory;
                 self.context_menu_index = 0;
                 cx.notify();
             }
@@ -16391,6 +16401,22 @@ mod tests {
         assert_eq!(
             EnvironmentBadge::from_project_environment_snapshot(&baseline_snapshot),
             None
+        );
+    }
+
+    #[test]
+    fn context_menu_target_parent_uses_entry_kind_without_filesystem_probe() {
+        assert_eq!(
+            context_menu_target_parent_path(Path::new("/workspace/src"), true),
+            PathBuf::from("/workspace/src")
+        );
+        assert_eq!(
+            context_menu_target_parent_path(Path::new("/workspace/src/main.rs"), false),
+            PathBuf::from("/workspace/src")
+        );
+        assert_eq!(
+            context_menu_target_parent_path(Path::new("main.rs"), false),
+            PathBuf::from(".")
         );
     }
 

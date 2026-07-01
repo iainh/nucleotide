@@ -31,7 +31,12 @@ pub enum FileTreeEvent {
     /// A directory was expanded or collapsed
     DirectoryToggled { path: PathBuf, expanded: bool },
     /// Context menu requested on a specific entry at screen position (x, y)
-    ContextMenuRequested { path: PathBuf, x: f32, y: f32 },
+    ContextMenuRequested {
+        path: PathBuf,
+        is_directory: bool,
+        x: f32,
+        y: f32,
+    },
     /// File system change detected
     FileSystemChanged {
         path: PathBuf,
