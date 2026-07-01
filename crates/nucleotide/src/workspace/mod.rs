@@ -29,6 +29,7 @@ use gpui::{
     WindowAppearance, canvas, div, img, px, relative, svg,
 };
 use gpui::{FontFeatures, FontWeight};
+use helix_core::command_line::{Args, Flag, Signature};
 use helix_core::syntax::config::LanguageServerFeature;
 use helix_core::{Position, Rope, RopeSlice, Selection, Transaction, line_ending, pos_at_coords};
 use helix_lsp::{OffsetEncoding, lsp};
@@ -2173,11 +2174,18 @@ fn wsl_remote_document_mtime(path: &Path) -> Option<i64> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct WslWriteCommand {
     force: bool,
     auto_format: bool,
+    path: Option<String>,
 }
+
+const WSL_WRITE_NO_FORMAT_FLAG: Flag = Flag {
+    name: "no-format",
+    doc: "skip auto-formatting",
+    ..Flag::DEFAULT
+};
 
 fn wsl_write_current_buffer_command(command: &str) -> Option<WslWriteCommand> {
     let (name, args, _) = helix_core::command_line::split(command);
@@ -2187,15 +2195,18 @@ fn wsl_write_current_buffer_command(command: &str) -> Option<WslWriteCommand> {
         _ => return None,
     };
 
-    let mut auto_format = true;
-    for arg in args.split_whitespace() {
-        match arg {
-            "--no-format" => auto_format = false,
-            _ => return None,
-        }
-    }
+    let signature = Signature {
+        positionals: (0, Some(1)),
+        flags: &[WSL_WRITE_NO_FORMAT_FLAG],
+        ..Signature::DEFAULT
+    };
+    let args = Args::parse(args, signature, true, |token| Ok(token.content)).ok()?;
 
-    Some(WslWriteCommand { force, auto_format })
+    Some(WslWriteCommand {
+        force,
+        auto_format: !args.has_flag(WSL_WRITE_NO_FORMAT_FLAG.name),
+        path: args.first().map(str::to_string),
+    })
 }
 
 fn trim_wsl_save_trailing_whitespace(doc: &mut helix_view::Document, view_id: ViewId) {
@@ -2246,6 +2257,29 @@ fn insert_wsl_save_final_newline(doc: &mut helix_view::Document, view_id: ViewId
     }
 }
 
+fn wsl_remote_save_target_path(current_path: &Path, requested_path: Option<&str>) -> PathBuf {
+    let Some(requested_path) = requested_path.filter(|path| !path.is_empty()) else {
+        return current_path.to_path_buf();
+    };
+
+    if requested_path.starts_with('/')
+        && let Some(workspace) = WslWorkspace::from_unc_path(current_path)
+        && let Some(unc_path) = workspace.unc_path_for_linux_path(requested_path)
+    {
+        return PathBuf::from(unc_path);
+    }
+
+    let requested = PathBuf::from(requested_path);
+    if requested.is_absolute() {
+        return requested;
+    }
+
+    current_path
+        .parent()
+        .unwrap_or_else(|| Path::new(""))
+        .join(requested)
+}
+
 struct PreparedWslRemoteSave {
     doc_id: DocumentId,
     path: PathBuf,
@@ -2256,17 +2290,22 @@ struct PreparedWslRemoteSave {
 
 fn prepare_wsl_remote_save(
     editor: &mut helix_view::editor::Editor,
-    command: WslWriteCommand,
+    command: &WslWriteCommand,
 ) -> anyhow::Result<Option<PreparedWslRemoteSave>> {
     let view_id = editor.tree.focus;
     let Some(doc_id) = editor.tree.try_get(view_id).map(|view| view.doc) else {
         return Ok(None);
     };
 
-    let Some(path) = editor.document(doc_id).and_then(|doc| doc.path()).cloned() else {
+    let Some(current_path) = editor.document(doc_id).and_then(|doc| doc.path()).cloned() else {
         return Ok(None);
     };
 
+    if WslWorkspace::from_unc_path(&current_path).is_none() {
+        return Ok(None);
+    }
+
+    let path = wsl_remote_save_target_path(&current_path, command.path.as_deref());
     if WslWorkspace::from_unc_path(&path).is_none() {
         return Ok(None);
     }
@@ -2319,7 +2358,7 @@ fn save_wsl_remote_current_buffer(
     editor: &mut helix_view::editor::Editor,
     command: WslWriteCommand,
 ) -> anyhow::Result<bool> {
-    let Some(prepared) = prepare_wsl_remote_save(editor, command)? else {
+    let Some(prepared) = prepare_wsl_remote_save(editor, &command)? else {
         return Ok(false);
     };
 
@@ -16956,6 +16995,7 @@ mod tests {
             Some(WslWriteCommand {
                 force: false,
                 auto_format: true,
+                path: None,
             })
         );
         assert_eq!(
@@ -16963,6 +17003,7 @@ mod tests {
             Some(WslWriteCommand {
                 force: false,
                 auto_format: false,
+                path: None,
             })
         );
         assert_eq!(
@@ -16970,6 +17011,7 @@ mod tests {
             Some(WslWriteCommand {
                 force: true,
                 auto_format: true,
+                path: None,
             })
         );
         assert_eq!(
@@ -16977,16 +17019,61 @@ mod tests {
             Some(WslWriteCommand {
                 force: true,
                 auto_format: false,
+                path: None,
             })
         );
     }
 
     #[test]
-    fn wsl_write_command_ignores_path_and_other_write_forms() {
-        assert_eq!(wsl_write_current_buffer_command("write other.txt"), None);
+    fn wsl_write_command_classifies_save_as_paths() {
+        assert_eq!(
+            wsl_write_current_buffer_command("write other.txt"),
+            Some(WslWriteCommand {
+                force: false,
+                auto_format: true,
+                path: Some("other.txt".to_string()),
+            })
+        );
+        assert_eq!(
+            wsl_write_current_buffer_command("w --no-format \"other file.txt\""),
+            Some(WslWriteCommand {
+                force: false,
+                auto_format: false,
+                path: Some("other file.txt".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn wsl_write_command_ignores_other_write_forms_and_invalid_arguments() {
         assert_eq!(wsl_write_current_buffer_command("write-all"), None);
         assert_eq!(wsl_write_current_buffer_command("wq"), None);
         assert_eq!(wsl_write_current_buffer_command("write --unknown"), None);
+        assert_eq!(wsl_write_current_buffer_command("write one two"), None);
+    }
+
+    #[test]
+    fn wsl_remote_save_target_resolves_relative_paths_beside_current_file() {
+        let current = Path::new(r"\\wsl.localhost\Ubuntu\home\iain\repo\src\main.rs");
+
+        assert_eq!(
+            wsl_remote_save_target_path(current, Some("copy.rs")),
+            PathBuf::from(r"\\wsl.localhost\Ubuntu\home\iain\repo\src\copy.rs")
+        );
+        assert_eq!(
+            wsl_remote_save_target_path(current, Some(r"..\copy.rs")),
+            PathBuf::from(r"\\wsl.localhost\Ubuntu\home\iain\repo\src\..\copy.rs")
+        );
+    }
+
+    #[test]
+    fn wsl_remote_save_target_maps_linux_absolute_paths_to_same_distro() {
+        let current = Path::new(r"\\wsl.localhost\Ubuntu\home\iain\repo\src\main.rs");
+
+        assert_eq!(
+            wsl_remote_save_target_path(current, Some("/tmp/copy.rs")),
+            PathBuf::from(r"\\wsl.localhost\Ubuntu\tmp\copy.rs")
+        );
     }
 
     #[cfg(target_os = "windows")]
