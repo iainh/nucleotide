@@ -2442,37 +2442,46 @@ fn prepare_wsl_remote_save_for_doc(
         return Ok(None);
     }
 
-    if editor.config().auto_format && auto_format {
-        anyhow::bail!("WSL remote save does not yet support auto-format; use :write --no-format");
+    let target_view = editor.get_synced_view_id(doc_id);
+    let auto_format_on_save = editor.config().auto_format && auto_format;
+    let trim_final_newlines = editor.config().trim_final_newlines;
+
+    {
+        let documents = &mut editor.documents;
+        let tree = &mut editor.tree;
+        let view = tree.get_mut(target_view);
+        let doc = documents
+            .get_mut(&doc_id)
+            .ok_or_else(|| anyhow::anyhow!("WSL document was not registered"))?;
+
+        if doc.readonly && !force {
+            anyhow::bail!(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "Path is read only"
+            ));
+        }
+
+        if doc.trim_trailing_whitespace() {
+            trim_wsl_save_trailing_whitespace(doc, target_view);
+        }
+        if trim_final_newlines {
+            trim_wsl_save_final_newlines(doc, target_view);
+        }
+        if doc.insert_final_newline() {
+            insert_wsl_save_final_newline(doc, target_view);
+        }
+
+        doc.append_changes_to_history(view);
     }
 
-    let target_view = editor.get_synced_view_id(doc_id);
-    let config = editor.config();
-    let documents = &mut editor.documents;
-    let tree = &mut editor.tree;
-    let view = tree.get_mut(target_view);
-    let doc = documents
+    if auto_format_on_save {
+        apply_wsl_remote_lsp_auto_format(editor, doc_id, target_view)?;
+    }
+
+    let doc = editor
+        .documents
         .get_mut(&doc_id)
         .ok_or_else(|| anyhow::anyhow!("WSL document was not registered"))?;
-
-    if doc.readonly && !force {
-        anyhow::bail!(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "Path is read only"
-        ));
-    }
-
-    if doc.trim_trailing_whitespace() {
-        trim_wsl_save_trailing_whitespace(doc, target_view);
-    }
-    if config.trim_final_newlines {
-        trim_wsl_save_final_newlines(doc, target_view);
-    }
-    if doc.insert_final_newline() {
-        insert_wsl_save_final_newline(doc, target_view);
-    }
-
-    doc.append_changes_to_history(view);
 
     let text = doc.text().clone();
     let has_bom = doc
@@ -2490,6 +2499,62 @@ fn prepare_wsl_remote_save_for_doc(
         bytes,
         has_bom,
     }))
+}
+
+fn apply_wsl_remote_lsp_auto_format(
+    editor: &mut helix_view::editor::Editor,
+    doc_id: DocumentId,
+    view_id: ViewId,
+) -> anyhow::Result<()> {
+    let (doc_version, format) = {
+        let Some(doc) = editor.document(doc_id) else {
+            return Ok(());
+        };
+
+        let Some(language_config) = doc.language_config() else {
+            return Ok(());
+        };
+        if !language_config.auto_format {
+            return Ok(());
+        }
+        if language_config.formatter.is_some() {
+            anyhow::bail!(
+                "WSL remote save does not yet support external formatter auto-format; use :write --no-format"
+            );
+        }
+
+        let Some(format) = doc.auto_format(editor) else {
+            return Ok(());
+        };
+
+        (doc.version(), format)
+    };
+
+    match helix_lsp::block_on(format) {
+        Ok(format) => {
+            let scrolloff = editor.config().scrolloff;
+            let documents = &mut editor.documents;
+            let tree = &mut editor.tree;
+            let view = tree.get_mut(view_id);
+            let doc = documents
+                .get_mut(&doc_id)
+                .ok_or_else(|| anyhow::anyhow!("WSL document was not registered"))?;
+
+            if doc.version() == doc_version {
+                doc.apply(&format, view.id);
+                doc.append_changes_to_history(view);
+                doc.detect_indent_and_line_ending();
+                view.ensure_cursor_in_view(doc, scrolloff);
+            } else {
+                info!("discarded WSL auto-format changes because the document changed");
+            }
+        }
+        Err(error) => {
+            info!("failed to auto-format WSL document before save: {error}");
+        }
+    }
+
+    Ok(())
 }
 
 fn save_local_modified_buffer_without_format(
@@ -2743,9 +2808,9 @@ fn save_wsl_remote_modified_buffers(
     if has_pathless_modified_buffer && !command.force {
         anyhow::bail!("cannot write a buffer without a filename");
     }
-    if editor.config().auto_format && command.auto_format {
+    if editor.config().auto_format && command.auto_format && !local_saves.is_empty() {
         anyhow::bail!(
-            "WSL remote write-all does not yet support auto-format; use :write-all --no-format"
+            "mixed WSL/local write-all does not yet support auto-format; use :write-all --no-format"
         );
     }
 

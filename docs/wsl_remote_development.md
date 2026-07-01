@@ -116,11 +116,15 @@ editor backend into Linux:
   persisted inside the distro instead of through the Windows UNC filesystem
   path. Relative save-as paths resolve beside the current WSL document, Linux
   absolute paths map back to the same distro, and `:write!`/`:w!` skips the
-  remote mtime guard and may create missing parent directories.
+  remote mtime guard and may create missing parent directories. LSP
+  auto-format-on-save is supported for WSL buffers; configured external
+  formatter commands are still rejected because those need a Linux-side command
+  execution boundary.
 - `:write-all`/`:wa` saves modified WSL buffers through the same queued remote
-  write path, and can save mixed local/WSL modified buffers when auto-format is
-  disabled or `--no-format` is supplied. This avoids a fallback through the
-  Windows UNC filesystem for bulk saves.
+  write path. Pure WSL write-all supports the same LSP auto-format path as
+  current-buffer saves. Mixed local/WSL write-all still requires `--no-format`
+  while the command interception owns the save boundary, avoiding a fallback
+  through the Windows UNC filesystem for bulk saves.
 - `:write-quit`/`:wq`/`:x` and `:write-buffer-close`/`:wbc` use the remote
   write path for WSL buffers before closing. These commands flush the queued
   save before closing, matching Helix's close-after-save sequencing.
@@ -162,8 +166,8 @@ memory for external-modification protection, mark the document clean on success,
 notify Helix's file-event handler, and emit LSP `didSave`.
 
 The remaining document I/O work is to make this a first-class file-provider
-boundary rather than a command interception. Auto-format-on-save, symlink and
-readonly metadata parity still need dedicated plumbing.
+boundary rather than a command interception. External formatter auto-format,
+symlink, and readonly metadata parity still need dedicated plumbing.
 
 ## Runtime Flow
 
