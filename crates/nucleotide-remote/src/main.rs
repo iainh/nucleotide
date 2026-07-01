@@ -6,9 +6,9 @@ use nucleotide_remote::{
     DEFAULT_FILE_READ_LIMIT, DEFAULT_WORKSPACE_SYMBOL_FILE_BYTE_LIMIT,
     DEFAULT_WORKSPACE_SYMBOL_FILE_LIMIT, DEFAULT_WORKSPACE_SYMBOL_TOTAL_BYTE_LIMIT,
     DirectoryListingResponse, EnvironmentResponse, FileCreateResponse, FileDeleteResponse,
-    FileReadResponse, FileRenameResponse, FileSearchResponse, GlobalSearchResponse, HelloResponse,
-    WorkspaceMetadataResponse, WorkspaceRootResponse, WorkspaceSymbolFilesOptions,
-    WorkspaceSymbolFilesResponse, encode_json_line,
+    FileDuplicateResponse, FileReadResponse, FileRenameResponse, FileSearchResponse,
+    GlobalSearchResponse, HelloResponse, WorkspaceMetadataResponse, WorkspaceRootResponse,
+    WorkspaceSymbolFilesOptions, WorkspaceSymbolFilesResponse, encode_json_line,
 };
 
 fn main() -> Result<()> {
@@ -71,6 +71,15 @@ fn main() -> Result<()> {
                 FileDeleteResponse::current(&name).context("failed to delete remote path")?;
             print!("{}", encode_json_line(&response)?);
         }
+        "duplicate" => {
+            let old_name = std::env::var("NUCLEOTIDE_REMOTE_DUPLICATE_OLD_NAME")
+                .context("NUCLEOTIDE_REMOTE_DUPLICATE_OLD_NAME is required")?;
+            let target_name = std::env::var("NUCLEOTIDE_REMOTE_DUPLICATE_TARGET_NAME")
+                .context("NUCLEOTIDE_REMOTE_DUPLICATE_TARGET_NAME is required")?;
+            let response = FileDuplicateResponse::current(&old_name, &target_name)
+                .context("failed to duplicate remote path")?;
+            print!("{}", encode_json_line(&response)?);
+        }
         "files" => {
             let response =
                 FileSearchResponse::current().context("failed to build file search response")?;
@@ -117,6 +126,7 @@ fn main() -> Result<()> {
             println!("nucleotide-remote create-directory");
             println!("nucleotide-remote rename");
             println!("nucleotide-remote delete");
+            println!("nucleotide-remote duplicate");
             println!("nucleotide-remote files");
             println!("nucleotide-remote search");
             println!("nucleotide-remote read");

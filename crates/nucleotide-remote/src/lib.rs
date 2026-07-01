@@ -8,7 +8,7 @@ use std::io::Read;
 use std::path::PathBuf;
 use std::time::UNIX_EPOCH;
 
-pub const PROTOCOL_VERSION: u32 = 11;
+pub const PROTOCOL_VERSION: u32 = 12;
 pub const DEFAULT_FILE_SEARCH_LIMIT: usize = 1_000;
 pub const DEFAULT_GLOBAL_SEARCH_LIMIT: usize = 1_000;
 pub const DEFAULT_FILE_READ_LIMIT: usize = 10_000;
@@ -279,6 +279,15 @@ pub struct FileDeleteResponse {
     pub kind: RemoteFileKind,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileDuplicateResponse {
+    pub protocol_version: u32,
+    pub current_dir: PathBuf,
+    pub old_path: PathBuf,
+    pub new_path: PathBuf,
+    pub kind: RemoteFileKind,
+}
+
 impl FileDeleteResponse {
     pub fn current(name: &str) -> std::io::Result<Self> {
         let name = sanitize_child_name(name)?;
@@ -297,6 +306,39 @@ impl FileDeleteResponse {
             protocol_version: PROTOCOL_VERSION,
             current_dir,
             path,
+            kind,
+        })
+    }
+}
+
+impl FileDuplicateResponse {
+    pub fn current(old_name: &str, target_name: &str) -> std::io::Result<Self> {
+        let old_name = sanitize_child_name(old_name)?;
+        let target_name = sanitize_child_name(target_name)?;
+        let current_dir = std::env::current_dir()?;
+        let old_path = current_dir.join(old_name);
+        let new_path = current_dir.join(target_name);
+        let metadata = std::fs::symlink_metadata(&old_path)?;
+        let kind = remote_file_kind_from_metadata(&metadata);
+
+        if new_path.exists() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "target exists",
+            ));
+        }
+
+        if old_path.is_dir() {
+            copy_dir_recursive(&old_path, &new_path)?;
+        } else {
+            std::fs::copy(&old_path, &new_path)?;
+        }
+
+        Ok(Self {
+            protocol_version: PROTOCOL_VERSION,
+            current_dir,
+            old_path,
+            new_path,
             kind,
         })
     }
@@ -329,6 +371,37 @@ impl FileRenameResponse {
             kind,
         })
     }
+}
+
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_dir_recursive(&from, &to)?;
+        } else if file_type.is_file() {
+            std::fs::copy(&from, &to)?;
+        } else if file_type.is_symlink()
+            && let Ok(target) = std::fs::read_link(&from)
+        {
+            let absolute_target = if target.is_absolute() {
+                target
+            } else {
+                from.parent()
+                    .unwrap_or_else(|| std::path::Path::new("."))
+                    .join(target)
+            };
+            if absolute_target.is_dir() {
+                copy_dir_recursive(&absolute_target, &to)?;
+            } else {
+                std::fs::copy(&absolute_target, &to)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn remote_file_kind_from_metadata(metadata: &std::fs::Metadata) -> RemoteFileKind {
@@ -1209,6 +1282,73 @@ mod tests {
 
         assert_eq!(nested.kind(), std::io::ErrorKind::InvalidInput);
         assert_eq!(parent.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn file_duplicate_response_duplicates_file_in_current_dir() {
+        let _guard = CURRENT_DIR_LOCK.lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("main.rs"), "fn main() {}\n").unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp.path()).unwrap();
+
+        let response = FileDuplicateResponse::current("main.rs", "main copy.rs").unwrap();
+
+        std::env::set_current_dir(original).unwrap();
+
+        assert_eq!(response.protocol_version, PROTOCOL_VERSION);
+        assert_eq!(response.old_path, temp.path().join("main.rs"));
+        assert_eq!(response.new_path, temp.path().join("main copy.rs"));
+        assert_eq!(response.kind, RemoteFileKind::File);
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("main copy.rs")).unwrap(),
+            "fn main() {}\n"
+        );
+    }
+
+    #[test]
+    fn file_duplicate_response_duplicates_directory_in_current_dir() {
+        let _guard = CURRENT_DIR_LOCK.lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temp.path().join("src").join("nested")).unwrap();
+        std::fs::write(temp.path().join("src").join("lib.rs"), "").unwrap();
+        std::fs::write(temp.path().join("src").join("nested").join("mod.rs"), "").unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp.path()).unwrap();
+
+        let response = FileDuplicateResponse::current("src", "src copy").unwrap();
+
+        std::env::set_current_dir(original).unwrap();
+
+        assert_eq!(response.kind, RemoteFileKind::Directory);
+        assert!(temp.path().join("src copy").join("lib.rs").exists());
+        assert!(
+            temp.path()
+                .join("src copy")
+                .join("nested")
+                .join("mod.rs")
+                .exists()
+        );
+    }
+
+    #[test]
+    fn file_duplicate_response_rejects_existing_or_invalid_names() {
+        let _guard = CURRENT_DIR_LOCK.lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("main.rs"), "").unwrap();
+        std::fs::write(temp.path().join("copy.rs"), "").unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp.path()).unwrap();
+
+        let existing = FileDuplicateResponse::current("main.rs", "copy.rs").unwrap_err();
+        let nested_source = FileDuplicateResponse::current("src/main.rs", "new.rs").unwrap_err();
+        let nested_target = FileDuplicateResponse::current("main.rs", "src/new.rs").unwrap_err();
+
+        std::env::set_current_dir(original).unwrap();
+
+        assert_eq!(existing.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(nested_source.kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(nested_target.kind(), std::io::ErrorKind::InvalidInput);
     }
 
     #[test]

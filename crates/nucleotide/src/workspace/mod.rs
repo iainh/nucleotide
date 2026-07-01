@@ -72,14 +72,14 @@ use nucleotide_core::EventBus;
 use nucleotide_env::{
     EnvironmentOrigin, WslWorkspace, create_wsl_remote_directory_blocking,
     create_wsl_remote_file_blocking, delete_wsl_remote_path_blocking,
-    load_wsl_remote_file_search_blocking, load_wsl_remote_global_search_blocking,
-    rename_wsl_remote_path_blocking,
+    duplicate_wsl_remote_path_blocking, load_wsl_remote_file_search_blocking,
+    load_wsl_remote_global_search_blocking, rename_wsl_remote_path_blocking,
 };
 use nucleotide_events::v2::run::{Event as RunEvent, ResolvedTask, RunId, RunStatus};
 use nucleotide_events::v2::terminal::{Event as TerminalEvent, TerminalId};
 use nucleotide_remote::{
-    FileCreateResponse, FileDeleteResponse, FileRenameResponse, FileSearchResponse,
-    GlobalSearchResponse, RemoteFileKind,
+    FileCreateResponse, FileDeleteResponse, FileDuplicateResponse, FileRenameResponse,
+    FileSearchResponse, GlobalSearchResponse, RemoteFileKind,
 };
 use nucleotide_terminal::TerminalBounds;
 use slotmap::KeyData;
@@ -2353,6 +2353,30 @@ fn delete_wsl_project_path(path: &Path) -> Result<bool, String> {
     wsl_deleted_path(path, &response)
         .map(|(_, was_dir)| was_dir)
         .ok_or_else(|| "remote helper returned an unmappable delete path".to_string())
+}
+
+fn wsl_duplicated_path(path: &Path, response: &FileDuplicateResponse) -> Option<(PathBuf, bool)> {
+    let parent = path.parent()?;
+    let workspace = WslWorkspace::from_unc_path(parent)?;
+    let old_path = workspace
+        .unc_path_for_linux_path(&response.old_path)
+        .map(PathBuf::from)?;
+    if old_path != path {
+        return None;
+    }
+
+    let new_path = workspace
+        .unc_path_for_linux_path(&response.new_path)
+        .map(PathBuf::from)?;
+    Some((new_path, matches!(response.kind, RemoteFileKind::Directory)))
+}
+
+fn duplicate_wsl_project_path(path: &Path, target_name: &str) -> Result<(PathBuf, bool), String> {
+    let response =
+        duplicate_wsl_remote_path_blocking(path, target_name, WSL_REMOTE_FILE_OP_TIMEOUT)
+            .map_err(|error| error.to_string())?;
+    wsl_duplicated_path(path, &response)
+        .ok_or_else(|| "remote helper returned an unmappable duplicate path".to_string())
 }
 
 fn global_search_picker(root: &Path, matches: Vec<GlobalSearchMatch>) -> crate::picker::Picker {
@@ -8415,6 +8439,49 @@ impl Workspace {
                     Err(error) => {
                         let status = EditorStatus {
                             status: format!("Failed to rename WSL path: {error}"),
+                            severity: Severity::Error,
+                        };
+                        self.core.update(cx, |core, cx| {
+                            core.editor.set_error(status.status.clone());
+                            cx.notify();
+                        });
+                        self.push_editor_status_notification(status, cx);
+                    }
+                }
+                return;
+            }
+
+            if let PendingFileOp::Duplicate { path } = &pending
+                && WslWorkspace::from_unc_path(path).is_some()
+            {
+                self.overlay
+                    .update(cx, |overlay, cx| overlay.dismiss_all(cx));
+
+                match duplicate_wsl_project_path(path, command) {
+                    Ok((new_path, is_dir)) => {
+                        let parent = new_path
+                            .parent()
+                            .unwrap_or_else(|| std::path::Path::new("."))
+                            .to_path_buf();
+                        self.dispatch_workspace_file_op_and_process(
+                            WsEvent::FileCreated {
+                                path: new_path.clone(),
+                                parent_directory: parent.clone(),
+                            },
+                            cx,
+                        );
+                        self.notify_lsp_file_operation(
+                            LspFileOperationNotification::Created {
+                                path: new_path,
+                                is_dir,
+                            },
+                            cx,
+                        );
+                        self.rescan_directory(&parent, cx);
+                    }
+                    Err(error) => {
+                        let status = EditorStatus {
+                            status: format!("Failed to duplicate WSL path: {error}"),
                             severity: Severity::Error,
                         };
                         self.core.update(cx, |core, cx| {
@@ -19310,6 +19377,43 @@ mod tests {
             ),
             Some((
                 PathBuf::from(r"\\wsl.localhost\Ubuntu\home\iain\repo\src\components"),
+                true,
+            ))
+        );
+    }
+
+    #[test]
+    fn wsl_duplicated_paths_map_back_to_unc_paths() {
+        let path = PathBuf::from(r"\\wsl.localhost\Ubuntu\home\iain\repo\src\old.rs");
+        let response = FileDuplicateResponse {
+            protocol_version: nucleotide_remote::PROTOCOL_VERSION,
+            current_dir: PathBuf::from("/home/iain/repo/src"),
+            old_path: PathBuf::from("/home/iain/repo/src/old.rs"),
+            new_path: PathBuf::from("/home/iain/repo/src/old copy.rs"),
+            kind: RemoteFileKind::File,
+        };
+        let directory_response = FileDuplicateResponse {
+            protocol_version: nucleotide_remote::PROTOCOL_VERSION,
+            current_dir: PathBuf::from("/home/iain/repo/src"),
+            old_path: PathBuf::from("/home/iain/repo/src/components"),
+            new_path: PathBuf::from("/home/iain/repo/src/components copy"),
+            kind: RemoteFileKind::Directory,
+        };
+
+        assert_eq!(
+            wsl_duplicated_path(&path, &response),
+            Some((
+                PathBuf::from(r"\\wsl.localhost\Ubuntu\home\iain\repo\src\old copy.rs"),
+                false,
+            ))
+        );
+        assert_eq!(
+            wsl_duplicated_path(
+                Path::new(r"\\wsl.localhost\Ubuntu\home\iain\repo\src\components"),
+                &directory_response,
+            ),
+            Some((
+                PathBuf::from(r"\\wsl.localhost\Ubuntu\home\iain\repo\src\components copy"),
                 true,
             ))
         );
