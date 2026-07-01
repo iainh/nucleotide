@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::SystemTime;
 use thiserror::Error;
 
@@ -29,6 +30,13 @@ pub enum WorkspaceError {
 
     #[error("search pattern is invalid: {0}")]
     InvalidSearchPattern(#[from] regex::Error),
+
+    #[error("{operation} failed for {path}: {message}")]
+    CommandFailed {
+        operation: &'static str,
+        path: PathBuf,
+        message: String,
+    },
 
     #[error("remote {operation} failed for {path}: {message}")]
     Remote {
@@ -231,6 +239,65 @@ pub struct ProjectEnvironmentSnapshot {
     pub diagnostics: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GitStatusOptions {
+    pub include_untracked: bool,
+    pub limit: usize,
+}
+
+impl GitStatusOptions {
+    pub fn with_limit(limit: usize) -> Self {
+        Self {
+            limit,
+            ..Self::default()
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GitStatusKind {
+    Unmodified,
+    Modified,
+    Added,
+    Deleted,
+    Renamed,
+    Copied,
+    TypeChanged,
+    Untracked,
+    Conflicted,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitStatusEntry {
+    pub relative_path: PathBuf,
+    pub original_relative_path: Option<PathBuf>,
+    pub index_status: GitStatusKind,
+    pub working_tree_status: GitStatusKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitStatusResult {
+    pub root: PathBuf,
+    pub entries: Vec<GitStatusEntry>,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitHeadResult {
+    pub root: PathBuf,
+    pub head: Option<String>,
+}
+
+impl Default for GitStatusOptions {
+    fn default() -> Self {
+        Self {
+            include_untracked: true,
+            limit: 10_000,
+        }
+    }
+}
+
 #[async_trait]
 pub trait WorkspaceBackend: Send + Sync {
     fn identity(&self) -> WorkspaceIdentity;
@@ -253,6 +320,10 @@ pub trait WorkspaceBackend: Send + Sync {
     async fn text_search(&self, query: TextSearchQuery) -> Result<TextSearchResult>;
 
     async fn project_environment(&self, root: &Path) -> Result<ProjectEnvironmentSnapshot>;
+
+    async fn git_head(&self, root: &Path) -> Result<GitHeadResult>;
+
+    async fn git_status(&self, root: &Path, options: GitStatusOptions) -> Result<GitStatusResult>;
 }
 
 #[derive(Debug, Default, Clone)]
@@ -295,6 +366,14 @@ impl WorkspaceBackend for LocalWorkspaceBackend {
 
     async fn project_environment(&self, root: &Path) -> Result<ProjectEnvironmentSnapshot> {
         local_project_environment(root)
+    }
+
+    async fn git_head(&self, root: &Path) -> Result<GitHeadResult> {
+        local_git_head(root)
+    }
+
+    async fn git_status(&self, root: &Path, options: GitStatusOptions) -> Result<GitStatusResult> {
+        local_git_status(root, options)
     }
 }
 
@@ -662,6 +741,147 @@ fn local_project_environment(root: &Path) -> Result<ProjectEnvironmentSnapshot> 
     })
 }
 
+fn local_git_head(root: &Path) -> Result<GitHeadResult> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--verify", "HEAD"])
+        .current_dir(root)
+        .output()
+        .map_err(|source| WorkspaceError::Io {
+            operation: "run git rev-parse",
+            path: root.to_path_buf(),
+            source,
+        })?;
+
+    if !output.status.success() {
+        return Ok(GitHeadResult {
+            root: root.to_path_buf(),
+            head: None,
+        });
+    }
+
+    let head = std::str::from_utf8(&output.stdout)
+        .ok()
+        .map(str::trim)
+        .filter(|head| !head.is_empty())
+        .map(ToOwned::to_owned);
+
+    Ok(GitHeadResult {
+        root: root.to_path_buf(),
+        head,
+    })
+}
+
+fn local_git_status(root: &Path, options: GitStatusOptions) -> Result<GitStatusResult> {
+    let mut command = Command::new("git");
+    command
+        .args(["status", "--porcelain=v1", "-z"])
+        .current_dir(root);
+    if options.include_untracked {
+        command.arg("--untracked-files=all");
+    } else {
+        command.arg("--untracked-files=no");
+    }
+
+    let output = command.output().map_err(|source| WorkspaceError::Io {
+        operation: "run git status",
+        path: root.to_path_buf(),
+        source,
+    })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let message = if stderr.is_empty() {
+            format!("git exited with status {}", output.status)
+        } else {
+            format!("git exited with status {}: {stderr}", output.status)
+        };
+        return Err(WorkspaceError::CommandFailed {
+            operation: "git status",
+            path: root.to_path_buf(),
+            message,
+        });
+    }
+
+    Ok(parse_git_status_output(root, &output.stdout, options.limit))
+}
+
+fn parse_git_status_output(root: &Path, output: &[u8], limit: usize) -> GitStatusResult {
+    let mut entries = Vec::new();
+    let mut fields = output
+        .split(|byte| *byte == 0)
+        .filter(|field| !field.is_empty());
+    let mut truncated = false;
+
+    while let Some(field) = fields.next() {
+        if field.len() < 4 || field[2] != b' ' {
+            continue;
+        }
+
+        let index = field[0];
+        let worktree = field[1];
+        let relative_path = path_from_git_bytes(&field[3..]);
+        let original_relative_path = if matches!(index, b'R' | b'C') {
+            fields.next().map(path_from_git_bytes)
+        } else {
+            None
+        };
+
+        if entries.len() >= limit {
+            truncated = true;
+            break;
+        }
+
+        entries.push(GitStatusEntry {
+            relative_path,
+            original_relative_path,
+            index_status: git_status_kind(index, worktree),
+            working_tree_status: git_status_kind(worktree, index),
+        });
+    }
+
+    GitStatusResult {
+        root: root.to_path_buf(),
+        entries,
+        truncated,
+    }
+}
+
+fn path_from_git_bytes(bytes: &[u8]) -> PathBuf {
+    PathBuf::from(String::from_utf8_lossy(bytes).into_owned())
+}
+
+fn git_status_kind(status: u8, other: u8) -> GitStatusKind {
+    if is_conflict_pair(status, other) {
+        return GitStatusKind::Conflicted;
+    }
+
+    match status {
+        b' ' => GitStatusKind::Unmodified,
+        b'M' => GitStatusKind::Modified,
+        b'A' => GitStatusKind::Added,
+        b'D' => GitStatusKind::Deleted,
+        b'R' => GitStatusKind::Renamed,
+        b'C' => GitStatusKind::Copied,
+        b'T' => GitStatusKind::TypeChanged,
+        b'?' => GitStatusKind::Untracked,
+        b'U' => GitStatusKind::Conflicted,
+        _ => GitStatusKind::Unknown,
+    }
+}
+
+fn is_conflict_pair(left: u8, right: u8) -> bool {
+    matches!(
+        (left, right),
+        (b'D', b'D')
+            | (b'A', b'U')
+            | (b'U', b'D')
+            | (b'U', b'A')
+            | (b'D', b'U')
+            | (b'A', b'A')
+            | (b'U', b'U')
+    )
+}
+
 fn file_stat_from_metadata(path: PathBuf, metadata: fs::Metadata) -> FileStat {
     let file_type = metadata.file_type();
     let kind = if file_type.is_file() {
@@ -896,5 +1116,116 @@ mod tests {
         assert_eq!(snapshot.root, temp.path());
         assert_eq!(snapshot.origin, ProjectEnvironmentOrigin::ProcessBaseline);
         assert!(snapshot.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn local_backend_git_head_returns_current_commit() {
+        let temp = tempfile::tempdir().unwrap();
+        init_git_repo(temp.path());
+        fs::write(temp.path().join("tracked.txt"), "initial\n").unwrap();
+        run_git(temp.path(), &["add", "tracked.txt"]);
+        run_git(temp.path(), &["commit", "-m", "initial"]);
+
+        let expected = git_output(temp.path(), &["rev-parse", "--verify", "HEAD"]);
+        let backend = LocalWorkspaceBackend;
+        let head = block_on(backend.git_head(temp.path())).unwrap();
+
+        assert_eq!(head.root, temp.path());
+        assert_eq!(head.head, Some(expected.trim().to_string()));
+    }
+
+    #[test]
+    fn local_backend_git_status_returns_structured_entries() {
+        let temp = tempfile::tempdir().unwrap();
+        init_git_repo(temp.path());
+        fs::write(temp.path().join("tracked.txt"), "initial\n").unwrap();
+        fs::write(temp.path().join("move-me.txt"), "move\n").unwrap();
+        run_git(temp.path(), &["add", "tracked.txt", "move-me.txt"]);
+        run_git(temp.path(), &["commit", "-m", "initial"]);
+
+        fs::write(temp.path().join("tracked.txt"), "changed\n").unwrap();
+        run_git(temp.path(), &["mv", "move-me.txt", "renamed.txt"]);
+        fs::write(temp.path().join("notes.md"), "untracked\n").unwrap();
+
+        let backend = LocalWorkspaceBackend;
+        let status =
+            block_on(backend.git_status(temp.path(), GitStatusOptions::default())).unwrap();
+
+        let modified = status
+            .entries
+            .iter()
+            .find(|entry| entry.relative_path == PathBuf::from("tracked.txt"))
+            .unwrap();
+        assert_eq!(modified.index_status, GitStatusKind::Unmodified);
+        assert_eq!(modified.working_tree_status, GitStatusKind::Modified);
+
+        let renamed = status
+            .entries
+            .iter()
+            .find(|entry| entry.relative_path == PathBuf::from("renamed.txt"))
+            .unwrap();
+        assert_eq!(renamed.index_status, GitStatusKind::Renamed);
+        assert_eq!(renamed.working_tree_status, GitStatusKind::Unmodified);
+        assert_eq!(
+            renamed.original_relative_path,
+            Some(PathBuf::from("move-me.txt"))
+        );
+
+        let untracked = status
+            .entries
+            .iter()
+            .find(|entry| entry.relative_path == PathBuf::from("notes.md"))
+            .unwrap();
+        assert_eq!(untracked.index_status, GitStatusKind::Untracked);
+        assert_eq!(untracked.working_tree_status, GitStatusKind::Untracked);
+        assert!(!status.truncated);
+    }
+
+    #[test]
+    fn local_backend_git_status_respects_limit() {
+        let temp = tempfile::tempdir().unwrap();
+        init_git_repo(temp.path());
+        fs::write(temp.path().join("a.txt"), "a\n").unwrap();
+        fs::write(temp.path().join("b.txt"), "b\n").unwrap();
+
+        let backend = LocalWorkspaceBackend;
+        let status =
+            block_on(backend.git_status(temp.path(), GitStatusOptions::with_limit(1))).unwrap();
+
+        assert_eq!(status.entries.len(), 1);
+        assert!(status.truncated);
+    }
+
+    fn init_git_repo(root: &Path) {
+        run_git(root, &["init"]);
+        run_git(root, &["config", "user.email", "nucleotide@example.test"]);
+        run_git(root, &["config", "user.name", "Nucleotide Tests"]);
+    }
+
+    fn run_git(root: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .output()
+            .unwrap_or_else(|error| panic!("failed to run git {args:?}: {error}"));
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn git_output(root: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .output()
+            .unwrap_or_else(|error| panic!("failed to run git {args:?}: {error}"));
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap()
     }
 }
