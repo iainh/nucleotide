@@ -141,6 +141,7 @@ pub struct FileSearchQuery {
     pub git_exclude: bool,
     pub follow_links: bool,
     pub max_depth: Option<usize>,
+    pub excluded_relative_prefixes: Vec<PathBuf>,
 }
 
 impl Default for FileSearchQuery {
@@ -157,6 +158,7 @@ impl Default for FileSearchQuery {
             git_exclude: true,
             follow_links: false,
             max_depth: None,
+            excluded_relative_prefixes: Vec::new(),
         }
     }
 }
@@ -610,6 +612,16 @@ fn local_file_search(query: FileSearchQuery) -> Result<FileSearchResult> {
         .git_exclude(query.git_exclude)
         .follow_links(query.follow_links)
         .add_custom_ignore_filename(".helix/ignore");
+    if !query.excluded_relative_prefixes.is_empty() {
+        let root = query.root.clone();
+        let excluded_relative_prefixes = query.excluded_relative_prefixes.clone();
+        walker.filter_entry(move |entry| {
+            let relative_path = entry.path().strip_prefix(&root).unwrap_or(entry.path());
+            !excluded_relative_prefixes
+                .iter()
+                .any(|prefix| relative_path.starts_with(prefix))
+        });
+    }
     if let Some(max_depth) = query.max_depth {
         walker.max_depth(Some(max_depth));
     }
@@ -1085,6 +1097,27 @@ mod tests {
         assert_eq!(result.files.len(), 1);
         assert!(result.truncated);
         assert!(result.files[0].to_string_lossy().ends_with(".rs"));
+    }
+
+    #[test]
+    fn local_backend_file_search_excludes_relative_prefixes_before_limit() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir(temp.path().join("skip")).unwrap();
+        fs::write(temp.path().join("skip").join("a.rs"), "").unwrap();
+        fs::write(temp.path().join("skip").join("b.rs"), "").unwrap();
+        fs::write(temp.path().join("main.rs"), "").unwrap();
+
+        let backend = LocalWorkspaceBackend;
+        let result = block_on(backend.file_search(FileSearchQuery {
+            root: temp.path().to_path_buf(),
+            limit: 1,
+            excluded_relative_prefixes: vec![PathBuf::from("skip")],
+            ..FileSearchQuery::default()
+        }))
+        .unwrap();
+
+        assert_eq!(result.files, vec![PathBuf::from("main.rs")]);
+        assert!(!result.truncated);
     }
 
     #[test]
