@@ -26,6 +26,12 @@ pub struct WslWorkspace {
     linux_path: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WslPathShapeKind {
+    File,
+    Directory,
+}
+
 impl WslWorkspace {
     pub fn from_unc_path(path: impl AsRef<Path>) -> Option<Self> {
         parse_wsl_unc_path(&path.as_ref().as_os_str().to_string_lossy())
@@ -61,6 +67,54 @@ impl WslWorkspace {
         }
         Some(unc)
     }
+}
+
+pub fn wsl_path_shape_fallback_kind(path: &Path) -> WslPathShapeKind {
+    if path.extension().is_some() || wsl_extensionless_file_name(path) {
+        WslPathShapeKind::File
+    } else {
+        WslPathShapeKind::Directory
+    }
+}
+
+fn wsl_extensionless_file_name(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let lower = name.to_ascii_lowercase();
+
+    matches!(
+        lower.as_str(),
+        "makefile"
+            | "gnumakefile"
+            | "dockerfile"
+            | "containerfile"
+            | "justfile"
+            | "taskfile"
+            | "vagrantfile"
+            | "rakefile"
+            | "gemfile"
+            | "procfile"
+            | "readme"
+            | "license"
+            | "licence"
+            | "copying"
+            | "notice"
+            | "changelog"
+            | "changes"
+            | "authors"
+            | "contributors"
+            | ".env"
+            | ".envrc"
+            | ".gitignore"
+            | ".dockerignore"
+            | ".editorconfig"
+            | ".gitattributes"
+            | ".gitmodules"
+            | ".bashrc"
+            | ".zshrc"
+            | ".profile"
+    )
 }
 
 pub fn build_wsl_environment_capture_command(workspace: &WslWorkspace) -> Command {
@@ -1416,6 +1470,28 @@ mod tests {
         assert_eq!(
             workspace.unc_path_for_linux_path(Path::new("relative")),
             None
+        );
+    }
+
+    #[test]
+    fn wsl_path_shape_fallback_recognizes_common_extensionless_files() {
+        for path in [
+            r"\\wsl.localhost\Ubuntu\home\iain\repo\Makefile",
+            r"\\wsl.localhost\Ubuntu\home\iain\repo\Dockerfile",
+            r"\\wsl.localhost\Ubuntu\home\iain\repo\README",
+            r"\\wsl.localhost\Ubuntu\home\iain\repo\.envrc",
+            r"\\wsl.localhost\Ubuntu\home\iain\repo\src\main.rs",
+        ] {
+            assert_eq!(
+                wsl_path_shape_fallback_kind(Path::new(path)),
+                WslPathShapeKind::File,
+                "{path}"
+            );
+        }
+
+        assert_eq!(
+            wsl_path_shape_fallback_kind(Path::new(r"\\wsl.localhost\Ubuntu\home\iain\repo\src")),
+            WslPathShapeKind::Directory
         );
     }
 

@@ -6,7 +6,10 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use helix_term::args::Args;
-use nucleotide_env::{WslWorkspace, load_wsl_remote_directory_listing_blocking};
+use nucleotide_env::{
+    WslPathShapeKind, WslWorkspace, load_wsl_remote_directory_listing_blocking,
+    wsl_path_shape_fallback_kind,
+};
 use nucleotide_logging::{error, info, instrument, warn};
 use nucleotide_remote::RemoteFileKind;
 
@@ -219,13 +222,10 @@ fn workspace_start_dir_for_kind(path: &Path, kind: StartupPathKind) -> Option<Pa
     match kind {
         StartupPathKind::Directory => Some(path.to_path_buf()),
         StartupPathKind::File => path.parent().map(Path::to_path_buf),
-        StartupPathKind::Unknown => {
-            if path.extension().is_some() {
-                path.parent().map(Path::to_path_buf)
-            } else {
-                Some(path.to_path_buf())
-            }
-        }
+        StartupPathKind::Unknown => match wsl_path_shape_fallback_kind(path) {
+            WslPathShapeKind::File => path.parent().map(Path::to_path_buf),
+            WslPathShapeKind::Directory => Some(path.to_path_buf()),
+        },
     }
 }
 
@@ -753,7 +753,9 @@ fn open_request_is_file_kind(path: &Path, kind: StartupPathKind) -> bool {
     match kind {
         StartupPathKind::File => true,
         StartupPathKind::Directory => false,
-        StartupPathKind::Unknown => path.extension().is_some(),
+        StartupPathKind::Unknown => {
+            matches!(wsl_path_shape_fallback_kind(path), WslPathShapeKind::File)
+        }
     }
 }
 
@@ -1762,6 +1764,16 @@ mod tests {
     }
 
     #[test]
+    fn workspace_start_dir_for_kind_treats_common_extensionless_files_as_files() {
+        let path = PathBuf::from(r"\\wsl.localhost\Ubuntu\home\iain\repo\Makefile");
+
+        assert_eq!(
+            workspace_start_dir_for_kind(&path, StartupPathKind::Unknown),
+            Some(PathBuf::from(r"\\wsl.localhost\Ubuntu\home\iain\repo"))
+        );
+    }
+
+    #[test]
     fn workspace_start_dir_for_argument_ignores_missing_native_parent() {
         let temp_dir = tempfile::tempdir().unwrap();
         let path = temp_dir
@@ -1880,11 +1892,15 @@ mod tests {
     }
 
     #[test]
-    fn open_request_unknown_kind_uses_extension_heuristic() {
+    fn open_request_unknown_kind_uses_path_shape_fallback() {
         let temp_dir = tempfile::tempdir().unwrap();
 
         assert!(open_request_is_file_kind(
             &temp_dir.path().join("missing.txt"),
+            StartupPathKind::Unknown
+        ));
+        assert!(open_request_is_file_kind(
+            &PathBuf::from(r"\\wsl.localhost\Ubuntu\home\iain\repo\Makefile"),
             StartupPathKind::Unknown
         ));
         assert!(!open_request_is_file_kind(

@@ -73,12 +73,13 @@ use crate::utils;
 use crate::{Core, Input, InputEvent};
 use nucleotide_core::EventBus;
 use nucleotide_env::{
-    EnvironmentOrigin, WslWorkspace, build_wsl_shell_command, create_wsl_remote_directory_blocking,
-    create_wsl_remote_file_blocking, delete_wsl_remote_path_blocking,
-    duplicate_wsl_remote_path_blocking, format_wsl_remote_file_blocking,
-    load_wsl_remote_file_content_blocking, load_wsl_remote_file_search_blocking,
-    load_wsl_remote_global_search_blocking, rename_wsl_remote_path_blocking,
-    set_wsl_remote_readonly_blocking, write_wsl_remote_file_blocking,
+    EnvironmentOrigin, WslPathShapeKind, WslWorkspace, build_wsl_shell_command,
+    create_wsl_remote_directory_blocking, create_wsl_remote_file_blocking,
+    delete_wsl_remote_path_blocking, duplicate_wsl_remote_path_blocking,
+    format_wsl_remote_file_blocking, load_wsl_remote_file_content_blocking,
+    load_wsl_remote_file_search_blocking, load_wsl_remote_global_search_blocking,
+    rename_wsl_remote_path_blocking, set_wsl_remote_readonly_blocking,
+    write_wsl_remote_file_blocking, wsl_path_shape_fallback_kind,
 };
 use nucleotide_events::v2::run::{Event as RunEvent, ResolvedTask, RunId, RunStatus};
 use nucleotide_events::v2::terminal::{Event as TerminalEvent, TerminalId};
@@ -1501,10 +1502,9 @@ fn selected_path_kind_without_wsl_probe(
     }
 
     if WslWorkspace::from_unc_path(path).is_some() {
-        return Some(if path.extension().is_some() {
-            SelectedPathKind::File
-        } else {
-            SelectedPathKind::Directory
+        return Some(match wsl_path_shape_fallback_kind(path) {
+            WslPathShapeKind::File => SelectedPathKind::File,
+            WslPathShapeKind::Directory => SelectedPathKind::Directory,
         });
     }
 
@@ -18257,10 +18257,17 @@ mod tests {
     }
 
     #[test]
-    fn selected_path_kind_uses_wsl_extension_heuristic_without_local_probe() {
+    fn selected_path_kind_uses_wsl_shape_fallback_without_local_probe() {
         assert_eq!(
             selected_path_kind_without_wsl_probe(
                 Path::new(r"\\wsl.localhost\Ubuntu\home\iain\repo\src\main.rs"),
+                None,
+            ),
+            Some(SelectedPathKind::File)
+        );
+        assert_eq!(
+            selected_path_kind_without_wsl_probe(
+                Path::new(r"\\wsl.localhost\Ubuntu\home\iain\repo\Makefile"),
                 None,
             ),
             Some(SelectedPathKind::File)

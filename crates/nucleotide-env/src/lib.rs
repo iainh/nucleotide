@@ -11,7 +11,7 @@ pub use shell_env::{
     ShellEnvironmentError, detect_shell_type, parse_shell_environment, shell_command_builder,
 };
 pub use wsl::{
-    WslRemoteHelperError, WslWorkspace, build_wsl_environment_capture_command,
+    WslPathShapeKind, WslRemoteHelperError, WslWorkspace, build_wsl_environment_capture_command,
     build_wsl_remote_create_directory_command, build_wsl_remote_create_file_command,
     build_wsl_remote_delete_path_command, build_wsl_remote_directory_listing_command,
     build_wsl_remote_duplicate_path_command, build_wsl_remote_env_command,
@@ -31,7 +31,7 @@ pub use wsl::{
     load_wsl_remote_metadata, load_wsl_remote_workspace_root_blocking,
     load_wsl_remote_workspace_symbol_files_blocking, move_wsl_remote_path_blocking,
     probe_wsl_remote_helper, rename_wsl_remote_path_blocking, set_wsl_remote_readonly_blocking,
-    write_wsl_remote_file_blocking, wsl_remote_helper_cache_path,
+    write_wsl_remote_file_blocking, wsl_path_shape_fallback_kind, wsl_remote_helper_cache_path,
     wsl_remote_helper_create_directory_script, wsl_remote_helper_create_file_script,
     wsl_remote_helper_delete_path_script, wsl_remote_helper_directory_listing_script,
     wsl_remote_helper_duplicate_path_script, wsl_remote_helper_env_script,

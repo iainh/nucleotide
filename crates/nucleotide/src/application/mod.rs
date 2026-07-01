@@ -57,10 +57,10 @@ use slotmap::Key;
 
 // Import our shell environment system
 use nucleotide_env::{
-    ProjectEnvironment, WslWorkspace, install_wsl_remote_helper,
+    ProjectEnvironment, WslPathShapeKind, WslWorkspace, install_wsl_remote_helper,
     load_wsl_remote_directory_listing_blocking, load_wsl_remote_metadata,
     load_wsl_remote_workspace_root_blocking, load_wsl_remote_workspace_symbol_files_blocking,
-    probe_wsl_remote_helper,
+    probe_wsl_remote_helper, wsl_path_shape_fallback_kind,
 };
 use nucleotide_remote::{
     DEFAULT_WORKSPACE_SYMBOL_FILE_BYTE_LIMIT, DEFAULT_WORKSPACE_SYMBOL_TOTAL_BYTE_LIMIT,
@@ -6716,7 +6716,10 @@ fn wsl_cli_argument_kind(path: &Path) -> Option<RemoteFileKind> {
 }
 
 fn wsl_cli_argument_directory_fallback(path: &Path) -> bool {
-    path.extension().is_none()
+    matches!(
+        wsl_path_shape_fallback_kind(path),
+        WslPathShapeKind::Directory
+    )
 }
 
 /// Detect if we need CLI environment and create appropriate ProjectEnvironment.
@@ -9919,6 +9922,9 @@ mod tests {
         )));
         assert!(!wsl_cli_argument_directory_fallback(Path::new(
             r"\\wsl.localhost\Ubuntu\home\iain\repo\src\main.rs"
+        )));
+        assert!(!wsl_cli_argument_directory_fallback(Path::new(
+            r"\\wsl.localhost\Ubuntu\home\iain\repo\Makefile"
         )));
     }
 

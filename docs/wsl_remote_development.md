@@ -81,8 +81,8 @@ editor backend into Linux:
   selections, file picker requests, and `gf`-style file navigation classify WSL
   paths without Windows `exists`/`is_dir`/`canonicalize` probes. When helper
   metadata is unavailable, path-shape fallbacks prefer opening extension-bearing
-  paths as files and extensionless paths as directories, keeping common remote
-  workflows responsive.
+  paths and common extensionless project files such as `Makefile`, `Dockerfile`,
+  and `README` as files, while other extensionless paths remain directories.
 - Workspace terminals and runnable commands opened from WSL roots are launched
   through `wsl.exe --distribution <distro> --cd <linux-path>`, so shells and
   commands start where the project files live. Rust-analyzer runnable payloads
