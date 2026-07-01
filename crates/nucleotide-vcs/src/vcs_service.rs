@@ -35,9 +35,20 @@ pub enum VcsEvent {
         file_path: PathBuf,
         /// Diff hunks for the file
         hunks: Vec<DiffHunkInfo>,
+        /// Git revision used as the diff base, if known.
+        diff_base_revision: Option<String>,
     },
     /// VCS service has started monitoring a repository
-    RepositoryStarted { root_path: PathBuf },
+    RepositoryStarted {
+        root_path: PathBuf,
+        current_head: Option<String>,
+    },
+    /// VCS repository head changed
+    RepositoryHeadChanged {
+        root_path: PathBuf,
+        previous_head: Option<String>,
+        current_head: String,
+    },
     /// VCS service encountered an error
     Error { message: String },
 }
@@ -45,7 +56,11 @@ pub enum VcsEvent {
 /// Convert VCS service event to domain event for the event bus
 fn vcs_event_to_domain_events(event: &VcsEvent) -> Vec<DomainVcsEvent> {
     match event {
-        VcsEvent::DiffHunksUpdated { file_path, hunks } => {
+        VcsEvent::DiffHunksUpdated {
+            file_path,
+            hunks,
+            diff_base_revision,
+        } => {
             // Convert DiffHunkInfo to DomainDiffHunk
             let domain_hunks: Vec<DomainDiffHunk> = hunks
                 .iter()
@@ -76,13 +91,25 @@ fn vcs_event_to_domain_events(event: &VcsEvent) -> Vec<DomainVcsEvent> {
                 doc_id: helix_view::DocumentId::default(), // TODO: Get actual doc_id when available
                 path: file_path.clone(),
                 hunks: domain_hunks,
-                diff_base_revision: diff_base_revision_for_file(file_path),
+                diff_base_revision: diff_base_revision.clone(),
             }]
         }
-        VcsEvent::RepositoryStarted { root_path } => vec![DomainVcsEvent::RepositoryHeadChanged {
+        VcsEvent::RepositoryStarted {
+            root_path,
+            current_head,
+        } => vec![DomainVcsEvent::RepositoryHeadChanged {
             repository_path: root_path.clone(),
             previous_head: None,
-            current_head: current_git_head(root_path).unwrap_or_else(|| "HEAD".to_string()),
+            current_head: current_head.clone().unwrap_or_else(|| "HEAD".to_string()),
+        }],
+        VcsEvent::RepositoryHeadChanged {
+            root_path,
+            previous_head,
+            current_head,
+        } => vec![DomainVcsEvent::RepositoryHeadChanged {
+            repository_path: root_path.clone(),
+            previous_head: previous_head.clone(),
+            current_head: current_head.clone(),
         }],
         VcsEvent::StatusUpdated { changes } => changes
             .iter()
@@ -129,10 +156,6 @@ fn current_git_head(root_path: &Path) -> Option<String> {
     }
 
     parse_git_head_output(&output.stdout)
-}
-
-fn diff_base_revision_for_file(file_path: &Path) -> Option<String> {
-    file_path.parent().and_then(current_git_head)
 }
 
 fn parse_git_head_output(stdout: &[u8]) -> Option<String> {
@@ -216,6 +239,8 @@ impl CacheStats {
 pub struct VcsService {
     /// Root path of the repository being monitored
     root_path: Option<PathBuf>,
+    /// Last repository head observed through the workspace backend.
+    repository_head: Option<String>,
     /// Workspace backend used for repository operations.
     workspace_backend: Option<WorkspaceBackendHandle>,
     /// Current VCS status cache
@@ -259,6 +284,7 @@ impl VcsService {
     pub fn new(config: VcsConfig) -> Self {
         Self {
             root_path: None,
+            repository_head: None,
             workspace_backend: None,
             status_cache: HashMap::new(),
             cache_timestamps: HashMap::new(),
@@ -324,6 +350,7 @@ impl VcsService {
         }
 
         self.root_path = Some(root_path.clone());
+        self.repository_head = None;
         self.is_monitoring = self.config.enabled;
 
         if self.is_monitoring {
@@ -335,7 +362,13 @@ impl VcsService {
             self.schedule_next_check();
 
             // Broadcast that we started monitoring
-            self.emit_vcs_event(VcsEvent::RepositoryStarted { root_path }, cx);
+            self.emit_vcs_event(
+                VcsEvent::RepositoryStarted {
+                    root_path,
+                    current_head: self.repository_head.clone(),
+                },
+                cx,
+            );
         }
     }
 
@@ -344,6 +377,7 @@ impl VcsService {
         info!("VCS: Stopping monitoring");
         self.is_monitoring = false;
         self.root_path = None;
+        self.repository_head = None;
         self.status_cache.clear();
         self.diff_handles.clear();
         self.diff_hunks_cache.clear();
@@ -434,6 +468,7 @@ impl VcsService {
                 VcsEvent::DiffHunksUpdated {
                     file_path: abs_path,
                     hunks,
+                    diff_base_revision: self.repository_head.clone(),
                 },
                 cx,
             );
@@ -451,6 +486,7 @@ impl VcsService {
                     VcsEvent::DiffHunksUpdated {
                         file_path: abs_path,
                         hunks: vec![],
+                        diff_base_revision: self.repository_head.clone(),
                     },
                     cx,
                 );
@@ -525,6 +561,7 @@ impl VcsService {
                 VcsEvent::DiffHunksUpdated {
                     file_path: abs_path.to_path_buf(),
                     hunks: Vec::new(),
+                    diff_base_revision: self.repository_head.clone(),
                 },
                 cx,
             );
@@ -825,7 +862,7 @@ impl VcsService {
             let refresh_result = cx
                 .background_executor()
                 .spawn(async move {
-                    run_git_status_with_backend(workspace_backend, &refresh_root_path, max_files)
+                    run_git_refresh_with_backend(workspace_backend, &refresh_root_path, max_files)
                         .await
                 })
                 .await;
@@ -843,12 +880,14 @@ impl VcsService {
                     }
 
                     match refresh_result {
-                        Ok(new_status) => {
+                        Ok(refresh) => {
                             debug!(
-                                status_count = new_status.len(),
+                                status_count = refresh.status.len(),
+                                current_head = ?refresh.head,
                                 "VCS: Got async git status results"
                             );
-                            service.update_status_cache(new_status, cx);
+                            service.update_repository_head(refresh.head, cx);
+                            service.update_status_cache(refresh.status, cx);
                         }
                         Err(error) => {
                             error!(error = %error, "VCS: Failed to get async git status");
@@ -866,6 +905,28 @@ impl VcsService {
             }
         })
         .detach();
+    }
+
+    fn update_repository_head(&mut self, new_head: Option<String>, cx: &mut Context<Self>) {
+        let Some(current_head) = new_head else {
+            return;
+        };
+
+        if self.repository_head.as_deref() == Some(current_head.as_str()) {
+            return;
+        }
+
+        let previous_head = self.repository_head.replace(current_head.clone());
+        if let Some(root_path) = self.root_path.clone() {
+            self.emit_vcs_event(
+                VcsEvent::RepositoryHeadChanged {
+                    root_path,
+                    previous_head,
+                    current_head,
+                },
+                cx,
+            );
+        }
     }
 
     /// Update the status cache and emit events for changes
@@ -930,6 +991,37 @@ impl VcsService {
         // TODO: Add periodic background refresh using a timer
         debug!("VCS: Status check scheduled (currently on-demand only)");
     }
+}
+
+struct GitRefreshResult {
+    status: HashMap<PathBuf, VcsStatus>,
+    head: Option<String>,
+}
+
+async fn run_git_refresh_with_backend(
+    backend: Option<WorkspaceBackendHandle>,
+    root_path: &Path,
+    max_files: usize,
+) -> Result<GitRefreshResult, String> {
+    let head = run_git_head_with_backend(backend.clone(), root_path).await?;
+    let status = run_git_status_with_backend(backend, root_path, max_files).await?;
+
+    Ok(GitRefreshResult { status, head })
+}
+
+async fn run_git_head_with_backend(
+    backend: Option<WorkspaceBackendHandle>,
+    root_path: &Path,
+) -> Result<Option<String>, String> {
+    let Some(backend) = backend else {
+        return Ok(current_git_head(root_path));
+    };
+
+    backend
+        .git_head(root_path)
+        .await
+        .map(|result| result.head)
+        .map_err(|error| format!("Workspace git head failed: {error}"))
 }
 
 async fn run_git_status_with_backend(
@@ -1369,22 +1461,8 @@ mod tests {
 
     #[test]
     fn diff_hunks_include_current_head_as_base_revision() {
-        let repo = tempfile::tempdir().expect("create temp git repository");
-        run_git(repo.path(), &["init"]);
-        run_git(repo.path(), &["config", "user.name", "Nucleotide Test"]);
-        run_git(
-            repo.path(),
-            &["config", "user.email", "nucleotide-test@example.com"],
-        );
-
-        let file_path = repo.path().join("src/lib.rs");
-        std::fs::create_dir_all(file_path.parent().expect("file has parent"))
-            .expect("create source directory");
-        std::fs::write(&file_path, "pub fn answer() -> u8 { 42 }\n").expect("write test file");
-        run_git(repo.path(), &["add", "."]);
-        run_git(repo.path(), &["commit", "-m", "initial"]);
-
-        let head = current_git_head(repo.path()).expect("repo should have a HEAD commit");
+        let file_path = PathBuf::from("/repo/src/lib.rs");
+        let head = "abc123".to_string();
         let events = vcs_event_to_domain_events(&VcsEvent::DiffHunksUpdated {
             file_path: file_path.clone(),
             hunks: vec![DiffHunkInfo {
@@ -1394,6 +1472,7 @@ mod tests {
                 before_start: 1,
                 before_end: 1,
             }],
+            diff_base_revision: Some(head.clone()),
         });
 
         assert_eq!(events.len(), 1);
@@ -1405,21 +1484,5 @@ mod tests {
                 ..
             } if path == &file_path && base_revision == &head
         ));
-    }
-
-    fn run_git(root: &Path, args: &[&str]) {
-        let output = std::process::Command::new("git")
-            .args(args)
-            .current_dir(root)
-            .output()
-            .expect("execute git command");
-
-        assert!(
-            output.status.success(),
-            "git {:?} failed: {}{}",
-            args,
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
     }
 }
