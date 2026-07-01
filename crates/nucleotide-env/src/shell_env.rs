@@ -900,7 +900,19 @@ async fn run_nix_print_dev_env(
     plan: &NativeFlakePlan,
     baseline_env: &HashMap<String, String>,
 ) -> Result<HashMap<String, String>, ShellEnvironmentError> {
-    run_nix_print_dev_env_with_binary(directory, plan, baseline_env, Path::new("nix")).await
+    let nix_binary =
+        resolve_program_from_env_path("nix", baseline_env).unwrap_or_else(|| PathBuf::from("nix"));
+    run_nix_print_dev_env_with_binary(directory, plan, baseline_env, &nix_binary).await
+}
+
+fn resolve_program_from_env_path(
+    program: &str,
+    environment: &HashMap<String, String>,
+) -> Option<PathBuf> {
+    let path = environment.get("PATH")?;
+    env::split_paths(path)
+        .map(|directory| directory.join(program))
+        .find(|candidate| candidate.is_file())
 }
 
 async fn run_nix_print_dev_env_with_binary(
@@ -909,7 +921,7 @@ async fn run_nix_print_dev_env_with_binary(
     baseline_env: &HashMap<String, String>,
     nix_binary: &Path,
 ) -> Result<HashMap<String, String>, ShellEnvironmentError> {
-    let profile = native_flake_profile_path(directory);
+    let profile = native_flake_profile_path(directory, baseline_env);
     if let Some(parent) = profile.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -1022,32 +1034,33 @@ fn parse_nix_print_dev_env_json(
     Ok(env)
 }
 
-fn native_flake_profile_path(directory: &Path) -> PathBuf {
+fn native_flake_profile_path(directory: &Path, environment: &HashMap<String, String>) -> PathBuf {
     let key = stable_hash_hex(directory.to_string_lossy().as_bytes());
-    nucleotide_cache_dir()
+    nucleotide_cache_dir(environment)
         .join("native-flake-env")
         .join(key)
         .join("flake-profile")
 }
 
-fn nucleotide_cache_dir() -> PathBuf {
-    if let Some(path) = non_empty_env_path("NUCLEOTIDE_CACHE_DIR") {
+fn nucleotide_cache_dir(environment: &HashMap<String, String>) -> PathBuf {
+    if let Some(path) = non_empty_env_path(environment, "NUCLEOTIDE_CACHE_DIR") {
         return path;
     }
 
-    if let Some(path) = non_empty_env_path("XDG_CACHE_HOME") {
+    if let Some(path) = non_empty_env_path(environment, "XDG_CACHE_HOME") {
         return path.join("nucleotide");
     }
 
-    if let Some(home) = non_empty_env_path("HOME") {
+    if let Some(home) = non_empty_env_path(environment, "HOME") {
         return home.join(".cache").join("nucleotide");
     }
 
     env::temp_dir().join("nucleotide")
 }
 
-fn non_empty_env_path(key: &str) -> Option<PathBuf> {
-    env::var_os(key)
+fn non_empty_env_path(environment: &HashMap<String, String>, key: &str) -> Option<PathBuf> {
+    environment
+        .get(key)
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
 }
@@ -1587,6 +1600,32 @@ impl ShellEnvironmentCache {
 mod tests {
     use super::*;
 
+    fn executable_tempdir() -> tempfile::TempDir {
+        let base = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join("test-tmp");
+        std::fs::create_dir_all(&base).unwrap();
+        tempfile::Builder::new()
+            .prefix("nucleotide-env-")
+            .tempdir_in(base)
+            .unwrap()
+    }
+
+    fn generated_executable_is_allowed(executable: &Path) -> bool {
+        match std::process::Command::new(executable)
+            .arg("--probe")
+            .status()
+        {
+            Ok(_) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => false,
+            Err(error) => panic!(
+                "failed to probe generated executable {}: {error}",
+                executable.display()
+            ),
+        }
+    }
+
     #[tokio::test]
     async fn test_shell_detection() {
         assert_eq!(detect_shell_type("/bin/bash"), "bash");
@@ -2003,7 +2042,7 @@ mod tests {
     async fn test_run_nix_print_dev_env_builds_expected_command() {
         use std::os::unix::fs::PermissionsExt;
 
-        let temp_dir = tempfile::tempdir().unwrap();
+        let temp_dir = executable_tempdir();
         let fake_nix = temp_dir.path().join("nix");
         let calls_file = temp_dir.path().join("calls.txt");
         std::fs::write(
@@ -2030,6 +2069,9 @@ esac
         let mut permissions = std::fs::metadata(&fake_nix).unwrap().permissions();
         permissions.set_mode(0o755);
         std::fs::set_permissions(&fake_nix, permissions).unwrap();
+        if !generated_executable_is_allowed(&fake_nix) {
+            return;
+        }
 
         let project_dir = tempfile::tempdir().unwrap();
         let plan = NativeFlakePlan {
@@ -2040,6 +2082,10 @@ esac
         let baseline = HashMap::from([
             ("HOME".to_string(), "/Users/test".to_string()),
             ("CARGO_HOME".to_string(), "/Users/test/.cargo".to_string()),
+            (
+                "NUCLEOTIDE_CACHE_DIR".to_string(),
+                temp_dir.path().join("cache").display().to_string(),
+            ),
         ]);
 
         let env =
@@ -2060,6 +2106,26 @@ esac
         assert!(calls.contains("--impure"));
         assert!(calls.contains("profile"));
         assert!(calls.contains("wipe-history"));
+    }
+
+    #[test]
+    fn test_resolve_program_from_env_path_uses_baseline_path() {
+        let empty_bin = tempfile::tempdir().unwrap();
+        let fake_bin = tempfile::tempdir().unwrap();
+        let fake_nix = fake_bin.path().join("nix");
+        std::fs::write(&fake_nix, "").unwrap();
+        let baseline = HashMap::from([(
+            "PATH".to_string(),
+            env::join_paths([empty_bin.path(), fake_bin.path()])
+                .unwrap()
+                .to_string_lossy()
+                .to_string(),
+        )]);
+
+        assert_eq!(
+            resolve_program_from_env_path("nix", &baseline),
+            Some(fake_nix)
+        );
     }
 
     #[test]
