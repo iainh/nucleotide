@@ -831,16 +831,19 @@ fn wsl_proxy_shim_script(
     workspace: &WslWorkspace,
     windows_root: &std::path::Path,
 ) -> String {
+    let launch_script = wsl_lsp_server_launch_script();
+
     #[cfg(windows)]
     {
         format!(
-            "@echo off\r\nnucleotide-lsp-proxy --server-cmd wsl.exe --log {} --wsl-distro {} --wsl-linux-root {} --wsl-windows-root {} -- --distribution {} --cd {} -- {} %*\r\n",
+            "@echo off\r\nnucleotide-lsp-proxy --server-cmd wsl.exe --log {} --wsl-distro {} --wsl-linux-root {} --wsl-windows-root {} -- --distribution {} --cd {} -- /bin/sh -c {} nucleotide-lsp-server {} %*\r\n",
             quote_cmd_arg(&log_file.display().to_string()),
             quote_cmd_arg(workspace.distro()),
             quote_cmd_arg(workspace.linux_path()),
             quote_cmd_arg(&windows_root.display().to_string()),
             quote_cmd_arg(workspace.distro()),
             quote_cmd_arg(workspace.linux_path()),
+            quote_cmd_arg(launch_script),
             quote_cmd_arg(server_name)
         )
     }
@@ -848,16 +851,21 @@ fn wsl_proxy_shim_script(
     #[cfg(not(windows))]
     {
         format!(
-            "#!/bin/sh\nexec nucleotide-lsp-proxy --server-cmd wsl.exe --log '{}' --wsl-distro '{}' --wsl-linux-root '{}' --wsl-windows-root '{}' -- --distribution '{}' --cd '{}' -- '{}' \"$@\"\n",
+            "#!/bin/sh\nexec nucleotide-lsp-proxy --server-cmd wsl.exe --log '{}' --wsl-distro '{}' --wsl-linux-root '{}' --wsl-windows-root '{}' -- --distribution '{}' --cd '{}' -- /bin/sh -c '{}' nucleotide-lsp-server '{}' \"$@\"\n",
             quote_posix_single(log_file),
             workspace.distro().replace('\'', "'\"'\"'"),
             workspace.linux_path().replace('\'', "'\"'\"'"),
             windows_root.display().to_string().replace('\'', "'\"'\"'"),
             workspace.distro().replace('\'', "'\"'\"'"),
             workspace.linux_path().replace('\'', "'\"'\"'"),
+            launch_script.replace('\'', "'\"'\"'"),
             server_name.replace('\'', "'\"'\"'")
         )
     }
+}
+
+fn wsl_lsp_server_launch_script() -> &'static str {
+    r####"server="$1"; shift; quote_arg() { printf "'%s'" "$(printf "%s" "$1" | sed "s/'/'\"'\"'/g")"; }; cmd=$(quote_arg "$server"); for arg in "$@"; do cmd="$cmd $(quote_arg "$arg")"; done; shell="${SHELL:-/bin/sh}"; case "$shell" in ""|sh|*/sh) exec "$server" "$@" ;; *) if [ -x "$shell" ]; then exec "$shell" -lc "exec $cmd"; fi; exec "$server" "$@" ;; esac"####
 }
 
 #[cfg(windows)]
@@ -1067,7 +1075,26 @@ mod tests {
         assert!(script.contains("--wsl-linux-root"));
         assert!(script.contains("/home/iain/repo"));
         assert!(script.contains("--wsl-windows-root"));
+        assert!(script.contains("/bin/sh"));
+        assert!(script.contains("SHELL"));
+        assert!(script.contains("-lc"));
         assert!(script.contains("rust-analyzer"));
+
+        #[cfg(windows)]
+        assert!(script.contains("%*"));
+
+        #[cfg(not(windows))]
+        assert!(script.contains("\"$@\""));
+    }
+
+    #[test]
+    fn wsl_lsp_server_launch_script_preserves_args_through_login_shell() {
+        let script = wsl_lsp_server_launch_script();
+
+        assert!(script.contains(r#"server="$1"; shift"#));
+        assert!(script.contains(r#"for arg in "$@""#));
+        assert!(script.contains(r#"exec "$shell" -lc "exec $cmd""#));
+        assert!(script.contains(r#"exec "$server" "$@""#));
     }
 
     #[test]
