@@ -2249,6 +2249,7 @@ fn global_search_matches_with_backend(
         return Ok(matches);
     }
 
+    let custom_ignore_filenames = global_search_custom_ignore_filenames(backend.identity());
     let disk_matches = futures_executor::block_on(backend.text_search(TextSearchQuery {
         root: root.to_path_buf(),
         pattern: query.to_string(),
@@ -2263,7 +2264,7 @@ fn global_search_matches_with_backend(
         follow_links: file_picker_config.follow_symlinks,
         max_depth: file_picker_config.max_depth,
         excluded_relative_paths,
-        custom_ignore_filenames: vec![helix_loader::config_dir().join("ignore")],
+        custom_ignore_filenames,
         ..TextSearchQuery::default()
     }))
     .map_err(|err| err.to_string())?;
@@ -2281,6 +2282,13 @@ fn global_search_matches_with_backend(
     }
 
     Ok(matches)
+}
+
+fn global_search_custom_ignore_filenames(identity: WorkspaceIdentity) -> Vec<PathBuf> {
+    match identity {
+        WorkspaceIdentity::Local => vec![helix_loader::config_dir().join("ignore")],
+        WorkspaceIdentity::Remote(_) => Vec::new(),
+    }
 }
 
 fn global_search_picker(root: &Path, matches: Vec<GlobalSearchMatch>) -> crate::picker::Picker {
@@ -18912,6 +18920,24 @@ mod tests {
             ),
             Err("no selections remaining")
         );
+    }
+
+    #[test]
+    fn global_search_custom_ignore_filenames_keeps_helix_config_for_local() {
+        assert_eq!(
+            global_search_custom_ignore_filenames(WorkspaceIdentity::Local),
+            vec![helix_loader::config_dir().join("ignore")]
+        );
+    }
+
+    #[test]
+    fn global_search_custom_ignore_filenames_drops_host_config_for_remote() {
+        let identity = WorkspaceIdentity::Remote(nucleotide_workspace::RemoteWorkspaceIdentity {
+            kind: nucleotide_workspace::RemoteWorkspaceKind::Wsl,
+            name: "Ubuntu".to_string(),
+        });
+
+        assert!(global_search_custom_ignore_filenames(identity).is_empty());
     }
 
     #[test]
