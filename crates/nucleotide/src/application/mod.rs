@@ -5806,7 +5806,12 @@ impl Application {
                 return workspace_backend
                     .project_environment(new_workspace_root)
                     .await
-                    .map(|snapshot| snapshot.variables.into_iter().collect())
+                    .map(|snapshot| {
+                        (
+                            snapshot.variables.into_iter().collect(),
+                            snapshot.diagnostics,
+                        )
+                    })
                     .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>);
             }
 
@@ -5814,6 +5819,7 @@ impl Application {
             cache
                 .get_environment(new_workspace_root)
                 .await
+                .map(|env| (env, Vec::new()))
                 .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>)
         })
         .await;
@@ -5830,11 +5836,19 @@ impl Application {
                     "Using fallback to ensure LSP startup is not blocked - this should still provide basic PATH resolution"
                 );
                 // Fallback: use current process environment which should still have basic Nix PATH
-                Ok(std::env::vars().collect())
+                Ok((std::env::vars().collect(), Vec::new()))
             }
         };
         match env_result {
-            Ok(env) => {
+            Ok((env, diagnostics)) => {
+                for diagnostic in &diagnostics {
+                    warn!(
+                        diagnostic = %diagnostic,
+                        new_workspace_root = %new_workspace_root.display(),
+                        "Project environment loaded with diagnostic"
+                    );
+                }
+
                 info!(
                     new_workspace_root = %new_workspace_root.display(),
                     env_var_count = env.len(),
