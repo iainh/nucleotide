@@ -1663,18 +1663,10 @@ fn gui_main(
                                         });
                                     });
                                 } else {
-                                    // Send folder selections through the workspace event path.
+                                    // Directory kind was already resolved for this request.
                                     cx.update(|cx| {
                                         workspace_clone.update(cx, |_workspace, cx| {
-                                            cx.emit(Update::Event(
-                                                nucleotide::types::AppEvent::Workspace(
-                                                    nucleotide::types::WorkspaceEvent::FileSelected {
-                                                        path: path.clone(),
-                                                        source:
-                                                            nucleotide_events::v2::workspace::SelectionSource::Command,
-                                                    },
-                                                ),
-                                            ));
+                                            cx.emit(Update::OpenDirectory(path.clone()));
                                         });
                                     });
                                 }

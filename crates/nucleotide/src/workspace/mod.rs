@@ -1455,6 +1455,41 @@ fn local_path_is_directory_without_wsl_probe(path: &Path) -> bool {
     WslWorkspace::from_unc_path(path).is_none() && path.is_dir()
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SelectedPathKind {
+    File,
+    Directory,
+}
+
+fn selected_path_kind_without_wsl_probe(
+    path: &Path,
+    cached_is_directory: Option<bool>,
+) -> Option<SelectedPathKind> {
+    if let Some(is_directory) = cached_is_directory {
+        return Some(if is_directory {
+            SelectedPathKind::Directory
+        } else {
+            SelectedPathKind::File
+        });
+    }
+
+    if WslWorkspace::from_unc_path(path).is_some() {
+        return Some(if path.extension().is_some() {
+            SelectedPathKind::File
+        } else {
+            SelectedPathKind::Directory
+        });
+    }
+
+    if path.is_file() {
+        Some(SelectedPathKind::File)
+    } else if path.is_dir() {
+        Some(SelectedPathKind::Directory)
+    } else {
+        None
+    }
+}
+
 #[derive(Clone)]
 struct DraggedFileTreeResize;
 
@@ -9626,10 +9661,17 @@ impl Workspace {
                             use nucleotide_events::v2::workspace::SelectionSource;
                             match source {
                                 SelectionSource::Click | SelectionSource::Command => {
-                                    if path.is_file() {
-                                        self.handle_open_file(path, cx);
-                                    } else if path.is_dir() {
-                                        self.handle_open_directory(path, cx);
+                                    match selected_path_kind_without_wsl_probe(
+                                        path,
+                                        self.project_tree_path_is_directory(path, cx),
+                                    ) {
+                                        Some(SelectedPathKind::File) => {
+                                            self.handle_open_file(path, cx);
+                                        }
+                                        Some(SelectedPathKind::Directory) => {
+                                            self.handle_open_directory(path, cx);
+                                        }
+                                        None => {}
                                     }
                                 }
                                 _ => {
@@ -16548,6 +16590,54 @@ mod tests {
         assert!(!local_path_is_directory_without_wsl_probe(Path::new(
             r"\\wsl.localhost\Ubuntu\home\iain\repo\src"
         )));
+    }
+
+    #[test]
+    fn selected_path_kind_uses_cached_directory_state() {
+        let path = Path::new(r"\\wsl.localhost\Ubuntu\home\iain\repo\src.with.dot");
+
+        assert_eq!(
+            selected_path_kind_without_wsl_probe(path, Some(true)),
+            Some(SelectedPathKind::Directory)
+        );
+        assert_eq!(
+            selected_path_kind_without_wsl_probe(path, Some(false)),
+            Some(SelectedPathKind::File)
+        );
+    }
+
+    #[test]
+    fn selected_path_kind_uses_wsl_extension_heuristic_without_local_probe() {
+        assert_eq!(
+            selected_path_kind_without_wsl_probe(
+                Path::new(r"\\wsl.localhost\Ubuntu\home\iain\repo\src\main.rs"),
+                None,
+            ),
+            Some(SelectedPathKind::File)
+        );
+        assert_eq!(
+            selected_path_kind_without_wsl_probe(
+                Path::new(r"\\wsl.localhost\Ubuntu\home\iain\repo\src"),
+                None,
+            ),
+            Some(SelectedPathKind::Directory)
+        );
+    }
+
+    #[test]
+    fn selected_path_kind_detects_native_directory_and_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("main.rs");
+        std::fs::write(&file, "").unwrap();
+
+        assert_eq!(
+            selected_path_kind_without_wsl_probe(temp.path(), None),
+            Some(SelectedPathKind::Directory)
+        );
+        assert_eq!(
+            selected_path_kind_without_wsl_probe(&file, None),
+            Some(SelectedPathKind::File)
+        );
     }
 
     #[test]
