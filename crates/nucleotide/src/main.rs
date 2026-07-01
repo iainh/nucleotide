@@ -641,6 +641,19 @@ fn parse_file_url(url_str: &str) -> Option<PathBuf> {
     None
 }
 
+fn platform_open_path_from_url_or_path(value: &str) -> Option<PathBuf> {
+    if let Some(path) = parse_file_url(value) {
+        return Some(path);
+    }
+
+    let path = PathBuf::from(value);
+    if WslWorkspace::from_unc_path(&path).is_some() {
+        return Some(path);
+    }
+
+    path.canonicalize().ok().filter(|path| path.exists())
+}
+
 #[cfg(any(target_os = "windows", test))]
 fn path_from_url_query_value(value: &str) -> Option<PathBuf> {
     if value.is_empty() {
@@ -1090,12 +1103,7 @@ fn gui_main(
             // Parse URLs and send file paths to the main app
             let mut paths = Vec::new();
             for url in urls {
-                if let Some(file_path) = parse_file_url(&url) {
-                    paths.push(file_path);
-                } else if let Ok(path) = PathBuf::from(&url).canonicalize()
-                    && path.exists()
-                {
-                    // Handle direct file paths (not URLs)
+                if let Some(path) = platform_open_path_from_url_or_path(&url) {
                     paths.push(path);
                 }
             }
@@ -1779,6 +1787,50 @@ mod tests {
         let path = PathBuf::from(r"\\wsl.localhost\Ubuntu\home\iain\repo\src\main.rs");
 
         assert_eq!(canonicalize_startup_path(&path), path);
+    }
+
+    #[test]
+    fn platform_open_path_from_url_or_path_accepts_file_url() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("file.txt");
+        std::fs::write(&file_path, "").unwrap();
+        let url = Url::from_file_path(&file_path).unwrap().to_string();
+
+        assert_eq!(platform_open_path_from_url_or_path(&url), Some(file_path));
+    }
+
+    #[test]
+    fn platform_open_path_from_url_or_path_canonicalizes_native_path() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let nested_dir = temp_dir.path().join("src");
+        std::fs::create_dir(&nested_dir).unwrap();
+        let path = nested_dir.join("..").join("src");
+
+        assert_eq!(
+            platform_open_path_from_url_or_path(&path.to_string_lossy()),
+            nested_dir.canonicalize().ok()
+        );
+    }
+
+    #[test]
+    fn platform_open_path_from_url_or_path_rejects_missing_native_path() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("missing.txt");
+
+        assert_eq!(
+            platform_open_path_from_url_or_path(&path.to_string_lossy()),
+            None
+        );
+    }
+
+    #[test]
+    fn platform_open_path_from_url_or_path_preserves_wsl_unc_path() {
+        let path = PathBuf::from(r"\\wsl.localhost\Ubuntu\home\iain\repo\src\main.rs");
+
+        assert_eq!(
+            platform_open_path_from_url_or_path(&path.to_string_lossy()),
+            Some(path)
+        );
     }
 
     #[test]
