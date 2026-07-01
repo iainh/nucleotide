@@ -8,8 +8,8 @@ use nucleotide_env::{EnvironmentOrigin, ProjectEnvironment, ShellEnvironmentErro
 use nucleotide_workspace::{
     DirectoryListing, FileKind, FileRead, FileSearchQuery, FileSearchResult, FileStat,
     LocalWorkspaceBackend, ProjectEnvironmentOrigin, ProjectEnvironmentSnapshot, ReadOptions,
-    RemoteWorkspaceIdentity, WorkspaceBackend, WorkspaceError, WorkspaceIdentity, WriteOptions,
-    WriteResult,
+    RemoteWorkspaceIdentity, TextSearchMatch, TextSearchQuery, TextSearchResult, WorkspaceBackend,
+    WorkspaceError, WorkspaceIdentity, WriteOptions, WriteResult,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::{BTreeMap, HashMap};
@@ -435,6 +435,7 @@ pub enum RemoteRequest {
         expected_modified_unix_millis: Option<i64>,
     },
     FileSearch(FileSearchRequest),
+    TextSearch(TextSearchRequest),
     ProjectEnvironment {
         root: PathBuf,
     },
@@ -465,6 +466,7 @@ pub enum RemoteResponse {
     ReadFile(FileReadResponse),
     WriteFile(WriteResultResponse),
     FileSearch(FileSearchResponse),
+    TextSearch(TextSearchResponse),
     ProjectEnvironment(ProjectEnvironmentResponse),
     Shutdown,
 }
@@ -513,6 +515,7 @@ impl HelloResponse {
                 "read_file".to_string(),
                 "write_file".to_string(),
                 "file_search".to_string(),
+                "text_search".to_string(),
                 "project_environment".to_string(),
                 "binary_body_frames".to_string(),
             ],
@@ -607,6 +610,60 @@ impl Default for FileSearchRequest {
 pub struct FileSearchResponse {
     pub root: PathBuf,
     pub files: Vec<PathBuf>,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TextSearchRequest {
+    pub root: PathBuf,
+    pub pattern: String,
+    pub limit: usize,
+    pub smart_case: bool,
+    pub hidden: bool,
+    pub parents: bool,
+    pub ignore: bool,
+    pub git_ignore: bool,
+    pub git_global: bool,
+    pub git_exclude: bool,
+    pub follow_links: bool,
+    pub max_depth: Option<usize>,
+    pub max_file_bytes: u64,
+}
+
+impl Default for TextSearchRequest {
+    fn default() -> Self {
+        let query = TextSearchQuery::default();
+        Self {
+            root: query.root,
+            pattern: query.pattern,
+            limit: query.limit,
+            smart_case: query.smart_case,
+            hidden: query.hidden,
+            parents: query.parents,
+            ignore: query.ignore,
+            git_ignore: query.git_ignore,
+            git_global: query.git_global,
+            git_exclude: query.git_exclude,
+            follow_links: query.follow_links,
+            max_depth: query.max_depth,
+            max_file_bytes: query.max_file_bytes,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TextSearchMatchResponse {
+    pub relative_path: PathBuf,
+    pub line_number: usize,
+    pub line_text: String,
+    pub start: usize,
+    pub end: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TextSearchResponse {
+    pub root: PathBuf,
+    pub matches: Vec<TextSearchMatchResponse>,
     pub truncated: bool,
 }
 
@@ -903,6 +960,38 @@ where
         }
     }
 
+    async fn text_search(
+        &self,
+        query: TextSearchQuery,
+    ) -> nucleotide_workspace::Result<TextSearchResult> {
+        let root = query.root.clone();
+        let request = TextSearchRequest {
+            root: query.root,
+            pattern: query.pattern,
+            limit: query.limit,
+            smart_case: query.smart_case,
+            hidden: query.hidden,
+            parents: query.parents,
+            ignore: query.ignore,
+            git_ignore: query.git_ignore,
+            git_global: query.git_global,
+            git_exclude: query.git_exclude,
+            follow_links: query.follow_links,
+            max_depth: query.max_depth,
+            max_file_bytes: query.max_file_bytes,
+        };
+        let (response, _) = self.request(
+            "text search",
+            &root,
+            RemoteRequest::TextSearch(request),
+            Vec::new(),
+        )?;
+        match response {
+            RemoteResponse::TextSearch(result) => Ok(text_search_from_response(result)),
+            other => Err(unexpected_response_error("text search", &root, other)),
+        }
+    }
+
     async fn project_environment(
         &self,
         root: &Path,
@@ -1137,6 +1226,29 @@ where
                     Vec::new(),
                 ))
             }
+            RemoteRequest::TextSearch(request) => {
+                let query = TextSearchQuery {
+                    root: self.resolve_search_root(&request.root),
+                    pattern: request.pattern,
+                    limit: request.limit,
+                    smart_case: request.smart_case,
+                    hidden: request.hidden,
+                    parents: request.parents,
+                    ignore: request.ignore,
+                    git_ignore: request.git_ignore,
+                    git_global: request.git_global,
+                    git_exclude: request.git_exclude,
+                    follow_links: request.follow_links,
+                    max_depth: request.max_depth,
+                    max_file_bytes: request.max_file_bytes,
+                };
+                let result = block_on(self.backend.text_search(query))
+                    .map_err(remote_error_from_workspace)?;
+                Ok(ServiceOutcome::Continue(
+                    RemoteResponse::TextSearch(text_search_response(result)),
+                    Vec::new(),
+                ))
+            }
             RemoteRequest::ProjectEnvironment { root } => {
                 let root = self.resolve_search_root(&root);
                 let snapshot = self
@@ -1295,6 +1407,24 @@ fn file_search_response(result: FileSearchResult) -> FileSearchResponse {
     }
 }
 
+fn text_search_response(result: TextSearchResult) -> TextSearchResponse {
+    TextSearchResponse {
+        root: result.root,
+        matches: result
+            .matches
+            .into_iter()
+            .map(|match_| TextSearchMatchResponse {
+                relative_path: match_.relative_path,
+                line_number: match_.line_number,
+                line_text: match_.line_text,
+                start: match_.start,
+                end: match_.end,
+            })
+            .collect(),
+        truncated: result.truncated,
+    }
+}
+
 fn project_environment_response(
     snapshot: ProjectEnvironmentSnapshot,
 ) -> ProjectEnvironmentResponse {
@@ -1362,6 +1492,24 @@ fn file_search_from_response(result: FileSearchResponse) -> FileSearchResult {
     FileSearchResult {
         root: result.root,
         files: result.files,
+        truncated: result.truncated,
+    }
+}
+
+fn text_search_from_response(result: TextSearchResponse) -> TextSearchResult {
+    TextSearchResult {
+        root: result.root,
+        matches: result
+            .matches
+            .into_iter()
+            .map(|match_| TextSearchMatch {
+                relative_path: match_.relative_path,
+                line_number: match_.line_number,
+                line_text: match_.line_text,
+                start: match_.start,
+                end: match_.end,
+            })
+            .collect(),
         truncated: result.truncated,
     }
 }
@@ -1783,6 +1931,7 @@ mod tests {
                 .capabilities
                 .contains(&"binary_body_frames".to_string())
         );
+        assert!(hello.capabilities.contains(&"text_search".to_string()));
         assert!(
             hello
                 .capabilities
@@ -1860,6 +2009,32 @@ mod tests {
         };
         assert_eq!(search.files, vec![PathBuf::from("src/main.rs")]);
         assert!(!search.truncated);
+    }
+
+    #[test]
+    fn service_text_search_uses_workspace_root_for_empty_root() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(temp.path().join("src")).unwrap();
+        std::fs::write(temp.path().join("src").join("main.rs"), "Needle\nneedle\n").unwrap();
+        std::fs::write(temp.path().join("README.md"), "needle\n").unwrap();
+
+        let frame = read_first_output_frame(single_request_output(
+            temp.path(),
+            RemoteRequest::TextSearch(TextSearchRequest {
+                pattern: "needle".to_string(),
+                limit: 1,
+                smart_case: true,
+                ..TextSearchRequest::default()
+            }),
+            Vec::new(),
+        ));
+
+        let response = frame.decode_json_header::<ResponseEnvelope>().unwrap();
+        let RemoteResponse::TextSearch(search) = response.response else {
+            panic!("expected text search response");
+        };
+        assert_eq!(search.matches.len(), 1);
+        assert!(search.truncated);
     }
 
     #[test]
@@ -2072,5 +2247,24 @@ esac
             snapshot.variables.get("ZED_ENVIRONMENT"),
             Some(&"process-baseline".to_string())
         );
+    }
+
+    #[test]
+    fn remote_workspace_backend_runs_text_search_through_service() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("main.rs"), "needle\n").unwrap();
+        let backend = remote_backend(temp.path());
+
+        let result = block_on(backend.text_search(TextSearchQuery {
+            root: PathBuf::new(),
+            pattern: "needle".to_string(),
+            limit: 10,
+            ..TextSearchQuery::default()
+        }))
+        .unwrap();
+
+        assert_eq!(result.matches.len(), 1);
+        assert_eq!(result.matches[0].relative_path, PathBuf::from("main.rs"));
+        assert_eq!(result.matches[0].line_number, 1);
     }
 }
