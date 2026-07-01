@@ -12,6 +12,7 @@ members = [
     "crates/nucleotide-env",
     "crates/nucleotide-process",
     "crates/nucleotide-workspace",
+    "crates/nucleotide-remote",
     "crates/nucleotide-vcs",
     "crates/nucleotide-lsp-proxy",
     "crates/nucleotide",
@@ -100,6 +101,7 @@ nucleotide-project = { path = "crates/nucleotide-project" }
 nucleotide-env = { path = "crates/nucleotide-env" }
 nucleotide-process = { path = "crates/nucleotide-process" }
 nucleotide-workspace = { path = "crates/nucleotide-workspace" }
+nucleotide-remote = { path = "crates/nucleotide-remote" }
 nucleotide-vcs = { path = "crates/nucleotide-vcs" }
 
 [patch."https://github.com/helix-editor/helix"]
