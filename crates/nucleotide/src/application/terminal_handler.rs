@@ -93,6 +93,14 @@ fn adapt_wsl_terminal_config(mut cfg: TerminalSessionCfg) -> TerminalSessionCfg 
 
     if let Some(program) = cfg.program.take().or_else(|| cfg.shell.take()) {
         args.push("--".to_string());
+        if !cfg.env.is_empty() {
+            args.push("env".to_string());
+            args.extend(
+                cfg.env
+                    .drain(..)
+                    .map(|(key, value)| format!("{key}={value}")),
+            );
+        }
         args.push(program);
         args.append(&mut cfg.args);
     }
@@ -435,13 +443,34 @@ mod wsl_terminal_tests {
                 "--cd",
                 "/repo",
                 "--",
+                "env",
+                "RUST_LOG=info",
                 "cargo",
                 "test",
                 "-p",
                 "crate",
             ]
         );
-        assert_eq!(cfg.env, vec![("RUST_LOG".to_string(), "info".to_string())]);
+        assert!(cfg.env.is_empty());
+    }
+
+    #[test]
+    fn wsl_interactive_terminal_preserves_windows_side_env() {
+        let cfg = adapt_wsl_terminal_config(TerminalSessionCfg {
+            cwd: Some(PathBuf::from(r"\\wsl.localhost\Ubuntu\repo")),
+            shell: None,
+            program: None,
+            args: Vec::new(),
+            env: vec![("TERM_PROGRAM".to_string(), "nucleotide".to_string())],
+            cols: Some(80),
+            rows: Some(24),
+        });
+
+        assert_eq!(cfg.args, vec!["--distribution", "Ubuntu", "--cd", "/repo"]);
+        assert_eq!(
+            cfg.env,
+            vec![("TERM_PROGRAM".to_string(), "nucleotide".to_string())]
+        );
     }
 
     #[test]
