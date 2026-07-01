@@ -4,6 +4,7 @@
 use nucleotide_logging::{debug, error, info, instrument, warn};
 use std::collections::HashMap;
 use std::env;
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -13,11 +14,14 @@ use tokio::sync::{RwLock, Semaphore};
 use tokio::time::{Duration, timeout};
 
 use crate::wsl::{
-    WslWorkspace, build_wsl_environment_capture_tokio_command, load_wsl_remote_environment,
+    WslRemoteHelperError, WslWorkspace, build_wsl_environment_capture_tokio_command,
+    install_wsl_remote_helper, load_wsl_remote_environment,
 };
 
 const DIRECTORY_SHELL_CAPTURE_TIMEOUT_SECONDS: u64 = 10;
 const PROCESS_SHELL_CAPTURE_TIMEOUT_SECONDS: u64 = 10;
+const WSL_REMOTE_HELPER_INSTALL_TIMEOUT_SECONDS: u64 = 15;
+const WSL_REMOTE_HELPER_INSTALL_SOURCE_ENV: &str = "NUCLEOTIDE_REMOTE_HELPER_INSTALL_SOURCE";
 
 /// Error types for shell environment operations
 #[derive(Debug, thiserror::Error)]
@@ -307,12 +311,7 @@ impl ProjectEnvironment {
             "Capturing WSL project environment"
         );
 
-        let (env, origin) = match load_wsl_remote_environment(
-            &workspace,
-            Duration::from_secs(DIRECTORY_SHELL_CAPTURE_TIMEOUT_SECONDS),
-        )
-        .await
-        {
+        let (env, origin) = match load_wsl_remote_environment_with_bootstrap(&workspace).await {
             Ok(response) => {
                 info!(
                     distro = %workspace.distro(),
@@ -717,6 +716,47 @@ fn environment_cache_directory(directory: &Path) -> PathBuf {
             .canonicalize()
             .unwrap_or_else(|_| directory.to_path_buf())
     }
+}
+
+async fn load_wsl_remote_environment_with_bootstrap(
+    workspace: &WslWorkspace,
+) -> Result<nucleotide_remote::EnvironmentResponse, WslRemoteHelperError> {
+    let timeout_duration = Duration::from_secs(DIRECTORY_SHELL_CAPTURE_TIMEOUT_SECONDS);
+    match load_wsl_remote_environment(workspace, timeout_duration).await {
+        Ok(response) => Ok(response),
+        Err(initial_error) => {
+            let Some(source_path) = wsl_remote_helper_install_source() else {
+                return Err(initial_error);
+            };
+
+            warn!(
+                distro = %workspace.distro(),
+                linux_path = %workspace.linux_path(),
+                error = %initial_error,
+                source_path = %source_path.display(),
+                "WSL remote helper environment command failed; attempting helper bootstrap"
+            );
+
+            install_wsl_remote_helper(
+                workspace,
+                &source_path,
+                Duration::from_secs(WSL_REMOTE_HELPER_INSTALL_TIMEOUT_SECONDS),
+            )
+            .await?;
+
+            load_wsl_remote_environment(workspace, timeout_duration).await
+        }
+    }
+}
+
+fn wsl_remote_helper_install_source() -> Option<PathBuf> {
+    wsl_remote_helper_install_source_from_value(env::var_os(WSL_REMOTE_HELPER_INSTALL_SOURCE_ENV))
+}
+
+fn wsl_remote_helper_install_source_from_value(value: Option<OsString>) -> Option<PathBuf> {
+    value
+        .map(PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty())
 }
 
 fn annotate_wsl_environment(
@@ -2100,6 +2140,21 @@ mod tests {
         let path = PathBuf::from(r"\\wsl.localhost\MissingDistro\home\iain\repo");
 
         assert_eq!(environment_cache_directory(&path), path);
+    }
+
+    #[test]
+    fn test_wsl_remote_helper_install_source_uses_explicit_non_empty_path() {
+        assert_eq!(
+            wsl_remote_helper_install_source_from_value(Some(OsString::from(
+                r"C:\helpers\nucleotide-remote"
+            ))),
+            Some(PathBuf::from(r"C:\helpers\nucleotide-remote"))
+        );
+        assert_eq!(
+            wsl_remote_helper_install_source_from_value(Some(OsString::from(""))),
+            None
+        );
+        assert_eq!(wsl_remote_helper_install_source_from_value(None), None);
     }
 
     #[test]
