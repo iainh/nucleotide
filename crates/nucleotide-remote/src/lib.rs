@@ -390,6 +390,7 @@ impl Drop for ChildProcessTransport {
     fn drop(&mut self) {
         if matches!(self.child.try_wait(), Ok(None)) {
             let _ = self.child.kill();
+            let _ = self.child.wait();
         }
     }
 }
