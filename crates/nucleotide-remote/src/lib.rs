@@ -11,9 +11,11 @@ use nucleotide_workspace::{
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::error::Error;
+use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -199,6 +201,174 @@ impl<R, W> FramedTransport<R, W> {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteServiceCommand {
+    pub program: OsString,
+    pub args: Vec<OsString>,
+    pub current_dir: Option<PathBuf>,
+}
+
+impl RemoteServiceCommand {
+    pub fn command(&self) -> Command {
+        let mut command = Command::new(&self.program);
+        command.args(&self.args);
+        if let Some(current_dir) = &self.current_dir {
+            command.current_dir(current_dir);
+        }
+        command
+    }
+
+    pub fn spawn(&self) -> io::Result<ChildProcessTransport> {
+        ChildProcessTransport::spawn(self)
+    }
+}
+
+pub fn local_service_command(
+    helper_path: impl AsRef<Path>,
+    workspace_root: impl AsRef<Path>,
+) -> RemoteServiceCommand {
+    let helper_path = helper_path.as_ref();
+    let workspace_root = workspace_root.as_ref();
+    RemoteServiceCommand {
+        program: helper_path.as_os_str().to_os_string(),
+        args: vec![
+            OsString::from("serve"),
+            OsString::from("--workspace"),
+            workspace_root.as_os_str().to_os_string(),
+        ],
+        current_dir: Some(workspace_root.to_path_buf()),
+    }
+}
+
+pub fn wsl_service_command(
+    distro: impl AsRef<OsStr>,
+    linux_root: impl AsRef<Path>,
+    helper_path: impl AsRef<Path>,
+) -> RemoteServiceCommand {
+    let linux_root = linux_root.as_ref();
+    let helper_path = helper_path.as_ref();
+    RemoteServiceCommand {
+        program: OsString::from("wsl.exe"),
+        args: vec![
+            OsString::from("--distribution"),
+            distro.as_ref().to_os_string(),
+            OsString::from("--cd"),
+            linux_root.as_os_str().to_os_string(),
+            OsString::from("--exec"),
+            helper_path.as_os_str().to_os_string(),
+            OsString::from("serve"),
+            OsString::from("--workspace"),
+            linux_root.as_os_str().to_os_string(),
+        ],
+        current_dir: None,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SshTarget {
+    pub host: String,
+    pub user: Option<String>,
+    pub port: Option<u16>,
+}
+
+impl SshTarget {
+    pub fn new(host: impl Into<String>) -> Self {
+        Self {
+            host: host.into(),
+            user: None,
+            port: None,
+        }
+    }
+
+    fn target_arg(&self) -> String {
+        match &self.user {
+            Some(user) if !user.is_empty() => format!("{user}@{}", self.host),
+            _ => self.host.clone(),
+        }
+    }
+}
+
+pub fn ssh_service_command(
+    target: SshTarget,
+    remote_root: impl AsRef<Path>,
+    helper_path: impl AsRef<Path>,
+) -> RemoteServiceCommand {
+    let remote_root = remote_root.as_ref().to_string_lossy();
+    let helper_path = helper_path.as_ref().to_string_lossy();
+    let remote_command = format!(
+        "exec {} serve --workspace {}",
+        quote_posix_shell(&helper_path),
+        quote_posix_shell(&remote_root)
+    );
+    let mut args = Vec::new();
+    if let Some(port) = target.port {
+        args.push(OsString::from("-p"));
+        args.push(OsString::from(port.to_string()));
+    }
+    args.push(OsString::from(target.target_arg()));
+    args.push(OsString::from("--"));
+    args.push(OsString::from(remote_command));
+
+    RemoteServiceCommand {
+        program: OsString::from("ssh"),
+        args,
+        current_dir: None,
+    }
+}
+
+pub struct ChildProcessTransport {
+    child: Child,
+    reader: ChildStdout,
+    writer: ChildStdin,
+}
+
+impl ChildProcessTransport {
+    pub fn spawn(spec: &RemoteServiceCommand) -> io::Result<Self> {
+        let mut command = spec.command();
+        command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit());
+        let mut child = command.spawn()?;
+        let writer = child
+            .stdin
+            .take()
+            .ok_or_else(|| io::Error::other("remote service child did not expose stdin"))?;
+        let reader = child
+            .stdout
+            .take()
+            .ok_or_else(|| io::Error::other("remote service child did not expose stdout"))?;
+
+        Ok(Self {
+            child,
+            reader,
+            writer,
+        })
+    }
+
+    pub fn child_id(&self) -> u32 {
+        self.child.id()
+    }
+}
+
+impl RemoteTransport for ChildProcessTransport {
+    fn write_frame(&mut self, frame: &Frame) -> io::Result<()> {
+        write_frame(&mut self.writer, frame)
+    }
+
+    fn read_frame(&mut self) -> io::Result<Option<Frame>> {
+        read_frame(&mut self.reader)
+    }
+}
+
+impl Drop for ChildProcessTransport {
+    fn drop(&mut self) {
+        if matches!(self.child.try_wait(), Ok(None)) {
+            let _ = self.child.kill();
+        }
+    }
+}
+
 impl<R, W> RemoteTransport for FramedTransport<R, W>
 where
     R: Read + Send,
@@ -211,6 +381,20 @@ where
     fn read_frame(&mut self) -> io::Result<Option<Frame>> {
         read_frame(&mut self.reader)
     }
+}
+
+fn quote_posix_shell(value: &str) -> String {
+    let mut quoted = String::with_capacity(value.len() + 2);
+    quoted.push('\'');
+    for ch in value.chars() {
+        if ch == '\'' {
+            quoted.push_str("'\"'\"'");
+        } else {
+            quoted.push(ch);
+        }
+    }
+    quoted.push('\'');
+    quoted
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1343,6 +1527,67 @@ mod tests {
     #[test]
     fn frame_reader_returns_none_on_clean_eof() {
         assert!(read_frame(&mut Cursor::new(Vec::new())).unwrap().is_none());
+    }
+
+    #[test]
+    fn local_service_command_runs_helper_directly() {
+        let spec = local_service_command("/tmp/nucleotide-remote", "/workspace/project");
+
+        assert_eq!(spec.program, OsString::from("/tmp/nucleotide-remote"));
+        assert_eq!(
+            spec.args,
+            vec![
+                OsString::from("serve"),
+                OsString::from("--workspace"),
+                OsString::from("/workspace/project")
+            ]
+        );
+        assert_eq!(spec.current_dir, Some(PathBuf::from("/workspace/project")));
+    }
+
+    #[test]
+    fn wsl_service_command_uses_exec_without_shell() {
+        let spec = wsl_service_command("Ubuntu", "/home/me/project", "/home/me/.cache/nucl/remote");
+
+        assert_eq!(spec.program, OsString::from("wsl.exe"));
+        assert_eq!(
+            spec.args,
+            vec![
+                OsString::from("--distribution"),
+                OsString::from("Ubuntu"),
+                OsString::from("--cd"),
+                OsString::from("/home/me/project"),
+                OsString::from("--exec"),
+                OsString::from("/home/me/.cache/nucl/remote"),
+                OsString::from("serve"),
+                OsString::from("--workspace"),
+                OsString::from("/home/me/project")
+            ]
+        );
+        assert_eq!(spec.current_dir, None);
+    }
+
+    #[test]
+    fn ssh_service_command_quotes_remote_paths() {
+        let mut target = SshTarget::new("devbox");
+        target.user = Some("me".to_string());
+        target.port = Some(2222);
+
+        let spec = ssh_service_command(
+            target,
+            "/home/me/project with spaces/it's",
+            "/home/me/.cache/nucleotide remote/bin",
+        );
+
+        assert_eq!(spec.program, OsString::from("ssh"));
+        assert_eq!(spec.args[0], OsString::from("-p"));
+        assert_eq!(spec.args[1], OsString::from("2222"));
+        assert_eq!(spec.args[2], OsString::from("me@devbox"));
+        assert_eq!(spec.args[3], OsString::from("--"));
+        let command = spec.args[4].to_string_lossy();
+        assert!(command.starts_with("exec "));
+        assert!(command.contains("'/home/me/.cache/nucleotide remote/bin'"));
+        assert!(command.contains("'/home/me/project with spaces/it'\"'\"'s'"));
     }
 
     #[test]
