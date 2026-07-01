@@ -76,8 +76,8 @@ use nucleotide_terminal::TerminalBounds;
 #[cfg(test)]
 use nucleotide_workspace::local_workspace_backend;
 use nucleotide_workspace::{
-    FileKind, FileSearchQuery, TextSearchQuery, WorkspaceBackend, WorkspaceBackendHandle,
-    WorkspaceIdentity,
+    FileKind, FileSearchQuery, ProjectEnvironmentOrigin, ProjectEnvironmentSnapshot,
+    TextSearchQuery, WorkspaceBackend, WorkspaceBackendHandle, WorkspaceIdentity,
 };
 use slotmap::KeyData;
 // (no direct Workspace v2 items used here)
@@ -192,6 +192,19 @@ impl EnvironmentBadge {
             Some("native-flake") => Some(Self::NativeFlake),
             _ => None,
         }
+    }
+
+    fn from_project_environment_snapshot(snapshot: &ProjectEnvironmentSnapshot) -> Option<Self> {
+        if snapshot.origin == ProjectEnvironmentOrigin::NativeFlake {
+            return Some(Self::NativeFlake);
+        }
+
+        Self::from_environment_marker(
+            snapshot
+                .variables
+                .get("ZED_ENVIRONMENT")
+                .map(String::as_str),
+        )
     }
 
     fn label(self) -> &'static str {
@@ -2583,7 +2596,18 @@ impl Workspace {
             return;
         };
 
-        if !project_root.join(".envrc").is_file() {
+        let (project_environment, workspace_backend) = {
+            let core = self.core.read(cx);
+            (
+                core.project_environment.clone(),
+                core.workspace_backend.clone(),
+            )
+        };
+        let workspace_identity = workspace_backend.identity();
+
+        if matches!(workspace_identity, WorkspaceIdentity::Local)
+            && !project_root.join(".envrc").is_file()
+        {
             self.environment_badge = None;
             cx.notify();
             return;
@@ -2592,29 +2616,40 @@ impl Workspace {
         self.environment_badge = Some(EnvironmentBadge::Loading);
         cx.notify();
 
-        let project_environment = self.core.read(cx).project_environment.clone();
         let runtime_handle = self.handle.clone();
 
         cx.spawn(async move |this, cx| {
             let loaded_root = project_root.clone();
             let result = runtime_handle
                 .spawn(async move {
-                    if project_environment
-                        .get_cached_origin(&project_root)
-                        .await
-                        .is_some_and(|origin| origin == EnvironmentOrigin::NativeFlake)
-                    {
-                        return Ok(Some(EnvironmentBadge::NativeFlake));
-                    }
+                    match workspace_identity {
+                        WorkspaceIdentity::Local => {
+                            if project_environment
+                                .get_cached_origin(&project_root)
+                                .await
+                                .is_some_and(|origin| origin == EnvironmentOrigin::NativeFlake)
+                            {
+                                return Ok::<_, anyhow::Error>(Some(EnvironmentBadge::NativeFlake));
+                            }
 
-                    project_environment
-                        .get_environment_for_directory(&project_root)
-                        .await
-                        .map(|environment| {
-                            EnvironmentBadge::from_environment_marker(
+                            let environment = project_environment
+                                .get_environment_for_directory(&project_root)
+                                .await
+                                .map_err(|error| anyhow::anyhow!("{error}"))?;
+                            Ok(EnvironmentBadge::from_environment_marker(
                                 environment.get("ZED_ENVIRONMENT").map(String::as_str),
-                            )
-                        })
+                            ))
+                        }
+                        WorkspaceIdentity::Remote(_) => {
+                            let snapshot = workspace_backend
+                                .project_environment(&project_root)
+                                .await
+                                .map_err(|error| anyhow::anyhow!("{error}"))?;
+                            Ok(EnvironmentBadge::from_project_environment_snapshot(
+                                &snapshot,
+                            ))
+                        }
+                    }
                 })
                 .await;
 
@@ -16322,6 +16357,41 @@ mod tests {
             None
         );
         assert_eq!(EnvironmentBadge::from_environment_marker(None), None);
+
+        let native_flake_snapshot = ProjectEnvironmentSnapshot {
+            root: PathBuf::from("/project"),
+            variables: std::collections::BTreeMap::new(),
+            origin: ProjectEnvironmentOrigin::NativeFlake,
+            diagnostics: Vec::new(),
+        };
+        assert_eq!(
+            EnvironmentBadge::from_project_environment_snapshot(&native_flake_snapshot),
+            Some(EnvironmentBadge::NativeFlake)
+        );
+
+        let mut marker_variables = std::collections::BTreeMap::new();
+        marker_variables.insert("ZED_ENVIRONMENT".to_string(), "native-flake".to_string());
+        let marker_snapshot = ProjectEnvironmentSnapshot {
+            root: PathBuf::from("/project"),
+            variables: marker_variables,
+            origin: ProjectEnvironmentOrigin::ProcessBaseline,
+            diagnostics: Vec::new(),
+        };
+        assert_eq!(
+            EnvironmentBadge::from_project_environment_snapshot(&marker_snapshot),
+            Some(EnvironmentBadge::NativeFlake)
+        );
+
+        let baseline_snapshot = ProjectEnvironmentSnapshot {
+            root: PathBuf::from("/project"),
+            variables: std::collections::BTreeMap::new(),
+            origin: ProjectEnvironmentOrigin::ProcessBaseline,
+            diagnostics: Vec::new(),
+        };
+        assert_eq!(
+            EnvironmentBadge::from_project_environment_snapshot(&baseline_snapshot),
+            None
+        );
     }
 
     #[test]
