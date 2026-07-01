@@ -42,7 +42,7 @@ editor backend into Linux:
 - `nucleotide-remote` is a versioned helper binary with `hello`, `env`,
   `metadata`, `root`, `list`, `create-file`, `create-directory`, `files`,
   `rename`, `delete`, `duplicate`, `move`, `search`, `read`, `read-full`,
-  `write`, `set-readonly`, and `symbol-files`
+  `write`, `set-readonly`, `format`, and `symbol-files`
   protocol commands.
   Metadata includes workspace marker and shallow source-directory facts so
   project/LSP detection can avoid repeated Windows UNC
@@ -59,8 +59,9 @@ editor backend into Linux:
   Windows side with the existing Helix syntax loader.
   The `root`, `list`, `create-file`, `create-directory`, `rename`, `delete`,
   `duplicate`, `move`, `files`, `search`, `read`, `read-full`, `write`, and
-  `set-readonly`, and `symbol-files` commands are part of helper protocol
-  version 16, so older cached helpers are bypassed by the versioned cache path.
+  `set-readonly`, `format`, and `symbol-files` commands are part of helper
+  protocol version 17, so older cached helpers are bypassed by the versioned
+  cache path.
 - Application startup schedules a short, non-blocking WSL helper health probe for
   WSL roots. Probes prefer
   `~/.cache/nucleotide/remote-helper/<protocol-version>/nucleotide-remote`
@@ -116,10 +117,10 @@ editor backend into Linux:
   persisted inside the distro instead of through the Windows UNC filesystem
   path. Relative save-as paths resolve beside the current WSL document, Linux
   absolute paths map back to the same distro, and `:write!`/`:w!` skips the
-  remote mtime guard and may create missing parent directories. LSP
-  auto-format-on-save is supported for WSL buffers; configured external
-  formatter commands are still rejected because those need a Linux-side command
-  execution boundary.
+  remote mtime guard and may create missing parent directories. LSP and
+  configured external formatter auto-format-on-save are supported for WSL
+  buffers; external formatter commands run through the Linux-side `format`
+  helper command and receive buffer text over stdin.
 - `:write-all`/`:wa` saves modified WSL buffers through the same queued remote
   write path. Pure WSL write-all supports the same LSP auto-format path as
   current-buffer saves. Mixed local/WSL write-all still requires `--no-format`
@@ -172,8 +173,9 @@ memory for external-modification protection, mark the document clean on success,
 notify Helix's file-event handler, and emit LSP `didSave`.
 
 The remaining document I/O work is to make this a first-class file-provider
-boundary rather than a command interception. External formatter auto-format and
-broader symlink metadata parity still need dedicated plumbing.
+boundary rather than a command interception. Broader symlink metadata parity and
+full Helix formatter expansion parity for non-focused `:write-all` buffers still
+need dedicated plumbing.
 
 ## Runtime Flow
 

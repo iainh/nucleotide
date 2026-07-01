@@ -6,9 +6,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::path::PathBuf;
+use std::process::{Command, Stdio};
 use std::time::UNIX_EPOCH;
 
-pub const PROTOCOL_VERSION: u32 = 16;
+pub const PROTOCOL_VERSION: u32 = 17;
 pub const DEFAULT_FILE_SEARCH_LIMIT: usize = 1_000;
 pub const DEFAULT_GLOBAL_SEARCH_LIMIT: usize = 1_000;
 pub const DEFAULT_FILE_READ_LIMIT: usize = 10_000;
@@ -706,6 +707,13 @@ pub struct FileReadonlyResponse {
     pub readonly: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FormatResponse {
+    pub protocol_version: u32,
+    pub current_dir: PathBuf,
+    pub output_base64: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FileWriteOptions {
     pub create_parent_dirs: bool,
@@ -1001,6 +1009,53 @@ impl FileReadonlyResponse {
             current_dir,
             path: path.to_path_buf(),
             readonly,
+        })
+    }
+}
+
+impl FormatResponse {
+    pub fn current_from_reader(
+        command: &str,
+        args: &[String],
+        mut reader: impl Read,
+    ) -> std::io::Result<Self> {
+        let current_dir = std::env::current_dir()?;
+        let mut input = Vec::new();
+        reader.read_to_end(&mut input)?;
+
+        let mut process = Command::new(command);
+        process
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        let mut child = process.spawn()?;
+        {
+            let mut stdin = child.stdin.take().ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "formatter stdin was unavailable",
+                )
+            })?;
+            stdin.write_all(&input)?;
+        }
+
+        let output = child.wait_with_output()?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let message = if stderr.is_empty() {
+                "formatter exited with non-zero status".to_string()
+            } else {
+                stderr
+            };
+            return Err(std::io::Error::new(std::io::ErrorKind::Other, message));
+        }
+
+        Ok(Self {
+            protocol_version: PROTOCOL_VERSION,
+            current_dir,
+            output_base64: encode_base64(&output.stdout),
         })
     }
 }
@@ -2069,6 +2124,23 @@ mod tests {
                 .unwrap()
                 .permissions()
                 .readonly()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn format_response_runs_formatter_with_stdin() {
+        let response = FormatResponse::current_from_reader(
+            "tr",
+            &["a-z".into(), "A-Z".into()],
+            "abc".as_bytes(),
+        )
+        .unwrap();
+
+        assert_eq!(response.protocol_version, PROTOCOL_VERSION);
+        assert_eq!(
+            decode_base64(&response.output_base64).unwrap(),
+            b"ABC".to_vec()
         );
     }
 

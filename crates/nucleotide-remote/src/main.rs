@@ -149,6 +149,19 @@ fn main() -> Result<()> {
                 .context("failed to update remote file readonly state")?;
             print!("{}", encode_json_line(&response)?);
         }
+        "format" => {
+            let command = std::env::var("NUCLEOTIDE_REMOTE_FORMAT_COMMAND")
+                .context("NUCLEOTIDE_REMOTE_FORMAT_COMMAND is required")?;
+            let args = format_args()?;
+            let stdin = std::io::stdin();
+            let response = nucleotide_remote::FormatResponse::current_from_reader(
+                &command,
+                &args,
+                stdin.lock(),
+            )
+            .context("failed to run remote formatter")?;
+            print!("{}", encode_json_line(&response)?);
+        }
         "symbol-files" => {
             let response = WorkspaceSymbolFilesResponse::current(workspace_symbol_files_options())
                 .context("failed to build workspace symbol file response")?;
@@ -172,12 +185,22 @@ fn main() -> Result<()> {
             println!("nucleotide-remote read-full");
             println!("nucleotide-remote write");
             println!("nucleotide-remote set-readonly");
+            println!("nucleotide-remote format");
             println!("nucleotide-remote symbol-files");
         }
         other => bail!("unknown nucleotide-remote command: {other}"),
     }
 
     Ok(())
+}
+
+fn format_args() -> Result<Vec<String>> {
+    let args = std::env::var("NUCLEOTIDE_REMOTE_FORMAT_ARGS_JSON").unwrap_or_default();
+    if args.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    serde_json::from_str(&args).context("failed to parse NUCLEOTIDE_REMOTE_FORMAT_ARGS_JSON")
 }
 
 fn file_write_options() -> FileWriteOptions {

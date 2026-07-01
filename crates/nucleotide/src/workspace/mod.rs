@@ -29,7 +29,7 @@ use gpui::{
     WindowAppearance, canvas, div, img, px, relative, svg,
 };
 use gpui::{FontFeatures, FontWeight};
-use helix_core::command_line::{Args, Flag, Signature};
+use helix_core::command_line::{Args, Flag, Signature, Token};
 use helix_core::syntax::config::LanguageServerFeature;
 use helix_core::{Position, Rope, RopeSlice, Selection, Transaction, line_ending, pos_at_coords};
 use helix_lsp::{OffsetEncoding, lsp};
@@ -75,10 +75,10 @@ use nucleotide_core::EventBus;
 use nucleotide_env::{
     EnvironmentOrigin, WslWorkspace, create_wsl_remote_directory_blocking,
     create_wsl_remote_file_blocking, delete_wsl_remote_path_blocking,
-    duplicate_wsl_remote_path_blocking, load_wsl_remote_file_content_blocking,
-    load_wsl_remote_file_search_blocking, load_wsl_remote_global_search_blocking,
-    rename_wsl_remote_path_blocking, set_wsl_remote_readonly_blocking,
-    write_wsl_remote_file_blocking,
+    duplicate_wsl_remote_path_blocking, format_wsl_remote_file_blocking,
+    load_wsl_remote_file_content_blocking, load_wsl_remote_file_search_blocking,
+    load_wsl_remote_global_search_blocking, rename_wsl_remote_path_blocking,
+    set_wsl_remote_readonly_blocking, write_wsl_remote_file_blocking,
 };
 use nucleotide_events::v2::run::{Event as RunEvent, ResolvedTask, RunId, RunStatus};
 use nucleotide_events::v2::terminal::{Event as TerminalEvent, TerminalId};
@@ -99,6 +99,7 @@ const WSL_REMOTE_GLOBAL_SEARCH_TIMEOUT: std::time::Duration = std::time::Duratio
 const WSL_REMOTE_FILE_OP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 const WSL_REMOTE_FILE_CONTENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const WSL_REMOTE_FILE_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const WSL_REMOTE_FORMAT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 #[cfg(target_os = "windows")]
 static WSL_REMOTE_DOCUMENT_MTIMES: LazyLock<Mutex<HashMap<PathBuf, i64>>> =
@@ -2476,7 +2477,7 @@ fn prepare_wsl_remote_save_for_doc(
     }
 
     if auto_format_on_save {
-        apply_wsl_remote_lsp_auto_format(editor, doc_id, target_view)?;
+        apply_wsl_remote_auto_format(editor, doc_id, target_view)?;
     }
 
     let doc = editor
@@ -2502,11 +2503,16 @@ fn prepare_wsl_remote_save_for_doc(
     }))
 }
 
-fn apply_wsl_remote_lsp_auto_format(
+fn apply_wsl_remote_auto_format(
     editor: &mut helix_view::editor::Editor,
     doc_id: DocumentId,
     view_id: ViewId,
 ) -> anyhow::Result<()> {
+    if let Some(format) = prepare_wsl_remote_external_format(editor, doc_id)? {
+        apply_wsl_remote_format_transaction(editor, doc_id, view_id, format)?;
+        return Ok(());
+    }
+
     let (doc_version, format) = {
         let Some(doc) = editor.document(doc_id) else {
             return Ok(());
@@ -2518,11 +2524,6 @@ fn apply_wsl_remote_lsp_auto_format(
         if !language_config.auto_format {
             return Ok(());
         }
-        if language_config.formatter.is_some() {
-            anyhow::bail!(
-                "WSL remote save does not yet support external formatter auto-format; use :write --no-format"
-            );
-        }
 
         let Some(format) = doc.auto_format(editor) else {
             return Ok(());
@@ -2533,26 +2534,132 @@ fn apply_wsl_remote_lsp_auto_format(
 
     match helix_lsp::block_on(format) {
         Ok(format) => {
-            let scrolloff = editor.config().scrolloff;
-            let documents = &mut editor.documents;
-            let tree = &mut editor.tree;
-            let view = tree.get_mut(view_id);
-            let doc = documents
-                .get_mut(&doc_id)
-                .ok_or_else(|| anyhow::anyhow!("WSL document was not registered"))?;
-
-            if doc.version() == doc_version {
-                doc.apply(&format, view.id);
-                doc.append_changes_to_history(view);
-                doc.detect_indent_and_line_ending();
-                view.ensure_cursor_in_view(doc, scrolloff);
-            } else {
-                info!("discarded WSL auto-format changes because the document changed");
-            }
+            apply_wsl_remote_format_transaction_if_current(
+                editor,
+                doc_id,
+                view_id,
+                doc_version,
+                format,
+            )?;
         }
         Err(error) => {
             info!("failed to auto-format WSL document before save: {error}");
         }
+    }
+
+    Ok(())
+}
+
+fn prepare_wsl_remote_external_format(
+    editor: &helix_view::editor::Editor,
+    doc_id: DocumentId,
+) -> anyhow::Result<Option<Transaction>> {
+    let Some(doc) = editor.document(doc_id) else {
+        return Ok(None);
+    };
+    let Some(language_config) = doc.language_config() else {
+        return Ok(None);
+    };
+    if !language_config.auto_format {
+        return Ok(None);
+    }
+    let Some(formatter) = language_config.formatter.as_ref() else {
+        return Ok(None);
+    };
+    let Some(path) = doc.path().cloned() else {
+        return Ok(None);
+    };
+
+    let args = expand_wsl_remote_formatter_args(editor, doc_id, &formatter.args)?;
+    let mut input = Vec::new();
+    helix_lsp::block_on(to_writer(
+        &mut input,
+        (helix_core::encoding::UTF_8, false),
+        doc.text(),
+    ))?;
+
+    let response = format_wsl_remote_file_blocking(
+        &path,
+        &formatter.command,
+        &args,
+        &input,
+        WSL_REMOTE_FORMAT_TIMEOUT,
+    )?;
+    let output = decode_base64(&response.output_base64)
+        .map_err(|error| anyhow::anyhow!("failed to decode WSL formatter output: {error}"))?;
+    let output = std::str::from_utf8(&output)
+        .map_err(|_| anyhow::anyhow!("WSL formatter produced invalid UTF-8"))?;
+
+    Ok(Some(helix_core::diff::compare_ropes(
+        doc.text(),
+        &Rope::from(output),
+    )))
+}
+
+fn expand_wsl_remote_formatter_args(
+    editor: &helix_view::editor::Editor,
+    doc_id: DocumentId,
+    args: &[String],
+) -> anyhow::Result<Vec<String>> {
+    let focused_doc_id = editor.tree.try_get(editor.tree.focus).map(|view| view.doc);
+    args.iter()
+        .map(|arg| {
+            let expanded = if arg.contains('%') {
+                if focused_doc_id != Some(doc_id) {
+                    anyhow::bail!(
+                        "WSL write-all external formatter args with expansions are only supported for the focused document; use :write-all --no-format"
+                    );
+                }
+                helix_view::expansion::expand(editor, Token::expand(arg.as_str()))?.into_owned()
+            } else {
+                arg.clone()
+            };
+
+            Ok(wsl_formatter_arg_for_remote(&expanded))
+        })
+        .collect()
+}
+
+fn wsl_formatter_arg_for_remote(arg: &str) -> String {
+    WslWorkspace::from_unc_path(Path::new(arg))
+        .map(|workspace| workspace.linux_path().to_string())
+        .unwrap_or_else(|| arg.to_string())
+}
+
+fn apply_wsl_remote_format_transaction(
+    editor: &mut helix_view::editor::Editor,
+    doc_id: DocumentId,
+    view_id: ViewId,
+    format: Transaction,
+) -> anyhow::Result<()> {
+    let Some(doc_version) = editor.document(doc_id).map(|doc| doc.version()) else {
+        return Ok(());
+    };
+    apply_wsl_remote_format_transaction_if_current(editor, doc_id, view_id, doc_version, format)
+}
+
+fn apply_wsl_remote_format_transaction_if_current(
+    editor: &mut helix_view::editor::Editor,
+    doc_id: DocumentId,
+    view_id: ViewId,
+    doc_version: i32,
+    format: Transaction,
+) -> anyhow::Result<()> {
+    let scrolloff = editor.config().scrolloff;
+    let documents = &mut editor.documents;
+    let tree = &mut editor.tree;
+    let view = tree.get_mut(view_id);
+    let doc = documents
+        .get_mut(&doc_id)
+        .ok_or_else(|| anyhow::anyhow!("WSL document was not registered"))?;
+
+    if doc.version() == doc_version {
+        doc.apply(&format, view.id);
+        doc.append_changes_to_history(view);
+        doc.detect_indent_and_line_ending();
+        view.ensure_cursor_in_view(doc, scrolloff);
+    } else {
+        info!("discarded WSL auto-format changes because the document changed");
     }
 
     Ok(())
