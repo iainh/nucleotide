@@ -9175,8 +9175,21 @@ impl Workspace {
                 let handle = self.handle.clone();
                 let core = self.core.clone();
                 let overlay = self.overlay.clone();
-                let workspace_backend = core.read(cx).workspace_backend.clone();
-                open_at(core, handle, overlay, path.clone(), workspace_backend, cx);
+                let (workspace_backend, file_picker_config) = core.update(cx, |core, _| {
+                    (
+                        core.workspace_backend.clone(),
+                        core.editor.config().file_picker.clone(),
+                    )
+                });
+                open_at(
+                    core,
+                    handle,
+                    overlay,
+                    path.clone(),
+                    workspace_backend,
+                    file_picker_config,
+                    cx,
+                );
             }
             crate::Update::ShowBufferPicker => {
                 nucleotide_logging::debug!("DIAG: Workspace received ShowBufferPicker");
@@ -15336,16 +15349,25 @@ fn open(
     overlay: Entity<OverlayView>,
     cx: &mut Context<Workspace>,
 ) {
-    let (base_dir, workspace_backend) = core.update(cx, |core, _| {
+    let (base_dir, workspace_backend, file_picker_config) = core.update(cx, |core, _| {
         (
             core.project_directory
                 .clone()
                 .unwrap_or_else(|| std::env::current_dir().unwrap_or_default()),
             core.workspace_backend.clone(),
+            core.editor.config().file_picker.clone(),
         )
     });
 
-    open_at(core, handle, overlay, base_dir, workspace_backend, cx);
+    open_at(
+        core,
+        handle,
+        overlay,
+        base_dir,
+        workspace_backend,
+        file_picker_config,
+        cx,
+    );
 }
 
 fn open_at(
@@ -15354,20 +15376,25 @@ fn open_at(
     overlay: Entity<OverlayView>,
     base_dir: std::path::PathBuf,
     workspace_backend: WorkspaceBackendHandle,
+    file_picker_config: helix_view::editor::FilePickerConfig,
     cx: &mut Context<Workspace>,
 ) {
     debug!("Opening file picker");
 
     debug!("Base directory for file picker: {:?}", base_dir);
 
-    let mut items =
-        match file_picker_items_from_backend(workspace_backend.as_ref(), &base_dir, 1000) {
-            Ok(items) => items,
-            Err(err) => {
-                warn!(error = %err, "Failed to build file picker items");
-                Vec::new()
-            }
-        };
+    let mut items = match file_picker_items_from_backend(
+        workspace_backend.as_ref(),
+        &base_dir,
+        1000,
+        &file_picker_config,
+    ) {
+        Ok(items) => items,
+        Err(err) => {
+            warn!(error = %err, "Failed to build file picker items");
+            Vec::new()
+        }
+    };
 
     // Sort items by label (path) for consistent ordering
     items.sort_by_key(|item| item.label.clone());
@@ -15414,6 +15441,7 @@ fn file_picker_items_from_backend(
     backend: &(impl WorkspaceBackend + ?Sized),
     base_dir: &Path,
     limit: usize,
+    file_picker_config: &helix_view::editor::FilePickerConfig,
 ) -> Result<Vec<crate::picker_view::PickerItem>, String> {
     use crate::picker_view::PickerItem;
     use std::sync::Arc;
@@ -15422,14 +15450,14 @@ fn file_picker_items_from_backend(
         root: base_dir.to_path_buf(),
         pattern: None,
         limit,
-        hidden: false,
-        parents: true,
-        ignore: true,
-        git_ignore: true,
-        git_global: true,
-        git_exclude: true,
-        follow_links: false,
-        max_depth: None,
+        hidden: !file_picker_config.hidden,
+        parents: file_picker_config.parents,
+        ignore: file_picker_config.ignore,
+        git_ignore: file_picker_config.git_ignore,
+        git_global: file_picker_config.git_global,
+        git_exclude: file_picker_config.git_exclude,
+        follow_links: file_picker_config.follow_symlinks,
+        max_depth: file_picker_config.max_depth,
         excluded_relative_prefixes: vec![PathBuf::from("zed-source")],
     }))
     .map_err(|err| err.to_string())?;
@@ -19005,7 +19033,13 @@ mod tests {
         std::fs::write(temp_dir.path().join("zed-source").join("skip.rs"), "").unwrap();
 
         let backend = local_workspace_backend();
-        let items = file_picker_items_from_backend(backend.as_ref(), temp_dir.path(), 100).unwrap();
+        let items = file_picker_items_from_backend(
+            backend.as_ref(),
+            temp_dir.path(),
+            100,
+            &default_file_picker_config(),
+        )
+        .unwrap();
         let labels = items
             .iter()
             .map(|item| item.label.to_string())
@@ -19016,6 +19050,24 @@ mod tests {
             items[0].file_path.as_ref(),
             Some(&temp_dir.path().join("src").join("main.rs"))
         );
+    }
+
+    #[test]
+    fn file_picker_items_from_backend_respects_hidden_config() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        std::fs::write(temp_dir.path().join(".hidden"), "").unwrap();
+
+        let backend = local_workspace_backend();
+        let mut config = default_file_picker_config();
+        config.hidden = false;
+        let items = file_picker_items_from_backend(backend.as_ref(), temp_dir.path(), 100, &config)
+            .unwrap();
+        let labels = items
+            .iter()
+            .map(|item| item.label.to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(labels, vec![".hidden"]);
     }
 
     // Helper struct for testing workspace functionality
