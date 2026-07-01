@@ -1435,14 +1435,25 @@ enum LspFileOperationNotification {
 fn file_operation_notification_succeeded(notification: &LspFileOperationNotification) -> bool {
     match notification {
         LspFileOperationNotification::Created { path, is_dir } => {
+            if WslWorkspace::from_unc_path(path).is_some() {
+                return true;
+            }
             path.exists() && path.is_dir() == *is_dir
         }
-        LspFileOperationNotification::Deleted { path, .. } => !path.exists(),
+        LspFileOperationNotification::Deleted { path, .. } => {
+            WslWorkspace::from_unc_path(path).is_some() || !path.exists()
+        }
         LspFileOperationNotification::Renamed {
             old_path,
             new_path,
             was_dir,
         } => {
+            if WslWorkspace::from_unc_path(old_path).is_some()
+                || WslWorkspace::from_unc_path(new_path).is_some()
+            {
+                return old_path != new_path;
+            }
+
             old_path != new_path
                 && !old_path.exists()
                 && new_path.exists()
@@ -16996,6 +17007,42 @@ mod tests {
             &LspFileOperationNotification::Renamed {
                 old_path,
                 new_path,
+                was_dir: false,
+            }
+        ));
+    }
+
+    #[test]
+    fn file_operation_notification_success_accepts_wsl_paths_without_local_probe() {
+        assert!(file_operation_notification_succeeded(
+            &LspFileOperationNotification::Created {
+                path: PathBuf::from(r"\\wsl.localhost\Ubuntu\home\iain\repo\src\main.rs"),
+                is_dir: false,
+            }
+        ));
+        assert!(file_operation_notification_succeeded(
+            &LspFileOperationNotification::Deleted {
+                path: PathBuf::from(r"\\wsl.localhost\Ubuntu\home\iain\repo\src\old.rs"),
+                was_dir: false,
+            }
+        ));
+        assert!(file_operation_notification_succeeded(
+            &LspFileOperationNotification::Renamed {
+                old_path: PathBuf::from(r"\\wsl.localhost\Ubuntu\home\iain\repo\src\old.rs"),
+                new_path: PathBuf::from(r"\\wsl.localhost\Ubuntu\home\iain\repo\src\new.rs"),
+                was_dir: false,
+            }
+        ));
+    }
+
+    #[test]
+    fn file_operation_notification_success_rejects_unchanged_wsl_rename() {
+        let path = PathBuf::from(r"\\wsl.localhost\Ubuntu\home\iain\repo\src\same.rs");
+
+        assert!(!file_operation_notification_succeeded(
+            &LspFileOperationNotification::Renamed {
+                old_path: path.clone(),
+                new_path: path,
                 was_dir: false,
             }
         ));
