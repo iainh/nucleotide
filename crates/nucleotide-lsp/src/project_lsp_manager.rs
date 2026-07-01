@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use helix_lsp::LanguageServerId;
-use nucleotide_env::{WslWorkspace, load_wsl_remote_metadata};
+use nucleotide_env::{WslWorkspace, load_wsl_remote_metadata_bootstrapping};
 use nucleotide_events::{ProjectLspCommand, ProjectLspEvent, ProjectType, ServerHealthStatus};
 use nucleotide_logging::{debug, error, info, instrument, warn};
 use tokio::sync::{RwLock, broadcast};
@@ -555,7 +555,8 @@ impl ProjectDetector {
     async fn detect_wsl_project_type(&self, workspace_root: &Path) -> Option<ProjectType> {
         let workspace = WslWorkspace::from_unc_path(workspace_root)?;
 
-        match load_wsl_remote_metadata(&workspace, WSL_REMOTE_METADATA_TIMEOUT).await {
+        match load_wsl_remote_metadata_bootstrapping(&workspace, WSL_REMOTE_METADATA_TIMEOUT).await
+        {
             Ok(metadata) => {
                 let Some(markers) = metadata.workspace_markers else {
                     debug!(

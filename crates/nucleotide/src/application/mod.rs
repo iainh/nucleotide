@@ -58,7 +58,7 @@ use slotmap::Key;
 // Import our shell environment system
 use nucleotide_env::{
     ProjectEnvironment, WslPathShapeKind, WslWorkspace, install_wsl_remote_helper,
-    load_wsl_remote_directory_listing_blocking, load_wsl_remote_metadata,
+    load_wsl_remote_directory_listing_blocking, load_wsl_remote_metadata_bootstrapping,
     load_wsl_remote_workspace_root_blocking, load_wsl_remote_workspace_symbol_files_blocking,
     probe_wsl_remote_helper, wsl_path_shape_fallback_kind,
 };
@@ -8303,7 +8303,7 @@ async fn detect_project_type_from_wsl_metadata(
 ) -> Option<nucleotide_events::ProjectType> {
     let workspace = WslWorkspace::from_unc_path(workspace_root)?;
 
-    match load_wsl_remote_metadata(&workspace, WSL_REMOTE_METADATA_TIMEOUT).await {
+    match load_wsl_remote_metadata_bootstrapping(&workspace, WSL_REMOTE_METADATA_TIMEOUT).await {
         Ok(metadata) => {
             let Some(markers) = metadata.workspace_markers else {
                 nucleotide_logging::debug!(

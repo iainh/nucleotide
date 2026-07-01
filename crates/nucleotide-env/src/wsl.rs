@@ -9,8 +9,9 @@ use nucleotide_remote::{
     WorkspaceMetadataResponse, WorkspaceRootResponse, WorkspaceSymbolFilesOptions,
     WorkspaceSymbolFilesResponse,
 };
+use std::ffi::OsString;
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
@@ -19,6 +20,8 @@ use tokio::time::timeout;
 const WSL_LOCALHOST_PREFIX: &str = "wsl.localhost";
 const WSL_LEGACY_PREFIX: &str = "wsl$";
 const WSL_REMOTE_HELPER_CACHE_ROOT: &str = ".cache/nucleotide/remote-helper";
+pub const WSL_REMOTE_HELPER_INSTALL_SOURCE_ENV: &str = "NUCLEOTIDE_REMOTE_HELPER_INSTALL_SOURCE";
+const WSL_REMOTE_HELPER_INSTALL_TIMEOUT_SECONDS: u64 = 15;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WslWorkspace {
@@ -360,6 +363,18 @@ pub fn wsl_remote_helper_cache_path() -> String {
     )
 }
 
+pub fn wsl_remote_helper_install_source() -> Option<PathBuf> {
+    wsl_remote_helper_install_source_from_value(std::env::var_os(
+        WSL_REMOTE_HELPER_INSTALL_SOURCE_ENV,
+    ))
+}
+
+pub fn wsl_remote_helper_install_source_from_value(value: Option<OsString>) -> Option<PathBuf> {
+    value
+        .map(PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty())
+}
+
 pub fn wsl_remote_helper_hello_script() -> String {
     wsl_remote_helper_command_script("hello")
 }
@@ -664,6 +679,29 @@ pub async fn load_wsl_remote_metadata(
     }
 
     parse_remote_metadata_output(&output.stdout)
+}
+
+pub async fn load_wsl_remote_metadata_bootstrapping(
+    workspace: &WslWorkspace,
+    timeout_duration: Duration,
+) -> Result<WorkspaceMetadataResponse, WslRemoteHelperError> {
+    match load_wsl_remote_metadata(workspace, timeout_duration).await {
+        Ok(response) => Ok(response),
+        Err(initial_error) => {
+            let Some(source_path) = wsl_remote_helper_install_source() else {
+                return Err(initial_error);
+            };
+
+            install_wsl_remote_helper(
+                workspace,
+                &source_path,
+                Duration::from_secs(WSL_REMOTE_HELPER_INSTALL_TIMEOUT_SECONDS),
+            )
+            .await?;
+
+            load_wsl_remote_metadata(workspace, timeout_duration).await
+        }
+    }
 }
 
 pub async fn load_wsl_remote_directory_listing(
@@ -1564,6 +1602,21 @@ mod tests {
             wsl_remote_helper_cache_path(),
             "$HOME/.cache/nucleotide/remote-helper/17/nucleotide-remote"
         );
+    }
+
+    #[test]
+    fn remote_helper_install_source_uses_explicit_non_empty_path() {
+        assert_eq!(
+            wsl_remote_helper_install_source_from_value(Some(OsString::from(
+                r"C:\helpers\nucleotide-remote"
+            ))),
+            Some(PathBuf::from(r"C:\helpers\nucleotide-remote"))
+        );
+        assert_eq!(
+            wsl_remote_helper_install_source_from_value(Some(OsString::from(""))),
+            None
+        );
+        assert_eq!(wsl_remote_helper_install_source_from_value(None), None);
     }
 
     #[test]
