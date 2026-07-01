@@ -14,7 +14,7 @@ use nucleotide_events::{
 use nucleotide_logging::{debug, error, info, warn};
 use nucleotide_types::{DiffChangeType, DiffHunkInfo, VcsStatus};
 use nucleotide_workspace::{
-    GitStatusEntry, GitStatusKind, GitStatusOptions, WorkspaceBackendHandle,
+    FileKind, GitStatusEntry, GitStatusKind, GitStatusOptions, ReadOptions, WorkspaceBackendHandle,
 };
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -278,6 +278,7 @@ pub struct VcsService {
 }
 
 const DIFF_CACHE_CAPACITY: usize = 128;
+const DIFF_METADATA_READ_LIMIT_BYTES: u64 = 4 * 1024 * 1024;
 
 impl VcsService {
     /// Create a new VCS service
@@ -530,27 +531,59 @@ impl VcsService {
         self.refresh_status_async(cx);
 
         for path in affected_paths {
-            self.refresh_diff_metadata_from_disk(&path, cx);
+            self.refresh_diff_metadata_from_workspace(&path, cx);
         }
     }
 
-    fn refresh_diff_metadata_from_disk(&mut self, abs_path: &Path, cx: &mut Context<Self>) {
-        if !abs_path.is_file() {
-            self.clear_file_diff(abs_path, cx);
-            return;
-        }
+    fn refresh_diff_metadata_from_workspace(&mut self, abs_path: &Path, cx: &mut Context<Self>) {
+        let path = abs_path.to_path_buf();
+        let workspace_backend = self.workspace_backend.clone();
 
-        match std::fs::read_to_string(abs_path) {
-            Ok(content) => self.update_file_diff(abs_path, Rope::from_str(&content), cx),
-            Err(error) => {
-                debug!(
-                    file_path = %abs_path.display(),
-                    error = %error,
-                    "VCS: Could not refresh diff metadata from disk"
-                );
-                self.clear_file_diff(abs_path, cx);
+        cx.spawn(async move |this, cx| {
+            let path_for_read = path.clone();
+            let read_result = cx
+                .background_executor()
+                .spawn(async move {
+                    read_diff_text_from_workspace(workspace_backend, &path_for_read).await
+                })
+                .await;
+
+            if let Some(this) = this.upgrade() {
+                this.update(cx, |service, cx| {
+                    let still_monitored = service
+                        .root_path
+                        .as_ref()
+                        .is_some_and(|root_path| path.starts_with(root_path))
+                        && service.is_monitoring;
+
+                    if !still_monitored {
+                        debug!(
+                            file_path = %path.display(),
+                            "VCS: Ignoring stale diff metadata refresh"
+                        );
+                        return;
+                    }
+
+                    match read_result {
+                        Ok(Some(content)) => {
+                            service.update_file_diff(&path, Rope::from_str(&content), cx);
+                        }
+                        Ok(None) => {
+                            service.clear_file_diff(&path, cx);
+                        }
+                        Err(error) => {
+                            debug!(
+                                file_path = %path.display(),
+                                error = %error,
+                                "VCS: Could not refresh diff metadata from workspace"
+                            );
+                            service.clear_file_diff(&path, cx);
+                        }
+                    }
+                });
             }
-        }
+        })
+        .detach();
     }
 
     fn clear_file_diff(&mut self, abs_path: &Path, cx: &mut Context<Self>) {
@@ -998,6 +1031,53 @@ struct GitRefreshResult {
     head: Option<String>,
 }
 
+async fn read_diff_text_from_workspace(
+    backend: Option<WorkspaceBackendHandle>,
+    path: &Path,
+) -> Result<Option<String>, String> {
+    let Some(backend) = backend else {
+        return read_local_diff_text(path);
+    };
+
+    let stat = backend
+        .stat(path)
+        .await
+        .map_err(|error| format!("Workspace stat failed: {error}"))?;
+    if stat.kind != FileKind::File {
+        return Ok(None);
+    }
+
+    let read = backend
+        .read_file(
+            path,
+            ReadOptions {
+                max_bytes: Some(DIFF_METADATA_READ_LIMIT_BYTES),
+            },
+        )
+        .await
+        .map_err(|error| format!("Workspace file read failed: {error}"))?;
+
+    if read.truncated {
+        return Ok(None);
+    }
+
+    String::from_utf8(read.bytes)
+        .map(Some)
+        .map_err(|error| format!("Workspace file is not valid UTF-8: {error}"))
+}
+
+fn read_local_diff_text(path: &Path) -> Result<Option<String>, String> {
+    let metadata =
+        std::fs::metadata(path).map_err(|error| format!("Local file metadata failed: {error}"))?;
+    if !metadata.is_file() || metadata.len() > DIFF_METADATA_READ_LIMIT_BYTES {
+        return Ok(None);
+    }
+
+    std::fs::read_to_string(path)
+        .map(Some)
+        .map_err(|error| format!("Local file read failed: {error}"))
+}
+
 async fn run_git_refresh_with_backend(
     backend: Option<WorkspaceBackendHandle>,
     root_path: &Path,
@@ -1286,6 +1366,9 @@ impl gpui::Global for VcsServiceHandle {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nucleotide_workspace::{
+        WorkspacePathMapping, local_workspace_backend, path_mapped_workspace_backend,
+    };
 
     fn insert_test_diff(service: &mut VcsService, index: usize) -> PathBuf {
         let path = PathBuf::from(format!("/repo/file-{index}.rs"));
@@ -1305,6 +1388,45 @@ mod tests {
     #[test]
     fn parse_git_head_output_rejects_empty_output() {
         assert_eq!(parse_git_head_output(b"\n"), None);
+    }
+
+    #[tokio::test]
+    async fn diff_metadata_read_uses_backend_for_display_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let native_root = temp.path().to_path_buf();
+        let native_src = native_root.join("src");
+        std::fs::create_dir_all(&native_src).unwrap();
+        std::fs::write(native_src.join("lib.rs"), "remote text\n").unwrap();
+
+        let display_root = PathBuf::from("/__nucleotide_remote_virtual__/project");
+        let display_file = display_root.join("src/lib.rs");
+        let backend = path_mapped_workspace_backend(
+            local_workspace_backend(),
+            WorkspacePathMapping::new(display_root, native_root),
+        );
+
+        let text = read_diff_text_from_workspace(Some(backend), &display_file)
+            .await
+            .unwrap();
+
+        assert_eq!(text.as_deref(), Some("remote text\n"));
+    }
+
+    #[tokio::test]
+    async fn diff_metadata_read_skips_large_backend_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("large.rs");
+        std::fs::write(
+            &file,
+            vec![b'a'; DIFF_METADATA_READ_LIMIT_BYTES as usize + 1],
+        )
+        .unwrap();
+
+        let text = read_diff_text_from_workspace(Some(local_workspace_backend()), &file)
+            .await
+            .unwrap();
+
+        assert!(text.is_none());
     }
 
     #[test]
