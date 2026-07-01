@@ -1503,6 +1503,12 @@ enum LspFileOperationNotification {
     },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WorkspaceSelectionTarget {
+    File,
+    Directory,
+}
+
 #[cfg(test)]
 fn file_operation_notification_succeeded(notification: &LspFileOperationNotification) -> bool {
     let backend = local_workspace_backend();
@@ -1517,6 +1523,31 @@ fn file_kind_for_path(backend: &(impl WorkspaceBackend + ?Sized), path: &Path) -
     futures_executor::block_on(backend.stat(path))
         .ok()
         .map(|stat| stat.kind)
+}
+
+fn workspace_selection_target_from_file_kind(kind: FileKind) -> Option<WorkspaceSelectionTarget> {
+    match kind {
+        FileKind::File | FileKind::Symlink => Some(WorkspaceSelectionTarget::File),
+        FileKind::Directory => Some(WorkspaceSelectionTarget::Directory),
+        FileKind::Other => None,
+    }
+}
+
+fn workspace_selection_target_for_path(
+    backend: &(impl WorkspaceBackend + ?Sized),
+    path: &Path,
+) -> Option<WorkspaceSelectionTarget> {
+    if matches!(backend.identity(), WorkspaceIdentity::Local) {
+        if path.is_file() {
+            Some(WorkspaceSelectionTarget::File)
+        } else if path.is_dir() {
+            Some(WorkspaceSelectionTarget::Directory)
+        } else {
+            None
+        }
+    } else {
+        file_kind_for_path(backend, path).and_then(workspace_selection_target_from_file_kind)
+    }
 }
 
 fn context_menu_target_parent_path(clicked: &Path, is_directory: bool) -> PathBuf {
@@ -9451,10 +9482,19 @@ impl Workspace {
                             use nucleotide_events::v2::workspace::SelectionSource;
                             match source {
                                 SelectionSource::Click | SelectionSource::Command => {
-                                    if path.is_file() {
-                                        self.handle_open_file(path, cx);
-                                    } else if path.is_dir() {
-                                        self.handle_open_directory(path, cx);
+                                    let workspace_backend =
+                                        self.core.read(cx).workspace_backend.clone();
+                                    match workspace_selection_target_for_path(
+                                        workspace_backend.as_ref(),
+                                        path,
+                                    ) {
+                                        Some(WorkspaceSelectionTarget::File) => {
+                                            self.handle_open_file(path, cx);
+                                        }
+                                        Some(WorkspaceSelectionTarget::Directory) => {
+                                            self.handle_open_directory(path, cx);
+                                        }
+                                        None => {}
                                     }
                                 }
                                 _ => {
@@ -16427,6 +16467,26 @@ mod tests {
         assert_eq!(
             context_menu_target_parent_path(Path::new("main.rs"), false),
             PathBuf::from(".")
+        );
+    }
+
+    #[test]
+    fn workspace_selection_target_maps_backend_file_kinds() {
+        assert_eq!(
+            workspace_selection_target_from_file_kind(FileKind::File),
+            Some(WorkspaceSelectionTarget::File)
+        );
+        assert_eq!(
+            workspace_selection_target_from_file_kind(FileKind::Symlink),
+            Some(WorkspaceSelectionTarget::File)
+        );
+        assert_eq!(
+            workspace_selection_target_from_file_kind(FileKind::Directory),
+            Some(WorkspaceSelectionTarget::Directory)
+        );
+        assert_eq!(
+            workspace_selection_target_from_file_kind(FileKind::Other),
+            None
         );
     }
 
