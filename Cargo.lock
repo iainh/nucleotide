@@ -5241,6 +5241,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleotide-workspace"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "futures",
+ "ignore",
+ "regex",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "num"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
