@@ -13,6 +13,10 @@ use crate::file_tree::entry::{FileTreeEntryId, FileTreeFlattenedSegment};
 use crate::file_tree::{
     FileKind, FileTreeCollisionStrategy, FileTreeConfig, FileTreeEntry, FileTreeSearchMode,
 };
+use nucleotide_workspace::{
+    DirectoryEntry, DirectoryListing, FileKind as WorkspaceFileKind, WorkspaceBackend,
+    WorkspaceIdentity,
+};
 
 /// Core file tree data structure.
 pub struct FileTree {
@@ -43,8 +47,31 @@ pub struct FileTree {
 impl FileTree {
     /// Create a new file tree for the given root path.
     pub fn new(root_path: PathBuf, config: FileTreeConfig) -> Self {
+        Self::new_with_local_ignores(root_path, config, true)
+    }
+
+    /// Create a file tree with local-only filesystem probes disabled for remote backends.
+    pub fn new_for_backend(
+        root_path: PathBuf,
+        config: FileTreeConfig,
+        identity: WorkspaceIdentity,
+    ) -> Self {
+        Self::new_with_local_ignores(
+            root_path,
+            config,
+            matches!(identity, WorkspaceIdentity::Local),
+        )
+    }
+
+    fn new_with_local_ignores(
+        root_path: PathBuf,
+        config: FileTreeConfig,
+        use_local_ignores: bool,
+    ) -> Self {
         let root_path = normalize_tree_path(&root_path);
-        let gitignore = Self::build_gitignore_matcher(&root_path);
+        let gitignore = use_local_ignores
+            .then(|| Self::build_gitignore_matcher(&root_path))
+            .flatten();
 
         Self {
             root_path,
@@ -125,6 +152,34 @@ impl FileTree {
         let root_path = self.root_path.clone();
         let max_depth = self.config.initial_depth.max(1);
         let (mut entries, _) = self.scan_directory_recursive(&root_path, 1, max_depth)?;
+        let directory_child_parents = directory_child_parent_paths(&root_path, &entries);
+
+        self.entries.clear();
+        self.path_to_id.clear();
+        self.expanded_dirs.insert(root_path.clone());
+        for entry in &mut entries {
+            if entry.is_directory() && directory_child_parents.contains(&entry.path) {
+                entry.is_expanded = true;
+                self.expanded_dirs.insert(entry.path.clone());
+            }
+        }
+        self.insert_entries(entries);
+        self.is_loaded = true;
+        self.invalidate_cache();
+
+        Ok(())
+    }
+
+    /// Load the initial file tree through a workspace backend.
+    pub fn load_with_backend(&mut self, backend: &(impl WorkspaceBackend + ?Sized)) -> Result<()> {
+        if self.is_loaded {
+            return Ok(());
+        }
+
+        let root_path = self.root_path.clone();
+        let max_depth = self.config.initial_depth.max(1);
+        let (mut entries, _) =
+            self.scan_directory_recursive_with_backend(backend, &root_path, 1, max_depth)?;
         let directory_child_parents = directory_child_parent_paths(&root_path, &entries);
 
         self.entries.clear();
@@ -641,6 +696,66 @@ impl FileTree {
         Ok(())
     }
 
+    /// Expand a directory with a backend listing.
+    pub fn expand_directory_with_listing(
+        &mut self,
+        path: &Path,
+        listing: DirectoryListing,
+    ) -> Result<()> {
+        let path = normalize_tree_path(path);
+        let mut parent_entry = self.entry_by_path(&path).context("Entry not found")?;
+
+        if !parent_entry.is_directory() {
+            anyhow::bail!("Not a directory");
+        }
+
+        self.expanded_dirs.insert(path.clone());
+        self.remove_descendants(&path);
+
+        let parent_depth = if path == self.root_path {
+            0
+        } else {
+            parent_entry.depth
+        };
+        let mut children = Vec::new();
+
+        for directory_entry in listing.entries {
+            let child_path = normalize_tree_path(&directory_entry.path);
+
+            if !self.config.show_hidden && self.is_hidden_file(&child_path) {
+                continue;
+            }
+
+            if !self.config.show_ignored && self.is_ignored_file(&child_path) {
+                continue;
+            }
+
+            let mut child_entry =
+                self.entry_from_directory_entry(directory_entry, parent_depth + 1);
+            child_entry.is_visible = true;
+            children.push(child_entry);
+        }
+
+        if path != self.root_path {
+            parent_entry.is_expanded = true;
+            if let FileKind::Directory {
+                ref mut child_count,
+                ref mut is_loaded,
+            } = parent_entry.kind
+            {
+                *child_count = children.len();
+                *is_loaded = true;
+            }
+            self.upsert_entry(parent_entry);
+        }
+
+        self.insert_entries(children);
+        self.loading_dirs.remove(&path);
+        self.invalidate_cache();
+
+        Ok(())
+    }
+
     /// Get the total number of entries.
     pub fn total_count(&self) -> usize {
         self.entries.len()
@@ -874,6 +989,56 @@ impl FileTree {
         Ok((entries, immediate_count))
     }
 
+    fn scan_directory_recursive_with_backend(
+        &mut self,
+        backend: &(impl WorkspaceBackend + ?Sized),
+        dir_path: &Path,
+        current_depth: usize,
+        max_depth: usize,
+    ) -> Result<(Vec<FileTreeEntry>, usize)> {
+        let listing = futures_executor::block_on(backend.list_dir(dir_path))
+            .with_context(|| format!("Failed to read directory: {}", dir_path.display()))?;
+
+        let mut entries = Vec::new();
+        let mut immediate_count = 0;
+        for directory_entry in listing.entries {
+            let path = normalize_tree_path(&directory_entry.path);
+
+            if !self.config.show_hidden && self.is_hidden_file(&path) {
+                continue;
+            }
+
+            if !self.config.show_ignored && self.is_ignored_file(&path) {
+                continue;
+            }
+
+            immediate_count += 1;
+            let mut file_entry = self.entry_from_directory_entry(directory_entry, current_depth);
+
+            if file_entry.is_directory() && current_depth < max_depth {
+                let (children, child_count) = self.scan_directory_recursive_with_backend(
+                    backend,
+                    &path,
+                    current_depth + 1,
+                    max_depth,
+                )?;
+                if let FileKind::Directory {
+                    child_count: ref mut entry_child_count,
+                    ref mut is_loaded,
+                } = file_entry.kind
+                {
+                    *entry_child_count = child_count;
+                    *is_loaded = true;
+                }
+                entries.extend(children);
+            }
+
+            entries.push(file_entry);
+        }
+
+        Ok((entries, immediate_count))
+    }
+
     fn load_directory(&mut self, dir_path: &Path) -> Result<()> {
         let path = normalize_tree_path(dir_path);
         let mut entry = self.entry_by_path(&path).context("Entry not found")?;
@@ -929,6 +1094,36 @@ impl FileTree {
                 .map(|target| target.exists())
                 .unwrap_or(false);
             FileTreeEntry::new_symlink(id, path, target, target_exists, mtime)
+        };
+
+        entry.depth = depth;
+        entry.is_visible = true;
+        entry.is_ignored = self.is_ignored_file(&entry.path);
+        entry
+    }
+
+    fn entry_from_directory_entry(
+        &mut self,
+        directory_entry: DirectoryEntry,
+        depth: usize,
+    ) -> FileTreeEntry {
+        let id = self.next_entry_id();
+        let stat = directory_entry.stat;
+        let path = normalize_tree_path(&stat.path);
+        let mut entry = match stat.kind {
+            WorkspaceFileKind::Directory => {
+                FileTreeEntry::new_directory(id, path.clone(), stat.modified)
+            }
+            WorkspaceFileKind::File => {
+                FileTreeEntry::new_file(id, path.clone(), stat.size, stat.modified)
+            }
+            WorkspaceFileKind::Symlink | WorkspaceFileKind::Other => FileTreeEntry::new_symlink(
+                id,
+                path,
+                directory_entry.symlink_target,
+                directory_entry.target_exists.unwrap_or(false),
+                stat.modified,
+            ),
         };
 
         entry.depth = depth;
@@ -1189,6 +1384,121 @@ pub struct FileTreeStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+    use std::time::SystemTime;
+
+    struct StaticBackend {
+        listings: HashMap<PathBuf, DirectoryListing>,
+    }
+
+    #[async_trait::async_trait]
+    impl WorkspaceBackend for StaticBackend {
+        fn identity(&self) -> WorkspaceIdentity {
+            WorkspaceIdentity::Remote(nucleotide_workspace::RemoteWorkspaceIdentity {
+                kind: nucleotide_workspace::RemoteWorkspaceKind::Other("test".to_string()),
+                name: "test".to_string(),
+            })
+        }
+
+        async fn stat(
+            &self,
+            path: &Path,
+        ) -> nucleotide_workspace::Result<nucleotide_workspace::FileStat> {
+            Err(workspace_test_error("stat", path))
+        }
+
+        async fn list_dir(&self, path: &Path) -> nucleotide_workspace::Result<DirectoryListing> {
+            self.listings
+                .get(path)
+                .cloned()
+                .ok_or_else(|| workspace_test_error("list directory", path))
+        }
+
+        async fn read_file(
+            &self,
+            path: &Path,
+            _options: nucleotide_workspace::ReadOptions,
+        ) -> nucleotide_workspace::Result<nucleotide_workspace::FileRead> {
+            Err(workspace_test_error("read file", path))
+        }
+
+        async fn write_file(
+            &self,
+            path: &Path,
+            _bytes: &[u8],
+            _options: nucleotide_workspace::WriteOptions,
+        ) -> nucleotide_workspace::Result<nucleotide_workspace::WriteResult> {
+            Err(workspace_test_error("write file", path))
+        }
+
+        async fn file_search(
+            &self,
+            query: nucleotide_workspace::FileSearchQuery,
+        ) -> nucleotide_workspace::Result<nucleotide_workspace::FileSearchResult> {
+            Err(workspace_test_error("file search", &query.root))
+        }
+
+        async fn text_search(
+            &self,
+            query: nucleotide_workspace::TextSearchQuery,
+        ) -> nucleotide_workspace::Result<nucleotide_workspace::TextSearchResult> {
+            Err(workspace_test_error("text search", &query.root))
+        }
+
+        async fn project_environment(
+            &self,
+            root: &Path,
+        ) -> nucleotide_workspace::Result<nucleotide_workspace::ProjectEnvironmentSnapshot>
+        {
+            Err(workspace_test_error("project environment", root))
+        }
+
+        async fn git_head(
+            &self,
+            root: &Path,
+        ) -> nucleotide_workspace::Result<nucleotide_workspace::GitHeadResult> {
+            Err(workspace_test_error("git head", root))
+        }
+
+        async fn git_status(
+            &self,
+            root: &Path,
+            _options: nucleotide_workspace::GitStatusOptions,
+        ) -> nucleotide_workspace::Result<nucleotide_workspace::GitStatusResult> {
+            Err(workspace_test_error("git status", root))
+        }
+    }
+
+    fn workspace_test_error(
+        operation: &'static str,
+        path: &Path,
+    ) -> nucleotide_workspace::WorkspaceError {
+        nucleotide_workspace::WorkspaceError::CommandFailed {
+            operation,
+            path: path.to_path_buf(),
+            message: "not implemented in static backend".to_string(),
+        }
+    }
+
+    fn static_entry(path: PathBuf, kind: WorkspaceFileKind) -> DirectoryEntry {
+        DirectoryEntry {
+            name: path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned(),
+            path: path.clone(),
+            stat: nucleotide_workspace::FileStat {
+                path,
+                kind,
+                size: 0,
+                modified: Some(SystemTime::UNIX_EPOCH),
+                readonly: false,
+            },
+            symlink_target: None,
+            target_exists: None,
+        }
+    }
 
     fn config() -> FileTreeConfig {
         FileTreeConfig {
@@ -1215,6 +1525,44 @@ mod tests {
             .iter()
             .map(|entry| entry.path.clone())
             .collect()
+    }
+
+    #[test]
+    fn backend_load_uses_workspace_listing_for_virtual_paths() {
+        let root = PathBuf::from("/__nucleotide_remote_virtual__/project");
+        let src = root.join("src");
+        let lib = src.join("lib.rs");
+        let readme = root.join("README.md");
+        let backend = StaticBackend {
+            listings: HashMap::from([
+                (
+                    root.clone(),
+                    DirectoryListing {
+                        path: root.clone(),
+                        entries: vec![
+                            static_entry(readme.clone(), WorkspaceFileKind::File),
+                            static_entry(src.clone(), WorkspaceFileKind::Directory),
+                        ],
+                    },
+                ),
+                (
+                    src.clone(),
+                    DirectoryListing {
+                        path: src.clone(),
+                        entries: vec![static_entry(lib.clone(), WorkspaceFileKind::File)],
+                    },
+                ),
+            ]),
+        };
+
+        let mut tree = FileTree::new_for_backend(root.clone(), config(), backend.identity());
+        tree.load_with_backend(&backend).unwrap();
+
+        let paths = visible_paths(&mut tree);
+        assert!(tree.is_expanded(&root));
+        assert!(paths.contains(&readme));
+        assert!(paths.contains(&src));
+        assert!(tree.entry_by_path(&lib).is_some());
     }
 
     #[test]

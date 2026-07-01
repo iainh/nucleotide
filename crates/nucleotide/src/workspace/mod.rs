@@ -4459,11 +4459,26 @@ impl Workspace {
         })
         .detach();
 
-        let file_tree_config = file_tree_config_from_gui(&core.read(cx).config.gui);
+        let (file_tree_config, workspace_backend) = {
+            let core = core.read(cx);
+            (
+                file_tree_config_from_gui(&core.config.gui),
+                core.workspace_backend.clone(),
+            )
+        };
         let file_tree = root_path.map(|root_path| {
             let handle_clone = handle.clone();
             let config = file_tree_config.clone();
-            cx.new(|cx| FileTreeView::new_with_runtime(root_path, config, Some(handle_clone), cx))
+            let workspace_backend = workspace_backend.clone();
+            cx.new(|cx| {
+                FileTreeView::new_with_runtime_and_backend(
+                    root_path,
+                    config,
+                    Some(handle_clone),
+                    workspace_backend,
+                    cx,
+                )
+            })
         });
 
         // Subscribe to file tree events if we have a file tree
@@ -8445,9 +8460,21 @@ impl Workspace {
 
         // Update the file tree with the new directory
         let handle_clone = self.handle.clone();
-        let config = file_tree_config_from_gui(&self.core.read(cx).config.gui);
+        let (config, workspace_backend) = {
+            let core = self.core.read(cx);
+            (
+                file_tree_config_from_gui(&core.config.gui),
+                core.workspace_backend.clone(),
+            )
+        };
         let new_file_tree = cx.new(|cx| {
-            FileTreeView::new_with_runtime(path.to_path_buf(), config, Some(handle_clone), cx)
+            FileTreeView::new_with_runtime_and_backend(
+                path.to_path_buf(),
+                config,
+                Some(handle_clone),
+                workspace_backend,
+                cx,
+            )
         });
 
         // Subscribe to file tree events
