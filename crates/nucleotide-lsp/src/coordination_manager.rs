@@ -6,11 +6,44 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use helix_view::DocumentId;
+use nucleotide_env::{WslWorkspace, load_wsl_remote_workspace_root_blocking};
 use nucleotide_logging::{debug, error, info, instrument, warn};
+
+const WSL_REMOTE_ROOT_TIMEOUT: Duration = Duration::from_secs(5);
 
 // Helper function to find workspace root from a specific directory
 #[instrument]
 fn find_workspace_root_from(start_dir: &Path) -> PathBuf {
+    if let Some(workspace) = WslWorkspace::from_unc_path(start_dir) {
+        match load_wsl_remote_workspace_root_blocking(&workspace, WSL_REMOTE_ROOT_TIMEOUT) {
+            Ok(response) => {
+                if let Some(root) = response
+                    .workspace_root
+                    .as_deref()
+                    .and_then(|root| workspace.unc_path_for_linux_path(root))
+                    .map(PathBuf::from)
+                {
+                    return root;
+                }
+
+                debug!(
+                    distro = %workspace.distro(),
+                    linux_path = %workspace.linux_path(),
+                    "WSL remote helper did not detect a workspace root"
+                );
+                return start_dir.to_path_buf();
+            }
+            Err(error) => {
+                warn!(
+                    distro = %workspace.distro(),
+                    linux_path = %workspace.linux_path(),
+                    error = %error,
+                    "Failed to detect WSL workspace root through remote helper; falling back to local marker probes"
+                );
+            }
+        }
+    }
+
     // Walk up the directory tree looking for VCS directories
     for ancestor in start_dir.ancestors() {
         if ancestor.join(".git").exists()
@@ -25,6 +58,23 @@ fn find_workspace_root_from(start_dir: &Path) -> PathBuf {
 
     // If no VCS directory found, use the start directory
     start_dir.to_path_buf()
+}
+
+fn project_root_start_dir<'a>(
+    file_path: Option<&'a Path>,
+    current_dir: Option<&'a Path>,
+) -> Option<&'a Path> {
+    if let Some(path) = file_path {
+        if WslWorkspace::from_unc_path(path).is_some() {
+            path.parent().or(Some(path))
+        } else if path.is_file() {
+            path.parent()
+        } else {
+            Some(path)
+        }
+    } else {
+        current_dir
+    }
 }
 
 // Internal config structure for LSP management
@@ -514,15 +564,7 @@ impl LspManager {
     #[instrument(skip(self))]
     fn detect_project_root(&self, file_path: Option<&Path>) -> Option<PathBuf> {
         let current_dir = std::env::current_dir().ok();
-        let start_dir = if let Some(path) = file_path {
-            if path.is_file() {
-                path.parent()
-            } else {
-                Some(path)
-            }
-        } else {
-            current_dir.as_deref()
-        };
+        let start_dir = project_root_start_dir(file_path, current_dir.as_deref());
 
         if let Some(dir) = start_dir {
             let project_root = find_workspace_root_from(dir);
@@ -710,6 +752,26 @@ mod tests {
             }
             _ => panic!("Expected file mode when no project detected and fallback enabled"),
         }
+    }
+
+    #[test]
+    fn project_root_start_dir_uses_wsl_parent_without_file_probe() {
+        let file_path = Path::new(r"\\wsl.localhost\Ubuntu\home\iain\repo\src\main.rs");
+
+        assert_eq!(
+            project_root_start_dir(Some(file_path), None),
+            Some(Path::new(r"\\wsl.localhost\Ubuntu\home\iain\repo\src"))
+        );
+    }
+
+    #[test]
+    fn project_root_start_dir_uses_current_dir_without_file_path() {
+        let current_dir = Path::new(r"C:\Users\iain\repo");
+
+        assert_eq!(
+            project_root_start_dir(None, Some(current_dir)),
+            Some(current_dir)
+        );
     }
 
     #[test]
