@@ -1458,7 +1458,8 @@ where
             Vec::new(),
         )?;
         match response {
-            RemoteResponse::ReadFile(read) => Ok(file_read_from_response(read, body)),
+            RemoteResponse::ReadFile(read) => file_read_from_response(read, body)
+                .map_err(|error| client_error_to_workspace("read file", path, error)),
             other => Err(unexpected_response_error("read file", path, other)),
         }
     }
@@ -1630,7 +1631,8 @@ where
             spec.stdin,
         )?;
         match response {
-            RemoteResponse::RunProcess(result) => Ok(process_output_from_response(result, body)),
+            RemoteResponse::RunProcess(result) => process_output_from_response(result, body)
+                .map_err(|error| client_error_to_workspace("run process", &cwd, error)),
             other => Err(unexpected_response_error("run process", &cwd, other)),
         }
     }
@@ -2298,8 +2300,27 @@ fn directory_listing_from_response(listing: DirectoryListingResponse) -> Directo
     }
 }
 
-fn file_read_from_response(read: FileReadResponse, bytes: Vec<u8>) -> FileRead {
-    FileRead {
+fn file_read_from_response(
+    read: FileReadResponse,
+    bytes: Vec<u8>,
+) -> std::result::Result<FileRead, RemoteClientError> {
+    let body_len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+    if body_len > read.size {
+        return Err(RemoteClientError::Protocol(format!(
+            "malformed read_file body: body has {} bytes but file size is {}",
+            bytes.len(),
+            read.size
+        )));
+    }
+    if !read.truncated && body_len != read.size {
+        return Err(RemoteClientError::Protocol(format!(
+            "malformed read_file body: response is not truncated but body has {} bytes and file size is {}",
+            bytes.len(),
+            read.size
+        )));
+    }
+
+    Ok(FileRead {
         path: read.path,
         bytes,
         size: read.size,
@@ -2308,7 +2329,7 @@ fn file_read_from_response(read: FileReadResponse, bytes: Vec<u8>) -> FileRead {
             .and_then(system_time_from_unix_millis),
         readonly: read.readonly,
         truncated: read.truncated,
-    }
+    })
 }
 
 fn write_result_from_response(result: WriteResultResponse) -> WriteResult {
@@ -2385,16 +2406,29 @@ fn git_status_from_response(result: GitStatusResponse) -> GitStatusResult {
 fn process_output_from_response(
     response: ProcessOutputResponse,
     mut body: Vec<u8>,
-) -> ProcessOutput {
-    let stdout_len = response.stdout_len.min(body.len());
+) -> std::result::Result<ProcessOutput, RemoteClientError> {
+    let expected_body_len = response
+        .stdout_len
+        .checked_add(response.stderr_len)
+        .ok_or_else(|| {
+            RemoteClientError::Protocol(
+                "malformed run_process body: stdout and stderr lengths overflow".to_string(),
+            )
+        })?;
+    if expected_body_len != body.len() {
+        return Err(RemoteClientError::Protocol(format!(
+            "malformed run_process body: header declares {expected_body_len} bytes but body has {} bytes",
+            body.len()
+        )));
+    }
+
+    let stdout_len = response.stdout_len;
     let stderr_start = stdout_len;
-    let stderr_end = stderr_start
-        .saturating_add(response.stderr_len)
-        .min(body.len());
+    let stderr_end = stderr_start + response.stderr_len;
     let stderr = body[stderr_start..stderr_end].to_vec();
     body.truncate(stdout_len);
 
-    ProcessOutput {
+    Ok(ProcessOutput {
         status_code: response.status_code,
         success: response.success,
         stdout: body,
@@ -2402,7 +2436,7 @@ fn process_output_from_response(
         stdout_truncated: response.stdout_truncated,
         stderr_truncated: response.stderr_truncated,
         timed_out: response.timed_out,
-    }
+    })
 }
 
 fn file_kind_from_response(kind: RemoteFileKind) -> FileKind {
@@ -3023,6 +3057,28 @@ mod tests {
         }
     }
 
+    struct StaticResponseTransport {
+        pending: VecDeque<Frame>,
+    }
+
+    impl StaticResponseTransport {
+        fn new(response: Frame) -> Self {
+            Self {
+                pending: VecDeque::from([response]),
+            }
+        }
+    }
+
+    impl RemoteTransport for StaticResponseTransport {
+        fn write_frame(&mut self, _frame: &Frame) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn read_frame(&mut self) -> io::Result<Option<Frame>> {
+            Ok(self.pending.pop_front())
+        }
+    }
+
     fn loopback_identity() -> RemoteWorkspaceIdentity {
         RemoteWorkspaceIdentity {
             kind: RemoteWorkspaceKind::Other("loopback".to_string()),
@@ -3034,6 +3090,25 @@ mod tests {
         RemoteWorkspaceBackend::new(
             loopback_identity(),
             RemoteWorkspaceClient::new(LoopbackTransport::new(root)),
+        )
+    }
+
+    fn static_response_backend(
+        response: RemoteResponse,
+        body: Vec<u8>,
+    ) -> RemoteWorkspaceBackend<StaticResponseTransport> {
+        let frame = Frame::from_json_header(
+            FrameKind::Response,
+            1,
+            0,
+            &ResponseEnvelope::new(response),
+            body,
+        )
+        .unwrap();
+
+        RemoteWorkspaceBackend::new(
+            loopback_identity(),
+            RemoteWorkspaceClient::new(StaticResponseTransport::new(frame)),
         )
     }
 
@@ -3186,6 +3261,61 @@ mod tests {
         .unwrap();
 
         assert!(!response.timed_out);
+    }
+
+    #[test]
+    fn remote_backend_rejects_malformed_run_process_body() {
+        let backend = static_response_backend(
+            RemoteResponse::RunProcess(ProcessOutputResponse {
+                status_code: Some(0),
+                success: true,
+                stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_len: 3,
+                stderr_len: 3,
+                timed_out: false,
+            }),
+            b"abc".to_vec(),
+        );
+
+        let result = block_on(backend.run_process(ProcessSpec {
+            program: "ignored".to_string(),
+            args: Vec::new(),
+            cwd: PathBuf::new(),
+            env: BTreeMap::new(),
+            clear_env: false,
+            stdin: Vec::new(),
+            max_output_bytes: None,
+            timeout_ms: None,
+        }));
+
+        assert!(matches!(
+            result,
+            Err(WorkspaceError::Remote { message, .. })
+                if message.contains("malformed run_process body")
+        ));
+    }
+
+    #[test]
+    fn remote_backend_rejects_short_untruncated_read_body() {
+        let backend = static_response_backend(
+            RemoteResponse::ReadFile(FileReadResponse {
+                path: PathBuf::from("main.rs"),
+                size: 6,
+                modified_unix_millis: None,
+                readonly: false,
+                truncated: false,
+            }),
+            b"abc".to_vec(),
+        );
+
+        let result = block_on(backend.read_file(Path::new("main.rs"), ReadOptions::default()));
+
+        assert!(matches!(
+            result,
+            Err(WorkspaceError::Remote { message, .. })
+                if message.contains("malformed read_file body")
+        ));
     }
 
     fn request_frame(id: u64, request: RemoteRequest, body: Vec<u8>) -> Frame {
