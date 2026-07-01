@@ -24,7 +24,7 @@ use helix_view::{
     input::KeyEvent,
     keyboard::{KeyCode, KeyModifiers},
 };
-use nucleotide_env::WslWorkspace;
+use nucleotide_env::{WslPathShapeKind, WslWorkspace, wsl_path_shape_fallback_kind};
 use nucleotide_logging::{PerfTimer, debug, info};
 use std::{
     borrow::Cow,
@@ -1491,7 +1491,10 @@ fn handle_native_file_navigation(
 
 fn native_navigation_target_is_directory_without_wsl_probe(path: &Path) -> bool {
     if WslWorkspace::from_unc_path(path).is_some() {
-        return path.extension().is_none();
+        return matches!(
+            wsl_path_shape_fallback_kind(path),
+            WslPathShapeKind::Directory
+        );
     }
 
     path.is_dir()
@@ -3815,6 +3818,9 @@ mod tests {
         ));
         assert!(!native_navigation_target_is_directory_without_wsl_probe(
             Path::new(r"\\wsl.localhost\Ubuntu\home\iain\repo\src\main.rs")
+        ));
+        assert!(!native_navigation_target_is_directory_without_wsl_probe(
+            Path::new(r"\\wsl.localhost\Ubuntu\home\iain\repo\Makefile")
         ));
     }
 
