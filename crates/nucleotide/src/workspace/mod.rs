@@ -29,7 +29,7 @@ use gpui::{
     WindowAppearance, canvas, div, img, px, relative, svg,
 };
 use gpui::{FontFeatures, FontWeight};
-use helix_core::command_line::{Args, Flag, Signature, Token};
+use helix_core::command_line::{Args, ExpansionKind, Flag, Signature, TokenKind, Tokenizer};
 use helix_core::syntax::config::LanguageServerFeature;
 use helix_core::{Position, Rope, RopeSlice, Selection, Transaction, line_ending, pos_at_coords};
 use helix_lsp::{OffsetEncoding, lsp};
@@ -2508,7 +2508,7 @@ fn apply_wsl_remote_auto_format(
     doc_id: DocumentId,
     view_id: ViewId,
 ) -> anyhow::Result<()> {
-    if let Some(format) = prepare_wsl_remote_external_format(editor, doc_id)? {
+    if let Some(format) = prepare_wsl_remote_external_format(editor, doc_id, view_id)? {
         apply_wsl_remote_format_transaction(editor, doc_id, view_id, format)?;
         return Ok(());
     }
@@ -2553,6 +2553,7 @@ fn apply_wsl_remote_auto_format(
 fn prepare_wsl_remote_external_format(
     editor: &helix_view::editor::Editor,
     doc_id: DocumentId,
+    view_id: ViewId,
 ) -> anyhow::Result<Option<Transaction>> {
     let Some(doc) = editor.document(doc_id) else {
         return Ok(None);
@@ -2570,7 +2571,7 @@ fn prepare_wsl_remote_external_format(
         return Ok(None);
     };
 
-    let args = expand_wsl_remote_formatter_args(editor, doc_id, &formatter.args)?;
+    let args = expand_wsl_remote_formatter_args(editor, doc_id, view_id, &formatter.args)?;
     let mut input = Vec::new();
     helix_lsp::block_on(to_writer(
         &mut input,
@@ -2599,18 +2600,17 @@ fn prepare_wsl_remote_external_format(
 fn expand_wsl_remote_formatter_args(
     editor: &helix_view::editor::Editor,
     doc_id: DocumentId,
+    view_id: ViewId,
     args: &[String],
 ) -> anyhow::Result<Vec<String>> {
-    let focused_doc_id = editor.tree.try_get(editor.tree.focus).map(|view| view.doc);
+    let Some(doc) = editor.document(doc_id) else {
+        return Ok(args.to_vec());
+    };
+    let context = WslFormatterExpansionContext::from_editor(editor, doc, view_id);
     args.iter()
         .map(|arg| {
             let expanded = if arg.contains('%') {
-                if focused_doc_id != Some(doc_id) {
-                    anyhow::bail!(
-                        "WSL write-all external formatter args with expansions are only supported for the focused document; use :write-all --no-format"
-                    );
-                }
-                helix_view::expansion::expand(editor, Token::expand(arg.as_str()))?.into_owned()
+                expand_wsl_remote_formatter_arg(arg, &context)?
             } else {
                 arg.clone()
             };
@@ -2618,6 +2618,194 @@ fn expand_wsl_remote_formatter_args(
             Ok(wsl_formatter_arg_for_remote(&expanded))
         })
         .collect()
+}
+
+struct WslFormatterExpansionContext {
+    cursor_line: String,
+    cursor_column: String,
+    buffer_name: String,
+    line_ending: String,
+    current_working_directory: String,
+    workspace_directory: String,
+    language: String,
+    selection: String,
+    selection_line_start: String,
+    selection_line_end: String,
+    shell: Vec<String>,
+}
+
+impl WslFormatterExpansionContext {
+    fn from_editor(
+        editor: &helix_view::editor::Editor,
+        doc: &helix_view::Document,
+        view_id: ViewId,
+    ) -> Self {
+        let text = doc.text().slice(..);
+        let selection = doc.selection(view_id).primary();
+        let cursor_line = selection.cursor_line(text);
+        let cursor = selection.cursor(text);
+        let position = helix_core::coords_at_pos(text, cursor);
+        let (selection_line_start, selection_line_end) = selection.line_range(text);
+
+        Self {
+            cursor_line: (cursor_line + 1).to_string(),
+            cursor_column: (position.col + 1).to_string(),
+            buffer_name: doc.display_name().into_owned(),
+            line_ending: doc.line_ending.as_str().to_string(),
+            current_working_directory: helix_stdx::env::current_working_dir()
+                .to_string_lossy()
+                .to_string(),
+            workspace_directory: helix_loader::find_workspace()
+                .0
+                .to_string_lossy()
+                .to_string(),
+            language: doc.language_name().unwrap_or("text").to_string(),
+            selection: selection.fragment(text).to_string(),
+            selection_line_start: (selection_line_start + 1).to_string(),
+            selection_line_end: (selection_line_end + 1).to_string(),
+            shell: editor.config().shell.clone(),
+        }
+    }
+
+    #[cfg(test)]
+    fn for_test(buffer_name: impl Into<String>) -> Self {
+        Self {
+            cursor_line: "2".to_string(),
+            cursor_column: "3".to_string(),
+            buffer_name: buffer_name.into(),
+            line_ending: "\n".to_string(),
+            current_working_directory: "C:\\Users\\iain\\projects\\nucleotide".to_string(),
+            workspace_directory: "C:\\Users\\iain\\projects\\nucleotide".to_string(),
+            language: "rust".to_string(),
+            selection: "selected".to_string(),
+            selection_line_start: "2".to_string(),
+            selection_line_end: "2".to_string(),
+            shell: vec!["cmd".to_string(), "/C".to_string()],
+        }
+    }
+}
+
+fn expand_wsl_remote_formatter_arg(
+    arg: &str,
+    context: &WslFormatterExpansionContext,
+) -> anyhow::Result<String> {
+    expand_wsl_remote_formatter_inner(arg, context)
+}
+
+fn expand_wsl_remote_formatter_inner(
+    content: &str,
+    context: &WslFormatterExpansionContext,
+) -> anyhow::Result<String> {
+    let mut expanded = String::new();
+    let mut start = 0;
+
+    while let Some(offset) = content[start..].find('%') {
+        let idx = start + offset;
+        if content.as_bytes().get(idx + '%'.len_utf8()).copied() == Some(b'%') {
+            expanded.push_str(&content[start..=idx]);
+            start = idx + ('%'.len_utf8() * 2);
+            continue;
+        }
+
+        expanded.push_str(&content[start..idx]);
+        let mut tokenizer = Tokenizer::new(&content[idx..], true);
+        let token = tokenizer
+            .parse_percent_token()
+            .expect("tokenizer should return a token at a percent")
+            .map_err(|err| anyhow::anyhow!("{err}"))?;
+        let token_expanded =
+            expand_wsl_remote_formatter_token(token.kind, &token.content, context)?;
+        expanded.push_str(&token_expanded);
+        start = idx + tokenizer.pos();
+    }
+
+    expanded.push_str(&content[start..]);
+    Ok(expanded)
+}
+
+fn expand_wsl_remote_formatter_token(
+    kind: TokenKind,
+    content: &str,
+    context: &WslFormatterExpansionContext,
+) -> anyhow::Result<String> {
+    match kind {
+        TokenKind::Unquoted | TokenKind::Quoted(_) => Ok(content.to_string()),
+        TokenKind::Expand => expand_wsl_remote_formatter_inner(content, context),
+        TokenKind::Expansion(ExpansionKind::Variable) => {
+            expand_wsl_remote_formatter_variable(content, context)
+        }
+        TokenKind::Expansion(ExpansionKind::Unicode) => u32::from_str_radix(content, 16)
+            .ok()
+            .and_then(char::from_u32)
+            .map(|ch| ch.to_string())
+            .ok_or_else(|| {
+                anyhow::anyhow!("could not interpret '{content}' as a Unicode character code")
+            }),
+        TokenKind::Expansion(ExpansionKind::Shell) => {
+            expand_wsl_remote_formatter_shell(content, context)
+        }
+        TokenKind::ExpansionKind => unreachable!(
+            "expansion name tokens cannot be emitted when command line validation is enabled"
+        ),
+    }
+}
+
+fn expand_wsl_remote_formatter_variable(
+    variable: &str,
+    context: &WslFormatterExpansionContext,
+) -> anyhow::Result<String> {
+    let value = match variable {
+        "cursor_line" => &context.cursor_line,
+        "cursor_column" => &context.cursor_column,
+        "buffer_name" => &context.buffer_name,
+        "line_ending" => &context.line_ending,
+        "current_working_directory" => &context.current_working_directory,
+        "workspace_directory" => &context.workspace_directory,
+        "language" => &context.language,
+        "selection" => &context.selection,
+        "selection_line_start" => &context.selection_line_start,
+        "selection_line_end" => &context.selection_line_end,
+        _ => anyhow::bail!("unknown variable '{variable}'"),
+    };
+
+    Ok(value.clone())
+}
+
+fn expand_wsl_remote_formatter_shell(
+    content: &str,
+    context: &WslFormatterExpansionContext,
+) -> anyhow::Result<String> {
+    let content = expand_wsl_remote_formatter_inner(content, context)?;
+    let Some((program, args)) = context.shell.split_first() else {
+        anyhow::bail!("shell is not configured");
+    };
+
+    let output = std::process::Command::new(program)
+        .args(args)
+        .arg(&content)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|err| anyhow::anyhow!("Failed to start shell: {err}"))?
+        .wait_with_output()?;
+
+    if !output.stderr.is_empty() {
+        warn!(
+            "Shell expansion command `{content}` failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+    if text.ends_with('\n') {
+        text.pop();
+        if text.ends_with('\r') {
+            text.pop();
+        }
+    }
+
+    Ok(text)
 }
 
 fn wsl_formatter_arg_for_remote(arg: &str) -> String {
@@ -17855,6 +18043,57 @@ mod tests {
         assert_eq!(
             wsl_remote_save_target_path(current, Some("/tmp/copy.rs")),
             PathBuf::from(r"\\wsl.localhost\Ubuntu\tmp\copy.rs")
+        );
+    }
+
+    #[test]
+    fn wsl_formatter_args_expand_target_document_variables() {
+        let context = WslFormatterExpansionContext::for_test(
+            r"\\wsl.localhost\Ubuntu\home\iain\repo\src\main.rs",
+        );
+
+        assert_eq!(
+            expand_wsl_remote_formatter_arg("--stdin-filepath=%{buffer_name}", &context).unwrap(),
+            r"--stdin-filepath=\\wsl.localhost\Ubuntu\home\iain\repo\src\main.rs"
+        );
+        assert_eq!(
+            expand_wsl_remote_formatter_arg(
+                "%{language}:%{cursor_line}:%{cursor_column}:%{selection}",
+                &context
+            )
+            .unwrap(),
+            "rust:2:3:selected"
+        );
+    }
+
+    #[test]
+    fn wsl_formatter_args_handle_percent_escaping_and_unicode() {
+        let context = WslFormatterExpansionContext::for_test("main.rs");
+
+        assert_eq!(
+            expand_wsl_remote_formatter_arg("literal-%%-%u{0020}-space", &context).unwrap(),
+            "literal-%- -space"
+        );
+    }
+
+    #[test]
+    fn wsl_formatter_args_reject_unknown_variables() {
+        let context = WslFormatterExpansionContext::for_test("main.rs");
+        let error = expand_wsl_remote_formatter_arg("%{missing}", &context).unwrap_err();
+
+        assert!(error.to_string().contains("unknown variable 'missing'"));
+    }
+
+    #[test]
+    fn wsl_formatter_args_map_expanded_unc_paths_to_linux_paths() {
+        let context = WslFormatterExpansionContext::for_test(
+            r"\\wsl.localhost\Ubuntu\home\iain\repo\src\main.rs",
+        );
+        let expanded = expand_wsl_remote_formatter_arg("%{buffer_name}", &context).unwrap();
+
+        assert_eq!(
+            wsl_formatter_arg_for_remote(&expanded),
+            "/home/iain/repo/src/main.rs"
         );
     }
 

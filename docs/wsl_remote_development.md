@@ -123,9 +123,10 @@ editor backend into Linux:
   helper command and receive buffer text over stdin.
 - `:write-all`/`:wa` saves modified WSL buffers through the same queued remote
   write path. Pure WSL write-all supports the same LSP auto-format path as
-  current-buffer saves. Mixed local/WSL write-all still requires `--no-format`
-  while the command interception owns the save boundary, avoiding a fallback
-  through the Windows UNC filesystem for bulk saves.
+  current-buffer saves, including formatter argument expansion for non-focused
+  buffers. Mixed local/WSL write-all still requires `--no-format` while the
+  command interception owns the save boundary, avoiding a fallback through the
+  Windows UNC filesystem for bulk saves.
 - `:write-quit`/`:wq`/`:x` and `:write-buffer-close`/`:wbc` use the remote
   write path for WSL buffers before closing. These commands flush the queued
   save before closing, matching Helix's close-after-save sequencing.
@@ -173,9 +174,8 @@ memory for external-modification protection, mark the document clean on success,
 notify Helix's file-event handler, and emit LSP `didSave`.
 
 The remaining document I/O work is to make this a first-class file-provider
-boundary rather than a command interception. Broader symlink metadata parity and
-full Helix formatter expansion parity for non-focused `:write-all` buffers still
-need dedicated plumbing.
+boundary rather than a command interception. Broader symlink metadata parity
+still needs dedicated plumbing.
 
 ## Runtime Flow
 
