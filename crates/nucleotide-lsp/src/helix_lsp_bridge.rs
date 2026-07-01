@@ -466,20 +466,15 @@ impl HelixLspBridge {
             "Starting language server lookup through Helix registry"
         );
 
-        // Representative document for server lookup
-        // For Rust, avoid using Cargo.toml; prefer an active .rs or a conventional entry point, else None
-        let doc_path = if language_id == "rust" {
-            find_active_rust_document(editor, workspace_root).or_else(|| {
-                for root in &root_dirs {
-                    if let Some(rs) = find_rs_file_shallow(root, 3) {
-                        return Some(rs);
-                    }
-                }
-                None
-            })
-        } else {
-            find_representative_file(workspace_root, language_id)
-        };
+        // Representative document for server lookup. Remote launch proxies must
+        // not fall back to host filesystem scans under WSL/SSH roots.
+        let doc_path = representative_document_for_server(
+            editor,
+            workspace_root,
+            language_id,
+            &root_dirs,
+            !launch_proxy_enabled,
+        );
 
         info!(
             doc_path = ?doc_path,
@@ -886,6 +881,39 @@ fn find_representative_file(
     None
 }
 
+fn representative_document_for_server(
+    editor: &Editor,
+    workspace_root: &std::path::Path,
+    language_id: &str,
+    root_dirs: &[PathBuf],
+    allow_disk_scan: bool,
+) -> Option<PathBuf> {
+    find_active_document_for_language(editor, workspace_root, language_id).or_else(|| {
+        representative_document_from_disk(workspace_root, language_id, root_dirs, allow_disk_scan)
+    })
+}
+
+fn representative_document_from_disk(
+    workspace_root: &std::path::Path,
+    language_id: &str,
+    root_dirs: &[PathBuf],
+    allow_disk_scan: bool,
+) -> Option<PathBuf> {
+    if !allow_disk_scan {
+        return None;
+    }
+
+    if language_id == "rust" {
+        for root in root_dirs {
+            if let Some(rs) = find_rs_file_shallow(root, 3) {
+                return Some(rs);
+            }
+        }
+    }
+
+    find_representative_file(workspace_root, language_id)
+}
+
 /// For Rust, prefer a single workspace root and let rust-analyzer expand the workspace members.
 fn rust_root_dirs(workspace_root: &std::path::Path) -> Vec<PathBuf> {
     vec![workspace_root.to_path_buf()]
@@ -930,15 +958,25 @@ fn find_rs_file_shallow(root: &std::path::Path, max_depth: usize) -> Option<Path
     }
     walk(root, 0, max_depth)
 }
-/// Try to pick the currently active Rust document within the given workspace root
-fn find_active_rust_document(editor: &Editor, workspace_root: &std::path::Path) -> Option<PathBuf> {
+/// Try to pick an open document for the requested language within the workspace root.
+fn find_active_document_for_language(
+    editor: &Editor,
+    workspace_root: &std::path::Path,
+    language_id: &str,
+) -> Option<PathBuf> {
     // Prefer the focused view if available, otherwise scan visible views
-    // Fallback: first Rust document whose path is inside the workspace root
+    // Fallback: first document whose path is inside the workspace root
     // Note: We intentionally avoid borrowing the editor mutably here
+
+    let expected_extension = language_file_extension(language_id)?;
 
     // Helper to validate a document path
     let is_candidate = |path: &std::path::Path| -> bool {
-        path.extension().map(|e| e == "rs").unwrap_or(false) && path.starts_with(workspace_root)
+        path.starts_with(workspace_root)
+            && path
+                .extension()
+                .and_then(|value| value.to_str())
+                .is_some_and(|value| value == expected_extension)
     };
 
     // 1) Try focused view first
@@ -967,4 +1005,87 @@ fn find_active_rust_document(editor: &Editor, workspace_root: &std::path::Path) 
     None
 }
 
+fn language_file_extension(language_id: &str) -> Option<&'static str> {
+    match language_id {
+        "rust" => Some("rs"),
+        "typescript" => Some("ts"),
+        "javascript" => Some("js"),
+        "python" => Some("py"),
+        "go" => Some("go"),
+        "c-sharp" | "csharp" => Some("cs"),
+        "java" => Some("java"),
+        _ => None,
+    }
+}
+
 // removed unused helper find_cargo_root_for to eliminate dead code warnings
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct TestDir {
+        path: PathBuf,
+    }
+
+    impl TestDir {
+        fn new(name: &str) -> Self {
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "nucleotide-lsp-{name}-{}-{nanos}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&path).unwrap();
+            Self { path }
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    #[test]
+    fn representative_document_skips_disk_for_proxied_launches() {
+        let temp = TestDir::new("proxied-representative");
+        let src = temp.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("main.rs"), "fn main() {}\n").unwrap();
+
+        let found = representative_document_from_disk(
+            temp.path(),
+            "rust",
+            &[temp.path().to_path_buf()],
+            false,
+        );
+
+        assert!(found.is_none());
+    }
+
+    #[test]
+    fn representative_document_scans_disk_for_local_launches() {
+        let temp = TestDir::new("local-representative");
+        let src = temp.path().join("src");
+        let main = src.join("main.rs");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(&main, "fn main() {}\n").unwrap();
+
+        let found = representative_document_from_disk(
+            temp.path(),
+            "rust",
+            &[temp.path().to_path_buf()],
+            true,
+        );
+
+        assert_eq!(found, Some(main));
+    }
+}
