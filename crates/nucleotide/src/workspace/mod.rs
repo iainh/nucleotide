@@ -2396,6 +2396,34 @@ fn prepare_wsl_remote_save_for_doc(
     }))
 }
 
+fn save_local_modified_buffer_without_format(
+    editor: &mut helix_view::editor::Editor,
+    doc_id: DocumentId,
+    force: bool,
+) -> anyhow::Result<()> {
+    let target_view = editor.get_synced_view_id(doc_id);
+    let config = editor.config();
+    let documents = &mut editor.documents;
+    let tree = &mut editor.tree;
+    let view = tree.get_mut(target_view);
+    let doc = documents
+        .get_mut(&doc_id)
+        .ok_or_else(|| anyhow::anyhow!("local document was not registered"))?;
+
+    if doc.trim_trailing_whitespace() {
+        trim_wsl_save_trailing_whitespace(doc, target_view);
+    }
+    if config.trim_final_newlines {
+        trim_wsl_save_final_newlines(doc, target_view);
+    }
+    if doc.insert_final_newline() {
+        insert_wsl_save_final_newline(doc, target_view);
+    }
+
+    doc.append_changes_to_history(view);
+    editor.save::<PathBuf>(doc_id, None, force)
+}
+
 fn enqueue_wsl_remote_save(
     editor: &mut helix_view::editor::Editor,
     prepared: PreparedWslRemoteSave,
@@ -2469,7 +2497,7 @@ fn save_wsl_remote_modified_buffers(
     command: WslWriteAllCommand,
 ) -> anyhow::Result<bool> {
     let mut wsl_saves = Vec::new();
-    let mut has_local_modified_buffer = false;
+    let mut local_saves = Vec::new();
     let mut has_pathless_modified_buffer = false;
 
     let doc_ids: Vec<DocumentId> = editor.documents.keys().copied().collect();
@@ -2485,7 +2513,7 @@ fn save_wsl_remote_modified_buffers(
             Some(path) if WslWorkspace::from_unc_path(path).is_some() => {
                 wsl_saves.push((doc_id, path.to_path_buf()));
             }
-            Some(_) => has_local_modified_buffer = true,
+            Some(_) => local_saves.push(doc_id),
             None => has_pathless_modified_buffer = true,
         }
     }
@@ -2497,13 +2525,17 @@ fn save_wsl_remote_modified_buffers(
     if has_pathless_modified_buffer && !command.force {
         anyhow::bail!("cannot write a buffer without a filename");
     }
-    if has_local_modified_buffer {
+    if editor.config().auto_format && command.auto_format {
         anyhow::bail!(
-            "WSL remote write-all with local modified buffers is not yet supported; save local buffers separately"
+            "WSL remote write-all does not yet support auto-format; use :write-all --no-format"
         );
     }
 
-    let save_count = wsl_saves.len();
+    let save_count = wsl_saves.len() + local_saves.len();
+    for doc_id in local_saves {
+        save_local_modified_buffer_without_format(editor, doc_id, command.force)?;
+    }
+
     for (doc_id, path) in wsl_saves {
         let Some(prepared) = prepare_wsl_remote_save_for_doc(
             editor,
