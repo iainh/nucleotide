@@ -1656,6 +1656,7 @@ where
         workspace_root: PathBuf,
         environment_baseline: HashMap<String, String>,
     ) -> Result<Self> {
+        let workspace_root = normalize_path_lexically(&workspace_root);
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -1769,7 +1770,7 @@ where
                 Vec::new(),
             )),
             RemoteRequest::Stat { path } => {
-                let path = self.resolve_path(&path);
+                let path = self.resolve_path(&path)?;
                 let stat =
                     block_on(self.backend.stat(&path)).map_err(remote_error_from_workspace)?;
                 Ok(ServiceOutcome::Continue(
@@ -1778,7 +1779,7 @@ where
                 ))
             }
             RemoteRequest::ListDir { path } => {
-                let path = self.resolve_path(&path);
+                let path = self.resolve_path(&path)?;
                 let listing =
                     block_on(self.backend.list_dir(&path)).map_err(remote_error_from_workspace)?;
                 Ok(ServiceOutcome::Continue(
@@ -1791,20 +1792,21 @@ where
                 file_name,
                 limit,
             } => {
-                let start = self.resolve_path(&start);
+                let start = self.resolve_path(&start)?;
                 let path = block_on(self.backend.find_ancestor_file(
                     &start,
                     file_name.as_str(),
                     limit,
                 ))
                 .map_err(remote_error_from_workspace)?;
+                let path = path.filter(|path| path_is_within_workspace(path, &self.workspace_root));
                 Ok(ServiceOutcome::Continue(
                     RemoteResponse::FindAncestorFile(path),
                     Vec::new(),
                 ))
             }
             RemoteRequest::CreateFile { path } => {
-                let path = self.resolve_path(&path);
+                let path = self.resolve_path(&path)?;
                 let stat = block_on(self.backend.create_file(&path))
                     .map_err(remote_error_from_workspace)?;
                 Ok(ServiceOutcome::Continue(
@@ -1813,7 +1815,7 @@ where
                 ))
             }
             RemoteRequest::CreateDir { path } => {
-                let path = self.resolve_path(&path);
+                let path = self.resolve_path(&path)?;
                 let stat = block_on(self.backend.create_dir(&path))
                     .map_err(remote_error_from_workspace)?;
                 Ok(ServiceOutcome::Continue(
@@ -1822,8 +1824,8 @@ where
                 ))
             }
             RemoteRequest::RenamePath { from, to } => {
-                let from = self.resolve_path(&from);
-                let to = self.resolve_path(&to);
+                let from = self.resolve_path(&from)?;
+                let to = self.resolve_path(&to)?;
                 let stat = block_on(self.backend.rename_path(&from, &to))
                     .map_err(remote_error_from_workspace)?;
                 Ok(ServiceOutcome::Continue(
@@ -1832,7 +1834,7 @@ where
                 ))
             }
             RemoteRequest::DeletePath { path } => {
-                let path = self.resolve_path(&path);
+                let path = self.resolve_path(&path)?;
                 let stat = block_on(self.backend.delete_path(&path))
                     .map_err(remote_error_from_workspace)?;
                 Ok(ServiceOutcome::Continue(
@@ -1841,8 +1843,8 @@ where
                 ))
             }
             RemoteRequest::CopyPath { from, to } => {
-                let from = self.resolve_path(&from);
-                let to = self.resolve_path(&to);
+                let from = self.resolve_path(&from)?;
+                let to = self.resolve_path(&to)?;
                 let stat = block_on(self.backend.copy_path(&from, &to))
                     .map_err(remote_error_from_workspace)?;
                 Ok(ServiceOutcome::Continue(
@@ -1851,7 +1853,7 @@ where
                 ))
             }
             RemoteRequest::ReadFile { path, max_bytes } => {
-                let path = self.resolve_path(&path);
+                let path = self.resolve_path(&path)?;
                 let max_bytes = Some(
                     max_bytes
                         .unwrap_or(MAX_FRAME_BODY_LEN)
@@ -1871,7 +1873,7 @@ where
                 create_parent_dirs,
                 expected_modified_unix_millis,
             } => {
-                let path = self.resolve_path(&path);
+                let path = self.resolve_path(&path)?;
                 let expected_modified =
                     expected_modified_unix_millis.and_then(system_time_from_unix_millis);
                 let result = block_on(self.backend.write_file(
@@ -1890,7 +1892,7 @@ where
             }
             RemoteRequest::FileSearch(request) => {
                 let query = FileSearchQuery {
-                    root: self.resolve_search_root(&request.root),
+                    root: self.resolve_search_root(&request.root)?,
                     pattern: request.pattern,
                     limit: request.limit,
                     hidden: request.hidden,
@@ -1912,7 +1914,7 @@ where
             }
             RemoteRequest::TextSearch(request) => {
                 let query = TextSearchQuery {
-                    root: self.resolve_search_root(&request.root),
+                    root: self.resolve_search_root(&request.root)?,
                     pattern: request.pattern,
                     limit: request.limit,
                     smart_case: request.smart_case,
@@ -1936,7 +1938,7 @@ where
                 ))
             }
             RemoteRequest::ProjectEnvironment { root } => {
-                let root = self.resolve_search_root(&root);
+                let root = self.resolve_search_root(&root)?;
                 let snapshot = self
                     .load_project_environment(&root)
                     .map_err(remote_error_from_environment)?;
@@ -1946,7 +1948,7 @@ where
                 ))
             }
             RemoteRequest::GitHead { root } => {
-                let root = self.resolve_search_root(&root);
+                let root = self.resolve_search_root(&root)?;
                 let result =
                     block_on(self.backend.git_head(&root)).map_err(remote_error_from_workspace)?;
                 Ok(ServiceOutcome::Continue(
@@ -1959,7 +1961,7 @@ where
                 include_untracked,
                 limit,
             } => {
-                let root = self.resolve_search_root(&root);
+                let root = self.resolve_search_root(&root)?;
                 let result = block_on(self.backend.git_status(
                     &root,
                     GitStatusOptions {
@@ -1974,7 +1976,7 @@ where
                 ))
             }
             RemoteRequest::RunProcess(request) => {
-                let cwd = self.resolve_path(&request.cwd);
+                let cwd = self.resolve_path(&request.cwd)?;
                 let max_output_bytes = Some(
                     request
                         .max_output_bytes
@@ -2038,17 +2040,26 @@ where
         })
     }
 
-    fn resolve_path(&self, path: &Path) -> PathBuf {
-        if path.is_absolute() {
+    fn resolve_path(&self, path: &Path) -> std::result::Result<PathBuf, RemoteError> {
+        let resolved = if path.as_os_str().is_empty() {
+            self.workspace_root.clone()
+        } else if path.is_absolute() {
             path.to_path_buf()
         } else {
             self.workspace_root.join(path)
+        };
+        let resolved = normalize_path_lexically(&resolved);
+
+        if path_is_within_workspace(&resolved, &self.workspace_root) {
+            Ok(resolved)
+        } else {
+            Err(path_outside_workspace_error(path, &self.workspace_root))
         }
     }
 
-    fn resolve_search_root(&self, root: &Path) -> PathBuf {
+    fn resolve_search_root(&self, root: &Path) -> std::result::Result<PathBuf, RemoteError> {
         if root.as_os_str().is_empty() {
-            self.workspace_root.clone()
+            Ok(self.workspace_root.clone())
         } else {
             self.resolve_path(root)
         }
@@ -2097,6 +2108,47 @@ pub fn serve_local_workspace<R: Read, W: Write>(
 enum ServiceOutcome {
     Continue(RemoteResponse, Vec<u8>),
     Shutdown,
+}
+
+fn normalize_path_lexically(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if !normalized.pop() && !normalized.has_root() {
+                    normalized.push(component.as_os_str());
+                }
+            }
+            std::path::Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            std::path::Component::RootDir => normalized.push(component.as_os_str()),
+            std::path::Component::Normal(part) => normalized.push(part),
+        }
+    }
+
+    if normalized.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        normalized
+    }
+}
+
+fn path_is_within_workspace(path: &Path, workspace_root: &Path) -> bool {
+    let path = normalize_path_lexically(path);
+    let workspace_root = normalize_path_lexically(workspace_root);
+    path == workspace_root || path.starts_with(workspace_root)
+}
+
+fn path_outside_workspace_error(path: &Path, workspace_root: &Path) -> RemoteError {
+    RemoteError {
+        code: "path_outside_workspace".to_string(),
+        message: format!(
+            "path {} is outside workspace root {}",
+            path.display(),
+            workspace_root.display()
+        ),
+        diagnostic: None,
+    }
 }
 
 fn file_stat_response(stat: FileStat) -> FileStatResponse {
@@ -3559,6 +3611,77 @@ mod tests {
             std::fs::read_to_string(temp.path().join("src").join("main.rs")).unwrap(),
             "fn main() {}\n"
         );
+    }
+
+    #[test]
+    fn service_rejects_absolute_paths_outside_workspace() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("workspace");
+        let outside = temp.path().join("outside.txt");
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::write(&outside, "secret").unwrap();
+
+        let frame = read_first_output_frame(single_request_output(
+            &workspace,
+            RemoteRequest::ReadFile {
+                path: outside,
+                max_bytes: None,
+            },
+            Vec::new(),
+        ));
+
+        assert_eq!(frame.kind, FrameKind::Error);
+        let error = frame.decode_json_header::<ErrorEnvelope>().unwrap();
+        assert_eq!(error.error.code, "path_outside_workspace");
+    }
+
+    #[test]
+    fn service_rejects_relative_parent_traversal() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("workspace");
+        let outside = temp.path().join("outside.txt");
+        std::fs::create_dir(&workspace).unwrap();
+
+        let frame = read_first_output_frame(single_request_output(
+            &workspace,
+            RemoteRequest::WriteFile {
+                path: PathBuf::from("../outside.txt"),
+                create_parent_dirs: false,
+                expected_modified_unix_millis: None,
+            },
+            b"escaped".to_vec(),
+        ));
+
+        assert_eq!(frame.kind, FrameKind::Error);
+        let error = frame.decode_json_header::<ErrorEnvelope>().unwrap();
+        assert_eq!(error.error.code, "path_outside_workspace");
+        assert!(!outside.exists());
+    }
+
+    #[test]
+    fn service_find_ancestor_file_does_not_return_outside_workspace() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("workspace");
+        let source = workspace.join("src").join("main.rs");
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        std::fs::write(temp.path().join("Cargo.toml"), "[package]\n").unwrap();
+        std::fs::write(&source, "fn main() {}\n").unwrap();
+
+        let frame = read_first_output_frame(single_request_output(
+            &workspace,
+            RemoteRequest::FindAncestorFile {
+                start: source,
+                file_name: "Cargo.toml".to_string(),
+                limit: 8,
+            },
+            Vec::new(),
+        ));
+
+        let response = frame.decode_json_header::<ResponseEnvelope>().unwrap();
+        let RemoteResponse::FindAncestorFile(found) = response.response else {
+            panic!("expected find ancestor response");
+        };
+        assert_eq!(found, None);
     }
 
     #[test]
