@@ -8,7 +8,7 @@ use std::io::Read;
 use std::path::PathBuf;
 use std::time::UNIX_EPOCH;
 
-pub const PROTOCOL_VERSION: u32 = 12;
+pub const PROTOCOL_VERSION: u32 = 13;
 pub const DEFAULT_FILE_SEARCH_LIMIT: usize = 1_000;
 pub const DEFAULT_GLOBAL_SEARCH_LIMIT: usize = 1_000;
 pub const DEFAULT_FILE_READ_LIMIT: usize = 10_000;
@@ -288,6 +288,15 @@ pub struct FileDuplicateResponse {
     pub kind: RemoteFileKind,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileMoveResponse {
+    pub protocol_version: u32,
+    pub current_dir: PathBuf,
+    pub old_path: PathBuf,
+    pub new_path: PathBuf,
+    pub kind: RemoteFileKind,
+}
+
 impl FileDeleteResponse {
     pub fn current(name: &str) -> std::io::Result<Self> {
         let name = sanitize_child_name(name)?;
@@ -344,6 +353,34 @@ impl FileDuplicateResponse {
     }
 }
 
+impl FileMoveResponse {
+    pub fn current(old_name: &str, target_path: &str) -> std::io::Result<Self> {
+        let old_name = sanitize_child_name(old_name)?;
+        let new_path = sanitize_absolute_target_path(target_path)?;
+        let current_dir = std::env::current_dir()?;
+        let old_path = current_dir.join(old_name);
+        let metadata = std::fs::symlink_metadata(&old_path)?;
+        let kind = remote_file_kind_from_metadata(&metadata);
+
+        if new_path.exists() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "target exists",
+            ));
+        }
+
+        std::fs::rename(&old_path, &new_path)?;
+
+        Ok(Self {
+            protocol_version: PROTOCOL_VERSION,
+            current_dir,
+            old_path,
+            new_path,
+            kind,
+        })
+    }
+}
+
 impl FileRenameResponse {
     pub fn current(old_name: &str, new_name: &str) -> std::io::Result<Self> {
         let old_name = sanitize_child_name(old_name)?;
@@ -371,6 +408,33 @@ impl FileRenameResponse {
             kind,
         })
     }
+}
+
+fn sanitize_absolute_target_path(path: &str) -> std::io::Result<PathBuf> {
+    if path.is_empty() || path.contains('\0') {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "invalid target path",
+        ));
+    }
+
+    let path = PathBuf::from(path);
+    if !path.is_absolute() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "target path must be absolute",
+        ));
+    }
+
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid target name")
+        })?;
+    sanitize_child_name(file_name)?;
+
+    Ok(path)
 }
 
 fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
@@ -1349,6 +1413,103 @@ mod tests {
         assert_eq!(existing.kind(), std::io::ErrorKind::AlreadyExists);
         assert_eq!(nested_source.kind(), std::io::ErrorKind::InvalidInput);
         assert_eq!(nested_target.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn file_move_response_moves_file_from_current_dir_to_absolute_target() {
+        let _guard = CURRENT_DIR_LOCK.lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let source_dir = temp.path().join("src");
+        let target_dir = temp.path().join("crates");
+        std::fs::create_dir_all(&source_dir).unwrap();
+        std::fs::create_dir_all(&target_dir).unwrap();
+        std::fs::write(source_dir.join("lib.rs"), "pub fn lib() {}\n").unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&source_dir).unwrap();
+
+        let response = FileMoveResponse::current(
+            "lib.rs",
+            target_dir
+                .join("lib.rs")
+                .to_str()
+                .expect("utf-8 target path"),
+        )
+        .unwrap();
+
+        std::env::set_current_dir(original).unwrap();
+
+        assert_eq!(response.protocol_version, PROTOCOL_VERSION);
+        assert_eq!(response.old_path, source_dir.join("lib.rs"));
+        assert_eq!(response.new_path, target_dir.join("lib.rs"));
+        assert_eq!(response.kind, RemoteFileKind::File);
+        assert!(!source_dir.join("lib.rs").exists());
+        assert!(target_dir.join("lib.rs").exists());
+    }
+
+    #[test]
+    fn file_move_response_moves_directory_from_current_dir_to_absolute_target() {
+        let _guard = CURRENT_DIR_LOCK.lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let source_dir = temp.path().join("src");
+        let target_dir = temp.path().join("crates");
+        std::fs::create_dir_all(source_dir.join("components")).unwrap();
+        std::fs::create_dir_all(&target_dir).unwrap();
+        std::fs::write(source_dir.join("components").join("mod.rs"), "").unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&source_dir).unwrap();
+
+        let response = FileMoveResponse::current(
+            "components",
+            target_dir
+                .join("components")
+                .to_str()
+                .expect("utf-8 target path"),
+        )
+        .unwrap();
+
+        std::env::set_current_dir(original).unwrap();
+
+        assert_eq!(response.kind, RemoteFileKind::Directory);
+        assert!(!source_dir.join("components").exists());
+        assert!(target_dir.join("components").join("mod.rs").exists());
+    }
+
+    #[test]
+    fn file_move_response_rejects_existing_or_invalid_targets() {
+        let _guard = CURRENT_DIR_LOCK.lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let source_dir = temp.path().join("src");
+        let target_dir = temp.path().join("crates");
+        std::fs::create_dir_all(&source_dir).unwrap();
+        std::fs::create_dir_all(&target_dir).unwrap();
+        std::fs::write(source_dir.join("lib.rs"), "").unwrap();
+        std::fs::write(target_dir.join("lib.rs"), "").unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&source_dir).unwrap();
+
+        let existing = FileMoveResponse::current(
+            "lib.rs",
+            target_dir
+                .join("lib.rs")
+                .to_str()
+                .expect("utf-8 target path"),
+        )
+        .unwrap_err();
+        let relative = FileMoveResponse::current("lib.rs", "crates/lib.rs").unwrap_err();
+        let nested_source = FileMoveResponse::current(
+            "src/lib.rs",
+            target_dir
+                .join("other.rs")
+                .to_str()
+                .expect("utf-8 target path"),
+        )
+        .unwrap_err();
+
+        std::env::set_current_dir(original).unwrap();
+
+        assert_eq!(existing.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(relative.kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(nested_source.kind(), std::io::ErrorKind::InvalidInput);
     }
 
     #[test]

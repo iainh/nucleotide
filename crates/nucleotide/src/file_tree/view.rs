@@ -18,9 +18,11 @@ use gpui::{
     MouseButton, MouseDownEvent, ParentElement, Render, ScrollHandle, ScrollStrategy,
     StatefulInteractiveElement, Styled, UniformListScrollHandle, Window, div, px, uniform_list,
 };
-use nucleotide_env::{WslWorkspace, load_wsl_remote_directory_listing};
+use nucleotide_env::{
+    WslWorkspace, load_wsl_remote_directory_listing, move_wsl_remote_path_blocking,
+};
 use nucleotide_logging::{debug, error, warn};
-use nucleotide_remote::{DirectoryListingResponse, RemoteFileKind};
+use nucleotide_remote::{DirectoryListingResponse, FileMoveResponse, RemoteFileKind};
 use nucleotide_types::{VcsStatus, scrollbar::SCROLLBAR_THICKNESS};
 use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::scrollbar::{Scrollbar, ScrollbarState};
@@ -32,6 +34,7 @@ use std::{
 };
 
 const WSL_REMOTE_DIRECTORY_LIST_TIMEOUT: Duration = Duration::from_secs(5);
+const WSL_REMOTE_FILE_TREE_MOVE_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum FileTreeScrollOffset {
@@ -204,6 +207,39 @@ fn rebase_file_tree_path(path: &Path, from: &Path, to: &Path) -> Option<PathBuf>
 
 fn file_tree_drop_destination(from: &Path, target_dir: &Path) -> Option<PathBuf> {
     from.file_name().map(|file_name| target_dir.join(file_name))
+}
+
+fn wsl_moved_paths_match(from: &Path, to: &Path, response: &FileMoveResponse) -> bool {
+    let Some(parent) = from.parent() else {
+        return false;
+    };
+    let Some(workspace) = WslWorkspace::from_unc_path(parent) else {
+        return false;
+    };
+    let old_path = response
+        .old_path
+        .to_str()
+        .and_then(|path| workspace.unc_path_for_linux_path(path));
+    let new_path = response
+        .new_path
+        .to_str()
+        .and_then(|path| workspace.unc_path_for_linux_path(path));
+
+    old_path.as_deref().map(Path::new) == Some(from)
+        && new_path.as_deref().map(Path::new) == Some(to)
+}
+
+fn move_file_tree_entry_on_disk(from: &Path, to: &Path) -> Result<(), String> {
+    if WslWorkspace::from_unc_path(from).is_some() {
+        let response = move_wsl_remote_path_blocking(from, to, WSL_REMOTE_FILE_TREE_MOVE_TIMEOUT)
+            .map_err(|error| error.to_string())?;
+        if !wsl_moved_paths_match(from, to, &response) {
+            return Err("remote helper returned an unmappable move path".to_string());
+        }
+        return Ok(());
+    }
+
+    std::fs::rename(from, to).map_err(|error| error.to_string())
 }
 
 /// File tree view component
@@ -1940,9 +1976,14 @@ impl FileTreeView {
         }
 
         let destination = file_tree_drop_destination(from, target_dir)?;
+        let destination_exists = if WslWorkspace::from_unc_path(&destination).is_some() {
+            false
+        } else {
+            destination.exists()
+        };
         if destination == from
             || self.tree.entry_by_path(&destination).is_some()
-            || destination.exists()
+            || destination_exists
         {
             return None;
         }
@@ -1966,7 +2007,7 @@ impl FileTreeView {
         };
         let from_path = from.to_path_buf();
 
-        if let Err(error) = std::fs::rename(&from_path, &destination) {
+        if let Err(error) = move_file_tree_entry_on_disk(&from_path, &destination) {
             warn!(
                 from = ?from_path,
                 to = ?destination,
@@ -2180,6 +2221,26 @@ mod tests {
                 target_exists: true,
             }
         );
+    }
+
+    #[test]
+    fn wsl_moved_paths_match_unc_source_and_destination() {
+        let from = Path::new(r"\\wsl.localhost\Ubuntu\home\iain\repo\src\lib.rs");
+        let to = Path::new(r"\\wsl.localhost\Ubuntu\home\iain\repo\crates\lib.rs");
+        let response = FileMoveResponse {
+            protocol_version: nucleotide_remote::PROTOCOL_VERSION,
+            current_dir: PathBuf::from("/home/iain/repo/src"),
+            old_path: PathBuf::from("/home/iain/repo/src/lib.rs"),
+            new_path: PathBuf::from("/home/iain/repo/crates/lib.rs"),
+            kind: RemoteFileKind::File,
+        };
+        let mismatched = FileMoveResponse {
+            new_path: PathBuf::from("/home/iain/repo/other/lib.rs"),
+            ..response.clone()
+        };
+
+        assert!(wsl_moved_paths_match(from, to, &response));
+        assert!(!wsl_moved_paths_match(from, to, &mismatched));
     }
 
     #[tokio::test]

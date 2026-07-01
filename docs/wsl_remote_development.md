@@ -41,7 +41,7 @@ editor backend into Linux:
   launch boundary owns those values.
 - `nucleotide-remote` is a versioned helper binary with `hello`, `env`,
   `metadata`, `root`, `list`, `create-file`, `create-directory`, `files`,
-  `rename`, `delete`, `duplicate`, `search`, `read`, and `symbol-files`
+  `rename`, `delete`, `duplicate`, `move`, `search`, `read`, and `symbol-files`
   protocol commands.
   Metadata includes workspace marker and shallow source-directory facts so
   project/LSP detection can avoid repeated Windows UNC
@@ -57,9 +57,9 @@ editor backend into Linux:
   bounded, ignore-filtered file text inside WSL, then parses symbols on the
   Windows side with the existing Helix syntax loader.
   The `root`, `list`, `create-file`, `create-directory`, `rename`, `delete`,
-  `duplicate`, `files`, `search`, `read`, and `symbol-files` commands are part
-  of helper protocol version 12, so older cached helpers are bypassed by the
-  versioned cache path.
+  `duplicate`, `move`, `files`, `search`, `read`, and `symbol-files` commands
+  are part of helper protocol version 13, so older cached helpers are bypassed
+  by the versioned cache path.
 - Application startup schedules a short, non-blocking WSL helper health probe for
   WSL roots. Probes prefer
   `~/.cache/nucleotide/remote-helper/<protocol-version>/nucleotide-remote`
@@ -81,10 +81,11 @@ editor backend into Linux:
   Native workspaces keep the existing local filesystem path. WSL file watching is
   disabled for the Windows watcher path so the UI does not pay for recursive UNC
   monitoring.
-- Project tree New File, New Folder, Rename, Delete, and Duplicate use the
-  helper-backed `create-file`, `create-directory`, `rename`, `delete`, and
-  `duplicate` commands for WSL paths, then map Linux result paths back to WSL
-  UNC before refreshing the parent and notifying language servers.
+- Project tree New File, New Folder, Rename, Delete, Duplicate, and drag/drop
+  moves use the helper-backed `create-file`, `create-directory`, `rename`,
+  `delete`, `duplicate`, and `move` commands for WSL paths, then map Linux
+  result paths back to WSL UNC before refreshing the parent and notifying
+  language servers.
 - Local path completion uses the same helper-backed directory listing for WSL
   paths with a short timeout, avoiding per-keystroke `\\wsl...` directory reads
   from the Windows side.
