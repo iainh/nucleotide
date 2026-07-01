@@ -8206,11 +8206,19 @@ fn detect_project_lsp_metadata(
 async fn detect_project_lsp_metadata_for_workspace(
     workspace_root: &Path,
 ) -> (nucleotide_events::ProjectType, Vec<String>) {
-    let project_type = detect_project_type_from_wsl_metadata(workspace_root)
-        .await
-        .unwrap_or_else(|| detect_project_type_from_workspace(workspace_root));
+    let project_type = if should_detect_project_type_locally(workspace_root) {
+        detect_project_type_from_workspace(workspace_root)
+    } else {
+        detect_project_type_from_wsl_metadata(workspace_root)
+            .await
+            .unwrap_or(nucleotide_events::ProjectType::Unknown)
+    };
     let language_servers = language_servers_for_project_type(&project_type);
     (project_type, language_servers)
+}
+
+pub(crate) fn should_detect_project_type_locally(workspace_root: &Path) -> bool {
+    WslWorkspace::from_unc_path(workspace_root).is_none()
 }
 
 async fn detect_project_type_from_wsl_metadata(
@@ -8248,7 +8256,7 @@ async fn detect_project_type_from_wsl_metadata(
                 distro = %workspace.distro(),
                 linux_path = %workspace.linux_path(),
                 error = %error,
-                "WSL remote helper metadata unavailable; falling back to UNC project detection"
+                "WSL remote helper metadata unavailable; skipping local UNC project detection"
             );
             None
         }
@@ -8515,9 +8523,10 @@ mod tests {
         native_symbol_item_from_lsp, path_completion_items, project_health_status,
         project_server_language_id, project_type_from_remote_workspace_metadata,
         remote_path_completion_items, should_apply_project_environment_overrides,
-        str_prefix_at_byte_limit, suppress_shadowed_buffer_word_completion_items,
-        syntax_symbol_kind_from_capture_name, workspace_diagnostic_refresh_reply,
-        workspace_marker_exists, workspace_symbol_files_options_from_picker_config,
+        should_detect_project_type_locally, str_prefix_at_byte_limit,
+        suppress_shadowed_buffer_word_completion_items, syntax_symbol_kind_from_capture_name,
+        workspace_diagnostic_refresh_reply, workspace_marker_exists,
+        workspace_symbol_files_options_from_picker_config,
         wsl_remote_helper_install_source_from_value, wsl_remote_helper_unavailable_message,
         wsl_unc_path_for_remote_path, wsl_workspace_for_project_directory,
         wsl_workspace_path_from_remote_relative,
@@ -9823,6 +9832,16 @@ mod tests {
     fn workspace_marker_detection_skips_wsl_unc_paths() {
         assert!(!workspace_marker_exists(Path::new(
             r"\\wsl.localhost\Ubuntu\home\iain\repo"
+        )));
+    }
+
+    #[test]
+    fn project_type_local_detection_skips_wsl_unc_paths() {
+        assert!(!should_detect_project_type_locally(Path::new(
+            r"\\wsl.localhost\Ubuntu\home\iain\repo"
+        )));
+        assert!(should_detect_project_type_locally(Path::new(
+            r"C:\Users\iain\repo"
         )));
     }
 

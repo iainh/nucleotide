@@ -38,8 +38,9 @@ fn find_workspace_root_from(start_dir: &Path) -> PathBuf {
                     distro = %workspace.distro(),
                     linux_path = %workspace.linux_path(),
                     error = %error,
-                    "Failed to detect WSL workspace root through remote helper; falling back to local marker probes"
+                    "Failed to detect WSL workspace root through remote helper; skipping local UNC marker probes"
                 );
+                return start_dir.to_path_buf();
             }
         }
     }
