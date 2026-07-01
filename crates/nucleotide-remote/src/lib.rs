@@ -24,6 +24,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio::io::AsyncWriteExt;
 
 pub const PROTOCOL_VERSION: u32 = 1;
 pub const FRAME_VERSION: u16 = 1;
@@ -2459,6 +2460,14 @@ where
             let stdout = std::io::stdout();
             serve_local_workspace(workspace_root, &mut stdin.lock(), &mut stdout.lock())
         }
+        "lsp-proxy" => {
+            let options = parse_lsp_proxy_options(args)?;
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .context("failed to create remote LSP proxy runtime")?;
+            runtime.block_on(run_lsp_proxy(options))
+        }
         "--help" | "-h" | "help" => {
             print_help(&mut std::io::stdout()).context("failed to write help")
         }
@@ -2497,14 +2506,205 @@ where
         .context("failed to resolve workspace root")
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LspProxyOptions {
+    workspace_root: PathBuf,
+    server: String,
+    server_args: Vec<String>,
+}
+
+fn parse_lsp_proxy_options<I>(args: I) -> Result<LspProxyOptions>
+where
+    I: IntoIterator<Item = String>,
+{
+    let mut args = args.into_iter();
+    let mut workspace_root = None;
+    let mut server = None;
+    let mut server_args = Vec::new();
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--workspace" => {
+                let path = args
+                    .next()
+                    .context("--workspace requires a remote workspace path")?;
+                let path = PathBuf::from(path);
+                workspace_root = Some(if path.is_absolute() {
+                    path
+                } else {
+                    std::env::current_dir()
+                        .context("failed to resolve current directory")?
+                        .join(path)
+                });
+            }
+            "--server" => {
+                server = Some(args.next().context("--server requires a language server")?);
+            }
+            "--server-arg" => {
+                server_args.push(
+                    args.next()
+                        .context("--server-arg requires a language server argument")?,
+                );
+            }
+            "--" => {
+                server_args.extend(args);
+                break;
+            }
+            other if server.is_none() => {
+                server = Some(other.to_string());
+            }
+            other => {
+                server_args.push(other.to_string());
+            }
+        }
+    }
+
+    Ok(LspProxyOptions {
+        workspace_root: workspace_root
+            .map(Ok)
+            .unwrap_or_else(std::env::current_dir)
+            .context("failed to resolve workspace root")?,
+        server: server.context("lsp-proxy requires --server <language-server>")?,
+        server_args,
+    })
+}
+
+async fn run_lsp_proxy(options: LspProxyOptions) -> Result<()> {
+    let environment = load_lsp_proxy_environment(&options.workspace_root).await?;
+    let server_program = resolve_program_from_environment_path(
+        &options.server,
+        &environment,
+        &options.workspace_root,
+    );
+
+    let mut child = tokio::process::Command::new(&server_program)
+        .args(&options.server_args)
+        .current_dir(&options.workspace_root)
+        .env_clear()
+        .envs(&environment)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .kill_on_drop(true)
+        .spawn()
+        .with_context(|| {
+            format!(
+                "failed to spawn language server {} in {}",
+                server_program.display(),
+                options.workspace_root.display()
+            )
+        })?;
+
+    let mut server_stdin = child
+        .stdin
+        .take()
+        .context("language server child did not expose stdin")?;
+    let mut server_stdout = child
+        .stdout
+        .take()
+        .context("language server child did not expose stdout")?;
+    let mut client_stdin = tokio::io::stdin();
+    let mut client_stdout = tokio::io::stdout();
+
+    let mut stdin_task = tokio::spawn(async move {
+        let copied = tokio::io::copy(&mut client_stdin, &mut server_stdin).await;
+        let _ = server_stdin.shutdown().await;
+        copied
+    });
+    let mut stdout_task =
+        tokio::spawn(async move { tokio::io::copy(&mut server_stdout, &mut client_stdout).await });
+
+    let status = tokio::select! {
+        result = &mut stdin_task => {
+            pipe_task_result(result, "copy LSP client stdin to server")?;
+            child.wait().await.context("failed waiting for language server after stdin closed")?
+        }
+        result = &mut stdout_task => {
+            pipe_task_result(result, "copy language server stdout to client")?;
+            child.wait().await.context("failed waiting for language server after stdout closed")?
+        }
+        status = child.wait() => {
+            status.context("failed waiting for language server")?
+        }
+    };
+
+    stdin_task.abort();
+    stdout_task.abort();
+
+    if status.success() {
+        Ok(())
+    } else {
+        bail!("language server exited with status {status}")
+    }
+}
+
+fn pipe_task_result(
+    result: std::result::Result<std::io::Result<u64>, tokio::task::JoinError>,
+    operation: &'static str,
+) -> Result<u64> {
+    result
+        .with_context(|| format!("{operation} task panicked"))?
+        .with_context(|| format!("{operation} failed"))
+}
+
+async fn load_lsp_proxy_environment(root: &Path) -> Result<HashMap<String, String>> {
+    let project_environment = ProjectEnvironment::new(Some(std::env::vars().collect()));
+    let environment = project_environment
+        .get_environment_for_directory(root)
+        .await
+        .with_context(|| format!("failed to load project environment for {}", root.display()))?;
+
+    for diagnostic in project_environment.get_environment_diagnostics(root).await {
+        eprintln!("nucleotide-remote lsp-proxy environment diagnostic: {diagnostic}");
+    }
+
+    Ok(environment)
+}
+
+fn resolve_program_from_environment_path(
+    program: &str,
+    environment: &HashMap<String, String>,
+    workspace_root: &Path,
+) -> PathBuf {
+    let program_path = Path::new(program);
+    if program_path.components().count() > 1 {
+        return if program_path.is_absolute() {
+            program_path.to_path_buf()
+        } else {
+            workspace_root.join(program_path)
+        };
+    }
+
+    environment
+        .get("PATH")
+        .into_iter()
+        .flat_map(std::env::split_paths)
+        .map(|directory| {
+            if directory.is_absolute() {
+                directory.join(program)
+            } else {
+                workspace_root.join(directory).join(program)
+            }
+        })
+        .find(|candidate| candidate.is_file())
+        .unwrap_or_else(|| program_path.to_path_buf())
+}
+
 fn print_help<W: Write>(writer: &mut W) -> io::Result<()> {
     writeln!(writer, "nucleotide-remote serve [--workspace <path>]")?;
+    writeln!(
+        writer,
+        "nucleotide-remote lsp-proxy [--workspace <path>] --server <name> [-- <args>...]"
+    )?;
     writeln!(writer)?;
     writeln!(
         writer,
         "Protocol traffic uses framed messages on stdin/stdout."
     )?;
-    writeln!(writer, "Logs and diagnostics must be written to stderr.")
+    writeln!(
+        writer,
+        "LSP proxy traffic also uses stdin/stdout and diagnostics must be written to stderr."
+    )
 }
 
 #[cfg(test)]
@@ -2542,6 +2742,61 @@ mod tests {
                 executable.display()
             ),
         }
+    }
+
+    #[test]
+    fn lsp_proxy_options_parse_workspace_server_and_args() {
+        let temp = tempfile::tempdir().unwrap();
+
+        let options = parse_lsp_proxy_options([
+            "--workspace".to_string(),
+            temp.path().display().to_string(),
+            "--server".to_string(),
+            "rust-analyzer".to_string(),
+            "--".to_string(),
+            "--log-file".to_string(),
+            "ra.log".to_string(),
+        ])
+        .unwrap();
+
+        assert_eq!(options.workspace_root, temp.path());
+        assert_eq!(options.server, "rust-analyzer");
+        assert_eq!(options.server_args, ["--log-file", "ra.log"]);
+    }
+
+    #[test]
+    fn lsp_proxy_resolves_server_from_project_environment_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let server = temp.path().join("rust-analyzer");
+        std::fs::write(&server, "").unwrap();
+        let environment = HashMap::from([(
+            "PATH".to_string(),
+            format!("{}:/usr/bin:/bin", temp.path().display()),
+        )]);
+
+        assert_eq!(
+            resolve_program_from_environment_path("rust-analyzer", &environment, temp.path()),
+            server
+        );
+        assert_eq!(
+            resolve_program_from_environment_path(
+                "/custom/rust-analyzer",
+                &environment,
+                temp.path()
+            ),
+            PathBuf::from("/custom/rust-analyzer")
+        );
+        assert_eq!(
+            resolve_program_from_environment_path(
+                "./node_modules/.bin/typescript-language-server",
+                &environment,
+                temp.path()
+            ),
+            temp.path()
+                .join("node_modules")
+                .join(".bin")
+                .join("typescript-language-server")
+        );
     }
 
     struct LoopbackTransport {
