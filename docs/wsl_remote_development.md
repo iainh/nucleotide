@@ -85,7 +85,10 @@ editor backend into Linux:
   workflows responsive.
 - Workspace terminals and runnable commands opened from WSL roots are launched
   through `wsl.exe --distribution <distro> --cd <linux-path>`, so shells and
-  commands start where the project files live.
+  commands start where the project files live. Rust-analyzer runnable payloads
+  from WSL language servers normalize Linux `cwd`, `workspaceRoot`, and source
+  locations back to same-distro WSL UNC paths before terminal dispatch, so
+  extension-provided commands also route through the WSL terminal adapter.
 - The file tree uses the remote helper for WSL initial root population,
   directory expansion, and directory refresh when a Tokio runtime is available.
   Native workspaces keep the existing local filesystem path. WSL file watching is

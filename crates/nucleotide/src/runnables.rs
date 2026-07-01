@@ -300,6 +300,41 @@ pub fn runnable_to_task_template(runnable: RaRunnable) -> ResolvedTask {
     ResolvedTask { template, command }
 }
 
+pub fn runnable_to_task_template_for_document(
+    runnable: RaRunnable,
+    document_path: &Path,
+) -> ResolvedTask {
+    let mut task = runnable_to_task_template(runnable);
+    let Some(workspace) = WslWorkspace::from_unc_path(document_path) else {
+        return task;
+    };
+
+    normalize_wsl_runnable_task(&mut task, &workspace);
+    task
+}
+
+fn normalize_wsl_runnable_task(task: &mut ResolvedTask, workspace: &WslWorkspace) {
+    normalize_wsl_command_paths(&mut task.command, workspace);
+    normalize_wsl_command_paths(&mut task.template.command, workspace);
+
+    if let Some(source) = &mut task.template.source {
+        source.path = wsl_unc_path_for_linux_path(workspace, &source.path)
+            .unwrap_or_else(|| source.path.clone());
+    }
+}
+
+fn normalize_wsl_command_paths(command: &mut CommandSpec, workspace: &WslWorkspace) {
+    if let Some(cwd) = &mut command.cwd
+        && let Some(mapped) = wsl_unc_path_for_linux_path(workspace, cwd)
+    {
+        *cwd = mapped;
+    }
+}
+
+fn wsl_unc_path_for_linux_path(workspace: &WslWorkspace, path: &Path) -> Option<PathBuf> {
+    workspace.unc_path_for_linux_path(path).map(PathBuf::from)
+}
+
 pub enum RaRunnablesRequest {}
 
 impl lsp::request::Request for RaRunnablesRequest {
@@ -545,12 +580,59 @@ fn sorted_env(environment: HashMap<String, String>) -> Vec<(String, String)> {
 }
 
 fn source_from_location_link(location: &lsp::LocationLink) -> Option<SourceLocation> {
-    let path = location.target_uri.to_file_path().ok()?;
+    let path = location
+        .target_uri
+        .to_file_path()
+        .ok()
+        .or_else(|| linux_path_from_file_uri(location.target_uri.as_str()))?;
     Some(SourceLocation {
         path,
         line: location.target_range.start.line as usize,
         column: location.target_range.start.character as usize,
     })
+}
+
+fn linux_path_from_file_uri(uri: &str) -> Option<PathBuf> {
+    let url = url::Url::parse(uri).ok()?;
+    if url.scheme() != "file" {
+        return None;
+    }
+
+    if url.host_str().is_some_and(|host| host != "localhost") {
+        return None;
+    }
+
+    let path = percent_decode_utf8(url.path())?;
+    path.starts_with('/').then(|| PathBuf::from(path))
+}
+
+fn percent_decode_utf8(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let high = hex_value(*bytes.get(index + 1)?)?;
+            let low = hex_value(*bytes.get(index + 2)?)?;
+            decoded.push((high << 4) | low);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+
+    String::from_utf8(decoded).ok()
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 fn run_kind_from_label(label: &str) -> RunKind {
@@ -726,6 +808,111 @@ fn second() {}
             task.command.env,
             vec![("RUST_BACKTRACE".into(), "1".into())]
         );
+    }
+
+    #[test]
+    fn rust_analyzer_runnable_maps_linux_cwd_for_wsl_documents() {
+        let raw = r#"
+        {
+          "label": "test tests::parses",
+          "kind": "cargo",
+          "args": {
+            "environment": {},
+            "cwd": "/home/iain/repo/crate",
+            "workspaceRoot": "/home/iain/repo",
+            "cargoArgs": ["test", "parses"],
+            "executableArgs": []
+          }
+        }
+        "#;
+
+        let runnable: RaRunnable = serde_json::from_str(raw).unwrap();
+        let task = runnable_to_task_template_for_document(
+            runnable,
+            Path::new(r"\\wsl.localhost\Ubuntu\home\iain\repo\src\lib.rs"),
+        );
+
+        assert_eq!(
+            task.command.cwd,
+            Some(PathBuf::from(r"\\wsl.localhost\Ubuntu\home\iain\repo"))
+        );
+        assert_eq!(task.template.command.cwd, task.command.cwd);
+    }
+
+    #[test]
+    fn rust_analyzer_runnable_maps_linux_source_for_wsl_documents() {
+        let raw = r#"
+        {
+          "label": "test tests::parses",
+          "location": {
+            "targetUri": "file:///home/iain/repo/src/lib.rs",
+            "targetRange": {
+              "start": {"line": 4, "character": 2},
+              "end": {"line": 4, "character": 20}
+            },
+            "targetSelectionRange": {
+              "start": {"line": 4, "character": 2},
+              "end": {"line": 4, "character": 20}
+            }
+          },
+          "kind": "shell",
+          "args": {
+            "environment": {},
+            "cwd": "/home/iain/repo",
+            "program": "cargo",
+            "args": ["test", "parses"]
+          }
+        }
+        "#;
+
+        let runnable: RaRunnable = serde_json::from_str(raw).unwrap();
+        let task = runnable_to_task_template_for_document(
+            runnable,
+            Path::new(r"\\wsl.localhost\Ubuntu\home\iain\repo\src\lib.rs"),
+        );
+
+        assert_eq!(
+            task.source().map(|source| source.path.as_path()),
+            Some(Path::new(
+                r"\\wsl.localhost\Ubuntu\home\iain\repo\src\lib.rs"
+            ))
+        );
+        assert_eq!(
+            task.command.cwd,
+            Some(PathBuf::from(r"\\wsl.localhost\Ubuntu\home\iain\repo"))
+        );
+    }
+
+    #[test]
+    fn linux_file_uri_source_fallback_decodes_percent_escapes() {
+        assert_eq!(
+            linux_path_from_file_uri("file:///home/iain/my%20repo/src/hash%23tag.rs"),
+            Some(PathBuf::from("/home/iain/my repo/src/hash#tag.rs"))
+        );
+    }
+
+    #[test]
+    fn rust_analyzer_runnable_keeps_local_document_paths_unchanged() {
+        let raw = r#"
+        {
+          "label": "run shell task",
+          "kind": "shell",
+          "args": {
+            "environment": {},
+            "cwd": "/workspace",
+            "program": "just",
+            "args": ["test"]
+          }
+        }
+        "#;
+
+        let runnable: RaRunnable = serde_json::from_str(raw).unwrap();
+        let task = runnable_to_task_template_for_document(
+            runnable,
+            Path::new(r"C:\Users\iain\repo\src\lib.rs"),
+        );
+
+        assert_eq!(task.command.cwd, Some(PathBuf::from("/workspace")));
     }
 
     #[test]

@@ -4027,6 +4027,7 @@ impl Workspace {
                 })
                 .map(|language_server| {
                     let server_name = language_server.name().to_string();
+                    let document_path = document.path.clone();
                     let params = crate::runnables::RunnablesParams {
                         text_document: identifier.clone(),
                         position: None,
@@ -4038,7 +4039,12 @@ impl Workspace {
                         request.await.map(|runnables| {
                             let tasks = runnables
                                 .into_iter()
-                                .map(crate::runnables::runnable_to_task_template)
+                                .map(|runnable| {
+                                    crate::runnables::runnable_to_task_template_for_document(
+                                        runnable,
+                                        &document_path,
+                                    )
+                                })
                                 .collect::<Vec<_>>();
                             (server_name, tasks)
                         })
