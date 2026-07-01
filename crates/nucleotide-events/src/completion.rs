@@ -38,7 +38,7 @@ pub enum Event {
     },
 
     ItemAccepted {
-        item: CompletionItem,
+        item: Box<CompletionItem>,
         doc_id: DocumentId,
         view_id: ViewId,
         insert_position: Position,

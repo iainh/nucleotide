@@ -258,7 +258,7 @@ impl DocumentationLoader {
         cx: &mut Context<T>,
     ) {
         let item_text = item.text.clone();
-        let item_kind = item.kind.clone();
+        let item_kind = item.kind;
 
         let task = cx.spawn(async move |_this, _cx| {
             // Simulate async documentation fetching

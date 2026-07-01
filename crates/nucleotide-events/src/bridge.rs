@@ -15,7 +15,7 @@ pub enum BridgeEvent {
     View(ViewEvent),
     Editor(EditorEvent),
     Lsp(LspEvent),
-    Completion(CompletionEvent),
+    Completion(Box<CompletionEvent>),
 }
 
 /// Convert old BridgedEvent to new V2 domain events  

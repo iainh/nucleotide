@@ -1054,14 +1054,13 @@ fn merge_nucleotide_helix_keybindings(config: &mut HelixConfig) -> anyhow::Resul
     let v = KeyEvent::from_str("v")?;
     let r = KeyEvent::from_str("r")?;
     let reset_diff_change = MappableCommand::from_str(":reset-diff-change")?;
-    if let Some(normal_keymap) = config.keys.get(&Mode::Normal) {
-        if matches!(
+    if let Some(normal_keymap) = config.keys.get(&Mode::Normal)
+        && (matches!(
             normal_keymap.search(&[space, v]),
             Some(KeyTrie::MappableCommand(_) | KeyTrie::Sequence(_))
-        ) || normal_keymap.search(&[space, v, r]).is_some()
-        {
-            return Ok(());
-        }
+        ) || normal_keymap.search(&[space, v, r]).is_some())
+    {
+        return Ok(());
     }
 
     let mut vcs_node = HashMap::new();
