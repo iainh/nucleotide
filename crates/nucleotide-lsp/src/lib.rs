@@ -25,7 +25,10 @@ pub use coordination_manager::{
     LspError, LspManager, LspManagerConfig, LspStartupMode, LspStartupResult, LspStartupStats,
 };
 pub use document_manager::{DocumentManager, DocumentManagerMut};
-pub use helix_lsp_bridge::{EditorLspIntegration, EnvironmentProvider, HelixLspBridge};
+pub use helix_lsp_bridge::{
+    EditorLspIntegration, EnvironmentProvider, HelixLspBridge, LspLaunchProxy,
+    LspLaunchProxyProvider,
+};
 // Note: lsp_completion_trigger module only contains functions, no LspCompletionTrigger type
 pub use lsp_state::{LspProgress, LspState, ServerStatus};
 pub use lsp_status::LspStatus;

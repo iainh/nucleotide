@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -36,6 +36,22 @@ pub trait EnvironmentProvider: Send + Sync {
     >;
 }
 
+#[derive(Debug, Clone)]
+pub struct LspLaunchProxy {
+    pub path_dir: PathBuf,
+    pub cleanup_paths: Vec<PathBuf>,
+    pub description: String,
+}
+
+#[allow(clippy::type_complexity)]
+pub trait LspLaunchProxyProvider: Send + Sync {
+    fn create_lsp_launch_proxy(
+        &self,
+        workspace_root: &std::path::Path,
+        server_name: &str,
+    ) -> Result<Option<LspLaunchProxy>, Box<dyn std::error::Error + Send + Sync>>;
+}
+
 /// Bridge between ProjectLspManager and Helix's LSP system
 #[derive(Clone)]
 pub struct HelixLspBridge {
@@ -43,6 +59,8 @@ pub struct HelixLspBridge {
     project_event_tx: broadcast::Sender<ProjectLspEvent>,
     /// Environment provider for LSP server startup
     environment_provider: Option<Arc<dyn EnvironmentProvider>>,
+    /// Optional provider for temporary launch shims, used by remote workspaces.
+    launch_proxy_provider: Option<Arc<dyn LspLaunchProxyProvider>>,
     /// Map of (workspace_root, server_name) -> LanguageServerId to scope reuse by workspace
     workspace_server_map: Arc<std::sync::Mutex<HashMap<(PathBuf, String), LanguageServerId>>>,
 }
@@ -53,6 +71,7 @@ impl HelixLspBridge {
         Self {
             project_event_tx,
             environment_provider: None,
+            launch_proxy_provider: None,
             workspace_server_map: Arc::new(std::sync::Mutex::new(HashMap::new())),
         }
     }
@@ -119,6 +138,20 @@ impl HelixLspBridge {
         Self {
             project_event_tx,
             environment_provider: Some(environment_provider),
+            launch_proxy_provider: None,
+            workspace_server_map: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        }
+    }
+
+    pub fn new_with_environment_and_launch_proxy(
+        project_event_tx: broadcast::Sender<ProjectLspEvent>,
+        environment_provider: Arc<dyn EnvironmentProvider>,
+        launch_proxy_provider: Arc<dyn LspLaunchProxyProvider>,
+    ) -> Self {
+        Self {
+            project_event_tx,
+            environment_provider: Some(environment_provider),
+            launch_proxy_provider: Some(launch_proxy_provider),
             workspace_server_map: Arc::new(std::sync::Mutex::new(HashMap::new())),
         }
     }
@@ -129,7 +162,6 @@ impl HelixLspBridge {
         server_name = %server_name,
         language_id = %language_id
     ))]
-    #[allow(clippy::ptr_arg)]
     #[allow(clippy::ptr_arg)]
     pub async fn start_server(
         &self,
@@ -251,10 +283,50 @@ impl HelixLspBridge {
                 ))
             })?;
 
-        // Inject environment variables if environment provider is available
         let mut original_env_vars = Vec::new();
+        let mut launch_proxy_cleanup_paths = Vec::new();
+        let mut launch_proxy_enabled = false;
 
-        if let Some(ref env_provider) = self.environment_provider {
+        if let Some(ref launch_proxy_provider) = self.launch_proxy_provider {
+            match launch_proxy_provider.create_lsp_launch_proxy(workspace_root, server_name) {
+                Ok(Some(proxy)) => {
+                    let original = std::env::var("PATH").ok();
+                    original_env_vars.push(("PATH".to_string(), original));
+                    let new_path = prepend_path_entry(&proxy.path_dir);
+                    // SAFETY: This mirrors the existing launch-time environment shim. The
+                    // variable is restored immediately after Helix performs server lookup.
+                    unsafe { std::env::set_var("PATH", &new_path) };
+                    launch_proxy_cleanup_paths = proxy.cleanup_paths;
+                    launch_proxy_enabled = true;
+                    info!(
+                        server_name = %server_name,
+                        shim_dir = %proxy.path_dir.display(),
+                        proxy = %proxy.description,
+                        "Enabled LSP launch proxy"
+                    );
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    warn!(
+                        server_name = %server_name,
+                        workspace_root = %workspace_root.display(),
+                        error = %error,
+                        "Failed to create LSP launch proxy"
+                    );
+                }
+            }
+        }
+
+        // Inject environment variables only for direct local server launches. Remote
+        // launch proxies load the project environment inside nucleotide-remote so the
+        // host PATH keeps transport binaries such as ssh.exe and wsl.exe visible.
+        if launch_proxy_enabled {
+            debug!(
+                server_name = %server_name,
+                workspace_root = %workspace_root.display(),
+                "Skipping host environment injection for proxied LSP launch"
+            );
+        } else if let Some(ref env_provider) = self.environment_provider {
             debug!("Injecting environment variables for LSP server startup");
 
             match env_provider.get_lsp_environment(workspace_root).await {
@@ -368,10 +440,7 @@ impl HelixLspBridge {
                 // Prepend to PATH via our temporary env injection mechanism
                 let original = std::env::var("PATH").ok();
                 original_env_vars.push(("PATH".to_string(), original));
-                let new_path = match std::env::var("PATH") {
-                    Ok(p) => format!("{}:{}", shim_dir.display(), p),
-                    Err(_) => shim_dir.display().to_string(),
-                };
+                let new_path = prepend_path_entry(&shim_dir);
                 unsafe { std::env::set_var("PATH", &new_path) };
                 shim_dir_to_cleanup = Some(shim_dir);
                 info!(
@@ -463,6 +532,7 @@ impl HelixLspBridge {
             let _ = std::fs::remove_file(dir.join(server_name));
             let _ = std::fs::remove_dir(dir);
         }
+        cleanup_launch_proxy_paths(launch_proxy_cleanup_paths);
 
         // Find the server with matching name
         for (name, result) in &mut servers {
@@ -585,6 +655,27 @@ impl HelixLspBridge {
             .language_server_by_id(server_id)
             .map(|ls| ls.is_initialized())
             .unwrap_or(false)
+    }
+}
+
+fn prepend_path_entry(path_entry: &Path) -> String {
+    let mut paths = vec![path_entry.to_path_buf()];
+    if let Some(existing) = std::env::var_os("PATH") {
+        paths.extend(std::env::split_paths(&existing));
+    }
+
+    std::env::join_paths(paths)
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| path_entry.display().to_string())
+}
+
+fn cleanup_launch_proxy_paths(paths: Vec<PathBuf>) {
+    for path in paths {
+        if path.is_dir() {
+            let _ = std::fs::remove_dir(&path);
+        } else {
+            let _ = std::fs::remove_file(&path);
+        }
     }
 }
 
