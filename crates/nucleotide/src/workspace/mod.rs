@@ -2181,6 +2181,12 @@ struct WslWriteCommand {
     path: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WslWriteAllCommand {
+    force: bool,
+    auto_format: bool,
+}
+
 const WSL_WRITE_NO_FORMAT_FLAG: Flag = Flag {
     name: "no-format",
     doc: "skip auto-formatting",
@@ -2206,6 +2212,27 @@ fn wsl_write_current_buffer_command(command: &str) -> Option<WslWriteCommand> {
         force,
         auto_format: !args.has_flag(WSL_WRITE_NO_FORMAT_FLAG.name),
         path: args.first().map(str::to_string),
+    })
+}
+
+fn wsl_write_all_command(command: &str) -> Option<WslWriteAllCommand> {
+    let (name, args, _) = helix_core::command_line::split(command);
+    let force = match name {
+        "write-all" | "wa" => false,
+        "write-all!" | "wa!" => true,
+        _ => return None,
+    };
+
+    let signature = Signature {
+        positionals: (0, Some(0)),
+        flags: &[WSL_WRITE_NO_FORMAT_FLAG],
+        ..Signature::DEFAULT
+    };
+    let args = Args::parse(args, signature, true, |token| Ok(token.content)).ok()?;
+
+    Some(WslWriteAllCommand {
+        force,
+        auto_format: !args.has_flag(WSL_WRITE_NO_FORMAT_FLAG.name),
     })
 }
 
@@ -2310,19 +2337,34 @@ fn prepare_wsl_remote_save(
         return Ok(None);
     }
 
-    if editor.config().auto_format && command.auto_format {
+    prepare_wsl_remote_save_for_doc(editor, doc_id, &path, command.force, command.auto_format)
+}
+
+fn prepare_wsl_remote_save_for_doc(
+    editor: &mut helix_view::editor::Editor,
+    doc_id: DocumentId,
+    path: &Path,
+    force: bool,
+    auto_format: bool,
+) -> anyhow::Result<Option<PreparedWslRemoteSave>> {
+    if WslWorkspace::from_unc_path(path).is_none() {
+        return Ok(None);
+    }
+
+    if editor.config().auto_format && auto_format {
         anyhow::bail!("WSL remote save does not yet support auto-format; use :write --no-format");
     }
 
+    let target_view = editor.get_synced_view_id(doc_id);
     let config = editor.config();
     let documents = &mut editor.documents;
     let tree = &mut editor.tree;
-    let view = tree.get_mut(view_id);
+    let view = tree.get_mut(target_view);
     let doc = documents
         .get_mut(&doc_id)
-        .ok_or_else(|| anyhow::anyhow!("active WSL document was not registered"))?;
+        .ok_or_else(|| anyhow::anyhow!("WSL document was not registered"))?;
 
-    if doc.readonly && !command.force {
+    if doc.readonly && !force {
         anyhow::bail!(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
             "Path is read only"
@@ -2330,13 +2372,13 @@ fn prepare_wsl_remote_save(
     }
 
     if doc.trim_trailing_whitespace() {
-        trim_wsl_save_trailing_whitespace(doc, view_id);
+        trim_wsl_save_trailing_whitespace(doc, target_view);
     }
     if config.trim_final_newlines {
-        trim_wsl_save_final_newlines(doc, view_id);
+        trim_wsl_save_final_newlines(doc, target_view);
     }
     if doc.insert_final_newline() {
-        insert_wsl_save_final_newline(doc, view_id);
+        insert_wsl_save_final_newline(doc, target_view);
     }
 
     doc.append_changes_to_history(view);
@@ -2347,22 +2389,19 @@ fn prepare_wsl_remote_save(
 
     Ok(Some(PreparedWslRemoteSave {
         doc_id,
-        path,
+        path: path.to_path_buf(),
         revision: doc.get_current_revision(),
         text,
         bytes,
     }))
 }
 
-fn save_wsl_remote_current_buffer(
+fn enqueue_wsl_remote_save(
     editor: &mut helix_view::editor::Editor,
-    command: WslWriteCommand,
-) -> anyhow::Result<bool> {
-    let Some(prepared) = prepare_wsl_remote_save(editor, &command)? else {
-        return Ok(false);
-    };
-
-    let expected_mtime = (!command.force)
+    prepared: PreparedWslRemoteSave,
+    force: bool,
+) -> anyhow::Result<()> {
+    let expected_mtime = (!force)
         .then(|| wsl_remote_document_mtime(&prepared.path))
         .flatten();
     let doc_id = prepared.doc_id;
@@ -2370,7 +2409,7 @@ fn save_wsl_remote_current_buffer(
     let path = prepared.path;
     let text = prepared.text;
     let bytes = prepared.bytes;
-    let create_parent_dirs = command.force;
+    let create_parent_dirs = force;
     let file_event_handler = editor.language_servers.file_event_handler.clone();
     let status_path = path.clone();
 
@@ -2410,6 +2449,76 @@ fn save_wsl_remote_current_buffer(
     editor.write_count += 1;
     editor.set_status(format!("Writing {}", status_path.display()));
 
+    Ok(())
+}
+
+fn save_wsl_remote_current_buffer(
+    editor: &mut helix_view::editor::Editor,
+    command: WslWriteCommand,
+) -> anyhow::Result<bool> {
+    let Some(prepared) = prepare_wsl_remote_save(editor, &command)? else {
+        return Ok(false);
+    };
+
+    enqueue_wsl_remote_save(editor, prepared, command.force)?;
+    Ok(true)
+}
+
+fn save_wsl_remote_modified_buffers(
+    editor: &mut helix_view::editor::Editor,
+    command: WslWriteAllCommand,
+) -> anyhow::Result<bool> {
+    let mut wsl_saves = Vec::new();
+    let mut has_local_modified_buffer = false;
+    let mut has_pathless_modified_buffer = false;
+
+    let doc_ids: Vec<DocumentId> = editor.documents.keys().copied().collect();
+    for doc_id in doc_ids {
+        let Some(doc) = editor.document(doc_id) else {
+            continue;
+        };
+        if !doc.is_modified() {
+            continue;
+        }
+
+        match doc.path() {
+            Some(path) if WslWorkspace::from_unc_path(path).is_some() => {
+                wsl_saves.push((doc_id, path.to_path_buf()));
+            }
+            Some(_) => has_local_modified_buffer = true,
+            None => has_pathless_modified_buffer = true,
+        }
+    }
+
+    if wsl_saves.is_empty() {
+        return Ok(false);
+    }
+
+    if has_pathless_modified_buffer && !command.force {
+        anyhow::bail!("cannot write a buffer without a filename");
+    }
+    if has_local_modified_buffer {
+        anyhow::bail!(
+            "WSL remote write-all with local modified buffers is not yet supported; save local buffers separately"
+        );
+    }
+
+    let save_count = wsl_saves.len();
+    for (doc_id, path) in wsl_saves {
+        let Some(prepared) = prepare_wsl_remote_save_for_doc(
+            editor,
+            doc_id,
+            &path,
+            command.force,
+            command.auto_format,
+        )?
+        else {
+            continue;
+        };
+        enqueue_wsl_remote_save(editor, prepared, command.force)?;
+    }
+
+    editor.set_status(format!("Writing {save_count} WSL buffers"));
     Ok(true)
 }
 
@@ -9145,6 +9254,21 @@ impl Workspace {
             let _guard = handle_for_command.enter();
 
             core.editor.clear_status();
+            if let Some(wsl_command) = wsl_write_all_command(command) {
+                match save_wsl_remote_modified_buffers(&mut core.editor, wsl_command) {
+                    Ok(true) => {
+                        cx.emit(crate::Update::Redraw);
+                        return current_editor_status(&core.editor);
+                    }
+                    Ok(false) => {}
+                    Err(error) => {
+                        core.editor.set_error(error.to_string());
+                        cx.emit(crate::Update::Redraw);
+                        return current_editor_status(&core.editor);
+                    }
+                }
+            }
+
             if let Some(wsl_command) = wsl_write_current_buffer_command(command) {
                 match save_wsl_remote_current_buffer(&mut core.editor, wsl_command) {
                     Ok(true) => {
@@ -17050,6 +17174,46 @@ mod tests {
         assert_eq!(wsl_write_current_buffer_command("wq"), None);
         assert_eq!(wsl_write_current_buffer_command("write --unknown"), None);
         assert_eq!(wsl_write_current_buffer_command("write one two"), None);
+    }
+
+    #[test]
+    fn wsl_write_all_command_classifies_write_all_forms() {
+        assert_eq!(
+            wsl_write_all_command("write-all"),
+            Some(WslWriteAllCommand {
+                force: false,
+                auto_format: true,
+            })
+        );
+        assert_eq!(
+            wsl_write_all_command("wa --no-format"),
+            Some(WslWriteAllCommand {
+                force: false,
+                auto_format: false,
+            })
+        );
+        assert_eq!(
+            wsl_write_all_command("write-all!"),
+            Some(WslWriteAllCommand {
+                force: true,
+                auto_format: true,
+            })
+        );
+        assert_eq!(
+            wsl_write_all_command("wa! --no-format"),
+            Some(WslWriteAllCommand {
+                force: true,
+                auto_format: false,
+            })
+        );
+    }
+
+    #[test]
+    fn wsl_write_all_command_rejects_arguments_and_other_write_commands() {
+        assert_eq!(wsl_write_all_command("write-all target.rs"), None);
+        assert_eq!(wsl_write_all_command("write"), None);
+        assert_eq!(wsl_write_all_command("write-quit-all"), None);
+        assert_eq!(wsl_write_all_command("write-all --unknown"), None);
     }
 
     #[test]

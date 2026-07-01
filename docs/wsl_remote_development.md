@@ -117,6 +117,9 @@ editor backend into Linux:
   path. Relative save-as paths resolve beside the current WSL document, Linux
   absolute paths map back to the same distro, and `:write!`/`:w!` skips the
   remote mtime guard and may create missing parent directories.
+- `:write-all`/`:wa` saves modified WSL buffers through the same queued remote
+  write path when the modified set is WSL-only, avoiding a fallback through the
+  Windows UNC filesystem for bulk saves.
 - Git status and repository HEAD checks run through `wsl.exe` for WSL roots, so
   file decorations and VCS events use Linux Git against local Linux paths while
   still mapping results back to Windows WSL UNC paths for the UI.
@@ -149,7 +152,7 @@ memory for external-modification protection, mark the document clean on success,
 notify Helix's file-event handler, and emit LSP `didSave`.
 
 The remaining document I/O work is to make this a first-class file-provider
-boundary rather than a command interception. Write all,
+boundary rather than a command interception. Mixed local/WSL write-all,
 write-and-close/write-and-quit sequencing, auto-format-on-save, symlink and
 readonly metadata parity, and BOM preservation still need dedicated plumbing.
 The current Helix `Document` API keeps the BOM flag private, so WSL saves encode
