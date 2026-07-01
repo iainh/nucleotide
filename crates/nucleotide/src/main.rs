@@ -714,16 +714,38 @@ fn parse_nucleotide_url(url_str: &str) -> Option<ProtocolOpenRequest> {
     })
 }
 
-fn open_request_workspace_dir(path: &Path) -> Option<PathBuf> {
+fn open_request_workspace_dir_for_kind(path: &Path, kind: StartupPathKind) -> Option<PathBuf> {
+    workspace_start_dir_for_kind(path, kind)
+}
+
+fn open_request_path_kind(path: &Path) -> Option<StartupPathKind> {
     if WslWorkspace::from_unc_path(path).is_some() {
-        return workspace_start_dir_for_kind(path, startup_path_kind(path));
+        return Some(startup_path_kind(path));
     }
 
     if path.is_dir() {
-        Some(path.to_path_buf())
+        Some(StartupPathKind::Directory)
+    } else if path.exists() {
+        Some(StartupPathKind::File)
     } else {
-        path.parent().map(Path::to_path_buf)
+        None
     }
+}
+
+fn forwarded_working_directory_exists(path: &Path) -> bool {
+    WslWorkspace::from_unc_path(path).is_some() || path.exists()
+}
+
+fn open_request_is_file_kind(path: &Path, kind: StartupPathKind) -> bool {
+    match kind {
+        StartupPathKind::File => true,
+        StartupPathKind::Directory => false,
+        StartupPathKind::Unknown => path.extension().is_some(),
+    }
+}
+
+fn open_request_path_exists(kind: Option<StartupPathKind>) -> bool {
+    kind.is_some()
 }
 
 fn window_options(
@@ -1575,11 +1597,17 @@ fn gui_main(
                         // If we have files to open, change working directory from the request
                         // or from the first file/directory.
                         let mut new_working_dir = request.working_directory.clone();
+                        let file_kinds: Vec<_> = request
+                            .files
+                            .iter()
+                            .map(|file| open_request_path_kind(&file.path))
+                            .collect();
 
                         if new_working_dir.is_none() {
-                            for file in &request.files {
-                                if file.path.exists()
-                                    && let Some(dir) = open_request_workspace_dir(&file.path)
+                            for (file, kind) in request.files.iter().zip(file_kinds.iter()) {
+                                if open_request_path_exists(*kind)
+                                    && let Some(dir) = (*kind)
+                                        .and_then(|kind| open_request_workspace_dir_for_kind(&file.path, kind))
                                 {
                                     new_working_dir = Some(dir.clone());
                                     info!(directory = ?dir, "Will change working directory");
@@ -1590,7 +1618,7 @@ fn gui_main(
 
                         // Change working directory if needed
                         if let Some(dir) = new_working_dir.clone() {
-                            if dir.exists() {
+                            if forwarded_working_directory_exists(&dir) {
                                 if let Err(e) = helix_stdx::env::set_current_working_dir(&dir) {
                                     error!(
                                         directory = ?dir,
@@ -1624,10 +1652,10 @@ fn gui_main(
                         }
 
                         // Now open all files/folders in the request.
-                        for file in request.files {
+                        for (file, kind) in request.files.into_iter().zip(file_kinds) {
                             let path = file.path;
-                            if path.exists() {
-                                if path.is_file() {
+                            if let Some(kind) = kind {
+                                if open_request_is_file_kind(&path, kind) {
                                     let position = file.position.into();
                                     cx.update(|cx| {
                                         workspace_clone.update(cx, |workspace, cx| {
@@ -1762,25 +1790,77 @@ mod tests {
     }
 
     #[test]
-    fn open_request_workspace_dir_uses_directory_itself() {
+    fn open_request_workspace_dir_for_kind_uses_directory_itself() {
         let temp_dir = tempfile::tempdir().unwrap();
 
         assert_eq!(
-            open_request_workspace_dir(temp_dir.path()),
+            open_request_workspace_dir_for_kind(temp_dir.path(), StartupPathKind::Directory),
             Some(temp_dir.path().to_path_buf())
         );
     }
 
     #[test]
-    fn open_request_workspace_dir_uses_file_parent() {
+    fn open_request_workspace_dir_for_kind_uses_file_parent() {
         let temp_dir = tempfile::tempdir().unwrap();
         let file_path = temp_dir.path().join("file.txt");
         std::fs::write(&file_path, "").unwrap();
 
         assert_eq!(
-            open_request_workspace_dir(&file_path),
+            open_request_workspace_dir_for_kind(&file_path, StartupPathKind::File),
             Some(temp_dir.path().to_path_buf())
         );
+    }
+
+    #[test]
+    fn open_request_path_kind_detects_native_directory_and_file() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("file.txt");
+        std::fs::write(&file_path, "").unwrap();
+
+        assert_eq!(
+            open_request_path_kind(temp_dir.path()),
+            Some(StartupPathKind::Directory)
+        );
+        assert_eq!(
+            open_request_path_kind(&file_path),
+            Some(StartupPathKind::File)
+        );
+    }
+
+    #[test]
+    fn open_request_path_kind_rejects_missing_native_path() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("missing.txt");
+
+        assert_eq!(open_request_path_kind(&file_path), None);
+    }
+
+    #[test]
+    fn open_request_unknown_kind_uses_extension_heuristic() {
+        let temp_dir = tempfile::tempdir().unwrap();
+
+        assert!(open_request_is_file_kind(
+            &temp_dir.path().join("missing.txt"),
+            StartupPathKind::Unknown
+        ));
+        assert!(!open_request_is_file_kind(
+            &temp_dir.path().join("project"),
+            StartupPathKind::Unknown
+        ));
+    }
+
+    #[test]
+    fn forwarded_working_directory_exists_accepts_native_directory() {
+        let temp_dir = tempfile::tempdir().unwrap();
+
+        assert!(forwarded_working_directory_exists(temp_dir.path()));
+    }
+
+    #[test]
+    fn forwarded_working_directory_exists_accepts_wsl_unc_without_local_probe() {
+        let path = Path::new(r"\\wsl.localhost\Ubuntu\home\iain\repo");
+
+        assert!(forwarded_working_directory_exists(path));
     }
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
