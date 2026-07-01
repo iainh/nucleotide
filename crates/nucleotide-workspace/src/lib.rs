@@ -69,6 +69,111 @@ pub enum RemoteWorkspaceKind {
     Other(String),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum WorkspaceLocation {
+    Local {
+        path: PathBuf,
+    },
+    Wsl {
+        original_path: PathBuf,
+        distro: String,
+        linux_path: PathBuf,
+    },
+    Ssh {
+        original_path: PathBuf,
+        target: SshWorkspaceTarget,
+        path: PathBuf,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SshWorkspaceTarget {
+    pub host: String,
+    pub user: Option<String>,
+    pub port: Option<u16>,
+}
+
+pub fn classify_workspace_location(path: impl AsRef<Path>) -> WorkspaceLocation {
+    let path = path.as_ref();
+    let text = path.to_string_lossy();
+
+    if let Some((distro, linux_path)) = parse_wsl_unc_path(&text) {
+        return WorkspaceLocation::Wsl {
+            original_path: path.to_path_buf(),
+            distro,
+            linux_path,
+        };
+    }
+
+    if let Some((target, remote_path)) = parse_ssh_uri_path(&text) {
+        return WorkspaceLocation::Ssh {
+            original_path: path.to_path_buf(),
+            target,
+            path: remote_path,
+        };
+    }
+
+    WorkspaceLocation::Local {
+        path: path.to_path_buf(),
+    }
+}
+
+fn parse_wsl_unc_path(value: &str) -> Option<(String, PathBuf)> {
+    let normalized = value.replace('\\', "/");
+    let rest = normalized
+        .strip_prefix("//wsl.localhost/")
+        .or_else(|| normalized.strip_prefix("//wsl$/"))?;
+    let mut parts = rest.split('/').filter(|part| !part.is_empty());
+    let distro = parts.next()?.to_string();
+    let linux_path = path_from_posix_segments(parts);
+
+    Some((distro, linux_path))
+}
+
+fn parse_ssh_uri_path(value: &str) -> Option<(SshWorkspaceTarget, PathBuf)> {
+    let rest = value.strip_prefix("ssh://")?;
+    let (authority, remote_path) = rest.split_once('/').unwrap_or((rest, ""));
+    if authority.is_empty() {
+        return None;
+    }
+
+    let (user, host_and_port) = authority
+        .rsplit_once('@')
+        .map(|(user, host)| (Some(user.to_string()), host))
+        .unwrap_or((None, authority));
+    let (host, port) = parse_ssh_host_and_port(host_and_port)?;
+
+    Some((
+        SshWorkspaceTarget { host, user, port },
+        path_from_posix_segments(remote_path.split('/')),
+    ))
+}
+
+fn parse_ssh_host_and_port(value: &str) -> Option<(String, Option<u16>)> {
+    if value.is_empty() {
+        return None;
+    }
+
+    if let Some((host, port)) = value.rsplit_once(':')
+        && !host.is_empty()
+        && let Ok(port) = port.parse::<u16>()
+    {
+        return Some((host.to_string(), Some(port)));
+    }
+
+    Some((value.to_string(), None))
+}
+
+fn path_from_posix_segments<'a>(segments: impl IntoIterator<Item = &'a str>) -> PathBuf {
+    let mut path = PathBuf::from("/");
+    for segment in segments {
+        if !segment.is_empty() {
+            path.push(segment);
+        }
+    }
+    path
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileKind {
     File,
@@ -978,6 +1083,62 @@ mod tests {
         let backend = local_workspace_backend();
 
         assert_eq!(backend.identity(), WorkspaceIdentity::Local);
+    }
+
+    #[test]
+    fn workspace_location_classifies_wsl_localhost_unc_without_probing() {
+        let path = PathBuf::from(r"\\wsl.localhost\Ubuntu-24.04\home\me\project");
+
+        assert_eq!(
+            classify_workspace_location(&path),
+            WorkspaceLocation::Wsl {
+                original_path: path,
+                distro: "Ubuntu-24.04".to_string(),
+                linux_path: PathBuf::from("/home/me/project"),
+            }
+        );
+    }
+
+    #[test]
+    fn workspace_location_classifies_legacy_wsl_unc_without_probing() {
+        let path = PathBuf::from(r"\\wsl$\Debian\var\www");
+
+        assert_eq!(
+            classify_workspace_location(&path),
+            WorkspaceLocation::Wsl {
+                original_path: path,
+                distro: "Debian".to_string(),
+                linux_path: PathBuf::from("/var/www"),
+            }
+        );
+    }
+
+    #[test]
+    fn workspace_location_classifies_ssh_uri_without_probing() {
+        let path = PathBuf::from("ssh://me@example.com:2222/home/me/project");
+
+        assert_eq!(
+            classify_workspace_location(&path),
+            WorkspaceLocation::Ssh {
+                original_path: path,
+                target: SshWorkspaceTarget {
+                    host: "example.com".to_string(),
+                    user: Some("me".to_string()),
+                    port: Some(2222),
+                },
+                path: PathBuf::from("/home/me/project"),
+            }
+        );
+    }
+
+    #[test]
+    fn workspace_location_classifies_local_paths_as_local() {
+        let path = PathBuf::from("/tmp/project");
+
+        assert_eq!(
+            classify_workspace_location(&path),
+            WorkspaceLocation::Local { path }
+        );
     }
 
     #[test]
