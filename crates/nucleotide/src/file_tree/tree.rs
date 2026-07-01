@@ -1513,6 +1513,13 @@ mod tests {
         ) -> nucleotide_workspace::Result<nucleotide_workspace::GitStatusResult> {
             Err(workspace_test_error("git status", root))
         }
+
+        async fn run_process(
+            &self,
+            spec: nucleotide_workspace::ProcessSpec,
+        ) -> nucleotide_workspace::Result<nucleotide_workspace::ProcessOutput> {
+            Err(workspace_test_error("run process", &spec.cwd))
+        }
     }
 
     fn workspace_test_error(

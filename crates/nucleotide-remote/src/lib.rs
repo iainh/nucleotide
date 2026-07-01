@@ -8,11 +8,11 @@ use nucleotide_env::{EnvironmentOrigin, ProjectEnvironment, ShellEnvironmentErro
 use nucleotide_workspace::{
     DirectoryListing, FileKind, FileRead, FileSearchQuery, FileSearchResult, FileStat,
     GitHeadResult, GitStatusEntry, GitStatusKind, GitStatusOptions, GitStatusResult,
-    LocalWorkspaceBackend, ProjectEnvironmentOrigin, ProjectEnvironmentSnapshot, ReadOptions,
-    RemoteWorkspaceIdentity, RemoteWorkspaceKind, SshWorkspaceTarget, TextSearchMatch,
-    TextSearchQuery, TextSearchResult, WorkspaceBackend, WorkspaceBackendHandle, WorkspaceError,
-    WorkspaceIdentity, WorkspaceLocation, WriteOptions, WriteResult, local_workspace_backend,
-    path_mapped_workspace_backend,
+    LocalWorkspaceBackend, ProcessOutput, ProcessSpec, ProjectEnvironmentOrigin,
+    ProjectEnvironmentSnapshot, ReadOptions, RemoteWorkspaceIdentity, RemoteWorkspaceKind,
+    SshWorkspaceTarget, TextSearchMatch, TextSearchQuery, TextSearchResult, WorkspaceBackend,
+    WorkspaceBackendHandle, WorkspaceError, WorkspaceIdentity, WorkspaceLocation, WriteOptions,
+    WriteResult, local_workspace_backend, path_mapped_workspace_backend,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::{BTreeMap, HashMap};
@@ -507,6 +507,7 @@ pub enum RemoteRequest {
         include_untracked: bool,
         limit: usize,
     },
+    RunProcess(ProcessRequest),
     Shutdown,
 }
 
@@ -544,6 +545,7 @@ pub enum RemoteResponse {
     ProjectEnvironment(ProjectEnvironmentResponse),
     GitHead(GitHeadResponse),
     GitStatus(GitStatusResponse),
+    RunProcess(ProcessOutputResponse),
     Shutdown,
 }
 
@@ -601,6 +603,7 @@ impl HelloResponse {
                 "project_environment".to_string(),
                 "git_head".to_string(),
                 "git_status".to_string(),
+                "run_process".to_string(),
                 "binary_body_frames".to_string(),
             ],
         }
@@ -971,6 +974,26 @@ pub struct GitStatusResponse {
 pub struct GitHeadResponse {
     pub root: PathBuf,
     pub head: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProcessRequest {
+    pub program: String,
+    pub args: Vec<String>,
+    pub cwd: PathBuf,
+    pub env: BTreeMap<String, String>,
+    pub clear_env: bool,
+    pub max_output_bytes: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProcessOutputResponse {
+    pub status_code: Option<i32>,
+    pub success: bool,
+    pub stdout_truncated: bool,
+    pub stderr_truncated: bool,
+    pub stdout_len: usize,
+    pub stderr_len: usize,
 }
 
 #[derive(Debug)]
@@ -1500,6 +1523,28 @@ where
             other => Err(unexpected_response_error("git status", root, other)),
         }
     }
+
+    async fn run_process(&self, spec: ProcessSpec) -> nucleotide_workspace::Result<ProcessOutput> {
+        let cwd = spec.cwd.clone();
+        let request = ProcessRequest {
+            program: spec.program,
+            args: spec.args,
+            cwd: spec.cwd,
+            env: spec.env,
+            clear_env: spec.clear_env,
+            max_output_bytes: spec.max_output_bytes,
+        };
+        let (response, body) = self.request(
+            "run process",
+            &cwd,
+            RemoteRequest::RunProcess(request),
+            spec.stdin,
+        )?;
+        match response {
+            RemoteResponse::RunProcess(result) => Ok(process_output_from_response(result, body)),
+            other => Err(unexpected_response_error("run process", &cwd, other)),
+        }
+    }
 }
 
 pub struct WorkspaceService<B> {
@@ -1839,6 +1884,32 @@ where
                     Vec::new(),
                 ))
             }
+            RemoteRequest::RunProcess(request) => {
+                let cwd = self.resolve_path(&request.cwd);
+                let max_output_bytes = Some(
+                    request
+                        .max_output_bytes
+                        .unwrap_or((MAX_FRAME_BODY_LEN / 2) as usize)
+                        .min((MAX_FRAME_BODY_LEN / 2) as usize),
+                );
+                let output = block_on(self.backend.run_process(ProcessSpec {
+                    program: request.program,
+                    args: request.args,
+                    cwd,
+                    env: request.env,
+                    clear_env: request.clear_env,
+                    stdin: request_body,
+                    max_output_bytes,
+                }))
+                .map_err(remote_error_from_workspace)?;
+                let response = process_output_response(&output);
+                let mut body = output.stdout;
+                body.extend_from_slice(&output.stderr);
+                Ok(ServiceOutcome::Continue(
+                    RemoteResponse::RunProcess(response),
+                    body,
+                ))
+            }
             RemoteRequest::Shutdown => Ok(ServiceOutcome::Shutdown),
         }
     }
@@ -2040,6 +2111,17 @@ fn git_status_response(result: GitStatusResult) -> GitStatusResponse {
     }
 }
 
+fn process_output_response(output: &ProcessOutput) -> ProcessOutputResponse {
+    ProcessOutputResponse {
+        status_code: output.status_code,
+        success: output.success,
+        stdout_truncated: output.stdout_truncated,
+        stderr_truncated: output.stderr_truncated,
+        stdout_len: output.stdout.len(),
+        stderr_len: output.stderr.len(),
+    }
+}
+
 fn file_stat_from_response(stat: FileStatResponse) -> FileStat {
     FileStat {
         path: stat.path,
@@ -2150,6 +2232,28 @@ fn git_status_from_response(result: GitStatusResponse) -> GitStatusResult {
             })
             .collect(),
         truncated: result.truncated,
+    }
+}
+
+fn process_output_from_response(
+    response: ProcessOutputResponse,
+    mut body: Vec<u8>,
+) -> ProcessOutput {
+    let stdout_len = response.stdout_len.min(body.len());
+    let stderr_start = stdout_len;
+    let stderr_end = stderr_start
+        .saturating_add(response.stderr_len)
+        .min(body.len());
+    let stderr = body[stderr_start..stderr_end].to_vec();
+    body.truncate(stdout_len);
+
+    ProcessOutput {
+        status_code: response.status_code,
+        success: response.success,
+        stdout: body,
+        stderr,
+        stdout_truncated: response.stdout_truncated,
+        stderr_truncated: response.stderr_truncated,
     }
 }
 
@@ -2613,6 +2717,34 @@ mod tests {
         let found = block_on(backend.find_ancestor_file(&file, "Cargo.toml", 8)).unwrap();
 
         assert_eq!(found, Some(manifest));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remote_backend_run_process_round_trips_output() {
+        let temp = tempfile::tempdir().unwrap();
+        let backend = remote_backend(temp.path());
+
+        let output = block_on(backend.run_process(ProcessSpec {
+            program: "/bin/sh".to_string(),
+            args: vec![
+                "-c".to_string(),
+                "printf '%s:' \"$REMOTE_FLAG\"; cat; printf err >&2".to_string(),
+            ],
+            cwd: PathBuf::new(),
+            env: BTreeMap::from([("REMOTE_FLAG".to_string(), "remote".to_string())]),
+            clear_env: false,
+            stdin: b"stdin".to_vec(),
+            max_output_bytes: None,
+        }))
+        .unwrap();
+
+        assert!(output.success);
+        assert_eq!(output.status_code, Some(0));
+        assert_eq!(output.stdout, b"remote:stdin");
+        assert_eq!(output.stderr, b"err");
+        assert!(!output.stdout_truncated);
+        assert!(!output.stderr_truncated);
     }
 
     fn request_frame(id: u64, request: RemoteRequest, body: Vec<u8>) -> Frame {
