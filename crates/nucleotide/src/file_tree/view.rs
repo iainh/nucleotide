@@ -144,7 +144,9 @@ fn remote_listing_to_file_tree_entries(
                 RemoteFileKind::File => FileTreeDirectoryEntryKind::File,
                 RemoteFileKind::Directory => FileTreeDirectoryEntryKind::Directory,
                 RemoteFileKind::Symlink => FileTreeDirectoryEntryKind::Symlink {
-                    target: entry.symlink_target,
+                    target: entry
+                        .symlink_target
+                        .map(|target| remote_symlink_target_to_file_tree_target(directory, target)),
                     target_exists: entry.target_exists.unwrap_or(false),
                 },
                 RemoteFileKind::Other => FileTreeDirectoryEntryKind::Other,
@@ -158,6 +160,20 @@ fn remote_listing_to_file_tree_entries(
             }
         })
         .collect()
+}
+
+fn remote_symlink_target_to_file_tree_target(directory: &Path, target: PathBuf) -> PathBuf {
+    let Some(target_str) = target.to_str() else {
+        return target;
+    };
+    if !target_str.starts_with('/') {
+        return target;
+    }
+
+    WslWorkspace::from_unc_path(directory)
+        .and_then(|workspace| workspace.unc_path_for_linux_path(target_str))
+        .map(PathBuf::from)
+        .unwrap_or(target)
 }
 
 fn widest_project_tree_entry_index(
@@ -2188,12 +2204,12 @@ mod tests {
                 current_dir: PathBuf::from("/home/iain/repo"),
                 entries: vec![
                     nucleotide_remote::DirectoryEntryResponse {
-                        name: "src".to_string(),
-                        kind: RemoteFileKind::Directory,
-                        size: 4096,
-                        modified_unix_millis: Some(1_000),
-                        symlink_target: None,
-                        target_exists: None,
+                        name: "absolute-current".to_string(),
+                        kind: RemoteFileKind::Symlink,
+                        size: 15,
+                        modified_unix_millis: None,
+                        symlink_target: Some(PathBuf::from("/home/iain/repo/src")),
+                        target_exists: Some(true),
                     },
                     nucleotide_remote::DirectoryEntryResponse {
                         name: "current".to_string(),
@@ -2203,23 +2219,40 @@ mod tests {
                         symlink_target: Some(PathBuf::from("src")),
                         target_exists: Some(true),
                     },
+                    nucleotide_remote::DirectoryEntryResponse {
+                        name: "src".to_string(),
+                        kind: RemoteFileKind::Directory,
+                        size: 4096,
+                        modified_unix_millis: Some(1_000),
+                        symlink_target: None,
+                        target_exists: None,
+                    },
                 ],
             },
         );
 
-        assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].path, directory.join("src"));
-        assert_eq!(entries[0].kind, FileTreeDirectoryEntryKind::Directory);
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].path, directory.join("absolute-current"));
         assert_eq!(
-            entries[0].mtime,
-            Some(UNIX_EPOCH + Duration::from_millis(1_000))
+            entries[0].kind,
+            FileTreeDirectoryEntryKind::Symlink {
+                target: Some(PathBuf::from(r"\\wsl.localhost\Ubuntu\home\iain\repo\src")),
+                target_exists: true,
+            }
         );
+        assert_eq!(entries[1].path, directory.join("current"));
         assert_eq!(
             entries[1].kind,
             FileTreeDirectoryEntryKind::Symlink {
                 target: Some(PathBuf::from("src")),
                 target_exists: true,
             }
+        );
+        assert_eq!(entries[2].path, directory.join("src"));
+        assert_eq!(entries[2].kind, FileTreeDirectoryEntryKind::Directory);
+        assert_eq!(
+            entries[2].mtime,
+            Some(UNIX_EPOCH + Duration::from_millis(1_000))
         );
     }
 

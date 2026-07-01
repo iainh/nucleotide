@@ -51,6 +51,8 @@ editor backend into Linux:
   Windows UI to map back to WSL UNC paths.
   Directory listing returns compact file metadata from inside WSL so the project
   tree can populate rows without enumerating `\\wsl...` paths through Windows.
+  Absolute symlink targets in those listings are mapped back to same-distro WSL
+  UNC paths for UI metadata, while relative symlink targets stay relative.
   Recursive file search returns picker-ready relative paths from inside WSL.
   Global text search walks ignore-filtered files and reads file contents inside
   WSL, returning relative path, line number, and line text matches to the
