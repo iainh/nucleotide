@@ -276,6 +276,16 @@ fn is_image_file_path(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+fn should_open_with_local_image_viewer(
+    path: &Path,
+    has_initial_position: bool,
+    backend_identity: &WorkspaceIdentity,
+) -> bool {
+    !has_initial_position
+        && matches!(backend_identity, WorkspaceIdentity::Local)
+        && is_image_file_path(path)
+}
+
 fn image_zoom_percent(zoom: f32) -> String {
     format!("{:.0}%", zoom * 100.0)
 }
@@ -8865,7 +8875,9 @@ impl Workspace {
         initial_position: Option<Position>,
         cx: &mut Context<Self>,
     ) {
-        if initial_position.is_none() && is_image_file_path(path) {
+        let backend_identity = self.core.read(cx).workspace_backend.identity();
+        if should_open_with_local_image_viewer(path, initial_position.is_some(), &backend_identity)
+        {
             self.open_image_file_internal(path, should_focus, cx);
             return;
         }
@@ -16297,6 +16309,39 @@ mod tests {
         assert_eq!(titlebar_filename(Some("main.rs")), "main.rs");
         assert_eq!(titlebar_filename(Some("")), "Nucleotide");
         assert_eq!(titlebar_filename(None), "Nucleotide");
+    }
+
+    #[test]
+    fn local_image_viewer_opens_image_paths_only_for_local_backends() {
+        let path = Path::new("/project/assets/logo.png");
+
+        assert!(should_open_with_local_image_viewer(
+            path,
+            false,
+            &WorkspaceIdentity::Local
+        ));
+        assert!(!should_open_with_local_image_viewer(
+            path,
+            false,
+            &WorkspaceIdentity::Remote(nucleotide_workspace::RemoteWorkspaceIdentity {
+                kind: nucleotide_workspace::RemoteWorkspaceKind::Wsl,
+                name: "Ubuntu".to_string(),
+            })
+        ));
+    }
+
+    #[test]
+    fn local_image_viewer_ignores_non_images_and_positioned_opens() {
+        assert!(!should_open_with_local_image_viewer(
+            Path::new("/project/src/main.rs"),
+            false,
+            &WorkspaceIdentity::Local
+        ));
+        assert!(!should_open_with_local_image_viewer(
+            Path::new("/project/assets/logo.png"),
+            true,
+            &WorkspaceIdentity::Local
+        ));
     }
 
     #[test]
