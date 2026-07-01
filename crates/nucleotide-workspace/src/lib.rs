@@ -160,6 +160,60 @@ pub struct FileSearchResult {
     pub truncated: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextSearchQuery {
+    pub root: PathBuf,
+    pub pattern: String,
+    pub limit: usize,
+    pub smart_case: bool,
+    pub hidden: bool,
+    pub parents: bool,
+    pub ignore: bool,
+    pub git_ignore: bool,
+    pub git_global: bool,
+    pub git_exclude: bool,
+    pub follow_links: bool,
+    pub max_depth: Option<usize>,
+    pub max_file_bytes: u64,
+}
+
+impl Default for TextSearchQuery {
+    fn default() -> Self {
+        let file_query = FileSearchQuery::default();
+        Self {
+            root: file_query.root,
+            pattern: String::new(),
+            limit: 1_000,
+            smart_case: true,
+            hidden: file_query.hidden,
+            parents: file_query.parents,
+            ignore: file_query.ignore,
+            git_ignore: file_query.git_ignore,
+            git_global: file_query.git_global,
+            git_exclude: file_query.git_exclude,
+            follow_links: file_query.follow_links,
+            max_depth: file_query.max_depth,
+            max_file_bytes: 1_000_000,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextSearchMatch {
+    pub relative_path: PathBuf,
+    pub line_number: usize,
+    pub line_text: String,
+    pub start: usize,
+    pub end: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextSearchResult {
+    pub root: PathBuf,
+    pub matches: Vec<TextSearchMatch>,
+    pub truncated: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProjectEnvironmentOrigin {
     NativeFlake,
@@ -196,6 +250,8 @@ pub trait WorkspaceBackend: Send + Sync {
 
     async fn file_search(&self, query: FileSearchQuery) -> Result<FileSearchResult>;
 
+    async fn text_search(&self, query: TextSearchQuery) -> Result<TextSearchResult>;
+
     async fn project_environment(&self, root: &Path) -> Result<ProjectEnvironmentSnapshot>;
 }
 
@@ -231,6 +287,10 @@ impl WorkspaceBackend for LocalWorkspaceBackend {
 
     async fn file_search(&self, query: FileSearchQuery) -> Result<FileSearchResult> {
         local_file_search(query)
+    }
+
+    async fn text_search(&self, query: TextSearchQuery) -> Result<TextSearchResult> {
+        local_text_search(query)
     }
 
     async fn project_environment(&self, root: &Path) -> Result<ProjectEnvironmentSnapshot> {
@@ -513,6 +573,86 @@ fn local_file_search(query: FileSearchQuery) -> Result<FileSearchResult> {
     })
 }
 
+fn local_text_search(query: TextSearchQuery) -> Result<TextSearchResult> {
+    let case_insensitive = query.smart_case && !query.pattern.chars().any(char::is_uppercase);
+    let pattern = RegexBuilder::new(&query.pattern)
+        .case_insensitive(case_insensitive)
+        .multi_line(true)
+        .build()?;
+    let mut walker = WalkBuilder::new(&query.root);
+    walker
+        .hidden(!query.hidden)
+        .parents(query.parents)
+        .ignore(query.ignore)
+        .git_ignore(query.git_ignore)
+        .git_global(query.git_global)
+        .git_exclude(query.git_exclude)
+        .follow_links(query.follow_links)
+        .add_custom_ignore_filename(".helix/ignore");
+    if let Some(max_depth) = query.max_depth {
+        walker.max_depth(Some(max_depth));
+    }
+
+    let mut matches = Vec::new();
+    let mut truncated = false;
+    'walk: for entry in walker.build() {
+        let entry = entry.map_err(|source| WorkspaceError::Io {
+            operation: "walk directory",
+            path: query.root.clone(),
+            source: std::io::Error::other(source),
+        })?;
+        if !entry
+            .file_type()
+            .is_some_and(|file_type| file_type.is_file())
+        {
+            continue;
+        }
+
+        let metadata = fs::metadata(entry.path()).map_err(|source| WorkspaceError::Io {
+            operation: "stat search file",
+            path: entry.path().to_path_buf(),
+            source,
+        })?;
+        if metadata.len() > query.max_file_bytes {
+            continue;
+        }
+
+        let Ok(contents) = fs::read_to_string(entry.path()) else {
+            continue;
+        };
+        let relative_path = entry
+            .path()
+            .strip_prefix(&query.root)
+            .unwrap_or(entry.path())
+            .to_path_buf();
+        if relative_path.as_os_str().is_empty() {
+            continue;
+        }
+
+        for (line_index, line_text) in contents.lines().enumerate() {
+            for found in pattern.find_iter(line_text) {
+                if matches.len() >= query.limit {
+                    truncated = true;
+                    break 'walk;
+                }
+                matches.push(TextSearchMatch {
+                    relative_path: relative_path.clone(),
+                    line_number: line_index + 1,
+                    line_text: line_text.to_string(),
+                    start: found.start(),
+                    end: found.end(),
+                });
+            }
+        }
+    }
+
+    Ok(TextSearchResult {
+        root: query.root,
+        matches,
+        truncated,
+    })
+}
+
 fn local_project_environment(root: &Path) -> Result<ProjectEnvironmentSnapshot> {
     Ok(ProjectEnvironmentSnapshot {
         root: root.to_path_buf(),
@@ -710,6 +850,41 @@ mod tests {
         assert_eq!(result.files.len(), 1);
         assert!(result.truncated);
         assert!(result.files[0].to_string_lossy().ends_with(".rs"));
+    }
+
+    #[test]
+    fn local_backend_text_search_respects_limit_and_smart_case() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir(temp.path().join("src")).unwrap();
+        fs::write(temp.path().join("src").join("main.rs"), "Needle\nneedle\n").unwrap();
+        fs::write(temp.path().join("README.md"), "needle\n").unwrap();
+
+        let backend = LocalWorkspaceBackend;
+        let smart_case_result = block_on(backend.text_search(TextSearchQuery {
+            root: temp.path().to_path_buf(),
+            pattern: "Needle".to_string(),
+            limit: 10,
+            smart_case: true,
+            ..TextSearchQuery::default()
+        }))
+        .unwrap();
+
+        assert_eq!(smart_case_result.matches.len(), 1);
+        assert!(!smart_case_result.truncated);
+        assert_eq!(smart_case_result.matches[0].line_text, "Needle");
+        assert_eq!(smart_case_result.matches[0].line_number, 1);
+
+        let limited_result = block_on(backend.text_search(TextSearchQuery {
+            root: temp.path().to_path_buf(),
+            pattern: "needle".to_string(),
+            limit: 1,
+            smart_case: true,
+            ..TextSearchQuery::default()
+        }))
+        .unwrap();
+
+        assert_eq!(limited_result.matches.len(), 1);
+        assert!(limited_result.truncated);
     }
 
     #[test]
