@@ -271,6 +271,14 @@ fn wsl_startup_path_kind(path: &Path) -> Option<StartupPathKind> {
     }
 }
 
+fn canonicalize_startup_path(path: &Path) -> PathBuf {
+    if WslWorkspace::from_unc_path(path).is_some() {
+        path.to_path_buf()
+    } else {
+        helix_stdx::path::canonicalize(path)
+    }
+}
+
 #[cfg(any(target_os = "windows", test))]
 fn parse_startup_dock_action<I, S>(args: I) -> Result<Option<usize>>
 where
@@ -458,7 +466,7 @@ fn main() -> Result<()> {
     args.files = args
         .files
         .into_iter()
-        .map(|(path, pos)| (helix_stdx::path::canonicalize(&path), pos))
+        .map(|(path, pos)| (canonicalize_startup_path(&path), pos))
         .collect();
 
     #[cfg(target_os = "windows")]
@@ -1734,6 +1742,23 @@ mod tests {
             .join("missing-file.rs");
 
         assert_eq!(workspace_start_dir_for_argument(&path), None);
+    }
+
+    #[test]
+    fn canonicalize_startup_path_canonicalizes_native_paths() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let nested_dir = temp_dir.path().join("src");
+        std::fs::create_dir(&nested_dir).unwrap();
+        let path = nested_dir.join("..").join("src");
+
+        assert_eq!(canonicalize_startup_path(&path), nested_dir);
+    }
+
+    #[test]
+    fn canonicalize_startup_path_preserves_wsl_unc_paths() {
+        let path = PathBuf::from(r"\\wsl.localhost\Ubuntu\home\iain\repo\src\main.rs");
+
+        assert_eq!(canonicalize_startup_path(&path), path);
     }
 
     #[test]
