@@ -107,6 +107,10 @@ editor backend into Linux:
 - File picker previews use the helper-backed `read` command for WSL file paths,
   so previewing a selected file reads a bounded text slice inside WSL instead of
   through the Windows UNC filesystem path.
+- Text/code file opens use the helper-backed `read-full` command for WSL file
+  paths, decoding bytes with Helix's normal file decoder and constructing a
+  clean local document buffer without reading file contents through the Windows
+  UNC filesystem path.
 - Git status and repository HEAD checks run through `wsl.exe` for WSL roots, so
   file decorations and VCS events use Linux Git against local Linux paths while
   still mapping results back to Windows WSL UNC paths for the UI.

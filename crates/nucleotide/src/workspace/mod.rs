@@ -29,9 +29,10 @@ use gpui::{
 };
 use gpui::{FontFeatures, FontWeight};
 use helix_core::syntax::config::LanguageServerFeature;
-use helix_core::{Position, Rope, RopeSlice, Selection, pos_at_coords};
+use helix_core::{Position, Rope, RopeSlice, Selection, Transaction, pos_at_coords};
 use helix_lsp::{OffsetEncoding, lsp};
 use helix_stdx::rope::RopeSliceExt;
+use helix_view::document::from_reader;
 use helix_view::input::KeyEvent;
 use helix_view::keyboard::{KeyCode, KeyModifiers};
 use helix_view::{DocumentId, ViewId, graphics::Rect as HelixRect};
@@ -72,14 +73,15 @@ use nucleotide_core::EventBus;
 use nucleotide_env::{
     EnvironmentOrigin, WslWorkspace, create_wsl_remote_directory_blocking,
     create_wsl_remote_file_blocking, delete_wsl_remote_path_blocking,
-    duplicate_wsl_remote_path_blocking, load_wsl_remote_file_search_blocking,
-    load_wsl_remote_global_search_blocking, rename_wsl_remote_path_blocking,
+    duplicate_wsl_remote_path_blocking, load_wsl_remote_file_content_blocking,
+    load_wsl_remote_file_search_blocking, load_wsl_remote_global_search_blocking,
+    rename_wsl_remote_path_blocking,
 };
 use nucleotide_events::v2::run::{Event as RunEvent, ResolvedTask, RunId, RunStatus};
 use nucleotide_events::v2::terminal::{Event as TerminalEvent, TerminalId};
 use nucleotide_remote::{
     FileCreateResponse, FileDeleteResponse, FileDuplicateResponse, FileRenameResponse,
-    FileSearchResponse, GlobalSearchResponse, RemoteFileKind,
+    FileSearchResponse, GlobalSearchResponse, RemoteFileKind, decode_base64,
 };
 use nucleotide_terminal::TerminalBounds;
 use slotmap::KeyData;
@@ -92,6 +94,7 @@ type FileTreeContextMenuHandler = fn(&mut Workspace, &mut Context<Workspace>);
 const WSL_REMOTE_FILE_PICKER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 const WSL_REMOTE_GLOBAL_SEARCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 const WSL_REMOTE_FILE_OP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+const WSL_REMOTE_FILE_CONTENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 fn document_lsp_identifier(
     doc: &helix_view::Document,
@@ -2120,6 +2123,64 @@ fn is_deleted_document_path(path: Option<&Path>) -> bool {
     }
 
     !path.exists()
+}
+
+fn remote_modified_unix_millis_to_system_time(millis: Option<i64>) -> std::time::SystemTime {
+    let Some(millis) = millis.and_then(|millis| u64::try_from(millis).ok()) else {
+        return std::time::SystemTime::now();
+    };
+
+    std::time::UNIX_EPOCH + std::time::Duration::from_millis(millis)
+}
+
+fn open_wsl_remote_file(
+    editor: &mut helix_view::editor::Editor,
+    path: &Path,
+    action: helix_view::editor::Action,
+) -> anyhow::Result<DocumentId> {
+    if let Some(doc_id) = editor.document_id_by_path(path) {
+        editor.switch(doc_id, action);
+        return Ok(doc_id);
+    }
+
+    let response = load_wsl_remote_file_content_blocking(path, WSL_REMOTE_FILE_CONTENT_TIMEOUT)?;
+    let bytes = decode_base64(&response.content_base64)
+        .map_err(|error| anyhow::anyhow!("failed to decode WSL file content: {error}"))?;
+    let mut reader = std::io::Cursor::new(bytes);
+    let (rope, encoding, _has_bom) =
+        from_reader(&mut reader, None).map_err(|error| anyhow::anyhow!(error))?;
+
+    let doc_id = editor.new_file(action);
+    let view_id = editor.tree.focus;
+    let save_time = remote_modified_unix_millis_to_system_time(response.modified_unix_millis);
+    let loader = editor.syn_loader.load();
+    let documents = &mut editor.documents;
+    let tree = &mut editor.tree;
+    let view = tree.get_mut(view_id);
+    let doc = documents
+        .get_mut(&doc_id)
+        .ok_or_else(|| anyhow::anyhow!("new WSL document was not registered"))?;
+
+    doc.ensure_view_init(view_id);
+    let replacement = rope.to_string();
+    let transaction = Transaction::change(
+        doc.text(),
+        std::iter::once((0, doc.text().len_chars(), Some(replacement.into()))),
+    )
+    .with_selection(Selection::point(0));
+    if !doc.apply(&transaction, view_id) {
+        anyhow::bail!("failed to apply WSL file content to document");
+    }
+    doc.append_changes_to_history(view);
+    doc.set_path(Some(path));
+    let _ = doc.set_encoding(encoding.name());
+    doc.readonly = response.readonly;
+    doc.detect_language(&loader);
+    doc.detect_indent_and_line_ending();
+    let revision = doc.get_current_revision();
+    doc.set_last_saved_revision(revision, save_time);
+
+    Ok(doc_id)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -9201,7 +9262,12 @@ impl Workspace {
                 "About to open file from picker: {path:?} with action: {:?}",
                 action
             );
-            match core.editor.open(path, action) {
+            let open_result = if WslWorkspace::from_unc_path(path).is_some() {
+                open_wsl_remote_file(&mut core.editor, path, action)
+            } else {
+                core.editor.open(path, action).map_err(anyhow::Error::from)
+            };
+            match open_result {
                 Err(e) => {
                     nucleotide_logging::error!(path = ?path, error = %e, "Failed to open file");
                 }
@@ -16601,6 +16667,29 @@ mod tests {
         assert!(!local_path_is_directory_without_wsl_probe(Path::new(
             r"\\wsl.localhost\Ubuntu\home\iain\repo\src"
         )));
+    }
+
+    #[test]
+    fn remote_modified_unix_millis_converts_to_system_time() {
+        let save_time = remote_modified_unix_millis_to_system_time(Some(1_700_000_000_000));
+
+        assert_eq!(
+            save_time
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis(),
+            1_700_000_000_000
+        );
+    }
+
+    #[test]
+    fn remote_modified_unix_millis_rejects_negative_values() {
+        let before = std::time::SystemTime::now();
+        let save_time = remote_modified_unix_millis_to_system_time(Some(-1));
+        let after = std::time::SystemTime::now();
+
+        assert!(save_time >= before);
+        assert!(save_time <= after);
     }
 
     #[test]
