@@ -4145,10 +4145,8 @@ impl Workspace {
                 }
                 TabId::Image(_) => false,
             });
-        if should_unpreview_retained_tab {
-            if let TabId::Document(doc_id) = tab_id {
-                self.unregister_preview_document(doc_id, cx);
-            }
+        if should_unpreview_retained_tab && let TabId::Document(doc_id) = tab_id {
+            self.unregister_preview_document(doc_id, cx);
         }
 
         let tab_ids = self.visible_tab_document_ids(cx);
@@ -11502,6 +11500,7 @@ impl Workspace {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn start_completion_request_with_provider_reuse(
         &mut self,
         cursor: usize,
@@ -11652,6 +11651,7 @@ impl Workspace {
     // removed unused show_completion_items
 
     /// Convert completion items and show completion popup with prefix filtering
+    #[allow(clippy::too_many_arguments)]
     pub fn show_completion_items_with_prefix(
         &mut self,
         items: Vec<nucleotide_events::completion::CompletionItem>,

@@ -333,7 +333,7 @@ fn workspace_marker_exists(path: &Path) -> bool {
 }
 
 fn buffer_text_matches_path(text: &Rope, path: &Path) -> bool {
-    std::fs::read_to_string(path).is_ok_and(|file_text| file_text == text.to_string())
+    std::fs::read_to_string(path).is_ok_and(|file_text| file_text == *text)
 }
 
 pub fn implicit_workspace_root_from_current_dir() -> Option<PathBuf> {
