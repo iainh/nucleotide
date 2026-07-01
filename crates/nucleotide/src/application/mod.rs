@@ -3729,6 +3729,12 @@ type SymbolItemFuture = BoxFuture<'static, anyhow::Result<Vec<NativeSymbolItem>>
 
 const WORKSPACE_SYNTAX_SYMBOL_FILE_LIMIT: usize = 10_000;
 const WORKSPACE_SYNTAX_SYMBOL_ITEM_LIMIT: usize = 20_000;
+const REMOTE_WORKSPACE_SYMBOL_FALLBACK_UNAVAILABLE: &str =
+    "Workspace symbol fallback is unavailable for remote workspaces without LSP workspace symbols";
+
+fn should_use_workspace_syntax_symbol_fallback(identity: &WorkspaceIdentity) -> bool {
+    matches!(identity, WorkspaceIdentity::Local)
+}
 
 #[derive(Debug)]
 struct NativeSymbolItem {
@@ -6222,6 +6228,16 @@ impl Application {
             open_symbols.extend(syntax_symbol_items_from_document(doc.id(), doc, &loader));
         }
 
+        if !should_use_workspace_syntax_symbol_fallback(&self.workspace_backend.identity()) {
+            if open_symbols.is_empty() {
+                self.editor
+                    .set_error(REMOTE_WORKSPACE_SYMBOL_FALLBACK_UNAVAILABLE);
+            } else {
+                self.finish_native_symbol_picker("Workspace Symbols", open_symbols, cx);
+            }
+            return;
+        }
+
         self.editor.set_status("Indexing workspace symbols...");
         cx.spawn(async move |core, cx| {
             let workspace_symbols = cx
@@ -8225,7 +8241,8 @@ mod tests {
         lsp_completion_items_from_response, lsp_completion_items_from_response_for_server,
         lsp_completion_resolve_supported, lsp_completion_response_is_incomplete, lsp_symbol_picker,
         native_symbol_item_from_lsp, path_completion_items, path_completion_items_from_listing,
-        project_health_status, project_server_language_id, str_prefix_at_byte_limit,
+        project_health_status, project_server_language_id,
+        should_use_workspace_syntax_symbol_fallback, str_prefix_at_byte_limit,
         suppress_shadowed_buffer_word_completion_items, syntax_symbol_kind_from_capture_name,
         workspace_diagnostic_refresh_reply,
     };
@@ -8828,6 +8845,19 @@ mod tests {
             syntax_symbol_kind_from_capture_name("definition.method"),
             None
         );
+    }
+
+    #[test]
+    fn workspace_syntax_symbol_fallback_is_local_only() {
+        assert!(should_use_workspace_syntax_symbol_fallback(
+            &WorkspaceIdentity::Local
+        ));
+        assert!(!should_use_workspace_syntax_symbol_fallback(
+            &WorkspaceIdentity::Remote(RemoteWorkspaceIdentity {
+                kind: RemoteWorkspaceKind::Ssh,
+                name: "devbox".to_string(),
+            })
+        ));
     }
 
     #[test]
