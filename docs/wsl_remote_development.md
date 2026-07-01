@@ -73,6 +73,11 @@ editor backend into Linux:
 - Application startup and project LSP coordination use helper-backed root
   detection for WSL paths, avoiding parent-directory marker probes through the
   Windows UNC filesystem.
+- Startup arguments, forwarded open requests, file selections, file picker
+  requests, and `gf`-style file navigation classify WSL paths without Windows
+  `exists`/`is_dir`/`canonicalize` probes. When helper metadata is unavailable,
+  path-shape fallbacks prefer opening extension-bearing paths as files and
+  extensionless paths as directories, keeping common remote workflows responsive.
 - Workspace terminals and runnable commands opened from WSL roots are launched
   through `wsl.exe --distribution <distro> --cd <linux-path>`, so shells and
   commands start where the project files live.
@@ -85,7 +90,9 @@ editor backend into Linux:
   moves use the helper-backed `create-file`, `create-directory`, `rename`,
   `delete`, `duplicate`, and `move` commands for WSL paths, then map Linux
   result paths back to WSL UNC before refreshing the parent and notifying
-  language servers.
+  language servers. LSP file-operation success checks trust WSL helper-backed
+  operation results instead of revalidating paths through the Windows UNC
+  filesystem.
 - Local path completion uses the same helper-backed directory listing for WSL
   paths with a short timeout, avoiding per-keystroke `\\wsl...` directory reads
   from the Windows side.
