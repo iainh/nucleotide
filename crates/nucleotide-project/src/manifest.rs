@@ -2,7 +2,7 @@
 // ABOUTME: Provides the foundation for language-specific project root detection
 
 use async_trait::async_trait;
-use nucleotide_env::WslWorkspace;
+use nucleotide_env::{WslWorkspace, build_wsl_tokio_shell_command};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -264,16 +264,9 @@ fn wsl_manifest_command(path: &Path, script_template: &str) -> Option<tokio::pro
     let linux_path = quote_posix_single(workspace.linux_path());
     let script = script_template.replace("{path}", &linux_path);
 
-    let mut command = nucleotide_process::tokio_command("wsl.exe");
-    command
-        .arg("--distribution")
-        .arg(workspace.distro())
-        .arg("--")
-        .arg("/bin/sh")
-        .arg("-c")
-        .arg(script);
-
-    Some(command)
+    Some(build_wsl_tokio_shell_command(
+        &workspace, "/bin/sh", &script,
+    ))
 }
 
 fn quote_posix_single(value: &str) -> String {
@@ -422,6 +415,7 @@ mod tests {
 
         assert!(command_debug.contains("wsl.exe"));
         assert!(command_debug.contains("Ubuntu"));
+        assert!(command_debug.contains("--cd"));
         assert!(command_debug.contains("test -f"));
         assert!(command_debug.contains("/home/iain/repo/Cargo.toml"));
     }

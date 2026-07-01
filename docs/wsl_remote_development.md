@@ -162,9 +162,9 @@ editor backend into Linux:
   contents are read through the helper-backed `read-full` command instead of
   through the Windows UNC filesystem path.
 - Manifest-based project detection uses a WSL manifest delegate for WSL UNC
-  paths. Marker checks and manifest reads run inside the distro with a
-  per-detection existence cache, while native paths keep the normal filesystem
-  delegate.
+  paths. Marker checks and manifest reads run inside the distro through the
+  shared WSL shell boundary with a per-detection existence cache, while native
+  paths keep the normal filesystem delegate.
 - Project type indicators use the helper-backed WSL directory listing when it is
   available, turning several synchronous marker-file checks into one Linux-side
   directory read.
