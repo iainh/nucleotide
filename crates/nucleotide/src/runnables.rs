@@ -6,6 +6,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::LazyLock;
 
 use helix_lsp::lsp;
+use nucleotide_env::WslWorkspace;
 use nucleotide_events::v2::run::{
     CommandSpec, ResolvedTask, RunKind, SourceLocation, TaskTemplate,
 };
@@ -36,6 +37,15 @@ pub struct RunnableDocument {
 
 pub fn discover_local_rust_runnables(document: &RunnableDocument) -> Vec<ResolvedTask> {
     if document.path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+        return Vec::new();
+    }
+
+    if WslWorkspace::from_unc_path(&document.path).is_some()
+        || document
+            .project_root
+            .as_deref()
+            .is_some_and(|root| WslWorkspace::from_unc_path(root).is_some())
+    {
         return Vec::new();
     }
 
@@ -604,6 +614,18 @@ fn parses_input() {}
                 .any(|task| task.label().starts_with("Run File Tests")
                     && is_file_tests_runnable(task))
         );
+    }
+
+    #[test]
+    fn local_discovery_skips_wsl_paths() {
+        let tasks = discover_local_rust_runnables(&doc(
+            r"\\wsl.localhost\Ubuntu\home\iain\repo\src\lib.rs",
+            "#[test]\nfn parses_input() {}\n",
+            1,
+            r"\\wsl.localhost\Ubuntu\home\iain\repo",
+        ));
+
+        assert!(tasks.is_empty());
     }
 
     #[test]
