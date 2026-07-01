@@ -29,10 +29,10 @@ use gpui::{
 };
 use gpui::{FontFeatures, FontWeight};
 use helix_core::syntax::config::LanguageServerFeature;
-use helix_core::{Position, Rope, RopeSlice, Selection, Transaction, pos_at_coords};
+use helix_core::{Position, Rope, RopeSlice, Selection, Transaction, line_ending, pos_at_coords};
 use helix_lsp::{OffsetEncoding, lsp};
 use helix_stdx::rope::RopeSliceExt;
-use helix_view::document::from_reader;
+use helix_view::document::{from_reader, to_writer};
 use helix_view::input::KeyEvent;
 use helix_view::keyboard::{KeyCode, KeyModifiers};
 use helix_view::{DocumentId, ViewId, graphics::Rect as HelixRect};
@@ -75,7 +75,7 @@ use nucleotide_env::{
     create_wsl_remote_file_blocking, delete_wsl_remote_path_blocking,
     duplicate_wsl_remote_path_blocking, load_wsl_remote_file_content_blocking,
     load_wsl_remote_file_search_blocking, load_wsl_remote_global_search_blocking,
-    rename_wsl_remote_path_blocking,
+    rename_wsl_remote_path_blocking, write_wsl_remote_file_blocking,
 };
 use nucleotide_events::v2::run::{Event as RunEvent, ResolvedTask, RunId, RunStatus};
 use nucleotide_events::v2::terminal::{Event as TerminalEvent, TerminalId};
@@ -95,6 +95,11 @@ const WSL_REMOTE_FILE_PICKER_TIMEOUT: std::time::Duration = std::time::Duration:
 const WSL_REMOTE_GLOBAL_SEARCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 const WSL_REMOTE_FILE_OP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 const WSL_REMOTE_FILE_CONTENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const WSL_REMOTE_FILE_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+#[cfg(target_os = "windows")]
+static WSL_REMOTE_DOCUMENT_MTIMES: LazyLock<Mutex<HashMap<PathBuf, i64>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn document_lsp_identifier(
     doc: &helix_view::Document,
@@ -2133,6 +2138,231 @@ fn remote_modified_unix_millis_to_system_time(millis: Option<i64>) -> std::time:
     std::time::UNIX_EPOCH + std::time::Duration::from_millis(millis)
 }
 
+fn valid_remote_modified_unix_millis(millis: Option<i64>) -> Option<i64> {
+    millis.filter(|millis| *millis >= 0)
+}
+
+fn record_wsl_remote_document_mtime(path: &Path, millis: Option<i64>) {
+    let Some(millis) = valid_remote_modified_unix_millis(millis) else {
+        return;
+    };
+
+    #[cfg(target_os = "windows")]
+    if let Ok(mut mtimes) = WSL_REMOTE_DOCUMENT_MTIMES.lock() {
+        mtimes.insert(path.to_path_buf(), millis);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    let _ = path;
+}
+
+fn wsl_remote_document_mtime(path: &Path) -> Option<i64> {
+    #[cfg(target_os = "windows")]
+    {
+        return WSL_REMOTE_DOCUMENT_MTIMES
+            .lock()
+            .ok()
+            .and_then(|mtimes| mtimes.get(path).copied());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = path;
+        None
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WslWriteCommand {
+    force: bool,
+    auto_format: bool,
+}
+
+fn wsl_write_current_buffer_command(command: &str) -> Option<WslWriteCommand> {
+    let (name, args, _) = helix_core::command_line::split(command);
+    let force = match name {
+        "write" | "w" => false,
+        "write!" | "w!" => true,
+        _ => return None,
+    };
+
+    let mut auto_format = true;
+    for arg in args.split_whitespace() {
+        match arg {
+            "--no-format" => auto_format = false,
+            _ => return None,
+        }
+    }
+
+    Some(WslWriteCommand { force, auto_format })
+}
+
+fn trim_wsl_save_trailing_whitespace(doc: &mut helix_view::Document, view_id: ViewId) {
+    let text = doc.text();
+    let mut pos = 0;
+    let transaction = Transaction::delete(
+        text,
+        text.lines().filter_map(|line| {
+            let line_end_len_chars = line_ending::get_line_ending(&line)
+                .map(|le| le.len_chars())
+                .unwrap_or_default();
+            let first_trailing_whitespace =
+                pos + line.last_non_whitespace_char().map_or(0, |idx| idx + 1);
+            pos += line.len_chars();
+            let line_end = pos - line_end_len_chars;
+            (first_trailing_whitespace != line_end).then_some((first_trailing_whitespace, line_end))
+        }),
+    );
+    doc.apply(&transaction, view_id);
+}
+
+fn trim_wsl_save_final_newlines(doc: &mut helix_view::Document, view_id: ViewId) {
+    let rope = doc.text();
+    let mut text = rope.slice(..);
+    let mut total_char_len = 0;
+    let mut final_char_len = 0;
+    while let Some(line_ending) = line_ending::get_line_ending(&text) {
+        total_char_len += line_ending.len_chars();
+        final_char_len = line_ending.len_chars();
+        text = text.slice(..text.len_chars() - line_ending.len_chars());
+    }
+    let chars_to_delete = total_char_len - final_char_len;
+    if chars_to_delete != 0 {
+        let transaction = Transaction::delete(
+            rope,
+            [(rope.len_chars() - chars_to_delete, rope.len_chars())].into_iter(),
+        );
+        doc.apply(&transaction, view_id);
+    }
+}
+
+fn insert_wsl_save_final_newline(doc: &mut helix_view::Document, view_id: ViewId) {
+    let text = doc.text();
+    if text.len_chars() > 0 && line_ending::get_line_ending(&text.slice(..)).is_none() {
+        let eof = Selection::point(text.len_chars());
+        let insert = Transaction::insert(text, &eof, doc.line_ending.as_str().into());
+        doc.apply(&insert, view_id);
+    }
+}
+
+struct PreparedWslRemoteSave {
+    doc_id: DocumentId,
+    path: PathBuf,
+    revision: usize,
+    text: Rope,
+    bytes: Vec<u8>,
+}
+
+fn prepare_wsl_remote_save(
+    editor: &mut helix_view::editor::Editor,
+    command: WslWriteCommand,
+) -> anyhow::Result<Option<PreparedWslRemoteSave>> {
+    let view_id = editor.tree.focus;
+    let Some(doc_id) = editor.tree.try_get(view_id).map(|view| view.doc) else {
+        return Ok(None);
+    };
+
+    let Some(path) = editor.document(doc_id).and_then(|doc| doc.path()).cloned() else {
+        return Ok(None);
+    };
+
+    if WslWorkspace::from_unc_path(&path).is_none() {
+        return Ok(None);
+    }
+
+    if editor.config().auto_format && command.auto_format {
+        anyhow::bail!("WSL remote save does not yet support auto-format; use :write --no-format");
+    }
+
+    let config = editor.config();
+    let documents = &mut editor.documents;
+    let tree = &mut editor.tree;
+    let view = tree.get_mut(view_id);
+    let doc = documents
+        .get_mut(&doc_id)
+        .ok_or_else(|| anyhow::anyhow!("active WSL document was not registered"))?;
+
+    if doc.readonly && !command.force {
+        anyhow::bail!(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "Path is read only"
+        ));
+    }
+
+    if doc.trim_trailing_whitespace() {
+        trim_wsl_save_trailing_whitespace(doc, view_id);
+    }
+    if config.trim_final_newlines {
+        trim_wsl_save_final_newlines(doc, view_id);
+    }
+    if doc.insert_final_newline() {
+        insert_wsl_save_final_newline(doc, view_id);
+    }
+
+    doc.append_changes_to_history(view);
+
+    let text = doc.text().clone();
+    let mut bytes = Vec::new();
+    helix_lsp::block_on(to_writer(&mut bytes, (doc.encoding(), false), &text))?;
+
+    Ok(Some(PreparedWslRemoteSave {
+        doc_id,
+        path,
+        revision: doc.get_current_revision(),
+        text,
+        bytes,
+    }))
+}
+
+fn finish_wsl_remote_save(
+    editor: &mut helix_view::editor::Editor,
+    prepared: PreparedWslRemoteSave,
+    modified_unix_millis: Option<i64>,
+) {
+    let save_time = remote_modified_unix_millis_to_system_time(modified_unix_millis);
+    record_wsl_remote_document_mtime(&prepared.path, modified_unix_millis);
+
+    if let Some(doc) = editor.document_mut(prepared.doc_id) {
+        doc.readonly = false;
+        doc.set_last_saved_revision(prepared.revision, save_time);
+
+        if let Some(identifier) = document_lsp_identifier(doc) {
+            for language_server in doc.language_servers() {
+                language_server.text_document_did_save(identifier.clone(), &prepared.text);
+            }
+        }
+    }
+
+    editor
+        .language_servers
+        .file_event_handler
+        .file_changed(prepared.path.clone());
+    editor.set_status(format!("Wrote {}", prepared.path.display()));
+}
+
+fn save_wsl_remote_current_buffer(
+    editor: &mut helix_view::editor::Editor,
+    command: WslWriteCommand,
+) -> anyhow::Result<bool> {
+    let Some(prepared) = prepare_wsl_remote_save(editor, command)? else {
+        return Ok(false);
+    };
+
+    let expected_mtime = (!command.force)
+        .then(|| wsl_remote_document_mtime(&prepared.path))
+        .flatten();
+    let response = write_wsl_remote_file_blocking(
+        &prepared.path,
+        &prepared.bytes,
+        command.force,
+        expected_mtime,
+        WSL_REMOTE_FILE_WRITE_TIMEOUT,
+    )?;
+
+    finish_wsl_remote_save(editor, prepared, response.modified_unix_millis);
+    Ok(true)
+}
+
 fn open_wsl_remote_file(
     editor: &mut helix_view::editor::Editor,
     path: &Path,
@@ -2179,6 +2409,7 @@ fn open_wsl_remote_file(
     doc.detect_indent_and_line_ending();
     let revision = doc.get_current_revision();
     doc.set_last_saved_revision(revision, save_time);
+    record_wsl_remote_document_mtime(path, response.modified_unix_millis);
 
     Ok(doc_id)
 }
@@ -8864,6 +9095,21 @@ impl Workspace {
             let _guard = handle_for_command.enter();
 
             core.editor.clear_status();
+            if let Some(wsl_command) = wsl_write_current_buffer_command(command) {
+                match save_wsl_remote_current_buffer(&mut core.editor, wsl_command) {
+                    Ok(true) => {
+                        cx.emit(crate::Update::Redraw);
+                        return current_editor_status(&core.editor);
+                    }
+                    Ok(false) => {}
+                    Err(error) => {
+                        core.editor.set_error(error.to_string());
+                        cx.emit(crate::Update::Redraw);
+                        return current_editor_status(&core.editor);
+                    }
+                }
+            }
+
             crate::helix_command::execute_command_line(&mut core.editor, &mut core.jobs, command);
 
             // Check if the theme has changed after command execution
@@ -16690,6 +16936,58 @@ mod tests {
 
         assert!(save_time >= before);
         assert!(save_time <= after);
+    }
+
+    #[test]
+    fn wsl_write_command_classifies_current_buffer_writes() {
+        assert_eq!(
+            wsl_write_current_buffer_command("write"),
+            Some(WslWriteCommand {
+                force: false,
+                auto_format: true,
+            })
+        );
+        assert_eq!(
+            wsl_write_current_buffer_command("w --no-format"),
+            Some(WslWriteCommand {
+                force: false,
+                auto_format: false,
+            })
+        );
+        assert_eq!(
+            wsl_write_current_buffer_command("write!"),
+            Some(WslWriteCommand {
+                force: true,
+                auto_format: true,
+            })
+        );
+        assert_eq!(
+            wsl_write_current_buffer_command("w! --no-format"),
+            Some(WslWriteCommand {
+                force: true,
+                auto_format: false,
+            })
+        );
+    }
+
+    #[test]
+    fn wsl_write_command_ignores_path_and_other_write_forms() {
+        assert_eq!(wsl_write_current_buffer_command("write other.txt"), None);
+        assert_eq!(wsl_write_current_buffer_command("write-all"), None);
+        assert_eq!(wsl_write_current_buffer_command("wq"), None);
+        assert_eq!(wsl_write_current_buffer_command("write --unknown"), None);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn wsl_remote_document_mtime_tracks_valid_millis_only() {
+        let path = Path::new(r"\\wsl.localhost\Ubuntu\home\iain\repo\file.rs");
+
+        record_wsl_remote_document_mtime(path, Some(1234));
+        assert_eq!(wsl_remote_document_mtime(path), Some(1234));
+
+        record_wsl_remote_document_mtime(path, Some(-1));
+        assert_eq!(wsl_remote_document_mtime(path), Some(1234));
     }
 
     #[test]

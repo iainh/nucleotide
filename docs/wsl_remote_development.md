@@ -111,6 +111,10 @@ editor backend into Linux:
   paths, decoding bytes with Helix's normal file decoder and constructing a
   clean local document buffer without reading file contents through the Windows
   UNC filesystem path.
+- Current-buffer `:write`/`:w` saves for WSL file paths use the helper-backed
+  stdin-fed `write` command, so document contents are persisted inside the
+  distro instead of through the Windows UNC filesystem path. `:write!`/`:w!`
+  skips the remote mtime guard and may create missing parent directories.
 - Git status and repository HEAD checks run through `wsl.exe` for WSL roots, so
   file decorations and VCS events use Linux Git against local Linux paths while
   still mapping results back to Windows WSL UNC paths for the UI.
@@ -134,22 +138,21 @@ services rather than a hard dependency.
 
 ## Document I/O Boundary
 
-Full document open/save is the next major remote-service boundary. The current
-Helix editor path canonicalizes the requested path, then `Document::open` checks
-local metadata/existence and reads through `std::fs::File`. Saves clone the
-buffer into an async task that uses local `tokio::fs` for parent checks,
-external modification checks, symlink resolution, read-only detection, atomic
-backup handling, file writes, fsync, timestamp capture, file-event notification,
-and LSP `didSave` emission.
+Document opens now use helper-backed full-file reads for WSL paths, and the
+common current-buffer write path now uses helper-backed remote writes. Saves
+preserve Helix's pre-save whitespace/final-newline handling, encode the buffer
+with Helix's current document encoding, persist through a Linux-side temp file,
+track remote modified times in memory for external-modification protection, mark
+the document clean on success, notify Helix's file-event handler, and emit LSP
+`didSave`.
 
-Because those behaviors are coupled to Helix's document lifecycle, WSL document
-I/O should be implemented as a first-class file-provider boundary rather than by
-reusing the bounded preview `read` command. The helper now has a byte-preserving
-`read-full` command and a stdin-fed `write` command with optional parent
-creation and expected-mtime protection, but the editor integration still needs
-remote read/write plumbing that preserves encoding, BOM, line endings,
-revision/save timestamps, external modification protection, language detection,
-diagnostics, and LSP save notifications.
+The remaining document I/O work is to make this a first-class async file-provider
+boundary rather than a synchronous command interception. Remote save-as, write
+all, write-and-close/write-and-quit sequencing, auto-format-on-save, symlink and
+readonly metadata parity, and BOM preservation still need dedicated plumbing.
+The current Helix `Document` API keeps the BOM flag private, so WSL saves encode
+with the document charset but do not yet preserve BOM state for remote-opened
+files.
 
 ## Runtime Flow
 
