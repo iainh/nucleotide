@@ -141,14 +141,14 @@ services rather than a hard dependency.
 Document opens now use helper-backed full-file reads for WSL paths, and the
 common current-buffer write path now uses helper-backed remote writes. Saves
 preserve Helix's pre-save whitespace/final-newline handling, encode the buffer
-with Helix's current document encoding, persist through a Linux-side temp file,
-track remote modified times in memory for external-modification protection, mark
-the document clean on success, notify Helix's file-event handler, and emit LSP
-`didSave`.
+with Helix's current document encoding, enqueue the remote write on Helix's save
+queue, persist through a Linux-side temp file, track remote modified times in
+memory for external-modification protection, mark the document clean on success,
+notify Helix's file-event handler, and emit LSP `didSave`.
 
-The remaining document I/O work is to make this a first-class async file-provider
-boundary rather than a synchronous command interception. Remote save-as, write
-all, write-and-close/write-and-quit sequencing, auto-format-on-save, symlink and
+The remaining document I/O work is to make this a first-class file-provider
+boundary rather than a command interception. Remote save-as, write all,
+write-and-close/write-and-quit sequencing, auto-format-on-save, symlink and
 readonly metadata parity, and BOM preservation still need dedicated plumbing.
 The current Helix `Document` API keeps the BOM flag private, so WSL saves encode
 with the document charset but do not yet preserve BOM state for remote-opened

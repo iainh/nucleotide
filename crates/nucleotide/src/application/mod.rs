@@ -3078,7 +3078,15 @@ impl Application {
             doc_save_event.revision
         );
 
-        doc.set_last_saved_revision(doc_save_event.revision, std::time::SystemTime::now());
+        doc.set_last_saved_revision(doc_save_event.revision, doc_save_event.save_time);
+
+        if WslWorkspace::from_unc_path(&doc_save_event.path).is_some()
+            && let Some(identifier) = document_lsp_identifier(doc)
+        {
+            for language_server in doc.language_servers() {
+                language_server.text_document_did_save(identifier.clone(), &doc_save_event.text);
+            }
+        }
 
         let lines = doc_save_event.text.len_lines();
         let bytes = doc_save_event.text.len_bytes();

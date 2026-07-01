@@ -17,6 +17,7 @@ use std::sync::Arc;
 #[cfg(target_os = "windows")]
 use std::sync::{LazyLock, Mutex};
 
+use futures_util::{FutureExt, stream};
 #[cfg(target_os = "windows")]
 use gpui::MenuItem;
 use gpui::prelude::{FluentBuilder, StyledImage};
@@ -32,7 +33,7 @@ use helix_core::syntax::config::LanguageServerFeature;
 use helix_core::{Position, Rope, RopeSlice, Selection, Transaction, line_ending, pos_at_coords};
 use helix_lsp::{OffsetEncoding, lsp};
 use helix_stdx::rope::RopeSliceExt;
-use helix_view::document::{from_reader, to_writer};
+use helix_view::document::{DocumentSavedEvent, from_reader, to_writer};
 use helix_view::input::KeyEvent;
 use helix_view::keyboard::{KeyCode, KeyModifiers};
 use helix_view::{DocumentId, ViewId, graphics::Rect as HelixRect};
@@ -2314,32 +2315,6 @@ fn prepare_wsl_remote_save(
     }))
 }
 
-fn finish_wsl_remote_save(
-    editor: &mut helix_view::editor::Editor,
-    prepared: PreparedWslRemoteSave,
-    modified_unix_millis: Option<i64>,
-) {
-    let save_time = remote_modified_unix_millis_to_system_time(modified_unix_millis);
-    record_wsl_remote_document_mtime(&prepared.path, modified_unix_millis);
-
-    if let Some(doc) = editor.document_mut(prepared.doc_id) {
-        doc.readonly = false;
-        doc.set_last_saved_revision(prepared.revision, save_time);
-
-        if let Some(identifier) = document_lsp_identifier(doc) {
-            for language_server in doc.language_servers() {
-                language_server.text_document_did_save(identifier.clone(), &prepared.text);
-            }
-        }
-    }
-
-    editor
-        .language_servers
-        .file_event_handler
-        .file_changed(prepared.path.clone());
-    editor.set_status(format!("Wrote {}", prepared.path.display()));
-}
-
 fn save_wsl_remote_current_buffer(
     editor: &mut helix_view::editor::Editor,
     command: WslWriteCommand,
@@ -2351,15 +2326,51 @@ fn save_wsl_remote_current_buffer(
     let expected_mtime = (!command.force)
         .then(|| wsl_remote_document_mtime(&prepared.path))
         .flatten();
-    let response = write_wsl_remote_file_blocking(
-        &prepared.path,
-        &prepared.bytes,
-        command.force,
-        expected_mtime,
-        WSL_REMOTE_FILE_WRITE_TIMEOUT,
-    )?;
+    let doc_id = prepared.doc_id;
+    let revision = prepared.revision;
+    let path = prepared.path;
+    let text = prepared.text;
+    let bytes = prepared.bytes;
+    let create_parent_dirs = command.force;
+    let file_event_handler = editor.language_servers.file_event_handler.clone();
+    let status_path = path.clone();
 
-    finish_wsl_remote_save(editor, prepared, response.modified_unix_millis);
+    let future = async move {
+        let write_path = path.clone();
+        let response = tokio::task::spawn_blocking(move || {
+            write_wsl_remote_file_blocking(
+                &write_path,
+                &bytes,
+                create_parent_dirs,
+                expected_mtime,
+                WSL_REMOTE_FILE_WRITE_TIMEOUT,
+            )
+        })
+        .await??;
+
+        let save_time = remote_modified_unix_millis_to_system_time(response.modified_unix_millis);
+        record_wsl_remote_document_mtime(&path, response.modified_unix_millis);
+        file_event_handler.file_changed(path.clone());
+
+        Ok(DocumentSavedEvent {
+            revision,
+            save_time,
+            doc_id,
+            path,
+            text,
+        })
+    }
+    .boxed();
+
+    editor
+        .saves
+        .get(&doc_id)
+        .ok_or_else(|| anyhow::format_err!("saves are closed for this document!"))?
+        .send(stream::once(future))
+        .map_err(|err| anyhow::anyhow!("failed to send save event: {err}"))?;
+    editor.write_count += 1;
+    editor.set_status(format!("Writing {}", status_path.display()));
+
     Ok(true)
 }
 
