@@ -20,8 +20,9 @@ pub use wsl::{
     build_wsl_remote_global_search_command, build_wsl_remote_hello_command,
     build_wsl_remote_helper_install_command, build_wsl_remote_metadata_command,
     build_wsl_remote_move_path_command, build_wsl_remote_rename_path_command,
-    build_wsl_remote_workspace_root_command, build_wsl_remote_workspace_symbol_files_command,
-    build_wsl_shell_command, create_wsl_remote_directory_blocking, create_wsl_remote_file_blocking,
+    build_wsl_remote_set_readonly_command, build_wsl_remote_workspace_root_command,
+    build_wsl_remote_workspace_symbol_files_command, build_wsl_shell_command,
+    create_wsl_remote_directory_blocking, create_wsl_remote_file_blocking,
     delete_wsl_remote_path_blocking, duplicate_wsl_remote_path_blocking, install_wsl_remote_helper,
     load_wsl_remote_directory_listing, load_wsl_remote_directory_listing_blocking,
     load_wsl_remote_environment, load_wsl_remote_file_content_blocking,
@@ -29,7 +30,7 @@ pub use wsl::{
     load_wsl_remote_global_search_blocking, load_wsl_remote_metadata,
     load_wsl_remote_workspace_root_blocking, load_wsl_remote_workspace_symbol_files_blocking,
     move_wsl_remote_path_blocking, probe_wsl_remote_helper, rename_wsl_remote_path_blocking,
-    write_wsl_remote_file_blocking, wsl_remote_helper_cache_path,
+    set_wsl_remote_readonly_blocking, write_wsl_remote_file_blocking, wsl_remote_helper_cache_path,
     wsl_remote_helper_create_directory_script, wsl_remote_helper_create_file_script,
     wsl_remote_helper_delete_path_script, wsl_remote_helper_directory_listing_script,
     wsl_remote_helper_duplicate_path_script, wsl_remote_helper_env_script,
@@ -38,7 +39,8 @@ pub use wsl::{
     wsl_remote_helper_global_search_script, wsl_remote_helper_hello_script,
     wsl_remote_helper_install_script, wsl_remote_helper_metadata_script,
     wsl_remote_helper_move_path_script, wsl_remote_helper_rename_path_script,
-    wsl_remote_helper_workspace_root_script, wsl_remote_helper_workspace_symbol_files_script,
+    wsl_remote_helper_set_readonly_script, wsl_remote_helper_workspace_root_script,
+    wsl_remote_helper_workspace_symbol_files_script,
 };
 
 #[cfg(test)]

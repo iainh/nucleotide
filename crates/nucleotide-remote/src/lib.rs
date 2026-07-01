@@ -8,7 +8,7 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::time::UNIX_EPOCH;
 
-pub const PROTOCOL_VERSION: u32 = 15;
+pub const PROTOCOL_VERSION: u32 = 16;
 pub const DEFAULT_FILE_SEARCH_LIMIT: usize = 1_000;
 pub const DEFAULT_GLOBAL_SEARCH_LIMIT: usize = 1_000;
 pub const DEFAULT_FILE_READ_LIMIT: usize = 10_000;
@@ -698,6 +698,14 @@ pub struct FileWriteResponse {
     pub modified_unix_millis: Option<i64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileReadonlyResponse {
+    pub protocol_version: u32,
+    pub current_dir: PathBuf,
+    pub path: PathBuf,
+    pub readonly: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FileWriteOptions {
     pub create_parent_dirs: bool,
@@ -958,6 +966,49 @@ impl FileWriteResponse {
             modified_unix_millis,
         })
     }
+}
+
+impl FileReadonlyResponse {
+    pub fn current(path: &std::path::Path, readonly: bool) -> std::io::Result<Self> {
+        let current_dir = std::env::current_dir()?;
+        let metadata = std::fs::metadata(path)?;
+        if !metadata.is_file() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "target path is not a file",
+            ));
+        }
+
+        let mut permissions = metadata.permissions();
+        set_file_readonly(&mut permissions, readonly);
+        std::fs::set_permissions(path, permissions)?;
+
+        let readonly = std::fs::metadata(path)?.permissions().readonly();
+        Ok(Self {
+            protocol_version: PROTOCOL_VERSION,
+            current_dir,
+            path: path.to_path_buf(),
+            readonly,
+        })
+    }
+}
+
+#[cfg(unix)]
+fn set_file_readonly(permissions: &mut std::fs::Permissions, readonly: bool) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mode = permissions.mode();
+    let mode = if readonly {
+        mode & !0o222
+    } else {
+        mode | 0o200
+    };
+    permissions.set_mode(mode);
+}
+
+#[cfg(not(unix))]
+fn set_file_readonly(permissions: &mut std::fs::Permissions, readonly: bool) {
+    permissions.set_readonly(readonly);
 }
 
 fn system_time_unix_millis(time: std::time::SystemTime) -> Option<i64> {
@@ -1954,6 +2005,33 @@ mod tests {
 
         assert_eq!(error.kind(), std::io::ErrorKind::Other);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "old");
+    }
+
+    #[test]
+    fn file_readonly_current_updates_file_permissions() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("main.rs");
+        std::fs::write(&path, "fn main() {}\n").unwrap();
+
+        let response = FileReadonlyResponse::current(&path, true).unwrap();
+        assert_eq!(response.protocol_version, PROTOCOL_VERSION);
+        assert_eq!(response.path, path);
+        assert!(response.readonly);
+        assert!(
+            std::fs::metadata(&response.path)
+                .unwrap()
+                .permissions()
+                .readonly()
+        );
+
+        let response = FileReadonlyResponse::current(&response.path, false).unwrap();
+        assert!(!response.readonly);
+        assert!(
+            !std::fs::metadata(&response.path)
+                .unwrap()
+                .permissions()
+                .readonly()
+        );
     }
 
     #[test]

@@ -77,7 +77,8 @@ use nucleotide_env::{
     create_wsl_remote_file_blocking, delete_wsl_remote_path_blocking,
     duplicate_wsl_remote_path_blocking, load_wsl_remote_file_content_blocking,
     load_wsl_remote_file_search_blocking, load_wsl_remote_global_search_blocking,
-    rename_wsl_remote_path_blocking, write_wsl_remote_file_blocking,
+    rename_wsl_remote_path_blocking, set_wsl_remote_readonly_blocking,
+    write_wsl_remote_file_blocking,
 };
 use nucleotide_events::v2::run::{Event as RunEvent, ResolvedTask, RunId, RunStatus};
 use nucleotide_events::v2::terminal::{Event as TerminalEvent, TerminalId};
@@ -5194,9 +5195,41 @@ impl Workspace {
             return;
         };
 
+        let Some((path, target_readonly)) = self
+            .core
+            .read(cx)
+            .editor
+            .documents
+            .get(&doc_id)
+            .map(|doc| (doc.path().cloned(), !doc.readonly))
+            .and_then(|(path, readonly)| path.map(|path| (path, readonly)))
+        else {
+            return;
+        };
+
+        let readonly = if WslWorkspace::from_unc_path(&path).is_some() {
+            match set_wsl_remote_readonly_blocking(
+                &path,
+                target_readonly,
+                WSL_REMOTE_FILE_OP_TIMEOUT,
+            ) {
+                Ok(response) => response.readonly,
+                Err(error) => {
+                    self.core.update(cx, |core, cx| {
+                        core.editor
+                            .set_error(format!("Failed to update WSL file permissions: {error}"));
+                        cx.emit(crate::Update::Redraw);
+                    });
+                    return;
+                }
+            }
+        } else {
+            target_readonly
+        };
+
         let toggled = self.core.update(cx, |core, _cx| {
             core.editor.documents.get_mut(&doc_id).map(|doc| {
-                doc.readonly = !doc.readonly;
+                doc.readonly = readonly;
                 doc.readonly
             })
         });

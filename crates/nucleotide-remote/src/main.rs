@@ -7,9 +7,10 @@ use nucleotide_remote::{
     DEFAULT_WORKSPACE_SYMBOL_FILE_LIMIT, DEFAULT_WORKSPACE_SYMBOL_TOTAL_BYTE_LIMIT,
     DirectoryListingResponse, EnvironmentResponse, FileContentResponse, FileCreateResponse,
     FileDeleteResponse, FileDuplicateResponse, FileMoveResponse, FileReadResponse,
-    FileRenameResponse, FileSearchResponse, FileWriteOptions, FileWriteResponse,
-    GlobalSearchResponse, HelloResponse, WorkspaceMetadataResponse, WorkspaceRootResponse,
-    WorkspaceSymbolFilesOptions, WorkspaceSymbolFilesResponse, encode_json_line,
+    FileReadonlyResponse, FileRenameResponse, FileSearchResponse, FileWriteOptions,
+    FileWriteResponse, GlobalSearchResponse, HelloResponse, WorkspaceMetadataResponse,
+    WorkspaceRootResponse, WorkspaceSymbolFilesOptions, WorkspaceSymbolFilesResponse,
+    encode_json_line,
 };
 
 fn main() -> Result<()> {
@@ -139,6 +140,15 @@ fn main() -> Result<()> {
                 .context("failed to write remote file")?;
             print!("{}", encode_json_line(&response)?);
         }
+        "set-readonly" => {
+            let path = std::env::var_os("NUCLEOTIDE_REMOTE_READONLY_PATH")
+                .map(std::path::PathBuf::from)
+                .context("NUCLEOTIDE_REMOTE_READONLY_PATH is required")?;
+            let readonly = env_bool("NUCLEOTIDE_REMOTE_READONLY_VALUE", true);
+            let response = FileReadonlyResponse::current(&path, readonly)
+                .context("failed to update remote file readonly state")?;
+            print!("{}", encode_json_line(&response)?);
+        }
         "symbol-files" => {
             let response = WorkspaceSymbolFilesResponse::current(workspace_symbol_files_options())
                 .context("failed to build workspace symbol file response")?;
@@ -161,6 +171,7 @@ fn main() -> Result<()> {
             println!("nucleotide-remote read");
             println!("nucleotide-remote read-full");
             println!("nucleotide-remote write");
+            println!("nucleotide-remote set-readonly");
             println!("nucleotide-remote symbol-files");
         }
         other => bail!("unknown nucleotide-remote command: {other}"),

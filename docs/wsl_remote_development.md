@@ -42,7 +42,7 @@ editor backend into Linux:
 - `nucleotide-remote` is a versioned helper binary with `hello`, `env`,
   `metadata`, `root`, `list`, `create-file`, `create-directory`, `files`,
   `rename`, `delete`, `duplicate`, `move`, `search`, `read`, `read-full`,
-  `write`, and `symbol-files`
+  `write`, `set-readonly`, and `symbol-files`
   protocol commands.
   Metadata includes workspace marker and shallow source-directory facts so
   project/LSP detection can avoid repeated Windows UNC
@@ -59,8 +59,8 @@ editor backend into Linux:
   Windows side with the existing Helix syntax loader.
   The `root`, `list`, `create-file`, `create-directory`, `rename`, `delete`,
   `duplicate`, `move`, `files`, `search`, `read`, `read-full`, `write`, and
-  `symbol-files` commands are part of helper protocol version 15, so older
-  cached helpers are bypassed by the versioned cache path.
+  `set-readonly`, and `symbol-files` commands are part of helper protocol
+  version 16, so older cached helpers are bypassed by the versioned cache path.
 - Application startup schedules a short, non-blocking WSL helper health probe for
   WSL roots. Probes prefer
   `~/.cache/nucleotide/remote-helper/<protocol-version>/nucleotide-remote`
@@ -134,6 +134,9 @@ editor backend into Linux:
 - WSL remote opens record the decoded BOM state and WSL remote saves feed that
   state back into Helix's encoder, so UTF BOMs are preserved even though Helix's
   document BOM flag is private.
+- The tab readonly toggle uses the helper-backed `set-readonly` command for WSL
+  file tabs before updating Helix's document state, so lock/unlock reflects
+  Linux file permissions instead of only local UI state.
 - Git status and repository HEAD checks run through `wsl.exe` for WSL roots, so
   file decorations and VCS events use Linux Git against local Linux paths while
   still mapping results back to Windows WSL UNC paths for the UI.
@@ -166,8 +169,8 @@ memory for external-modification protection, mark the document clean on success,
 notify Helix's file-event handler, and emit LSP `didSave`.
 
 The remaining document I/O work is to make this a first-class file-provider
-boundary rather than a command interception. External formatter auto-format,
-symlink, and readonly metadata parity still need dedicated plumbing.
+boundary rather than a command interception. External formatter auto-format and
+symlink metadata parity still need dedicated plumbing.
 
 ## Runtime Flow
 
