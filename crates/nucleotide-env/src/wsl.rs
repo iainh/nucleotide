@@ -356,6 +356,13 @@ pub fn build_wsl_remote_helper_install_command(
     command
 }
 
+pub fn build_wsl_remote_helper_install_blocking_command(workspace: &WslWorkspace) -> Command {
+    let mut command =
+        build_wsl_shell_command(workspace, "/bin/sh", &wsl_remote_helper_install_script());
+    command.stdin(Stdio::piped());
+    command
+}
+
 pub fn wsl_remote_helper_cache_path() -> String {
     format!(
         "$HOME/{}/{}/nucleotide-remote",
@@ -726,7 +733,7 @@ pub fn load_wsl_remote_directory_listing_blocking(
     timeout_duration: Duration,
 ) -> Result<DirectoryListingResponse, WslRemoteHelperError> {
     let mut command = build_wsl_remote_directory_listing_command(workspace);
-    let stdout = run_blocking_wsl_remote_command(&mut command, timeout_duration)?;
+    let stdout = run_blocking_wsl_remote_command(workspace, &mut command, timeout_duration)?;
     parse_remote_directory_listing_output(&stdout)
 }
 
@@ -735,7 +742,7 @@ pub fn load_wsl_remote_workspace_root_blocking(
     timeout_duration: Duration,
 ) -> Result<WorkspaceRootResponse, WslRemoteHelperError> {
     let mut command = build_wsl_remote_workspace_root_command(workspace);
-    let stdout = run_blocking_wsl_remote_command(&mut command, timeout_duration)?;
+    let stdout = run_blocking_wsl_remote_command(workspace, &mut command, timeout_duration)?;
     parse_remote_workspace_root_output(&stdout)
 }
 
@@ -744,7 +751,7 @@ pub fn load_wsl_remote_file_search_blocking(
     timeout_duration: Duration,
 ) -> Result<FileSearchResponse, WslRemoteHelperError> {
     let mut command = build_wsl_remote_file_search_command(workspace);
-    let stdout = run_blocking_wsl_remote_command(&mut command, timeout_duration)?;
+    let stdout = run_blocking_wsl_remote_command(workspace, &mut command, timeout_duration)?;
     parse_remote_file_search_output(&stdout)
 }
 
@@ -756,7 +763,7 @@ pub fn load_wsl_remote_global_search_blocking(
     timeout_duration: Duration,
 ) -> Result<GlobalSearchResponse, WslRemoteHelperError> {
     let mut command = build_wsl_remote_global_search_command(workspace, query, smart_case, limit);
-    let stdout = run_blocking_wsl_remote_command(&mut command, timeout_duration)?;
+    let stdout = run_blocking_wsl_remote_command(workspace, &mut command, timeout_duration)?;
     parse_remote_global_search_output(&stdout)
 }
 
@@ -766,7 +773,7 @@ pub fn load_wsl_remote_workspace_symbol_files_blocking(
     timeout_duration: Duration,
 ) -> Result<WorkspaceSymbolFilesResponse, WslRemoteHelperError> {
     let mut command = build_wsl_remote_workspace_symbol_files_command(workspace, options);
-    let stdout = run_blocking_wsl_remote_command(&mut command, timeout_duration)?;
+    let stdout = run_blocking_wsl_remote_command(workspace, &mut command, timeout_duration)?;
     parse_remote_workspace_symbol_files_output(&stdout)
 }
 
@@ -775,13 +782,19 @@ pub fn load_wsl_remote_file_read_blocking(
     limit: usize,
     timeout_duration: Duration,
 ) -> Result<FileReadResponse, WslRemoteHelperError> {
+    let Some((workspace, _)) = wsl_file_parent_workspace(path) else {
+        return Err(WslRemoteHelperError::CommandFailed(format!(
+            "not a readable WSL file path: {}",
+            path.display()
+        )));
+    };
     let Some(mut command) = build_wsl_remote_file_read_command(path, limit) else {
         return Err(WslRemoteHelperError::CommandFailed(format!(
             "not a readable WSL file path: {}",
             path.display()
         )));
     };
-    let stdout = run_blocking_wsl_remote_command(&mut command, timeout_duration)?;
+    let stdout = run_blocking_wsl_remote_command(&workspace, &mut command, timeout_duration)?;
     parse_remote_file_read_output(&stdout)
 }
 
@@ -789,13 +802,19 @@ pub fn load_wsl_remote_file_content_blocking(
     path: &Path,
     timeout_duration: Duration,
 ) -> Result<FileContentResponse, WslRemoteHelperError> {
+    let Some((workspace, _)) = wsl_file_parent_workspace(path) else {
+        return Err(WslRemoteHelperError::CommandFailed(format!(
+            "not a readable WSL file path: {}",
+            path.display()
+        )));
+    };
     let Some(mut command) = build_wsl_remote_file_content_command(path) else {
         return Err(WslRemoteHelperError::CommandFailed(format!(
             "not a readable WSL file path: {}",
             path.display()
         )));
     };
-    let stdout = run_blocking_wsl_remote_command(&mut command, timeout_duration)?;
+    let stdout = run_blocking_wsl_remote_command(&workspace, &mut command, timeout_duration)?;
     parse_remote_file_content_output(&stdout)
 }
 
@@ -806,6 +825,12 @@ pub fn write_wsl_remote_file_blocking(
     expected_modified_unix_millis: Option<i64>,
     timeout_duration: Duration,
 ) -> Result<FileWriteResponse, WslRemoteHelperError> {
+    let Some((workspace, _)) = wsl_file_parent_workspace(path) else {
+        return Err(WslRemoteHelperError::CommandFailed(format!(
+            "not a writable WSL file path: {}",
+            path.display()
+        )));
+    };
     let Some(mut command) = build_wsl_remote_file_write_command(
         path,
         create_parent_dirs,
@@ -816,8 +841,12 @@ pub fn write_wsl_remote_file_blocking(
             path.display()
         )));
     };
-    let stdout =
-        run_blocking_wsl_remote_command_with_stdin(&mut command, content, timeout_duration)?;
+    let stdout = run_blocking_wsl_remote_command_with_stdin(
+        &workspace,
+        &mut command,
+        content,
+        timeout_duration,
+    )?;
     parse_remote_file_write_output(&stdout)
 }
 
@@ -826,13 +855,19 @@ pub fn set_wsl_remote_readonly_blocking(
     readonly: bool,
     timeout_duration: Duration,
 ) -> Result<FileReadonlyResponse, WslRemoteHelperError> {
+    let Some((workspace, _)) = wsl_file_parent_workspace(path) else {
+        return Err(WslRemoteHelperError::CommandFailed(format!(
+            "not a WSL file path: {}",
+            path.display()
+        )));
+    };
     let Some(mut command) = build_wsl_remote_set_readonly_command(path, readonly) else {
         return Err(WslRemoteHelperError::CommandFailed(format!(
             "not a WSL file path: {}",
             path.display()
         )));
     };
-    let stdout = run_blocking_wsl_remote_command(&mut command, timeout_duration)?;
+    let stdout = run_blocking_wsl_remote_command(&workspace, &mut command, timeout_duration)?;
     parse_remote_file_readonly_output(&stdout)
 }
 
@@ -843,14 +878,24 @@ pub fn format_wsl_remote_file_blocking(
     content: &[u8],
     timeout_duration: Duration,
 ) -> Result<FormatResponse, WslRemoteHelperError> {
+    let Some((workspace, _)) = wsl_file_parent_workspace(path) else {
+        return Err(WslRemoteHelperError::CommandFailed(format!(
+            "not a formattable WSL file path: {}",
+            path.display()
+        )));
+    };
     let Some(mut command) = build_wsl_remote_format_command(path, command, args) else {
         return Err(WslRemoteHelperError::CommandFailed(format!(
             "not a formattable WSL file path: {}",
             path.display()
         )));
     };
-    let stdout =
-        run_blocking_wsl_remote_command_with_stdin(&mut command, content, timeout_duration)?;
+    let stdout = run_blocking_wsl_remote_command_with_stdin(
+        &workspace,
+        &mut command,
+        content,
+        timeout_duration,
+    )?;
     parse_remote_format_output(&stdout)
 }
 
@@ -859,13 +904,19 @@ pub fn create_wsl_remote_file_blocking(
     name: &str,
     timeout_duration: Duration,
 ) -> Result<FileCreateResponse, WslRemoteHelperError> {
+    let Some(workspace) = WslWorkspace::from_unc_path(parent) else {
+        return Err(WslRemoteHelperError::CommandFailed(format!(
+            "not a WSL directory path: {}",
+            parent.display()
+        )));
+    };
     let Some(mut command) = build_wsl_remote_create_file_command(parent, name) else {
         return Err(WslRemoteHelperError::CommandFailed(format!(
             "not a WSL directory path: {}",
             parent.display()
         )));
     };
-    let stdout = run_blocking_wsl_remote_command(&mut command, timeout_duration)?;
+    let stdout = run_blocking_wsl_remote_command(&workspace, &mut command, timeout_duration)?;
     parse_remote_file_create_output(&stdout)
 }
 
@@ -874,13 +925,19 @@ pub fn create_wsl_remote_directory_blocking(
     name: &str,
     timeout_duration: Duration,
 ) -> Result<FileCreateResponse, WslRemoteHelperError> {
+    let Some(workspace) = WslWorkspace::from_unc_path(parent) else {
+        return Err(WslRemoteHelperError::CommandFailed(format!(
+            "not a WSL directory path: {}",
+            parent.display()
+        )));
+    };
     let Some(mut command) = build_wsl_remote_create_directory_command(parent, name) else {
         return Err(WslRemoteHelperError::CommandFailed(format!(
             "not a WSL directory path: {}",
             parent.display()
         )));
     };
-    let stdout = run_blocking_wsl_remote_command(&mut command, timeout_duration)?;
+    let stdout = run_blocking_wsl_remote_command(&workspace, &mut command, timeout_duration)?;
     parse_remote_file_create_output(&stdout)
 }
 
@@ -889,13 +946,19 @@ pub fn rename_wsl_remote_path_blocking(
     new_name: &str,
     timeout_duration: Duration,
 ) -> Result<FileRenameResponse, WslRemoteHelperError> {
+    let Some((workspace, _)) = wsl_file_parent_workspace(path) else {
+        return Err(WslRemoteHelperError::CommandFailed(format!(
+            "not a WSL file path: {}",
+            path.display()
+        )));
+    };
     let Some(mut command) = build_wsl_remote_rename_path_command(path, new_name) else {
         return Err(WslRemoteHelperError::CommandFailed(format!(
             "not a WSL file path: {}",
             path.display()
         )));
     };
-    let stdout = run_blocking_wsl_remote_command(&mut command, timeout_duration)?;
+    let stdout = run_blocking_wsl_remote_command(&workspace, &mut command, timeout_duration)?;
     parse_remote_file_rename_output(&stdout)
 }
 
@@ -903,13 +966,19 @@ pub fn delete_wsl_remote_path_blocking(
     path: &Path,
     timeout_duration: Duration,
 ) -> Result<FileDeleteResponse, WslRemoteHelperError> {
+    let Some((workspace, _)) = wsl_file_parent_workspace(path) else {
+        return Err(WslRemoteHelperError::CommandFailed(format!(
+            "not a WSL file path: {}",
+            path.display()
+        )));
+    };
     let Some(mut command) = build_wsl_remote_delete_path_command(path) else {
         return Err(WslRemoteHelperError::CommandFailed(format!(
             "not a WSL file path: {}",
             path.display()
         )));
     };
-    let stdout = run_blocking_wsl_remote_command(&mut command, timeout_duration)?;
+    let stdout = run_blocking_wsl_remote_command(&workspace, &mut command, timeout_duration)?;
     parse_remote_file_delete_output(&stdout)
 }
 
@@ -918,13 +987,19 @@ pub fn duplicate_wsl_remote_path_blocking(
     target_name: &str,
     timeout_duration: Duration,
 ) -> Result<FileDuplicateResponse, WslRemoteHelperError> {
+    let Some((workspace, _)) = wsl_file_parent_workspace(path) else {
+        return Err(WslRemoteHelperError::CommandFailed(format!(
+            "not a WSL file path: {}",
+            path.display()
+        )));
+    };
     let Some(mut command) = build_wsl_remote_duplicate_path_command(path, target_name) else {
         return Err(WslRemoteHelperError::CommandFailed(format!(
             "not a WSL file path: {}",
             path.display()
         )));
     };
-    let stdout = run_blocking_wsl_remote_command(&mut command, timeout_duration)?;
+    let stdout = run_blocking_wsl_remote_command(&workspace, &mut command, timeout_duration)?;
     parse_remote_file_duplicate_output(&stdout)
 }
 
@@ -933,6 +1008,13 @@ pub fn move_wsl_remote_path_blocking(
     target_path: &Path,
     timeout_duration: Duration,
 ) -> Result<FileMoveResponse, WslRemoteHelperError> {
+    let Some((workspace, _)) = wsl_file_parent_workspace(path) else {
+        return Err(WslRemoteHelperError::CommandFailed(format!(
+            "not a same-distro WSL move: {} -> {}",
+            path.display(),
+            target_path.display()
+        )));
+    };
     let Some(mut command) = build_wsl_remote_move_path_command(path, target_path) else {
         return Err(WslRemoteHelperError::CommandFailed(format!(
             "not a same-distro WSL move: {} -> {}",
@@ -940,23 +1022,54 @@ pub fn move_wsl_remote_path_blocking(
             target_path.display()
         )));
     };
-    let stdout = run_blocking_wsl_remote_command(&mut command, timeout_duration)?;
+    let stdout = run_blocking_wsl_remote_command(&workspace, &mut command, timeout_duration)?;
     parse_remote_file_move_output(&stdout)
 }
 
 fn run_blocking_wsl_remote_command(
+    workspace: &WslWorkspace,
     command: &mut Command,
     timeout_duration: Duration,
 ) -> Result<Vec<u8>, WslRemoteHelperError> {
-    run_blocking_wsl_remote_command_inner(command, None, timeout_duration)
+    run_blocking_wsl_remote_command_inner_with_bootstrap(workspace, command, None, timeout_duration)
 }
 
 fn run_blocking_wsl_remote_command_with_stdin(
+    workspace: &WslWorkspace,
     command: &mut Command,
     stdin_bytes: &[u8],
     timeout_duration: Duration,
 ) -> Result<Vec<u8>, WslRemoteHelperError> {
-    run_blocking_wsl_remote_command_inner(command, Some(stdin_bytes), timeout_duration)
+    run_blocking_wsl_remote_command_inner_with_bootstrap(
+        workspace,
+        command,
+        Some(stdin_bytes),
+        timeout_duration,
+    )
+}
+
+fn run_blocking_wsl_remote_command_inner_with_bootstrap(
+    workspace: &WslWorkspace,
+    command: &mut Command,
+    stdin_bytes: Option<&[u8]>,
+    timeout_duration: Duration,
+) -> Result<Vec<u8>, WslRemoteHelperError> {
+    match run_blocking_wsl_remote_command_inner(command, stdin_bytes, timeout_duration) {
+        Ok(stdout) => Ok(stdout),
+        Err(initial_error) => {
+            let Some(source_path) = wsl_remote_helper_install_source() else {
+                return Err(initial_error);
+            };
+
+            install_wsl_remote_helper_blocking(
+                workspace,
+                &source_path,
+                Duration::from_secs(WSL_REMOTE_HELPER_INSTALL_TIMEOUT_SECONDS),
+            )?;
+
+            run_blocking_wsl_remote_command_inner(command, stdin_bytes, timeout_duration)
+        }
+    }
 }
 
 fn run_blocking_wsl_remote_command_inner(
@@ -1056,6 +1169,18 @@ pub async fn install_wsl_remote_helper(
         return Err(WslRemoteHelperError::CommandFailed(stderr));
     }
 
+    Ok(())
+}
+
+pub fn install_wsl_remote_helper_blocking(
+    workspace: &WslWorkspace,
+    local_helper_path: &Path,
+    timeout_duration: Duration,
+) -> Result<(), WslRemoteHelperError> {
+    let helper_file = std::fs::File::open(local_helper_path)?;
+    let mut command = build_wsl_remote_helper_install_blocking_command(workspace);
+    command.stdin(Stdio::from(helper_file));
+    let _stdout = run_blocking_wsl_remote_command_inner(&mut command, None, timeout_duration)?;
     Ok(())
 }
 
@@ -2731,6 +2856,27 @@ mod tests {
         assert!(debug.contains("chmod 755"));
     }
 
+    #[test]
+    fn builds_wsl_remote_helper_install_blocking_command() {
+        let workspace = WslWorkspace {
+            distro: "Ubuntu".to_string(),
+            linux_path: "/home/iain/repo".to_string(),
+        };
+        let command = build_wsl_remote_helper_install_blocking_command(&workspace);
+        let debug = format!("{command:?}");
+
+        assert!(debug.contains("wsl.exe"));
+        assert!(debug.contains("--distribution"));
+        assert!(debug.contains("Ubuntu"));
+        assert!(debug.contains("--cd"));
+        assert!(debug.contains("/home/iain/repo"));
+        assert!(debug.contains("/bin/sh"));
+        assert!(debug.contains("-c"));
+        assert!(debug.contains(".cache/nucleotide/remote-helper/17/nucleotide-remote"));
+        assert!(debug.contains("cat >"));
+        assert!(debug.contains("chmod 755"));
+    }
+
     #[tokio::test]
     async fn install_wsl_remote_helper_rejects_missing_local_binary_before_wsl() {
         let workspace = WslWorkspace {
@@ -2744,6 +2890,23 @@ mod tests {
             Duration::from_millis(1),
         )
         .await
+        .unwrap_err();
+
+        assert!(matches!(error, WslRemoteHelperError::Io(_)));
+    }
+
+    #[test]
+    fn install_wsl_remote_helper_blocking_rejects_missing_local_binary_before_wsl() {
+        let workspace = WslWorkspace {
+            distro: "Ubuntu".to_string(),
+            linux_path: "/home/iain/repo".to_string(),
+        };
+
+        let error = install_wsl_remote_helper_blocking(
+            &workspace,
+            Path::new(r"C:\definitely\missing\nucleotide-remote.exe"),
+            Duration::from_millis(1),
+        )
         .unwrap_err();
 
         assert!(matches!(error, WslRemoteHelperError::Io(_)));

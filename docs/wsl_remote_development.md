@@ -76,10 +76,12 @@ editor backend into Linux:
   WSL language server launch if the helper remains unavailable. WSL environment
   capture and helper-backed metadata detection use the same explicit install
   source to bootstrap and retry the helper before falling back to direct shell
-  capture or unknown project detection. Helper and environment commands use a
-  portable `/bin/sh -c` wrapper that re-enters the user's login shell when
-  available, so common user PATH setup is preserved without relying on
-  non-portable `sh -l` behavior.
+  capture or unknown project detection. Blocking helper-backed services such as
+  root detection, directory listing, file search, file reads/writes, formatting,
+  and project tree file operations also retry once after installing from that
+  source. Helper and environment commands use a portable `/bin/sh -c` wrapper
+  that re-enters the user's login shell when available, so common user PATH
+  setup is preserved without relying on non-portable `sh -l` behavior.
 - Application startup and project LSP coordination use helper-backed root
   detection for WSL paths, avoiding parent-directory marker probes through the
   Windows UNC filesystem. Startup project-root detection first classifies WSL
