@@ -299,6 +299,10 @@ fn should_open_with_local_image_viewer(
         && is_image_file_path(path)
 }
 
+fn should_add_recent_project(backend_identity: &WorkspaceIdentity) -> bool {
+    matches!(backend_identity, WorkspaceIdentity::Local)
+}
+
 fn image_zoom_percent(zoom: f32) -> String {
     format!("{:.0}%", zoom * 100.0)
 }
@@ -6576,7 +6580,10 @@ impl Workspace {
 
     #[instrument(skip(self, cx))]
     pub fn set_project_directory(&mut self, dir: std::path::PathBuf, cx: &mut Context<Self>) {
-        add_recent_project(&dir, cx);
+        let workspace_identity = self.core.read(cx).workspace_backend.identity();
+        if should_add_recent_project(&workspace_identity) {
+            add_recent_project(&dir, cx);
+        }
 
         // Check if this is a project root change
         let is_project_change = self.current_project_root.as_ref() != Some(&dir);
@@ -6895,7 +6902,10 @@ impl Workspace {
         self.current_project_root = root;
         self.refresh_environment_badge(self.current_project_root.clone(), cx);
         if let Some(ref root) = self.current_project_root {
-            add_recent_project(root, cx);
+            let workspace_identity = self.core.read(cx).workspace_backend.identity();
+            if should_add_recent_project(&workspace_identity) {
+                add_recent_project(root, cx);
+            }
             info!(project_root = %root.display(), "Set current project root explicitly");
         } else {
             info!("Cleared current project root");
@@ -16475,6 +16485,17 @@ mod tests {
             true,
             &WorkspaceIdentity::Local
         ));
+    }
+
+    #[test]
+    fn recent_project_integration_is_local_only() {
+        assert!(should_add_recent_project(&WorkspaceIdentity::Local));
+        assert!(!should_add_recent_project(&WorkspaceIdentity::Remote(
+            nucleotide_workspace::RemoteWorkspaceIdentity {
+                kind: nucleotide_workspace::RemoteWorkspaceKind::Ssh,
+                name: "devbox".to_string(),
+            }
+        )));
     }
 
     #[test]
