@@ -233,6 +233,10 @@ fn should_launch_lsp_on_local_host(identity: &WorkspaceIdentity) -> bool {
     matches!(identity, WorkspaceIdentity::Local)
 }
 
+fn should_stat_picker_root_with_backend(identity: &WorkspaceIdentity) -> bool {
+    !matches!(identity, WorkspaceIdentity::Local)
+}
+
 type CompletionServerResult = anyhow::Result<(
     LanguageServerId,
     OffsetEncoding,
@@ -2960,7 +2964,16 @@ impl Application {
                             cx.emit(crate::Update::ShowFilePicker);
                         }
                         editor_input::NativePickerRequest::FileAt(path) => {
-                            if path.exists() {
+                            let workspace_backend = self.workspace_backend.clone();
+                            let workspace_identity = workspace_backend.identity();
+                            let path_exists =
+                                if should_stat_picker_root_with_backend(&workspace_identity) {
+                                    handle.block_on(workspace_backend.stat(&path)).is_ok()
+                                } else {
+                                    path.exists()
+                                };
+
+                            if path_exists {
                                 cx.emit(crate::Update::ShowFilePickerAt(path));
                             } else {
                                 self.editor.set_error(format!(
@@ -8400,9 +8413,9 @@ mod tests {
         lsp_completion_resolve_supported, lsp_completion_response_is_incomplete, lsp_symbol_picker,
         native_symbol_item_from_lsp, path_completion_items, path_completion_items_from_listing,
         project_health_status, project_server_language_id, should_launch_lsp_on_local_host,
-        should_use_workspace_syntax_symbol_fallback, str_prefix_at_byte_limit,
-        suppress_shadowed_buffer_word_completion_items, syntax_symbol_kind_from_capture_name,
-        workspace_diagnostic_refresh_reply,
+        should_stat_picker_root_with_backend, should_use_workspace_syntax_symbol_fallback,
+        str_prefix_at_byte_limit, suppress_shadowed_buffer_word_completion_items,
+        syntax_symbol_kind_from_capture_name, workspace_diagnostic_refresh_reply,
     };
     use crate::test_utils::test_support::{
         TestUpdate, create_counting_channel, create_test_diagnostic_events,
@@ -9043,6 +9056,19 @@ mod tests {
             &WorkspaceIdentity::Local
         ));
         assert!(!should_use_workspace_syntax_symbol_fallback(
+            &WorkspaceIdentity::Remote(RemoteWorkspaceIdentity {
+                kind: RemoteWorkspaceKind::Ssh,
+                name: "devbox".to_string(),
+            })
+        ));
+    }
+
+    #[test]
+    fn picker_root_stat_uses_backend_for_remote_workspaces() {
+        assert!(!should_stat_picker_root_with_backend(
+            &WorkspaceIdentity::Local
+        ));
+        assert!(should_stat_picker_root_with_backend(
             &WorkspaceIdentity::Remote(RemoteWorkspaceIdentity {
                 kind: RemoteWorkspaceKind::Ssh,
                 name: "devbox".to_string(),
