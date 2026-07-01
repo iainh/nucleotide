@@ -40,9 +40,10 @@ editor backend into Linux:
   not inject Linux environment snapshots into the Windows process; the remote
   launch boundary owns those values.
 - `nucleotide-remote` is a versioned helper binary with `hello`, `env`,
-  `metadata`, `root`, `list`, `create-file`, `files`, `search`, `read`, and
-  `symbol-files` protocol commands. Metadata includes workspace marker and shallow
-  source-directory facts so project/LSP detection can avoid repeated Windows UNC
+  `metadata`, `root`, `list`, `create-file`, `create-directory`, `files`,
+  `search`, `read`, and `symbol-files` protocol commands. Metadata includes
+  workspace marker and shallow source-directory facts so project/LSP detection
+  can avoid repeated Windows UNC
   filesystem probes when the helper is available. Root detection walks parent
   directories inside WSL and returns Linux workspace/project roots for the
   Windows UI to map back to WSL UNC paths.
@@ -54,9 +55,9 @@ editor backend into Linux:
   Windows UI. Workspace symbol fallback scanning uses `symbol-files` to collect
   bounded, ignore-filtered file text inside WSL, then parses symbols on the
   Windows side with the existing Helix syntax loader.
-  The `root`, `list`, `create-file`, `files`, `search`, `read`, and
-  `symbol-files` commands are part of helper protocol version 8, so older cached
-  helpers are bypassed by the versioned cache path.
+  The `root`, `list`, `create-file`, `create-directory`, `files`, `search`,
+  `read`, and `symbol-files` commands are part of helper protocol version 9, so
+  older cached helpers are bypassed by the versioned cache path.
 - Application startup schedules a short, non-blocking WSL helper health probe for
   WSL roots. Probes prefer
   `~/.cache/nucleotide/remote-helper/<protocol-version>/nucleotide-remote`
@@ -78,9 +79,9 @@ editor backend into Linux:
   Native workspaces keep the existing local filesystem path. WSL file watching is
   disabled for the Windows watcher path so the UI does not pay for recursive UNC
   monitoring.
-- Project tree New File uses the helper-backed `create-file` command for WSL
-  directories, then maps the Linux result path back to WSL UNC before refreshing
-  the parent and notifying language servers.
+- Project tree New File and New Folder use the helper-backed `create-file` and
+  `create-directory` commands for WSL directories, then map Linux result paths
+  back to WSL UNC before refreshing the parent and notifying language servers.
 - Local path completion uses the same helper-backed directory listing for WSL
   paths with a short timeout, avoiding per-keystroke `\\wsl...` directory reads
   from the Windows side.

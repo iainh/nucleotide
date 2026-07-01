@@ -8,7 +8,7 @@ use std::io::Read;
 use std::path::PathBuf;
 use std::time::UNIX_EPOCH;
 
-pub const PROTOCOL_VERSION: u32 = 8;
+pub const PROTOCOL_VERSION: u32 = 9;
 pub const DEFAULT_FILE_SEARCH_LIMIT: usize = 1_000;
 pub const DEFAULT_GLOBAL_SEARCH_LIMIT: usize = 1_000;
 pub const DEFAULT_FILE_READ_LIMIT: usize = 10_000;
@@ -227,6 +227,20 @@ impl FileCreateResponse {
             current_dir,
             path,
             kind: RemoteFileKind::File,
+        })
+    }
+
+    pub fn current_directory(name: &str) -> std::io::Result<Self> {
+        let name = sanitize_child_name(name)?;
+        let current_dir = std::env::current_dir()?;
+        let path = current_dir.join(name);
+        std::fs::create_dir(&path)?;
+
+        Ok(Self {
+            protocol_version: PROTOCOL_VERSION,
+            current_dir,
+            path,
+            kind: RemoteFileKind::Directory,
         })
     }
 }
@@ -977,6 +991,23 @@ mod tests {
         assert_eq!(response.path, temp.path().join("created.rs"));
         assert_eq!(response.kind, RemoteFileKind::File);
         assert!(temp.path().join("created.rs").is_file());
+    }
+
+    #[test]
+    fn file_create_response_creates_new_directory_in_current_dir() {
+        let _guard = CURRENT_DIR_LOCK.lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp.path()).unwrap();
+
+        let response = FileCreateResponse::current_directory("created").unwrap();
+
+        std::env::set_current_dir(original).unwrap();
+
+        assert_eq!(response.protocol_version, PROTOCOL_VERSION);
+        assert_eq!(response.path, temp.path().join("created"));
+        assert_eq!(response.kind, RemoteFileKind::Directory);
+        assert!(temp.path().join("created").is_dir());
     }
 
     #[test]

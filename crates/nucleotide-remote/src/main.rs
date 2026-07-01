@@ -48,6 +48,13 @@ fn main() -> Result<()> {
                 FileCreateResponse::current_file(&name).context("failed to create remote file")?;
             print!("{}", encode_json_line(&response)?);
         }
+        "create-directory" => {
+            let name = std::env::var("NUCLEOTIDE_REMOTE_CREATE_NAME")
+                .context("NUCLEOTIDE_REMOTE_CREATE_NAME is required")?;
+            let response = FileCreateResponse::current_directory(&name)
+                .context("failed to create remote directory")?;
+            print!("{}", encode_json_line(&response)?);
+        }
         "files" => {
             let response =
                 FileSearchResponse::current().context("failed to build file search response")?;
@@ -91,6 +98,7 @@ fn main() -> Result<()> {
             println!("nucleotide-remote root");
             println!("nucleotide-remote list");
             println!("nucleotide-remote create-file");
+            println!("nucleotide-remote create-directory");
             println!("nucleotide-remote files");
             println!("nucleotide-remote search");
             println!("nucleotide-remote read");

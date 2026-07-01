@@ -70,8 +70,9 @@ use crate::utils;
 use crate::{Core, Input, InputEvent};
 use nucleotide_core::EventBus;
 use nucleotide_env::{
-    EnvironmentOrigin, WslWorkspace, create_wsl_remote_file_blocking,
-    load_wsl_remote_file_search_blocking, load_wsl_remote_global_search_blocking,
+    EnvironmentOrigin, WslWorkspace, create_wsl_remote_directory_blocking,
+    create_wsl_remote_file_blocking, load_wsl_remote_file_search_blocking,
+    load_wsl_remote_global_search_blocking,
 };
 use nucleotide_events::v2::run::{Event as RunEvent, ResolvedTask, RunId, RunStatus};
 use nucleotide_events::v2::terminal::{Event as TerminalEvent, TerminalId};
@@ -2267,8 +2268,12 @@ fn workspace_path_from_remote_relative(root: &Path, relative_path: &Path) -> Pat
     path
 }
 
-fn wsl_created_file_path(parent: &Path, response: &FileCreateResponse) -> Option<PathBuf> {
-    if response.kind != RemoteFileKind::File {
+fn wsl_created_path(
+    parent: &Path,
+    response: &FileCreateResponse,
+    expected_kind: RemoteFileKind,
+) -> Option<PathBuf> {
+    if response.kind != expected_kind {
         return None;
     }
 
@@ -2281,7 +2286,14 @@ fn wsl_created_file_path(parent: &Path, response: &FileCreateResponse) -> Option
 fn create_wsl_project_file(parent: &Path, name: &str) -> Result<PathBuf, String> {
     let response = create_wsl_remote_file_blocking(parent, name, WSL_REMOTE_FILE_OP_TIMEOUT)
         .map_err(|error| error.to_string())?;
-    wsl_created_file_path(parent, &response)
+    wsl_created_path(parent, &response, RemoteFileKind::File)
+        .ok_or_else(|| "remote helper returned an unmappable file path".to_string())
+}
+
+fn create_wsl_project_directory(parent: &Path, name: &str) -> Result<PathBuf, String> {
+    let response = create_wsl_remote_directory_blocking(parent, name, WSL_REMOTE_FILE_OP_TIMEOUT)
+        .map_err(|error| error.to_string())?;
+    wsl_created_path(parent, &response, RemoteFileKind::Directory)
         .ok_or_else(|| "remote helper returned an unmappable file path".to_string())
 }
 
@@ -8227,6 +8239,42 @@ impl Workspace {
                     Err(error) => {
                         let status = EditorStatus {
                             status: format!("Failed to create WSL file: {error}"),
+                            severity: Severity::Error,
+                        };
+                        self.core.update(cx, |core, cx| {
+                            core.editor.set_error(status.status.clone());
+                            cx.notify();
+                        });
+                        self.push_editor_status_notification(status, cx);
+                    }
+                }
+                return;
+            }
+
+            if let PendingFileOp::NewFolder { parent } = &pending
+                && WslWorkspace::from_unc_path(parent).is_some()
+            {
+                self.overlay
+                    .update(cx, |overlay, cx| overlay.dismiss_all(cx));
+
+                match create_wsl_project_directory(parent, command) {
+                    Ok(path) => {
+                        self.dispatch_workspace_file_op_and_process(
+                            WsEvent::FileCreated {
+                                path: path.clone(),
+                                parent_directory: parent.clone(),
+                            },
+                            cx,
+                        );
+                        self.notify_lsp_file_operation(
+                            LspFileOperationNotification::Created { path, is_dir: true },
+                            cx,
+                        );
+                        self.rescan_directory(parent, cx);
+                    }
+                    Err(error) => {
+                        let status = EditorStatus {
+                            status: format!("Failed to create WSL folder: {error}"),
                             severity: Severity::Error,
                         };
                         self.core.update(cx, |core, cx| {
@@ -19034,20 +19082,36 @@ mod tests {
     }
 
     #[test]
-    fn wsl_created_file_paths_map_back_to_unc_paths() {
+    fn wsl_created_paths_map_back_to_unc_paths() {
         let parent = PathBuf::from(r"\\wsl.localhost\Ubuntu\home\iain\repo\src");
-        let response = FileCreateResponse {
+        let file_response = FileCreateResponse {
             protocol_version: nucleotide_remote::PROTOCOL_VERSION,
             current_dir: PathBuf::from("/home/iain/repo/src"),
             path: PathBuf::from("/home/iain/repo/src/main.rs"),
             kind: RemoteFileKind::File,
         };
+        let directory_response = FileCreateResponse {
+            protocol_version: nucleotide_remote::PROTOCOL_VERSION,
+            current_dir: PathBuf::from("/home/iain/repo/src"),
+            path: PathBuf::from("/home/iain/repo/src/components"),
+            kind: RemoteFileKind::Directory,
+        };
 
         assert_eq!(
-            wsl_created_file_path(&parent, &response),
+            wsl_created_path(&parent, &file_response, RemoteFileKind::File),
             Some(PathBuf::from(
                 r"\\wsl.localhost\Ubuntu\home\iain\repo\src\main.rs"
             ))
+        );
+        assert_eq!(
+            wsl_created_path(&parent, &directory_response, RemoteFileKind::Directory),
+            Some(PathBuf::from(
+                r"\\wsl.localhost\Ubuntu\home\iain\repo\src\components"
+            ))
+        );
+        assert_eq!(
+            wsl_created_path(&parent, &directory_response, RemoteFileKind::File),
+            None
         );
     }
 
