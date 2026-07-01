@@ -93,6 +93,40 @@ pub struct SshWorkspaceTarget {
     pub port: Option<u16>,
 }
 
+impl WorkspaceLocation {
+    pub fn display_root(&self) -> &Path {
+        match self {
+            WorkspaceLocation::Local { path }
+            | WorkspaceLocation::Wsl {
+                original_path: path,
+                ..
+            }
+            | WorkspaceLocation::Ssh {
+                original_path: path,
+                ..
+            } => path,
+        }
+    }
+
+    pub fn native_root(&self) -> &Path {
+        match self {
+            WorkspaceLocation::Local { path }
+            | WorkspaceLocation::Wsl {
+                linux_path: path, ..
+            }
+            | WorkspaceLocation::Ssh { path, .. } => path,
+        }
+    }
+
+    pub fn is_remote(&self) -> bool {
+        !matches!(self, WorkspaceLocation::Local { .. })
+    }
+
+    pub fn path_mapping(&self) -> WorkspacePathMapping {
+        WorkspacePathMapping::new(self.display_root(), self.native_root())
+    }
+}
+
 pub fn classify_workspace_location(path: impl AsRef<Path>) -> WorkspaceLocation {
     let path = path.as_ref();
     let text = path.to_string_lossy();
@@ -445,6 +479,221 @@ pub type WorkspaceBackendHandle = Arc<dyn WorkspaceBackend>;
 
 pub fn local_workspace_backend() -> WorkspaceBackendHandle {
     Arc::new(LocalWorkspaceBackend)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspacePathMapping {
+    display_root: PathBuf,
+    native_root: PathBuf,
+}
+
+impl WorkspacePathMapping {
+    pub fn new(display_root: impl Into<PathBuf>, native_root: impl Into<PathBuf>) -> Self {
+        Self {
+            display_root: display_root.into(),
+            native_root: native_root.into(),
+        }
+    }
+
+    pub fn display_root(&self) -> &Path {
+        &self.display_root
+    }
+
+    pub fn native_root(&self) -> &Path {
+        &self.native_root
+    }
+
+    pub fn to_native_path(&self, path: &Path) -> PathBuf {
+        rebase_workspace_path(path, &self.display_root, &self.native_root)
+    }
+
+    pub fn to_display_path(&self, path: &Path) -> PathBuf {
+        rebase_workspace_path(path, &self.native_root, &self.display_root)
+    }
+}
+
+pub struct PathMappedWorkspaceBackend {
+    inner: WorkspaceBackendHandle,
+    mapping: WorkspacePathMapping,
+}
+
+impl PathMappedWorkspaceBackend {
+    pub fn new(inner: WorkspaceBackendHandle, mapping: WorkspacePathMapping) -> Self {
+        Self { inner, mapping }
+    }
+
+    pub fn mapping(&self) -> &WorkspacePathMapping {
+        &self.mapping
+    }
+
+    fn map_file_stat_to_display(&self, mut stat: FileStat) -> FileStat {
+        stat.path = self.mapping.to_display_path(&stat.path);
+        stat
+    }
+
+    fn map_directory_entry_to_display(&self, mut entry: DirectoryEntry) -> DirectoryEntry {
+        entry.path = self.mapping.to_display_path(&entry.path);
+        entry.stat = self.map_file_stat_to_display(entry.stat);
+        entry.symlink_target = entry
+            .symlink_target
+            .map(|target| self.mapping.to_display_path(&target));
+        entry
+    }
+
+    fn map_directory_listing_to_display(&self, mut listing: DirectoryListing) -> DirectoryListing {
+        listing.path = self.mapping.to_display_path(&listing.path);
+        listing.entries = listing
+            .entries
+            .into_iter()
+            .map(|entry| self.map_directory_entry_to_display(entry))
+            .collect();
+        listing
+    }
+
+    fn map_file_read_to_display(&self, mut read: FileRead) -> FileRead {
+        read.path = self.mapping.to_display_path(&read.path);
+        read
+    }
+
+    fn map_write_result_to_display(&self, mut result: WriteResult) -> WriteResult {
+        result.path = self.mapping.to_display_path(&result.path);
+        result
+    }
+
+    fn map_file_search_query_to_native(&self, mut query: FileSearchQuery) -> FileSearchQuery {
+        query.root = self.mapping.to_native_path(&query.root);
+        query
+    }
+
+    fn map_file_search_result_to_display(&self, mut result: FileSearchResult) -> FileSearchResult {
+        result.root = self.mapping.to_display_path(&result.root);
+        result
+    }
+
+    fn map_text_search_query_to_native(&self, mut query: TextSearchQuery) -> TextSearchQuery {
+        query.root = self.mapping.to_native_path(&query.root);
+        query
+    }
+
+    fn map_text_search_result_to_display(&self, mut result: TextSearchResult) -> TextSearchResult {
+        result.root = self.mapping.to_display_path(&result.root);
+        result
+    }
+
+    fn map_project_environment_to_display(
+        &self,
+        mut snapshot: ProjectEnvironmentSnapshot,
+    ) -> ProjectEnvironmentSnapshot {
+        snapshot.root = self.mapping.to_display_path(&snapshot.root);
+        snapshot
+    }
+
+    fn map_git_head_to_display(&self, mut result: GitHeadResult) -> GitHeadResult {
+        result.root = self.mapping.to_display_path(&result.root);
+        result
+    }
+
+    fn map_git_status_to_display(&self, mut result: GitStatusResult) -> GitStatusResult {
+        result.root = self.mapping.to_display_path(&result.root);
+        result
+    }
+}
+
+pub fn path_mapped_workspace_backend(
+    inner: WorkspaceBackendHandle,
+    mapping: WorkspacePathMapping,
+) -> WorkspaceBackendHandle {
+    Arc::new(PathMappedWorkspaceBackend::new(inner, mapping))
+}
+
+#[async_trait]
+impl WorkspaceBackend for PathMappedWorkspaceBackend {
+    fn identity(&self) -> WorkspaceIdentity {
+        self.inner.identity()
+    }
+
+    async fn stat(&self, path: &Path) -> Result<FileStat> {
+        let native_path = self.mapping.to_native_path(path);
+        self.inner
+            .stat(&native_path)
+            .await
+            .map(|stat| self.map_file_stat_to_display(stat))
+    }
+
+    async fn list_dir(&self, path: &Path) -> Result<DirectoryListing> {
+        let native_path = self.mapping.to_native_path(path);
+        self.inner
+            .list_dir(&native_path)
+            .await
+            .map(|listing| self.map_directory_listing_to_display(listing))
+    }
+
+    async fn read_file(&self, path: &Path, options: ReadOptions) -> Result<FileRead> {
+        let native_path = self.mapping.to_native_path(path);
+        self.inner
+            .read_file(&native_path, options)
+            .await
+            .map(|read| self.map_file_read_to_display(read))
+    }
+
+    async fn write_file(
+        &self,
+        path: &Path,
+        bytes: &[u8],
+        options: WriteOptions,
+    ) -> Result<WriteResult> {
+        let native_path = self.mapping.to_native_path(path);
+        self.inner
+            .write_file(&native_path, bytes, options)
+            .await
+            .map(|result| self.map_write_result_to_display(result))
+    }
+
+    async fn file_search(&self, query: FileSearchQuery) -> Result<FileSearchResult> {
+        self.inner
+            .file_search(self.map_file_search_query_to_native(query))
+            .await
+            .map(|result| self.map_file_search_result_to_display(result))
+    }
+
+    async fn text_search(&self, query: TextSearchQuery) -> Result<TextSearchResult> {
+        self.inner
+            .text_search(self.map_text_search_query_to_native(query))
+            .await
+            .map(|result| self.map_text_search_result_to_display(result))
+    }
+
+    async fn project_environment(&self, root: &Path) -> Result<ProjectEnvironmentSnapshot> {
+        let native_root = self.mapping.to_native_path(root);
+        self.inner
+            .project_environment(&native_root)
+            .await
+            .map(|snapshot| self.map_project_environment_to_display(snapshot))
+    }
+
+    async fn git_head(&self, root: &Path) -> Result<GitHeadResult> {
+        let native_root = self.mapping.to_native_path(root);
+        self.inner
+            .git_head(&native_root)
+            .await
+            .map(|result| self.map_git_head_to_display(result))
+    }
+
+    async fn git_status(&self, root: &Path, options: GitStatusOptions) -> Result<GitStatusResult> {
+        let native_root = self.mapping.to_native_path(root);
+        self.inner
+            .git_status(&native_root, options)
+            .await
+            .map(|result| self.map_git_status_to_display(result))
+    }
+}
+
+fn rebase_workspace_path(path: &Path, from_root: &Path, to_root: &Path) -> PathBuf {
+    match path.strip_prefix(from_root) {
+        Ok(relative_path) if relative_path.as_os_str().is_empty() => to_root.to_path_buf(),
+        Ok(relative_path) => to_root.join(relative_path),
+        Err(_) => path.to_path_buf(),
+    }
 }
 
 #[async_trait]
@@ -1138,6 +1387,115 @@ mod tests {
         assert_eq!(
             classify_workspace_location(&path),
             WorkspaceLocation::Local { path }
+        );
+    }
+
+    #[test]
+    fn workspace_location_exposes_display_to_native_mapping() {
+        let path = PathBuf::from("ssh://me@example.com/home/me/project");
+        let location = classify_workspace_location(&path);
+
+        assert!(location.is_remote());
+        assert_eq!(location.display_root(), path.as_path());
+        assert_eq!(location.native_root(), Path::new("/home/me/project"));
+        assert_eq!(
+            location
+                .path_mapping()
+                .to_native_path(&path.join("src").join("main.rs")),
+            PathBuf::from("/home/me/project/src/main.rs")
+        );
+    }
+
+    #[test]
+    fn path_mapped_backend_lists_native_directory_as_display_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir(temp.path().join("src")).unwrap();
+        fs::write(temp.path().join("README.md"), "").unwrap();
+        let display_root = PathBuf::from("/remote/project");
+        let backend = path_mapped_workspace_backend(
+            local_workspace_backend(),
+            WorkspacePathMapping::new(display_root.clone(), temp.path()),
+        );
+
+        let listing = block_on(backend.list_dir(&display_root)).unwrap();
+
+        assert_eq!(listing.path, display_root);
+        assert_eq!(
+            listing
+                .entries
+                .iter()
+                .map(|entry| entry.path.clone())
+                .collect::<Vec<_>>(),
+            vec![display_root.join("README.md"), display_root.join("src")]
+        );
+        assert_eq!(
+            listing
+                .entries
+                .iter()
+                .map(|entry| entry.stat.path.clone())
+                .collect::<Vec<_>>(),
+            vec![display_root.join("README.md"), display_root.join("src")]
+        );
+    }
+
+    #[test]
+    fn path_mapped_backend_reads_and_writes_display_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir(temp.path().join("src")).unwrap();
+        let display_root = PathBuf::from("/remote/project");
+        let display_path = display_root.join("src").join("main.rs");
+        let native_path = temp.path().join("src").join("main.rs");
+        let backend = path_mapped_workspace_backend(
+            local_workspace_backend(),
+            WorkspacePathMapping::new(display_root.clone(), temp.path()),
+        );
+
+        let write =
+            block_on(backend.write_file(&display_path, b"fn main() {}\n", WriteOptions::default()))
+                .unwrap();
+        let read = block_on(backend.read_file(&display_path, ReadOptions::default())).unwrap();
+
+        assert_eq!(write.path, display_path);
+        assert_eq!(read.path, display_path);
+        assert_eq!(read.bytes, b"fn main() {}\n");
+        assert_eq!(
+            std::fs::read_to_string(native_path).unwrap(),
+            "fn main() {}\n"
+        );
+    }
+
+    #[test]
+    fn path_mapped_backend_keeps_search_paths_display_rooted() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir(temp.path().join("src")).unwrap();
+        fs::write(temp.path().join("src").join("main.rs"), "needle\n").unwrap();
+        let display_root = PathBuf::from("/remote/project");
+        let backend = path_mapped_workspace_backend(
+            local_workspace_backend(),
+            WorkspacePathMapping::new(display_root.clone(), temp.path()),
+        );
+
+        let files = block_on(backend.file_search(FileSearchQuery {
+            root: display_root.clone(),
+            pattern: None,
+            limit: 10,
+            ..FileSearchQuery::default()
+        }))
+        .unwrap();
+        let matches = block_on(backend.text_search(TextSearchQuery {
+            root: display_root.clone(),
+            pattern: "needle".to_string(),
+            limit: 10,
+            ..TextSearchQuery::default()
+        }))
+        .unwrap();
+
+        assert_eq!(files.root, display_root);
+        assert_eq!(files.files, vec![PathBuf::from("src/main.rs")]);
+        assert_eq!(matches.root, display_root);
+        assert_eq!(
+            matches.matches[0].relative_path,
+            PathBuf::from("src/main.rs")
         );
     }
 
