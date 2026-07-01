@@ -128,7 +128,9 @@ editor backend into Linux:
   remote mtime guard and may create missing parent directories. LSP and
   configured external formatter auto-format-on-save are supported for WSL
   buffers; external formatter commands run through the Linux-side `format`
-  helper command and receive buffer text over stdin.
+  helper command and receive buffer text over stdin. Formatter argument
+  `%sh{...}` expansions for WSL buffers also run through the same distro shell
+  path, rather than the Windows-side configured editor shell.
 - `:write-all`/`:wa` saves modified WSL buffers through the same queued remote
   write path. Pure WSL write-all supports the same LSP auto-format path as
   current-buffer saves, including formatter argument expansion for non-focused

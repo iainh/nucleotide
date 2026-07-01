@@ -73,7 +73,7 @@ use crate::utils;
 use crate::{Core, Input, InputEvent};
 use nucleotide_core::EventBus;
 use nucleotide_env::{
-    EnvironmentOrigin, WslWorkspace, create_wsl_remote_directory_blocking,
+    EnvironmentOrigin, WslWorkspace, build_wsl_shell_command, create_wsl_remote_directory_blocking,
     create_wsl_remote_file_blocking, delete_wsl_remote_path_blocking,
     duplicate_wsl_remote_path_blocking, format_wsl_remote_file_blocking,
     load_wsl_remote_file_content_blocking, load_wsl_remote_file_search_blocking,
@@ -2626,6 +2626,7 @@ struct WslFormatterExpansionContext {
     selection_line_start: String,
     selection_line_end: String,
     shell: Vec<String>,
+    remote_workspace: Option<WslWorkspace>,
 }
 
 impl WslFormatterExpansionContext {
@@ -2640,6 +2641,10 @@ impl WslFormatterExpansionContext {
         let cursor = selection.cursor(text);
         let position = helix_core::coords_at_pos(text, cursor);
         let (selection_line_start, selection_line_end) = selection.line_range(text);
+        let remote_workspace = doc
+            .path()
+            .and_then(|path| path.parent())
+            .and_then(WslWorkspace::from_unc_path);
 
         Self {
             cursor_line: (cursor_line + 1).to_string(),
@@ -2658,6 +2663,7 @@ impl WslFormatterExpansionContext {
             selection_line_start: (selection_line_start + 1).to_string(),
             selection_line_end: (selection_line_end + 1).to_string(),
             shell: editor.config().shell.clone(),
+            remote_workspace,
         }
     }
 
@@ -2675,8 +2681,54 @@ impl WslFormatterExpansionContext {
             selection_line_start: "2".to_string(),
             selection_line_end: "2".to_string(),
             shell: vec!["cmd".to_string(), "/C".to_string()],
+            remote_workspace: None,
         }
     }
+
+    #[cfg(test)]
+    fn for_wsl_test(buffer_name: impl Into<String>) -> Self {
+        let mut context = Self::for_test(buffer_name);
+        context.remote_workspace =
+            WslWorkspace::from_unc_path(Path::new(r"\\wsl.localhost\Ubuntu\home\iain\repo\src"));
+        context
+    }
+}
+
+fn wsl_remote_formatter_shell_command(
+    workspace: &WslWorkspace,
+    content: &str,
+) -> std::process::Command {
+    build_wsl_shell_command(workspace, "/bin/sh", content)
+}
+
+fn capture_formatter_shell_output(
+    mut command: std::process::Command,
+    content: &str,
+) -> anyhow::Result<String> {
+    let output = command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|err| anyhow::anyhow!("Failed to start shell: {err}"))?
+        .wait_with_output()?;
+
+    if !output.stderr.is_empty() {
+        warn!(
+            "Shell expansion command `{content}` failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+    if text.ends_with('\n') {
+        text.pop();
+        if text.ends_with('\r') {
+            text.pop();
+        }
+    }
+
+    Ok(text)
 }
 
 fn expand_wsl_remote_formatter_arg(
@@ -2762,7 +2814,11 @@ fn expand_wsl_remote_formatter_variable(
         _ => anyhow::bail!("unknown variable '{variable}'"),
     };
 
-    Ok(value.clone())
+    Ok(if context.remote_workspace.is_some() {
+        wsl_formatter_arg_for_remote(value)
+    } else {
+        value.clone()
+    })
 }
 
 fn expand_wsl_remote_formatter_shell(
@@ -2770,36 +2826,25 @@ fn expand_wsl_remote_formatter_shell(
     context: &WslFormatterExpansionContext,
 ) -> anyhow::Result<String> {
     let content = expand_wsl_remote_formatter_inner(content, context)?;
+    if let Some(workspace) = &context.remote_workspace {
+        return capture_formatter_shell_output(
+            wsl_remote_formatter_shell_command(workspace, &content),
+            &content,
+        );
+    }
+
     let Some((program, args)) = context.shell.split_first() else {
         anyhow::bail!("shell is not configured");
     };
 
-    let output = std::process::Command::new(program)
-        .args(args)
-        .arg(&content)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|err| anyhow::anyhow!("Failed to start shell: {err}"))?
-        .wait_with_output()?;
-
-    if !output.stderr.is_empty() {
-        warn!(
-            "Shell expansion command `{content}` failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-
-    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
-    if text.ends_with('\n') {
-        text.pop();
-        if text.ends_with('\r') {
-            text.pop();
-        }
-    }
-
-    Ok(text)
+    capture_formatter_shell_output(
+        {
+            let mut command = std::process::Command::new(program);
+            command.args(args).arg(&content);
+            command
+        },
+        &content,
+    )
 }
 
 fn wsl_formatter_arg_for_remote(arg: &str) -> String {
@@ -18121,6 +18166,56 @@ mod tests {
             wsl_formatter_arg_for_remote(&expanded),
             "/home/iain/repo/src/main.rs"
         );
+    }
+
+    #[test]
+    fn wsl_formatter_variables_expand_to_linux_paths_for_remote_shells() {
+        let context = WslFormatterExpansionContext::for_wsl_test(
+            r"\\wsl.localhost\Ubuntu\home\iain\repo\src\main.rs",
+        );
+
+        assert_eq!(
+            expand_wsl_remote_formatter_arg("%{buffer_name}", &context).unwrap(),
+            "/home/iain/repo/src/main.rs"
+        );
+    }
+
+    #[test]
+    fn wsl_formatter_shell_context_tracks_remote_workspace() {
+        let local = WslFormatterExpansionContext::for_test("main.rs");
+        assert!(local.remote_workspace.is_none());
+
+        let remote = WslFormatterExpansionContext::for_wsl_test(
+            r"\\wsl.localhost\Ubuntu\home\iain\repo\src\main.rs",
+        );
+
+        assert_eq!(
+            remote.remote_workspace.as_ref().map(WslWorkspace::distro),
+            Some("Ubuntu")
+        );
+        assert_eq!(
+            remote
+                .remote_workspace
+                .as_ref()
+                .map(WslWorkspace::linux_path),
+            Some("/home/iain/repo/src")
+        );
+    }
+
+    #[test]
+    fn wsl_formatter_shell_command_runs_inside_distribution() {
+        let workspace =
+            WslWorkspace::from_unc_path(Path::new(r"\\wsl.localhost\Ubuntu\home\iain\repo\src"))
+                .expect("wsl workspace");
+        let command = wsl_remote_formatter_shell_command(&workspace, "printf '%s' hi");
+        let debug = format!("{command:?}");
+
+        assert!(debug.contains("wsl.exe"));
+        assert!(debug.contains("--distribution"));
+        assert!(debug.contains("Ubuntu"));
+        assert!(debug.contains("--cd"));
+        assert!(debug.contains("/home/iain/repo/src"));
+        assert!(debug.contains("printf"));
     }
 
     #[cfg(target_os = "windows")]
