@@ -73,6 +73,7 @@ use nucleotide_env::EnvironmentOrigin;
 use nucleotide_events::v2::run::{Event as RunEvent, ResolvedTask, RunId, RunStatus};
 use nucleotide_events::v2::terminal::{Event as TerminalEvent, TerminalId};
 use nucleotide_terminal::TerminalBounds;
+use nucleotide_workspace::{FileKind, LocalWorkspaceBackend, TextSearchQuery, WorkspaceBackend};
 use slotmap::KeyData;
 // (no direct Workspace v2 items used here)
 use nucleotide_vcs::{VcsEvent, VcsServiceHandle};
@@ -2098,54 +2099,89 @@ fn global_search_matches(
     open_documents: &[(PathBuf, Rope)],
     limit: usize,
 ) -> Result<Vec<GlobalSearchMatch>, String> {
+    let backend = LocalWorkspaceBackend;
+    global_search_matches_with_backend(
+        &backend,
+        root,
+        query,
+        smart_case,
+        file_picker_config,
+        open_documents,
+        limit,
+    )
+}
+
+fn global_search_matches_with_backend(
+    backend: &(impl WorkspaceBackend + ?Sized),
+    root: &Path,
+    query: &str,
+    smart_case: bool,
+    file_picker_config: &helix_view::editor::FilePickerConfig,
+    open_documents: &[(PathBuf, Rope)],
+    limit: usize,
+) -> Result<Vec<GlobalSearchMatch>, String> {
     if query.is_empty() {
         return Ok(Vec::new());
-    }
-
-    if !root.exists() {
-        return Err("Current working directory does not exist".to_string());
     }
 
     let regex = compile_global_search_regex(query, smart_case)
         .map_err(|err| format!("Failed to compile regex: {err}"))?;
     let mut matches = Vec::new();
-    let mut walker = ignore::WalkBuilder::new(root);
-    walker
-        .hidden(file_picker_config.hidden)
-        .parents(file_picker_config.parents)
-        .ignore(file_picker_config.ignore)
-        .follow_links(file_picker_config.follow_symlinks)
-        .git_ignore(file_picker_config.git_ignore)
-        .git_global(file_picker_config.git_global)
-        .git_exclude(file_picker_config.git_exclude)
-        .max_depth(file_picker_config.max_depth)
-        .add_custom_ignore_filename(helix_loader::config_dir().join("ignore"))
-        .add_custom_ignore_filename(".helix/ignore");
 
-    for entry in walker.build().filter_map(Result::ok) {
-        if !entry
-            .file_type()
-            .is_some_and(|file_type| file_type.is_file())
-        {
-            continue;
-        }
+    let root_stat = futures_executor::block_on(backend.stat(root))
+        .map_err(|_| "Current working directory does not exist".to_string())?;
+    if root_stat.kind == FileKind::File {
+        return Err("Current working directory is not a directory".to_string());
+    }
 
-        let path = entry.path();
-        if let Some((_, doc_text)) = open_documents
-            .iter()
-            .find(|(doc_path, _)| doc_path.as_path() == path)
-        {
-            if push_global_search_matches(&mut matches, path, doc_text.slice(..), &regex, limit) {
-                break;
-            }
-            continue;
-        }
-
-        let Ok(contents) = std::fs::read_to_string(path) else {
+    let mut excluded_relative_paths = Vec::new();
+    for (path, doc_text) in open_documents {
+        let Ok(relative_path) = path.strip_prefix(root) else {
             continue;
         };
-        let rope = Rope::from(contents.as_str());
-        if push_global_search_matches(&mut matches, path, rope.slice(..), &regex, limit) {
+        if relative_path.as_os_str().is_empty() {
+            continue;
+        }
+
+        excluded_relative_paths.push(relative_path.to_path_buf());
+
+        if push_global_search_matches(&mut matches, path, doc_text.slice(..), &regex, limit) {
+            return Ok(matches);
+        }
+    }
+
+    let disk_limit = limit.saturating_sub(matches.len());
+    if disk_limit == 0 {
+        return Ok(matches);
+    }
+
+    let disk_matches = futures_executor::block_on(backend.text_search(TextSearchQuery {
+        root: root.to_path_buf(),
+        pattern: query.to_string(),
+        limit: disk_limit,
+        smart_case,
+        hidden: !file_picker_config.hidden,
+        parents: file_picker_config.parents,
+        ignore: file_picker_config.ignore,
+        git_ignore: file_picker_config.git_ignore,
+        git_global: file_picker_config.git_global,
+        git_exclude: file_picker_config.git_exclude,
+        follow_links: file_picker_config.follow_symlinks,
+        max_depth: file_picker_config.max_depth,
+        excluded_relative_paths,
+        custom_ignore_filenames: vec![helix_loader::config_dir().join("ignore")],
+        ..TextSearchQuery::default()
+    }))
+    .map_err(|err| err.to_string())?;
+
+    for disk_match in disk_matches.matches {
+        let path = root.join(&disk_match.relative_path);
+        matches.push(GlobalSearchMatch {
+            path,
+            line: disk_match.line_number.saturating_sub(1),
+            line_text: disk_match.line_text,
+        });
+        if matches.len() >= limit {
             break;
         }
     }
@@ -18639,6 +18675,55 @@ mod tests {
                 line_text: "unsaved needle".to_string(),
             }]
         );
+    }
+
+    #[test]
+    fn global_search_matches_excludes_open_documents_from_disk_search() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("buffer.txt");
+        std::fs::write(&path, "saved needle\n").unwrap();
+        let open_documents = vec![(path.clone(), Rope::from("unsaved needle\n"))];
+
+        let matches = global_search_matches(
+            temp_dir.path(),
+            "needle",
+            true,
+            &default_file_picker_config(),
+            &open_documents,
+            10,
+        )
+        .unwrap();
+
+        assert_eq!(
+            matches,
+            vec![GlobalSearchMatch {
+                path,
+                line: 0,
+                line_text: "unsaved needle".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn global_search_matches_ignores_open_documents_outside_root() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let outside_path = outside.path().join("outside.txt");
+        std::fs::write(root.path().join("inside.txt"), "plain\n").unwrap();
+        std::fs::write(&outside_path, "needle\n").unwrap();
+        let open_documents = vec![(outside_path, Rope::from("needle\n"))];
+
+        let matches = global_search_matches(
+            root.path(),
+            "needle",
+            true,
+            &default_file_picker_config(),
+            &open_documents,
+            10,
+        )
+        .unwrap();
+
+        assert!(matches.is_empty());
     }
 
     // Helper struct for testing workspace functionality

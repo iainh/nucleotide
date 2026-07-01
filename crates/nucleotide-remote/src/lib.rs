@@ -641,6 +641,8 @@ pub struct TextSearchRequest {
     pub follow_links: bool,
     pub max_depth: Option<usize>,
     pub max_file_bytes: u64,
+    pub excluded_relative_paths: Vec<PathBuf>,
+    pub custom_ignore_filenames: Vec<PathBuf>,
 }
 
 impl Default for TextSearchRequest {
@@ -660,6 +662,8 @@ impl Default for TextSearchRequest {
             follow_links: query.follow_links,
             max_depth: query.max_depth,
             max_file_bytes: query.max_file_bytes,
+            excluded_relative_paths: query.excluded_relative_paths,
+            custom_ignore_filenames: query.custom_ignore_filenames,
         }
     }
 }
@@ -1028,6 +1032,8 @@ where
             follow_links: query.follow_links,
             max_depth: query.max_depth,
             max_file_bytes: query.max_file_bytes,
+            excluded_relative_paths: query.excluded_relative_paths,
+            custom_ignore_filenames: query.custom_ignore_filenames,
         };
         let (response, _) = self.request(
             "text search",
@@ -1326,6 +1332,8 @@ where
                     follow_links: request.follow_links,
                     max_depth: request.max_depth,
                     max_file_bytes: request.max_file_bytes,
+                    excluded_relative_paths: request.excluded_relative_paths,
+                    custom_ignore_filenames: request.custom_ignore_filenames,
                 };
                 let result = block_on(self.backend.text_search(query))
                     .map_err(remote_error_from_workspace)?;
@@ -2229,6 +2237,32 @@ mod tests {
         };
         assert_eq!(search.matches.len(), 1);
         assert!(search.truncated);
+    }
+
+    #[test]
+    fn service_text_search_excludes_relative_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(temp.path().join("src")).unwrap();
+        std::fs::write(temp.path().join("src").join("main.rs"), "needle\n").unwrap();
+        std::fs::write(temp.path().join("README.md"), "needle\n").unwrap();
+
+        let frame = read_first_output_frame(single_request_output(
+            temp.path(),
+            RemoteRequest::TextSearch(TextSearchRequest {
+                pattern: "needle".to_string(),
+                limit: 10,
+                excluded_relative_paths: vec![PathBuf::from("src/main.rs")],
+                ..TextSearchRequest::default()
+            }),
+            Vec::new(),
+        ));
+
+        let response = frame.decode_json_header::<ResponseEnvelope>().unwrap();
+        let RemoteResponse::TextSearch(search) = response.response else {
+            panic!("expected text search response");
+        };
+        assert_eq!(search.matches.len(), 1);
+        assert_eq!(search.matches[0].relative_path, PathBuf::from("README.md"));
     }
 
     #[test]
