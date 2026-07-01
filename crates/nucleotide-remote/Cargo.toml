@@ -1,0 +1,22 @@
+[package]
+name = "nucleotide-remote"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+description = "Remote workspace service for Nucleotide"
+categories = ["text-editors", "gui"]
+rust-version = "1.95"
+
+[dependencies]
+anyhow.workspace = true
+futures.workspace = true
+nucleotide-workspace.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
