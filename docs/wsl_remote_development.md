@@ -73,11 +73,12 @@ editor backend into Linux:
 - Application startup and project LSP coordination use helper-backed root
   detection for WSL paths, avoiding parent-directory marker probes through the
   Windows UNC filesystem.
-- Startup arguments, forwarded open requests, file selections, file picker
-  requests, and `gf`-style file navigation classify WSL paths without Windows
-  `exists`/`is_dir`/`canonicalize` probes. When helper metadata is unavailable,
-  path-shape fallbacks prefer opening extension-bearing paths as files and
-  extensionless paths as directories, keeping common remote workflows responsive.
+- Startup arguments, forwarded open requests, platform open events, file
+  selections, file picker requests, and `gf`-style file navigation classify WSL
+  paths without Windows `exists`/`is_dir`/`canonicalize` probes. When helper
+  metadata is unavailable, path-shape fallbacks prefer opening extension-bearing
+  paths as files and extensionless paths as directories, keeping common remote
+  workflows responsive.
 - Workspace terminals and runnable commands opened from WSL roots are launched
   through `wsl.exe --distribution <distro> --cd <linux-path>`, so shells and
   commands start where the project files live.
@@ -125,6 +126,23 @@ editor backend into Linux:
 This means the first supported path is direct WSL LSP execution with path
 translation. The helper is currently an optional foundation for richer remote
 services rather than a hard dependency.
+
+## Document I/O Boundary
+
+Full document open/save is the next major remote-service boundary. The current
+Helix editor path canonicalizes the requested path, then `Document::open` checks
+local metadata/existence and reads through `std::fs::File`. Saves clone the
+buffer into an async task that uses local `tokio::fs` for parent checks,
+external modification checks, symlink resolution, read-only detection, atomic
+backup handling, file writes, fsync, timestamp capture, file-event notification,
+and LSP `didSave` emission.
+
+Because those behaviors are coupled to Helix's document lifecycle, WSL document
+I/O should be implemented as a first-class file-provider boundary rather than by
+reusing the bounded preview `read` command. A safe implementation needs remote
+read and write commands that preserve encoding, BOM, line endings, revision/save
+timestamps, external modification protection, language detection, diagnostics,
+and LSP save notifications.
 
 ## Runtime Flow
 
