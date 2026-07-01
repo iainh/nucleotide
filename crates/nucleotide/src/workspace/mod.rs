@@ -77,6 +77,7 @@ use nucleotide_terminal::TerminalBounds;
 use nucleotide_workspace::local_workspace_backend;
 use nucleotide_workspace::{
     FileKind, FileSearchQuery, TextSearchQuery, WorkspaceBackend, WorkspaceBackendHandle,
+    WorkspaceIdentity,
 };
 use slotmap::KeyData;
 // (no direct Workspace v2 items used here)
@@ -6434,15 +6435,22 @@ impl Workspace {
             core.project_directory = Some(dir.clone());
         });
 
-        // Update project status service
+        let workspace_backend = self.core.read(cx).workspace_backend.clone();
+
+        // Update project status service. Remote project type detection is
+        // handled through the workspace backend to avoid host filesystem
+        // probes on WSL/SSH paths.
         let project_status = nucleotide_project::project_status_service(cx);
-        project_status.set_project_root(Some(dir.clone()));
+        if matches!(workspace_backend.identity(), WorkspaceIdentity::Local) {
+            project_status.set_project_root(Some(dir.clone()));
+        } else {
+            project_status.set_project_root_without_detection(Some(dir.clone()));
+        }
 
         // Start VCS monitoring for the new directory
-        let workspace_backend = self.core.read(cx).workspace_backend.clone();
         let vcs_handle = cx.global::<VcsServiceHandle>().service().clone();
         vcs_handle.update(cx, |service, cx| {
-            service.set_workspace_backend(workspace_backend);
+            service.set_workspace_backend(workspace_backend.clone());
             service.start_monitoring(dir.clone(), cx);
         });
 
@@ -6626,10 +6634,19 @@ impl Workspace {
         // Force refresh project detection in the project status service
         info!(project_root = %project_root.display(), "Updating project status service with project root");
         let project_status = nucleotide_project::project_status_service(cx);
-        project_status.set_project_root(Some(project_root.clone()));
-        info!("Project status service updated, refreshing project detection");
-        project_status.refresh_project_detection();
-        info!("Project detection refresh completed");
+        let workspace_backend = self.core.read(cx).workspace_backend.clone();
+        if matches!(workspace_backend.identity(), WorkspaceIdentity::Local) {
+            project_status.set_project_root(Some(project_root.clone()));
+            info!("Project status service updated, refreshing project detection");
+            project_status.refresh_project_detection();
+            info!("Project detection refresh completed");
+        } else {
+            project_status.set_project_root_without_detection(Some(project_root.clone()));
+            info!(
+                backend = ?workspace_backend.identity(),
+                "Project status detection deferred to workspace backend"
+            );
+        }
 
         if let Some(sender) = self.core.read(cx).get_project_lsp_command_sender() {
             let span = tracing::info_span!(
