@@ -15,6 +15,7 @@ use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::scrollbar::{Scrollbar, ScrollbarState};
 use nucleotide_ui::theme_manager::HelixThemedContext;
 use nucleotide_ui::{Button, ButtonSize, ButtonVariant, MarkdownStyle, Tooltipped, markdown};
+use nucleotide_workspace::WorkspaceIdentity;
 
 use crate::{Core, Input, InputEvent};
 use nucleotide_editor::{
@@ -266,6 +267,14 @@ impl DocumentView {
             self.runnable_tasks_cache = None;
             return BTreeMap::new();
         };
+
+        if !matches!(
+            self.core.read(cx).workspace_backend.identity(),
+            WorkspaceIdentity::Local
+        ) {
+            self.runnable_tasks_cache = None;
+            return BTreeMap::new();
+        }
 
         if self
             .runnable_tasks_cache
