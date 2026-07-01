@@ -2,15 +2,19 @@
 // ABOUTME: Keeps WSL, SSH, and local service transports on one request model
 
 use anyhow::{Context, Result, bail};
+use async_trait::async_trait;
 use futures::executor::block_on;
 use nucleotide_workspace::{
     DirectoryListing, FileKind, FileRead, FileSearchQuery, FileSearchResult, FileStat,
-    LocalWorkspaceBackend, ReadOptions, WorkspaceBackend, WorkspaceError, WriteOptions,
-    WriteResult,
+    LocalWorkspaceBackend, ReadOptions, RemoteWorkspaceIdentity, WorkspaceBackend, WorkspaceError,
+    WorkspaceIdentity, WriteOptions, WriteResult,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use std::error::Error;
+use std::fmt;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub const PROTOCOL_VERSION: u32 = 1;
@@ -176,6 +180,37 @@ pub fn read_frame<R: Read>(reader: &mut R) -> io::Result<Option<Frame>> {
         header,
         body,
     }))
+}
+
+pub trait RemoteTransport: Send {
+    fn write_frame(&mut self, frame: &Frame) -> io::Result<()>;
+
+    fn read_frame(&mut self) -> io::Result<Option<Frame>>;
+}
+
+pub struct FramedTransport<R, W> {
+    reader: R,
+    writer: W,
+}
+
+impl<R, W> FramedTransport<R, W> {
+    pub fn new(reader: R, writer: W) -> Self {
+        Self { reader, writer }
+    }
+}
+
+impl<R, W> RemoteTransport for FramedTransport<R, W>
+where
+    R: Read + Send,
+    W: Write + Send,
+{
+    fn write_frame(&mut self, frame: &Frame) -> io::Result<()> {
+        write_frame(&mut self.writer, frame)
+    }
+
+    fn read_frame(&mut self) -> io::Result<Option<Frame>> {
+        read_frame(&mut self.reader)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -381,6 +416,282 @@ pub struct FileSearchResponse {
     pub root: PathBuf,
     pub files: Vec<PathBuf>,
     pub truncated: bool,
+}
+
+#[derive(Debug)]
+pub enum RemoteClientError {
+    Io(io::Error),
+    Json(serde_json::Error),
+    Disconnected,
+    Protocol(String),
+    Remote(RemoteError),
+}
+
+impl fmt::Display for RemoteClientError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io(error) => write!(formatter, "remote transport I/O failed: {error}"),
+            Self::Json(error) => write!(formatter, "remote protocol JSON failed: {error}"),
+            Self::Disconnected => formatter.write_str("remote service disconnected"),
+            Self::Protocol(message) => write!(formatter, "remote protocol error: {message}"),
+            Self::Remote(error) => write!(formatter, "remote service error: {}", error.message),
+        }
+    }
+}
+
+impl Error for RemoteClientError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Io(error) => Some(error),
+            Self::Json(error) => Some(error),
+            Self::Disconnected | Self::Protocol(_) | Self::Remote(_) => None,
+        }
+    }
+}
+
+impl From<io::Error> for RemoteClientError {
+    fn from(error: io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
+impl From<serde_json::Error> for RemoteClientError {
+    fn from(error: serde_json::Error) -> Self {
+        Self::Json(error)
+    }
+}
+
+pub struct RemoteWorkspaceClient<T> {
+    transport: T,
+    next_request_id: u64,
+}
+
+impl<T> RemoteWorkspaceClient<T>
+where
+    T: RemoteTransport,
+{
+    pub fn new(transport: T) -> Self {
+        Self {
+            transport,
+            next_request_id: 1,
+        }
+    }
+
+    pub fn request(
+        &mut self,
+        request: RemoteRequest,
+        body: Vec<u8>,
+    ) -> std::result::Result<(RemoteResponse, Vec<u8>), RemoteClientError> {
+        let request_id = self.next_id();
+        let envelope = RequestEnvelope::new(request);
+        let frame = Frame::from_json_header(FrameKind::Request, request_id, 0, &envelope, body)?;
+        self.transport.write_frame(&frame)?;
+
+        loop {
+            let frame = self
+                .transport
+                .read_frame()?
+                .ok_or(RemoteClientError::Disconnected)?;
+            if frame.request_id != request_id {
+                return Err(RemoteClientError::Protocol(format!(
+                    "received frame for request {}, expected {}",
+                    frame.request_id, request_id
+                )));
+            }
+
+            match frame.kind {
+                FrameKind::Response => {
+                    let envelope = frame.decode_json_header::<ResponseEnvelope>()?;
+                    if envelope.protocol_version != PROTOCOL_VERSION {
+                        return Err(RemoteClientError::Protocol(format!(
+                            "unsupported response protocol version {}; expected {}",
+                            envelope.protocol_version, PROTOCOL_VERSION
+                        )));
+                    }
+                    return Ok((envelope.response, frame.body));
+                }
+                FrameKind::Error => {
+                    let envelope = frame.decode_json_header::<ErrorEnvelope>()?;
+                    if envelope.protocol_version != PROTOCOL_VERSION {
+                        return Err(RemoteClientError::Protocol(format!(
+                            "unsupported error protocol version {}; expected {}",
+                            envelope.protocol_version, PROTOCOL_VERSION
+                        )));
+                    }
+                    return Err(RemoteClientError::Remote(envelope.error));
+                }
+                FrameKind::Progress => continue,
+                other => {
+                    return Err(RemoteClientError::Protocol(format!(
+                        "unexpected response frame kind: {other:?}"
+                    )));
+                }
+            }
+        }
+    }
+
+    pub fn shutdown(&mut self) -> std::result::Result<(), RemoteClientError> {
+        let (response, _) = self.request(RemoteRequest::Shutdown, Vec::new())?;
+        match response {
+            RemoteResponse::Shutdown => Ok(()),
+            other => Err(RemoteClientError::Protocol(format!(
+                "unexpected shutdown response: {other:?}"
+            ))),
+        }
+    }
+
+    fn next_id(&mut self) -> u64 {
+        let id = self.next_request_id;
+        self.next_request_id = self.next_request_id.wrapping_add(1).max(1);
+        id
+    }
+}
+
+pub struct RemoteWorkspaceBackend<T> {
+    identity: RemoteWorkspaceIdentity,
+    client: Mutex<RemoteWorkspaceClient<T>>,
+}
+
+impl<T> RemoteWorkspaceBackend<T>
+where
+    T: RemoteTransport,
+{
+    pub fn new(identity: RemoteWorkspaceIdentity, client: RemoteWorkspaceClient<T>) -> Self {
+        Self {
+            identity,
+            client: Mutex::new(client),
+        }
+    }
+
+    fn request(
+        &self,
+        operation: &'static str,
+        path: &Path,
+        request: RemoteRequest,
+        body: Vec<u8>,
+    ) -> nucleotide_workspace::Result<(RemoteResponse, Vec<u8>)> {
+        let mut client = self
+            .client
+            .lock()
+            .map_err(|_| remote_lock_error(operation, path))?;
+        client
+            .request(request, body)
+            .map_err(|error| client_error_to_workspace(operation, path, error))
+    }
+}
+
+#[async_trait]
+impl<T> WorkspaceBackend for RemoteWorkspaceBackend<T>
+where
+    T: RemoteTransport + Send,
+{
+    fn identity(&self) -> WorkspaceIdentity {
+        WorkspaceIdentity::Remote(self.identity.clone())
+    }
+
+    async fn stat(&self, path: &Path) -> nucleotide_workspace::Result<FileStat> {
+        let (response, _) = self.request(
+            "stat",
+            path,
+            RemoteRequest::Stat {
+                path: path.to_path_buf(),
+            },
+            Vec::new(),
+        )?;
+        match response {
+            RemoteResponse::Stat(stat) => Ok(file_stat_from_response(stat)),
+            other => Err(unexpected_response_error("stat", path, other)),
+        }
+    }
+
+    async fn list_dir(&self, path: &Path) -> nucleotide_workspace::Result<DirectoryListing> {
+        let (response, _) = self.request(
+            "list directory",
+            path,
+            RemoteRequest::ListDir {
+                path: path.to_path_buf(),
+            },
+            Vec::new(),
+        )?;
+        match response {
+            RemoteResponse::ListDir(listing) => Ok(directory_listing_from_response(listing)),
+            other => Err(unexpected_response_error("list directory", path, other)),
+        }
+    }
+
+    async fn read_file(
+        &self,
+        path: &Path,
+        options: ReadOptions,
+    ) -> nucleotide_workspace::Result<FileRead> {
+        let (response, body) = self.request(
+            "read file",
+            path,
+            RemoteRequest::ReadFile {
+                path: path.to_path_buf(),
+                max_bytes: options.max_bytes,
+            },
+            Vec::new(),
+        )?;
+        match response {
+            RemoteResponse::ReadFile(read) => Ok(file_read_from_response(read, body)),
+            other => Err(unexpected_response_error("read file", path, other)),
+        }
+    }
+
+    async fn write_file(
+        &self,
+        path: &Path,
+        bytes: &[u8],
+        options: WriteOptions,
+    ) -> nucleotide_workspace::Result<WriteResult> {
+        let (response, _) = self.request(
+            "write file",
+            path,
+            RemoteRequest::WriteFile {
+                path: path.to_path_buf(),
+                create_parent_dirs: options.create_parent_dirs,
+                expected_modified_unix_millis: options
+                    .expected_modified
+                    .and_then(system_time_unix_millis),
+            },
+            bytes.to_vec(),
+        )?;
+        match response {
+            RemoteResponse::WriteFile(result) => Ok(write_result_from_response(result)),
+            other => Err(unexpected_response_error("write file", path, other)),
+        }
+    }
+
+    async fn file_search(
+        &self,
+        query: FileSearchQuery,
+    ) -> nucleotide_workspace::Result<FileSearchResult> {
+        let root = query.root.clone();
+        let request = FileSearchRequest {
+            root: query.root,
+            pattern: query.pattern,
+            limit: query.limit,
+            hidden: query.hidden,
+            parents: query.parents,
+            ignore: query.ignore,
+            git_ignore: query.git_ignore,
+            git_global: query.git_global,
+            git_exclude: query.git_exclude,
+            follow_links: query.follow_links,
+            max_depth: query.max_depth,
+        };
+        let (response, _) = self.request(
+            "file search",
+            &root,
+            RemoteRequest::FileSearch(request),
+            Vec::new(),
+        )?;
+        match response {
+            RemoteResponse::FileSearch(result) => Ok(file_search_from_response(result)),
+            other => Err(unexpected_response_error("file search", &root, other)),
+        }
+    }
 }
 
 pub struct WorkspaceService<B> {
@@ -694,6 +1005,75 @@ fn file_search_response(result: FileSearchResult) -> FileSearchResponse {
     }
 }
 
+fn file_stat_from_response(stat: FileStatResponse) -> FileStat {
+    FileStat {
+        path: stat.path,
+        kind: file_kind_from_response(stat.kind),
+        size: stat.size,
+        modified: stat
+            .modified_unix_millis
+            .and_then(system_time_from_unix_millis),
+        readonly: stat.readonly,
+    }
+}
+
+fn directory_listing_from_response(listing: DirectoryListingResponse) -> DirectoryListing {
+    DirectoryListing {
+        path: listing.path,
+        entries: listing
+            .entries
+            .into_iter()
+            .map(|entry| nucleotide_workspace::DirectoryEntry {
+                name: entry.name,
+                path: entry.path,
+                stat: file_stat_from_response(entry.stat),
+                symlink_target: entry.symlink_target,
+                target_exists: entry.target_exists,
+            })
+            .collect(),
+    }
+}
+
+fn file_read_from_response(read: FileReadResponse, bytes: Vec<u8>) -> FileRead {
+    FileRead {
+        path: read.path,
+        bytes,
+        size: read.size,
+        modified: read
+            .modified_unix_millis
+            .and_then(system_time_from_unix_millis),
+        readonly: read.readonly,
+        truncated: read.truncated,
+    }
+}
+
+fn write_result_from_response(result: WriteResultResponse) -> WriteResult {
+    WriteResult {
+        path: result.path,
+        size: result.size,
+        modified: result
+            .modified_unix_millis
+            .and_then(system_time_from_unix_millis),
+    }
+}
+
+fn file_search_from_response(result: FileSearchResponse) -> FileSearchResult {
+    FileSearchResult {
+        root: result.root,
+        files: result.files,
+        truncated: result.truncated,
+    }
+}
+
+fn file_kind_from_response(kind: RemoteFileKind) -> FileKind {
+    match kind {
+        RemoteFileKind::File => FileKind::File,
+        RemoteFileKind::Directory => FileKind::Directory,
+        RemoteFileKind::Symlink => FileKind::Symlink,
+        RemoteFileKind::Other => FileKind::Other,
+    }
+}
+
 fn remote_file_kind(kind: FileKind) -> RemoteFileKind {
     match kind {
         FileKind::File => RemoteFileKind::File,
@@ -709,12 +1089,67 @@ fn remote_error_from_workspace(error: WorkspaceError) -> RemoteError {
         WorkspaceError::Modified { .. } => "modified",
         WorkspaceError::NotFile { .. } => "not_file",
         WorkspaceError::InvalidSearchPattern(_) => "invalid_search_pattern",
+        WorkspaceError::Remote { .. } => "remote",
     };
 
     RemoteError {
         code: code.to_string(),
         message: error.to_string(),
         diagnostic: Some(format!("{error:?}")),
+    }
+}
+
+fn remote_lock_error(operation: &'static str, path: &Path) -> WorkspaceError {
+    WorkspaceError::Remote {
+        operation,
+        path: path.to_path_buf(),
+        message: "remote client lock is poisoned".to_string(),
+        diagnostic: None,
+    }
+}
+
+fn client_error_to_workspace(
+    operation: &'static str,
+    path: &Path,
+    error: RemoteClientError,
+) -> WorkspaceError {
+    match error {
+        RemoteClientError::Remote(error) if error.code == "modified" => WorkspaceError::Modified {
+            path: path.to_path_buf(),
+        },
+        RemoteClientError::Remote(error) if error.code == "not_file" => WorkspaceError::NotFile {
+            path: path.to_path_buf(),
+        },
+        RemoteClientError::Remote(error) => WorkspaceError::Remote {
+            operation,
+            path: path.to_path_buf(),
+            message: error.message,
+            diagnostic: error.diagnostic,
+        },
+        RemoteClientError::Io(source) => WorkspaceError::Io {
+            operation,
+            path: path.to_path_buf(),
+            source,
+        },
+        other => WorkspaceError::Remote {
+            operation,
+            path: path.to_path_buf(),
+            message: other.to_string(),
+            diagnostic: Some(format!("{other:?}")),
+        },
+    }
+}
+
+fn unexpected_response_error(
+    operation: &'static str,
+    path: &Path,
+    response: RemoteResponse,
+) -> WorkspaceError {
+    WorkspaceError::Remote {
+        operation,
+        path: path.to_path_buf(),
+        message: format!("unexpected response: {response:?}"),
+        diagnostic: None,
     }
 }
 
@@ -795,7 +1230,61 @@ fn print_help<W: Write>(writer: &mut W) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nucleotide_workspace::RemoteWorkspaceKind;
+    use std::collections::VecDeque;
     use std::io::Cursor;
+
+    struct LoopbackTransport {
+        root: PathBuf,
+        pending: VecDeque<Frame>,
+    }
+
+    impl LoopbackTransport {
+        fn new(root: &Path) -> Self {
+            Self {
+                root: root.to_path_buf(),
+                pending: VecDeque::new(),
+            }
+        }
+    }
+
+    impl RemoteTransport for LoopbackTransport {
+        fn write_frame(&mut self, frame: &Frame) -> io::Result<()> {
+            let mut input = Vec::new();
+            write_frame(&mut input, frame)?;
+            let root = self.root.clone();
+            let output = std::thread::spawn(move || {
+                let service = WorkspaceService::new(LocalWorkspaceBackend, root);
+                let mut output = Vec::new();
+                service
+                    .serve(&mut Cursor::new(input), &mut output)
+                    .map(|_| output)
+            })
+            .join()
+            .map_err(|_| io::Error::other("loopback service thread panicked"))?
+            .map_err(|error| io::Error::other(error.to_string()))?;
+
+            let mut cursor = Cursor::new(output);
+            while let Some(frame) = read_frame(&mut cursor)? {
+                self.pending.push_back(frame);
+            }
+            Ok(())
+        }
+
+        fn read_frame(&mut self) -> io::Result<Option<Frame>> {
+            Ok(self.pending.pop_front())
+        }
+    }
+
+    fn remote_backend(root: &Path) -> RemoteWorkspaceBackend<LoopbackTransport> {
+        RemoteWorkspaceBackend::new(
+            RemoteWorkspaceIdentity {
+                kind: RemoteWorkspaceKind::Other("loopback".to_string()),
+                name: "loopback".to_string(),
+            },
+            RemoteWorkspaceClient::new(LoopbackTransport::new(root)),
+        )
+    }
 
     fn request_frame(id: u64, request: RemoteRequest, body: Vec<u8>) -> Frame {
         Frame::from_json_header(
@@ -971,5 +1460,64 @@ mod tests {
         assert_eq!(frame.kind, FrameKind::Error);
         let error = frame.decode_json_header::<ErrorEnvelope>().unwrap();
         assert_eq!(error.error.code, "protocol_mismatch");
+    }
+
+    #[test]
+    fn remote_workspace_backend_reads_files_through_service() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("main.rs"), "abcdef").unwrap();
+        let backend = remote_backend(temp.path());
+
+        let read =
+            block_on(backend.read_file(Path::new("main.rs"), ReadOptions { max_bytes: Some(4) }))
+                .unwrap();
+
+        assert_eq!(read.bytes, b"abcd");
+        assert_eq!(read.size, 6);
+        assert!(read.truncated);
+    }
+
+    #[test]
+    fn remote_workspace_backend_writes_files_through_service() {
+        let temp = tempfile::tempdir().unwrap();
+        let backend = remote_backend(temp.path());
+
+        let result = block_on(backend.write_file(
+            Path::new("src/main.rs"),
+            b"fn main() {}\n",
+            WriteOptions {
+                create_parent_dirs: true,
+                expected_modified: None,
+            },
+        ))
+        .unwrap();
+
+        assert_eq!(result.size, 13);
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("src").join("main.rs")).unwrap(),
+            "fn main() {}\n"
+        );
+    }
+
+    #[test]
+    fn remote_workspace_backend_maps_modified_errors() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("main.rs"), "old").unwrap();
+        let backend = remote_backend(temp.path());
+
+        let result = block_on(backend.write_file(
+            Path::new("main.rs"),
+            b"new",
+            WriteOptions {
+                create_parent_dirs: false,
+                expected_modified: Some(UNIX_EPOCH),
+            },
+        ));
+
+        assert!(matches!(result, Err(WorkspaceError::Modified { .. })));
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("main.rs")).unwrap(),
+            "old"
+        );
     }
 }
