@@ -1414,6 +1414,43 @@ mod tests {
                 .ok_or_else(|| workspace_test_error("list directory", path))
         }
 
+        async fn create_file(
+            &self,
+            path: &Path,
+        ) -> nucleotide_workspace::Result<nucleotide_workspace::FileStat> {
+            Err(workspace_test_error("create file", path))
+        }
+
+        async fn create_dir(
+            &self,
+            path: &Path,
+        ) -> nucleotide_workspace::Result<nucleotide_workspace::FileStat> {
+            Err(workspace_test_error("create directory", path))
+        }
+
+        async fn rename_path(
+            &self,
+            from: &Path,
+            _to: &Path,
+        ) -> nucleotide_workspace::Result<nucleotide_workspace::FileStat> {
+            Err(workspace_test_error("rename path", from))
+        }
+
+        async fn delete_path(
+            &self,
+            path: &Path,
+        ) -> nucleotide_workspace::Result<nucleotide_workspace::FileStat> {
+            Err(workspace_test_error("delete path", path))
+        }
+
+        async fn copy_path(
+            &self,
+            from: &Path,
+            _to: &Path,
+        ) -> nucleotide_workspace::Result<nucleotide_workspace::FileStat> {
+            Err(workspace_test_error("copy path", from))
+        }
+
         async fn read_file(
             &self,
             path: &Path,
