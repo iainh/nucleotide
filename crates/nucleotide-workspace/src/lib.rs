@@ -28,6 +28,14 @@ pub enum WorkspaceError {
 
     #[error("search pattern is invalid: {0}")]
     InvalidSearchPattern(#[from] regex::Error),
+
+    #[error("remote {operation} failed for {path}: {message}")]
+    Remote {
+        operation: &'static str,
+        path: PathBuf,
+        message: String,
+        diagnostic: Option<String>,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, WorkspaceError>;
