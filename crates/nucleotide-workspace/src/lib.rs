@@ -181,7 +181,7 @@ fn parse_ssh_uri_path(value: &str) -> Option<(SshWorkspaceTarget, PathBuf)> {
 
     Some((
         SshWorkspaceTarget { host, user, port },
-        path_from_posix_segments(remote_path.split('/')),
+        path_from_percent_encoded_posix_path(remote_path),
     ))
 }
 
@@ -208,6 +208,47 @@ fn path_from_posix_segments<'a>(segments: impl IntoIterator<Item = &'a str>) -> 
         }
     }
     path
+}
+
+fn path_from_percent_encoded_posix_path(value: &str) -> PathBuf {
+    let mut path = PathBuf::from("/");
+    for segment in value.split('/').filter(|segment| !segment.is_empty()) {
+        path.push(percent_decode_uri_component(segment));
+    }
+    path
+}
+
+fn percent_decode_uri_component(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+
+    while index < bytes.len() {
+        if bytes[index] == b'%'
+            && index + 2 < bytes.len()
+            && let (Some(high), Some(low)) = (
+                hex_digit_value(bytes[index + 1]),
+                hex_digit_value(bytes[index + 2]),
+            )
+        {
+            output.push((high << 4) | low);
+            index += 3;
+        } else {
+            output.push(bytes[index]);
+            index += 1;
+        }
+    }
+
+    String::from_utf8_lossy(&output).into_owned()
+}
+
+fn hex_digit_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2120,6 +2161,24 @@ mod tests {
                     port: Some(2222),
                 },
                 path: PathBuf::from("/home/me/project"),
+            }
+        );
+    }
+
+    #[test]
+    fn workspace_location_decodes_ssh_uri_path_escapes() {
+        let path = PathBuf::from("ssh://me@example.com/home/me/Project%20One/%E2%9C%93");
+
+        assert_eq!(
+            classify_workspace_location(&path),
+            WorkspaceLocation::Ssh {
+                original_path: path,
+                target: SshWorkspaceTarget {
+                    host: "example.com".to_string(),
+                    user: Some("me".to_string()),
+                    port: None,
+                },
+                path: PathBuf::from("/home/me/Project One/\u{2713}"),
             }
         );
     }
