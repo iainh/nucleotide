@@ -8052,10 +8052,15 @@ fn local_path_completion_context(
     matched_path: &str,
     doc_path: Option<&Path>,
 ) -> Option<LocalPathCompletionContext> {
+    let doc_workspace = doc_path.and_then(WslWorkspace::from_unc_path);
     let path = if matched_path.starts_with("file://") {
         url::Url::parse(matched_path)
             .ok()
             .and_then(|url| url.to_file_path().ok())?
+    } else if matched_path.starts_with('/')
+        && let Some(workspace) = doc_workspace.as_ref()
+    {
+        PathBuf::from(workspace.unc_path_for_linux_path(matched_path)?)
     } else {
         PathBuf::from(matched_path)
     };
@@ -9875,6 +9880,32 @@ mod tests {
                 .expect("path context with trailing slash");
 
         assert_eq!(context.dir_path, PathBuf::from("/workspace/project/src"));
+        assert_eq!(context.typed_file_name, None);
+    }
+
+    #[test]
+    fn local_path_completion_context_maps_wsl_absolute_linux_paths() {
+        let doc_path = Path::new(r"\\wsl.localhost\Ubuntu\home\iain\repo\src\main.rs");
+        let context =
+            local_path_completion_context("/home/iain/repo/ma", Some(doc_path)).expect("context");
+
+        assert_eq!(
+            context.dir_path,
+            PathBuf::from(r"\\wsl.localhost\Ubuntu\home\iain\repo")
+        );
+        assert_eq!(context.typed_file_name.as_deref(), Some("ma"));
+    }
+
+    #[test]
+    fn local_path_completion_context_maps_wsl_absolute_linux_directory() {
+        let doc_path = Path::new(r"\\wsl.localhost\Ubuntu\home\iain\repo\src\main.rs");
+        let context =
+            local_path_completion_context("/home/iain/repo/src/", Some(doc_path)).expect("context");
+
+        assert_eq!(
+            context.dir_path,
+            PathBuf::from(r"\\wsl.localhost\Ubuntu\home\iain\repo\src")
+        );
         assert_eq!(context.typed_file_name, None);
     }
 

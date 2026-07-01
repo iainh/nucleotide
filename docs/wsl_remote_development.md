@@ -89,6 +89,10 @@ editor backend into Linux:
   metadata is unavailable, path-shape fallbacks prefer opening extension-bearing
   paths and common extensionless project files such as `Makefile`, `Dockerfile`,
   and `README` as files, while other extensionless paths remain directories.
+- Path completions from WSL documents accept absolute Linux paths and map them
+  into the active document's distro before listing through the helper, so
+  `/home/me/project/...` behaves like the matching `\\wsl.localhost\<distro>`
+  path.
 - Workspace terminals and runnable commands opened from WSL roots are launched
   through `wsl.exe --distribution <distro> --cd <linux-path>`, so shells and
   commands start where the project files live. Runnable/task environment
