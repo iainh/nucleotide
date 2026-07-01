@@ -1676,7 +1676,7 @@ fn local_run_process(spec: ProcessSpec) -> Result<ProcessOutput> {
     if spec.clear_env {
         command.env_clear();
     }
-    command.envs(&spec.env);
+    apply_process_environment(&mut command, &spec.env);
     configure_workspace_process(&mut command);
 
     let mut child = command.spawn().map_err(|source| WorkspaceError::Io {
@@ -1778,6 +1778,18 @@ fn wait_for_process(
         let remaining = timeout.saturating_sub(elapsed);
         std::thread::sleep(remaining.min(Duration::from_millis(10)));
     }
+}
+
+fn apply_process_environment(command: &mut Command, environment: &BTreeMap<String, String>) {
+    for (key, value) in environment {
+        if process_environment_entry_is_valid(key, value) {
+            command.env(key, value);
+        }
+    }
+}
+
+fn process_environment_entry_is_valid(key: &str, value: &str) -> bool {
+    !key.is_empty() && !key.contains(['=', '\0']) && !value.contains('\0')
 }
 
 #[cfg(unix)]
@@ -2103,6 +2115,48 @@ mod tests {
         assert!(!output.stdout_truncated);
         assert!(!output.stderr_truncated);
         assert!(!output.timed_out);
+    }
+
+    #[test]
+    fn process_environment_validation_rejects_invalid_entries() {
+        assert!(process_environment_entry_is_valid("GOOD", "value"));
+        assert!(!process_environment_entry_is_valid("", "value"));
+        assert!(!process_environment_entry_is_valid("BAD=KEY", "value"));
+        assert!(!process_environment_entry_is_valid("BAD\0KEY", "value"));
+        assert!(!process_environment_entry_is_valid(
+            "BAD_VALUE",
+            "bad\0value"
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_backend_run_process_ignores_invalid_environment_entries() {
+        let temp = tempfile::tempdir().unwrap();
+        let backend = LocalWorkspaceBackend;
+
+        let output = block_on(backend.run_process(ProcessSpec {
+            program: "/bin/sh".to_string(),
+            args: vec![
+                "-c".to_string(),
+                "printf '%s:%s' \"$GOOD\" \"${BAD_VALUE-unset}\"".to_string(),
+            ],
+            cwd: temp.path().to_path_buf(),
+            env: BTreeMap::from([
+                ("GOOD".to_string(), "yes".to_string()),
+                ("BAD=KEY".to_string(), "ignored".to_string()),
+                ("BAD\0KEY".to_string(), "ignored".to_string()),
+                ("BAD_VALUE".to_string(), "bad\0value".to_string()),
+            ]),
+            clear_env: true,
+            stdin: Vec::new(),
+            max_output_bytes: None,
+            timeout_ms: None,
+        }))
+        .unwrap();
+
+        assert!(output.success);
+        assert_eq!(output.stdout, b"yes:unset");
     }
 
     #[cfg(unix)]
