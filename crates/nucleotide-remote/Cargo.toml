@@ -15,6 +15,8 @@ rust-version = "1.95"
 anyhow.workspace = true
 async-trait.workspace = true
 futures.workspace = true
+dirs.workspace = true
+ignore.workspace = true
 nucleotide-env.workspace = true
 nucleotide-workspace.workspace = true
 serde = { workspace = true, features = ["derive"] }

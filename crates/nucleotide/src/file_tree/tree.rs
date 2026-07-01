@@ -1008,7 +1008,8 @@ impl FileTree {
                 continue;
             }
 
-            if !self.config.show_ignored && self.is_ignored_file(&path) {
+            if !self.config.show_ignored && self.directory_entry_is_ignored(&directory_entry, &path)
+            {
                 continue;
             }
 
@@ -1107,6 +1108,7 @@ impl FileTree {
         directory_entry: DirectoryEntry,
         depth: usize,
     ) -> FileTreeEntry {
+        let backend_ignored = directory_entry.ignored;
         let id = self.next_entry_id();
         let stat = directory_entry.stat;
         let path = normalize_tree_path(&stat.path);
@@ -1128,7 +1130,7 @@ impl FileTree {
 
         entry.depth = depth;
         entry.is_visible = true;
-        entry.is_ignored = self.is_ignored_file(&entry.path);
+        entry.is_ignored = backend_ignored.unwrap_or_else(|| self.is_ignored_file(&entry.path));
         entry
     }
 
@@ -1301,6 +1303,10 @@ impl FileTree {
         }
 
         false
+    }
+
+    fn directory_entry_is_ignored(&self, entry: &DirectoryEntry, path: &Path) -> bool {
+        entry.ignored.unwrap_or_else(|| self.is_ignored_file(path))
     }
 }
 
@@ -1550,6 +1556,14 @@ mod tests {
             },
             symlink_target: None,
             target_exists: None,
+            ignored: None,
+        }
+    }
+
+    fn ignored_static_entry(path: PathBuf, kind: WorkspaceFileKind) -> DirectoryEntry {
+        DirectoryEntry {
+            ignored: Some(true),
+            ..static_entry(path, kind)
         }
     }
 
@@ -1616,6 +1630,59 @@ mod tests {
         assert!(paths.contains(&readme));
         assert!(paths.contains(&src));
         assert!(tree.entry_by_path(&lib).is_some());
+    }
+
+    #[test]
+    fn backend_load_filters_backend_supplied_ignored_entries() {
+        let root = PathBuf::from("/__nucleotide_remote_virtual__/project");
+        let visible = root.join("visible.rs");
+        let ignored = root.join("ignored.log");
+        let backend = StaticBackend {
+            listings: HashMap::from([(
+                root.clone(),
+                DirectoryListing {
+                    path: root.clone(),
+                    entries: vec![
+                        static_entry(visible.clone(), WorkspaceFileKind::File),
+                        ignored_static_entry(ignored.clone(), WorkspaceFileKind::File),
+                    ],
+                },
+            )]),
+        };
+
+        let mut config = config();
+        config.show_ignored = false;
+        let mut tree = FileTree::new_for_backend(root.clone(), config, backend.identity());
+        tree.load_with_backend(&backend).unwrap();
+
+        assert!(tree.entry_by_path(&visible).is_some());
+        assert!(tree.entry_by_path(&ignored).is_none());
+    }
+
+    #[test]
+    fn backend_load_can_show_backend_supplied_ignored_entries() {
+        let root = PathBuf::from("/__nucleotide_remote_virtual__/project");
+        let ignored = root.join("ignored.log");
+        let backend = StaticBackend {
+            listings: HashMap::from([(
+                root.clone(),
+                DirectoryListing {
+                    path: root.clone(),
+                    entries: vec![ignored_static_entry(
+                        ignored.clone(),
+                        WorkspaceFileKind::File,
+                    )],
+                },
+            )]),
+        };
+        let mut config = config();
+        config.show_ignored = true;
+
+        let mut tree = FileTree::new_for_backend(root.clone(), config, backend.identity());
+        tree.load_with_backend(&backend).unwrap();
+
+        let entry = tree.entry_by_path(&ignored).expect("ignored entry");
+        assert!(entry.is_ignored);
     }
 
     #[test]

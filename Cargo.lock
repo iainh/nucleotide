@@ -5166,7 +5166,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "dirs",
  "futures",
+ "ignore",
  "nucleotide-env",
  "nucleotide-workspace",
  "serde",

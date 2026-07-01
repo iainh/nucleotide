@@ -275,6 +275,7 @@ pub struct DirectoryEntry {
     pub stat: FileStat,
     pub symlink_target: Option<PathBuf>,
     pub target_exists: Option<bool>,
+    pub ignored: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -986,6 +987,7 @@ fn local_list_dir(path: &Path) -> Result<DirectoryListing> {
                 stat: file_stat_from_metadata(entry_path, metadata),
                 symlink_target,
                 target_exists,
+                ignored: None,
             })
         })
         .collect::<Result<Vec<_>>>()?;

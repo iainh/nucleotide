@@ -8474,6 +8474,7 @@ mod tests {
             },
             symlink_target: None,
             target_exists: None,
+            ignored: None,
         }
     }
 
