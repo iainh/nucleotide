@@ -1574,10 +1574,7 @@ impl FileTreeView {
         }
 
         let destination = file_tree_drop_destination(from, target_dir)?;
-        if destination == from
-            || self.tree.entry_by_path(&destination).is_some()
-            || destination.exists()
-        {
+        if destination == from || self.tree.entry_by_path(&destination).is_some() {
             return None;
         }
 
@@ -1599,17 +1596,45 @@ impl FileTreeView {
             return;
         };
         let from_path = from.to_path_buf();
+        let destination_for_io = destination.clone();
+        let workspace_backend = self.workspace_backend.clone();
 
-        if let Err(error) = std::fs::rename(&from_path, &destination) {
-            warn!(
-                from = ?from_path,
-                to = ?destination,
-                error = %error,
-                "Failed to move file tree entry on disk"
-            );
-            return;
-        }
+        cx.spawn(async move |this, cx| {
+            let from_for_io = from_path.clone();
+            let rename_result = cx
+                .background_executor()
+                .spawn(async move {
+                    workspace_backend
+                        .rename_path(&from_for_io, &destination_for_io)
+                        .await
+                })
+                .await;
 
+            if let Some(this) = this.upgrade() {
+                this.update(cx, |view, cx| match rename_result {
+                    Ok(stat) => {
+                        view.handle_entry_move_completed(from_path, stat.path, cx);
+                    }
+                    Err(error) => {
+                        warn!(
+                            from = ?from_path,
+                            to = ?destination,
+                            error = %error,
+                            "Failed to move file tree entry through workspace backend"
+                        );
+                    }
+                });
+            }
+        })
+        .detach();
+    }
+
+    fn handle_entry_move_completed(
+        &mut self,
+        from_path: PathBuf,
+        destination: PathBuf,
+        cx: &mut Context<Self>,
+    ) {
         match self
             .tree
             .move_entry(&from_path, &destination, FileTreeCollisionStrategy::Error)
@@ -1625,9 +1650,16 @@ impl FileTreeView {
                     from = ?from_path,
                     to = ?destination,
                     error = %error,
-                    "Disk move succeeded but file tree model move failed; applying rename fallback"
+                    "Workspace backend move succeeded but file tree model move failed; refreshing affected directories"
                 );
-                self.handle_file_renamed(&from_path, &destination, cx);
+                if let Some(parent) = from_path.parent() {
+                    self.refresh_directory(parent, cx);
+                }
+                if let Some(parent) = destination.parent()
+                    && Some(parent) != from_path.parent()
+                {
+                    self.refresh_directory(parent, cx);
+                }
                 self.emit_file_tree_move_event(from_path, destination, cx);
             }
         }
@@ -1738,6 +1770,7 @@ mod tests {
     use super::*;
     use crate::file_tree::entry::FileTreeEntryId;
     use gpui::{AppContext, TestAppContext};
+    use nucleotide_workspace::{WorkspacePathMapping, path_mapped_workspace_backend};
     use std::{cell::RefCell, rc::Rc};
 
     fn test_config() -> FileTreeConfig {
@@ -2337,6 +2370,53 @@ mod tests {
                 to: moved_file_path,
             },
         }));
+    }
+
+    #[gpui::test]
+    async fn entry_drop_moves_file_through_mapped_backend(cx: &mut TestAppContext) {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let display_root = PathBuf::from("/remote/project");
+        let native_source_dir = temp_dir.path().join("src");
+        let native_target_dir = temp_dir.path().join("crates");
+        let native_file_path = native_source_dir.join("lib.rs");
+        let native_moved_file_path = native_target_dir.join("lib.rs");
+        std::fs::create_dir_all(&native_source_dir).unwrap();
+        std::fs::create_dir_all(&native_target_dir).unwrap();
+        std::fs::write(&native_file_path, "pub fn lib() {}\n").unwrap();
+
+        let display_source_dir = display_root.join("src");
+        let display_target_dir = display_root.join("crates");
+        let display_file_path = display_source_dir.join("lib.rs");
+        let display_moved_file_path = display_target_dir.join("lib.rs");
+        let backend = path_mapped_workspace_backend(
+            local_workspace_backend(),
+            WorkspacePathMapping::new(display_root.clone(), temp_dir.path()),
+        );
+        let view = cx.new(|cx| {
+            FileTreeView::new_with_runtime_and_backend(
+                display_root.clone(),
+                test_config(),
+                None,
+                backend,
+                cx,
+            )
+        });
+
+        cx.run_until_parked();
+        view.update(cx, |view, cx| {
+            view.select_path(Some(display_file_path.clone()), cx);
+            view.handle_entry_move_requested(&display_file_path, &display_target_dir, cx);
+        });
+        cx.run_until_parked();
+
+        view.read_with(cx, |view, _cx| {
+            assert_eq!(view.selected_path(), Some(&display_moved_file_path));
+            assert_eq!(view.selected_paths(), vec![display_moved_file_path.clone()]);
+            assert!(view.contains_path(&display_moved_file_path));
+            assert!(!view.contains_path(&display_file_path));
+        });
+        assert!(!native_file_path.exists());
+        assert!(native_moved_file_path.exists());
     }
 }
 
