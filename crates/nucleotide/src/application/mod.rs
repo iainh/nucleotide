@@ -53,8 +53,8 @@ use helix_view::{
 use nucleotide_events::{ProjectLspCommand, ProjectLspCommandError};
 use nucleotide_lsp::{HelixLspBridge, ProjectLspManager, ServerStatus};
 use nucleotide_workspace::{
-    FileKind, WorkspaceBackendHandle, WorkspaceIdentity, classify_workspace_location,
-    local_workspace_backend,
+    DirectoryListing, FileKind, WorkspaceBackendHandle, WorkspaceIdentity,
+    classify_workspace_location, local_workspace_backend,
 };
 use slotmap::Key;
 
@@ -108,6 +108,7 @@ type CompletionServerResult = anyhow::Result<(
     Option<lsp::CompletionResponse>,
 )>;
 type CompletionServerFuture = BoxFuture<'static, CompletionServerResult>;
+type LocalCompletionFuture = BoxFuture<'static, Vec<nucleotide_events::completion::CompletionItem>>;
 type CompletionResolveFuture =
     BoxFuture<'static, anyhow::Result<nucleotide_events::completion::CompletionItem>>;
 type InlayHintJobFuture =
@@ -185,72 +186,98 @@ pub struct PendingCompletionRequest {
     prefix: String,
     retained_items: Vec<nucleotide_events::completion::CompletionItem>,
     local_items: Vec<nucleotide_events::completion::CompletionItem>,
+    local_futures: FuturesOrdered<LocalCompletionFuture>,
     lsp_error: Option<anyhow::Error>,
     lsp_futures: FuturesOrdered<CompletionServerFuture>,
 }
 
 impl PendingCompletionRequest {
     pub async fn collect(
-        mut self,
+        self,
     ) -> anyhow::Result<(
         Vec<nucleotide_events::completion::CompletionItem>,
         String,
         bool,
         Vec<u64>,
     )> {
-        let mut items = self.retained_items;
-        let mut lsp_error = self.lsp_error.take();
-        let mut is_incomplete = false;
-        let mut incomplete_server_ids = Vec::new();
+        let PendingCompletionRequest {
+            prefix,
+            retained_items,
+            mut local_items,
+            mut local_futures,
+            mut lsp_error,
+            mut lsp_futures,
+        } = self;
 
-        while let Some(response) = futures_util::StreamExt::next(&mut self.lsp_futures).await {
-            match response {
-                Ok((server_id, offset_encoding, Some(lsp_response))) => {
-                    let server_is_incomplete = lsp_completion_response_is_incomplete(&lsp_response);
-                    is_incomplete |= server_is_incomplete;
-                    if server_is_incomplete {
-                        incomplete_server_ids.push(server_id.data().as_ffi());
+        let lsp_collect = async move {
+            let mut lsp_items = Vec::new();
+            let mut is_incomplete = false;
+            let mut incomplete_server_ids = Vec::new();
+
+            while let Some(response) = futures_util::StreamExt::next(&mut lsp_futures).await {
+                match response {
+                    Ok((server_id, offset_encoding, Some(lsp_response))) => {
+                        let server_is_incomplete =
+                            lsp_completion_response_is_incomplete(&lsp_response);
+                        is_incomplete |= server_is_incomplete;
+                        if server_is_incomplete {
+                            incomplete_server_ids.push(server_id.data().as_ffi());
+                        }
+                        let mut server_items = lsp_completion_items_from_response_for_server(
+                            lsp_response,
+                            offset_encoding,
+                            Some(server_id),
+                        );
+                        nucleotide_logging::info!(
+                            server_id = ?server_id,
+                            item_count = server_items.len(),
+                            is_incomplete = server_is_incomplete,
+                            "Received LSP completion items from language server"
+                        );
+                        lsp_items.append(&mut server_items);
                     }
-                    let mut server_items = lsp_completion_items_from_response_for_server(
-                        lsp_response,
-                        offset_encoding,
-                        Some(server_id),
-                    );
-                    nucleotide_logging::info!(
-                        server_id = ?server_id,
-                        item_count = server_items.len(),
-                        is_incomplete = server_is_incomplete,
-                        "Received LSP completion items from language server"
-                    );
-                    items.append(&mut server_items);
-                }
-                Ok((server_id, _, None)) => {
-                    nucleotide_logging::info!(
-                        server_id = ?server_id,
-                        "LSP server returned no completions"
-                    );
-                }
-                Err(err) => {
-                    nucleotide_logging::warn!(
-                        error = %err,
-                        "LSP completion request failed"
-                    );
-                    if lsp_error.is_none() {
-                        lsp_error = Some(err);
+                    Ok((server_id, _, None)) => {
+                        nucleotide_logging::info!(
+                            server_id = ?server_id,
+                            "LSP server returned no completions"
+                        );
+                    }
+                    Err(err) => {
+                        nucleotide_logging::warn!(
+                            error = %err,
+                            "LSP completion request failed"
+                        );
+                        if lsp_error.is_none() {
+                            lsp_error = Some(err);
+                        }
                     }
                 }
             }
-        }
+
+            (lsp_items, lsp_error, is_incomplete, incomplete_server_ids)
+        };
+
+        let local_collect = async move {
+            while let Some(mut items) = futures_util::StreamExt::next(&mut local_futures).await {
+                local_items.append(&mut items);
+            }
+            local_items
+        };
+
+        let ((mut lsp_items, lsp_error, is_incomplete, incomplete_server_ids), mut local_items) =
+            futures_util::future::join(lsp_collect, local_collect).await;
+
+        let mut items = retained_items;
+        items.append(&mut lsp_items);
 
         nucleotide_logging::debug!(
             lsp_item_count = items.len(),
-            local_item_count = self.local_items.len(),
+            local_item_count = local_items.len(),
             incomplete_server_count = incomplete_server_ids.len(),
-            prefix = %self.prefix,
+            prefix = %prefix,
             is_incomplete = is_incomplete,
             "Merging LSP and local completion items"
         );
-        let mut local_items = self.local_items;
         suppress_shadowed_buffer_word_completion_items(&items, &mut local_items);
         items.extend(local_items);
         dedupe_completion_items(&mut items);
@@ -261,7 +288,7 @@ impl PendingCompletionRequest {
             return Err(err);
         }
 
-        Ok((items, self.prefix, is_incomplete, incomplete_server_ids))
+        Ok((items, prefix, is_incomplete, incomplete_server_ids))
     }
 }
 
@@ -4831,7 +4858,8 @@ impl Application {
             "Extracted completion prefix for filtering"
         );
 
-        let local_items = self.collect_local_completion_items(cursor, doc_id, &prefix);
+        let (local_items, local_futures) =
+            self.collect_local_completion_items(cursor, doc_id, &prefix);
         let (lsp_futures, lsp_error) = match self.prepare_lsp_completion_futures(
             cursor,
             doc_id,
@@ -4853,6 +4881,7 @@ impl Application {
             prefix,
             retained_items,
             local_items,
+            local_futures,
             lsp_error,
             lsp_futures,
         })
@@ -5094,10 +5123,16 @@ impl Application {
         cursor: usize,
         doc_id: helix_view::DocumentId,
         prefix: &str,
-    ) -> Vec<nucleotide_events::completion::CompletionItem> {
-        let mut items = self.collect_buffer_word_completion_items(doc_id, prefix);
-        items.extend(self.collect_path_completion_items(cursor, doc_id));
-        items
+    ) -> (
+        Vec<nucleotide_events::completion::CompletionItem>,
+        FuturesOrdered<LocalCompletionFuture>,
+    ) {
+        let items = self.collect_buffer_word_completion_items(doc_id, prefix);
+        let mut futures = FuturesOrdered::new();
+        if let Some(path_completion_future) = self.collect_path_completion_items(cursor, doc_id) {
+            futures.push_back(path_completion_future);
+        }
+        (items, futures)
     }
 
     fn collect_buffer_word_completion_items(
@@ -5116,10 +5151,8 @@ impl Application {
         &self,
         cursor: usize,
         doc_id: helix_view::DocumentId,
-    ) -> Vec<nucleotide_events::completion::CompletionItem> {
-        let Some(doc) = self.editor.documents.get(&doc_id) else {
-            return Vec::new();
-        };
+    ) -> Option<LocalCompletionFuture> {
+        let doc = self.editor.documents.get(&doc_id)?;
 
         let text = doc.text();
         let cursor_pos = cursor.min(text.len_chars());
@@ -5128,18 +5161,23 @@ impl Application {
             .line_to_char(current_line)
             .max(cursor_pos.saturating_sub(1000));
         let line_until_cursor = text.slice(start..cursor_pos);
-        let Some(matched_path) = get_path_suffix(line_until_cursor, false) else {
-            return Vec::new();
-        };
+        let matched_path = get_path_suffix(line_until_cursor, false)?;
 
         let matched_path = String::from(matched_path);
-        let Some(context) =
-            local_path_completion_context(&matched_path, doc.path().map(PathBuf::as_path))
-        else {
-            return Vec::new();
-        };
+        let workspace_backend = self.workspace_backend.clone();
+        let context = local_path_completion_context(
+            &matched_path,
+            doc.path().map(PathBuf::as_path),
+            workspace_backend.identity(),
+        )?;
 
-        path_completion_items(&context.dir_path, context.typed_file_name.as_deref())
+        Some(
+            async move {
+                path_completion_items(workspace_backend, context.dir_path, context.typed_file_name)
+                    .await
+            }
+            .boxed(),
+        )
     }
 
     /// Extract the current word prefix at the cursor position for completion filtering
@@ -7665,7 +7703,13 @@ fn maybe_insert_buffer_word(
 fn local_path_completion_context(
     matched_path: &str,
     doc_path: Option<&Path>,
+    workspace_identity: WorkspaceIdentity,
 ) -> Option<LocalPathCompletionContext> {
+    let is_local_workspace = matches!(workspace_identity, WorkspaceIdentity::Local);
+    if !is_local_workspace && matched_path.starts_with('~') {
+        return None;
+    }
+
     let path = if matched_path.starts_with("file://") {
         url::Url::parse(matched_path)
             .ok()
@@ -7674,11 +7718,15 @@ fn local_path_completion_context(
         PathBuf::from(matched_path)
     };
 
-    let path = helix_path::expand(&path);
+    let path = if is_local_workspace {
+        helix_path::expand(&path).into_owned()
+    } else {
+        path
+    };
     let parent_dir = doc_path.and_then(Path::parent);
     let path = match parent_dir {
-        Some(parent_dir) if path.is_relative() => parent_dir.join(path.as_ref()),
-        _ => path.into_owned(),
+        Some(parent_dir) if path.is_relative() => parent_dir.join(path.as_path()),
+        _ => path,
     };
 
     if path_suffix_ends_with_separator(matched_path) {
@@ -7701,57 +7749,82 @@ fn path_suffix_ends_with_separator(path: &str) -> bool {
         || (cfg!(windows) && matches!(path.as_bytes().last(), Some(b'\\')))
 }
 
-fn path_completion_items(
-    dir_path: &Path,
-    typed_file_name: Option<&str>,
+async fn path_completion_items(
+    workspace_backend: WorkspaceBackendHandle,
+    dir_path: PathBuf,
+    typed_file_name: Option<String>,
 ) -> Vec<nucleotide_events::completion::CompletionItem> {
-    let Ok(read_dir) = std::fs::read_dir(dir_path) else {
-        return Vec::new();
+    let workspace_identity = workspace_backend.identity();
+    let listing = match workspace_backend.list_dir(&dir_path).await {
+        Ok(listing) => listing,
+        Err(err) => {
+            nucleotide_logging::debug!(
+                directory = %dir_path.display(),
+                error = %err,
+                "Path completion directory listing failed"
+            );
+            return Vec::new();
+        }
     };
 
-    let mut entries: Vec<_> = read_dir
-        .filter_map(Result::ok)
-        .filter_map(|entry| {
-            let file_name = entry.file_name().into_string().ok()?;
-            let metadata = entry.metadata().ok()?;
-            Some((file_name, metadata))
-        })
-        .filter(|(file_name, _)| {
+    path_completion_items_from_listing(&listing, typed_file_name.as_deref(), workspace_identity)
+}
+
+fn path_completion_items_from_listing(
+    listing: &DirectoryListing,
+    typed_file_name: Option<&str>,
+    workspace_identity: WorkspaceIdentity,
+) -> Vec<nucleotide_events::completion::CompletionItem> {
+    let mut entries: Vec<_> = listing
+        .entries
+        .iter()
+        .filter(|entry| {
             typed_file_name
-                .map(|typed| typed.is_empty() || file_name.starts_with(typed))
+                .map(|typed| typed.is_empty() || entry.name.starts_with(typed))
                 .unwrap_or(true)
         })
         .collect();
 
-    entries.sort_by(|(left_name, left_metadata), (right_name, right_metadata)| {
-        right_metadata
-            .is_dir()
-            .cmp(&left_metadata.is_dir())
-            .then_with(|| left_name.cmp(right_name))
+    entries.sort_by(|left, right| {
+        let left_is_dir = left.stat.kind == FileKind::Directory;
+        let right_is_dir = right.stat.kind == FileKind::Directory;
+        right_is_dir
+            .cmp(&left_is_dir)
+            .then_with(|| left.name.cmp(&right.name))
     });
 
     entries
         .into_iter()
         .take(MAX_LOCAL_COMPLETION_ITEMS)
-        .map(|(file_name, metadata)| {
-            let kind = if metadata.is_dir() {
+        .map(|entry| {
+            let is_dir = entry.stat.kind == FileKind::Directory;
+            let kind = if is_dir {
                 nucleotide_events::completion::CompletionItemKind::Folder
             } else {
                 nucleotide_events::completion::CompletionItemKind::File
             };
-            let kind_name = if metadata.is_dir() { "folder" } else { "file" };
-            let documentation = local_path_documentation(&dir_path.join(&file_name), kind_name);
+            let kind_name = if is_dir { "folder" } else { "file" };
+            let documentation =
+                local_path_documentation(&entry.path, kind_name, workspace_identity.clone());
 
-            nucleotide_events::completion::CompletionItem::new(file_name.clone(), kind)
-                .with_insert_text(file_name)
+            nucleotide_events::completion::CompletionItem::new(entry.name.clone(), kind)
+                .with_insert_text(entry.name.clone())
                 .with_detail(kind_name.to_string())
                 .with_documentation(documentation)
         })
         .collect()
 }
 
-fn local_path_documentation(full_path: &Path, kind: &str) -> String {
-    let full_path = helix_path::fold_home_dir(helix_path::canonicalize(full_path));
+fn local_path_documentation(
+    full_path: &Path,
+    kind: &str,
+    workspace_identity: WorkspaceIdentity,
+) -> String {
+    let full_path = if matches!(workspace_identity, WorkspaceIdentity::Local) {
+        helix_path::fold_home_dir(helix_path::canonicalize(full_path)).into_owned()
+    } else {
+        full_path.to_path_buf()
+    };
     format!("type: `{kind}`\nfull path: `{}`", full_path.display())
 }
 
@@ -8111,8 +8184,8 @@ mod tests {
         lsp_completion_insert_text, lsp_completion_insert_text_format,
         lsp_completion_items_from_response, lsp_completion_items_from_response_for_server,
         lsp_completion_resolve_supported, lsp_completion_response_is_incomplete, lsp_symbol_picker,
-        native_symbol_item_from_lsp, path_completion_items, project_health_status,
-        project_server_language_id, str_prefix_at_byte_limit,
+        native_symbol_item_from_lsp, path_completion_items, path_completion_items_from_listing,
+        project_health_status, project_server_language_id, str_prefix_at_byte_limit,
         suppress_shadowed_buffer_word_completion_items, syntax_symbol_kind_from_capture_name,
         workspace_diagnostic_refresh_reply,
     };
@@ -8131,7 +8204,10 @@ mod tests {
     use helix_view::{graphics::Rect, handlers::Handlers, theme};
     use nucleotide_core::event_bridge;
     use nucleotide_events::completion::{CompletionItem, CompletionItemKind};
-    use nucleotide_workspace::local_workspace_backend;
+    use nucleotide_workspace::{
+        DirectoryEntry, DirectoryListing, FileKind, FileStat, RemoteWorkspaceIdentity,
+        RemoteWorkspaceKind, WorkspaceIdentity, local_workspace_backend,
+    };
     use slotmap::{Key, KeyData};
     use std::cell::RefCell;
     use std::collections::{HashMap, HashSet};
@@ -8156,6 +8232,22 @@ mod tests {
             .build()
             .expect("test tokio runtime")
     });
+
+    fn directory_entry(name: &str, path: PathBuf, kind: FileKind) -> DirectoryEntry {
+        DirectoryEntry {
+            name: name.to_string(),
+            path: path.clone(),
+            stat: FileStat {
+                path,
+                kind,
+                size: 0,
+                modified: None,
+                readonly: false,
+            },
+            symlink_target: None,
+            target_exists: None,
+        }
+    }
 
     #[test]
     fn bridged_event_gpui_context_route_only_includes_side_effect_variants() {
@@ -9217,9 +9309,12 @@ mod tests {
 
     #[test]
     fn local_path_completion_context_resolves_relative_paths_from_document() {
-        let context =
-            local_path_completion_context("src/ma", Some(Path::new("/workspace/project/lib.rs")))
-                .expect("relative path context");
+        let context = local_path_completion_context(
+            "src/ma",
+            Some(Path::new("/workspace/project/lib.rs")),
+            WorkspaceIdentity::Local,
+        )
+        .expect("relative path context");
 
         assert_eq!(context.dir_path, PathBuf::from("/workspace/project/src"));
         assert_eq!(context.typed_file_name.as_deref(), Some("ma"));
@@ -9227,23 +9322,31 @@ mod tests {
 
     #[test]
     fn local_path_completion_context_handles_trailing_slash() {
-        let context =
-            local_path_completion_context("src/", Some(Path::new("/workspace/project/lib.rs")))
-                .expect("path context with trailing slash");
+        let context = local_path_completion_context(
+            "src/",
+            Some(Path::new("/workspace/project/lib.rs")),
+            WorkspaceIdentity::Local,
+        )
+        .expect("path context with trailing slash");
 
         assert_eq!(context.dir_path, PathBuf::from("/workspace/project/src"));
         assert_eq!(context.typed_file_name, None);
     }
 
-    #[test]
-    fn path_completion_items_filter_and_classify_entries() {
+    #[tokio::test]
+    async fn path_completion_items_filter_and_classify_entries() {
         let temp_dir = tempdir().expect("tempdir");
         fs::write(temp_dir.path().join("main.rs"), "").expect("main.rs");
         fs::write(temp_dir.path().join("mod.rs"), "").expect("mod.rs");
         fs::create_dir(temp_dir.path().join("module")).expect("module dir");
         fs::write(temp_dir.path().join("readme.md"), "").expect("readme.md");
 
-        let items = path_completion_items(temp_dir.path(), Some("m"));
+        let items = path_completion_items(
+            local_workspace_backend(),
+            temp_dir.path().to_path_buf(),
+            Some("m".to_string()),
+        )
+        .await;
 
         let labels: Vec<_> = items.iter().map(|item| item.label.as_str()).collect();
         assert_eq!(labels, vec!["module", "main.rs", "mod.rs"]);
@@ -9256,6 +9359,34 @@ mod tests {
             nucleotide_events::completion::CompletionItemKind::File
         );
         assert!(items.iter().all(|item| item.documentation.is_some()));
+    }
+
+    #[test]
+    fn path_completion_items_from_remote_listing_skip_local_canonicalize() {
+        let remote_src = PathBuf::from("/remote/project/src");
+        let listing = DirectoryListing {
+            path: remote_src.clone(),
+            entries: vec![
+                directory_entry("main.rs", remote_src.join("main.rs"), FileKind::File),
+                directory_entry("module", remote_src.join("module"), FileKind::Directory),
+                directory_entry("ignored.rs", remote_src.join("ignored.rs"), FileKind::File),
+            ],
+        };
+        let identity = WorkspaceIdentity::Remote(RemoteWorkspaceIdentity {
+            kind: RemoteWorkspaceKind::Wsl,
+            name: "Ubuntu".to_string(),
+        });
+
+        let items = path_completion_items_from_listing(&listing, Some("m"), identity);
+
+        let labels: Vec<_> = items.iter().map(|item| item.label.as_str()).collect();
+        assert_eq!(labels, vec!["module", "main.rs"]);
+        assert_eq!(items[0].kind, CompletionItemKind::Folder);
+        assert_eq!(items[1].kind, CompletionItemKind::File);
+        assert_eq!(
+            items[1].documentation.as_deref(),
+            Some("type: `file`\nfull path: `/remote/project/src/main.rs`")
+        );
     }
 
     #[test]
@@ -9342,6 +9473,7 @@ mod tests {
                 "private".to_string(),
                 CompletionItemKind::Text,
             )],
+            local_futures: FuturesOrdered::new(),
             lsp_error: None,
             lsp_futures,
         };
@@ -9385,6 +9517,7 @@ mod tests {
                 CompletionItem::new("private".to_string(), CompletionItemKind::Text)
                     .with_detail("buffer".to_string()),
             ],
+            local_futures: FuturesOrdered::new(),
             lsp_error: None,
             lsp_futures,
         };
@@ -9404,6 +9537,7 @@ mod tests {
                 "src/lib.rs".to_string(),
                 CompletionItemKind::File,
             )],
+            local_futures: FuturesOrdered::new(),
             lsp_error: Some(anyhow::anyhow!("no completion server")),
             lsp_futures: FuturesOrdered::new(),
         };
@@ -9443,6 +9577,7 @@ mod tests {
             prefix: "pri".to_string(),
             retained_items: vec![],
             local_items: vec![],
+            local_futures: FuturesOrdered::new(),
             lsp_error: None,
             lsp_futures,
         };
