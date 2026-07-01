@@ -26,7 +26,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncWriteExt;
 
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 pub const FRAME_VERSION: u16 = 1;
 pub const FRAME_MAGIC: [u8; 4] = *b"NUCL";
 pub const FRAME_HEADER_LEN: usize = 36;
@@ -662,6 +662,7 @@ impl HelloResponse {
                 "file_search".to_string(),
                 "text_search".to_string(),
                 "project_environment".to_string(),
+                "project_environment_process_spawn".to_string(),
                 "git_head".to_string(),
                 "git_status".to_string(),
                 "run_process".to_string(),
@@ -1125,6 +1126,8 @@ pub struct ProcessRequest {
     pub cwd: PathBuf,
     pub env: BTreeMap<String, String>,
     pub clear_env: bool,
+    #[serde(default)]
+    pub inherit_project_environment: bool,
     pub max_output_bytes: Option<usize>,
     pub timeout_ms: Option<u64>,
 }
@@ -1678,6 +1681,7 @@ where
             cwd: spec.cwd,
             env: spec.env,
             clear_env: spec.clear_env,
+            inherit_project_environment: spec.inherit_project_environment,
             max_output_bytes: spec.max_output_bytes,
             timeout_ms: spec.timeout_ms,
         };
@@ -2042,12 +2046,23 @@ where
                         .unwrap_or((MAX_FRAME_BODY_LEN / 2) as usize)
                         .min((MAX_FRAME_BODY_LEN / 2) as usize),
                 );
+                let env = if request.inherit_project_environment {
+                    let mut project_environment = self
+                        .load_project_environment(&cwd)
+                        .map_err(remote_error_from_environment)?
+                        .variables;
+                    project_environment.extend(request.env);
+                    project_environment
+                } else {
+                    request.env
+                };
                 let output = block_on(self.backend.run_process(ProcessSpec {
                     program: request.program,
                     args: request.args,
                     cwd,
-                    env: request.env,
+                    env,
                     clear_env: request.clear_env,
+                    inherit_project_environment: false,
                     stdin: request_body,
                     max_output_bytes,
                     timeout_ms: request.timeout_ms,
@@ -3268,6 +3283,7 @@ mod tests {
             cwd: PathBuf::new(),
             env: BTreeMap::from([("REMOTE_FLAG".to_string(), "remote".to_string())]),
             clear_env: false,
+            inherit_project_environment: false,
             stdin: b"stdin".to_vec(),
             max_output_bytes: None,
             timeout_ms: None,
@@ -3295,6 +3311,7 @@ mod tests {
             cwd: PathBuf::new(),
             env: BTreeMap::new(),
             clear_env: false,
+            inherit_project_environment: false,
             stdin: Vec::new(),
             max_output_bytes: None,
             timeout_ms: Some(20),
@@ -3341,6 +3358,7 @@ mod tests {
             cwd: PathBuf::new(),
             env: BTreeMap::new(),
             clear_env: false,
+            inherit_project_environment: false,
             stdin: Vec::new(),
             max_output_bytes: None,
             timeout_ms: None,
@@ -4222,6 +4240,93 @@ esac
                 .get("PATH")
                 .is_some_and(|path| path.starts_with("/nix/dev/bin"))
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn service_run_process_can_inherit_project_environment() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join(".envrc"), "use flake\n").unwrap();
+
+        let fake_bin = executable_tempdir();
+        let fake_nix = fake_bin.path().join("nix");
+        std::fs::write(
+            &fake_nix,
+            r#"#!/bin/sh
+case "$*" in
+  *"print-dev-env"*)
+    printf '{"variables":{"PATH":{"type":"exported","value":"/nix/dev/bin"},"REMOTE_FLAG":{"type":"exported","value":"loaded"},"DEV_ONLY":{"type":"exported","value":"devshell"}}}\n'
+    ;;
+  *"profile wipe-history"*)
+    exit 0
+    ;;
+  *)
+    exit 2
+    ;;
+esac
+"#,
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&fake_nix).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&fake_nix, permissions).unwrap();
+        if !generated_executable_is_allowed(&fake_nix) {
+            return;
+        }
+
+        let baseline = HashMap::from([
+            (
+                "PATH".to_string(),
+                format!("{}:/usr/bin:/bin", fake_bin.path().display()),
+            ),
+            (
+                "HOME".to_string(),
+                temp.path().join("home").display().to_string(),
+            ),
+            (
+                "NUCLEOTIDE_CACHE_DIR".to_string(),
+                temp.path().join("cache").display().to_string(),
+            ),
+        ]);
+        let request = request_frame(
+            11,
+            RemoteRequest::RunProcess(ProcessRequest {
+                program: "/bin/sh".to_string(),
+                args: vec![
+                    "-c".to_string(),
+                    "printf '%s:%s' \"$DEV_ONLY\" \"$REMOTE_FLAG\"".to_string(),
+                ],
+                cwd: PathBuf::new(),
+                env: BTreeMap::from([("REMOTE_FLAG".to_string(), "override".to_string())]),
+                clear_env: true,
+                inherit_project_environment: true,
+                max_output_bytes: None,
+                timeout_ms: None,
+            }),
+            Vec::new(),
+        );
+        let mut input = Vec::new();
+        write_frame(&mut input, &request).unwrap();
+
+        let service = WorkspaceService::with_environment_baseline(
+            LocalWorkspaceBackend,
+            temp.path().to_path_buf(),
+            baseline,
+        )
+        .unwrap();
+        let mut output = Vec::new();
+        service.serve(&mut Cursor::new(input), &mut output).unwrap();
+
+        let frame = read_first_output_frame(output);
+        let response = frame.decode_json_header::<ResponseEnvelope>().unwrap();
+        let RemoteResponse::RunProcess(process) = response.response else {
+            panic!("expected run process response");
+        };
+        assert!(process.success);
+        assert_eq!(process.stdout_len, "devshell:override".len());
+        assert_eq!(&frame.body[..process.stdout_len], b"devshell:override");
     }
 
     #[test]
