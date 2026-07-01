@@ -224,6 +224,25 @@ impl RemoteServiceCommand {
         command
     }
 
+    pub fn display_invocation(&self) -> String {
+        std::iter::once(self.program.as_os_str())
+            .chain(self.args.iter().map(OsString::as_os_str))
+            .map(quote_command_display_arg)
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    pub fn display_context(&self) -> String {
+        match &self.current_dir {
+            Some(current_dir) => format!(
+                "{} (cwd {})",
+                self.display_invocation(),
+                quote_command_display_arg(current_dir.as_os_str())
+            ),
+            None => self.display_invocation(),
+        }
+    }
+
     pub fn spawn(&self) -> io::Result<ChildProcessTransport> {
         ChildProcessTransport::spawn(self)
     }
@@ -401,6 +420,22 @@ fn quote_posix_shell(value: &str) -> String {
     }
     quoted.push('\'');
     quoted
+}
+
+fn quote_command_display_arg(value: &OsStr) -> String {
+    let value = value.to_string_lossy();
+    if value.is_empty() {
+        return "''".to_string();
+    }
+
+    if value.chars().all(|ch| {
+        ch.is_ascii_alphanumeric()
+            || matches!(ch, '/' | '.' | '_' | '-' | '=' | ':' | '@' | ',' | '+')
+    }) {
+        value.into_owned()
+    } else {
+        quote_posix_shell(&value)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1136,12 +1171,21 @@ pub fn spawn_child_process_workspace_backend(
     let transport = command.spawn().with_context(|| {
         format!(
             "failed to start remote workspace service: {}",
-            command.program.to_string_lossy()
+            command.display_context()
         )
     })?;
     let client = RemoteWorkspaceClient::new(transport);
-    let (backend, hello) = RemoteWorkspaceBackend::connect(identity, client)
-        .context("failed to connect to remote workspace service")?;
+    let (backend, hello) =
+        RemoteWorkspaceBackend::connect(identity, client).with_context(|| {
+            format!(
+                concat!(
+                    "failed to connect to remote workspace service after starting {}; ",
+                    "verify the helper exists and speaks protocol version {}"
+                ),
+                command.display_context(),
+                PROTOCOL_VERSION
+            )
+        })?;
 
     Ok((Arc::new(backend), hello))
 }
@@ -2644,6 +2688,26 @@ mod tests {
             ]
         );
         assert_eq!(spec.current_dir, Some(PathBuf::from("/workspace/project")));
+    }
+
+    #[test]
+    fn service_command_display_quotes_arguments_and_cwd() {
+        let spec = local_service_command(
+            "/tmp/nucleotide remote",
+            "/workspace/project with spaces/it's",
+        );
+        let quoted_workspace = "'/workspace/project with spaces/it'\"'\"'s'";
+
+        assert_eq!(
+            spec.display_invocation(),
+            format!("'/tmp/nucleotide remote' serve --workspace {quoted_workspace}")
+        );
+        assert_eq!(
+            spec.display_context(),
+            format!(
+                "'/tmp/nucleotide remote' serve --workspace {quoted_workspace} (cwd {quoted_workspace})"
+            )
+        );
     }
 
     #[test]
