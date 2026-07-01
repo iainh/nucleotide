@@ -24,6 +24,7 @@ use helix_view::{
     input::KeyEvent,
     keyboard::{KeyCode, KeyModifiers},
 };
+use nucleotide_env::WslWorkspace;
 use nucleotide_logging::{PerfTimer, debug, info};
 use std::{
     borrow::Cow,
@@ -1474,7 +1475,7 @@ fn handle_native_file_navigation(
         let target_path = path::expand(&target);
         let target_path = base_path.join(target_path.as_ref());
 
-        if target_path.is_dir() {
+        if native_navigation_target_is_directory_without_wsl_probe(&target_path) {
             return KeymapDispatch::RequestPicker(NativePickerRequest::FileAt(target_path));
         }
 
@@ -1486,6 +1487,14 @@ fn handle_native_file_navigation(
     }
 
     KeymapDispatch::Handled
+}
+
+fn native_navigation_target_is_directory_without_wsl_probe(path: &Path) -> bool {
+    if WslWorkspace::from_unc_path(path).is_some() {
+        return path.extension().is_none();
+    }
+
+    path.is_dir()
 }
 
 fn target_is_external_url(target: &str) -> bool {
@@ -3783,6 +3792,30 @@ mod tests {
     fn file_navigation_accepts_windows_drive_paths() {
         assert!(!target_is_external_url("C:\\Users\\test\\file.rs"));
         assert!(!target_is_external_url("D:/a/nucleotide/target.txt"));
+    }
+
+    #[test]
+    fn native_navigation_directory_check_preserves_native_behavior() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("file.rs");
+        std::fs::write(&file_path, "").unwrap();
+
+        assert!(native_navigation_target_is_directory_without_wsl_probe(
+            temp_dir.path()
+        ));
+        assert!(!native_navigation_target_is_directory_without_wsl_probe(
+            &file_path
+        ));
+    }
+
+    #[test]
+    fn native_navigation_directory_check_uses_wsl_shape_without_local_probe() {
+        assert!(native_navigation_target_is_directory_without_wsl_probe(
+            Path::new(r"\\wsl.localhost\Ubuntu\home\iain\repo\src")
+        ));
+        assert!(!native_navigation_target_is_directory_without_wsl_probe(
+            Path::new(r"\\wsl.localhost\Ubuntu\home\iain\repo\src\main.rs")
+        ));
     }
 
     #[test]
