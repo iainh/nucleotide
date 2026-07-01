@@ -9,8 +9,10 @@ use nucleotide_workspace::{
     DirectoryListing, FileKind, FileRead, FileSearchQuery, FileSearchResult, FileStat,
     GitHeadResult, GitStatusEntry, GitStatusKind, GitStatusOptions, GitStatusResult,
     LocalWorkspaceBackend, ProjectEnvironmentOrigin, ProjectEnvironmentSnapshot, ReadOptions,
-    RemoteWorkspaceIdentity, TextSearchMatch, TextSearchQuery, TextSearchResult, WorkspaceBackend,
-    WorkspaceBackendHandle, WorkspaceError, WorkspaceIdentity, WriteOptions, WriteResult,
+    RemoteWorkspaceIdentity, RemoteWorkspaceKind, SshWorkspaceTarget, TextSearchMatch,
+    TextSearchQuery, TextSearchResult, WorkspaceBackend, WorkspaceBackendHandle, WorkspaceError,
+    WorkspaceIdentity, WorkspaceLocation, WriteOptions, WriteResult, local_workspace_backend,
+    path_mapped_workspace_backend,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::{BTreeMap, HashMap};
@@ -534,6 +536,168 @@ impl HelloResponse {
             ],
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteWorkspaceBackendOptions {
+    pub remote_helper_path: PathBuf,
+    pub local_helper_path: Option<PathBuf>,
+    pub use_local_service: bool,
+}
+
+impl Default for RemoteWorkspaceBackendOptions {
+    fn default() -> Self {
+        Self {
+            remote_helper_path: PathBuf::from("nucleotide-remote"),
+            local_helper_path: None,
+            use_local_service: false,
+        }
+    }
+}
+
+impl RemoteWorkspaceBackendOptions {
+    pub fn from_environment() -> Self {
+        let mut options = Self::default();
+        if let Some(path) = std::env::var_os("NUCLEOTIDE_REMOTE_HELPER") {
+            options.remote_helper_path = PathBuf::from(path);
+        }
+        if let Some(path) = std::env::var_os("NUCLEOTIDE_LOCAL_REMOTE_HELPER") {
+            options.local_helper_path = Some(PathBuf::from(path));
+        }
+        options.use_local_service = env_flag_enabled("NUCLEOTIDE_LOCAL_REMOTE_SERVICE");
+        options
+    }
+}
+
+#[derive(Clone)]
+pub struct WorkspaceBackendConnection {
+    pub backend: WorkspaceBackendHandle,
+    pub location: WorkspaceLocation,
+    pub hello: Option<HelloResponse>,
+}
+
+pub fn remote_workspace_identity_for_location(
+    location: &WorkspaceLocation,
+) -> Option<RemoteWorkspaceIdentity> {
+    match location {
+        WorkspaceLocation::Local { .. } => None,
+        WorkspaceLocation::Wsl { distro, .. } => Some(RemoteWorkspaceIdentity {
+            kind: RemoteWorkspaceKind::Wsl,
+            name: distro.clone(),
+        }),
+        WorkspaceLocation::Ssh { target, .. } => Some(RemoteWorkspaceIdentity {
+            kind: RemoteWorkspaceKind::Ssh,
+            name: ssh_target_display_name(target),
+        }),
+    }
+}
+
+pub fn remote_service_command_for_location(
+    location: &WorkspaceLocation,
+    helper_path: impl AsRef<Path>,
+) -> Option<RemoteServiceCommand> {
+    match location {
+        WorkspaceLocation::Local { .. } => None,
+        WorkspaceLocation::Wsl {
+            distro, linux_path, ..
+        } => Some(wsl_service_command(distro, linux_path, helper_path)),
+        WorkspaceLocation::Ssh { target, path, .. } => Some(ssh_service_command(
+            ssh_target_from_workspace_target(target),
+            path,
+            helper_path,
+        )),
+    }
+}
+
+pub fn connect_workspace_backend_for_location(
+    location: WorkspaceLocation,
+    options: &RemoteWorkspaceBackendOptions,
+) -> Result<WorkspaceBackendConnection> {
+    if let WorkspaceLocation::Local { path } = &location {
+        if options.use_local_service {
+            let helper_path = options
+                .local_helper_path
+                .as_deref()
+                .unwrap_or(&options.remote_helper_path);
+            let command = local_service_command(helper_path, path);
+            let (backend, hello) = spawn_child_process_workspace_backend(
+                RemoteWorkspaceIdentity {
+                    kind: RemoteWorkspaceKind::Other("local-service".to_string()),
+                    name: "local-service".to_string(),
+                },
+                &command,
+            )
+            .with_context(|| {
+                format!(
+                    "failed to initialize local workspace service for {}",
+                    path.display()
+                )
+            })?;
+
+            return Ok(WorkspaceBackendConnection {
+                backend,
+                location,
+                hello: Some(hello),
+            });
+        }
+
+        return Ok(WorkspaceBackendConnection {
+            backend: local_workspace_backend(),
+            location,
+            hello: None,
+        });
+    }
+
+    let identity = remote_workspace_identity_for_location(&location)
+        .context("remote workspace location is missing an identity")?;
+    let command = remote_service_command_for_location(&location, &options.remote_helper_path)
+        .context("remote workspace location is missing a service command")?;
+    let mapping = location.path_mapping();
+    let display_root = location.display_root().to_path_buf();
+    let (backend, hello) =
+        spawn_child_process_workspace_backend(identity, &command).with_context(|| {
+            format!(
+                "failed to initialize remote workspace service for {}",
+                display_root.display()
+            )
+        })?;
+
+    Ok(WorkspaceBackendConnection {
+        backend: path_mapped_workspace_backend(backend, mapping),
+        location,
+        hello: Some(hello),
+    })
+}
+
+fn env_flag_enabled(name: &str) -> bool {
+    std::env::var(name)
+        .map(|value| {
+            matches!(
+                value.as_str(),
+                "1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn ssh_target_from_workspace_target(target: &SshWorkspaceTarget) -> SshTarget {
+    SshTarget {
+        host: target.host.clone(),
+        user: target.user.clone(),
+        port: target.port,
+    }
+}
+
+fn ssh_target_display_name(target: &SshWorkspaceTarget) -> String {
+    let mut name = match &target.user {
+        Some(user) if !user.is_empty() => format!("{user}@{}", target.host),
+        _ => target.host.clone(),
+    };
+    if let Some(port) = target.port {
+        name.push(':');
+        name.push_str(&port.to_string());
+    }
+    name
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1978,6 +2142,32 @@ mod tests {
     use std::collections::VecDeque;
     use std::io::Cursor;
 
+    fn executable_tempdir() -> tempfile::TempDir {
+        let base = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join("test-tmp");
+        std::fs::create_dir_all(&base).unwrap();
+        tempfile::Builder::new()
+            .prefix("nucleotide-remote-")
+            .tempdir_in(base)
+            .unwrap()
+    }
+
+    fn generated_executable_is_allowed(executable: &Path) -> bool {
+        match std::process::Command::new(executable)
+            .arg("--probe")
+            .status()
+        {
+            Ok(_) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => false,
+            Err(error) => panic!(
+                "failed to probe generated executable {}: {error}",
+                executable.display()
+            ),
+        }
+    }
+
     struct LoopbackTransport {
         root: PathBuf,
         pending: VecDeque<Frame>,
@@ -2179,6 +2369,100 @@ mod tests {
         assert!(command.starts_with("exec "));
         assert!(command.contains("'/home/me/.cache/nucleotide remote/bin'"));
         assert!(command.contains("'/home/me/project with spaces/it'\"'\"'s'"));
+    }
+
+    #[test]
+    fn remote_workspace_identity_uses_wsl_distro() {
+        let location = WorkspaceLocation::Wsl {
+            original_path: PathBuf::from(r"\\wsl.localhost\Ubuntu\home\me\project"),
+            distro: "Ubuntu".to_string(),
+            linux_path: PathBuf::from("/home/me/project"),
+        };
+
+        let identity = remote_workspace_identity_for_location(&location).unwrap();
+
+        assert_eq!(identity.kind, RemoteWorkspaceKind::Wsl);
+        assert_eq!(identity.name, "Ubuntu");
+    }
+
+    #[test]
+    fn remote_workspace_identity_formats_ssh_target() {
+        let location = WorkspaceLocation::Ssh {
+            original_path: PathBuf::from("ssh://me@example.com:2222/home/me/project"),
+            target: SshWorkspaceTarget {
+                host: "example.com".to_string(),
+                user: Some("me".to_string()),
+                port: Some(2222),
+            },
+            path: PathBuf::from("/home/me/project"),
+        };
+
+        let identity = remote_workspace_identity_for_location(&location).unwrap();
+
+        assert_eq!(identity.kind, RemoteWorkspaceKind::Ssh);
+        assert_eq!(identity.name, "me@example.com:2222");
+    }
+
+    #[test]
+    fn remote_service_command_for_wsl_uses_native_root() {
+        let location = WorkspaceLocation::Wsl {
+            original_path: PathBuf::from(r"\\wsl.localhost\Ubuntu\home\me\project"),
+            distro: "Ubuntu".to_string(),
+            linux_path: PathBuf::from("/home/me/project"),
+        };
+
+        let spec = remote_service_command_for_location(&location, "/remote/bin/nucleotide-remote")
+            .unwrap();
+
+        assert_eq!(spec.program, OsString::from("wsl.exe"));
+        assert_eq!(spec.args[3], OsString::from("/home/me/project"));
+        assert_eq!(
+            spec.args[5],
+            OsString::from("/remote/bin/nucleotide-remote")
+        );
+        assert_eq!(spec.args[8], OsString::from("/home/me/project"));
+    }
+
+    #[test]
+    fn remote_service_command_for_ssh_uses_target_and_native_root() {
+        let location = WorkspaceLocation::Ssh {
+            original_path: PathBuf::from("ssh://me@example.com:2222/home/me/project"),
+            target: SshWorkspaceTarget {
+                host: "example.com".to_string(),
+                user: Some("me".to_string()),
+                port: Some(2222),
+            },
+            path: PathBuf::from("/home/me/project"),
+        };
+
+        let spec = remote_service_command_for_location(&location, "/remote/bin/nucleotide-remote")
+            .unwrap();
+
+        assert_eq!(spec.program, OsString::from("ssh"));
+        assert_eq!(spec.args[0], OsString::from("-p"));
+        assert_eq!(spec.args[1], OsString::from("2222"));
+        assert_eq!(spec.args[2], OsString::from("me@example.com"));
+        assert_eq!(spec.args[3], OsString::from("--"));
+        let command = spec.args[4].to_string_lossy();
+        assert!(command.contains("/remote/bin/nucleotide-remote"));
+        assert!(command.contains("/home/me/project"));
+    }
+
+    #[test]
+    fn workspace_backend_factory_keeps_local_backend_in_process_by_default() {
+        let temp = tempfile::tempdir().unwrap();
+        let location = WorkspaceLocation::Local {
+            path: temp.path().to_path_buf(),
+        };
+
+        let connection = connect_workspace_backend_for_location(
+            location,
+            &RemoteWorkspaceBackendOptions::default(),
+        )
+        .unwrap();
+
+        assert_eq!(connection.backend.identity(), WorkspaceIdentity::Local);
+        assert_eq!(connection.hello, None);
     }
 
     #[test]
@@ -2432,7 +2716,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(temp.path().join(".envrc"), "use flake\n").unwrap();
 
-        let fake_bin = tempfile::tempdir().unwrap();
+        let fake_bin = executable_tempdir();
         let fake_nix = fake_bin.path().join("nix");
         std::fs::write(
             &fake_nix,
@@ -2454,6 +2738,9 @@ esac
         let mut permissions = std::fs::metadata(&fake_nix).unwrap().permissions();
         permissions.set_mode(0o755);
         std::fs::set_permissions(&fake_nix, permissions).unwrap();
+        if !generated_executable_is_allowed(&fake_nix) {
+            return;
+        }
 
         let baseline = HashMap::from([
             (

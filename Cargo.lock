@@ -4985,6 +4985,7 @@ dependencies = [
  "nucleotide-lsp",
  "nucleotide-process",
  "nucleotide-project",
+ "nucleotide-remote",
  "nucleotide-terminal",
  "nucleotide-terminal-panel",
  "nucleotide-terminal-view",

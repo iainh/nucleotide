@@ -52,7 +52,9 @@ use helix_view::{
 };
 use nucleotide_events::{ProjectLspCommand, ProjectLspCommandError};
 use nucleotide_lsp::{HelixLspBridge, ProjectLspManager, ServerStatus};
-use nucleotide_workspace::{WorkspaceBackendHandle, local_workspace_backend};
+use nucleotide_workspace::{
+    WorkspaceBackendHandle, classify_workspace_location, local_workspace_backend,
+};
 use slotmap::Key;
 
 // Import our shell environment system
@@ -360,7 +362,7 @@ pub fn implicit_workspace_root_from_current_dir() -> Option<PathBuf> {
 
 // Removed unused Tag-related structs and enums
 
-use anyhow::Error;
+use anyhow::{Context as _, Error};
 use nucleotide_core::{EventAggregatorHandle, EventBus, event_bridge, gpui_to_helix_bridge};
 use nucleotide_events::v2::diagnostics::Event as DiagnosticsEvent;
 use nucleotide_logging::{
@@ -6442,6 +6444,48 @@ fn detect_and_create_project_environment() -> ProjectEnvironment {
     ProjectEnvironment::new(Some(cli_env))
 }
 
+fn initial_workspace_backend(
+    project_directory: Option<&Path>,
+) -> Result<WorkspaceBackendHandle, Error> {
+    let Some(project_directory) = project_directory else {
+        return Ok(local_workspace_backend());
+    };
+
+    let location = classify_workspace_location(project_directory);
+    let display_root = location.display_root().to_path_buf();
+    let native_root = location.native_root().to_path_buf();
+    let options = nucleotide_remote::RemoteWorkspaceBackendOptions::from_environment();
+    let connection = nucleotide_remote::connect_workspace_backend_for_location(location, &options)
+        .with_context(|| {
+            format!(
+                "failed to initialize workspace backend for {}",
+                display_root.display()
+            )
+        })?;
+
+    match &connection.hello {
+        Some(hello) => {
+            nucleotide_logging::info!(
+                workspace_root = %display_root.display(),
+                native_root = %native_root.display(),
+                backend = ?connection.backend.identity(),
+                helper_version = %hello.helper_version,
+                helper_os = %hello.os,
+                helper_arch = %hello.arch,
+                "Initialized remote workspace backend"
+            );
+        }
+        None => {
+            nucleotide_logging::info!(
+                workspace_root = %display_root.display(),
+                "Initialized local workspace backend"
+            );
+        }
+    }
+
+    Ok(connection.backend)
+}
+
 pub fn init_editor(
     args: Args,
     helix_config: Config,
@@ -6491,6 +6535,7 @@ pub fn init_editor(
             None
         }
     };
+    let workspace_backend = initial_workspace_backend(project_directory.as_deref())?;
 
     let mut theme_parent_dirs = vec![helix_loader::config_dir()];
     theme_parent_dirs.extend(helix_loader::runtime_dirs().iter().cloned());
@@ -6848,7 +6893,7 @@ pub fn init_editor(
         lsp_progress: LspProgressMap::new(),
         lsp_state: None, // Will be initialized when Application is wrapped in a GPUI entity
         project_directory,
-        workspace_backend: local_workspace_backend(),
+        workspace_backend,
         event_bridge_rx: Some(bridge_rx),
         gpui_to_helix_rx: Some(gpui_to_helix_rx),
         config: gui_config,
