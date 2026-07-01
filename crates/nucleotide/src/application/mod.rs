@@ -72,6 +72,7 @@ const WSL_REMOTE_HELPER_INSTALL_TIMEOUT: Duration = Duration::from_secs(15);
 const WSL_REMOTE_METADATA_TIMEOUT: Duration = Duration::from_secs(2);
 const WSL_REMOTE_PATH_COMPLETION_TIMEOUT: Duration = Duration::from_millis(500);
 const WSL_REMOTE_ROOT_TIMEOUT: Duration = Duration::from_millis(750);
+const WSL_REMOTE_CLI_ARGUMENT_TIMEOUT: Duration = Duration::from_millis(750);
 const WSL_REMOTE_SYMBOL_FILES_TIMEOUT: Duration = Duration::from_secs(10);
 const WSL_REMOTE_HELPER_INSTALL_SOURCE_ENV: &str = "NUCLEOTIDE_REMOTE_HELPER_INSTALL_SOURCE";
 
@@ -6673,6 +6674,43 @@ fn project_directory_from_wsl_argument(path: &Path) -> Option<PathBuf> {
     detect_project_root_from_wsl_dir(parent)
 }
 
+fn cli_argument_is_directory_without_wsl_probe(path: &Path) -> bool {
+    if WslWorkspace::from_unc_path(path).is_none() {
+        return path.is_dir();
+    }
+
+    match wsl_cli_argument_kind(path) {
+        Some(kind) => matches!(kind, RemoteFileKind::Directory),
+        None => wsl_cli_argument_directory_fallback(path),
+    }
+}
+
+fn wsl_cli_argument_kind(path: &Path) -> Option<RemoteFileKind> {
+    let parent = path.parent()?;
+    let file_name = path.file_name()?.to_str()?;
+    let workspace = WslWorkspace::from_unc_path(parent)?;
+
+    match load_wsl_remote_directory_listing_blocking(&workspace, WSL_REMOTE_CLI_ARGUMENT_TIMEOUT) {
+        Ok(listing) => listing
+            .entries
+            .into_iter()
+            .find(|entry| entry.name == file_name)
+            .map(|entry| entry.kind),
+        Err(error) => {
+            debug!(
+                path = %path.display(),
+                error = %error,
+                "Failed to classify WSL CLI argument through remote helper; using path-shape fallback"
+            );
+            None
+        }
+    }
+}
+
+fn wsl_cli_argument_directory_fallback(path: &Path) -> bool {
+    path.extension().is_none()
+}
+
 /// Detect if we need CLI environment and create appropriate ProjectEnvironment.
 /// GUI launchers on Unix-like desktops usually provide a minimal environment, so
 /// those launches use login-shell capture. CLI launches keep their inherited env.
@@ -7116,7 +7154,7 @@ pub fn init_editor(
         let mut first = true;
         for (file, pos) in args.files {
             // Skip directories
-            if file.is_dir() {
+            if cli_argument_is_directory_without_wsl_probe(&file) {
                 continue;
             }
 
@@ -8517,24 +8555,24 @@ mod tests {
         NativeSymbolItem, NativeSymbolTarget, PendingCompletionRequest,
         WORKSPACE_SYNTAX_SYMBOL_FILE_LIMIT, apply_remote_workspace_config_overrides,
         bridged_event_needs_gpui_context, buffer_text_matches_path, buffer_word_completion_items,
-        char_index_for_line_col, coalesce_bridged_events, completion_context_for_trigger,
-        current_dir_is_executable_dir, dedupe_completion_items, detect_project_lsp_metadata,
-        diagnostic_picker_path_label, diagnostic_severity_label,
-        file_picker_path_exists_without_wsl_probe, home_requires_login_shell_capture,
-        is_workspace_diagnostic_refresh_method, local_path_completion_context,
-        lsp_completion_insert_text, lsp_completion_insert_text_format,
-        lsp_completion_items_from_response, lsp_completion_items_from_response_for_server,
-        lsp_completion_resolve_supported, lsp_completion_response_is_incomplete, lsp_symbol_picker,
-        native_symbol_item_from_lsp, path_completion_items, project_health_status,
-        project_server_language_id, project_type_from_remote_workspace_metadata,
-        remote_path_completion_items, should_apply_project_environment_overrides,
-        should_detect_project_type_locally, str_prefix_at_byte_limit,
-        suppress_shadowed_buffer_word_completion_items, syntax_symbol_kind_from_capture_name,
-        workspace_diagnostic_refresh_reply, workspace_marker_exists,
-        workspace_symbol_files_options_from_picker_config,
-        wsl_remote_helper_install_source_from_value, wsl_remote_helper_unavailable_message,
-        wsl_unc_path_for_remote_path, wsl_workspace_for_project_directory,
-        wsl_workspace_path_from_remote_relative,
+        char_index_for_line_col, cli_argument_is_directory_without_wsl_probe,
+        coalesce_bridged_events, completion_context_for_trigger, current_dir_is_executable_dir,
+        dedupe_completion_items, detect_project_lsp_metadata, diagnostic_picker_path_label,
+        diagnostic_severity_label, file_picker_path_exists_without_wsl_probe,
+        home_requires_login_shell_capture, is_workspace_diagnostic_refresh_method,
+        local_path_completion_context, lsp_completion_insert_text,
+        lsp_completion_insert_text_format, lsp_completion_items_from_response,
+        lsp_completion_items_from_response_for_server, lsp_completion_resolve_supported,
+        lsp_completion_response_is_incomplete, lsp_symbol_picker, native_symbol_item_from_lsp,
+        path_completion_items, project_health_status, project_server_language_id,
+        project_type_from_remote_workspace_metadata, remote_path_completion_items,
+        should_apply_project_environment_overrides, should_detect_project_type_locally,
+        str_prefix_at_byte_limit, suppress_shadowed_buffer_word_completion_items,
+        syntax_symbol_kind_from_capture_name, workspace_diagnostic_refresh_reply,
+        workspace_marker_exists, workspace_symbol_files_options_from_picker_config,
+        wsl_cli_argument_directory_fallback, wsl_remote_helper_install_source_from_value,
+        wsl_remote_helper_unavailable_message, wsl_unc_path_for_remote_path,
+        wsl_workspace_for_project_directory, wsl_workspace_path_from_remote_relative,
     };
     use crate::test_utils::test_support::{
         TestUpdate, create_counting_channel, create_test_diagnostic_events,
@@ -9853,6 +9891,26 @@ mod tests {
     fn file_picker_path_exists_accepts_wsl_unc_without_local_probe() {
         assert!(file_picker_path_exists_without_wsl_probe(Path::new(
             r"\\wsl.localhost\Ubuntu\home\iain\repo"
+        )));
+    }
+
+    #[test]
+    fn cli_argument_directory_detection_preserves_native_behavior() {
+        let temp = tempdir().unwrap();
+        let file = temp.path().join("main.rs");
+        fs::write(&file, "").unwrap();
+
+        assert!(cli_argument_is_directory_without_wsl_probe(temp.path()));
+        assert!(!cli_argument_is_directory_without_wsl_probe(&file));
+    }
+
+    #[test]
+    fn wsl_cli_argument_directory_fallback_uses_path_shape() {
+        assert!(wsl_cli_argument_directory_fallback(Path::new(
+            r"\\wsl.localhost\Ubuntu\home\iain\repo\src"
+        )));
+        assert!(!wsl_cli_argument_directory_fallback(Path::new(
+            r"\\wsl.localhost\Ubuntu\home\iain\repo\src\main.rs"
         )));
     }
 
