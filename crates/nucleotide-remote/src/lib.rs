@@ -8,7 +8,7 @@ use std::io::Read;
 use std::path::PathBuf;
 use std::time::UNIX_EPOCH;
 
-pub const PROTOCOL_VERSION: u32 = 9;
+pub const PROTOCOL_VERSION: u32 = 10;
 pub const DEFAULT_FILE_SEARCH_LIMIT: usize = 1_000;
 pub const DEFAULT_GLOBAL_SEARCH_LIMIT: usize = 1_000;
 pub const DEFAULT_FILE_READ_LIMIT: usize = 10_000;
@@ -260,6 +260,57 @@ fn sanitize_child_name(name: &str) -> std::io::Result<&str> {
     }
 
     Ok(name)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileRenameResponse {
+    pub protocol_version: u32,
+    pub current_dir: PathBuf,
+    pub old_path: PathBuf,
+    pub new_path: PathBuf,
+    pub kind: RemoteFileKind,
+}
+
+impl FileRenameResponse {
+    pub fn current(old_name: &str, new_name: &str) -> std::io::Result<Self> {
+        let old_name = sanitize_child_name(old_name)?;
+        let new_name = sanitize_child_name(new_name)?;
+        let current_dir = std::env::current_dir()?;
+        let old_path = current_dir.join(old_name);
+        let new_path = current_dir.join(new_name);
+        let metadata = std::fs::symlink_metadata(&old_path)?;
+        let kind = remote_file_kind_from_metadata(&metadata);
+
+        if new_path.exists() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "target exists",
+            ));
+        }
+
+        std::fs::rename(&old_path, &new_path)?;
+
+        Ok(Self {
+            protocol_version: PROTOCOL_VERSION,
+            current_dir,
+            old_path,
+            new_path,
+            kind,
+        })
+    }
+}
+
+fn remote_file_kind_from_metadata(metadata: &std::fs::Metadata) -> RemoteFileKind {
+    let file_type = metadata.file_type();
+    if file_type.is_dir() {
+        RemoteFileKind::Directory
+    } else if file_type.is_file() {
+        RemoteFileKind::File
+    } else if file_type.is_symlink() {
+        RemoteFileKind::Symlink
+    } else {
+        RemoteFileKind::Other
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1029,6 +1080,61 @@ mod tests {
         assert_eq!(nested.kind(), std::io::ErrorKind::InvalidInput);
         assert_eq!(windows_separator.kind(), std::io::ErrorKind::InvalidInput);
         assert_eq!(parent.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn file_rename_response_renames_file_in_current_dir() {
+        let _guard = CURRENT_DIR_LOCK.lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("old.rs"), "").unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp.path()).unwrap();
+
+        let response = FileRenameResponse::current("old.rs", "new.rs").unwrap();
+
+        std::env::set_current_dir(original).unwrap();
+
+        assert_eq!(response.protocol_version, PROTOCOL_VERSION);
+        assert_eq!(response.old_path, temp.path().join("old.rs"));
+        assert_eq!(response.new_path, temp.path().join("new.rs"));
+        assert_eq!(response.kind, RemoteFileKind::File);
+        assert!(!temp.path().join("old.rs").exists());
+        assert!(temp.path().join("new.rs").is_file());
+    }
+
+    #[test]
+    fn file_rename_response_renames_directory_in_current_dir() {
+        let _guard = CURRENT_DIR_LOCK.lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(temp.path().join("old")).unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp.path()).unwrap();
+
+        let response = FileRenameResponse::current("old", "new").unwrap();
+
+        std::env::set_current_dir(original).unwrap();
+
+        assert_eq!(response.kind, RemoteFileKind::Directory);
+        assert!(!temp.path().join("old").exists());
+        assert!(temp.path().join("new").is_dir());
+    }
+
+    #[test]
+    fn file_rename_response_rejects_existing_target_or_invalid_names() {
+        let _guard = CURRENT_DIR_LOCK.lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("old.rs"), "").unwrap();
+        std::fs::write(temp.path().join("exists.rs"), "").unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp.path()).unwrap();
+
+        let existing = FileRenameResponse::current("old.rs", "exists.rs").unwrap_err();
+        let nested = FileRenameResponse::current("old.rs", "src/main.rs").unwrap_err();
+
+        std::env::set_current_dir(original).unwrap();
+
+        assert_eq!(existing.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(nested.kind(), std::io::ErrorKind::InvalidInput);
     }
 
     #[test]

@@ -6,9 +6,9 @@ use nucleotide_remote::{
     DEFAULT_FILE_READ_LIMIT, DEFAULT_WORKSPACE_SYMBOL_FILE_BYTE_LIMIT,
     DEFAULT_WORKSPACE_SYMBOL_FILE_LIMIT, DEFAULT_WORKSPACE_SYMBOL_TOTAL_BYTE_LIMIT,
     DirectoryListingResponse, EnvironmentResponse, FileCreateResponse, FileReadResponse,
-    FileSearchResponse, GlobalSearchResponse, HelloResponse, WorkspaceMetadataResponse,
-    WorkspaceRootResponse, WorkspaceSymbolFilesOptions, WorkspaceSymbolFilesResponse,
-    encode_json_line,
+    FileRenameResponse, FileSearchResponse, GlobalSearchResponse, HelloResponse,
+    WorkspaceMetadataResponse, WorkspaceRootResponse, WorkspaceSymbolFilesOptions,
+    WorkspaceSymbolFilesResponse, encode_json_line,
 };
 
 fn main() -> Result<()> {
@@ -55,6 +55,15 @@ fn main() -> Result<()> {
                 .context("failed to create remote directory")?;
             print!("{}", encode_json_line(&response)?);
         }
+        "rename" => {
+            let old_name = std::env::var("NUCLEOTIDE_REMOTE_RENAME_OLD_NAME")
+                .context("NUCLEOTIDE_REMOTE_RENAME_OLD_NAME is required")?;
+            let new_name = std::env::var("NUCLEOTIDE_REMOTE_RENAME_NEW_NAME")
+                .context("NUCLEOTIDE_REMOTE_RENAME_NEW_NAME is required")?;
+            let response = FileRenameResponse::current(&old_name, &new_name)
+                .context("failed to rename remote path")?;
+            print!("{}", encode_json_line(&response)?);
+        }
         "files" => {
             let response =
                 FileSearchResponse::current().context("failed to build file search response")?;
@@ -99,6 +108,7 @@ fn main() -> Result<()> {
             println!("nucleotide-remote list");
             println!("nucleotide-remote create-file");
             println!("nucleotide-remote create-directory");
+            println!("nucleotide-remote rename");
             println!("nucleotide-remote files");
             println!("nucleotide-remote search");
             println!("nucleotide-remote read");

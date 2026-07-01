@@ -72,12 +72,13 @@ use nucleotide_core::EventBus;
 use nucleotide_env::{
     EnvironmentOrigin, WslWorkspace, create_wsl_remote_directory_blocking,
     create_wsl_remote_file_blocking, load_wsl_remote_file_search_blocking,
-    load_wsl_remote_global_search_blocking,
+    load_wsl_remote_global_search_blocking, rename_wsl_remote_path_blocking,
 };
 use nucleotide_events::v2::run::{Event as RunEvent, ResolvedTask, RunId, RunStatus};
 use nucleotide_events::v2::terminal::{Event as TerminalEvent, TerminalId};
 use nucleotide_remote::{
-    FileCreateResponse, FileSearchResponse, GlobalSearchResponse, RemoteFileKind,
+    FileCreateResponse, FileRenameResponse, FileSearchResponse, GlobalSearchResponse,
+    RemoteFileKind,
 };
 use nucleotide_terminal::TerminalBounds;
 use slotmap::KeyData;
@@ -2295,6 +2296,38 @@ fn create_wsl_project_directory(parent: &Path, name: &str) -> Result<PathBuf, St
         .map_err(|error| error.to_string())?;
     wsl_created_path(parent, &response, RemoteFileKind::Directory)
         .ok_or_else(|| "remote helper returned an unmappable file path".to_string())
+}
+
+fn wsl_renamed_paths(
+    path: &Path,
+    response: &FileRenameResponse,
+    was_dir: bool,
+) -> Option<(PathBuf, PathBuf)> {
+    if matches!(response.kind, RemoteFileKind::Directory) != was_dir {
+        return None;
+    }
+
+    let parent = path.parent()?;
+    let workspace = WslWorkspace::from_unc_path(parent)?;
+    let old_path = workspace
+        .unc_path_for_linux_path(&response.old_path)
+        .map(PathBuf::from)?;
+    if old_path != path {
+        return None;
+    }
+    let new_path = workspace
+        .unc_path_for_linux_path(&response.new_path)
+        .map(PathBuf::from)?;
+
+    Some((old_path, new_path))
+}
+
+fn rename_wsl_project_path(path: &Path, new_name: &str, was_dir: bool) -> Result<PathBuf, String> {
+    let response = rename_wsl_remote_path_blocking(path, new_name, WSL_REMOTE_FILE_OP_TIMEOUT)
+        .map_err(|error| error.to_string())?;
+    wsl_renamed_paths(path, &response, was_dir)
+        .map(|(_, new_path)| new_path)
+        .ok_or_else(|| "remote helper returned an unmappable rename path".to_string())
 }
 
 fn global_search_picker(root: &Path, matches: Vec<GlobalSearchMatch>) -> crate::picker::Picker {
@@ -8275,6 +8308,49 @@ impl Workspace {
                     Err(error) => {
                         let status = EditorStatus {
                             status: format!("Failed to create WSL folder: {error}"),
+                            severity: Severity::Error,
+                        };
+                        self.core.update(cx, |core, cx| {
+                            core.editor.set_error(status.status.clone());
+                            cx.notify();
+                        });
+                        self.push_editor_status_notification(status, cx);
+                    }
+                }
+                return;
+            }
+
+            if let PendingFileOp::Rename { path } = &pending
+                && WslWorkspace::from_unc_path(path).is_some()
+            {
+                self.overlay
+                    .update(cx, |overlay, cx| overlay.dismiss_all(cx));
+
+                let was_dir = self.cached_or_local_path_is_directory(path, cx);
+                match rename_wsl_project_path(path, command, was_dir) {
+                    Ok(new_path) => {
+                        self.dispatch_workspace_file_op_and_process(
+                            WsEvent::FileRenamed {
+                                old_path: path.clone(),
+                                new_path: new_path.clone(),
+                            },
+                            cx,
+                        );
+                        self.notify_lsp_file_operation(
+                            LspFileOperationNotification::Renamed {
+                                old_path: path.clone(),
+                                new_path,
+                                was_dir,
+                            },
+                            cx,
+                        );
+                        if let Some(parent) = path.parent() {
+                            self.rescan_directory(parent, cx);
+                        }
+                    }
+                    Err(error) => {
+                        let status = EditorStatus {
+                            status: format!("Failed to rename WSL path: {error}"),
                             severity: Severity::Error,
                         };
                         self.core.update(cx, |core, cx| {
@@ -19111,6 +19187,37 @@ mod tests {
         );
         assert_eq!(
             wsl_created_path(&parent, &directory_response, RemoteFileKind::File),
+            None
+        );
+    }
+
+    #[test]
+    fn wsl_renamed_paths_map_back_to_unc_paths() {
+        let old_path = PathBuf::from(r"\\wsl.localhost\Ubuntu\home\iain\repo\src\old.rs");
+        let response = FileRenameResponse {
+            protocol_version: nucleotide_remote::PROTOCOL_VERSION,
+            current_dir: PathBuf::from("/home/iain/repo/src"),
+            old_path: PathBuf::from("/home/iain/repo/src/old.rs"),
+            new_path: PathBuf::from("/home/iain/repo/src/new.rs"),
+            kind: RemoteFileKind::File,
+        };
+        let directory_response = FileRenameResponse {
+            protocol_version: nucleotide_remote::PROTOCOL_VERSION,
+            current_dir: PathBuf::from("/home/iain/repo/src"),
+            old_path: PathBuf::from("/home/iain/repo/src/old"),
+            new_path: PathBuf::from("/home/iain/repo/src/new"),
+            kind: RemoteFileKind::Directory,
+        };
+
+        assert_eq!(
+            wsl_renamed_paths(&old_path, &response, false),
+            Some((
+                PathBuf::from(r"\\wsl.localhost\Ubuntu\home\iain\repo\src\old.rs"),
+                PathBuf::from(r"\\wsl.localhost\Ubuntu\home\iain\repo\src\new.rs")
+            ))
+        );
+        assert_eq!(
+            wsl_renamed_paths(&old_path, &directory_response, false),
             None
         );
     }
