@@ -529,6 +529,14 @@ impl ProjectDetector {
         &self,
         workspace_root: &std::path::Path,
     ) -> Result<ProjectType, Box<dyn std::error::Error + Send + Sync>> {
+        if let Some(project_type) = self.detect_wsl_project_type(workspace_root).await {
+            return Ok(project_type);
+        }
+
+        if WslWorkspace::from_unc_path(workspace_root).is_some() {
+            return Ok(ProjectType::Unknown);
+        }
+
         // First try custom project markers if enabled
         if self.project_markers_config.enable_project_markers
             && let Some(project_type) = self.detect_with_custom_markers(workspace_root).await?
@@ -538,17 +546,13 @@ impl ProjectDetector {
 
         // Fall back to builtin detection if enabled or no custom markers found
         if self.project_markers_config.enable_builtin_fallback {
-            if let Some(project_type) = self.detect_wsl_builtin_patterns(workspace_root).await {
-                return Ok(project_type);
-            }
-
             return self.detect_with_builtin_patterns(workspace_root).await;
         }
 
         Ok(ProjectType::Unknown)
     }
 
-    async fn detect_wsl_builtin_patterns(&self, workspace_root: &Path) -> Option<ProjectType> {
+    async fn detect_wsl_project_type(&self, workspace_root: &Path) -> Option<ProjectType> {
         let workspace = WslWorkspace::from_unc_path(workspace_root)?;
 
         match load_wsl_remote_metadata(&workspace, WSL_REMOTE_METADATA_TIMEOUT).await {
@@ -562,11 +566,22 @@ impl ProjectDetector {
                     return None;
                 };
 
-                let project_type = project_type_from_remote_workspace_metadata(
-                    &markers,
-                    metadata.source_extensions.as_ref(),
-                    metadata.src_dir_exists,
-                )?;
+                if self.project_markers_config.enable_project_markers
+                    && let Some(project_type) =
+                        self.detect_custom_project_type_from_markers(&markers)
+                {
+                    return Some(project_type);
+                }
+
+                let project_type = if self.project_markers_config.enable_builtin_fallback {
+                    project_type_from_remote_workspace_metadata(
+                        &markers,
+                        metadata.source_extensions.as_ref(),
+                        metadata.src_dir_exists,
+                    )
+                } else {
+                    Some(ProjectType::Unknown)
+                }?;
                 info!(
                     distro = %workspace.distro(),
                     linux_path = %workspace.linux_path(),
@@ -581,11 +596,38 @@ impl ProjectDetector {
                     distro = %workspace.distro(),
                     linux_path = %workspace.linux_path(),
                     error = %error,
-                    "WSL remote helper metadata unavailable; falling back to UNC project detection"
+                    "WSL remote helper metadata unavailable; skipping local UNC project detection"
                 );
-                None
+                Some(ProjectType::Unknown)
             }
         }
+    }
+
+    fn detect_custom_project_type_from_markers(
+        &self,
+        marker_names: &BTreeSet<String>,
+    ) -> Option<ProjectType> {
+        let mut matches = Vec::new();
+        for (project_name, marker_config) in &self.project_markers_config.markers {
+            for marker_pattern in &marker_config.markers {
+                if marker_names.contains(marker_pattern) {
+                    matches.push((project_name, marker_config, marker_pattern));
+                }
+            }
+        }
+
+        matches.sort_by_key(|entry| std::cmp::Reverse(entry.1.priority));
+        let (project_name, marker_config, marker_pattern) = matches.first()?;
+
+        info!(
+            selected_project = %project_name,
+            selected_marker = %marker_pattern,
+            priority = marker_config.priority,
+            total_matches = matches.len(),
+            "Selected WSL project type from remote helper custom markers"
+        );
+
+        Some(self.map_custom_project_to_builtin_type(project_name))
     }
 
     /// Detect project type using custom markers configuration
@@ -1117,6 +1159,66 @@ mod tests {
         assert_eq!(
             detector.map_custom_project_to_builtin_type("bespoke-toolchain"),
             ProjectType::Other("bespoke-toolchain".to_string())
+        );
+    }
+
+    #[test]
+    fn test_custom_project_type_detection_uses_remote_marker_names() {
+        let mut config = ProjectMarkersConfig {
+            enable_project_markers: true,
+            ..ProjectMarkersConfig::default()
+        };
+        config.markers.insert(
+            "rust-workspace".to_string(),
+            ProjectMarker {
+                markers: vec!["Cargo.toml".to_string()],
+                language_server: "rust-analyzer".to_string(),
+                root_strategy: RootStrategy::Closest,
+                priority: 50,
+            },
+        );
+        let detector = ProjectDetector::new(config);
+
+        assert!(matches!(
+            detector.detect_custom_project_type_from_markers(&BTreeSet::from([
+                "Cargo.toml".to_string()
+            ])),
+            Some(ProjectType::Rust)
+        ));
+    }
+
+    #[test]
+    fn test_custom_project_type_detection_prefers_high_priority_remote_marker() {
+        let mut config = ProjectMarkersConfig {
+            enable_project_markers: true,
+            ..ProjectMarkersConfig::default()
+        };
+        config.markers.insert(
+            "rust-workspace".to_string(),
+            ProjectMarker {
+                markers: vec!["Cargo.toml".to_string()],
+                language_server: "rust-analyzer".to_string(),
+                root_strategy: RootStrategy::Closest,
+                priority: 50,
+            },
+        );
+        config.markers.insert(
+            "bespoke-toolchain".to_string(),
+            ProjectMarker {
+                markers: vec![".bespoke".to_string()],
+                language_server: "bespoke-ls".to_string(),
+                root_strategy: RootStrategy::Closest,
+                priority: 90,
+            },
+        );
+        let detector = ProjectDetector::new(config);
+
+        assert_eq!(
+            detector.detect_custom_project_type_from_markers(&BTreeSet::from([
+                "Cargo.toml".to_string(),
+                ".bespoke".to_string(),
+            ])),
+            Some(ProjectType::Other("bespoke-toolchain".to_string()))
         );
     }
 

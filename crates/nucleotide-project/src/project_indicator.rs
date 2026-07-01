@@ -387,7 +387,10 @@ pub fn detect_project_types_for_path(path: &Path) -> Vec<ProjectType> {
         "Starting project type detection in path"
     );
 
-    let marker_source = if let Some(marker_names) = wsl_project_marker_names(path) {
+    let marker_source = if !allows_local_project_marker_checks(path) {
+        let Some(marker_names) = wsl_project_marker_names(path) else {
+            return Vec::new();
+        };
         ProjectMarkerSource::Remote(marker_names)
     } else {
         if !path.exists() {
@@ -410,6 +413,10 @@ pub fn detect_project_types_for_path(path: &Path) -> Vec<ProjectType> {
     };
 
     detect_project_types_from_markers(path, &marker_source)
+}
+
+fn allows_local_project_marker_checks(path: &Path) -> bool {
+    WslWorkspace::from_unc_path(path).is_none()
 }
 
 enum ProjectMarkerSource<'a> {
@@ -440,7 +447,7 @@ fn wsl_project_marker_names(path: &Path) -> Option<HashSet<String>> {
             nucleotide_logging::warn!(
                 path = %path.display(),
                 error = %error,
-                "Failed to load WSL project marker listing; falling back to local checks"
+                "Failed to load WSL project marker listing; skipping local UNC project marker checks"
             );
             None
         }
@@ -645,6 +652,16 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let detected = detect_project_types_for_path(temp_dir.path());
         assert_eq!(detected.len(), 0);
+    }
+
+    #[test]
+    fn test_wsl_paths_skip_local_project_marker_checks() {
+        assert!(!allows_local_project_marker_checks(Path::new(
+            r"\\wsl.localhost\Ubuntu\home\iain\repo"
+        )));
+        assert!(allows_local_project_marker_checks(Path::new(
+            r"C:\Users\iain\repo"
+        )));
     }
 
     #[test]
