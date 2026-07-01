@@ -8,10 +8,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::SystemTime;
 use thiserror::Error;
+
+const DEFAULT_PROCESS_OUTPUT_LIMIT_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Error)]
 pub enum WorkspaceError {
@@ -435,6 +437,27 @@ pub struct GitHeadResult {
     pub head: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessSpec {
+    pub program: String,
+    pub args: Vec<String>,
+    pub cwd: PathBuf,
+    pub env: BTreeMap<String, String>,
+    pub clear_env: bool,
+    pub stdin: Vec<u8>,
+    pub max_output_bytes: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessOutput {
+    pub status_code: Option<i32>,
+    pub success: bool,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+    pub stdout_truncated: bool,
+    pub stderr_truncated: bool,
+}
+
 impl Default for GitStatusOptions {
     fn default() -> Self {
         Self {
@@ -487,6 +510,8 @@ pub trait WorkspaceBackend: Send + Sync {
     async fn git_head(&self, root: &Path) -> Result<GitHeadResult>;
 
     async fn git_status(&self, root: &Path, options: GitStatusOptions) -> Result<GitStatusResult>;
+
+    async fn run_process(&self, spec: ProcessSpec) -> Result<ProcessOutput>;
 }
 
 #[derive(Debug, Default, Clone)]
@@ -613,6 +638,11 @@ impl PathMappedWorkspaceBackend {
     fn map_git_status_to_display(&self, mut result: GitStatusResult) -> GitStatusResult {
         result.root = self.mapping.to_display_path(&result.root);
         result
+    }
+
+    fn map_process_spec_to_native(&self, mut spec: ProcessSpec) -> ProcessSpec {
+        spec.cwd = self.mapping.to_native_path(&spec.cwd);
+        spec
     }
 }
 
@@ -758,6 +788,12 @@ impl WorkspaceBackend for PathMappedWorkspaceBackend {
             .await
             .map(|result| self.map_git_status_to_display(result))
     }
+
+    async fn run_process(&self, spec: ProcessSpec) -> Result<ProcessOutput> {
+        self.inner
+            .run_process(self.map_process_spec_to_native(spec))
+            .await
+    }
 }
 
 fn rebase_workspace_path(path: &Path, from_root: &Path, to_root: &Path) -> PathBuf {
@@ -842,6 +878,10 @@ impl WorkspaceBackend for LocalWorkspaceBackend {
 
     async fn git_status(&self, root: &Path, options: GitStatusOptions) -> Result<GitStatusResult> {
         local_git_status(root, options)
+    }
+
+    async fn run_process(&self, spec: ProcessSpec) -> Result<ProcessOutput> {
+        local_run_process(spec)
     }
 }
 
@@ -1581,6 +1621,124 @@ fn local_project_environment(root: &Path) -> Result<ProjectEnvironmentSnapshot> 
     })
 }
 
+fn local_run_process(spec: ProcessSpec) -> Result<ProcessOutput> {
+    let cwd = spec.cwd.clone();
+    let mut command = Command::new(&spec.program);
+    command
+        .args(&spec.args)
+        .current_dir(&cwd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if spec.clear_env {
+        command.env_clear();
+    }
+    command.envs(&spec.env);
+
+    let mut child = command.spawn().map_err(|source| WorkspaceError::Io {
+        operation: "spawn process",
+        path: cwd.clone(),
+        source,
+    })?;
+
+    let output_limit = spec
+        .max_output_bytes
+        .unwrap_or(DEFAULT_PROCESS_OUTPUT_LIMIT_BYTES);
+    let mut stdin = child.stdin.take();
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| WorkspaceError::CommandFailed {
+            operation: "spawn process",
+            path: cwd.clone(),
+            message: "child process stdout was not piped".to_string(),
+        })?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| WorkspaceError::CommandFailed {
+            operation: "spawn process",
+            path: cwd.clone(),
+            message: "child process stderr was not piped".to_string(),
+        })?;
+
+    let stdout_thread = std::thread::spawn(move || read_limited(stdout, output_limit));
+    let stderr_thread = std::thread::spawn(move || read_limited(stderr, output_limit));
+    let input = spec.stdin;
+    let stdin_thread = stdin.take().map(|mut stdin| {
+        std::thread::spawn(move || match stdin.write_all(&input) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+            Err(error) => Err(error),
+        })
+    });
+
+    let status = child.wait().map_err(|source| WorkspaceError::Io {
+        operation: "wait for process",
+        path: cwd.clone(),
+        source,
+    })?;
+
+    if let Some(thread) = stdin_thread {
+        join_io_thread(thread, "write process stdin", &cwd)?;
+    }
+    let (stdout, stdout_truncated) = join_io_thread(stdout_thread, "read process stdout", &cwd)?;
+    let (stderr, stderr_truncated) = join_io_thread(stderr_thread, "read process stderr", &cwd)?;
+
+    Ok(ProcessOutput {
+        status_code: status.code(),
+        success: status.success(),
+        stdout,
+        stderr,
+        stdout_truncated,
+        stderr_truncated,
+    })
+}
+
+fn read_limited<R: Read>(mut reader: R, limit: usize) -> std::io::Result<(Vec<u8>, bool)> {
+    let mut output = Vec::with_capacity(limit.min(8192));
+    let mut truncated = false;
+    let mut buffer = [0_u8; 8192];
+
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        let remaining = limit.saturating_sub(output.len());
+        if remaining >= read {
+            output.extend_from_slice(&buffer[..read]);
+        } else {
+            output.extend_from_slice(&buffer[..remaining]);
+            truncated = true;
+        }
+        if remaining < read {
+            truncated = true;
+        }
+    }
+
+    Ok((output, truncated))
+}
+
+fn join_io_thread<T>(
+    thread: std::thread::JoinHandle<std::io::Result<T>>,
+    operation: &'static str,
+    path: &Path,
+) -> Result<T> {
+    thread
+        .join()
+        .map_err(|_| WorkspaceError::CommandFailed {
+            operation,
+            path: path.to_path_buf(),
+            message: "I/O thread panicked".to_string(),
+        })?
+        .map_err(|source| WorkspaceError::Io {
+            operation,
+            path: path.to_path_buf(),
+            source,
+        })
+}
+
 fn local_git_head(root: &Path) -> Result<GitHeadResult> {
     let output = Command::new("git")
         .args(["rev-parse", "--verify", "HEAD"])
@@ -1786,6 +1944,67 @@ mod tests {
         assert_eq!(backend.identity(), WorkspaceIdentity::Local);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn local_backend_run_process_collects_output_and_status() {
+        let temp = tempfile::tempdir().unwrap();
+        let backend = LocalWorkspaceBackend;
+
+        let output = block_on(backend.run_process(ProcessSpec {
+            program: "/bin/sh".to_string(),
+            args: vec![
+                "-c".to_string(),
+                "dir=$(pwd -P); printf '%s:%s:' \"$FOO\" \"$dir\"; cat".to_string(),
+            ],
+            cwd: temp.path().to_path_buf(),
+            env: BTreeMap::from([("FOO".to_string(), "bar".to_string())]),
+            clear_env: false,
+            stdin: b"stdin".to_vec(),
+            max_output_bytes: None,
+        }))
+        .unwrap();
+
+        assert!(output.success);
+        assert_eq!(output.status_code, Some(0));
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            format!(
+                "bar:{}:stdin",
+                temp.path().canonicalize().unwrap().display()
+            )
+        );
+        assert_eq!(output.stderr, Vec::<u8>::new());
+        assert!(!output.stdout_truncated);
+        assert!(!output.stderr_truncated);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_backend_run_process_truncates_stored_output_after_limit() {
+        let temp = tempfile::tempdir().unwrap();
+        let backend = LocalWorkspaceBackend;
+
+        let output = block_on(backend.run_process(ProcessSpec {
+            program: "/bin/sh".to_string(),
+            args: vec![
+                "-c".to_string(),
+                "printf abcdef; printf ghij >&2".to_string(),
+            ],
+            cwd: temp.path().to_path_buf(),
+            env: BTreeMap::new(),
+            clear_env: false,
+            stdin: Vec::new(),
+            max_output_bytes: Some(3),
+        }))
+        .unwrap();
+
+        assert!(output.success);
+        assert_eq!(output.stdout, b"abc");
+        assert_eq!(output.stderr, b"ghi");
+        assert!(output.stdout_truncated);
+        assert!(output.stderr_truncated);
+    }
+
     #[test]
     fn workspace_location_classifies_wsl_localhost_unc_without_probing() {
         let path = PathBuf::from(r"\\wsl.localhost\Ubuntu-24.04\home\me\project");
@@ -1913,6 +2132,36 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(native_path).unwrap(),
             "fn main() {}\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn path_mapped_backend_runs_process_in_native_cwd() {
+        let temp = tempfile::tempdir().unwrap();
+        let native_src = temp.path().join("src");
+        fs::create_dir(&native_src).unwrap();
+        let display_root = PathBuf::from("/remote/project");
+        let backend = path_mapped_workspace_backend(
+            local_workspace_backend(),
+            WorkspacePathMapping::new(display_root.clone(), temp.path()),
+        );
+
+        let output = block_on(backend.run_process(ProcessSpec {
+            program: "/bin/sh".to_string(),
+            args: vec!["-c".to_string(), "pwd -P".to_string()],
+            cwd: display_root.join("src"),
+            env: BTreeMap::new(),
+            clear_env: false,
+            stdin: Vec::new(),
+            max_output_bytes: None,
+        }))
+        .unwrap();
+
+        assert!(output.success);
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap().trim(),
+            native_src.canonicalize().unwrap().display().to_string()
         );
     }
 
