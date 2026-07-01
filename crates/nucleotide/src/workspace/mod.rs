@@ -2188,6 +2188,11 @@ struct WslWriteAllCommand {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WslWriteQuitAllCommand {
+    write_all: WslWriteAllCommand,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WslWriteCloseAction {
     CloseBuffer,
     CloseView,
@@ -2247,14 +2252,7 @@ fn wsl_write_close_command(command: &str) -> Option<WslWriteCloseCommand> {
     })
 }
 
-fn wsl_write_all_command(command: &str) -> Option<WslWriteAllCommand> {
-    let (name, args, _) = helix_core::command_line::split(command);
-    let force = match name {
-        "write-all" | "wa" => false,
-        "write-all!" | "wa!" => true,
-        _ => return None,
-    };
-
+fn parse_wsl_write_all_args(args: &str, force: bool) -> Option<WslWriteAllCommand> {
     let signature = Signature {
         positionals: (0, Some(0)),
         flags: &[WSL_WRITE_NO_FORMAT_FLAG],
@@ -2265,6 +2263,30 @@ fn wsl_write_all_command(command: &str) -> Option<WslWriteAllCommand> {
     Some(WslWriteAllCommand {
         force,
         auto_format: !args.has_flag(WSL_WRITE_NO_FORMAT_FLAG.name),
+    })
+}
+
+fn wsl_write_all_command(command: &str) -> Option<WslWriteAllCommand> {
+    let (name, args, _) = helix_core::command_line::split(command);
+    let force = match name {
+        "write-all" | "wa" => false,
+        "write-all!" | "wa!" => true,
+        _ => return None,
+    };
+
+    parse_wsl_write_all_args(args, force)
+}
+
+fn wsl_write_quit_all_command(command: &str) -> Option<WslWriteQuitAllCommand> {
+    let (name, args, _) = helix_core::command_line::split(command);
+    let force = match name {
+        "write-quit-all" | "wqa" | "xa" => false,
+        "write-quit-all!" | "wqa!" | "xa!" => true,
+        _ => return None,
+    };
+
+    Some(WslWriteQuitAllCommand {
+        write_all: parse_wsl_write_all_args(args, force)?,
     })
 }
 
@@ -2540,7 +2562,31 @@ fn flush_queued_wsl_save_and_close(
     runtime: &tokio::runtime::Handle,
 ) -> anyhow::Result<()> {
     runtime.block_on(async { editor.flush_writes().await })?;
+    mark_flushed_wsl_saves(editor, std::slice::from_ref(&queued));
 
+    match action {
+        WslWriteCloseAction::CloseView => {
+            let view_id = editor.tree.focus;
+            editor.close(view_id);
+        }
+        WslWriteCloseAction::CloseBuffer => {
+            close_document_after_wsl_save(editor, queued.doc_id)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn mark_flushed_wsl_saves(
+    editor: &mut helix_view::editor::Editor,
+    queued_saves: &[QueuedWslRemoteSave],
+) {
+    for queued in queued_saves {
+        mark_flushed_wsl_save(editor, queued);
+    }
+}
+
+fn mark_flushed_wsl_save(editor: &mut helix_view::editor::Editor, queued: &QueuedWslRemoteSave) {
     if editor.document(queued.doc_id).is_some() {
         editor.set_doc_path(queued.doc_id, &queued.path);
     }
@@ -2552,34 +2598,84 @@ fn flush_queued_wsl_save_and_close(
             language_server.text_document_did_save(identifier.clone(), doc.text());
         }
     }
+}
 
-    match action {
-        WslWriteCloseAction::CloseView => {
-            let view_id = editor.tree.focus;
-            editor.close(view_id);
+fn close_document_after_wsl_save(
+    editor: &mut helix_view::editor::Editor,
+    doc_id: DocumentId,
+) -> anyhow::Result<()> {
+    editor
+        .close_document(doc_id, false)
+        .map_err(|error| match error {
+            helix_view::editor::CloseError::DoesNotExist => {
+                anyhow::anyhow!("document does not exist")
+            }
+            helix_view::editor::CloseError::BufferModified(name) => {
+                anyhow::anyhow!("buffer modified: {name}")
+            }
+            helix_view::editor::CloseError::SaveError(error) => error,
+        })
+}
+
+fn close_all_editor_views(editor: &mut helix_view::editor::Editor) {
+    let views: Vec<_> = editor.tree.views().map(|(view, _)| view.id).collect();
+    for view_id in views {
+        editor.close(view_id);
+    }
+}
+
+fn ensure_no_modified_buffers_remaining(
+    editor: &mut helix_view::editor::Editor,
+) -> anyhow::Result<()> {
+    let modified_ids: Vec<_> = editor
+        .documents()
+        .filter(|doc| doc.is_modified())
+        .map(|doc| doc.id())
+        .collect();
+
+    if let Some(first) = modified_ids.first() {
+        let current = editor.tree.try_get(editor.tree.focus).map(|view| view.doc);
+        if !current.is_some_and(|doc_id| modified_ids.contains(&doc_id)) {
+            editor.switch(*first, helix_view::editor::Action::Replace);
         }
-        WslWriteCloseAction::CloseBuffer => {
-            editor
-                .close_document(queued.doc_id, false)
-                .map_err(|error| match error {
-                    helix_view::editor::CloseError::DoesNotExist => {
-                        anyhow::anyhow!("document does not exist")
-                    }
-                    helix_view::editor::CloseError::BufferModified(name) => {
-                        anyhow::anyhow!("buffer modified: {name}")
-                    }
-                    helix_view::editor::CloseError::SaveError(error) => error,
-                })?;
-        }
+
+        let modified_names: Vec<_> = modified_ids
+            .iter()
+            .filter_map(|doc_id| editor.document(*doc_id).map(|doc| doc.display_name()))
+            .collect();
+
+        anyhow::bail!(
+            "{} unsaved buffer{} remaining: {:?}",
+            modified_names.len(),
+            if modified_names.len() == 1 { "" } else { "s" },
+            modified_names,
+        );
     }
 
+    Ok(())
+}
+
+fn flush_wsl_write_all_and_quit(
+    editor: &mut helix_view::editor::Editor,
+    queued_saves: &[QueuedWslRemoteSave],
+    force: bool,
+    runtime: &tokio::runtime::Handle,
+) -> anyhow::Result<()> {
+    runtime.block_on(async { editor.flush_writes().await })?;
+    mark_flushed_wsl_saves(editor, queued_saves);
+
+    if !force {
+        ensure_no_modified_buffers_remaining(editor)?;
+    }
+
+    close_all_editor_views(editor);
     Ok(())
 }
 
 fn save_wsl_remote_modified_buffers(
     editor: &mut helix_view::editor::Editor,
     command: WslWriteAllCommand,
-) -> anyhow::Result<bool> {
+) -> anyhow::Result<Option<Vec<QueuedWslRemoteSave>>> {
     let mut wsl_saves = Vec::new();
     let mut local_saves = Vec::new();
     let mut has_pathless_modified_buffer = false;
@@ -2603,7 +2699,7 @@ fn save_wsl_remote_modified_buffers(
     }
 
     if wsl_saves.is_empty() {
-        return Ok(false);
+        return Ok(None);
     }
 
     if has_pathless_modified_buffer && !command.force {
@@ -2616,6 +2712,7 @@ fn save_wsl_remote_modified_buffers(
     }
 
     let save_count = wsl_saves.len() + local_saves.len();
+    let mut queued_wsl_saves = Vec::with_capacity(wsl_saves.len());
     for doc_id in local_saves {
         save_local_modified_buffer_without_format(editor, doc_id, command.force)?;
     }
@@ -2631,11 +2728,11 @@ fn save_wsl_remote_modified_buffers(
         else {
             continue;
         };
-        let _ = enqueue_wsl_remote_save(editor, prepared, command.force)?;
+        queued_wsl_saves.push(enqueue_wsl_remote_save(editor, prepared, command.force)?);
     }
 
     editor.set_status(format!("Writing {save_count} WSL buffers"));
-    Ok(true)
+    Ok(Some(queued_wsl_saves))
 }
 
 fn open_wsl_remote_file(
@@ -9399,13 +9496,41 @@ impl Workspace {
                 }
             }
 
-            if let Some(wsl_command) = wsl_write_all_command(command) {
-                match save_wsl_remote_modified_buffers(&mut core.editor, wsl_command) {
+            if let Some(wsl_command) = wsl_write_quit_all_command(command) {
+                match save_wsl_remote_modified_buffers(&mut core.editor, wsl_command.write_all)
+                    .and_then(|queued_saves| {
+                        if let Some(queued_saves) = queued_saves {
+                            flush_wsl_write_all_and_quit(
+                                &mut core.editor,
+                                &queued_saves,
+                                wsl_command.write_all.force,
+                                &handle_for_command,
+                            )?;
+                            Ok(true)
+                        } else {
+                            Ok(false)
+                        }
+                    }) {
                     Ok(true) => {
                         cx.emit(crate::Update::Redraw);
                         return current_editor_status(&core.editor);
                     }
                     Ok(false) => {}
+                    Err(error) => {
+                        core.editor.set_error(error.to_string());
+                        cx.emit(crate::Update::Redraw);
+                        return current_editor_status(&core.editor);
+                    }
+                }
+            }
+
+            if let Some(wsl_command) = wsl_write_all_command(command) {
+                match save_wsl_remote_modified_buffers(&mut core.editor, wsl_command) {
+                    Ok(Some(_)) => {
+                        cx.emit(crate::Update::Redraw);
+                        return current_editor_status(&core.editor);
+                    }
+                    Ok(None) => {}
                     Err(error) => {
                         core.editor.set_error(error.to_string());
                         cx.emit(crate::Update::Redraw);
@@ -17415,6 +17540,54 @@ mod tests {
         assert_eq!(wsl_write_all_command("write"), None);
         assert_eq!(wsl_write_all_command("write-quit-all"), None);
         assert_eq!(wsl_write_all_command("write-all --unknown"), None);
+    }
+
+    #[test]
+    fn wsl_write_quit_all_command_classifies_write_quit_all_forms() {
+        assert_eq!(
+            wsl_write_quit_all_command("write-quit-all"),
+            Some(WslWriteQuitAllCommand {
+                write_all: WslWriteAllCommand {
+                    force: false,
+                    auto_format: true,
+                },
+            })
+        );
+        assert_eq!(
+            wsl_write_quit_all_command("wqa --no-format"),
+            Some(WslWriteQuitAllCommand {
+                write_all: WslWriteAllCommand {
+                    force: false,
+                    auto_format: false,
+                },
+            })
+        );
+        assert_eq!(
+            wsl_write_quit_all_command("write-quit-all!"),
+            Some(WslWriteQuitAllCommand {
+                write_all: WslWriteAllCommand {
+                    force: true,
+                    auto_format: true,
+                },
+            })
+        );
+        assert_eq!(
+            wsl_write_quit_all_command("xa! --no-format"),
+            Some(WslWriteQuitAllCommand {
+                write_all: WslWriteAllCommand {
+                    force: true,
+                    auto_format: false,
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn wsl_write_quit_all_command_rejects_arguments_and_other_write_commands() {
+        assert_eq!(wsl_write_quit_all_command("write-quit-all target.rs"), None);
+        assert_eq!(wsl_write_quit_all_command("write-all"), None);
+        assert_eq!(wsl_write_quit_all_command("quit-all"), None);
+        assert_eq!(wsl_write_quit_all_command("wqa --unknown"), None);
     }
 
     #[test]
