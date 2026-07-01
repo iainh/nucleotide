@@ -124,9 +124,9 @@ editor backend into Linux:
 - `:write-all`/`:wa` saves modified WSL buffers through the same queued remote
   write path. Pure WSL write-all supports the same LSP auto-format path as
   current-buffer saves, including formatter argument expansion for non-focused
-  buffers. Mixed local/WSL write-all still requires `--no-format` while the
-  command interception owns the save boundary, avoiding a fallback through the
-  Windows UNC filesystem for bulk saves.
+  buffers. Mixed local/WSL write-all formats local buffers through the normal
+  local formatter path while still saving WSL buffers through the helper,
+  avoiding a fallback through the Windows UNC filesystem for bulk saves.
 - `:write-quit`/`:wq`/`:x` and `:write-buffer-close`/`:wbc` use the remote
   write path for WSL buffers before closing. These commands flush the queued
   save before closing, matching Helix's close-after-save sequencing.

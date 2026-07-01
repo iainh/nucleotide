@@ -2534,13 +2534,7 @@ fn apply_wsl_remote_auto_format(
 
     match helix_lsp::block_on(format) {
         Ok(format) => {
-            apply_wsl_remote_format_transaction_if_current(
-                editor,
-                doc_id,
-                view_id,
-                doc_version,
-                format,
-            )?;
+            apply_save_format_transaction_if_current(editor, doc_id, view_id, doc_version, format)?;
         }
         Err(error) => {
             info!("failed to auto-format WSL document before save: {error}");
@@ -2823,10 +2817,10 @@ fn apply_wsl_remote_format_transaction(
     let Some(doc_version) = editor.document(doc_id).map(|doc| doc.version()) else {
         return Ok(());
     };
-    apply_wsl_remote_format_transaction_if_current(editor, doc_id, view_id, doc_version, format)
+    apply_save_format_transaction_if_current(editor, doc_id, view_id, doc_version, format)
 }
 
-fn apply_wsl_remote_format_transaction_if_current(
+fn apply_save_format_transaction_if_current(
     editor: &mut helix_view::editor::Editor,
     doc_id: DocumentId,
     view_id: ViewId,
@@ -2847,19 +2841,21 @@ fn apply_wsl_remote_format_transaction_if_current(
         doc.detect_indent_and_line_ending();
         view.ensure_cursor_in_view(doc, scrolloff);
     } else {
-        info!("discarded WSL auto-format changes because the document changed");
+        info!("discarded auto-format changes because the document changed");
     }
 
     Ok(())
 }
 
-fn save_local_modified_buffer_without_format(
+fn save_local_modified_buffer(
     editor: &mut helix_view::editor::Editor,
     doc_id: DocumentId,
     force: bool,
+    auto_format: bool,
 ) -> anyhow::Result<()> {
     let target_view = editor.get_synced_view_id(doc_id);
     let config = editor.config();
+    let auto_format_on_save = config.auto_format && auto_format;
     let documents = &mut editor.documents;
     let tree = &mut editor.tree;
     let view = tree.get_mut(target_view);
@@ -2878,6 +2874,36 @@ fn save_local_modified_buffer_without_format(
     }
 
     doc.append_changes_to_history(view);
+
+    if auto_format_on_save {
+        let format = {
+            let Some(doc) = editor.document(doc_id) else {
+                return Ok(());
+            };
+            doc.auto_format(editor)
+                .map(|format| (doc.version(), format))
+        };
+
+        if let Some((doc_version, format)) = format {
+            match helix_lsp::block_on(format) {
+                Ok(format) => {
+                    apply_save_format_transaction_if_current(
+                        editor,
+                        doc_id,
+                        target_view,
+                        doc_version,
+                        format,
+                    )?;
+                }
+                Err(error) => {
+                    info!(
+                        "failed to auto-format local document before mixed write-all save: {error}"
+                    );
+                }
+            }
+        }
+    }
+
     editor.save::<PathBuf>(doc_id, None, force)
 }
 
@@ -3104,16 +3130,10 @@ fn save_wsl_remote_modified_buffers(
     if has_pathless_modified_buffer && !command.force {
         anyhow::bail!("cannot write a buffer without a filename");
     }
-    if editor.config().auto_format && command.auto_format && !local_saves.is_empty() {
-        anyhow::bail!(
-            "mixed WSL/local write-all does not yet support auto-format; use :write-all --no-format"
-        );
-    }
-
     let save_count = wsl_saves.len() + local_saves.len();
     let mut queued_wsl_saves = Vec::with_capacity(wsl_saves.len());
     for doc_id in local_saves {
-        save_local_modified_buffer_without_format(editor, doc_id, command.force)?;
+        save_local_modified_buffer(editor, doc_id, command.force, command.auto_format)?;
     }
 
     for (doc_id, path) in wsl_saves {
