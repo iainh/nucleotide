@@ -1,0 +1,673 @@
+// ABOUTME: Workspace backend abstractions for local and remote project operations
+// ABOUTME: Keeps editor-facing workspace services independent of transport details
+
+use async_trait::async_trait;
+use ignore::WalkBuilder;
+use regex::RegexBuilder;
+use std::fs::{self, File};
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum WorkspaceError {
+    #[error("{operation} failed for {path}: {source}")]
+    Io {
+        operation: &'static str,
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("file was modified externally: {path}")]
+    Modified { path: PathBuf },
+
+    #[error("path is not a file: {path}")]
+    NotFile { path: PathBuf },
+
+    #[error("search pattern is invalid: {0}")]
+    InvalidSearchPattern(#[from] regex::Error),
+}
+
+pub type Result<T> = std::result::Result<T, WorkspaceError>;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum WorkspaceIdentity {
+    Local,
+    Remote(RemoteWorkspaceIdentity),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct RemoteWorkspaceIdentity {
+    pub kind: RemoteWorkspaceKind,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum RemoteWorkspaceKind {
+    Wsl,
+    Ssh,
+    Other(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileKind {
+    File,
+    Directory,
+    Symlink,
+    Other,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileStat {
+    pub path: PathBuf,
+    pub kind: FileKind,
+    pub size: u64,
+    pub modified: Option<SystemTime>,
+    pub readonly: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirectoryEntry {
+    pub name: String,
+    pub path: PathBuf,
+    pub stat: FileStat,
+    pub symlink_target: Option<PathBuf>,
+    pub target_exists: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirectoryListing {
+    pub path: PathBuf,
+    pub entries: Vec<DirectoryEntry>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ReadOptions {
+    pub max_bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileRead {
+    pub path: PathBuf,
+    pub bytes: Vec<u8>,
+    pub size: u64,
+    pub modified: Option<SystemTime>,
+    pub readonly: bool,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct WriteOptions {
+    pub create_parent_dirs: bool,
+    pub expected_modified: Option<SystemTime>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WriteResult {
+    pub path: PathBuf,
+    pub size: u64,
+    pub modified: Option<SystemTime>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileSearchQuery {
+    pub root: PathBuf,
+    pub pattern: Option<String>,
+    pub limit: usize,
+    pub hidden: bool,
+    pub parents: bool,
+    pub ignore: bool,
+    pub git_ignore: bool,
+    pub git_global: bool,
+    pub git_exclude: bool,
+    pub follow_links: bool,
+    pub max_depth: Option<usize>,
+}
+
+impl Default for FileSearchQuery {
+    fn default() -> Self {
+        Self {
+            root: PathBuf::new(),
+            pattern: None,
+            limit: 1_000,
+            hidden: false,
+            parents: true,
+            ignore: true,
+            git_ignore: true,
+            git_global: true,
+            git_exclude: true,
+            follow_links: false,
+            max_depth: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileSearchResult {
+    pub root: PathBuf,
+    pub files: Vec<PathBuf>,
+    pub truncated: bool,
+}
+
+#[async_trait]
+pub trait WorkspaceBackend: Send + Sync {
+    fn identity(&self) -> WorkspaceIdentity;
+
+    async fn stat(&self, path: &Path) -> Result<FileStat>;
+
+    async fn list_dir(&self, path: &Path) -> Result<DirectoryListing>;
+
+    async fn read_file(&self, path: &Path, options: ReadOptions) -> Result<FileRead>;
+
+    async fn write_file(
+        &self,
+        path: &Path,
+        bytes: &[u8],
+        options: WriteOptions,
+    ) -> Result<WriteResult>;
+
+    async fn file_search(&self, query: FileSearchQuery) -> Result<FileSearchResult>;
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct LocalWorkspaceBackend;
+
+#[async_trait]
+impl WorkspaceBackend for LocalWorkspaceBackend {
+    fn identity(&self) -> WorkspaceIdentity {
+        WorkspaceIdentity::Local
+    }
+
+    async fn stat(&self, path: &Path) -> Result<FileStat> {
+        local_stat(path)
+    }
+
+    async fn list_dir(&self, path: &Path) -> Result<DirectoryListing> {
+        local_list_dir(path)
+    }
+
+    async fn read_file(&self, path: &Path, options: ReadOptions) -> Result<FileRead> {
+        local_read_file(path, options)
+    }
+
+    async fn write_file(
+        &self,
+        path: &Path,
+        bytes: &[u8],
+        options: WriteOptions,
+    ) -> Result<WriteResult> {
+        local_write_file(path, bytes, options)
+    }
+
+    async fn file_search(&self, query: FileSearchQuery) -> Result<FileSearchResult> {
+        local_file_search(query)
+    }
+}
+
+fn local_stat(path: &Path) -> Result<FileStat> {
+    let metadata = fs::symlink_metadata(path).map_err(|source| WorkspaceError::Io {
+        operation: "stat",
+        path: path.to_path_buf(),
+        source,
+    })?;
+    Ok(file_stat_from_metadata(path.to_path_buf(), metadata))
+}
+
+fn local_list_dir(path: &Path) -> Result<DirectoryListing> {
+    let entries = fs::read_dir(path).map_err(|source| WorkspaceError::Io {
+        operation: "list directory",
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let mut entries = entries
+        .map(|entry| {
+            let entry = entry.map_err(|source| WorkspaceError::Io {
+                operation: "read directory entry",
+                path: path.to_path_buf(),
+                source,
+            })?;
+            let entry_path = entry.path();
+            let metadata =
+                fs::symlink_metadata(&entry_path).map_err(|source| WorkspaceError::Io {
+                    operation: "stat directory entry",
+                    path: entry_path.clone(),
+                    source,
+                })?;
+            let file_type = metadata.file_type();
+            let symlink_target = file_type
+                .is_symlink()
+                .then(|| fs::read_link(&entry_path))
+                .transpose()
+                .map_err(|source| WorkspaceError::Io {
+                    operation: "read symlink",
+                    path: entry_path.clone(),
+                    source,
+                })?;
+            let target_exists = symlink_target.as_ref().map(|target| {
+                if target.is_absolute() {
+                    target.exists()
+                } else {
+                    entry_path
+                        .parent()
+                        .unwrap_or_else(|| Path::new("."))
+                        .join(target)
+                        .exists()
+                }
+            });
+
+            Ok(DirectoryEntry {
+                name: entry.file_name().to_string_lossy().into_owned(),
+                path: entry_path.clone(),
+                stat: file_stat_from_metadata(entry_path, metadata),
+                symlink_target,
+                target_exists,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    entries.sort_by(|left, right| {
+        left.name
+            .to_lowercase()
+            .cmp(&right.name.to_lowercase())
+            .then_with(|| left.name.cmp(&right.name))
+    });
+
+    Ok(DirectoryListing {
+        path: path.to_path_buf(),
+        entries,
+    })
+}
+
+fn local_read_file(path: &Path, options: ReadOptions) -> Result<FileRead> {
+    let metadata = fs::metadata(path).map_err(|source| WorkspaceError::Io {
+        operation: "stat file",
+        path: path.to_path_buf(),
+        source,
+    })?;
+    if !metadata.is_file() {
+        return Err(WorkspaceError::NotFile {
+            path: path.to_path_buf(),
+        });
+    }
+
+    let size = metadata.len();
+    let read_len = options.max_bytes.unwrap_or(size).min(size);
+    let mut file = File::open(path).map_err(|source| WorkspaceError::Io {
+        operation: "open file",
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let mut bytes = Vec::with_capacity(read_len.try_into().unwrap_or(0));
+    std::io::Read::by_ref(&mut file)
+        .take(read_len)
+        .read_to_end(&mut bytes)
+        .map_err(|source| WorkspaceError::Io {
+            operation: "read file",
+            path: path.to_path_buf(),
+            source,
+        })?;
+
+    Ok(FileRead {
+        path: path.to_path_buf(),
+        bytes,
+        size,
+        modified: metadata.modified().ok(),
+        readonly: metadata.permissions().readonly(),
+        truncated: read_len < size,
+    })
+}
+
+fn local_write_file(path: &Path, bytes: &[u8], options: WriteOptions) -> Result<WriteResult> {
+    if let Some(parent) = path.parent()
+        && options.create_parent_dirs
+    {
+        fs::create_dir_all(parent).map_err(|source| WorkspaceError::Io {
+            operation: "create parent directories",
+            path: parent.to_path_buf(),
+            source,
+        })?;
+    }
+
+    if let Some(expected_modified) = options.expected_modified {
+        let modified = fs::metadata(path)
+            .and_then(|metadata| metadata.modified())
+            .map_err(|source| WorkspaceError::Io {
+                operation: "stat file before write",
+                path: path.to_path_buf(),
+                source,
+            })?;
+        if modified != expected_modified {
+            return Err(WorkspaceError::Modified {
+                path: path.to_path_buf(),
+            });
+        }
+    }
+
+    let target_path = write_target_for_path(path)?;
+    let existing_permissions = match fs::metadata(&target_path) {
+        Ok(metadata) if metadata.is_file() => Some(metadata.permissions()),
+        Ok(_) => {
+            return Err(WorkspaceError::NotFile {
+                path: path.to_path_buf(),
+            });
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(source) => {
+            return Err(WorkspaceError::Io {
+                operation: "stat write target",
+                path: target_path.clone(),
+                source,
+            });
+        }
+    };
+    let parent = target_path.parent().ok_or_else(|| WorkspaceError::Io {
+        operation: "resolve write parent",
+        path: target_path.clone(),
+        source: std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has no parent"),
+    })?;
+    let mut temp = tempfile::Builder::new()
+        .prefix(".nucleotide-write-")
+        .tempfile_in(parent)
+        .map_err(|source| WorkspaceError::Io {
+            operation: "create temporary file",
+            path: parent.to_path_buf(),
+            source,
+        })?;
+    temp.write_all(bytes)
+        .and_then(|_| temp.flush())
+        .map_err(|source| WorkspaceError::Io {
+            operation: "write temporary file",
+            path: target_path.clone(),
+            source,
+        })?;
+    if let Some(permissions) = existing_permissions {
+        temp.as_file()
+            .set_permissions(permissions)
+            .map_err(|source| WorkspaceError::Io {
+                operation: "set temporary file permissions",
+                path: target_path.clone(),
+                source,
+            })?;
+    }
+    temp.as_file()
+        .sync_all()
+        .map_err(|source| WorkspaceError::Io {
+            operation: "sync temporary file",
+            path: target_path.clone(),
+            source,
+        })?;
+
+    let temp_path = temp.into_temp_path();
+    fs::rename(&temp_path, &target_path).map_err(|source| WorkspaceError::Io {
+        operation: "replace file",
+        path: target_path.clone(),
+        source,
+    })?;
+
+    let metadata = fs::metadata(&target_path).map_err(|source| WorkspaceError::Io {
+        operation: "stat written file",
+        path: target_path,
+        source,
+    })?;
+
+    Ok(WriteResult {
+        path: path.to_path_buf(),
+        size: metadata.len(),
+        modified: metadata.modified().ok(),
+    })
+}
+
+fn local_file_search(query: FileSearchQuery) -> Result<FileSearchResult> {
+    let pattern = query
+        .pattern
+        .as_ref()
+        .map(|pattern| RegexBuilder::new(pattern).case_insensitive(true).build())
+        .transpose()?;
+    let mut walker = WalkBuilder::new(&query.root);
+    walker
+        .hidden(!query.hidden)
+        .parents(query.parents)
+        .ignore(query.ignore)
+        .git_ignore(query.git_ignore)
+        .git_global(query.git_global)
+        .git_exclude(query.git_exclude)
+        .follow_links(query.follow_links)
+        .add_custom_ignore_filename(".helix/ignore");
+    if let Some(max_depth) = query.max_depth {
+        walker.max_depth(Some(max_depth));
+    }
+
+    let mut files = Vec::new();
+    let mut truncated = false;
+    for entry in walker.build() {
+        let entry = entry.map_err(|source| WorkspaceError::Io {
+            operation: "walk directory",
+            path: query.root.clone(),
+            source: std::io::Error::other(source),
+        })?;
+        if !entry
+            .file_type()
+            .is_some_and(|file_type| file_type.is_file())
+        {
+            continue;
+        }
+        let relative_path = entry
+            .path()
+            .strip_prefix(&query.root)
+            .unwrap_or(entry.path())
+            .to_path_buf();
+        if relative_path.as_os_str().is_empty() {
+            continue;
+        }
+        if let Some(pattern) = &pattern
+            && !pattern.is_match(&relative_path.to_string_lossy())
+        {
+            continue;
+        }
+        if files.len() >= query.limit {
+            truncated = true;
+            break;
+        }
+        files.push(relative_path);
+    }
+    files.sort();
+
+    Ok(FileSearchResult {
+        root: query.root,
+        files,
+        truncated,
+    })
+}
+
+fn file_stat_from_metadata(path: PathBuf, metadata: fs::Metadata) -> FileStat {
+    let file_type = metadata.file_type();
+    let kind = if file_type.is_file() {
+        FileKind::File
+    } else if file_type.is_dir() {
+        FileKind::Directory
+    } else if file_type.is_symlink() {
+        FileKind::Symlink
+    } else {
+        FileKind::Other
+    };
+
+    FileStat {
+        path,
+        kind,
+        size: metadata.len(),
+        modified: metadata.modified().ok(),
+        readonly: metadata.permissions().readonly(),
+    }
+}
+
+fn write_target_for_path(path: &Path) -> Result<PathBuf> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(path.to_path_buf());
+        }
+        Err(source) => {
+            return Err(WorkspaceError::Io {
+                operation: "stat write target",
+                path: path.to_path_buf(),
+                source,
+            });
+        }
+    };
+
+    if !metadata.file_type().is_symlink() {
+        return Ok(path.to_path_buf());
+    }
+
+    let target = fs::read_link(path).map_err(|source| WorkspaceError::Io {
+        operation: "read write symlink",
+        path: path.to_path_buf(),
+        source,
+    })?;
+    Ok(if target.is_absolute() {
+        target
+    } else {
+        path.parent().unwrap_or_else(|| Path::new(".")).join(target)
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::executor::block_on;
+
+    #[test]
+    fn local_backend_lists_directory_entries_sorted_by_name() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(temp.path().join("b.rs"), "").unwrap();
+        fs::write(temp.path().join("A.rs"), "").unwrap();
+
+        let backend = LocalWorkspaceBackend;
+        let listing = block_on(backend.list_dir(temp.path())).unwrap();
+
+        let names = listing
+            .entries
+            .into_iter()
+            .map(|entry| entry.name)
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["A.rs", "b.rs"]);
+    }
+
+    #[test]
+    fn local_backend_reads_bounded_file_prefix() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("main.rs");
+        fs::write(&path, "abcdef").unwrap();
+
+        let backend = LocalWorkspaceBackend;
+        let read = block_on(backend.read_file(&path, ReadOptions { max_bytes: Some(3) })).unwrap();
+
+        assert_eq!(read.bytes, b"abc");
+        assert_eq!(read.size, 6);
+        assert!(read.truncated);
+    }
+
+    #[test]
+    fn local_backend_rejects_external_modification_mismatch() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("main.rs");
+        fs::write(&path, "old").unwrap();
+
+        let backend = LocalWorkspaceBackend;
+        let result = block_on(backend.write_file(
+            &path,
+            b"new",
+            WriteOptions {
+                create_parent_dirs: false,
+                expected_modified: Some(SystemTime::UNIX_EPOCH),
+            },
+        ));
+
+        assert!(matches!(result, Err(WorkspaceError::Modified { .. })));
+        assert_eq!(fs::read_to_string(path).unwrap(), "old");
+    }
+
+    #[test]
+    fn local_backend_writes_file_atomically() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("main.rs");
+
+        let backend = LocalWorkspaceBackend;
+        let result = block_on(backend.write_file(
+            &path,
+            b"fn main() {}\n",
+            WriteOptions {
+                create_parent_dirs: false,
+                expected_modified: None,
+            },
+        ))
+        .unwrap();
+
+        assert_eq!(result.path, path);
+        assert_eq!(result.size, 13);
+        assert_eq!(fs::read_to_string(result.path).unwrap(), "fn main() {}\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_backend_preserves_existing_file_permissions_on_write() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("script.sh");
+        fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let backend = LocalWorkspaceBackend;
+        block_on(backend.write_file(&path, b"#!/bin/sh\nexit 1\n", WriteOptions::default()))
+            .unwrap();
+
+        let mode = fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o755);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_backend_preserves_symlink_on_write() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("target.rs");
+        let link = temp.path().join("link.rs");
+        fs::write(&target, "old").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let backend = LocalWorkspaceBackend;
+        block_on(backend.write_file(&link, b"new", WriteOptions::default())).unwrap();
+
+        assert!(
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(fs::read_to_string(target).unwrap(), "new");
+    }
+
+    #[test]
+    fn local_backend_search_respects_limit_and_pattern() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir(temp.path().join("src")).unwrap();
+        fs::write(temp.path().join("src").join("main.rs"), "").unwrap();
+        fs::write(temp.path().join("src").join("lib.rs"), "").unwrap();
+        fs::write(temp.path().join("README.md"), "").unwrap();
+
+        let backend = LocalWorkspaceBackend;
+        let result = block_on(backend.file_search(FileSearchQuery {
+            root: temp.path().to_path_buf(),
+            pattern: Some(r"\.rs$".to_string()),
+            limit: 1,
+            ..FileSearchQuery::default()
+        }))
+        .unwrap();
+
+        assert_eq!(result.files.len(), 1);
+        assert!(result.truncated);
+        assert!(result.files[0].to_string_lossy().ends_with(".rs"));
+    }
+}

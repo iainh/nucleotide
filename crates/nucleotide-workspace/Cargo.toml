@@ -1,0 +1,22 @@
+[package]
+name = "nucleotide-workspace"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+description = "Workspace backend abstractions for Nucleotide"
+categories = ["text-editors", "gui"]
+rust-version = "1.95"
+
+[dependencies]
+async-trait.workspace = true
+ignore.workspace = true
+regex.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+futures.workspace = true
