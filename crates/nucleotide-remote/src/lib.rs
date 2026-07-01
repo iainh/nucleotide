@@ -910,8 +910,9 @@ impl FileWriteResponse {
     ) -> std::io::Result<Self> {
         let current_dir = std::env::current_dir()?;
         let path = path.to_path_buf();
+        let write_path = file_write_target_path(&path)?;
 
-        if let Some(parent) = path.parent()
+        if let Some(parent) = write_path.parent()
             && !parent.exists()
         {
             if options.create_parent_dirs {
@@ -924,7 +925,7 @@ impl FileWriteResponse {
             }
         }
 
-        if let Ok(metadata) = std::fs::metadata(&path) {
+        if let Ok(metadata) = std::fs::metadata(&write_path) {
             if !metadata.is_file() {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
@@ -948,14 +949,16 @@ impl FileWriteResponse {
             ));
         }
 
-        let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+        let parent = write_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."));
         let mut temp = tempfile::NamedTempFile::new_in(parent)?;
         let size = std::io::copy(&mut reader, &mut temp)?;
         temp.flush()?;
         temp.as_file().sync_all()?;
-        persist_temp_file(temp, &path)?;
+        persist_temp_file(temp, &write_path)?;
 
-        let metadata = std::fs::metadata(&path)?;
+        let metadata = std::fs::metadata(&write_path)?;
         let modified_unix_millis = metadata.modified().ok().and_then(system_time_unix_millis);
 
         Ok(Self {
@@ -965,6 +968,15 @@ impl FileWriteResponse {
             size,
             modified_unix_millis,
         })
+    }
+}
+
+fn file_write_target_path(path: &std::path::Path) -> std::io::Result<PathBuf> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => std::fs::canonicalize(path),
+        Ok(_) => Ok(path.to_path_buf()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(path.to_path_buf()),
+        Err(error) => Err(error),
     }
 }
 
@@ -1942,6 +1954,32 @@ mod tests {
             "fn main() {}\n"
         );
         assert!(response.modified_unix_millis.is_some());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_write_current_preserves_symlink_and_writes_target() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("target.rs");
+        let link = temp.path().join("link.rs");
+        std::fs::write(&target, "old").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let response = FileWriteResponse::current_from_reader(
+            &link,
+            "new".as_bytes(),
+            FileWriteOptions::default(),
+        )
+        .unwrap();
+
+        assert_eq!(response.path, link);
+        assert!(
+            std::fs::symlink_metadata(&response.path)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(std::fs::read_to_string(target).unwrap(), "new");
     }
 
     #[test]

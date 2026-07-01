@@ -134,6 +134,9 @@ editor backend into Linux:
 - WSL remote opens record the decoded BOM state and WSL remote saves feed that
   state back into Helix's encoder, so UTF BOMs are preserved even though Helix's
   document BOM flag is private.
+- WSL remote saves preserve existing file symlinks by resolving the symlink in
+  the Linux helper and atomically replacing the target file, rather than
+  replacing the symlink path itself from Windows.
 - The tab readonly toggle uses the helper-backed `set-readonly` command for WSL
   file tabs before updating Helix's document state, so lock/unlock reflects
   Linux file permissions instead of only local UI state.
@@ -170,7 +173,7 @@ notify Helix's file-event handler, and emit LSP `didSave`.
 
 The remaining document I/O work is to make this a first-class file-provider
 boundary rather than a command interception. External formatter auto-format and
-symlink metadata parity still need dedicated plumbing.
+broader symlink metadata parity still need dedicated plumbing.
 
 ## Runtime Flow
 
