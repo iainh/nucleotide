@@ -8,7 +8,7 @@ use std::io::Read;
 use std::path::PathBuf;
 use std::time::UNIX_EPOCH;
 
-pub const PROTOCOL_VERSION: u32 = 10;
+pub const PROTOCOL_VERSION: u32 = 11;
 pub const DEFAULT_FILE_SEARCH_LIMIT: usize = 1_000;
 pub const DEFAULT_GLOBAL_SEARCH_LIMIT: usize = 1_000;
 pub const DEFAULT_FILE_READ_LIMIT: usize = 10_000;
@@ -269,6 +269,37 @@ pub struct FileRenameResponse {
     pub old_path: PathBuf,
     pub new_path: PathBuf,
     pub kind: RemoteFileKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileDeleteResponse {
+    pub protocol_version: u32,
+    pub current_dir: PathBuf,
+    pub path: PathBuf,
+    pub kind: RemoteFileKind,
+}
+
+impl FileDeleteResponse {
+    pub fn current(name: &str) -> std::io::Result<Self> {
+        let name = sanitize_child_name(name)?;
+        let current_dir = std::env::current_dir()?;
+        let path = current_dir.join(name);
+        let metadata = std::fs::symlink_metadata(&path)?;
+        let kind = remote_file_kind_from_metadata(&metadata);
+
+        if matches!(kind, RemoteFileKind::Directory) {
+            std::fs::remove_dir_all(&path)?;
+        } else {
+            std::fs::remove_file(&path)?;
+        }
+
+        Ok(Self {
+            protocol_version: PROTOCOL_VERSION,
+            current_dir,
+            path,
+            kind,
+        })
+    }
 }
 
 impl FileRenameResponse {
@@ -1135,6 +1166,49 @@ mod tests {
 
         assert_eq!(existing.kind(), std::io::ErrorKind::AlreadyExists);
         assert_eq!(nested.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn file_delete_response_deletes_file_in_current_dir() {
+        let _guard = CURRENT_DIR_LOCK.lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("delete.rs"), "").unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp.path()).unwrap();
+
+        let response = FileDeleteResponse::current("delete.rs").unwrap();
+
+        std::env::set_current_dir(original).unwrap();
+
+        assert_eq!(response.protocol_version, PROTOCOL_VERSION);
+        assert_eq!(response.path, temp.path().join("delete.rs"));
+        assert_eq!(response.kind, RemoteFileKind::File);
+        assert!(!temp.path().join("delete.rs").exists());
+    }
+
+    #[test]
+    fn file_delete_response_deletes_directory_in_current_dir() {
+        let _guard = CURRENT_DIR_LOCK.lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temp.path().join("delete-me").join("nested")).unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp.path()).unwrap();
+
+        let response = FileDeleteResponse::current("delete-me").unwrap();
+
+        std::env::set_current_dir(original).unwrap();
+
+        assert_eq!(response.kind, RemoteFileKind::Directory);
+        assert!(!temp.path().join("delete-me").exists());
+    }
+
+    #[test]
+    fn file_delete_response_rejects_invalid_names() {
+        let nested = FileDeleteResponse::current("src/main.rs").unwrap_err();
+        let parent = FileDeleteResponse::current("..").unwrap_err();
+
+        assert_eq!(nested.kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(parent.kind(), std::io::ErrorKind::InvalidInput);
     }
 
     #[test]

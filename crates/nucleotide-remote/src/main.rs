@@ -5,8 +5,8 @@ use anyhow::{Context, Result, bail};
 use nucleotide_remote::{
     DEFAULT_FILE_READ_LIMIT, DEFAULT_WORKSPACE_SYMBOL_FILE_BYTE_LIMIT,
     DEFAULT_WORKSPACE_SYMBOL_FILE_LIMIT, DEFAULT_WORKSPACE_SYMBOL_TOTAL_BYTE_LIMIT,
-    DirectoryListingResponse, EnvironmentResponse, FileCreateResponse, FileReadResponse,
-    FileRenameResponse, FileSearchResponse, GlobalSearchResponse, HelloResponse,
+    DirectoryListingResponse, EnvironmentResponse, FileCreateResponse, FileDeleteResponse,
+    FileReadResponse, FileRenameResponse, FileSearchResponse, GlobalSearchResponse, HelloResponse,
     WorkspaceMetadataResponse, WorkspaceRootResponse, WorkspaceSymbolFilesOptions,
     WorkspaceSymbolFilesResponse, encode_json_line,
 };
@@ -64,6 +64,13 @@ fn main() -> Result<()> {
                 .context("failed to rename remote path")?;
             print!("{}", encode_json_line(&response)?);
         }
+        "delete" => {
+            let name = std::env::var("NUCLEOTIDE_REMOTE_DELETE_NAME")
+                .context("NUCLEOTIDE_REMOTE_DELETE_NAME is required")?;
+            let response =
+                FileDeleteResponse::current(&name).context("failed to delete remote path")?;
+            print!("{}", encode_json_line(&response)?);
+        }
         "files" => {
             let response =
                 FileSearchResponse::current().context("failed to build file search response")?;
@@ -109,6 +116,7 @@ fn main() -> Result<()> {
             println!("nucleotide-remote create-file");
             println!("nucleotide-remote create-directory");
             println!("nucleotide-remote rename");
+            println!("nucleotide-remote delete");
             println!("nucleotide-remote files");
             println!("nucleotide-remote search");
             println!("nucleotide-remote read");

@@ -71,14 +71,15 @@ use crate::{Core, Input, InputEvent};
 use nucleotide_core::EventBus;
 use nucleotide_env::{
     EnvironmentOrigin, WslWorkspace, create_wsl_remote_directory_blocking,
-    create_wsl_remote_file_blocking, load_wsl_remote_file_search_blocking,
-    load_wsl_remote_global_search_blocking, rename_wsl_remote_path_blocking,
+    create_wsl_remote_file_blocking, delete_wsl_remote_path_blocking,
+    load_wsl_remote_file_search_blocking, load_wsl_remote_global_search_blocking,
+    rename_wsl_remote_path_blocking,
 };
 use nucleotide_events::v2::run::{Event as RunEvent, ResolvedTask, RunId, RunStatus};
 use nucleotide_events::v2::terminal::{Event as TerminalEvent, TerminalId};
 use nucleotide_remote::{
-    FileCreateResponse, FileRenameResponse, FileSearchResponse, GlobalSearchResponse,
-    RemoteFileKind,
+    FileCreateResponse, FileDeleteResponse, FileRenameResponse, FileSearchResponse,
+    GlobalSearchResponse, RemoteFileKind,
 };
 use nucleotide_terminal::TerminalBounds;
 use slotmap::KeyData;
@@ -2328,6 +2329,30 @@ fn rename_wsl_project_path(path: &Path, new_name: &str, was_dir: bool) -> Result
     wsl_renamed_paths(path, &response, was_dir)
         .map(|(_, new_path)| new_path)
         .ok_or_else(|| "remote helper returned an unmappable rename path".to_string())
+}
+
+fn wsl_deleted_path(path: &Path, response: &FileDeleteResponse) -> Option<(PathBuf, bool)> {
+    let parent = path.parent()?;
+    let workspace = WslWorkspace::from_unc_path(parent)?;
+    let deleted_path = workspace
+        .unc_path_for_linux_path(&response.path)
+        .map(PathBuf::from)?;
+    if deleted_path != path {
+        return None;
+    }
+
+    Some((
+        deleted_path,
+        matches!(response.kind, RemoteFileKind::Directory),
+    ))
+}
+
+fn delete_wsl_project_path(path: &Path) -> Result<bool, String> {
+    let response = delete_wsl_remote_path_blocking(path, WSL_REMOTE_FILE_OP_TIMEOUT)
+        .map_err(|error| error.to_string())?;
+    wsl_deleted_path(path, &response)
+        .map(|(_, was_dir)| was_dir)
+        .ok_or_else(|| "remote helper returned an unmappable delete path".to_string())
 }
 
 fn global_search_picker(root: &Path, matches: Vec<GlobalSearchMatch>) -> crate::picker::Picker {
@@ -5100,6 +5125,45 @@ impl Workspace {
     /// Execute the delete after confirmation
     fn perform_delete_confirm(&mut self, cx: &mut Context<Self>) {
         if let Some(path) = self.delete_confirm_path.clone() {
+            if WslWorkspace::from_unc_path(&path).is_some() {
+                match delete_wsl_project_path(&path) {
+                    Ok(was_dir) => {
+                        self.dispatch_workspace_file_op_and_process(
+                            nucleotide_events::v2::workspace::Event::FileDeleted {
+                                path: path.clone(),
+                                was_directory: was_dir,
+                            },
+                            cx,
+                        );
+                        self.notify_lsp_file_operation(
+                            LspFileOperationNotification::Deleted {
+                                path: path.clone(),
+                                was_dir,
+                            },
+                            cx,
+                        );
+                        if let Some(parent) = path.parent() {
+                            self.rescan_directory(parent, cx);
+                        }
+                    }
+                    Err(error) => {
+                        let status = EditorStatus {
+                            status: format!("Failed to delete WSL path: {error}"),
+                            severity: Severity::Error,
+                        };
+                        self.core.update(cx, |core, cx| {
+                            core.editor.set_error(status.status.clone());
+                            cx.notify();
+                        });
+                        self.push_editor_status_notification(status, cx);
+                    }
+                }
+                self.delete_confirm_open = false;
+                self.delete_confirm_path = None;
+                cx.notify();
+                return;
+            }
+
             let existed_before = path.exists();
             let was_dir = path.is_dir();
             let mode = match self.core.read(cx).config.gui.file_ops.delete_behavior {
@@ -19219,6 +19283,35 @@ mod tests {
         assert_eq!(
             wsl_renamed_paths(&old_path, &directory_response, false),
             None
+        );
+    }
+
+    #[test]
+    fn wsl_deleted_paths_map_back_to_unc_paths() {
+        let path = PathBuf::from(r"\\wsl.localhost\Ubuntu\home\iain\repo\src\delete.rs");
+        let response = FileDeleteResponse {
+            protocol_version: nucleotide_remote::PROTOCOL_VERSION,
+            current_dir: PathBuf::from("/home/iain/repo/src"),
+            path: PathBuf::from("/home/iain/repo/src/delete.rs"),
+            kind: RemoteFileKind::File,
+        };
+        let directory_response = FileDeleteResponse {
+            protocol_version: nucleotide_remote::PROTOCOL_VERSION,
+            current_dir: PathBuf::from("/home/iain/repo/src"),
+            path: PathBuf::from("/home/iain/repo/src/components"),
+            kind: RemoteFileKind::Directory,
+        };
+
+        assert_eq!(wsl_deleted_path(&path, &response), Some((path, false)));
+        assert_eq!(
+            wsl_deleted_path(
+                Path::new(r"\\wsl.localhost\Ubuntu\home\iain\repo\src\components"),
+                &directory_response,
+            ),
+            Some((
+                PathBuf::from(r"\\wsl.localhost\Ubuntu\home\iain\repo\src\components"),
+                true,
+            ))
         );
     }
 
