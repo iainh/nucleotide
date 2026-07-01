@@ -2133,8 +2133,8 @@ fn tab_double_click_plan(has_file_path: bool) -> TabDoubleClickPlan {
     }
 }
 
-fn is_deleted_document_path(path: Option<&Path>) -> bool {
-    path.is_some_and(|path| !path.exists())
+fn is_deleted_document_path(path: Option<&Path>, backend_identity: &WorkspaceIdentity) -> bool {
+    matches!(backend_identity, WorkspaceIdentity::Local) && path.is_some_and(|path| !path.exists())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -9557,6 +9557,7 @@ impl Workspace {
         let show_diagnostics = core.config.gui.tabs.show_diagnostics;
         let activate_on_close = core.config.gui.tabs.activate_on_close;
         let show_preview_tabs = core.config.gui.preview_tabs.enabled;
+        let workspace_identity = core.workspace_backend.identity();
 
         // Collect all current tab IDs
         let current_doc_ids: std::collections::HashSet<_> =
@@ -9642,7 +9643,7 @@ impl Workspace {
 
                 documents.push(DocumentInfo {
                     id: TabId::Document(doc_id),
-                    is_deleted: is_deleted_document_path(path.as_deref()),
+                    is_deleted: is_deleted_document_path(path.as_deref(), &workspace_identity),
                     path,
                     is_modified: doc.is_modified(),
                     is_readonly: doc.readonly,
@@ -9660,7 +9661,7 @@ impl Workspace {
         for (index, tab) in self.image_tabs.iter().enumerate() {
             documents.push(DocumentInfo {
                 id: TabId::Image(tab.id),
-                is_deleted: is_deleted_document_path(Some(&tab.path)),
+                is_deleted: is_deleted_document_path(Some(&tab.path), &workspace_identity),
                 path: Some(tab.path.clone()),
                 is_modified: false,
                 is_readonly: false,
@@ -18487,15 +18488,35 @@ mod tests {
 
     #[test]
     fn deleted_document_path_matches_zed_backing_file_rule() {
-        assert!(!is_deleted_document_path(None));
+        assert!(!is_deleted_document_path(None, &WorkspaceIdentity::Local));
 
         let dir = tempfile::tempdir().unwrap();
         let existing_path = dir.path().join("existing.rs");
         std::fs::write(&existing_path, "").unwrap();
-        assert!(!is_deleted_document_path(Some(existing_path.as_path())));
+        assert!(!is_deleted_document_path(
+            Some(existing_path.as_path()),
+            &WorkspaceIdentity::Local
+        ));
 
         let missing_path = dir.path().join("missing.rs");
-        assert!(is_deleted_document_path(Some(missing_path.as_path())));
+        assert!(is_deleted_document_path(
+            Some(missing_path.as_path()),
+            &WorkspaceIdentity::Local
+        ));
+    }
+
+    #[test]
+    fn deleted_document_path_does_not_probe_remote_paths() {
+        let remote_identity =
+            WorkspaceIdentity::Remote(nucleotide_workspace::RemoteWorkspaceIdentity {
+                kind: nucleotide_workspace::RemoteWorkspaceKind::Ssh,
+                name: "devbox".to_string(),
+            });
+
+        assert!(!is_deleted_document_path(
+            Some(Path::new("/remote/project/missing.rs")),
+            &remote_identity
+        ));
     }
 
     fn activation_doc(id: char, age: u64) -> TabActivationDocument<char> {
