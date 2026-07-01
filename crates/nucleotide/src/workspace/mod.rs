@@ -10442,10 +10442,22 @@ impl Workspace {
                 );
                 cx.notify();
             }
-            VcsEvent::RepositoryStarted { root_path } => {
+            VcsEvent::RepositoryStarted { root_path, .. } => {
                 debug!(
                     root_path = %root_path.display(),
                     "Workspace: VCS repository monitoring started"
+                );
+                cx.notify();
+            }
+            VcsEvent::RepositoryHeadChanged {
+                root_path,
+                current_head,
+                ..
+            } => {
+                debug!(
+                    root_path = %root_path.display(),
+                    current_head,
+                    "Workspace: VCS repository head changed"
                 );
                 cx.notify();
             }
