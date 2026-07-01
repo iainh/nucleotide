@@ -65,12 +65,21 @@ use nucleotide_env::ProjectEnvironment;
 /// This bridges our environment system with the LSP system
 pub struct ProjectEnvironmentProvider {
     project_environment: Arc<ProjectEnvironment>,
+    workspace_backend: WorkspaceBackendHandle,
 }
 
 impl ProjectEnvironmentProvider {
     pub fn new(project_environment: Arc<ProjectEnvironment>) -> Self {
+        Self::with_workspace_backend(project_environment, local_workspace_backend())
+    }
+
+    pub fn with_workspace_backend(
+        project_environment: Arc<ProjectEnvironment>,
+        workspace_backend: WorkspaceBackendHandle,
+    ) -> Self {
         Self {
             project_environment,
+            workspace_backend,
         }
     }
 }
@@ -91,9 +100,18 @@ impl nucleotide_lsp::EnvironmentProvider for ProjectEnvironmentProvider {
         >,
     > {
         let project_env = self.project_environment.clone();
+        let workspace_backend = self.workspace_backend.clone();
         let directory = directory.to_path_buf();
 
         Box::pin(async move {
+            if !matches!(workspace_backend.identity(), WorkspaceIdentity::Local) {
+                return workspace_backend
+                    .project_environment(&directory)
+                    .await
+                    .map(|snapshot| snapshot.variables.into_iter().collect())
+                    .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>);
+            }
+
             match project_env.get_lsp_environment(&directory).await {
                 Ok(env) => Ok(env),
                 Err(e) => Err(Box::new(e) as Box<dyn std::error::Error + Send + Sync>),
@@ -1187,11 +1205,16 @@ impl Application {
             crate::types::Severity::Info,
         );
 
-        let project_environment = self.project_environment.clone();
+        let env_provider = ProjectEnvironmentProvider::with_workspace_backend(
+            self.project_environment.clone(),
+            self.workspace_backend.clone(),
+        );
         tokio::spawn(async move {
-            match project_environment
-                .get_lsp_environment(&workspace_root)
-                .await
+            match nucleotide_lsp::EnvironmentProvider::get_lsp_environment(
+                &env_provider,
+                &workspace_root,
+            )
+            .await
             {
                 Ok(env) => {
                     debug!(
@@ -4284,8 +4307,9 @@ impl Application {
         let event_tx = project_manager.get_event_sender();
 
         // Create HelixLspBridge with environment provider
-        let env_provider = Arc::new(ProjectEnvironmentProvider::new(
+        let env_provider = Arc::new(ProjectEnvironmentProvider::with_workspace_backend(
             self.project_environment.clone(),
+            self.workspace_backend.clone(),
         ));
         let helix_bridge =
             nucleotide_lsp::HelixLspBridge::new_with_environment(event_tx, env_provider);
@@ -4624,9 +4648,11 @@ impl Application {
                 // Try to recreate the bridge and connect it to manager
                 if let Some(manager) = self.project_lsp_manager.write().await.take() {
                     let event_sender = manager.get_event_sender();
-                    let env_provider = Arc::new(ProjectEnvironmentProvider::new(
-                        self.project_environment.clone(),
-                    ));
+                    let env_provider =
+                        Arc::new(ProjectEnvironmentProvider::with_workspace_backend(
+                            self.project_environment.clone(),
+                            self.workspace_backend.clone(),
+                        ));
                     let bridge = HelixLspBridge::new_with_environment(event_sender, env_provider);
 
                     // Connect the bridge to the manager in recovery
@@ -5721,9 +5747,21 @@ impl Application {
         // Native `nix print-dev-env` may need longer on a cold cache; legacy shell capture
         // still has its own short internal timeout.
         let env_capture_timeout = tokio::time::Duration::from_secs(35);
+        let workspace_backend = self.workspace_backend.clone();
         let env_result = tokio::time::timeout(env_capture_timeout, async {
+            if !matches!(workspace_backend.identity(), WorkspaceIdentity::Local) {
+                return workspace_backend
+                    .project_environment(new_workspace_root)
+                    .await
+                    .map(|snapshot| snapshot.variables.into_iter().collect())
+                    .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>);
+            }
+
             let mut cache = self.shell_env_cache.lock().await;
-            cache.get_environment(new_workspace_root).await
+            cache
+                .get_environment(new_workspace_root)
+                .await
+                .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>)
         })
         .await;
 
