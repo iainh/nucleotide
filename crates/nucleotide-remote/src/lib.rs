@@ -10,7 +10,7 @@ use nucleotide_workspace::{
     GitHeadResult, GitStatusEntry, GitStatusKind, GitStatusOptions, GitStatusResult,
     LocalWorkspaceBackend, ProjectEnvironmentOrigin, ProjectEnvironmentSnapshot, ReadOptions,
     RemoteWorkspaceIdentity, TextSearchMatch, TextSearchQuery, TextSearchResult, WorkspaceBackend,
-    WorkspaceError, WorkspaceIdentity, WriteOptions, WriteResult,
+    WorkspaceBackendHandle, WorkspaceError, WorkspaceIdentity, WriteOptions, WriteResult,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::{BTreeMap, HashMap};
@@ -20,7 +20,7 @@ use std::fmt;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub const PROTOCOL_VERSION: u32 = 1;
@@ -852,6 +852,16 @@ where
         }
     }
 
+    pub fn hello(&mut self) -> std::result::Result<HelloResponse, RemoteClientError> {
+        let (response, _) = self.request(RemoteRequest::Hello, Vec::new())?;
+        match response {
+            RemoteResponse::Hello(hello) => Ok(hello),
+            other => Err(RemoteClientError::Protocol(format!(
+                "unexpected hello response: {other:?}"
+            ))),
+        }
+    }
+
     pub fn shutdown(&mut self) -> std::result::Result<(), RemoteClientError> {
         let (response, _) = self.request(RemoteRequest::Shutdown, Vec::new())?;
         match response {
@@ -885,6 +895,14 @@ where
         }
     }
 
+    pub fn connect(
+        identity: RemoteWorkspaceIdentity,
+        mut client: RemoteWorkspaceClient<T>,
+    ) -> std::result::Result<(Self, HelloResponse), RemoteClientError> {
+        let hello = client.hello()?;
+        Ok((Self::new(identity, client), hello))
+    }
+
     fn request(
         &self,
         operation: &'static str,
@@ -900,6 +918,23 @@ where
             .request(request, body)
             .map_err(|error| client_error_to_workspace(operation, path, error))
     }
+}
+
+pub fn spawn_child_process_workspace_backend(
+    identity: RemoteWorkspaceIdentity,
+    command: &RemoteServiceCommand,
+) -> Result<(WorkspaceBackendHandle, HelloResponse)> {
+    let transport = command.spawn().with_context(|| {
+        format!(
+            "failed to start remote workspace service: {}",
+            command.program.to_string_lossy()
+        )
+    })?;
+    let client = RemoteWorkspaceClient::new(transport);
+    let (backend, hello) = RemoteWorkspaceBackend::connect(identity, client)
+        .context("failed to connect to remote workspace service")?;
+
+    Ok((Arc::new(backend), hello))
 }
 
 #[async_trait]
@@ -1985,14 +2020,45 @@ mod tests {
         }
     }
 
+    fn loopback_identity() -> RemoteWorkspaceIdentity {
+        RemoteWorkspaceIdentity {
+            kind: RemoteWorkspaceKind::Other("loopback".to_string()),
+            name: "loopback".to_string(),
+        }
+    }
+
     fn remote_backend(root: &Path) -> RemoteWorkspaceBackend<LoopbackTransport> {
         RemoteWorkspaceBackend::new(
-            RemoteWorkspaceIdentity {
-                kind: RemoteWorkspaceKind::Other("loopback".to_string()),
-                name: "loopback".to_string(),
-            },
+            loopback_identity(),
             RemoteWorkspaceClient::new(LoopbackTransport::new(root)),
         )
+    }
+
+    #[test]
+    fn remote_client_hello_returns_service_metadata() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut client = RemoteWorkspaceClient::new(LoopbackTransport::new(temp.path()));
+
+        let hello = client.hello().unwrap();
+
+        assert_eq!(hello.workspace_root, temp.path());
+        assert_eq!(hello.helper_version, env!("CARGO_PKG_VERSION"));
+        assert!(hello.capabilities.contains(&"list_dir".to_string()));
+    }
+
+    #[test]
+    fn remote_backend_connect_performs_handshake() {
+        let temp = tempfile::tempdir().unwrap();
+        let client = RemoteWorkspaceClient::new(LoopbackTransport::new(temp.path()));
+
+        let (backend, hello) =
+            RemoteWorkspaceBackend::connect(loopback_identity(), client).unwrap();
+
+        assert_eq!(hello.workspace_root, temp.path());
+        assert_eq!(
+            backend.identity(),
+            WorkspaceIdentity::Remote(loopback_identity())
+        );
     }
 
     fn request_frame(id: u64, request: RemoteRequest, body: Vec<u8>) -> Frame {
