@@ -53,7 +53,9 @@ use helix_view::{
     view::View,
 };
 use nucleotide_events::{ProjectLspCommand, ProjectLspCommandError};
-use nucleotide_lsp::{HelixLspBridge, ProjectLspManager, ServerStatus};
+use nucleotide_lsp::{
+    HelixLspBridge, LspLaunchProxy, LspLaunchProxyProvider, ProjectLspManager, ServerStatus,
+};
 use nucleotide_workspace::{
     DirectoryListing, FileKind, WorkspaceBackendHandle, WorkspaceIdentity,
     classify_workspace_location, local_workspace_backend,
@@ -122,8 +124,110 @@ impl nucleotide_lsp::EnvironmentProvider for ProjectEnvironmentProvider {
     }
 }
 
-const REMOTE_LSP_PROCESS_LAUNCH_UNAVAILABLE: &str =
-    "Remote LSP process launch is not implemented yet; skipping local language server startup";
+pub struct RemoteLspLaunchProxyProvider {
+    helper_path: PathBuf,
+}
+
+impl RemoteLspLaunchProxyProvider {
+    pub fn from_environment() -> Self {
+        Self {
+            helper_path: nucleotide_remote::RemoteWorkspaceBackendOptions::from_environment()
+                .remote_helper_path,
+        }
+    }
+}
+
+impl LspLaunchProxyProvider for RemoteLspLaunchProxyProvider {
+    fn create_lsp_launch_proxy(
+        &self,
+        workspace_root: &std::path::Path,
+        server_name: &str,
+    ) -> Result<Option<LspLaunchProxy>, Box<dyn std::error::Error + Send + Sync>> {
+        let location = classify_workspace_location(workspace_root);
+        let Some(command) = nucleotide_remote::remote_lsp_proxy_command_for_location(
+            &location,
+            &self.helper_path,
+            server_name,
+        ) else {
+            return Ok(None);
+        };
+
+        let shim_dir = std::env::temp_dir().join(format!(
+            "nuc-remote-lsp-shims-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_micros()
+        ));
+        std::fs::create_dir_all(&shim_dir)?;
+        let shim_path = shim_dir.join(lsp_shim_file_name(server_name));
+        write_lsp_proxy_shim(&shim_path, &command)?;
+
+        Ok(Some(LspLaunchProxy {
+            path_dir: shim_dir.clone(),
+            cleanup_paths: vec![shim_path, shim_dir],
+            description: command.display_context(),
+        }))
+    }
+}
+
+fn lsp_shim_file_name(server_name: &str) -> String {
+    let sanitized = server_name.replace(['/', '\\'], "_");
+    if cfg!(windows) {
+        format!("{sanitized}.cmd")
+    } else {
+        sanitized
+    }
+}
+
+fn write_lsp_proxy_shim(
+    shim_path: &Path,
+    command: &nucleotide_remote::RemoteServiceCommand,
+) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        let script = format!(
+            "@echo off\r\n{} %*\r\n",
+            windows_command_invocation(command)
+        );
+        std::fs::write(shim_path, script)
+    }
+
+    #[cfg(not(windows))]
+    {
+        let script = format!("#!/bin/sh\nexec {} \"$@\"\n", command.display_invocation());
+        std::fs::write(shim_path, script)?;
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = std::fs::metadata(shim_path)?.permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(shim_path, permissions)
+    }
+}
+
+#[cfg(windows)]
+fn windows_command_invocation(command: &nucleotide_remote::RemoteServiceCommand) -> String {
+    std::iter::once(command.program.as_os_str())
+        .chain(command.args.iter().map(std::ffi::OsString::as_os_str))
+        .map(quote_windows_command_arg)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+#[cfg(windows)]
+fn quote_windows_command_arg(value: &std::ffi::OsStr) -> String {
+    let value = value.to_string_lossy();
+    if value.is_empty() {
+        return "\"\"".to_string();
+    }
+    if value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '/' | '.' | '_' | '-' | '=' | ':'))
+    {
+        return value.into_owned();
+    }
+
+    format!("\"{}\"", value.replace('"', "\\\""))
+}
+
+const REMOTE_LSP_PROCESS_LAUNCH_UNAVAILABLE: &str = "File-based local LSP startup is skipped for remote workspaces; project LSP startup uses the remote proxy";
 
 fn should_launch_lsp_on_local_host(identity: &WorkspaceIdentity) -> bool {
     matches!(identity, WorkspaceIdentity::Local)
@@ -4256,21 +4360,6 @@ impl Application {
         language_id: &str,
     ) -> Result<nucleotide_events::ServerStartResult, nucleotide_events::ProjectLspCommandError>
     {
-        let workspace_identity = self.workspace_backend.identity();
-        if !should_launch_lsp_on_local_host(&workspace_identity) {
-            warn!(
-                workspace_root = %workspace_root.display(),
-                server_name = %server_name,
-                language_id = %language_id,
-                backend = ?workspace_identity,
-                reason = REMOTE_LSP_PROCESS_LAUNCH_UNAVAILABLE,
-                "Skipping local LSP server start for remote workspace"
-            );
-            return Err(nucleotide_events::ProjectLspCommandError::ServerStartup(
-                REMOTE_LSP_PROCESS_LAUNCH_UNAVAILABLE.to_string(),
-            ));
-        }
-
         info!(
             workspace_root = %workspace_root.display(),
             server_name = %server_name,
@@ -4354,8 +4443,12 @@ impl Application {
             self.project_environment.clone(),
             self.workspace_backend.clone(),
         ));
-        let helix_bridge =
-            nucleotide_lsp::HelixLspBridge::new_with_environment(event_tx, env_provider);
+        let launch_proxy_provider = Arc::new(RemoteLspLaunchProxyProvider::from_environment());
+        let helix_bridge = nucleotide_lsp::HelixLspBridge::new_with_environment_and_launch_proxy(
+            event_tx,
+            env_provider,
+            launch_proxy_provider,
+        );
         let helix_bridge_arc = std::sync::Arc::new(helix_bridge.clone());
 
         // Set the bridge in the project manager
@@ -4706,7 +4799,13 @@ impl Application {
                             self.project_environment.clone(),
                             self.workspace_backend.clone(),
                         ));
-                    let bridge = HelixLspBridge::new_with_environment(event_sender, env_provider);
+                    let launch_proxy_provider =
+                        Arc::new(RemoteLspLaunchProxyProvider::from_environment());
+                    let bridge = HelixLspBridge::new_with_environment_and_launch_proxy(
+                        event_sender,
+                        env_provider,
+                        launch_proxy_provider,
+                    );
 
                     // Connect the bridge to the manager in recovery
                     manager.set_helix_bridge(Arc::new(bridge.clone())).await;
@@ -5935,19 +6034,6 @@ impl Application {
         language_servers: &[String],
     ) -> Vec<nucleotide_events::ServerStartResult> {
         let mut results = Vec::new();
-
-        let workspace_identity = self.workspace_backend.identity();
-        if !should_launch_lsp_on_local_host(&workspace_identity) {
-            warn!(
-                workspace_root = %workspace_root.display(),
-                project_type = ?project_type,
-                language_servers = ?language_servers,
-                backend = ?workspace_identity,
-                reason = REMOTE_LSP_PROCESS_LAUNCH_UNAVAILABLE,
-                "Skipping detected LSP server startup for remote workspace"
-            );
-            return results;
-        }
 
         info!(
             workspace_root = %workspace_root.display(),
@@ -8303,11 +8389,11 @@ mod tests {
     use super::{
         Application, ApplicationCore, EditorInputBridge, LspCompletionTrigger, MaintenanceWake,
         NativeSymbolItem, NativeSymbolTarget, PendingCompletionRequest,
-        bridged_event_needs_gpui_context, buffer_text_matches_path, buffer_word_completion_items,
-        char_index_for_line_col, coalesce_bridged_events, completion_context_for_trigger,
-        current_dir_is_executable_dir, dedupe_completion_items, detect_project_lsp_metadata,
-        detect_project_type_from_workspace_backend, diagnostic_picker_path_label,
-        diagnostic_severity_label, home_requires_login_shell_capture,
+        RemoteLspLaunchProxyProvider, bridged_event_needs_gpui_context, buffer_text_matches_path,
+        buffer_word_completion_items, char_index_for_line_col, coalesce_bridged_events,
+        completion_context_for_trigger, current_dir_is_executable_dir, dedupe_completion_items,
+        detect_project_lsp_metadata, detect_project_type_from_workspace_backend,
+        diagnostic_picker_path_label, diagnostic_severity_label, home_requires_login_shell_capture,
         is_workspace_diagnostic_refresh_method, local_path_completion_context,
         lsp_completion_insert_text, lsp_completion_insert_text_format,
         lsp_completion_items_from_response, lsp_completion_items_from_response_for_server,
@@ -8462,6 +8548,38 @@ mod tests {
             current_dir.path(),
             &exe_path
         ));
+    }
+
+    #[test]
+    fn remote_lsp_launch_proxy_provider_creates_remote_helper_shim() {
+        let provider = RemoteLspLaunchProxyProvider {
+            helper_path: PathBuf::from("/remote/bin/nucleotide-remote"),
+        };
+
+        let proxy = nucleotide_lsp::LspLaunchProxyProvider::create_lsp_launch_proxy(
+            &provider,
+            Path::new("ssh://me@example.com/home/me/project"),
+            "rust-analyzer",
+        )
+        .unwrap()
+        .expect("remote proxy");
+
+        assert!(proxy.path_dir.is_dir());
+        assert!(proxy.description.contains("lsp-proxy"));
+        assert!(proxy.description.contains("rust-analyzer"));
+
+        let script = fs::read_to_string(&proxy.cleanup_paths[0]).unwrap();
+        assert!(script.contains("nucleotide-remote"));
+        assert!(script.contains("lsp-proxy"));
+        assert!(script.contains("rust-analyzer"));
+
+        for path in proxy.cleanup_paths {
+            if path.is_dir() {
+                let _ = fs::remove_dir(path);
+            } else {
+                let _ = fs::remove_file(path);
+            }
+        }
     }
 
     #[test]
