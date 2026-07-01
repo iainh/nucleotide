@@ -79,7 +79,10 @@ editor backend into Linux:
   without relying on non-portable `sh -l` behavior.
 - Application startup and project LSP coordination use helper-backed root
   detection for WSL paths, avoiding parent-directory marker probes through the
-  Windows UNC filesystem.
+  Windows UNC filesystem. Startup project-root detection first classifies WSL
+  arguments as files or directories, then runs helper root detection from the
+  directory side of the path so file arguments do not pay for failed directory
+  probes.
 - Startup arguments, forwarded open requests, platform open events, file
   selections, file picker requests, and `gf`-style file navigation classify WSL
   paths without Windows `exists`/`is_dir`/`canonicalize` probes. When helper

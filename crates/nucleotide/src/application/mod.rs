@@ -6658,7 +6658,9 @@ fn detect_project_root_from_wsl_dir(dir: &Path) -> Option<PathBuf> {
 }
 
 fn project_directory_from_wsl_argument(path: &Path) -> Option<PathBuf> {
-    let workspace = WslWorkspace::from_unc_path(path)?;
+    let start_dir = wsl_argument_project_start_dir(path)?;
+    let workspace = WslWorkspace::from_unc_path(&start_dir)?;
+
     match load_wsl_remote_workspace_root_blocking(&workspace, WSL_REMOTE_ROOT_TIMEOUT) {
         Ok(response) => {
             return Some(
@@ -6666,20 +6668,37 @@ fn project_directory_from_wsl_argument(path: &Path) -> Option<PathBuf> {
                     .project_root
                     .as_deref()
                     .and_then(|root| wsl_unc_path_for_remote_path(&workspace, root))
-                    .unwrap_or_else(|| path.to_path_buf()),
+                    .unwrap_or(start_dir),
             );
         }
         Err(error) => {
             debug!(
-                path = %path.display(),
+                path = %start_dir.display(),
                 error = %error,
-                "Failed to load WSL project directory from argument path; trying parent as file path"
+                "Failed to load WSL project directory from argument start directory"
             );
         }
     }
 
-    let parent = path.parent()?;
-    detect_project_root_from_wsl_dir(parent)
+    Some(start_dir)
+}
+
+fn wsl_argument_project_start_dir(path: &Path) -> Option<PathBuf> {
+    WslWorkspace::from_unc_path(path)?;
+
+    wsl_argument_project_start_dir_for_kind(path, wsl_cli_argument_kind(path))
+}
+
+fn wsl_argument_project_start_dir_for_kind(
+    path: &Path,
+    kind: Option<RemoteFileKind>,
+) -> Option<PathBuf> {
+    match kind {
+        Some(RemoteFileKind::Directory) => Some(path.to_path_buf()),
+        Some(_) => path.parent().map(Path::to_path_buf),
+        None if wsl_cli_argument_directory_fallback(path) => Some(path.to_path_buf()),
+        None => path.parent().map(Path::to_path_buf),
+    }
 }
 
 fn cli_argument_is_directory_without_wsl_probe(path: &Path) -> bool {
@@ -8581,9 +8600,10 @@ mod tests {
         str_prefix_at_byte_limit, suppress_shadowed_buffer_word_completion_items,
         syntax_symbol_kind_from_capture_name, workspace_diagnostic_refresh_reply,
         workspace_marker_exists, workspace_symbol_files_options_from_picker_config,
-        wsl_cli_argument_directory_fallback, wsl_remote_helper_install_source_from_value,
-        wsl_remote_helper_unavailable_message, wsl_unc_path_for_remote_path,
-        wsl_workspace_for_project_directory, wsl_workspace_path_from_remote_relative,
+        wsl_argument_project_start_dir_for_kind, wsl_cli_argument_directory_fallback,
+        wsl_remote_helper_install_source_from_value, wsl_remote_helper_unavailable_message,
+        wsl_unc_path_for_remote_path, wsl_workspace_for_project_directory,
+        wsl_workspace_path_from_remote_relative,
     };
     use crate::test_utils::test_support::{
         TestUpdate, create_counting_channel, create_test_diagnostic_events,
@@ -9926,6 +9946,36 @@ mod tests {
         assert!(!wsl_cli_argument_directory_fallback(Path::new(
             r"\\wsl.localhost\Ubuntu\home\iain\repo\Makefile"
         )));
+    }
+
+    #[test]
+    fn wsl_argument_project_start_dir_uses_remote_kind_before_path_shape() {
+        let dotted_dir = Path::new(r"\\wsl.localhost\Ubuntu\home\iain\repo\src.with.dot");
+        assert_eq!(
+            wsl_argument_project_start_dir_for_kind(dotted_dir, Some(RemoteFileKind::Directory)),
+            Some(dotted_dir.to_path_buf())
+        );
+
+        let file = Path::new(r"\\wsl.localhost\Ubuntu\home\iain\repo\src\main.rs");
+        assert_eq!(
+            wsl_argument_project_start_dir_for_kind(file, Some(RemoteFileKind::File)),
+            Some(PathBuf::from(r"\\wsl.localhost\Ubuntu\home\iain\repo\src"))
+        );
+    }
+
+    #[test]
+    fn wsl_argument_project_start_dir_fallback_handles_extensionless_files() {
+        let directory = Path::new(r"\\wsl.localhost\Ubuntu\home\iain\repo\src");
+        assert_eq!(
+            wsl_argument_project_start_dir_for_kind(directory, None),
+            Some(directory.to_path_buf())
+        );
+
+        let makefile = Path::new(r"\\wsl.localhost\Ubuntu\home\iain\repo\Makefile");
+        assert_eq!(
+            wsl_argument_project_start_dir_for_kind(makefile, None),
+            Some(PathBuf::from(r"\\wsl.localhost\Ubuntu\home\iain\repo"))
+        );
     }
 
     #[test]
