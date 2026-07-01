@@ -4,11 +4,11 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::OpenOptions;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::time::UNIX_EPOCH;
 
-pub const PROTOCOL_VERSION: u32 = 13;
+pub const PROTOCOL_VERSION: u32 = 14;
 pub const DEFAULT_FILE_SEARCH_LIMIT: usize = 1_000;
 pub const DEFAULT_GLOBAL_SEARCH_LIMIT: usize = 1_000;
 pub const DEFAULT_FILE_READ_LIMIT: usize = 10_000;
@@ -679,6 +679,30 @@ pub struct FileReadResponse {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileWriteResponse {
+    pub protocol_version: u32,
+    pub current_dir: PathBuf,
+    pub path: PathBuf,
+    pub size: u64,
+    pub modified_unix_millis: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileWriteOptions {
+    pub create_parent_dirs: bool,
+    pub expected_modified_unix_millis: Option<i64>,
+}
+
+impl Default for FileWriteOptions {
+    fn default() -> Self {
+        Self {
+            create_parent_dirs: false,
+            expected_modified_unix_millis: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceSymbolFileEntryResponse {
     pub relative_path: PathBuf,
     pub content: String,
@@ -829,6 +853,90 @@ impl FileReadResponse {
             size,
             truncated,
         })
+    }
+}
+
+impl FileWriteResponse {
+    pub fn current_from_reader(
+        path: &std::path::Path,
+        mut reader: impl Read,
+        options: FileWriteOptions,
+    ) -> std::io::Result<Self> {
+        let current_dir = std::env::current_dir()?;
+        let path = path.to_path_buf();
+
+        if let Some(parent) = path.parent()
+            && !parent.exists()
+        {
+            if options.create_parent_dirs {
+                std::fs::create_dir_all(parent)?;
+            } else {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "parent directory does not exist",
+                ));
+            }
+        }
+
+        if let Ok(metadata) = std::fs::metadata(&path) {
+            if !metadata.is_file() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "target path is not a file",
+                ));
+            }
+
+            if let Some(expected) = options.expected_modified_unix_millis {
+                let actual = metadata.modified().ok().and_then(system_time_unix_millis);
+                if actual != Some(expected) {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        "target file was modified externally",
+                    ));
+                }
+            }
+        } else if options.expected_modified_unix_millis.is_some() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "target file does not exist",
+            ));
+        }
+
+        let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+        let mut temp = tempfile::NamedTempFile::new_in(parent)?;
+        let size = std::io::copy(&mut reader, &mut temp)?;
+        temp.flush()?;
+        temp.as_file().sync_all()?;
+        persist_temp_file(temp, &path)?;
+
+        let metadata = std::fs::metadata(&path)?;
+        let modified_unix_millis = metadata.modified().ok().and_then(system_time_unix_millis);
+
+        Ok(Self {
+            protocol_version: PROTOCOL_VERSION,
+            current_dir,
+            path,
+            size,
+            modified_unix_millis,
+        })
+    }
+}
+
+fn system_time_unix_millis(time: std::time::SystemTime) -> Option<i64> {
+    time.duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|duration| duration.as_millis() as i64)
+}
+
+fn persist_temp_file(temp: tempfile::NamedTempFile, path: &std::path::Path) -> std::io::Result<()> {
+    match temp.persist(path) {
+        Ok(_) => Ok(()),
+        Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let temp = error.file;
+            std::fs::remove_file(path)?;
+            temp.persist(path).map(|_| ()).map_err(|error| error.error)
+        }
+        Err(error) => Err(error.error),
     }
 }
 
@@ -1583,6 +1691,109 @@ mod tests {
         assert!(line.contains("\"binary\":false"));
         assert!(line.contains("\"size\":13"));
         assert!(line.contains("\"truncated\":false"));
+    }
+
+    #[test]
+    fn file_write_response_encodes_saved_file_metadata() {
+        let response = FileWriteResponse {
+            protocol_version: PROTOCOL_VERSION,
+            current_dir: PathBuf::from("/workspace"),
+            path: PathBuf::from("src/main.rs"),
+            size: 13,
+            modified_unix_millis: Some(1_700_000_000_000),
+        };
+
+        let line = encode_json_line(&response).unwrap();
+
+        assert!(line.contains("\"current_dir\":\"/workspace\""));
+        assert!(line.contains("\"path\":\"src/main.rs\""));
+        assert!(line.contains("\"size\":13"));
+        assert!(line.contains("\"modified_unix_millis\":1700000000000"));
+    }
+
+    #[test]
+    fn file_write_current_writes_stdin_bytes_atomically() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("main.rs");
+
+        let response = FileWriteResponse::current_from_reader(
+            &path,
+            "fn main() {}\n".as_bytes(),
+            FileWriteOptions::default(),
+        )
+        .unwrap();
+
+        assert_eq!(response.protocol_version, PROTOCOL_VERSION);
+        assert_eq!(response.path, path);
+        assert_eq!(response.size, 13);
+        assert_eq!(
+            std::fs::read_to_string(&response.path).unwrap(),
+            "fn main() {}\n"
+        );
+        assert!(response.modified_unix_millis.is_some());
+    }
+
+    #[test]
+    fn file_write_current_can_create_parent_directories() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("src").join("main.rs");
+
+        FileWriteResponse::current_from_reader(
+            &path,
+            "fn main() {}\n".as_bytes(),
+            FileWriteOptions {
+                create_parent_dirs: true,
+                expected_modified_unix_millis: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "fn main() {}\n");
+    }
+
+    #[test]
+    fn file_write_current_overwrites_when_expected_mtime_matches() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("main.rs");
+        std::fs::write(&path, "old").unwrap();
+        let expected_modified_unix_millis = std::fs::metadata(&path)
+            .unwrap()
+            .modified()
+            .ok()
+            .and_then(system_time_unix_millis);
+
+        let response = FileWriteResponse::current_from_reader(
+            &path,
+            "new".as_bytes(),
+            FileWriteOptions {
+                create_parent_dirs: false,
+                expected_modified_unix_millis,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(response.size, 3);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new");
+    }
+
+    #[test]
+    fn file_write_current_rejects_external_modification_mismatch() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("main.rs");
+        std::fs::write(&path, "old").unwrap();
+
+        let error = FileWriteResponse::current_from_reader(
+            &path,
+            "new".as_bytes(),
+            FileWriteOptions {
+                create_parent_dirs: false,
+                expected_modified_unix_millis: Some(0),
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::Other);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "old");
     }
 
     #[test]

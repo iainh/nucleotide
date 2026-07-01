@@ -7,9 +7,9 @@ use nucleotide_remote::{
     DEFAULT_WORKSPACE_SYMBOL_FILE_LIMIT, DEFAULT_WORKSPACE_SYMBOL_TOTAL_BYTE_LIMIT,
     DirectoryListingResponse, EnvironmentResponse, FileCreateResponse, FileDeleteResponse,
     FileDuplicateResponse, FileMoveResponse, FileReadResponse, FileRenameResponse,
-    FileSearchResponse, GlobalSearchResponse, HelloResponse, WorkspaceMetadataResponse,
-    WorkspaceRootResponse, WorkspaceSymbolFilesOptions, WorkspaceSymbolFilesResponse,
-    encode_json_line,
+    FileSearchResponse, FileWriteOptions, FileWriteResponse, GlobalSearchResponse, HelloResponse,
+    WorkspaceMetadataResponse, WorkspaceRootResponse, WorkspaceSymbolFilesOptions,
+    WorkspaceSymbolFilesResponse, encode_json_line,
 };
 
 fn main() -> Result<()> {
@@ -121,6 +121,16 @@ fn main() -> Result<()> {
                 .context("failed to build file read response")?;
             print!("{}", encode_json_line(&response)?);
         }
+        "write" => {
+            let path = std::env::var_os("NUCLEOTIDE_REMOTE_WRITE_PATH")
+                .map(std::path::PathBuf::from)
+                .context("NUCLEOTIDE_REMOTE_WRITE_PATH is required")?;
+            let options = file_write_options();
+            let stdin = std::io::stdin();
+            let response = FileWriteResponse::current_from_reader(&path, stdin.lock(), options)
+                .context("failed to write remote file")?;
+            print!("{}", encode_json_line(&response)?);
+        }
         "symbol-files" => {
             let response = WorkspaceSymbolFilesResponse::current(workspace_symbol_files_options())
                 .context("failed to build workspace symbol file response")?;
@@ -141,12 +151,24 @@ fn main() -> Result<()> {
             println!("nucleotide-remote files");
             println!("nucleotide-remote search");
             println!("nucleotide-remote read");
+            println!("nucleotide-remote write");
             println!("nucleotide-remote symbol-files");
         }
         other => bail!("unknown nucleotide-remote command: {other}"),
     }
 
     Ok(())
+}
+
+fn file_write_options() -> FileWriteOptions {
+    FileWriteOptions {
+        create_parent_dirs: env_bool("NUCLEOTIDE_REMOTE_WRITE_CREATE_PARENT_DIRS", false),
+        expected_modified_unix_millis: std::env::var(
+            "NUCLEOTIDE_REMOTE_WRITE_EXPECTED_MTIME_UNIX_MILLIS",
+        )
+        .ok()
+        .and_then(|value| value.parse().ok()),
+    }
 }
 
 fn workspace_symbol_files_options() -> WorkspaceSymbolFilesOptions {
