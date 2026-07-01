@@ -31,6 +31,12 @@ impl ProjectStatusHandle {
         service.set_project_root(path);
     }
 
+    /// Update project root path without running synchronous filesystem detection.
+    pub fn set_project_root_without_detection(&self, path: Option<PathBuf>) {
+        let mut service = self.inner.write();
+        service.set_project_root_without_detection(path);
+    }
+
     /// Update LSP state and refresh project status
     pub fn update_lsp_state(&self, lsp_state: &nucleotide_lsp::LspState) {
         let mut service = self.inner.write();
@@ -139,6 +145,20 @@ impl ProjectStatusService {
             );
         }
 
+        self.last_detection_update = Some(Instant::now());
+    }
+
+    /// Set the project root while deferring type detection to another service.
+    pub fn set_project_root_without_detection(&mut self, path: Option<PathBuf>) {
+        info!(
+            project_path = ?path,
+            "Setting project root without synchronous project type detection"
+        );
+
+        self.project_root = path.clone();
+        self.project_info.root_path = path;
+        self.project_info.detected_types.clear();
+        self.project_info.last_updated = Instant::now();
         self.last_detection_update = Some(Instant::now());
     }
 
@@ -290,6 +310,22 @@ mod tests {
         let project_root = service.project_root();
         assert!(project_root.is_some());
         assert_eq!(project_root.unwrap(), temp_dir.path());
+    }
+
+    #[tokio::test]
+    async fn test_set_project_root_without_detection_defers_types() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        File::create(&cargo_toml)
+            .unwrap()
+            .write_all(b"[package]\nname = \"test\"")
+            .unwrap();
+
+        let mut service = ProjectStatusService::new();
+        service.set_project_root_without_detection(Some(temp_dir.path().to_path_buf()));
+
+        assert_eq!(service.project_root(), Some(temp_dir.path()));
+        assert!(service.get_project_info().detected_types.is_empty());
     }
 
     #[tokio::test]

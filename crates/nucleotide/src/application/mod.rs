@@ -53,7 +53,8 @@ use helix_view::{
 use nucleotide_events::{ProjectLspCommand, ProjectLspCommandError};
 use nucleotide_lsp::{HelixLspBridge, ProjectLspManager, ServerStatus};
 use nucleotide_workspace::{
-    WorkspaceBackendHandle, classify_workspace_location, local_workspace_backend,
+    FileKind, WorkspaceBackendHandle, WorkspaceIdentity, classify_workspace_location,
+    local_workspace_backend,
 };
 use slotmap::Key;
 
@@ -4276,6 +4277,10 @@ impl Application {
         // No separate event listener setup needed
 
         // Now start the project manager and detect projects using the stored manager
+        let project_directory = self.project_directory.clone();
+        let workspace_backend = self.workspace_backend.clone();
+        let use_manager_detection =
+            matches!(workspace_backend.identity(), WorkspaceIdentity::Local);
         {
             let manager_guard = self.project_lsp_manager.read().await;
             if let Some(ref manager) = *manager_guard {
@@ -4284,20 +4289,28 @@ impl Application {
 
                 // Trigger project detection if we have a project directory
                 // Now it's safe to emit events - the listener is already subscribed
-                if let Some(project_dir) = &self.project_directory {
+                if let Some(project_dir) = &project_directory {
                     info!(
                         project_directory = %project_dir.display(),
                         "Triggering project detection for automatic LSP server startup"
                     );
 
-                    if let Err(e) = manager.detect_project(project_dir.clone()).await {
-                        nucleotide_logging::warn!(
-                            error = %e,
-                            project_directory = %project_dir.display(),
-                            "Project detection failed - LSP servers may need to be started manually"
-                        );
+                    if use_manager_detection {
+                        if let Err(e) = manager.detect_project(project_dir.clone()).await {
+                            nucleotide_logging::warn!(
+                                error = %e,
+                                project_directory = %project_dir.display(),
+                                "Project detection failed - LSP servers may need to be started manually"
+                            );
+                        } else {
+                            info!("Project detection completed successfully");
+                        }
                     } else {
-                        info!("Project detection completed successfully");
+                        nucleotide_logging::warn!(
+                            project_directory = %project_dir.display(),
+                            backend = ?workspace_backend.identity(),
+                            "Skipping local ProjectLspManager detection for remote workspace"
+                        );
                     }
                 } else {
                     nucleotide_logging::warn!(
@@ -4305,6 +4318,22 @@ impl Application {
                     );
                 }
             }
+        }
+
+        if !use_manager_detection && let Some(project_dir) = project_directory {
+            let (project_type, language_servers) =
+                detect_project_lsp_metadata_with_backend(&project_dir, workspace_backend).await;
+            let servers_started = self
+                .start_detected_project_servers(&project_dir, &project_type, &language_servers)
+                .await;
+
+            info!(
+                project_directory = %project_dir.display(),
+                project_type = ?project_type,
+                language_servers = ?language_servers,
+                servers_started = servers_started.len(),
+                "Remote project detection completed through workspace backend"
+            );
         }
 
         info!("Project LSP system initialized successfully with project detection");
@@ -4614,6 +4643,17 @@ impl Application {
         workspace_root: PathBuf,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         info!("Starting project language servers proactively");
+
+        if !matches!(self.workspace_backend.identity(), WorkspaceIdentity::Local) {
+            let (project_type, language_servers) = detect_project_lsp_metadata_with_backend(
+                &workspace_root,
+                self.workspace_backend.clone(),
+            )
+            .await;
+            self.start_detected_project_servers(&workspace_root, &project_type, &language_servers)
+                .await;
+            return Ok(());
+        }
 
         // Detect the project and get language server requirements
         if let Some(manager_ref) = self.project_lsp_manager.read().await.as_ref() {
@@ -5449,9 +5489,16 @@ impl Application {
                 None
             };
 
-        let (project_type, language_servers) = manager_project_info
-            .map(|project| (project.project_type, project.language_servers))
-            .unwrap_or_else(|| detect_project_lsp_metadata(workspace_root));
+        let (project_type, language_servers) = match manager_project_info {
+            Some(project) => (project.project_type, project.language_servers),
+            None => {
+                detect_project_lsp_metadata_with_backend(
+                    workspace_root,
+                    self.workspace_backend.clone(),
+                )
+                .await
+            }
+        };
 
         let servers_started = self
             .start_detected_project_servers(workspace_root, &project_type, &language_servers)
@@ -5507,11 +5554,19 @@ impl Application {
             None
         };
 
-        let project_type = manager_state
+        let project_type = match manager_state
             .as_ref()
             .and_then(|(project_info, _)| project_info.as_ref())
-            .map(|project| project.project_type.clone())
-            .unwrap_or_else(|| detect_project_type_from_workspace(workspace_root));
+        {
+            Some(project) => project.project_type.clone(),
+            None => {
+                detect_project_type_from_workspace_with_backend(
+                    workspace_root,
+                    self.workspace_backend.clone(),
+                )
+                .await
+            }
+        };
 
         let active_servers = manager_state
             .map(|(_, servers)| {
@@ -5721,7 +5776,11 @@ impl Application {
         &mut self,
         workspace_root: &std::path::Path,
     ) -> Vec<nucleotide_events::ServerStartResult> {
-        let (project_type, language_servers) = detect_project_lsp_metadata(workspace_root);
+        let (project_type, language_servers) = detect_project_lsp_metadata_with_backend(
+            workspace_root,
+            self.workspace_backend.clone(),
+        )
+        .await;
         self.start_detected_project_servers(workspace_root, &project_type, &language_servers)
             .await
     }
@@ -7754,10 +7813,21 @@ fn completion_symbol_key(text: &str) -> Option<String> {
     (!key.is_empty()).then_some(key)
 }
 
+#[cfg(test)]
 fn detect_project_lsp_metadata(
     workspace_root: &Path,
 ) -> (nucleotide_events::ProjectType, Vec<String>) {
     let project_type = detect_project_type_from_workspace(workspace_root);
+    let language_servers = language_servers_for_project_type(&project_type);
+    (project_type, language_servers)
+}
+
+async fn detect_project_lsp_metadata_with_backend(
+    workspace_root: &Path,
+    workspace_backend: WorkspaceBackendHandle,
+) -> (nucleotide_events::ProjectType, Vec<String>) {
+    let project_type =
+        detect_project_type_from_workspace_with_backend(workspace_root, workspace_backend).await;
     let language_servers = language_servers_for_project_type(&project_type);
     (project_type, language_servers)
 }
@@ -7798,6 +7868,87 @@ fn detect_project_type_from_workspace(workspace_root: &Path) -> nucleotide_event
     }
 
     ProjectType::Unknown
+}
+
+async fn detect_project_type_from_workspace_with_backend(
+    workspace_root: &Path,
+    workspace_backend: WorkspaceBackendHandle,
+) -> nucleotide_events::ProjectType {
+    if matches!(workspace_backend.identity(), WorkspaceIdentity::Local) {
+        return detect_project_type_from_workspace(workspace_root);
+    }
+
+    detect_project_type_from_workspace_backend(workspace_root, &workspace_backend).await
+}
+
+async fn detect_project_type_from_workspace_backend(
+    workspace_root: &Path,
+    workspace_backend: &WorkspaceBackendHandle,
+) -> nucleotide_events::ProjectType {
+    use nucleotide_events::ProjectType;
+
+    if workspace_file_marker_exists(workspace_backend, workspace_root, "Cargo.toml").await {
+        return ProjectType::Rust;
+    }
+
+    if workspace_file_marker_exists(workspace_backend, workspace_root, "tsconfig.json").await {
+        return ProjectType::TypeScript;
+    }
+
+    if workspace_file_marker_exists(workspace_backend, workspace_root, "package.json").await {
+        return ProjectType::JavaScript;
+    }
+
+    if workspace_any_file_marker_exists(
+        workspace_backend,
+        workspace_root,
+        &["pyproject.toml", "requirements.txt", "setup.py", "Pipfile"],
+    )
+    .await
+    {
+        return ProjectType::Python;
+    }
+
+    if workspace_any_file_marker_exists(workspace_backend, workspace_root, &["go.mod", "go.sum"])
+        .await
+    {
+        return ProjectType::Go;
+    }
+
+    if workspace_file_marker_exists(workspace_backend, workspace_root, "CMakeLists.txt").await {
+        return ProjectType::Cpp;
+    }
+
+    if workspace_file_marker_exists(workspace_backend, workspace_root, "Makefile").await {
+        return ProjectType::C;
+    }
+
+    ProjectType::Unknown
+}
+
+async fn workspace_any_file_marker_exists(
+    workspace_backend: &WorkspaceBackendHandle,
+    workspace_root: &Path,
+    markers: &[&str],
+) -> bool {
+    for marker in markers {
+        if workspace_file_marker_exists(workspace_backend, workspace_root, marker).await {
+            return true;
+        }
+    }
+    false
+}
+
+async fn workspace_file_marker_exists(
+    workspace_backend: &WorkspaceBackendHandle,
+    workspace_root: &Path,
+    marker: &str,
+) -> bool {
+    workspace_backend
+        .stat(&workspace_root.join(marker))
+        .await
+        .map(|stat| matches!(stat.kind, FileKind::File | FileKind::Symlink))
+        .unwrap_or(false)
 }
 
 fn language_servers_for_project_type(project_type: &nucleotide_events::ProjectType) -> Vec<String> {
@@ -7954,7 +8105,8 @@ mod tests {
         bridged_event_needs_gpui_context, buffer_text_matches_path, buffer_word_completion_items,
         char_index_for_line_col, coalesce_bridged_events, completion_context_for_trigger,
         current_dir_is_executable_dir, dedupe_completion_items, detect_project_lsp_metadata,
-        diagnostic_picker_path_label, diagnostic_severity_label, home_requires_login_shell_capture,
+        detect_project_type_from_workspace_backend, diagnostic_picker_path_label,
+        diagnostic_severity_label, home_requires_login_shell_capture,
         is_workspace_diagnostic_refresh_method, local_path_completion_context,
         lsp_completion_insert_text, lsp_completion_insert_text_format,
         lsp_completion_items_from_response, lsp_completion_items_from_response_for_server,
@@ -8647,6 +8799,23 @@ mod tests {
             nucleotide_events::ProjectType::Unknown
         ));
         assert!(language_servers.is_empty());
+    }
+
+    #[test]
+    fn project_lsp_metadata_backend_detector_uses_workspace_stat() {
+        let rust_project = tempdir().unwrap();
+        fs::write(
+            rust_project.path().join("Cargo.toml"),
+            "[package]\nname = \"demo\"\n",
+        )
+        .unwrap();
+
+        let backend = local_workspace_backend();
+        let project_type = TEST_RUNTIME.block_on(async {
+            detect_project_type_from_workspace_backend(rust_project.path(), &backend).await
+        });
+
+        assert!(matches!(project_type, nucleotide_events::ProjectType::Rust));
     }
 
     #[test]
