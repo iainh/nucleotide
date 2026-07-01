@@ -41,6 +41,7 @@ nucleotide-lsp.workspace = true
 nucleotide-editor.workspace = true
 nucleotide-project.workspace = true
 nucleotide-env.workspace = true
+nucleotide-workspace.workspace = true
 nucleotide-process.workspace = true
 nucleotide-vcs.workspace = true
 nucleotide-terminal = { path = "../nucleotide-terminal" }

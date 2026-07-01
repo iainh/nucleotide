@@ -4,7 +4,7 @@
 use async_trait::async_trait;
 use ignore::WalkBuilder;
 use regex::RegexBuilder;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -183,6 +183,8 @@ pub struct TextSearchQuery {
     pub follow_links: bool,
     pub max_depth: Option<usize>,
     pub max_file_bytes: u64,
+    pub excluded_relative_paths: Vec<PathBuf>,
+    pub custom_ignore_filenames: Vec<PathBuf>,
 }
 
 impl Default for TextSearchQuery {
@@ -202,6 +204,8 @@ impl Default for TextSearchQuery {
             follow_links: file_query.follow_links,
             max_depth: file_query.max_depth,
             max_file_bytes: 1_000_000,
+            excluded_relative_paths: Vec::new(),
+            custom_ignore_filenames: Vec::new(),
         }
     }
 }
@@ -668,12 +672,20 @@ fn local_text_search(query: TextSearchQuery) -> Result<TextSearchResult> {
         .git_exclude(query.git_exclude)
         .follow_links(query.follow_links)
         .add_custom_ignore_filename(".helix/ignore");
+    for filename in &query.custom_ignore_filenames {
+        walker.add_custom_ignore_filename(filename);
+    }
     if let Some(max_depth) = query.max_depth {
         walker.max_depth(Some(max_depth));
     }
 
     let mut matches = Vec::new();
     let mut truncated = false;
+    let excluded_relative_paths = query
+        .excluded_relative_paths
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
     'walk: for entry in walker.build() {
         let entry = entry.map_err(|source| WorkspaceError::Io {
             operation: "walk directory",
@@ -705,6 +717,9 @@ fn local_text_search(query: TextSearchQuery) -> Result<TextSearchResult> {
             .unwrap_or(entry.path())
             .to_path_buf();
         if relative_path.as_os_str().is_empty() {
+            continue;
+        }
+        if excluded_relative_paths.contains(&relative_path) {
             continue;
         }
 
@@ -1105,6 +1120,51 @@ mod tests {
 
         assert_eq!(limited_result.matches.len(), 1);
         assert!(limited_result.truncated);
+    }
+
+    #[test]
+    fn local_backend_text_search_excludes_relative_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir(temp.path().join("src")).unwrap();
+        fs::write(temp.path().join("src").join("main.rs"), "needle\n").unwrap();
+        fs::write(temp.path().join("README.md"), "needle\n").unwrap();
+
+        let backend = LocalWorkspaceBackend;
+        let result = block_on(backend.text_search(TextSearchQuery {
+            root: temp.path().to_path_buf(),
+            pattern: "needle".to_string(),
+            limit: 10,
+            excluded_relative_paths: vec![PathBuf::from("src/main.rs")],
+            ..TextSearchQuery::default()
+        }))
+        .unwrap();
+
+        assert_eq!(result.matches.len(), 1);
+        assert_eq!(result.matches[0].relative_path, PathBuf::from("README.md"));
+    }
+
+    #[test]
+    fn local_backend_text_search_uses_custom_ignore_filenames() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(temp.path().join(".nucleotide-ignore"), "ignored.txt\n").unwrap();
+        fs::write(temp.path().join("ignored.txt"), "needle\n").unwrap();
+        fs::write(temp.path().join("visible.txt"), "needle\n").unwrap();
+
+        let backend = LocalWorkspaceBackend;
+        let result = block_on(backend.text_search(TextSearchQuery {
+            root: temp.path().to_path_buf(),
+            pattern: "needle".to_string(),
+            limit: 10,
+            custom_ignore_filenames: vec![temp.path().join(".nucleotide-ignore")],
+            ..TextSearchQuery::default()
+        }))
+        .unwrap();
+
+        assert_eq!(result.matches.len(), 1);
+        assert_eq!(
+            result.matches[0].relative_path,
+            PathBuf::from("visible.txt")
+        );
     }
 
     #[test]
