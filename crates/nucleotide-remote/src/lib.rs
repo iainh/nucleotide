@@ -984,6 +984,7 @@ pub struct ProcessRequest {
     pub env: BTreeMap<String, String>,
     pub clear_env: bool,
     pub max_output_bytes: Option<usize>,
+    pub timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -994,6 +995,8 @@ pub struct ProcessOutputResponse {
     pub stderr_truncated: bool,
     pub stdout_len: usize,
     pub stderr_len: usize,
+    #[serde(default)]
+    pub timed_out: bool,
 }
 
 #[derive(Debug)]
@@ -1533,6 +1536,7 @@ where
             env: spec.env,
             clear_env: spec.clear_env,
             max_output_bytes: spec.max_output_bytes,
+            timeout_ms: spec.timeout_ms,
         };
         let (response, body) = self.request(
             "run process",
@@ -1900,6 +1904,7 @@ where
                     clear_env: request.clear_env,
                     stdin: request_body,
                     max_output_bytes,
+                    timeout_ms: request.timeout_ms,
                 }))
                 .map_err(remote_error_from_workspace)?;
                 let response = process_output_response(&output);
@@ -2119,6 +2124,7 @@ fn process_output_response(output: &ProcessOutput) -> ProcessOutputResponse {
         stderr_truncated: output.stderr_truncated,
         stdout_len: output.stdout.len(),
         stderr_len: output.stderr.len(),
+        timed_out: output.timed_out,
     }
 }
 
@@ -2254,6 +2260,7 @@ fn process_output_from_response(
         stderr,
         stdout_truncated: response.stdout_truncated,
         stderr_truncated: response.stderr_truncated,
+        timed_out: response.timed_out,
     }
 }
 
@@ -2736,6 +2743,7 @@ mod tests {
             clear_env: false,
             stdin: b"stdin".to_vec(),
             max_output_bytes: None,
+            timeout_ms: None,
         }))
         .unwrap();
 
@@ -2745,6 +2753,44 @@ mod tests {
         assert_eq!(output.stderr, b"err");
         assert!(!output.stdout_truncated);
         assert!(!output.stderr_truncated);
+        assert!(!output.timed_out);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remote_backend_run_process_reports_timeout() {
+        let temp = tempfile::tempdir().unwrap();
+        let backend = remote_backend(temp.path());
+
+        let output = block_on(backend.run_process(ProcessSpec {
+            program: "tail".to_string(),
+            args: vec!["-f".to_string(), "/dev/null".to_string()],
+            cwd: PathBuf::new(),
+            env: BTreeMap::new(),
+            clear_env: false,
+            stdin: Vec::new(),
+            max_output_bytes: None,
+            timeout_ms: Some(20),
+        }))
+        .unwrap();
+
+        assert!(!output.success);
+        assert!(output.timed_out);
+    }
+
+    #[test]
+    fn process_output_response_defaults_missing_timeout_flag() {
+        let response: ProcessOutputResponse = serde_json::from_value(serde_json::json!({
+            "status_code": 0,
+            "success": true,
+            "stdout_truncated": false,
+            "stderr_truncated": false,
+            "stdout_len": 0,
+            "stderr_len": 0
+        }))
+        .unwrap();
+
+        assert!(!response.timed_out);
     }
 
     fn request_frame(id: u64, request: RemoteRequest, body: Vec<u8>) -> Frame {

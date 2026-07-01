@@ -8,9 +8,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 use thiserror::Error;
 
 const DEFAULT_PROCESS_OUTPUT_LIMIT_BYTES: usize = 1024 * 1024;
@@ -446,6 +446,7 @@ pub struct ProcessSpec {
     pub clear_env: bool,
     pub stdin: Vec<u8>,
     pub max_output_bytes: Option<usize>,
+    pub timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -456,6 +457,7 @@ pub struct ProcessOutput {
     pub stderr: Vec<u8>,
     pub stdout_truncated: bool,
     pub stderr_truncated: bool,
+    pub timed_out: bool,
 }
 
 impl Default for GitStatusOptions {
@@ -1673,11 +1675,7 @@ fn local_run_process(spec: ProcessSpec) -> Result<ProcessOutput> {
         })
     });
 
-    let status = child.wait().map_err(|source| WorkspaceError::Io {
-        operation: "wait for process",
-        path: cwd.clone(),
-        source,
-    })?;
+    let (status, timed_out) = wait_for_process(&mut child, spec.timeout_ms, &cwd)?;
 
     if let Some(thread) = stdin_thread {
         join_io_thread(thread, "write process stdin", &cwd)?;
@@ -1692,7 +1690,56 @@ fn local_run_process(spec: ProcessSpec) -> Result<ProcessOutput> {
         stderr,
         stdout_truncated,
         stderr_truncated,
+        timed_out,
     })
+}
+
+fn wait_for_process(
+    child: &mut Child,
+    timeout_ms: Option<u64>,
+    path: &Path,
+) -> Result<(std::process::ExitStatus, bool)> {
+    let Some(timeout_ms) = timeout_ms else {
+        return child
+            .wait()
+            .map(|status| (status, false))
+            .map_err(|source| WorkspaceError::Io {
+                operation: "wait for process",
+                path: path.to_path_buf(),
+                source,
+            });
+    };
+
+    let timeout = Duration::from_millis(timeout_ms);
+    let started = Instant::now();
+    loop {
+        if let Some(status) = child.try_wait().map_err(|source| WorkspaceError::Io {
+            operation: "poll process",
+            path: path.to_path_buf(),
+            source,
+        })? {
+            return Ok((status, false));
+        }
+
+        let elapsed = started.elapsed();
+        if elapsed >= timeout {
+            child.kill().map_err(|source| WorkspaceError::Io {
+                operation: "kill timed out process",
+                path: path.to_path_buf(),
+                source,
+            })?;
+            return child.wait().map(|status| (status, true)).map_err(|source| {
+                WorkspaceError::Io {
+                    operation: "wait for killed process",
+                    path: path.to_path_buf(),
+                    source,
+                }
+            });
+        }
+
+        let remaining = timeout.saturating_sub(elapsed);
+        std::thread::sleep(remaining.min(Duration::from_millis(10)));
+    }
 }
 
 fn read_limited<R: Read>(mut reader: R, limit: usize) -> std::io::Result<(Vec<u8>, bool)> {
@@ -1961,6 +2008,7 @@ mod tests {
             clear_env: false,
             stdin: b"stdin".to_vec(),
             max_output_bytes: None,
+            timeout_ms: None,
         }))
         .unwrap();
 
@@ -1976,6 +2024,7 @@ mod tests {
         assert_eq!(output.stderr, Vec::<u8>::new());
         assert!(!output.stdout_truncated);
         assert!(!output.stderr_truncated);
+        assert!(!output.timed_out);
     }
 
     #[cfg(unix)]
@@ -1995,6 +2044,7 @@ mod tests {
             clear_env: false,
             stdin: Vec::new(),
             max_output_bytes: Some(3),
+            timeout_ms: None,
         }))
         .unwrap();
 
@@ -2003,6 +2053,29 @@ mod tests {
         assert_eq!(output.stderr, b"ghi");
         assert!(output.stdout_truncated);
         assert!(output.stderr_truncated);
+        assert!(!output.timed_out);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_backend_run_process_kills_timed_out_child() {
+        let temp = tempfile::tempdir().unwrap();
+        let backend = LocalWorkspaceBackend;
+
+        let output = block_on(backend.run_process(ProcessSpec {
+            program: "tail".to_string(),
+            args: vec!["-f".to_string(), "/dev/null".to_string()],
+            cwd: temp.path().to_path_buf(),
+            env: BTreeMap::new(),
+            clear_env: false,
+            stdin: Vec::new(),
+            max_output_bytes: None,
+            timeout_ms: Some(20),
+        }))
+        .unwrap();
+
+        assert!(!output.success);
+        assert!(output.timed_out);
     }
 
     #[test]
@@ -2155,6 +2228,7 @@ mod tests {
             clear_env: false,
             stdin: Vec::new(),
             max_output_bytes: None,
+            timeout_ms: None,
         }))
         .unwrap();
 
