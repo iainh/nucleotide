@@ -5253,6 +5253,7 @@ dependencies = [
  "nucleotide-logging",
  "nucleotide-process",
  "nucleotide-types",
+ "nucleotide-workspace",
  "tempfile",
  "tokio",
 ]

@@ -4441,14 +4441,22 @@ impl Workspace {
         let _project_status_handle = nucleotide_project::initialize_project_status_service(cx);
 
         // Initialize file tree only if project directory is explicitly set
-        let root_path = core.read(cx).project_directory.clone();
+        let (root_path, vcs_workspace_backend) = {
+            let core = core.read(cx);
+            (
+                core.project_directory.clone(),
+                core.workspace_backend.clone(),
+            )
+        };
         let root_path_for_manager = root_path.clone(); // Clone for later use
 
         // Start VCS monitoring if we have a root path
         if let Some(root_path) = &root_path {
             let root_path_clone = root_path.clone();
+            let workspace_backend = vcs_workspace_backend.clone();
             let vcs_handle = cx.global::<VcsServiceHandle>().service().clone();
             vcs_handle.update(cx, |service, cx| {
+                service.set_workspace_backend(workspace_backend);
                 service.start_monitoring(root_path_clone, cx);
             });
         }
@@ -6431,8 +6439,10 @@ impl Workspace {
         project_status.set_project_root(Some(dir.clone()));
 
         // Start VCS monitoring for the new directory
+        let workspace_backend = self.core.read(cx).workspace_backend.clone();
         let vcs_handle = cx.global::<VcsServiceHandle>().service().clone();
         vcs_handle.update(cx, |service, cx| {
+            service.set_workspace_backend(workspace_backend);
             service.start_monitoring(dir.clone(), cx);
         });
 
@@ -9517,8 +9527,10 @@ impl Workspace {
 
         // Ensure VCS service is monitoring the current project directory
         if let Some(ref project_dir) = project_directory {
+            let workspace_backend = self.core.read(cx).workspace_backend.clone();
             let vcs_handle = cx.global::<VcsServiceHandle>().service().clone();
             vcs_handle.update(cx, |service, cx| {
+                service.set_workspace_backend(workspace_backend);
                 // Only start monitoring if we're not already monitoring this directory
                 if service.root_path() != Some(project_dir.as_path()) {
                     service.start_monitoring(project_dir.clone(), cx);

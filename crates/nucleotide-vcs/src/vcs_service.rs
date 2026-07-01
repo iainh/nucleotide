@@ -13,6 +13,9 @@ use nucleotide_events::{
 };
 use nucleotide_logging::{debug, error, info, warn};
 use nucleotide_types::{DiffChangeType, DiffHunkInfo, VcsStatus};
+use nucleotide_workspace::{
+    GitStatusEntry, GitStatusKind, GitStatusOptions, WorkspaceBackendHandle,
+};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -213,6 +216,8 @@ impl CacheStats {
 pub struct VcsService {
     /// Root path of the repository being monitored
     root_path: Option<PathBuf>,
+    /// Workspace backend used for repository operations.
+    workspace_backend: Option<WorkspaceBackendHandle>,
     /// Current VCS status cache
     status_cache: HashMap<PathBuf, VcsStatus>,
     /// Timestamp of last cache update for each path
@@ -254,6 +259,7 @@ impl VcsService {
     pub fn new(config: VcsConfig) -> Self {
         Self {
             root_path: None,
+            workspace_backend: None,
             status_cache: HashMap::new(),
             cache_timestamps: HashMap::new(),
             diff_provider: DiffProviderRegistry::default(),
@@ -276,6 +282,10 @@ impl VcsService {
     /// Set the event bus for forwarding VCS events
     pub fn set_event_bus(&mut self, event_bus: Box<dyn EventBus + Send + Sync>) {
         self.event_bus = Some(event_bus);
+    }
+
+    pub fn set_workspace_backend(&mut self, backend: WorkspaceBackendHandle) {
+        self.workspace_backend = Some(backend);
     }
 
     /// Start monitoring a repository
@@ -808,12 +818,16 @@ impl VcsService {
         self.status_refresh_in_flight = true;
         let max_files = self.config.max_files;
         let refresh_root_path = root_path.clone();
+        let workspace_backend = self.workspace_backend.clone();
 
         debug!(root_path = %root_path.display(), "VCS: Starting async status refresh");
         cx.spawn(async move |this, cx| {
             let refresh_result = cx
                 .background_executor()
-                .spawn(async move { run_git_status(&refresh_root_path, max_files) })
+                .spawn(async move {
+                    run_git_status_with_backend(workspace_backend, &refresh_root_path, max_files)
+                        .await
+                })
                 .await;
 
             if let Some(this) = this.upgrade() {
@@ -915,6 +929,52 @@ impl VcsService {
         // For now, we'll only refresh on demand to avoid async complexity
         // TODO: Add periodic background refresh using a timer
         debug!("VCS: Status check scheduled (currently on-demand only)");
+    }
+}
+
+async fn run_git_status_with_backend(
+    backend: Option<WorkspaceBackendHandle>,
+    root_path: &Path,
+    max_files: usize,
+) -> Result<HashMap<PathBuf, VcsStatus>, String> {
+    let Some(backend) = backend else {
+        return run_git_status(root_path, max_files);
+    };
+
+    let status = backend
+        .git_status(root_path, GitStatusOptions::with_limit(max_files))
+        .await
+        .map_err(|error| format!("Workspace git status failed: {error}"))?;
+
+    Ok(status
+        .entries
+        .into_iter()
+        .map(|entry| {
+            (
+                status.root.join(&entry.relative_path),
+                vcs_status_from_workspace_entry(&entry),
+            )
+        })
+        .collect())
+}
+
+fn vcs_status_from_workspace_entry(entry: &GitStatusEntry) -> VcsStatus {
+    use GitStatusKind::{
+        Added, Conflicted, Copied, Deleted, Modified, Renamed, TypeChanged, Unknown, Unmodified,
+        Untracked,
+    };
+
+    match (entry.index_status, entry.working_tree_status) {
+        (Conflicted, _) | (_, Conflicted) => VcsStatus::Conflicted,
+        (Untracked, _) | (_, Untracked) => VcsStatus::Untracked,
+        (Deleted, _) | (_, Deleted) => VcsStatus::Deleted,
+        (Renamed, _) | (_, Renamed) => VcsStatus::Renamed,
+        (Added, Unmodified) => VcsStatus::Added,
+        (Copied, Unmodified) => VcsStatus::Added,
+        (Modified | TypeChanged, _) | (_, Modified | TypeChanged) => VcsStatus::Modified,
+        (Unknown, _) | (_, Unknown) => VcsStatus::Unknown,
+        (Unmodified, Unmodified) => VcsStatus::Clean,
+        (Added | Copied, _) | (_, Added | Copied) => VcsStatus::Modified,
     }
 }
 
@@ -1153,6 +1213,45 @@ mod tests {
     #[test]
     fn parse_git_head_output_rejects_empty_output() {
         assert_eq!(parse_git_head_output(b"\n"), None);
+    }
+
+    #[test]
+    fn workspace_git_status_entries_map_to_vcs_status() {
+        let entry = |index_status, working_tree_status| GitStatusEntry {
+            relative_path: PathBuf::from("src/lib.rs"),
+            original_relative_path: None,
+            index_status,
+            working_tree_status,
+        };
+
+        assert_eq!(
+            vcs_status_from_workspace_entry(&entry(
+                GitStatusKind::Unmodified,
+                GitStatusKind::Modified
+            )),
+            VcsStatus::Modified
+        );
+        assert_eq!(
+            vcs_status_from_workspace_entry(&entry(
+                GitStatusKind::Untracked,
+                GitStatusKind::Untracked
+            )),
+            VcsStatus::Untracked
+        );
+        assert_eq!(
+            vcs_status_from_workspace_entry(&entry(
+                GitStatusKind::Added,
+                GitStatusKind::Unmodified
+            )),
+            VcsStatus::Added
+        );
+        assert_eq!(
+            vcs_status_from_workspace_entry(&entry(
+                GitStatusKind::Conflicted,
+                GitStatusKind::Modified
+            )),
+            VcsStatus::Conflicted
+        );
     }
 
     #[test]
