@@ -35,10 +35,6 @@ pub struct RunnableDocument {
 }
 
 pub fn discover_local_rust_runnables(document: &RunnableDocument) -> Vec<ResolvedTask> {
-    if document.path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
-        return Vec::new();
-    }
-
     let Some(cargo_root) = document
         .project_root
         .as_deref()
@@ -48,6 +44,17 @@ pub fn discover_local_rust_runnables(document: &RunnableDocument) -> Vec<Resolve
     else {
         return Vec::new();
     };
+
+    discover_rust_runnables_with_cargo_root(document, cargo_root)
+}
+
+pub fn discover_rust_runnables_with_cargo_root(
+    document: &RunnableDocument,
+    cargo_root: PathBuf,
+) -> Vec<ResolvedTask> {
+    if document.path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+        return Vec::new();
+    }
 
     let mut tasks = Vec::new();
     let mut test_count = 0usize;
@@ -659,6 +666,26 @@ fn second() {}
         assert_eq!(
             file_task.command.args,
             vec!["test", "--test", "api", "--", "--nocapture"]
+        );
+    }
+
+    #[test]
+    fn explicit_cargo_root_discovery_does_not_probe_host_manifest() {
+        let document = doc(
+            "/remote/project/src/main.rs",
+            "fn main() {}\n",
+            0,
+            "/remote/project",
+        );
+
+        let tasks =
+            discover_rust_runnables_with_cargo_root(&document, PathBuf::from("/remote/project"));
+
+        assert!(tasks.iter().any(|task| task.label() == "Run Binary"));
+        assert!(
+            tasks
+                .iter()
+                .all(|task| task.command.cwd == Some(PathBuf::from("/remote/project")))
         );
     }
 
