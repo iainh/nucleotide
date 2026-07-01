@@ -8,7 +8,7 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::time::UNIX_EPOCH;
 
-pub const PROTOCOL_VERSION: u32 = 14;
+pub const PROTOCOL_VERSION: u32 = 15;
 pub const DEFAULT_FILE_SEARCH_LIMIT: usize = 1_000;
 pub const DEFAULT_GLOBAL_SEARCH_LIMIT: usize = 1_000;
 pub const DEFAULT_FILE_READ_LIMIT: usize = 10_000;
@@ -679,6 +679,17 @@ pub struct FileReadResponse {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileContentResponse {
+    pub protocol_version: u32,
+    pub current_dir: PathBuf,
+    pub path: PathBuf,
+    pub content_base64: String,
+    pub size: u64,
+    pub modified_unix_millis: Option<i64>,
+    pub readonly: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileWriteResponse {
     pub protocol_version: u32,
     pub current_dir: PathBuf,
@@ -856,6 +867,33 @@ impl FileReadResponse {
     }
 }
 
+impl FileContentResponse {
+    pub fn current(path: &std::path::Path) -> std::io::Result<Self> {
+        let current_dir = std::env::current_dir()?;
+        let metadata = std::fs::metadata(path)?;
+        if !metadata.is_file() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "target path is not a file",
+            ));
+        }
+
+        let mut bytes = Vec::with_capacity(metadata.len().try_into().unwrap_or(0));
+        std::fs::File::open(path)?.read_to_end(&mut bytes)?;
+        let modified_unix_millis = metadata.modified().ok().and_then(system_time_unix_millis);
+
+        Ok(Self {
+            protocol_version: PROTOCOL_VERSION,
+            current_dir,
+            path: path.to_path_buf(),
+            content_base64: encode_base64(&bytes),
+            size: metadata.len(),
+            modified_unix_millis,
+            readonly: metadata.permissions().readonly(),
+        })
+    }
+}
+
 impl FileWriteResponse {
     pub fn current_from_reader(
         path: &std::path::Path,
@@ -963,6 +1001,89 @@ fn utf8_prefix_from_bytes(bytes: &[u8]) -> Option<&str> {
             std::str::from_utf8(&bytes[..error.valid_up_to()]).ok()
         }
         Err(_) => None,
+    }
+}
+
+const BASE64_TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+pub fn encode_base64(bytes: &[u8]) -> String {
+    let mut encoded = String::with_capacity(bytes.len().div_ceil(3) * 4);
+
+    for chunk in bytes.chunks(3) {
+        let first = chunk[0];
+        let second = chunk.get(1).copied().unwrap_or(0);
+        let third = chunk.get(2).copied().unwrap_or(0);
+        let combined = ((first as u32) << 16) | ((second as u32) << 8) | third as u32;
+
+        encoded.push(BASE64_TABLE[((combined >> 18) & 0x3f) as usize] as char);
+        encoded.push(BASE64_TABLE[((combined >> 12) & 0x3f) as usize] as char);
+        if chunk.len() > 1 {
+            encoded.push(BASE64_TABLE[((combined >> 6) & 0x3f) as usize] as char);
+        } else {
+            encoded.push('=');
+        }
+        if chunk.len() > 2 {
+            encoded.push(BASE64_TABLE[(combined & 0x3f) as usize] as char);
+        } else {
+            encoded.push('=');
+        }
+    }
+
+    encoded
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Base64DecodeError;
+
+impl std::fmt::Display for Base64DecodeError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("invalid base64 data")
+    }
+}
+
+impl std::error::Error for Base64DecodeError {}
+
+pub fn decode_base64(value: &str) -> Result<Vec<u8>, Base64DecodeError> {
+    let bytes = value.as_bytes();
+    if !bytes.len().is_multiple_of(4) {
+        return Err(Base64DecodeError);
+    }
+
+    let mut decoded = Vec::with_capacity(bytes.len() / 4 * 3);
+    for chunk in bytes.chunks(4) {
+        let padding = chunk.iter().rev().take_while(|byte| **byte == b'=').count();
+        if padding > 2 || chunk[..4 - padding].iter().any(|byte| *byte == b'=') {
+            return Err(Base64DecodeError);
+        }
+
+        let mut combined = 0u32;
+        for byte in chunk {
+            combined <<= 6;
+            if *byte != b'=' {
+                combined |= base64_value(*byte).ok_or(Base64DecodeError)? as u32;
+            }
+        }
+
+        decoded.push(((combined >> 16) & 0xff) as u8);
+        if padding < 2 {
+            decoded.push(((combined >> 8) & 0xff) as u8);
+        }
+        if padding < 1 {
+            decoded.push((combined & 0xff) as u8);
+        }
+    }
+
+    Ok(decoded)
+}
+
+fn base64_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'A'..=b'Z' => Some(byte - b'A'),
+        b'a'..=b'z' => Some(byte - b'a' + 26),
+        b'0'..=b'9' => Some(byte - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
     }
 }
 
@@ -1691,6 +1812,45 @@ mod tests {
         assert!(line.contains("\"binary\":false"));
         assert!(line.contains("\"size\":13"));
         assert!(line.contains("\"truncated\":false"));
+    }
+
+    #[test]
+    fn base64_round_trip_preserves_binary_bytes() {
+        let bytes = [0x00, 0x01, 0xff, b'h', b'e', b'l', b'l', b'o'];
+        let encoded = encode_base64(&bytes);
+
+        assert_eq!(decode_base64(&encoded).unwrap(), bytes);
+        assert_eq!(encode_base64(b""), "");
+        assert_eq!(encode_base64(b"f"), "Zg==");
+        assert_eq!(encode_base64(b"fo"), "Zm8=");
+        assert_eq!(encode_base64(b"foo"), "Zm9v");
+        assert!(decode_base64("not valid").is_err());
+    }
+
+    #[test]
+    fn file_content_response_encodes_full_file_bytes() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("image.bin");
+        let bytes = [0x00, 0x01, 0xff, b'h', b'i'];
+        std::fs::write(&path, bytes).unwrap();
+
+        let response = FileContentResponse::current(&path).unwrap();
+
+        assert_eq!(response.protocol_version, PROTOCOL_VERSION);
+        assert_eq!(response.path, path);
+        assert_eq!(response.size, bytes.len() as u64);
+        assert_eq!(decode_base64(&response.content_base64).unwrap(), bytes);
+        assert!(response.modified_unix_millis.is_some());
+        assert!(!response.readonly);
+    }
+
+    #[test]
+    fn file_content_response_rejects_directories() {
+        let temp = tempfile::tempdir().unwrap();
+
+        let error = FileContentResponse::current(temp.path()).unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
     }
 
     #[test]

@@ -5,11 +5,11 @@ use anyhow::{Context, Result, bail};
 use nucleotide_remote::{
     DEFAULT_FILE_READ_LIMIT, DEFAULT_WORKSPACE_SYMBOL_FILE_BYTE_LIMIT,
     DEFAULT_WORKSPACE_SYMBOL_FILE_LIMIT, DEFAULT_WORKSPACE_SYMBOL_TOTAL_BYTE_LIMIT,
-    DirectoryListingResponse, EnvironmentResponse, FileCreateResponse, FileDeleteResponse,
-    FileDuplicateResponse, FileMoveResponse, FileReadResponse, FileRenameResponse,
-    FileSearchResponse, FileWriteOptions, FileWriteResponse, GlobalSearchResponse, HelloResponse,
-    WorkspaceMetadataResponse, WorkspaceRootResponse, WorkspaceSymbolFilesOptions,
-    WorkspaceSymbolFilesResponse, encode_json_line,
+    DirectoryListingResponse, EnvironmentResponse, FileContentResponse, FileCreateResponse,
+    FileDeleteResponse, FileDuplicateResponse, FileMoveResponse, FileReadResponse,
+    FileRenameResponse, FileSearchResponse, FileWriteOptions, FileWriteResponse,
+    GlobalSearchResponse, HelloResponse, WorkspaceMetadataResponse, WorkspaceRootResponse,
+    WorkspaceSymbolFilesOptions, WorkspaceSymbolFilesResponse, encode_json_line,
 };
 
 fn main() -> Result<()> {
@@ -121,6 +121,14 @@ fn main() -> Result<()> {
                 .context("failed to build file read response")?;
             print!("{}", encode_json_line(&response)?);
         }
+        "read-full" => {
+            let path = std::env::var_os("NUCLEOTIDE_REMOTE_READ_PATH")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| std::path::PathBuf::from("."));
+            let response = FileContentResponse::current(&path)
+                .context("failed to build full file read response")?;
+            print!("{}", encode_json_line(&response)?);
+        }
         "write" => {
             let path = std::env::var_os("NUCLEOTIDE_REMOTE_WRITE_PATH")
                 .map(std::path::PathBuf::from)
@@ -151,6 +159,7 @@ fn main() -> Result<()> {
             println!("nucleotide-remote files");
             println!("nucleotide-remote search");
             println!("nucleotide-remote read");
+            println!("nucleotide-remote read-full");
             println!("nucleotide-remote write");
             println!("nucleotide-remote symbol-files");
         }

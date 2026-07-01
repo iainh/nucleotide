@@ -41,7 +41,8 @@ editor backend into Linux:
   launch boundary owns those values.
 - `nucleotide-remote` is a versioned helper binary with `hello`, `env`,
   `metadata`, `root`, `list`, `create-file`, `create-directory`, `files`,
-  `rename`, `delete`, `duplicate`, `move`, `search`, `read`, `write`, and `symbol-files`
+  `rename`, `delete`, `duplicate`, `move`, `search`, `read`, `read-full`,
+  `write`, and `symbol-files`
   protocol commands.
   Metadata includes workspace marker and shallow source-directory facts so
   project/LSP detection can avoid repeated Windows UNC
@@ -57,9 +58,9 @@ editor backend into Linux:
   bounded, ignore-filtered file text inside WSL, then parses symbols on the
   Windows side with the existing Helix syntax loader.
   The `root`, `list`, `create-file`, `create-directory`, `rename`, `delete`,
-  `duplicate`, `move`, `files`, `search`, `read`, `write`, and `symbol-files` commands
-  are part of helper protocol version 14, so older cached helpers are bypassed
-  by the versioned cache path.
+  `duplicate`, `move`, `files`, `search`, `read`, `read-full`, `write`, and
+  `symbol-files` commands are part of helper protocol version 15, so older
+  cached helpers are bypassed by the versioned cache path.
 - Application startup schedules a short, non-blocking WSL helper health probe for
   WSL roots. Probes prefer
   `~/.cache/nucleotide/remote-helper/<protocol-version>/nucleotide-remote`
@@ -139,11 +140,12 @@ and LSP `didSave` emission.
 
 Because those behaviors are coupled to Helix's document lifecycle, WSL document
 I/O should be implemented as a first-class file-provider boundary rather than by
-reusing the bounded preview `read` command. The helper now has a stdin-fed
-`write` command with optional parent creation and expected-mtime protection, but
-the editor integration still needs remote read/write plumbing that preserves
-encoding, BOM, line endings, revision/save timestamps, external modification
-protection, language detection, diagnostics, and LSP save notifications.
+reusing the bounded preview `read` command. The helper now has a byte-preserving
+`read-full` command and a stdin-fed `write` command with optional parent
+creation and expected-mtime protection, but the editor integration still needs
+remote read/write plumbing that preserves encoding, BOM, line endings,
+revision/save timestamps, external modification protection, language detection,
+diagnostics, and LSP save notifications.
 
 ## Runtime Flow
 
