@@ -612,10 +612,12 @@ impl OverlayView {
                         items,
                         on_select,
                         show_preview,
+                        preview_text_provider,
                     } => {
                         let is_file_finder = title.as_ref() == "Open File";
                         let items = items.clone();
                         let on_select = on_select.clone();
+                        let preview_text_provider = preview_text_provider.clone();
                         let core_weak = self.core.clone();
                         let _items_count = items.len();
 
@@ -988,6 +990,7 @@ impl OverlayView {
                             });
                             // Provide a preview text provider for buffer items
                             let text_core = core_weak.clone();
+                            let picker_preview_text_provider = preview_text_provider.clone();
                             view = view.with_preview_text_provider_fn(move |item, cx| {
                                 if let Some((doc_id, path_opt)) = item
                                     .data
@@ -1017,6 +1020,9 @@ impl OverlayView {
                                         crate::runnables::task_preview_text(task),
                                         task.source().map(|source| source.path.clone()),
                                     ));
+                                }
+                                if let Some(provider) = picker_preview_text_provider.as_ref() {
+                                    return provider(item, cx);
                                 }
                                 None
                             });

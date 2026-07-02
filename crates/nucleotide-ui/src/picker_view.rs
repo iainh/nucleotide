@@ -854,6 +854,14 @@ impl PickerView {
         }
         // Try standalone PathBuf (for file picker)
         else if let Some(path_buf) = item.data.downcast_ref::<std::path::PathBuf>() {
+            if let Some(provider) = &self.preview_text_provider_cb
+                && let Some((text, _path)) = provider(item, cx)
+            {
+                self.preview_loading = false;
+                self.preview_content = Some(text);
+                cx.notify();
+                return;
+            }
             self.load_file_preview(path_buf.clone(), cx);
         } else {
             // Debug: check what type we actually have

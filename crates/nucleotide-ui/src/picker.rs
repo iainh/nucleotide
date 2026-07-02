@@ -5,7 +5,16 @@ use gpui::{
 };
 use std::sync::Arc;
 
-use crate::picker_view::PickerItem;
+use crate::picker_view::{PickerItem, PickerView};
+
+pub type PickerPreviewTextProvider = Arc<
+    dyn for<'a> Fn(
+            &PickerItem,
+            &mut gpui::Context<PickerView>,
+        ) -> Option<(String, Option<std::path::PathBuf>)>
+        + Send
+        + Sync,
+>;
 
 #[derive(Clone)]
 pub enum Picker {
@@ -14,6 +23,7 @@ pub enum Picker {
         items: Vec<PickerItem>,
         on_select: Arc<dyn Fn(usize) + Send + Sync>,
         show_preview: bool,
+        preview_text_provider: Option<PickerPreviewTextProvider>,
     },
 }
 
@@ -29,6 +39,7 @@ impl Picker {
             items,
             on_select: Arc::new(on_select),
             show_preview: false,
+            preview_text_provider: None,
         }
     }
 
@@ -39,6 +50,26 @@ impl Picker {
                 show_preview: preview,
                 ..
             } => *preview = show_preview,
+        }
+        self
+    }
+
+    /// Provide text previews for picker items without falling back to direct filesystem reads.
+    pub fn with_preview_text_provider_fn(
+        mut self,
+        f: impl for<'a> Fn(
+            &PickerItem,
+            &mut gpui::Context<PickerView>,
+        ) -> Option<(String, Option<std::path::PathBuf>)>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        match &mut self {
+            Picker::Native {
+                preview_text_provider,
+                ..
+            } => *preview_text_provider = Some(Arc::new(f)),
         }
         self
     }
@@ -58,6 +89,7 @@ impl Picker {
                 // Directory selection will be handled through events
             }),
             show_preview: false,
+            preview_text_provider: None,
         }
     }
 }
@@ -250,6 +282,21 @@ mod tests {
         match picker {
             Picker::Native { show_preview, .. } => {
                 assert!(show_preview);
+            }
+        }
+    }
+
+    #[test]
+    fn native_picker_can_store_preview_text_provider() {
+        let picker = Picker::native("Open File", Vec::new(), |_| {})
+            .with_preview_text_provider_fn(|_item, _cx| Some(("preview".to_string(), None)));
+
+        match picker {
+            Picker::Native {
+                preview_text_provider,
+                ..
+            } => {
+                assert!(preview_text_provider.is_some());
             }
         }
     }
