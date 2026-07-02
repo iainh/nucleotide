@@ -316,8 +316,9 @@ fn remote_image_cache_dir() -> PathBuf {
         .join("remote-images")
 }
 
-fn remote_image_cache_path(path: &Path) -> PathBuf {
+fn remote_image_cache_path(backend_identity: &WorkspaceIdentity, path: &Path) -> PathBuf {
     let mut hasher = DefaultHasher::new();
+    backend_identity.hash(&mut hasher);
     path.hash(&mut hasher);
     let hash = hasher.finish();
     let file_name = path
@@ -348,6 +349,7 @@ async fn cache_remote_image_file(
     backend: WorkspaceBackendHandle,
     path: PathBuf,
 ) -> anyhow::Result<PathBuf> {
+    let backend_identity = backend.identity();
     let read = backend
         .read_file(
             &path,
@@ -364,7 +366,7 @@ async fn cache_remote_image_file(
         );
     }
 
-    let cache_path = remote_image_cache_path(&path);
+    let cache_path = remote_image_cache_path(&backend_identity, &path);
     if let Some(parent) = cache_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -17732,7 +17734,11 @@ mod tests {
     #[test]
     fn remote_image_cache_paths_preserve_extension_and_escape_names() {
         let path = Path::new("ssh://devbox/home/me/project/assets/logo one.png");
-        let cache_path = remote_image_cache_path(path);
+        let identity = WorkspaceIdentity::Remote(nucleotide_workspace::RemoteWorkspaceIdentity {
+            kind: nucleotide_workspace::RemoteWorkspaceKind::Ssh,
+            name: "devbox".to_string(),
+        });
+        let cache_path = remote_image_cache_path(&identity, path);
         let file_name = cache_path
             .file_name()
             .and_then(|name| name.to_str())
@@ -17740,6 +17746,24 @@ mod tests {
 
         assert!(cache_path.starts_with(remote_image_cache_dir()));
         assert!(file_name.ends_with("-logo_one.png"));
+    }
+
+    #[test]
+    fn remote_image_cache_paths_are_scoped_by_remote_identity() {
+        let path = Path::new("/home/me/project/assets/logo.png");
+        let first = WorkspaceIdentity::Remote(nucleotide_workspace::RemoteWorkspaceIdentity {
+            kind: nucleotide_workspace::RemoteWorkspaceKind::Ssh,
+            name: "devbox-a".to_string(),
+        });
+        let second = WorkspaceIdentity::Remote(nucleotide_workspace::RemoteWorkspaceIdentity {
+            kind: nucleotide_workspace::RemoteWorkspaceKind::Ssh,
+            name: "devbox-b".to_string(),
+        });
+
+        assert_ne!(
+            remote_image_cache_path(&first, path),
+            remote_image_cache_path(&second, path)
+        );
     }
 
     #[test]
