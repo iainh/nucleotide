@@ -64,9 +64,30 @@ pub enum NativeLspNavigationRequest {
     GotoReference,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NativeWorkspaceRequest {
     ToggleFileTree,
+    OpenFiles {
+        paths: Vec<PathBuf>,
+        action: NativeFileOpenAction,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeFileOpenAction {
+    Replace,
+    HorizontalSplit,
+    VerticalSplit,
+}
+
+impl From<NativeFileOpenAction> for Action {
+    fn from(action: NativeFileOpenAction) -> Self {
+        match action {
+            NativeFileOpenAction::Replace => Action::Replace,
+            NativeFileOpenAction::HorizontalSplit => Action::HorizontalSplit,
+            NativeFileOpenAction::VerticalSplit => Action::VerticalSplit,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -647,6 +668,17 @@ impl NativeCommandInput {
                     request,
                 }
             }
+            KeymapDispatch::RequestWorkspace(request) => {
+                if self.keymaps.pending().is_empty() {
+                    context.editor.count = None;
+                } else {
+                    context.editor.selected_register = context.register.take();
+                }
+                NativeCommandResult::RequestWorkspace {
+                    callbacks: Vec::new(),
+                    request,
+                }
+            }
             KeymapDispatch::RequestViewportScroll(request) => {
                 if self.keymaps.pending().is_empty() {
                     context.editor.count = None;
@@ -841,6 +873,7 @@ enum KeymapDispatch {
     RequestPicker(NativePickerRequest),
     RequestPrompt(NativePromptRequest),
     RequestLspNavigation(NativeLspNavigationRequest),
+    RequestWorkspace(NativeWorkspaceRequest),
     RequestViewportScroll(nucleotide_editor::EditorViewportScrollRequest),
     RequestViewportCursor(nucleotide_editor::EditorViewportCursorRequest),
     Pending,
@@ -1449,23 +1482,24 @@ fn is_plain_char_key(key: KeyEvent, expected: char) -> bool {
     )
 }
 
-fn native_file_navigation_command(command: &MappableCommand) -> Option<Action> {
+fn native_file_navigation_command(command: &MappableCommand) -> Option<NativeFileOpenAction> {
     match command.name() {
-        "goto_file" => Some(Action::Replace),
-        "goto_file_hsplit" => Some(Action::HorizontalSplit),
-        "goto_file_vsplit" => Some(Action::VerticalSplit),
+        "goto_file" => Some(NativeFileOpenAction::Replace),
+        "goto_file_hsplit" => Some(NativeFileOpenAction::HorizontalSplit),
+        "goto_file_vsplit" => Some(NativeFileOpenAction::VerticalSplit),
         _ => None,
     }
 }
 
 fn handle_native_file_navigation(
     context: &mut commands::Context<'_>,
-    action: Action,
+    action: NativeFileOpenAction,
 ) -> KeymapDispatch {
     let Some((base_path, targets)) = native_file_navigation_targets(context.editor) else {
         return KeymapDispatch::Unhandled;
     };
 
+    let mut paths = Vec::new();
     for target in targets {
         if target_is_external_url(&target) {
             return KeymapDispatch::Unhandled;
@@ -1478,14 +1512,14 @@ fn handle_native_file_navigation(
             return KeymapDispatch::RequestPicker(NativePickerRequest::FileAt(target_path));
         }
 
-        if let Err(err) = context.editor.open(&target_path, action) {
-            context
-                .editor
-                .set_error(format!("Open file failed: {:?}", err));
-        }
+        paths.push(target_path);
     }
 
-    KeymapDispatch::Handled
+    if paths.is_empty() {
+        KeymapDispatch::Handled
+    } else {
+        KeymapDispatch::RequestWorkspace(NativeWorkspaceRequest::OpenFiles { paths, action })
+    }
 }
 
 fn target_is_external_url(target: &str) -> bool {
@@ -3691,7 +3725,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn editor_input_bridge_handles_goto_file_natively() {
+    async fn editor_input_bridge_requests_workspace_open_for_goto_file() {
         let temp_dir = tempfile::tempdir().unwrap();
         let target_path = temp_dir.path().join("target.txt");
         std::fs::write(&target_path, "opened\n").unwrap();
@@ -3712,16 +3746,15 @@ mod tests {
         let outcome = bridge.handle_key(f, &mut compositor, &mut editor, &mut jobs);
         assert!(outcome.handled_by_native_command);
         assert_eq!(outcome.picker_requested, None);
-
-        let focused_path = editor
-            .tree
-            .try_get(editor.tree.focus)
-            .and_then(|view| editor.document(view.doc))
-            .and_then(|doc| doc.path())
-            .cloned();
-        let focused_path = focused_path.as_deref().map(canonicalize_for_assertion);
         let expected_path = canonicalize_for_assertion(&target_path);
-        assert_eq!(focused_path.as_deref(), Some(expected_path.as_path()));
+        match outcome.workspace_requested {
+            Some(NativeWorkspaceRequest::OpenFiles { paths, action }) => {
+                assert_eq!(paths.len(), 1);
+                assert_eq!(canonicalize_for_assertion(&paths[0]), expected_path);
+                assert_eq!(action, NativeFileOpenAction::Replace);
+            }
+            other => panic!("expected workspace open request, got {other:?}"),
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -3765,7 +3798,7 @@ mod tests {
                 assert_eq!(command, MappableCommand::goto_file);
                 assert!(matches!(
                     native_file_navigation_command(&command),
-                    Some(Action::Replace)
+                    Some(NativeFileOpenAction::Replace)
                 ));
                 assert!(native_command_supported(&command));
             }
