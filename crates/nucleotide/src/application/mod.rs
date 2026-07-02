@@ -3166,6 +3166,16 @@ impl Application {
                         editor_input::NativeWorkspaceRequest::ToggleFileTree => {
                             cx.emit(crate::Update::ToggleFileTree);
                         }
+                        editor_input::NativeWorkspaceRequest::OpenFiles { paths, action } => {
+                            for path in paths {
+                                self.handle_native_open_file_request(
+                                    path,
+                                    action.into(),
+                                    handle.clone(),
+                                    cx,
+                                );
+                            }
+                        }
                     }
                 }
 
@@ -7671,7 +7681,94 @@ pub(crate) fn open_workspace_document_from_read(
     ))
 }
 
+enum NativeOpenFileOutcome {
+    Directory(PathBuf),
+    Document(WorkspaceDocumentRead),
+}
+
+async fn native_open_file_with_backend(
+    workspace_backend: WorkspaceBackendHandle,
+    path: PathBuf,
+) -> Result<NativeOpenFileOutcome, Error> {
+    let stat = workspace_backend
+        .stat(&path)
+        .await
+        .with_context(|| format!("failed to stat workspace path {}", path.display()))?;
+
+    if matches!(stat.kind, FileKind::Directory) {
+        return Ok(NativeOpenFileOutcome::Directory(path));
+    }
+
+    read_workspace_document(workspace_backend, path)
+        .await
+        .map(NativeOpenFileOutcome::Document)
+}
+
 impl Application {
+    fn handle_native_open_file_request(
+        &mut self,
+        path: PathBuf,
+        action: helix_view::editor::Action,
+        handle: tokio::runtime::Handle,
+        cx: &mut gpui::Context<crate::Core>,
+    ) {
+        let workspace_backend = self.workspace_backend.clone();
+        let workspace_identity = workspace_backend.identity();
+
+        if matches!(workspace_identity, WorkspaceIdentity::Local) {
+            if path.is_dir() {
+                cx.emit(crate::Update::ShowFilePickerAt(path));
+                return;
+            }
+
+            if let Err(error) =
+                open_workspace_document(&mut self.editor, &workspace_backend, &path, action)
+            {
+                self.editor
+                    .set_error(format!("Open file failed: {error:?}"));
+            }
+            return;
+        }
+
+        self.editor
+            .set_status(format!("Opening workspace file: {}", path.display()));
+        cx.spawn(async move |core, cx| {
+            let result = match handle
+                .spawn(native_open_file_with_backend(
+                    workspace_backend,
+                    path.clone(),
+                ))
+                .await
+            {
+                Ok(result) => result,
+                Err(error) => Err(anyhow::anyhow!("workspace open task failed: {error}")),
+            };
+
+            if let Some(core) = core.upgrade() {
+                core.update(cx, |core, cx| match result {
+                    Ok(NativeOpenFileOutcome::Directory(path)) => {
+                        cx.emit(crate::Update::ShowFilePickerAt(path));
+                    }
+                    Ok(NativeOpenFileOutcome::Document(document_read)) => {
+                        if let Err(error) = open_workspace_document_from_read(
+                            &mut core.editor,
+                            document_read,
+                            action,
+                        ) {
+                            core.editor
+                                .set_error(format!("Open remote file failed: {error:?}"));
+                        }
+                    }
+                    Err(error) => {
+                        core.editor
+                            .set_error(format!("Open remote file failed: {error:?}"));
+                    }
+                });
+            }
+        })
+        .detach();
+    }
+
     pub fn schedule_inlay_hints_for_visible_views(&mut self) {
         if !self.editor.config().lsp.display_inlay_hints {
             return;
@@ -8813,7 +8910,7 @@ mod tests {
 
     use super::{
         Application, ApplicationCore, EditorInputBridge, LspCompletionTrigger, MaintenanceWake,
-        NativeSymbolItem, NativeSymbolTarget, PendingCompletionRequest,
+        NativeOpenFileOutcome, NativeSymbolItem, NativeSymbolTarget, PendingCompletionRequest,
         RemoteLspLaunchProxyProvider, WorkspaceDocumentSaveHandler,
         bridged_event_needs_gpui_context, buffer_text_matches_path, buffer_word_completion_items,
         char_index_for_line_col, coalesce_bridged_events, completion_context_for_trigger,
@@ -8825,12 +8922,13 @@ mod tests {
         lsp_completion_insert_text, lsp_completion_insert_text_format,
         lsp_completion_items_from_response, lsp_completion_items_from_response_for_server,
         lsp_completion_resolve_supported, lsp_completion_response_is_incomplete, lsp_symbol_picker,
-        native_symbol_item_from_lsp, open_workspace_document, path_completion_items,
-        path_completion_items_from_listing, project_health_status, project_server_language_id,
-        should_launch_lsp_on_local_host, should_stat_picker_root_with_backend,
-        should_use_workspace_syntax_symbol_fallback, startup_path_should_open_as_file,
-        str_prefix_at_byte_limit, suppress_shadowed_buffer_word_completion_items,
-        syntax_symbol_kind_from_capture_name, workspace_diagnostic_refresh_reply,
+        native_open_file_with_backend, native_symbol_item_from_lsp, open_workspace_document,
+        path_completion_items, path_completion_items_from_listing, project_health_status,
+        project_server_language_id, should_launch_lsp_on_local_host,
+        should_stat_picker_root_with_backend, should_use_workspace_syntax_symbol_fallback,
+        startup_path_should_open_as_file, str_prefix_at_byte_limit,
+        suppress_shadowed_buffer_word_completion_items, syntax_symbol_kind_from_capture_name,
+        workspace_diagnostic_refresh_reply,
     };
     use crate::test_utils::test_support::{
         TestUpdate, create_counting_channel, create_test_diagnostic_events,
@@ -9339,6 +9437,59 @@ mod tests {
             "updated\nfn remote() {}\n"
         );
         assert!(!editor.document(doc_id).unwrap().is_modified());
+    }
+
+    #[test]
+    fn native_open_file_with_backend_loads_remote_file() {
+        let temp = tempdir().unwrap();
+        fs::create_dir_all(temp.path().join("src")).unwrap();
+        fs::write(temp.path().join("src").join("main.rs"), "fn remote() {}\n").unwrap();
+
+        let display_root = PathBuf::from("ssh://me@example.com/home/me/project");
+        let display_path = display_root.join("src").join("main.rs");
+        let backend = path_mapped_workspace_backend(
+            Arc::new(RemoteIdentityLocalBackend),
+            WorkspacePathMapping::new(&display_root, temp.path()),
+        );
+
+        let outcome =
+            TEST_RUNTIME.block_on(native_open_file_with_backend(backend, display_path.clone()));
+
+        match outcome.unwrap() {
+            NativeOpenFileOutcome::Document(document_read) => {
+                assert_eq!(document_read.read.path, display_path);
+                assert_eq!(document_read.read.bytes, b"fn remote() {}\n");
+            }
+            NativeOpenFileOutcome::Directory(path) => {
+                panic!(
+                    "expected document outcome, got directory {}",
+                    path.display()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn native_open_file_with_backend_reports_remote_directory() {
+        let temp = tempdir().unwrap();
+        fs::create_dir_all(temp.path().join("src")).unwrap();
+
+        let display_root = PathBuf::from("ssh://me@example.com/home/me/project");
+        let display_path = display_root.join("src");
+        let backend = path_mapped_workspace_backend(
+            Arc::new(RemoteIdentityLocalBackend),
+            WorkspacePathMapping::new(&display_root, temp.path()),
+        );
+
+        let outcome =
+            TEST_RUNTIME.block_on(native_open_file_with_backend(backend, display_path.clone()));
+
+        match outcome.unwrap() {
+            NativeOpenFileOutcome::Directory(path) => {
+                assert_eq!(path, display_path);
+            }
+            NativeOpenFileOutcome::Document(_) => panic!("expected directory outcome"),
+        }
     }
 
     #[test]
