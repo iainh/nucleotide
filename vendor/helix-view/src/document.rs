@@ -120,6 +120,16 @@ pub struct DocumentSavedEvent {
     pub text: Rope,
 }
 
+#[derive(Debug, Clone)]
+pub struct DocumentSaveData {
+    pub path: PathBuf,
+    pub previous_path: Option<PathBuf>,
+    pub text: Rope,
+    pub encoding_with_bom_info: (&'static Encoding, bool),
+    pub last_saved_time: SystemTime,
+    pub force: bool,
+}
+
 pub type DocumentSavedEventResult = Result<DocumentSavedEvent, anyhow::Error>;
 pub type DocumentSavedEventFuture = BoxFuture<'static, DocumentSavedEventResult>;
 
@@ -674,6 +684,139 @@ pub async fn to_writer<'a, W: tokio::io::AsyncWriteExt + Unpin + ?Sized>(
     Ok(())
 }
 
+async fn save_to_local_path(
+    save: DocumentSaveData,
+    atomic_save: bool,
+) -> Result<SystemTime, anyhow::Error> {
+    use tokio::fs;
+
+    let path = save.path;
+    if let Some(parent) = path.parent() {
+        // TODO: display a prompt asking the user if the directories should be created
+        if !parent.exists() {
+            if save.force {
+                std::fs::DirBuilder::new().recursive(true).create(parent)?;
+            } else {
+                bail!("can't save file, parent directory does not exist (use :w! to create it)");
+            }
+        }
+    }
+
+    // Protect against overwriting changes made externally
+    if !save.force {
+        if let Ok(metadata) = fs::metadata(&path).await {
+            if let Ok(mtime) = metadata.modified() {
+                if save.last_saved_time < mtime {
+                    bail!("file modified by an external process, use :w! to overwrite");
+                }
+            }
+        }
+    }
+    let write_path = tokio::fs::read_link(&path)
+        .await
+        .ok()
+        .and_then(|p| {
+            if p.is_relative() {
+                path.parent().map(|parent| parent.join(p))
+            } else {
+                Some(p)
+            }
+        })
+        .unwrap_or_else(|| path.clone());
+
+    if readonly(&write_path) {
+        bail!(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "Path is read only"
+        ));
+    }
+
+    // Assume it is a hardlink to prevent data loss if the metadata cant be read (e.g. on certain Windows configurations)
+    let is_hardlink = helix_stdx::faccess::hardlink_count(&write_path).unwrap_or(2) > 1;
+    let backup = if path.exists() && atomic_save {
+        let path_ = write_path.clone();
+        // hacks: we use tempfile to handle the complex task of creating
+        // non clobbered temporary path for us we don't want
+        // the whole automatically delete path on drop thing
+        // since the path doesn't exist yet, we just want
+        // the path
+        tokio::task::spawn_blocking(move || -> Option<PathBuf> {
+            let mut builder = tempfile::Builder::new();
+            builder.prefix(path_.file_name()?).suffix(".bck");
+
+            let backup_path = if is_hardlink {
+                builder
+                    .make_in(path_.parent()?, |backup| std::fs::copy(&path_, backup))
+                    .ok()?
+                    .into_temp_path()
+            } else {
+                builder
+                    .make_in(path_.parent()?, |backup| std::fs::rename(&path_, backup))
+                    .ok()?
+                    .into_temp_path()
+            };
+
+            backup_path.keep().ok()
+        })
+        .await
+        .ok()
+        .flatten()
+    } else {
+        None
+    };
+
+    let write_result: anyhow::Result<_> = async {
+        let mut dst = tokio::fs::File::create(&write_path).await?;
+        to_writer(&mut dst, save.encoding_with_bom_info, &save.text).await?;
+        dst.sync_all().await?;
+        Ok(())
+    }
+    .await;
+
+    let save_time = match fs::metadata(&write_path).await {
+        Ok(metadata) => metadata.modified().map_or(SystemTime::now(), |mtime| mtime),
+        Err(_) => SystemTime::now(),
+    };
+
+    if let Some(backup) = backup {
+        if is_hardlink {
+            let mut delete = true;
+            if write_result.is_err() {
+                // Restore backup
+                let _ = tokio::fs::copy(&backup, &write_path).await.map_err(|e| {
+                    delete = false;
+                    log::error!("Failed to restore backup on write failure: {e}")
+                });
+            }
+
+            if delete {
+                // Delete backup
+                let _ = tokio::fs::remove_file(backup)
+                    .await
+                    .map_err(|e| log::error!("Failed to remove backup file on write: {e}"));
+            }
+        } else if write_result.is_err() {
+            // restore backup
+            let _ = tokio::fs::rename(&backup, &write_path)
+                .await
+                .map_err(|e| log::error!("Failed to restore backup on write failure: {e}"));
+        } else {
+            // copy metadata and delete backup
+            let _ = tokio::task::spawn_blocking(move || {
+                let _ = copy_metadata(&backup, &write_path)
+                    .map_err(|e| log::error!("Failed to copy metadata on write: {e}"));
+                let _ = std::fs::remove_file(backup)
+                    .map_err(|e| log::error!("Failed to remove backup file on write: {e}"));
+            })
+            .await;
+        }
+    }
+
+    write_result?;
+
+    Ok(save_time)
+}
+
 fn take_with<T, F>(mut_ref: &mut T, f: F)
 where
     T: Default,
@@ -983,16 +1126,27 @@ impl Document {
         // futures_util::future::Ready<_>,
     }
 
-    /// The `Document`'s text is encoded according to its encoding and written to the file located
-    /// at its `path()`.
-    fn save_impl(
+    /// Build a save future using a caller-supplied writer.
+    ///
+    /// The writer is responsible for persisting [`DocumentSaveData::text`] and
+    /// returning the file modification time that should become the document's
+    /// latest saved time. This method still owns Helix's save bookkeeping:
+    /// revision capture, save event construction, and LSP didSave
+    /// notifications.
+    pub fn save_with<P, F, Fut>(
         &mut self,
-        path: Option<PathBuf>,
+        path: Option<P>,
         force: bool,
+        write: F,
     ) -> Result<
         impl Future<Output = Result<DocumentSavedEvent, anyhow::Error>> + 'static + Send,
         anyhow::Error,
-    > {
+    >
+    where
+        P: Into<PathBuf>,
+        F: FnOnce(DocumentSaveData) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<SystemTime, anyhow::Error>> + Send + 'static,
+    {
         log::debug!(
             "submitting save of doc '{:?}'",
             self.path().map(|path| path.to_string_lossy())
@@ -1001,7 +1155,9 @@ impl Document {
         // we clone and move text + path into the future so that we asynchronously save the current
         // state without blocking any further edits.
         let text = self.text().clone();
+        let previous_path = self.path.clone();
 
+        let path = path.map(Into::into);
         let path = match path {
             Some(path) => helix_stdx::path::canonicalize(path),
             None => {
@@ -1012,142 +1168,26 @@ impl Document {
             }
         };
 
-        let identifier = self.path().map(|_| self.identifier());
+        let identifier = self.url().map(lsp::TextDocumentIdentifier::new);
         let language_servers = self.language_servers.clone();
 
         // mark changes up to now as saved
         let current_rev = self.get_current_revision();
         let doc_id = self.id();
-        let atomic_save = self.config.load().atomic_save;
 
         let encoding_with_bom_info = (self.encoding, self.has_bom);
         let last_saved_time = self.last_saved_time;
 
-        // We encode the file according to the `Document`'s encoding.
         let future = async move {
-            use tokio::fs;
-            if let Some(parent) = path.parent() {
-                // TODO: display a prompt asking the user if the directories should be created
-                if !parent.exists() {
-                    if force {
-                        std::fs::DirBuilder::new().recursive(true).create(parent)?;
-                    } else {
-                        bail!("can't save file, parent directory does not exist (use :w! to create it)");
-                    }
-                }
-            }
-
-            // Protect against overwriting changes made externally
-            if !force {
-                if let Ok(metadata) = fs::metadata(&path).await {
-                    if let Ok(mtime) = metadata.modified() {
-                        if last_saved_time < mtime {
-                            bail!("file modified by an external process, use :w! to overwrite");
-                        }
-                    }
-                }
-            }
-            let write_path = tokio::fs::read_link(&path)
-                .await
-                .ok()
-                .and_then(|p| {
-                    if p.is_relative() {
-                        path.parent().map(|parent| parent.join(p))
-                    } else {
-                        Some(p)
-                    }
-                })
-                .unwrap_or_else(|| path.clone());
-
-            if readonly(&write_path) {
-                bail!(std::io::Error::new(
-                    std::io::ErrorKind::PermissionDenied,
-                    "Path is read only"
-                ));
-            }
-
-            // Assume it is a hardlink to prevent data loss if the metadata cant be read (e.g. on certain Windows configurations)
-            let is_hardlink = helix_stdx::faccess::hardlink_count(&write_path).unwrap_or(2) > 1;
-            let backup = if path.exists() && atomic_save {
-                let path_ = write_path.clone();
-                // hacks: we use tempfile to handle the complex task of creating
-                // non clobbered temporary path for us we don't want
-                // the whole automatically delete path on drop thing
-                // since the path doesn't exist yet, we just want
-                // the path
-                tokio::task::spawn_blocking(move || -> Option<PathBuf> {
-                    let mut builder = tempfile::Builder::new();
-                    builder.prefix(path_.file_name()?).suffix(".bck");
-
-                    let backup_path = if is_hardlink {
-                        builder
-                            .make_in(path_.parent()?, |backup| std::fs::copy(&path_, backup))
-                            .ok()?
-                            .into_temp_path()
-                    } else {
-                        builder
-                            .make_in(path_.parent()?, |backup| std::fs::rename(&path_, backup))
-                            .ok()?
-                            .into_temp_path()
-                    };
-
-                    backup_path.keep().ok()
-                })
-                .await
-                .ok()
-                .flatten()
-            } else {
-                None
-            };
-
-            let write_result: anyhow::Result<_> = async {
-                let mut dst = tokio::fs::File::create(&write_path).await?;
-                to_writer(&mut dst, encoding_with_bom_info, &text).await?;
-                dst.sync_all().await?;
-                Ok(())
-            }
-            .await;
-
-            let save_time = match fs::metadata(&write_path).await {
-                Ok(metadata) => metadata.modified().map_or(SystemTime::now(), |mtime| mtime),
-                Err(_) => SystemTime::now(),
-            };
-
-            if let Some(backup) = backup {
-                if is_hardlink {
-                    let mut delete = true;
-                    if write_result.is_err() {
-                        // Restore backup
-                        let _ = tokio::fs::copy(&backup, &write_path).await.map_err(|e| {
-                            delete = false;
-                            log::error!("Failed to restore backup on write failure: {e}")
-                        });
-                    }
-
-                    if delete {
-                        // Delete backup
-                        let _ = tokio::fs::remove_file(backup)
-                            .await
-                            .map_err(|e| log::error!("Failed to remove backup file on write: {e}"));
-                    }
-                } else if write_result.is_err() {
-                    // restore backup
-                    let _ = tokio::fs::rename(&backup, &write_path)
-                        .await
-                        .map_err(|e| log::error!("Failed to restore backup on write failure: {e}"));
-                } else {
-                    // copy metadata and delete backup
-                    let _ = tokio::task::spawn_blocking(move || {
-                        let _ = copy_metadata(&backup, &write_path)
-                            .map_err(|e| log::error!("Failed to copy metadata on write: {e}"));
-                        let _ = std::fs::remove_file(backup)
-                            .map_err(|e| log::error!("Failed to remove backup file on write: {e}"));
-                    })
-                    .await;
-                }
-            }
-
-            write_result?;
+            let save_time = write(DocumentSaveData {
+                path: path.clone(),
+                previous_path,
+                text: text.clone(),
+                encoding_with_bom_info,
+                last_saved_time,
+                force,
+            })
+            .await?;
 
             let event = DocumentSavedEvent {
                 revision: current_rev,
@@ -1170,6 +1210,22 @@ impl Document {
         };
 
         Ok(future)
+    }
+
+    /// The `Document`'s text is encoded according to its encoding and written to the file located
+    /// at its `path()`.
+    fn save_impl(
+        &mut self,
+        path: Option<PathBuf>,
+        force: bool,
+    ) -> Result<
+        impl Future<Output = Result<DocumentSavedEvent, anyhow::Error>> + 'static + Send,
+        anyhow::Error,
+    > {
+        let atomic_save = self.config.load().atomic_save;
+        self.save_with(path, force, move |save| {
+            save_to_local_path(save, atomic_save)
+        })
     }
 
     /// Detect the programming language based on the file type.
