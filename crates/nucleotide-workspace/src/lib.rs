@@ -1803,6 +1803,14 @@ fn local_project_environment(root: &Path) -> Result<ProjectEnvironmentSnapshot> 
 
 fn local_run_process(spec: ProcessSpec) -> Result<ProcessOutput> {
     let cwd = spec.cwd.clone();
+    let process_env = if spec.inherit_project_environment {
+        let mut project_env = local_project_environment(&cwd)?.variables;
+        project_env.extend(spec.env.clone());
+        project_env
+    } else {
+        spec.env.clone()
+    };
+
     let mut command = Command::new(&spec.program);
     command
         .args(&spec.args)
@@ -1813,7 +1821,7 @@ fn local_run_process(spec: ProcessSpec) -> Result<ProcessOutput> {
     if spec.clear_env {
         command.env_clear();
     }
-    apply_process_environment(&mut command, &spec.env);
+    apply_process_environment(&mut command, &process_env);
     configure_workspace_process(&mut command);
 
     let mut child = command.spawn().map_err(|source| WorkspaceError::Io {
@@ -2296,6 +2304,36 @@ mod tests {
 
         assert!(output.success);
         assert_eq!(output.stdout, b"yes:unset");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_backend_run_process_can_inherit_project_environment() {
+        let temp = tempfile::tempdir().unwrap();
+        let backend = LocalWorkspaceBackend;
+        let expected_path = std::env::var("PATH").unwrap_or_else(|_| "unset".to_string());
+
+        let output = block_on(backend.run_process(ProcessSpec {
+            program: "/bin/sh".to_string(),
+            args: vec![
+                "-c".to_string(),
+                "printf '%s:%s' \"${PATH-unset}\" \"$FOO\"".to_string(),
+            ],
+            cwd: temp.path().to_path_buf(),
+            env: BTreeMap::from([("FOO".to_string(), "bar".to_string())]),
+            clear_env: true,
+            inherit_project_environment: true,
+            stdin: Vec::new(),
+            max_output_bytes: None,
+            timeout_ms: None,
+        }))
+        .unwrap();
+
+        assert!(output.success);
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            format!("{expected_path}:bar")
+        );
     }
 
     #[cfg(unix)]
