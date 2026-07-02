@@ -1319,6 +1319,7 @@ pub struct Workspace {
     // Delete confirmation modal state
     delete_confirm_open: bool,
     delete_confirm_path: Option<std::path::PathBuf>,
+    delete_confirm_was_directory: bool,
     // Unsaved close confirmation modal state
     close_confirm_open: bool,
     close_confirm: Option<UnsavedCloseConfirmation<DocumentId>>,
@@ -1555,10 +1556,20 @@ fn ui_completion_item_from_event(
 
 // Pending file operation kinds awaiting user input (used with the prompt overlay)
 enum PendingFileOp {
-    NewFile { parent: std::path::PathBuf },
-    NewFolder { parent: std::path::PathBuf },
-    Rename { path: std::path::PathBuf },
-    Duplicate { path: std::path::PathBuf },
+    NewFile {
+        parent: std::path::PathBuf,
+    },
+    NewFolder {
+        parent: std::path::PathBuf,
+    },
+    Rename {
+        path: std::path::PathBuf,
+        was_dir: bool,
+    },
+    Duplicate {
+        path: std::path::PathBuf,
+        is_dir: bool,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -1587,17 +1598,21 @@ enum WorkspaceSelectionTarget {
 #[cfg(test)]
 fn file_operation_notification_succeeded(notification: &LspFileOperationNotification) -> bool {
     let backend = local_workspace_backend();
-    file_operation_notification_succeeded_with_backend(backend.as_ref(), notification)
+    futures_executor::block_on(file_operation_notification_succeeded_with_backend_async(
+        &backend,
+        notification,
+    ))
 }
 
 fn file_kind_matches_dir(kind: FileKind, is_dir: bool) -> bool {
     (kind == FileKind::Directory) == is_dir
 }
 
-fn file_kind_for_path(backend: &(impl WorkspaceBackend + ?Sized), path: &Path) -> Option<FileKind> {
-    futures_executor::block_on(backend.stat(path))
-        .ok()
-        .map(|stat| stat.kind)
+async fn file_kind_for_path_async(
+    backend: &WorkspaceBackendHandle,
+    path: &Path,
+) -> Option<FileKind> {
+    backend.stat(path).await.ok().map(|stat| stat.kind)
 }
 
 fn workspace_selection_target_from_file_kind(kind: FileKind) -> Option<WorkspaceSelectionTarget> {
@@ -1621,7 +1636,9 @@ fn workspace_selection_target_for_path(
             None
         }
     } else {
-        file_kind_for_path(backend, path).and_then(workspace_selection_target_from_file_kind)
+        futures_executor::block_on(backend.stat(path))
+            .ok()
+            .and_then(|stat| workspace_selection_target_from_file_kind(stat.kind))
     }
 }
 
@@ -1637,15 +1654,18 @@ fn context_menu_target_parent_path(clicked: &Path, is_directory: bool) -> PathBu
     }
 }
 
-fn file_operation_notification_succeeded_with_backend(
-    backend: &(impl WorkspaceBackend + ?Sized),
+async fn file_operation_notification_succeeded_with_backend_async(
+    backend: &WorkspaceBackendHandle,
     notification: &LspFileOperationNotification,
 ) -> bool {
     match notification {
-        LspFileOperationNotification::Created { path, is_dir } => file_kind_for_path(backend, path)
-            .is_some_and(|kind| file_kind_matches_dir(kind, *is_dir)),
+        LspFileOperationNotification::Created { path, is_dir } => {
+            file_kind_for_path_async(backend, path)
+                .await
+                .is_some_and(|kind| file_kind_matches_dir(kind, *is_dir))
+        }
         LspFileOperationNotification::Deleted { path, .. } => {
-            file_kind_for_path(backend, path).is_none()
+            file_kind_for_path_async(backend, path).await.is_none()
         }
         LspFileOperationNotification::Renamed {
             old_path,
@@ -1653,11 +1673,26 @@ fn file_operation_notification_succeeded_with_backend(
             was_dir,
         } => {
             old_path != new_path
-                && file_kind_for_path(backend, old_path).is_none()
-                && file_kind_for_path(backend, new_path)
+                && file_kind_for_path_async(backend, old_path).await.is_none()
+                && file_kind_for_path_async(backend, new_path)
+                    .await
                     .is_some_and(|kind| file_kind_matches_dir(kind, *was_dir))
         }
     }
+}
+
+async fn wait_for_file_operation_notification(
+    backend: WorkspaceBackendHandle,
+    notification: LspFileOperationNotification,
+) -> bool {
+    for _ in 0..50 {
+        if file_operation_notification_succeeded_with_backend_async(&backend, &notification).await {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    false
 }
 
 #[derive(Clone)]
@@ -4532,13 +4567,13 @@ impl Workspace {
             .is_some_and(|file_tree| file_tree.read(cx).contains_path(path))
     }
 
-    fn start_rename_file(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+    fn start_rename_file(&mut self, path: PathBuf, was_dir: bool, cx: &mut Context<Self>) {
         let current_name = path
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("")
             .to_string();
-        self.pending_file_op = Some(PendingFileOp::Rename { path });
+        self.pending_file_op = Some(PendingFileOp::Rename { path, was_dir });
         self.core.update(cx, move |_core, cx| {
             let prompt = crate::prompt::Prompt::native("Rename to", current_name, |_input| {});
             cx.emit(crate::Update::Prompt(prompt));
@@ -4657,7 +4692,7 @@ impl Workspace {
         match tab_double_click_plan(path.is_some()) {
             TabDoubleClickPlan::Rename => {
                 if let Some(path) = path {
-                    self.start_rename_file(path, cx);
+                    self.start_rename_file(path, false, cx);
                 }
             }
             TabDoubleClickPlan::Activate => match tab_id {
@@ -5075,6 +5110,7 @@ impl Workspace {
             needs_file_tree_refresh: false,
             delete_confirm_open: false,
             delete_confirm_path: None,
+            delete_confirm_was_directory: false,
             close_confirm_open: false,
             close_confirm: None,
             terminal_panel_visible: false,
@@ -5162,6 +5198,7 @@ impl Workspace {
     fn cancel_delete_confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.delete_confirm_open = false;
         self.delete_confirm_path = None;
+        self.delete_confirm_was_directory = false;
         if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>().cloned() {
             let _ = coord.focus_first(
                 window,
@@ -5221,8 +5258,9 @@ impl Workspace {
         }
     }
 
-    fn request_delete_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+    fn request_delete_path(&mut self, path: PathBuf, was_directory: bool, cx: &mut Context<Self>) {
         self.delete_confirm_path = Some(path);
+        self.delete_confirm_was_directory = was_directory;
         match self.core.read(cx).config.gui.file_ops.delete_behavior {
             crate::config::DeleteBehavior::Trash => self.perform_delete_confirm(cx),
             crate::config::DeleteBehavior::Permanent => {
@@ -5443,10 +5481,7 @@ impl Workspace {
     /// Execute the delete after confirmation
     fn perform_delete_confirm(&mut self, cx: &mut Context<Self>) {
         if let Some(path) = self.delete_confirm_path.clone() {
-            let workspace_backend = self.core.read(cx).workspace_backend.clone();
-            let before_kind = file_kind_for_path(workspace_backend.as_ref(), &path);
-            let existed_before = before_kind.is_some();
-            let was_dir = before_kind == Some(FileKind::Directory);
+            let was_dir = self.delete_confirm_was_directory;
             let mode = match self.core.read(cx).config.gui.file_ops.delete_behavior {
                 crate::config::DeleteBehavior::Trash => {
                     nucleotide_events::v2::workspace::DeleteMode::Trash
@@ -5466,20 +5501,15 @@ impl Workspace {
                 path: path.clone(),
                 was_dir,
             };
-            if existed_before
-                && file_operation_notification_succeeded_with_backend(
-                    workspace_backend.as_ref(),
-                    &notification,
-                )
-            {
-                self.notify_lsp_file_operation(notification, cx);
-            }
-            if let Some(parent) = path.parent() {
-                self.rescan_directory(parent, cx);
-            }
+            self.observe_file_operation_completion(
+                notification,
+                path.parent().map(|parent| parent.to_path_buf()),
+                cx,
+            );
         }
         self.delete_confirm_open = false;
         self.delete_confirm_path = None;
+        self.delete_confirm_was_directory = false;
         cx.notify();
     }
 
@@ -6085,14 +6115,14 @@ impl Workspace {
 
     fn cm_action_rename(this: &mut Workspace, cx: &mut Context<Workspace>) {
         if let Some(path) = this.context_menu_path.clone() {
-            this.start_rename_file(path, cx);
+            this.start_rename_file(path, this.context_menu_is_directory, cx);
         }
         this.close_context_menu(cx);
     }
 
     fn cm_action_delete(this: &mut Workspace, cx: &mut Context<Workspace>) {
         if let Some(path) = this.context_menu_path.clone() {
-            this.request_delete_path(path, cx);
+            this.request_delete_path(path, this.context_menu_is_directory, cx);
         }
         this.close_context_menu(cx);
     }
@@ -6104,7 +6134,10 @@ impl Workspace {
                 .and_then(|n| n.to_str())
                 .map(|s| format!("{} copy", s))
                 .unwrap_or_else(|| "copy".to_string());
-            this.pending_file_op = Some(PendingFileOp::Duplicate { path });
+            this.pending_file_op = Some(PendingFileOp::Duplicate {
+                path,
+                is_dir: this.context_menu_is_directory,
+            });
             this.core.update(cx, move |_core, cx| {
                 let prompt = crate::prompt::Prompt::native("Duplicate as", base_name, |_input| {});
                 cx.emit(crate::Update::Prompt(prompt));
@@ -6456,6 +6489,7 @@ impl Workspace {
                 "escape" => {
                     self.delete_confirm_open = false;
                     self.delete_confirm_path = None;
+                    self.delete_confirm_was_directory = false;
                     cx.notify();
                     return;
                 }
@@ -6756,9 +6790,15 @@ impl Workspace {
         {
             let is_tree_focused = file_tree.focus_handle(cx).is_focused(window);
             if is_tree_focused {
-                let selected = file_tree.read(cx).selected_path().cloned();
+                let (selected, was_directory) = {
+                    let tree = file_tree.read(cx);
+                    (
+                        tree.selected_path().cloned(),
+                        tree.selected_path_is_directory(),
+                    )
+                };
                 if let Some(path) = selected {
-                    self.request_delete_path(path, cx);
+                    self.request_delete_path(path, was_directory, cx);
                 }
             }
         }
@@ -8731,7 +8771,6 @@ impl Workspace {
         if let Some(pending) = self.pending_file_op.take() {
             use nucleotide_events::v2::workspace::{Event as WsEvent, FileOpIntent};
 
-            let workspace_backend = self.core.read(cx).workspace_backend.clone();
             // Build event and decide which directory to rescan using references to avoid moves
             let (event, refresh_dir, lsp_file_operation): (
                 WsEvent,
@@ -8764,9 +8803,7 @@ impl Workspace {
                         is_dir: true,
                     }),
                 ),
-                PendingFileOp::Rename { path } => {
-                    let was_dir = file_kind_for_path(workspace_backend.as_ref(), path)
-                        == Some(FileKind::Directory);
+                PendingFileOp::Rename { path, was_dir } => {
                     let new_path = path
                         .parent()
                         .unwrap_or_else(|| std::path::Path::new("."))
@@ -8782,13 +8819,11 @@ impl Workspace {
                         Some(LspFileOperationNotification::Renamed {
                             old_path: path.clone(),
                             new_path,
-                            was_dir,
+                            was_dir: *was_dir,
                         }),
                     )
                 }
-                PendingFileOp::Duplicate { path } => {
-                    let is_dir = file_kind_for_path(workspace_backend.as_ref(), path)
-                        == Some(FileKind::Directory);
+                PendingFileOp::Duplicate { path, is_dir } => {
                     let target_path = path
                         .parent()
                         .unwrap_or_else(|| std::path::Path::new("."))
@@ -8803,7 +8838,7 @@ impl Workspace {
                         path.parent().map(|p| p.to_path_buf()),
                         Some(LspFileOperationNotification::Created {
                             path: target_path,
-                            is_dir,
+                            is_dir: *is_dir,
                         }),
                     )
                 }
@@ -8814,17 +8849,8 @@ impl Workspace {
                 .update(cx, |overlay, cx| overlay.dismiss_all(cx));
             self.dispatch_workspace_file_op_and_process(event, cx);
 
-            if let Some(notification) = lsp_file_operation
-                && file_operation_notification_succeeded_with_backend(
-                    workspace_backend.as_ref(),
-                    &notification,
-                )
-            {
-                self.notify_lsp_file_operation(notification, cx);
-            }
-
-            if let Some(dir) = refresh_dir {
-                self.rescan_directory(&dir, cx);
+            if let Some(notification) = lsp_file_operation {
+                self.observe_file_operation_completion(notification, refresh_dir, cx);
             }
             return;
         }
@@ -11319,6 +11345,55 @@ impl Workspace {
                 }
             }
         });
+    }
+
+    fn observe_file_operation_completion(
+        &mut self,
+        notification: LspFileOperationNotification,
+        refresh_dir: Option<PathBuf>,
+        cx: &mut Context<Self>,
+    ) {
+        let workspace_backend = self.core.read(cx).workspace_backend.clone();
+        let runtime_handle = self.handle.clone();
+
+        cx.spawn(async move |this, cx| {
+            let notification_for_task = notification.clone();
+            let observed = match runtime_handle
+                .spawn(wait_for_file_operation_notification(
+                    workspace_backend,
+                    notification_for_task,
+                ))
+                .await
+            {
+                Ok(observed) => observed,
+                Err(error) => {
+                    warn!(
+                        error = %error,
+                        ?notification,
+                        "File operation completion observer failed"
+                    );
+                    false
+                }
+            };
+
+            if let Some(this) = this.upgrade() {
+                this.update(cx, |workspace, cx| {
+                    if observed {
+                        workspace.notify_lsp_file_operation(notification.clone(), cx);
+                    } else {
+                        warn!(
+                            ?notification,
+                            "File operation was not observed in workspace backend before timeout"
+                        );
+                    }
+
+                    if let Some(refresh_dir) = refresh_dir.as_ref() {
+                        workspace.rescan_directory(refresh_dir, cx);
+                    }
+                });
+            }
+        })
+        .detach();
     }
 
     fn dispatch_workspace_file_op_and_process(
@@ -14843,6 +14918,7 @@ impl Render for Workspace {
                 if workspace.delete_confirm_open {
                     workspace.delete_confirm_open = false;
                     workspace.delete_confirm_path = None;
+                    workspace.delete_confirm_was_directory = false;
                     cx.notify();
                 }
 
