@@ -288,8 +288,24 @@ fn parse_ssh_host_and_port(value: &str) -> Option<(String, Option<u16>)> {
         return None;
     }
 
+    if let Some(bracketed) = value.strip_prefix('[') {
+        let (host, rest) = bracketed.split_once(']')?;
+        if host.is_empty() {
+            return None;
+        }
+
+        return match rest {
+            "" => Some((host.to_string(), None)),
+            rest => {
+                let port = rest.strip_prefix(':')?.parse::<u16>().ok()?;
+                Some((host.to_string(), Some(port)))
+            }
+        };
+    }
+
     if let Some((host, port)) = value.rsplit_once(':')
         && !host.is_empty()
+        && !host.contains(':')
         && let Ok(port) = port.parse::<u16>()
     {
         return Some((host.to_string(), Some(port)));
@@ -2422,6 +2438,42 @@ mod tests {
                     host: "example.com".to_string(),
                     user: Some("me".to_string()),
                     port: Some(2222),
+                },
+                path: PathBuf::from("/home/me/project"),
+            }
+        );
+    }
+
+    #[test]
+    fn workspace_location_classifies_ssh_uri_with_bracketed_ipv6_host() {
+        let path = PathBuf::from("ssh://me@[2001:db8::1]:2222/home/me/project");
+
+        assert_eq!(
+            classify_workspace_location(&path),
+            WorkspaceLocation::Ssh {
+                original_path: path,
+                target: SshWorkspaceTarget {
+                    host: "2001:db8::1".to_string(),
+                    user: Some("me".to_string()),
+                    port: Some(2222),
+                },
+                path: PathBuf::from("/home/me/project"),
+            }
+        );
+    }
+
+    #[test]
+    fn workspace_location_classifies_ssh_uri_with_unbracketed_ipv6_host_without_port() {
+        let path = PathBuf::from("ssh://2001:db8::1/home/me/project");
+
+        assert_eq!(
+            classify_workspace_location(&path),
+            WorkspaceLocation::Ssh {
+                original_path: path,
+                target: SshWorkspaceTarget {
+                    host: "2001:db8::1".to_string(),
+                    user: None,
+                    port: None,
                 },
                 path: PathBuf::from("/home/me/project"),
             }
