@@ -1058,15 +1058,24 @@ fn ssh_target_from_workspace_target(target: &SshWorkspaceTarget) -> SshTarget {
 }
 
 fn ssh_target_display_name(target: &SshWorkspaceTarget) -> String {
+    let host = ssh_display_host(&target.host);
     let mut name = match &target.user {
-        Some(user) if !user.is_empty() => format!("{user}@{}", target.host),
-        _ => target.host.clone(),
+        Some(user) if !user.is_empty() => format!("{user}@{host}"),
+        _ => host,
     };
     if let Some(port) = target.port {
         name.push(':');
         name.push_str(&port.to_string());
     }
     name
+}
+
+fn ssh_display_host(host: &str) -> String {
+    if host.contains(':') && !(host.starts_with('[') && host.ends_with(']')) {
+        format!("[{host}]")
+    } else {
+        host.to_string()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -4174,6 +4183,31 @@ mod tests {
 
         assert_eq!(identity.kind, RemoteWorkspaceKind::Ssh);
         assert_eq!(identity.name, "me@example.com:2222");
+    }
+
+    #[test]
+    fn remote_workspace_identity_formats_ssh_ipv6_target() {
+        let location = WorkspaceLocation::Ssh {
+            original_path: PathBuf::from("ssh://me@[2001:db8::1]:2222/home/me/project"),
+            target: SshWorkspaceTarget {
+                host: "2001:db8::1".to_string(),
+                user: Some("me".to_string()),
+                port: Some(2222),
+            },
+            path: PathBuf::from("/home/me/project"),
+        };
+
+        let identity = remote_workspace_identity_for_location(&location).unwrap();
+
+        assert_eq!(identity.kind, RemoteWorkspaceKind::Ssh);
+        assert_eq!(identity.name, "me@[2001:db8::1]:2222");
+    }
+
+    #[test]
+    fn ssh_display_host_brackets_ipv6_hosts() {
+        assert_eq!(ssh_display_host("example.com"), "example.com");
+        assert_eq!(ssh_display_host("2001:db8::1"), "[2001:db8::1]");
+        assert_eq!(ssh_display_host("[2001:db8::1]"), "[2001:db8::1]");
     }
 
     #[test]
