@@ -18,7 +18,7 @@ use helix_event::dispatch;
 use helix_vcs::DiffProviderRegistry;
 
 use futures_util::stream::select_all::SelectAll;
-use futures_util::{future, StreamExt};
+use futures_util::{future, FutureExt, StreamExt};
 use helix_lsp::{Call, LanguageServerId};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
@@ -1124,6 +1124,7 @@ pub struct Editor {
     /// The currently applied editor theme. While previewing a theme, the previewed theme
     /// is set here.
     pub theme: Theme,
+    pub save_handler: Option<Arc<dyn DocumentSaveHandler>>,
 
     /// The primary Selection prior to starting a goto_line_number preview. This is
     /// restored when the preview is aborted, or added to the jumplist when it is
@@ -1228,6 +1229,15 @@ impl Default for OpenDocumentOptions {
     }
 }
 
+pub trait DocumentSaveHandler: Send + Sync {
+    fn save(
+        &self,
+        doc: &mut Document,
+        path: Option<PathBuf>,
+        force: bool,
+    ) -> Option<anyhow::Result<DocumentSavedEventFuture>>;
+}
+
 /// Error thrown on failed document closed
 pub enum CloseError {
     /// Document doesn't exist
@@ -1274,6 +1284,7 @@ impl Editor {
             syn_loader,
             theme_loader,
             last_theme: None,
+            save_handler: None,
             last_selection: None,
             registers: Registers::new(Box::new(arc_swap::access::Map::new(
                 Arc::clone(&config),
@@ -1359,6 +1370,10 @@ impl Editor {
 
     pub fn clear_status(&mut self) {
         self.status_msg = None;
+    }
+
+    pub fn set_save_handler(&mut self, save_handler: Option<Arc<dyn DocumentSaveHandler>>) {
+        self.save_handler = save_handler;
     }
 
     #[inline]
@@ -2006,8 +2021,13 @@ impl Editor {
         // via stream.then() ? then push into main future
 
         let path = path.map(|path| path.into());
+        let save_handler = self.save_handler.clone();
         let doc = doc_mut!(self, &doc_id);
-        let doc_save_future = doc.save(path, force)?;
+        let doc_save_future: DocumentSavedEventFuture =
+            match save_handler.and_then(|handler| handler.save(doc, path.clone(), force)) {
+                Some(result) => result?,
+                None => doc.save(path, force)?.boxed(),
+            };
 
         // When a file is written to, notify the file event handler.
         // Note: This can be removed once proper file watching is implemented.

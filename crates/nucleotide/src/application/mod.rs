@@ -31,7 +31,7 @@ use std::{
     pin::Pin,
     sync::Arc,
     task::{Context as TaskContext, Poll, Wake, Waker},
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 use tokio::sync::RwLock;
 
@@ -48,7 +48,8 @@ use helix_lsp::{LanguageServerId, LspProgressMap, OffsetEncoding, lsp};
 use helix_stdx::path::{self as helix_path, get_path_suffix, get_relative_path};
 use helix_view::{
     document::{
-        Document, DocumentInlayHints, DocumentInlayHintsId, DocumentOpenMetadata, Mode, from_reader,
+        Document, DocumentInlayHints, DocumentInlayHintsId, DocumentOpenMetadata, DocumentSaveData,
+        Mode, from_reader, to_writer,
     },
     input::KeyEvent,
     keyboard::{KeyCode, KeyModifiers},
@@ -60,7 +61,8 @@ use nucleotide_lsp::{
 };
 use nucleotide_workspace::{
     DirectoryListing, FileKind, ReadOptions, WorkspaceBackendHandle, WorkspaceIdentity,
-    classify_workspace_location, local_workspace_backend, remote_startup_workspace_root,
+    WriteOptions, classify_workspace_location, local_workspace_backend,
+    remote_startup_workspace_root,
 };
 use slotmap::Key;
 
@@ -124,6 +126,73 @@ impl nucleotide_lsp::EnvironmentProvider for ProjectEnvironmentProvider {
             }
         })
     }
+}
+
+pub struct WorkspaceDocumentSaveHandler {
+    workspace_backend: WorkspaceBackendHandle,
+}
+
+impl WorkspaceDocumentSaveHandler {
+    pub fn new(workspace_backend: WorkspaceBackendHandle) -> Self {
+        Self { workspace_backend }
+    }
+}
+
+impl helix_view::editor::DocumentSaveHandler for WorkspaceDocumentSaveHandler {
+    fn save(
+        &self,
+        doc: &mut Document,
+        path: Option<PathBuf>,
+        force: bool,
+    ) -> Option<anyhow::Result<helix_view::document::DocumentSavedEventFuture>> {
+        let target_path = remote_document_save_target(doc, path)?;
+        let workspace_backend = self.workspace_backend.clone();
+        let save = doc.save_with(Some(target_path), force, move |save| {
+            let workspace_backend = workspace_backend.clone();
+            async move { write_remote_document(workspace_backend, save).await }
+        });
+
+        Some(save.map(|future| future.boxed()))
+    }
+}
+
+fn remote_document_save_target(doc: &Document, requested_path: Option<PathBuf>) -> Option<PathBuf> {
+    match requested_path {
+        Some(path) if classify_workspace_location(&path).is_remote() => Some(path),
+        Some(path) if path.is_relative() => doc
+            .path()
+            .filter(|doc_path| classify_workspace_location(doc_path).is_remote())
+            .and_then(|doc_path| doc_path.parent().map(|parent| parent.join(path))),
+        Some(_) => None,
+        None => doc
+            .path()
+            .filter(|path| classify_workspace_location(path).is_remote())
+            .cloned(),
+    }
+}
+
+async fn write_remote_document(
+    workspace_backend: WorkspaceBackendHandle,
+    save: DocumentSaveData,
+) -> anyhow::Result<SystemTime> {
+    let mut bytes = Vec::new();
+    to_writer(&mut bytes, save.encoding_with_bom_info, &save.text).await?;
+    let expected_modified = (!save.force
+        && save.previous_path.as_deref() == Some(save.path.as_path()))
+    .then_some(save.last_saved_time);
+
+    let result = workspace_backend
+        .write_file(
+            &save.path,
+            &bytes,
+            WriteOptions {
+                create_parent_dirs: save.force,
+                expected_modified,
+            },
+        )
+        .await?;
+
+    Ok(result.modified.unwrap_or_else(SystemTime::now))
 }
 
 pub struct RemoteLspLaunchProxyProvider {
@@ -7088,6 +7157,9 @@ pub fn init_editor(
         })),
         handlers,
     );
+    editor.set_save_handler(Some(Arc::new(WorkspaceDocumentSaveHandler::new(
+        workspace_backend.clone(),
+    ))));
 
     if args.load_tutor {
         let path = helix_loader::runtime_file(Path::new("tutor"));
@@ -8480,23 +8552,23 @@ mod tests {
     use super::{
         Application, ApplicationCore, EditorInputBridge, LspCompletionTrigger, MaintenanceWake,
         NativeSymbolItem, NativeSymbolTarget, PendingCompletionRequest,
-        RemoteLspLaunchProxyProvider, bridged_event_needs_gpui_context, buffer_text_matches_path,
-        buffer_word_completion_items, char_index_for_line_col, coalesce_bridged_events,
-        completion_context_for_trigger, current_dir_is_executable_dir, dedupe_completion_items,
-        detect_project_lsp_metadata, detect_project_type_from_workspace_backend,
-        detect_project_type_from_workspace_listing, diagnostic_picker_path_label,
-        diagnostic_severity_label, document_workspace_root, file_picker_current_directory,
-        home_requires_login_shell_capture, is_workspace_diagnostic_refresh_method,
-        local_path_completion_context, lsp_completion_insert_text,
-        lsp_completion_insert_text_format, lsp_completion_items_from_response,
-        lsp_completion_items_from_response_for_server, lsp_completion_resolve_supported,
-        lsp_completion_response_is_incomplete, lsp_symbol_picker, native_symbol_item_from_lsp,
-        open_workspace_document, path_completion_items, path_completion_items_from_listing,
-        project_health_status, project_server_language_id, should_launch_lsp_on_local_host,
-        should_stat_picker_root_with_backend, should_use_workspace_syntax_symbol_fallback,
-        startup_path_should_open_as_file, str_prefix_at_byte_limit,
-        suppress_shadowed_buffer_word_completion_items, syntax_symbol_kind_from_capture_name,
-        workspace_diagnostic_refresh_reply,
+        RemoteLspLaunchProxyProvider, WorkspaceDocumentSaveHandler,
+        bridged_event_needs_gpui_context, buffer_text_matches_path, buffer_word_completion_items,
+        char_index_for_line_col, coalesce_bridged_events, completion_context_for_trigger,
+        current_dir_is_executable_dir, dedupe_completion_items, detect_project_lsp_metadata,
+        detect_project_type_from_workspace_backend, detect_project_type_from_workspace_listing,
+        diagnostic_picker_path_label, diagnostic_severity_label, document_workspace_root,
+        file_picker_current_directory, home_requires_login_shell_capture,
+        is_workspace_diagnostic_refresh_method, local_path_completion_context,
+        lsp_completion_insert_text, lsp_completion_insert_text_format,
+        lsp_completion_items_from_response, lsp_completion_items_from_response_for_server,
+        lsp_completion_resolve_supported, lsp_completion_response_is_incomplete, lsp_symbol_picker,
+        native_symbol_item_from_lsp, open_workspace_document, path_completion_items,
+        path_completion_items_from_listing, project_health_status, project_server_language_id,
+        should_launch_lsp_on_local_host, should_stat_picker_root_with_backend,
+        should_use_workspace_syntax_symbol_fallback, startup_path_should_open_as_file,
+        str_prefix_at_byte_limit, suppress_shadowed_buffer_word_completion_items,
+        syntax_symbol_kind_from_capture_name, workspace_diagnostic_refresh_reply,
     };
     use crate::test_utils::test_support::{
         TestUpdate, create_counting_channel, create_test_diagnostic_events,
@@ -8505,7 +8577,7 @@ mod tests {
     use arc_swap::{ArcSwap, access::Map};
     use futures_util::{FutureExt, stream::FuturesOrdered};
     use gpui::{AppContext, Entity};
-    use helix_core::{Rope, diagnostic::Severity, syntax};
+    use helix_core::{Rope, Transaction, diagnostic::Severity, syntax};
     use helix_lsp::{LspProgressMap, OffsetEncoding, lsp};
     use helix_term::{
         compositor::Compositor, config::Config as HelixConfig, job::Jobs, keymap::Keymaps,
@@ -8824,6 +8896,9 @@ mod tests {
             WorkspacePathMapping::new(display_root, temp.path()),
         );
         let mut editor = new_test_editor();
+        editor.set_save_handler(Some(Arc::new(WorkspaceDocumentSaveHandler::new(
+            backend.clone(),
+        ))));
 
         let doc_id = open_workspace_document(
             &mut editor,
@@ -8840,6 +8915,27 @@ mod tests {
         );
         assert_eq!(doc.text(), "fn remote() {}\n");
         assert!(!doc.is_modified());
+
+        let view_id = editor.tree.focus;
+        {
+            let tree = &mut editor.tree;
+            let documents = &mut editor.documents;
+            let view = tree.get_mut(view_id);
+            let doc = documents.get_mut(&doc_id).unwrap();
+            let transaction =
+                Transaction::change(doc.text(), [(0, 0, Some("updated\n".into()))].into_iter());
+            doc.apply(&transaction, view_id);
+            doc.append_changes_to_history(view);
+        }
+
+        editor.save::<PathBuf>(doc_id, None, false).unwrap();
+        TEST_RUNTIME.block_on(editor.flush_writes()).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(temp.path().join("src").join("main.rs")).unwrap(),
+            "updated\nfn remote() {}\n"
+        );
+        assert!(!editor.document(doc_id).unwrap().is_modified());
     }
 
     fn new_test_application(cx: &mut gpui::TestAppContext) -> Entity<Application> {
