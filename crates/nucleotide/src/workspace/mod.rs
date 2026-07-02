@@ -3424,7 +3424,15 @@ impl Workspace {
             .command
             .cwd
             .clone()
-            .or_else(|| Self::terminal_spawn_cwd(self.current_project_root.as_deref()));
+            .or_else(|| Self::terminal_spawn_cwd(self.current_project_root.as_deref()))
+            .map(|cwd| {
+                let backend_identity = self.core.read(cx).workspace_backend.identity();
+                terminal_directory_for_workspace_path(
+                    &cwd,
+                    self.current_project_root.as_deref(),
+                    &backend_identity,
+                )
+            });
         let env = task.command.env.clone();
         let terminal_id = self.open_terminal_panel_for_command(
             cwd,
