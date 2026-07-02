@@ -5,7 +5,8 @@ use crate::common::ModalStyle;
 use gpui::prelude::FluentBuilder;
 use gpui::{
     App, Context, DismissEvent, EventEmitter, FocusHandle, Focusable, Hsla, InteractiveElement,
-    IntoElement, KeyDownEvent, ParentElement, Render, SharedString, Styled, Window, div, px, svg,
+    IntoElement, KeyDownEvent, ParentElement, Render, SharedString, Styled, Task, Window, div, px,
+    svg,
 };
 
 #[derive(Clone, Debug)]
@@ -22,6 +23,9 @@ type PromptSubmitCallback = Box<dyn FnMut(&str, &mut Context<PromptView>) + 'sta
 type PromptCancelCallback = Box<dyn FnMut(&mut Context<PromptView>) + 'static>;
 type PromptChangeCallback = Box<dyn FnMut(&str, &mut Context<PromptView>) + 'static>;
 type PromptCompletionFn = Box<dyn Fn(&str) -> Vec<CompletionItem> + 'static>;
+type PromptCompletionTask = Task<Vec<CompletionItem>>;
+type PromptCompletionTaskFn =
+    Box<dyn Fn(&str, &mut Context<PromptView>) -> Option<PromptCompletionTask> + 'static>;
 
 pub struct PromptView {
     // Core prompt state
@@ -38,6 +42,8 @@ pub struct PromptView {
     completion_selection: usize,
     show_completions: bool,
     original_input: Option<SharedString>, // Store original input before showing completions
+    completion_generation: u64,
+    completion_task: Option<Task<()>>,
 
     // UI state
     focus_handle: FocusHandle,
@@ -48,6 +54,7 @@ pub struct PromptView {
     on_cancel: Option<PromptCancelCallback>,
     on_change: Option<PromptChangeCallback>,
     completion_fn: Option<PromptCompletionFn>,
+    completion_task_fn: Option<PromptCompletionTaskFn>,
 
     // Styling
     style: PromptStyle,
@@ -133,12 +140,15 @@ impl PromptView {
             completion_selection: 0,
             show_completions: false,
             original_input: None,
+            completion_generation: 0,
+            completion_task: None,
             focus_handle,
             completion_scroll_offset: 0,
             on_submit: None,
             on_cancel: None,
             on_change: None,
             completion_fn: None,
+            completion_task_fn: None,
             style: PromptStyle::default(),
         }
     }
@@ -171,11 +181,17 @@ impl PromptView {
         self
     }
 
+    pub fn with_completion_task_fn(
+        mut self,
+        completion_task_fn: impl Fn(&str, &mut Context<PromptView>) -> Option<PromptCompletionTask>
+        + 'static,
+    ) -> Self {
+        self.completion_task_fn = Some(Box::new(completion_task_fn));
+        self
+    }
+
     pub fn set_completions(&mut self, completions: Vec<CompletionItem>, cx: &mut Context<Self>) {
-        self.completions = completions;
-        self.completion_selection = 0;
-        self.show_completions = !self.completions.is_empty();
-        cx.notify();
+        self.apply_completions(completions, cx);
     }
 
     pub fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
@@ -210,26 +226,51 @@ impl PromptView {
     }
 
     fn recalculate_completions(&mut self, cx: &mut Context<Self>) {
+        self.completion_generation = self.completion_generation.wrapping_add(1);
+        self.completion_task = None;
+
+        let input = self.input.clone();
         if let Some(completion_fn) = &self.completion_fn {
-            let completions = completion_fn(&self.input);
-            self.completions = completions;
-            self.completion_selection = 0;
-            self.completion_scroll_offset = 0; // Reset scroll when completions change
-            let will_show_completions = !self.completions.is_empty();
-
-            // Store original input when we first show completions
-            if will_show_completions && !self.show_completions {
-                self.original_input = Some(self.input.clone());
-            }
-            // Clear original input when hiding completions
-            else if !will_show_completions && self.show_completions {
-                self.original_input = None;
-            }
-
-            self.show_completions = will_show_completions;
-
-            cx.notify();
+            let completions = completion_fn(&input);
+            self.apply_completions(completions, cx);
         }
+
+        let Some(completion_task_fn) = &self.completion_task_fn else {
+            return;
+        };
+
+        let Some(task) = completion_task_fn(&input, cx) else {
+            return;
+        };
+
+        let expected_input = input.clone();
+        let generation = self.completion_generation;
+        self.completion_task = Some(cx.spawn(async move |view_weak, cx| {
+            let completions = task.await;
+            _ = view_weak.update(cx, |this, cx| {
+                if this.completion_generation != generation || this.input != expected_input {
+                    return;
+                }
+
+                this.apply_completions(completions, cx);
+            });
+        }));
+    }
+
+    fn apply_completions(&mut self, completions: Vec<CompletionItem>, cx: &mut Context<Self>) {
+        self.completions = completions;
+        self.completion_selection = 0;
+        self.completion_scroll_offset = 0;
+        let will_show_completions = !self.completions.is_empty();
+
+        if will_show_completions && !self.show_completions {
+            self.original_input = Some(self.input.clone());
+        } else if !will_show_completions && self.show_completions {
+            self.original_input = None;
+        }
+
+        self.show_completions = will_show_completions;
+        cx.notify();
     }
 
     fn delete_char(&mut self, cx: &mut Context<Self>) {
