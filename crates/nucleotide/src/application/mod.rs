@@ -6902,9 +6902,7 @@ impl Application {
         &mut self,
         location: &crate::types::LspLocation,
     ) -> anyhow::Result<(DocumentId, ViewId)> {
-        let doc_id = self
-            .editor
-            .open(&location.path, helix_view::editor::Action::Replace)?;
+        let doc_id = self.open_navigation_document(&location.path)?;
         let view_id = self.editor.tree.focus;
 
         if self.editor.tree.try_get(view_id).map(|view| view.doc) != Some(doc_id) {
@@ -6958,8 +6956,7 @@ impl Application {
         location: &crate::types::DiagnosticLocation,
     ) -> anyhow::Result<(DocumentId, ViewId)> {
         let doc_id = if let Some(path) = &location.path {
-            self.editor
-                .open(path, helix_view::editor::Action::Replace)?
+            self.open_navigation_document(path)?
         } else {
             if self.editor.document(location.doc_id).is_none() {
                 anyhow::bail!("Diagnostic target document is no longer open");
@@ -6990,9 +6987,7 @@ impl Application {
         &mut self,
         location: &crate::types::SyntaxFileLocation,
     ) -> anyhow::Result<(DocumentId, ViewId)> {
-        let doc_id = self
-            .editor
-            .open(&location.path, helix_view::editor::Action::Replace)?;
+        let doc_id = self.open_navigation_document(&location.path)?;
         let view_id = self.editor.tree.focus;
         let doc = self
             .editor
@@ -7015,9 +7010,7 @@ impl Application {
         &mut self,
         location: &crate::types::GlobalSearchLocation,
     ) -> anyhow::Result<(DocumentId, ViewId)> {
-        let doc_id = self
-            .editor
-            .open(&location.path, helix_view::editor::Action::Replace)?;
+        let doc_id = self.open_navigation_document(&location.path)?;
         let view_id = self.editor.tree.focus;
         let doc = self
             .editor
@@ -7036,6 +7029,16 @@ impl Application {
         self.editor.ensure_cursor_in_view(view_id);
 
         Ok((doc_id, view_id))
+    }
+
+    fn open_navigation_document(&mut self, path: &Path) -> anyhow::Result<DocumentId> {
+        let workspace_backend = self.workspace_backend.clone();
+        let action = if self.editor.tree.views().count() == 0 {
+            helix_view::editor::Action::VerticalSplit
+        } else {
+            helix_view::editor::Action::Replace
+        };
+        open_workspace_document(&mut self.editor, &workspace_backend, path, action)
     }
 
     // NOTE: handle_crank_event is defined earlier in the file and includes completion processing
@@ -9777,6 +9780,48 @@ mod tests {
 
         let doc = editor.document(doc_id).unwrap();
         assert!(doc.diff_handle().is_some());
+    }
+
+    #[gpui::test]
+    async fn jump_to_global_search_location_uses_workspace_backend_for_remote_path(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let temp = tempdir().unwrap();
+        fs::create_dir_all(temp.path().join("src")).unwrap();
+        fs::write(temp.path().join("src").join("main.rs"), "one\ntwo\nthree\n").unwrap();
+
+        let display_root = PathBuf::from("ssh://me@example.com/home/me/project");
+        let display_path = display_root.join("src").join("main.rs");
+        let backend = path_mapped_workspace_backend(
+            Arc::new(RemoteIdentityLocalBackend),
+            WorkspacePathMapping::new(&display_root, temp.path()),
+        );
+        let app = new_test_application(cx);
+
+        app.update(cx, |app, _cx| {
+            app.workspace_backend = backend;
+            let (doc_id, view_id) = app
+                .jump_to_global_search_location(&crate::types::GlobalSearchLocation {
+                    path: display_path.clone(),
+                    line: 1,
+                })
+                .expect("remote global search jump");
+            let doc = app.editor.document(doc_id).expect("opened remote doc");
+
+            assert_eq!(
+                doc.path().map(PathBuf::as_path),
+                Some(display_path.as_path())
+            );
+            assert_eq!(doc.text(), "one\ntwo\nthree\n");
+            assert_eq!(
+                doc.selection(view_id)
+                    .primary()
+                    .cursor_line(doc.text().slice(..)),
+                1
+            );
+        });
+
+        assert!(!display_path.exists());
     }
 
     fn init_git_repo(root: &Path) {
