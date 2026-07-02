@@ -186,13 +186,20 @@ fn split_remote_path_position(value: &str) -> (&str, Position) {
 }
 
 fn remote_path_position_colon_minimum(value: &str) -> usize {
-    let Some(rest) = value.strip_prefix("ssh://") else {
+    let Some(rest) = strip_prefix_ignore_ascii_case(value, "ssh://") else {
         return 0;
     };
 
     rest.find('/')
         .map(|path_start| "ssh://".len() + path_start)
         .unwrap_or(value.len())
+}
+
+fn strip_prefix_ignore_ascii_case<'a>(value: &'a str, prefix: &str) -> Option<&'a str> {
+    value
+        .get(..prefix.len())
+        .is_some_and(|candidate| candidate.eq_ignore_ascii_case(prefix))
+        .then(|| &value[prefix.len()..])
 }
 
 fn split_remote_path_row_col(value: &str, min_colon: usize) -> Option<(&str, usize, usize)> {
@@ -265,6 +272,22 @@ mod tests {
     }
 
     #[test]
+    fn remote_file_args_parse_uppercase_ssh_uri_position_suffix() {
+        let files = remote_file_args_from_argv(&argv(&[
+            "nucl",
+            "SSH://me@example.com:2222/home/me/project/src/main.rs:12:4",
+        ]));
+
+        assert_eq!(
+            files,
+            vec![(
+                PathBuf::from("SSH://me@example.com:2222/home/me/project/src/main.rs"),
+                Position::new(11, 3)
+            )]
+        );
+    }
+
+    #[test]
     fn remote_file_args_do_not_treat_ssh_port_as_position() {
         let files = remote_file_args_from_argv(&argv(&["nucl", "ssh://me@example.com:2222"]));
 
@@ -272,6 +295,19 @@ mod tests {
             files,
             vec![(
                 PathBuf::from("ssh://me@example.com:2222"),
+                Position::default()
+            )]
+        );
+    }
+
+    #[test]
+    fn remote_file_args_do_not_treat_uppercase_ssh_port_as_position() {
+        let files = remote_file_args_from_argv(&argv(&["nucl", "SSH://me@example.com:2222"]));
+
+        assert_eq!(
+            files,
+            vec![(
+                PathBuf::from("SSH://me@example.com:2222"),
                 Position::default()
             )]
         );
