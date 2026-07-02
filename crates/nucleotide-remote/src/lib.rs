@@ -756,6 +756,9 @@ pub enum RemoteRequest {
     ListDir {
         path: PathBuf,
     },
+    ListDirs {
+        paths: Vec<PathBuf>,
+    },
     FindAncestorFile {
         start: PathBuf,
         file_name: String,
@@ -827,6 +830,7 @@ pub enum RemoteResponse {
     Hello(HelloResponse),
     Stat(FileStatResponse),
     ListDir(DirectoryListingResponse),
+    ListDirs(ListDirsResponse),
     FindAncestorFile(Option<PathBuf>),
     CreateFile(FileStatResponse),
     CreateDir(FileStatResponse),
@@ -885,6 +889,7 @@ impl HelloResponse {
             capabilities: vec![
                 "stat".to_string(),
                 "list_dir".to_string(),
+                "list_dirs".to_string(),
                 "find_ancestor_file".to_string(),
                 "create_file".to_string(),
                 "create_dir".to_string(),
@@ -2483,6 +2488,18 @@ pub struct DirectoryListingResponse {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DirectoryListingResultResponse {
+    pub path: PathBuf,
+    pub listing: Option<DirectoryListingResponse>,
+    pub error: Option<RemoteError>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListDirsResponse {
+    pub results: Vec<DirectoryListingResultResponse>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileReadResponse {
     pub path: PathBuf,
     pub size: u64,
@@ -3067,6 +3084,77 @@ where
         }
     }
 
+    async fn list_dirs(
+        &self,
+        paths: Vec<PathBuf>,
+    ) -> Vec<(PathBuf, nucleotide_workspace::Result<DirectoryListing>)> {
+        if paths.is_empty() {
+            return Vec::new();
+        }
+
+        let representative_path = paths.first().cloned().unwrap_or_else(|| PathBuf::from("."));
+        let response = self
+            .request(
+                "list directories",
+                &representative_path,
+                RemoteRequest::ListDirs {
+                    paths: paths.clone(),
+                },
+                Vec::new(),
+            )
+            .await;
+
+        match response {
+            Ok((RemoteResponse::ListDirs(response), _)) => response
+                .results
+                .into_iter()
+                .map(|result| {
+                    let listing = match (result.listing, result.error) {
+                        (Some(listing), None) => Ok(directory_listing_from_response(listing)),
+                        (_, Some(error)) => Err(remote_error_to_workspace(
+                            "list directories",
+                            &result.path,
+                            error,
+                        )),
+                        (None, None) => Err(WorkspaceError::Remote {
+                            operation: "list directories",
+                            path: result.path.clone(),
+                            message: "remote list directories response omitted listing and error"
+                                .to_string(),
+                            diagnostic: None,
+                        }),
+                    };
+                    (result.path, listing)
+                })
+                .collect(),
+            Ok((other, _)) => paths
+                .into_iter()
+                .map(|path| {
+                    let error = unexpected_response_error("list directories", &path, other.clone());
+                    (path, Err(error))
+                })
+                .collect(),
+            Err(error) => {
+                let message = error.to_string();
+                let diagnostic = Some(format!("{error:?}"));
+                paths
+                    .into_iter()
+                    .map(|path| {
+                        (
+                            path.clone(),
+                            Err(WorkspaceError::Remote {
+                                operation: "list directories",
+                                path,
+                                message: message.clone(),
+                                diagnostic: diagnostic.clone(),
+                            }),
+                        )
+                    })
+                    .collect()
+            }
+        }
+    }
+
     async fn find_ancestor_file(
         &self,
         start: &Path,
@@ -3553,6 +3641,47 @@ where
                 );
                 Ok(ServiceOutcome::Continue(
                     RemoteResponse::ListDir(directory_listing_response(listing)),
+                    Vec::new(),
+                ))
+            }
+            RemoteRequest::ListDirs { paths } => {
+                let mut results = Vec::with_capacity(paths.len());
+                for display_path in paths {
+                    let result = match self.resolve_path(&display_path) {
+                        Ok(path) => {
+                            match block_on(self.backend.list_dir(&path))
+                                .map_err(remote_error_from_workspace)
+                            {
+                                Ok(listing) => {
+                                    let listing = annotate_directory_listing_ignored(
+                                        listing,
+                                        &self.workspace_root,
+                                        self.ignore_matcher.as_ref(),
+                                    );
+                                    DirectoryListingResultResponse {
+                                        path: display_path,
+                                        listing: Some(directory_listing_response(listing)),
+                                        error: None,
+                                    }
+                                }
+                                Err(error) => DirectoryListingResultResponse {
+                                    path: display_path,
+                                    listing: None,
+                                    error: Some(error),
+                                },
+                            }
+                        }
+                        Err(error) => DirectoryListingResultResponse {
+                            path: display_path,
+                            listing: None,
+                            error: Some(error),
+                        },
+                    };
+                    results.push(result);
+                }
+
+                Ok(ServiceOutcome::Continue(
+                    RemoteResponse::ListDirs(ListDirsResponse { results }),
                     Vec::new(),
                 ))
             }
@@ -4449,18 +4578,7 @@ fn client_error_to_workspace(
     error: RemoteClientError,
 ) -> WorkspaceError {
     match error {
-        RemoteClientError::Remote(error) if error.code == "modified" => WorkspaceError::Modified {
-            path: path.to_path_buf(),
-        },
-        RemoteClientError::Remote(error) if error.code == "not_file" => WorkspaceError::NotFile {
-            path: path.to_path_buf(),
-        },
-        RemoteClientError::Remote(error) => WorkspaceError::Remote {
-            operation,
-            path: path.to_path_buf(),
-            message: error.message,
-            diagnostic: error.diagnostic,
-        },
+        RemoteClientError::Remote(error) => remote_error_to_workspace(operation, path, error),
         RemoteClientError::Io(source) => WorkspaceError::Io {
             operation,
             path: path.to_path_buf(),
@@ -4471,6 +4589,27 @@ fn client_error_to_workspace(
             path: path.to_path_buf(),
             message: other.to_string(),
             diagnostic: Some(format!("{other:?}")),
+        },
+    }
+}
+
+fn remote_error_to_workspace(
+    operation: &'static str,
+    path: &Path,
+    error: RemoteError,
+) -> WorkspaceError {
+    match error.code.as_str() {
+        "modified" => WorkspaceError::Modified {
+            path: path.to_path_buf(),
+        },
+        "not_file" => WorkspaceError::NotFile {
+            path: path.to_path_buf(),
+        },
+        _ => WorkspaceError::Remote {
+            operation,
+            path: path.to_path_buf(),
+            message: error.message,
+            diagnostic: error.diagnostic,
         },
     }
 }
@@ -5283,6 +5422,7 @@ mod tests {
         assert_eq!(hello.workspace_root, temp.path());
         assert_eq!(hello.helper_version, env!("CARGO_PKG_VERSION"));
         assert!(hello.capabilities.contains(&"list_dir".to_string()));
+        assert!(hello.capabilities.contains(&"list_dirs".to_string()));
         assert!(
             hello
                 .capabilities
@@ -6422,6 +6562,7 @@ mod tests {
                 .capabilities
                 .contains(&"binary_body_frames".to_string())
         );
+        assert!(hello.capabilities.contains(&"list_dirs".to_string()));
         assert!(hello.capabilities.contains(&"text_search".to_string()));
         assert!(
             hello
@@ -7163,6 +7304,47 @@ esac
             .expect("ignored entry");
         assert_eq!(visible.ignored, Some(false));
         assert_eq!(ignored.ignored, Some(true));
+    }
+
+    #[test]
+    fn remote_workspace_backend_batches_directory_listings() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(temp.path().join("src")).unwrap();
+        std::fs::create_dir(temp.path().join("tests")).unwrap();
+        std::fs::write(temp.path().join("src").join("lib.rs"), "").unwrap();
+        std::fs::write(temp.path().join("tests").join("integration.rs"), "").unwrap();
+        let backend = remote_backend(temp.path());
+
+        let results = block_on(backend.list_dirs(vec![
+            PathBuf::from("src"),
+            PathBuf::from("tests"),
+            PathBuf::from("missing"),
+        ]));
+
+        assert_eq!(results.len(), 3);
+        let (src_path, src_listing) = &results[0];
+        assert_eq!(src_path, Path::new("src"));
+        assert!(
+            src_listing
+                .as_ref()
+                .unwrap()
+                .entries
+                .iter()
+                .any(|entry| entry.name == "lib.rs")
+        );
+        let (tests_path, tests_listing) = &results[1];
+        assert_eq!(tests_path, Path::new("tests"));
+        assert!(
+            tests_listing
+                .as_ref()
+                .unwrap()
+                .entries
+                .iter()
+                .any(|entry| entry.name == "integration.rs")
+        );
+        let (missing_path, missing_listing) = &results[2];
+        assert_eq!(missing_path, Path::new("missing"));
+        assert!(missing_listing.is_err());
     }
 
     #[test]
