@@ -9514,11 +9514,101 @@ impl Workspace {
             return;
         }
 
+        if matches!(backend_identity, WorkspaceIdentity::Remote(_)) {
+            self.open_remote_document_async(
+                path.to_path_buf(),
+                should_focus,
+                preview_from_project_panel,
+                initial_position,
+                cx,
+            );
+            return;
+        }
+
+        self.finish_open_file_internal(
+            path,
+            should_focus,
+            preview_from_project_panel,
+            initial_position,
+            None,
+            cx,
+        );
+    }
+
+    fn open_remote_document_async(
+        &mut self,
+        path: PathBuf,
+        should_focus: bool,
+        preview_from_project_panel: bool,
+        initial_position: Option<Position>,
+        cx: &mut Context<Self>,
+    ) {
+        let workspace_backend = self.core.read(cx).workspace_backend.clone();
+        let runtime_handle = self.handle.clone();
+        self.set_run_status(
+            format!("Loading remote file: {}", path.display()),
+            Severity::Info,
+            cx,
+        );
+
+        cx.spawn(async move |this, cx| {
+            let path_for_read = path.clone();
+            let document_read = match runtime_handle
+                .spawn(crate::application::read_workspace_document(
+                    workspace_backend,
+                    path_for_read,
+                ))
+                .await
+            {
+                Ok(result) => result,
+                Err(error) => Err(anyhow::anyhow!("remote document read task failed: {error}")),
+            };
+
+            if let Some(this) = this.upgrade() {
+                this.update(cx, |workspace, cx| match document_read {
+                    Ok(document_read) => {
+                        workspace.finish_open_file_internal(
+                            &path,
+                            should_focus,
+                            preview_from_project_panel,
+                            initial_position,
+                            Some(document_read),
+                            cx,
+                        );
+                    }
+                    Err(error) => {
+                        nucleotide_logging::error!(
+                            path = ?path,
+                            error = %error,
+                            "Failed to open remote file"
+                        );
+                        workspace.set_run_status(
+                            format!("Failed to open remote file: {error}"),
+                            Severity::Error,
+                            cx,
+                        );
+                    }
+                });
+            }
+        })
+        .detach();
+    }
+
+    fn finish_open_file_internal(
+        &mut self,
+        path: &std::path::Path,
+        should_focus: bool,
+        preview_from_project_panel: bool,
+        initial_position: Option<Position>,
+        document_read: Option<crate::application::WorkspaceDocumentRead>,
+        cx: &mut Context<Self>,
+    ) {
         // Open the specified file in the editor
         debug!("Workspace: Received OpenFile update for: {path:?}");
         let mut reveal_opened_view = None;
         let mut opened_doc_id = None;
         let mut project_panel_preview = None;
+        let mut document_read = document_read;
         self.core.update(cx, |core, cx| {
             let _guard = self.handle.enter();
             let existed_already = core
@@ -9542,12 +9632,20 @@ impl Workspace {
                 action
             );
             let workspace_backend = core.workspace_backend.clone();
-            match crate::application::open_workspace_document(
-                &mut core.editor,
-                &workspace_backend,
-                path,
-                action,
-            ) {
+            let open_result = match document_read.take() {
+                Some(document_read) => crate::application::open_workspace_document_from_read(
+                    &mut core.editor,
+                    document_read,
+                    action,
+                ),
+                None => crate::application::open_workspace_document(
+                    &mut core.editor,
+                    &workspace_backend,
+                    path,
+                    action,
+                ),
+            };
+            match open_result {
                 Err(e) => {
                     nucleotide_logging::error!(path = ?path, error = %e, "Failed to open file");
                 }

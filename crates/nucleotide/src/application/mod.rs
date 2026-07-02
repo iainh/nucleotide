@@ -60,7 +60,7 @@ use nucleotide_lsp::{
     HelixLspBridge, LspLaunchProxy, LspLaunchProxyProvider, ProjectLspManager, ServerStatus,
 };
 use nucleotide_workspace::{
-    DirectoryListing, FileKind, ProcessSpec, ReadOptions, WorkspaceBackendHandle,
+    DirectoryListing, FileKind, FileRead, ProcessSpec, ReadOptions, WorkspaceBackendHandle,
     WorkspaceIdentity, WriteOptions, classify_workspace_location, local_workspace_backend,
     remote_startup_workspace_root,
 };
@@ -7562,9 +7562,27 @@ pub(crate) fn open_workspace_document(
         return editor.open(path, action).map_err(Error::from);
     }
 
-    let read =
-        futures_executor::block_on(workspace_backend.read_file(path, ReadOptions::default()))
-            .with_context(|| format!("failed to read workspace file {}", path.display()))?;
+    let document_read = futures_executor::block_on(read_workspace_document(
+        workspace_backend.clone(),
+        path.to_path_buf(),
+    ))?;
+
+    open_workspace_document_from_read(editor, document_read, action)
+}
+
+pub(crate) struct WorkspaceDocumentRead {
+    pub read: FileRead,
+    pub diff_base: Option<Vec<u8>>,
+}
+
+pub(crate) async fn read_workspace_document(
+    workspace_backend: WorkspaceBackendHandle,
+    path: PathBuf,
+) -> Result<WorkspaceDocumentRead, Error> {
+    let read = workspace_backend
+        .read_file(&path, ReadOptions::default())
+        .await
+        .with_context(|| format!("failed to read workspace file {}", path.display()))?;
     if read.truncated {
         bail!(
             "workspace file was truncated while opening {}",
@@ -7572,6 +7590,27 @@ pub(crate) fn open_workspace_document(
         );
     }
 
+    let diff_base = match read_remote_git_diff_base(&workspace_backend, &read.path).await {
+        Ok(diff_base) => diff_base,
+        Err(error) => {
+            debug!(
+                path = %read.path.display(),
+                error = %error,
+                "Could not load remote git diff base"
+            );
+            None
+        }
+    };
+
+    Ok(WorkspaceDocumentRead { read, diff_base })
+}
+
+pub(crate) fn open_workspace_document_from_read(
+    editor: &mut Editor,
+    document_read: WorkspaceDocumentRead,
+    action: helix_view::editor::Action,
+) -> Result<DocumentId, Error> {
+    let WorkspaceDocumentRead { read, diff_base } = document_read;
     let metadata = DocumentOpenMetadata {
         readonly: read.readonly,
         last_saved_time: read.modified,
@@ -7588,18 +7627,8 @@ pub(crate) fn open_workspace_document(
     )
     .with_context(|| format!("failed to decode workspace file {}", read.path.display()))?;
 
-    match futures_executor::block_on(read_remote_git_diff_base(workspace_backend, &read.path)) {
-        Ok(Some(diff_base)) => {
-            doc.set_diff_base(diff_base);
-        }
-        Ok(None) => {}
-        Err(error) => {
-            debug!(
-                path = %read.path.display(),
-                error = %error,
-                "Could not load remote git diff base"
-            );
-        }
+    if let Some(diff_base) = diff_base {
+        doc.set_diff_base(diff_base);
     }
 
     Ok(editor.open_document_with_options(
