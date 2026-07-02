@@ -517,6 +517,18 @@ fn document_workspace_root(
     }
 }
 
+fn file_picker_current_directory(
+    workspace_identity: &WorkspaceIdentity,
+    project_directory: Option<&Path>,
+    current_working_dir: PathBuf,
+) -> Option<PathBuf> {
+    if matches!(workspace_identity, WorkspaceIdentity::Local) {
+        current_working_dir.exists().then_some(current_working_dir)
+    } else {
+        project_directory.map(Path::to_path_buf)
+    }
+}
+
 pub fn implicit_workspace_root_from_current_dir() -> Option<PathBuf> {
     let current_dir = std::env::current_dir().ok()?;
 
@@ -2999,8 +3011,13 @@ impl Application {
                         }
                         editor_input::NativePickerRequest::FileCurrentDirectory => {
                             let cwd = helix_stdx::env::current_working_dir();
-                            if cwd.exists() {
-                                cx.emit(crate::Update::ShowFilePickerAt(cwd));
+                            let workspace_identity = self.workspace_backend.identity();
+                            if let Some(directory) = file_picker_current_directory(
+                                &workspace_identity,
+                                self.project_directory.as_deref(),
+                                cwd,
+                            ) {
+                                cx.emit(crate::Update::ShowFilePickerAt(directory));
                             } else {
                                 self.editor
                                     .set_error("Current working directory does not exist");
@@ -8412,13 +8429,14 @@ mod tests {
         completion_context_for_trigger, current_dir_is_executable_dir, dedupe_completion_items,
         detect_project_lsp_metadata, detect_project_type_from_workspace_backend,
         detect_project_type_from_workspace_listing, diagnostic_picker_path_label,
-        diagnostic_severity_label, document_workspace_root, home_requires_login_shell_capture,
-        is_workspace_diagnostic_refresh_method, local_path_completion_context,
-        lsp_completion_insert_text, lsp_completion_insert_text_format,
-        lsp_completion_items_from_response, lsp_completion_items_from_response_for_server,
-        lsp_completion_resolve_supported, lsp_completion_response_is_incomplete, lsp_symbol_picker,
-        native_symbol_item_from_lsp, path_completion_items, path_completion_items_from_listing,
-        project_health_status, project_server_language_id, should_launch_lsp_on_local_host,
+        diagnostic_severity_label, document_workspace_root, file_picker_current_directory,
+        home_requires_login_shell_capture, is_workspace_diagnostic_refresh_method,
+        local_path_completion_context, lsp_completion_insert_text,
+        lsp_completion_insert_text_format, lsp_completion_items_from_response,
+        lsp_completion_items_from_response_for_server, lsp_completion_resolve_supported,
+        lsp_completion_response_is_incomplete, lsp_symbol_picker, native_symbol_item_from_lsp,
+        path_completion_items, path_completion_items_from_listing, project_health_status,
+        project_server_language_id, should_launch_lsp_on_local_host,
         should_stat_picker_root_with_backend, should_use_workspace_syntax_symbol_fallback,
         str_prefix_at_byte_limit, suppress_shadowed_buffer_word_completion_items,
         syntax_symbol_kind_from_capture_name, workspace_diagnostic_refresh_reply,
@@ -9096,6 +9114,20 @@ mod tests {
         let root = document_workspace_root(&identity, Some(project_directory), document_path);
 
         assert_eq!(root, project_directory);
+    }
+
+    #[test]
+    fn file_picker_current_directory_uses_project_directory_for_remote_workspaces() {
+        let identity = WorkspaceIdentity::Remote(RemoteWorkspaceIdentity {
+            kind: RemoteWorkspaceKind::Ssh,
+            name: "devbox".to_string(),
+        });
+        let project_directory = Path::new("ssh://devbox/home/me/project");
+        let host_cwd = PathBuf::from("/definitely/not/a/remote/project");
+
+        let directory = file_picker_current_directory(&identity, Some(project_directory), host_cwd);
+
+        assert_eq!(directory.as_deref(), Some(project_directory));
     }
 
     #[test]
