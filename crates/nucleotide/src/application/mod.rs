@@ -7800,6 +7800,70 @@ pub(crate) fn open_workspace_document_from_read(
     ))
 }
 
+pub(crate) fn reload_workspace_document_from_read(
+    editor: &mut Editor,
+    doc_id: DocumentId,
+    view_id: ViewId,
+    document_read: WorkspaceDocumentRead,
+) -> Result<(), Error> {
+    let WorkspaceDocumentRead { read, diff_base } = document_read;
+    let encoding = editor
+        .document(doc_id)
+        .with_context(|| format!("document {doc_id:?} is no longer open"))?
+        .encoding();
+
+    let mut bytes = read.bytes.as_slice();
+    let (rope, ..) = helix_view::document::from_reader(&mut bytes, Some(encoding))
+        .with_context(|| format!("failed to decode workspace file {}", read.path.display()))?;
+
+    let transaction = {
+        let doc = editor
+            .document(doc_id)
+            .with_context(|| format!("document {doc_id:?} is no longer open"))?;
+        helix_core::diff::compare_ropes(doc.text(), &rope)
+    };
+
+    let view = editor
+        .tree
+        .try_get(view_id)
+        .with_context(|| format!("view {view_id:?} is no longer open"))?;
+    if view.doc != doc_id {
+        bail!("view {view_id:?} no longer displays document {doc_id:?}");
+    }
+
+    let tree = &mut editor.tree;
+    let documents = &mut editor.documents;
+    let view = tree.get_mut(view_id);
+    let doc = documents
+        .get_mut(&doc_id)
+        .with_context(|| format!("document {doc_id:?} is no longer open"))?;
+
+    if doc.path().map(PathBuf::as_path) != Some(read.path.as_path()) {
+        bail!(
+            "document path changed before reload: expected {}, found {:?}",
+            read.path.display(),
+            doc.path()
+        );
+    }
+
+    doc.set_path_with_metadata(Some(&read.path), Some(read.readonly), read.modified);
+    if !doc.apply(&transaction, view.id) {
+        bail!(
+            "failed to apply reload transaction for {}",
+            read.path.display()
+        );
+    }
+    doc.append_changes_to_history(view);
+    doc.reset_modified();
+    doc.detect_indent_and_line_ending();
+
+    if let Some(diff_base) = diff_base {
+        doc.set_diff_base(diff_base);
+    }
+
+    Ok(())
+}
+
 enum NativeOpenFileOutcome {
     Directory(PathBuf),
     Document(WorkspaceDocumentRead),
