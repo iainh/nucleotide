@@ -3051,20 +3051,13 @@ impl Workspace {
         })
     }
 
-    fn discover_focused_runnables(
-        &self,
-        cx: &mut Context<Self>,
-    ) -> Result<(crate::runnables::RunnableDocument, Vec<ResolvedTask>), String> {
-        let document = self.focused_runnable_document(cx)?;
-        let workspace_backend = self.core.read(cx).workspace_backend.clone();
-        let tasks = if matches!(workspace_backend.identity(), WorkspaceIdentity::Local) {
-            crate::runnables::discover_local_rust_runnables(&document)
-        } else {
-            futures_executor::block_on(workspace_backend.find_ancestor_file(
-                &document.path,
-                "Cargo.toml",
-                64,
-            ))
+    async fn discover_remote_rust_runnables_for_document(
+        workspace_backend: WorkspaceBackendHandle,
+        document: crate::runnables::RunnableDocument,
+    ) -> Vec<ResolvedTask> {
+        workspace_backend
+            .find_ancestor_file(&document.path, "Cargo.toml", 64)
+            .await
             .ok()
             .flatten()
             .and_then(|manifest| manifest.parent().map(Path::to_path_buf))
@@ -3072,8 +3065,6 @@ impl Workspace {
                 crate::runnables::discover_rust_runnables_with_cargo_root(&document, cargo_root)
             })
             .unwrap_or_default()
-        };
-        Ok((document, tasks))
     }
 
     fn show_runnables(&mut self, cx: &mut Context<Self>) {
@@ -3089,15 +3080,56 @@ impl Workspace {
     }
 
     fn request_focused_runnables(&mut self, action: RunnableAction, cx: &mut Context<Self>) {
-        use futures_util::stream::{FuturesOrdered, StreamExt};
-
-        let (document, local_tasks) = match self.discover_focused_runnables(cx) {
-            Ok(discovery) => discovery,
+        let document = match self.focused_runnable_document(cx) {
+            Ok(document) => document,
             Err(message) => {
                 self.set_run_status(message, Severity::Error, cx);
                 return;
             }
         };
+
+        let workspace_backend = self.core.read(cx).workspace_backend.clone();
+        if matches!(workspace_backend.identity(), WorkspaceIdentity::Remote(_)) {
+            self.set_run_status("Discovering Rust runnables...", Severity::Info, cx);
+            let runtime_handle = self.handle.clone();
+            cx.spawn(async move |this, cx| {
+                let document_for_discovery = document.clone();
+                let local_tasks = match runtime_handle
+                    .spawn(Self::discover_remote_rust_runnables_for_document(
+                        workspace_backend,
+                        document_for_discovery,
+                    ))
+                    .await
+                {
+                    Ok(tasks) => tasks,
+                    Err(error) => {
+                        warn!(error = %error, "Remote runnable discovery task failed");
+                        Vec::new()
+                    }
+                };
+
+                if let Some(this) = this.upgrade() {
+                    this.update(cx, |workspace, cx| {
+                        workspace.request_runnables_for_document(action, document, local_tasks, cx);
+                    });
+                }
+            })
+            .detach();
+            return;
+        }
+
+        let local_tasks = crate::runnables::discover_local_rust_runnables(&document);
+        self.request_runnables_for_document(action, document, local_tasks, cx);
+    }
+
+    fn request_runnables_for_document(
+        &mut self,
+        action: RunnableAction,
+        document: crate::runnables::RunnableDocument,
+        local_tasks: Vec<ResolvedTask>,
+        cx: &mut Context<Self>,
+    ) {
+        use futures_util::stream::{FuturesOrdered, StreamExt};
 
         let cursor_line = document.cursor_line;
         let mut futures: FuturesOrdered<_> = {
@@ -3112,7 +3144,6 @@ impl Workspace {
                 return;
             };
             if doc.path() != Some(&document.path) {
-                self.finish_runnable_request(action, local_tasks, cursor_line, cx);
                 return;
             }
 
@@ -20146,6 +20177,29 @@ mod tests {
                 line_text: "needle".to_string(),
             }]
         );
+    }
+
+    #[tokio::test]
+    async fn discover_remote_rust_runnables_uses_workspace_backend_cargo_root() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let src_dir = temp_dir.path().join("src");
+        std::fs::create_dir(&src_dir).unwrap();
+        std::fs::write(temp_dir.path().join("Cargo.toml"), "[package]\n").unwrap();
+        let path = src_dir.join("lib.rs");
+        std::fs::write(&path, "#[test]\nfn it_works() {}\n").unwrap();
+
+        let tasks = Workspace::discover_remote_rust_runnables_for_document(
+            local_workspace_backend(),
+            crate::runnables::RunnableDocument {
+                path: path.clone(),
+                text: std::fs::read_to_string(&path).unwrap(),
+                cursor_line: 1,
+                project_root: None,
+            },
+        )
+        .await;
+
+        assert!(tasks.iter().any(|task| task.label() == "Run Test it_works"));
     }
 
     #[test]
