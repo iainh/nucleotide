@@ -64,6 +64,12 @@ struct RemoteDirectoryPollResult {
     listing: Result<DirectoryListing, String>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+struct RemoteFileSystemChange {
+    path: PathBuf,
+    kind: FileSystemEventKind,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum FileTreeScrollOffset {
     Top,
@@ -242,6 +248,53 @@ fn changed_paths_between_fingerprints(
     }
 
     changed.into_iter().collect()
+}
+
+fn file_system_changes_between_fingerprints(
+    previous: Option<&DirectoryListingFingerprint>,
+    current: &DirectoryListingFingerprint,
+) -> Vec<RemoteFileSystemChange> {
+    let Some(previous) = previous else {
+        return Vec::new();
+    };
+
+    let previous_entries = previous
+        .entries
+        .iter()
+        .map(|entry| (&entry.path, entry))
+        .collect::<BTreeMap<_, _>>();
+    let current_entries = current
+        .entries
+        .iter()
+        .map(|entry| (&entry.path, entry))
+        .collect::<BTreeMap<_, _>>();
+
+    let mut changes = Vec::new();
+    for (path, current_entry) in &current_entries {
+        match previous_entries.get(path).copied() {
+            Some(previous_entry) if previous_entry == *current_entry => {}
+            Some(_) => changes.push(RemoteFileSystemChange {
+                path: (*path).clone(),
+                kind: FileSystemEventKind::Modified,
+            }),
+            None => changes.push(RemoteFileSystemChange {
+                path: (*path).clone(),
+                kind: FileSystemEventKind::Created,
+            }),
+        }
+    }
+
+    for path in previous_entries.keys() {
+        if !current_entries.contains_key(path) {
+            changes.push(RemoteFileSystemChange {
+                path: (*path).clone(),
+                kind: FileSystemEventKind::Deleted,
+            });
+        }
+    }
+
+    changes.sort_by(|left, right| left.path.cmp(&right.path));
+    changes
 }
 
 fn workspace_file_kind_fingerprint(kind: WorkspaceFileKind) -> DirectoryEntryFingerprintKind {
@@ -721,6 +774,8 @@ impl FileTreeView {
             }
             let changed_child_paths =
                 changed_paths_between_fingerprints(previous_fingerprint, &fingerprint);
+            let file_system_changes =
+                file_system_changes_between_fingerprints(previous_fingerprint, &fingerprint);
 
             match self
                 .tree
@@ -733,6 +788,12 @@ impl FileTreeView {
                         changed_paths.push(result.path);
                     } else {
                         changed_paths.extend(changed_child_paths);
+                    }
+                    for change in file_system_changes {
+                        cx.emit(FileTreeEvent::FileSystemChanged {
+                            path: change.path,
+                            kind: change.kind,
+                        });
                     }
                 }
                 Err(error) => {
@@ -2314,6 +2375,51 @@ mod tests {
                 PathBuf::from("/workspace/src/b.rs"),
             ]
         );
+    }
+
+    #[test]
+    fn file_system_changes_between_fingerprints_reports_typed_changes() {
+        let previous = DirectoryListingFingerprint {
+            entries: vec![
+                file_fingerprint("/workspace/src/deleted.rs", 1),
+                file_fingerprint("/workspace/src/main.rs", 1),
+            ],
+        };
+        let current = DirectoryListingFingerprint {
+            entries: vec![
+                file_fingerprint("/workspace/src/added.rs", 1),
+                file_fingerprint("/workspace/src/main.rs", 2),
+            ],
+        };
+
+        let changes = file_system_changes_between_fingerprints(Some(&previous), &current);
+
+        assert_eq!(
+            changes,
+            vec![
+                RemoteFileSystemChange {
+                    path: PathBuf::from("/workspace/src/added.rs"),
+                    kind: FileSystemEventKind::Created,
+                },
+                RemoteFileSystemChange {
+                    path: PathBuf::from("/workspace/src/deleted.rs"),
+                    kind: FileSystemEventKind::Deleted,
+                },
+                RemoteFileSystemChange {
+                    path: PathBuf::from("/workspace/src/main.rs"),
+                    kind: FileSystemEventKind::Modified,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn file_system_changes_between_fingerprints_skips_initial_cache_seed() {
+        let current = DirectoryListingFingerprint {
+            entries: vec![file_fingerprint("/workspace/src/main.rs", 1)],
+        };
+
+        assert!(file_system_changes_between_fingerprints(None, &current).is_empty());
     }
 
     #[test]
