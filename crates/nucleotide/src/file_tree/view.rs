@@ -22,11 +22,45 @@ use nucleotide_types::{VcsStatus, scrollbar::SCROLLBAR_THICKNESS};
 use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::scrollbar::{Scrollbar, ScrollbarState};
 use nucleotide_vcs::VcsServiceHandle;
-use nucleotide_workspace::{WorkspaceBackendHandle, WorkspaceIdentity, local_workspace_backend};
+use nucleotide_workspace::{
+    DirectoryListing, FileKind as WorkspaceFileKind, WorkspaceBackendHandle, WorkspaceIdentity,
+    local_workspace_backend,
+};
 use std::{
     collections::BTreeSet,
     path::{Path, PathBuf},
 };
+
+const REMOTE_FILE_TREE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DirectoryListingFingerprint {
+    entries: Vec<DirectoryEntryFingerprint>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum DirectoryEntryFingerprintKind {
+    File,
+    Directory,
+    Symlink,
+    Other,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct DirectoryEntryFingerprint {
+    path: PathBuf,
+    kind: DirectoryEntryFingerprintKind,
+    size: u64,
+    modified: Option<std::time::SystemTime>,
+    symlink_target: Option<PathBuf>,
+    target_exists: Option<bool>,
+    ignored: Option<bool>,
+}
+
+struct RemoteDirectoryPollResult {
+    path: PathBuf,
+    listing: Result<DirectoryListing, String>,
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum FileTreeScrollOffset {
@@ -128,6 +162,79 @@ fn file_tree_drop_destination(from: &Path, target_dir: &Path) -> Option<PathBuf>
     from.file_name().map(|file_name| target_dir.join(file_name))
 }
 
+fn listing_fingerprint(listing: &DirectoryListing) -> DirectoryListingFingerprint {
+    let mut entries = listing
+        .entries
+        .iter()
+        .map(|entry| DirectoryEntryFingerprint {
+            path: entry.path.clone(),
+            kind: workspace_file_kind_fingerprint(entry.stat.kind),
+            size: entry.stat.size,
+            modified: entry.stat.modified,
+            symlink_target: entry.symlink_target.clone(),
+            target_exists: entry.target_exists,
+            ignored: entry.ignored,
+        })
+        .collect::<Vec<_>>();
+    entries.sort();
+    DirectoryListingFingerprint { entries }
+}
+
+fn tree_entries_fingerprint(entries: Vec<FileTreeEntry>) -> DirectoryListingFingerprint {
+    let mut entries = entries
+        .into_iter()
+        .map(|entry| DirectoryEntryFingerprint {
+            path: entry.path.clone(),
+            kind: file_tree_entry_kind_fingerprint(&entry),
+            size: entry.size,
+            modified: entry.mtime,
+            symlink_target: match &entry.kind {
+                crate::file_tree::FileKind::Symlink { target, .. } => target.clone(),
+                _ => None,
+            },
+            target_exists: match &entry.kind {
+                crate::file_tree::FileKind::Symlink { target_exists, .. } => Some(*target_exists),
+                _ => None,
+            },
+            ignored: Some(entry.is_ignored),
+        })
+        .collect::<Vec<_>>();
+    entries.sort();
+    DirectoryListingFingerprint { entries }
+}
+
+fn workspace_file_kind_fingerprint(kind: WorkspaceFileKind) -> DirectoryEntryFingerprintKind {
+    match kind {
+        WorkspaceFileKind::File => DirectoryEntryFingerprintKind::File,
+        WorkspaceFileKind::Directory => DirectoryEntryFingerprintKind::Directory,
+        WorkspaceFileKind::Symlink => DirectoryEntryFingerprintKind::Symlink,
+        WorkspaceFileKind::Other => DirectoryEntryFingerprintKind::Other,
+    }
+}
+
+fn file_tree_entry_kind_fingerprint(entry: &FileTreeEntry) -> DirectoryEntryFingerprintKind {
+    match &entry.kind {
+        crate::file_tree::FileKind::File { .. } => DirectoryEntryFingerprintKind::File,
+        crate::file_tree::FileKind::Directory { .. } => DirectoryEntryFingerprintKind::Directory,
+        crate::file_tree::FileKind::Symlink { .. } => DirectoryEntryFingerprintKind::Symlink,
+    }
+}
+
+async fn poll_remote_directory_listings(
+    workspace_backend: WorkspaceBackendHandle,
+    directories: Vec<PathBuf>,
+) -> Vec<RemoteDirectoryPollResult> {
+    let mut results = Vec::with_capacity(directories.len());
+    for path in directories {
+        let listing = workspace_backend
+            .list_dir(&path)
+            .await
+            .map_err(|error| error.to_string());
+        results.push(RemoteDirectoryPollResult { path, listing });
+    }
+    results
+}
+
 /// File tree view component
 pub struct FileTreeView {
     /// The underlying file tree data
@@ -156,6 +263,10 @@ pub struct FileTreeView {
     pending_fs_events: std::collections::HashMap<PathBuf, FileTreeEvent>,
     /// Last file system event time for debouncing
     last_fs_event_time: Option<std::time::Instant>,
+    /// Whether remote directory polling is currently active.
+    remote_file_polling_active: bool,
+    /// Last seen fingerprints for expanded remote directories.
+    remote_directory_fingerprints: std::collections::HashMap<PathBuf, DirectoryListingFingerprint>,
     /// Whether the initial tree load is running in the background.
     initial_load_in_flight: bool,
     /// Monotonic revision for structural tree changes.
@@ -196,6 +307,8 @@ impl FileTreeView {
             workspace_backend,
             pending_fs_events: std::collections::HashMap::new(),
             last_fs_event_time: None,
+            remote_file_polling_active: false,
+            remote_directory_fingerprints: std::collections::HashMap::new(),
             initial_load_in_flight: false,
             tree_revision: 0,
         };
@@ -256,6 +369,8 @@ impl FileTreeView {
             workspace_backend,
             pending_fs_events: std::collections::HashMap::new(),
             last_fs_event_time: None,
+            remote_file_polling_active: false,
+            remote_directory_fingerprints: std::collections::HashMap::new(),
             initial_load_in_flight: false,
             tree_revision: 0,
         };
@@ -351,6 +466,11 @@ impl FileTreeView {
                                     "File system watching disabled for file tree"
                                 );
                             }
+
+                            if view.should_poll_remote_filesystem() {
+                                view.seed_remote_directory_fingerprints();
+                                view.start_remote_file_polling(cx);
+                            }
                         }
                         Err(error) => {
                             error!(error = %error, "Failed to load file tree");
@@ -362,6 +482,158 @@ impl FileTreeView {
             }
         })
         .detach();
+    }
+
+    fn should_poll_remote_filesystem(&self) -> bool {
+        self.tree.config().watch_filesystem
+            && matches!(
+                self.workspace_backend.identity(),
+                WorkspaceIdentity::Remote(_)
+            )
+    }
+
+    fn seed_remote_directory_fingerprints(&mut self) {
+        let expanded = self.tree.expanded_directory_paths();
+        self.remote_directory_fingerprints
+            .retain(|path, _| expanded.contains(path));
+
+        for directory in expanded {
+            let children = self.tree.immediate_child_entries(&directory);
+            self.remote_directory_fingerprints
+                .insert(directory, tree_entries_fingerprint(children));
+        }
+    }
+
+    fn seed_remote_directory_fingerprint(&mut self, directory: &Path) {
+        let children = self.tree.immediate_child_entries(directory);
+        self.remote_directory_fingerprints
+            .insert(directory.to_path_buf(), tree_entries_fingerprint(children));
+    }
+
+    fn start_remote_file_polling(&mut self, cx: &mut Context<Self>) {
+        if self.remote_file_polling_active || !self.should_poll_remote_filesystem() {
+            return;
+        }
+
+        self.remote_file_polling_active = true;
+        debug!(
+            root_path = %self.tree.root_path().display(),
+            "Starting remote file tree polling"
+        );
+
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(REMOTE_FILE_TREE_POLL_INTERVAL)
+                    .await;
+
+                let Some(entity) = this.upgrade() else {
+                    break;
+                };
+
+                let poll_plan = entity.update(cx, |view, _cx| {
+                    if !view.should_poll_remote_filesystem() {
+                        view.remote_file_polling_active = false;
+                        view.remote_directory_fingerprints.clear();
+                        return None;
+                    }
+
+                    Some((
+                        view.workspace_backend.clone(),
+                        view.tree.expanded_directory_paths(),
+                    ))
+                });
+
+                let Some((workspace_backend, directories)) = poll_plan else {
+                    break;
+                };
+
+                if directories.is_empty() {
+                    continue;
+                }
+
+                let results = cx
+                    .background_executor()
+                    .spawn(poll_remote_directory_listings(
+                        workspace_backend,
+                        directories,
+                    ))
+                    .await;
+
+                if let Some(entity) = this.upgrade() {
+                    entity.update(cx, |view, cx| {
+                        view.apply_remote_directory_poll_results(results, cx);
+                    });
+                } else {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn apply_remote_directory_poll_results(
+        &mut self,
+        results: Vec<RemoteDirectoryPollResult>,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.should_poll_remote_filesystem() {
+            self.remote_file_polling_active = false;
+            self.remote_directory_fingerprints.clear();
+            return;
+        }
+
+        let expanded = self.tree.expanded_directory_paths();
+        self.remote_directory_fingerprints
+            .retain(|path, _| expanded.contains(path));
+
+        let mut changed_paths = Vec::new();
+        for result in results {
+            if !expanded.contains(&result.path) {
+                continue;
+            }
+
+            let listing = match result.listing {
+                Ok(listing) => listing,
+                Err(error) => {
+                    warn!(
+                        path = %result.path.display(),
+                        error = %error,
+                        "Failed to poll remote file tree directory"
+                    );
+                    continue;
+                }
+            };
+
+            let fingerprint = listing_fingerprint(&listing);
+            if self.remote_directory_fingerprints.get(&result.path) == Some(&fingerprint) {
+                continue;
+            }
+
+            match self
+                .tree
+                .refresh_directory_with_listing(&result.path, listing)
+            {
+                Ok(()) => {
+                    self.remote_directory_fingerprints
+                        .insert(result.path.clone(), fingerprint);
+                    changed_paths.push(result.path);
+                }
+                Err(error) => {
+                    warn!(
+                        path = %result.path.display(),
+                        error = %error,
+                        "Failed to apply remote file tree directory refresh"
+                    );
+                }
+            }
+        }
+
+        if !changed_paths.is_empty() {
+            self.tree_revision = self.tree_revision.wrapping_add(1);
+            self.refresh_vcs_for_file_system_changes(&changed_paths, cx);
+            cx.notify();
+        }
     }
 
     fn restore_selection_after_tree_replace(
@@ -403,6 +675,13 @@ impl FileTreeView {
     pub fn set_config(&mut self, config: FileTreeConfig, cx: &mut Context<Self>) {
         self.tree_revision = self.tree_revision.wrapping_add(1);
         self.tree.set_config(config);
+        if self.should_poll_remote_filesystem() {
+            self.seed_remote_directory_fingerprints();
+            self.start_remote_file_polling(cx);
+        } else {
+            self.remote_file_polling_active = false;
+            self.remote_directory_fingerprints.clear();
+        }
         cx.notify();
     }
 
@@ -726,6 +1005,7 @@ impl FileTreeView {
                 error!(path = %path.display(), error = %e, "Failed to collapse directory");
             } else {
                 self.tree_revision = self.tree_revision.wrapping_add(1);
+                self.remote_directory_fingerprints.remove(path);
                 cx.emit(FileTreeEvent::DirectoryToggled {
                     path: path.to_path_buf(),
                     expanded: false,
@@ -761,6 +1041,10 @@ impl FileTreeView {
                                     );
                                 } else {
                                     view.tree_revision = view.tree_revision.wrapping_add(1);
+                                    if view.should_poll_remote_filesystem() {
+                                        view.seed_remote_directory_fingerprint(&path_buf);
+                                        view.start_remote_file_polling(cx);
+                                    }
                                     cx.emit(FileTreeEvent::DirectoryToggled {
                                         path: path_buf.clone(),
                                         expanded: true,
@@ -938,10 +1222,15 @@ impl FileTreeView {
                 this.update(cx, |view, cx| {
                     match listing {
                         Ok(listing) => {
-                            if let Err(e) = view.tree.expand_directory_with_listing(&dir, listing) {
+                            if let Err(e) = view.tree.refresh_directory_with_listing(&dir, listing)
+                            {
                                 error!(path=%dir.display(), error=%e, "Failed to refresh directory entries");
                             } else {
                                 view.tree_revision = view.tree_revision.wrapping_add(1);
+                                if view.should_poll_remote_filesystem() {
+                                    view.seed_remote_directory_fingerprint(&dir);
+                                    view.start_remote_file_polling(cx);
+                                }
                             }
                         }
                         Err(e) => {
@@ -1804,6 +2093,41 @@ mod tests {
         cx.run_until_parked();
 
         events
+    }
+
+    #[test]
+    fn listing_and_tree_entry_fingerprints_match_common_metadata() {
+        let path = PathBuf::from("/workspace/src/main.rs");
+        let modified = Some(std::time::SystemTime::UNIX_EPOCH);
+        let listing = DirectoryListing {
+            path: PathBuf::from("/workspace/src"),
+            entries: vec![nucleotide_workspace::DirectoryEntry {
+                name: "main.rs".to_string(),
+                path: path.clone(),
+                stat: nucleotide_workspace::FileStat {
+                    path: path.clone(),
+                    kind: WorkspaceFileKind::File,
+                    size: 12,
+                    modified,
+                    readonly: false,
+                },
+                symlink_target: None,
+                target_exists: None,
+                ignored: Some(false),
+            }],
+        };
+        let mut entry = FileTreeEntry::new_file(
+            crate::file_tree::entry::FileTreeEntryId(1),
+            path,
+            12,
+            modified,
+        );
+        entry.is_ignored = false;
+
+        assert_eq!(
+            listing_fingerprint(&listing),
+            tree_entries_fingerprint(vec![entry])
+        );
     }
 
     #[gpui::test]
