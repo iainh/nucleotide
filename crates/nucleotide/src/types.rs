@@ -108,6 +108,7 @@ pub enum Update {
     },
     OpenFile(std::path::PathBuf),
     OpenDirectory(std::path::PathBuf),
+    OpenRemote(String),
     SelectionChanged {
         doc_id: helix_view::DocumentId,
         view_id: helix_view::ViewId,
@@ -173,6 +174,7 @@ impl std::fmt::Debug for Update {
             Update::FileTreeSearchSubmitted(query) => {
                 write!(f, "FileTreeSearchSubmitted({query:?})")
             }
+            Update::OpenRemote(input) => write!(f, "OpenRemote({input:?})"),
             Update::RegexSelectionSubmitted { action, regex } => {
                 write!(f, "RegexSelectionSubmitted({action:?}, {regex:?})")
             }

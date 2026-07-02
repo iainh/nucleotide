@@ -838,8 +838,9 @@ use nucleotide::actions::{
         CompletionSelectNext, CompletionSelectPrev, TriggerCompletion,
     },
     editor::{
-        CloseFile, Copy, DecreaseFontSize, IncreaseFontSize, OpenDirectory, OpenFile, OpenSettings,
-        Paste, Quit, Redo, ReloadConfiguration, RevertCurrentChange, Save, SaveAs, Undo,
+        CloseFile, Copy, DecreaseFontSize, IncreaseFontSize, OpenDirectory, OpenFile, OpenRemote,
+        OpenSettings, Paste, Quit, Redo, ReloadConfiguration, RevertCurrentChange, Save, SaveAs,
+        Undo,
     },
     help::{About, OpenTutorial, ThemeDebug},
     picker::{ConfirmSelection, DismissPicker, SelectFirst, SelectLast, TogglePreview},
@@ -887,6 +888,7 @@ fn default_app_menus() -> Vec<Menu> {
             items: vec![
                 MenuItem::action("Open...", OpenFile),
                 MenuItem::action("Open Directory", OpenDirectory),
+                MenuItem::action("Open Remote...", OpenRemote),
             ],
         },
         Menu {
@@ -961,6 +963,7 @@ fn windows_app_menus() -> Vec<Menu> {
             MenuItem::separator(),
             MenuItem::action("Open File...", OpenFile),
             MenuItem::action("Open Folder...", OpenDirectory),
+            MenuItem::action("Open Remote...", OpenRemote),
             MenuItem::separator(),
             MenuItem::action("Save", Save),
             MenuItem::action("Save As...", SaveAs),
@@ -1874,6 +1877,25 @@ mod tests {
             }
             _ => panic!("expected open directory action"),
         }
+    }
+
+    #[test]
+    fn file_menu_exposes_open_remote_action() {
+        let menus = app_menus();
+        let file_menu = menus
+            .iter()
+            .find(|menu| menu.name.as_ref() == "File")
+            .expect("file menu should exist");
+
+        let has_open_remote = file_menu.items.iter().any(|item| match item {
+            MenuItem::Action { name, action, .. } => {
+                name.as_ref() == "Open Remote..."
+                    && action.partial_eq(&nucleotide::actions::editor::OpenRemote)
+            }
+            _ => false,
+        });
+
+        assert!(has_open_remote, "File menu should expose Open Remote...");
     }
 
     #[cfg(target_os = "windows")]

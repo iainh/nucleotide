@@ -96,6 +96,7 @@ pub mod editor {
             Quit,
             OpenFile,
             OpenDirectory,
+            OpenRemote,
             OpenSettings,
             ReloadConfiguration,
             Save,
