@@ -2644,25 +2644,62 @@ impl Workspace {
         current_project_root.map(Path::to_path_buf)
     }
 
-    fn remote_terminal_proxy_command(
-        cwd: Option<&Path>,
+    fn remote_terminal_proxy_command_with_options(
+        location: &nucleotide_workspace::WorkspaceLocation,
+        options: &nucleotide_remote::RemoteWorkspaceBackendOptions,
         shell: Option<&str>,
         command: Option<(&str, &[String])>,
         env: &[(String, String)],
     ) -> Option<nucleotide_remote::RemoteServiceCommand> {
-        let location = classify_workspace_location(cwd?);
-        let options = crate::config::Config::load()
-            .map(|config| config.remote_workspace_backend_options())
-            .unwrap_or_else(|error| {
-                warn!(error = %error, "Failed to load config for remote terminal helper");
-                nucleotide_remote::RemoteWorkspaceBackendOptions::from_environment()
-            });
+        if !location.is_remote() {
+            return None;
+        }
+
         match nucleotide_remote::resolved_remote_terminal_proxy_command_for_location(
-            &location, &options, shell, command, env,
+            location, options, shell, command, env,
         ) {
             Ok(command) => command,
             Err(error) => {
                 warn!(error = %error, "Failed to resolve remote terminal helper");
+                None
+            }
+        }
+    }
+
+    async fn remote_terminal_proxy_command_async(
+        cwd: Option<PathBuf>,
+        shell: Option<String>,
+        command: Option<(String, Vec<String>)>,
+        env: Vec<(String, String)>,
+    ) -> Option<nucleotide_remote::RemoteServiceCommand> {
+        match tokio::task::spawn_blocking(move || {
+            let location = cwd.as_deref().map(classify_workspace_location)?;
+            if !location.is_remote() {
+                return None;
+            }
+
+            let options = crate::config::Config::load()
+                .map(|config| config.remote_workspace_backend_options())
+                .unwrap_or_else(|error| {
+                    warn!(error = %error, "Failed to load config for remote terminal helper");
+                    nucleotide_remote::RemoteWorkspaceBackendOptions::from_environment()
+                });
+            let command = command
+                .as_ref()
+                .map(|(program, args)| (program.as_str(), args.as_slice()));
+            Self::remote_terminal_proxy_command_with_options(
+                &location,
+                &options,
+                shell.as_deref(),
+                command,
+                &env,
+            )
+        })
+        .await
+        {
+            Ok(command) => command,
+            Err(error) => {
+                warn!(error = %error, "Remote terminal helper resolution task failed");
                 None
             }
         }
@@ -2716,8 +2753,6 @@ impl Workspace {
         self.last_terminal_bounds = None;
 
         let shell: Option<String> = None;
-        let remote_proxy =
-            Self::remote_terminal_proxy_command(cwd.as_deref(), shell.as_deref(), None, &extra_env);
         let (event_bus, project_environment) = {
             let core = self.core.read(cx);
             (
@@ -2725,8 +2760,15 @@ impl Workspace {
                 core.project_environment.clone(),
             )
         };
-        let cwd_for_env = cwd.clone();
         self.handle.spawn(async move {
+            let remote_proxy = Self::remote_terminal_proxy_command_async(
+                cwd.clone(),
+                shell.clone(),
+                None,
+                extra_env.clone(),
+            )
+            .await;
+
             if let Some(remote_proxy) = remote_proxy {
                 if let Some(bus) = event_bus.as_ref() {
                     let (proxy_cwd, program, args) =
@@ -2750,7 +2792,7 @@ impl Workspace {
                 return;
             }
 
-            let mut env = match cwd_for_env.as_deref() {
+            let mut env = match cwd.as_deref() {
                 Some(directory) => {
                     match project_environment
                         .get_environment_for_directory(directory)
@@ -2808,12 +2850,6 @@ impl Workspace {
         self.run_output_terminal = Some(id);
         self.last_terminal_bounds = None;
 
-        let remote_proxy = Self::remote_terminal_proxy_command(
-            cwd.as_deref(),
-            None,
-            Some((program.as_str(), &args)),
-            &extra_env,
-        );
         let (event_bus, project_environment) = {
             let core = self.core.read(cx);
             (
@@ -2821,8 +2857,15 @@ impl Workspace {
                 core.project_environment.clone(),
             )
         };
-        let cwd_for_env = cwd.clone();
         self.handle.spawn(async move {
+            let remote_proxy = Self::remote_terminal_proxy_command_async(
+                cwd.clone(),
+                None,
+                Some((program.clone(), args.clone())),
+                extra_env.clone(),
+            )
+            .await;
+
             if let Some(remote_proxy) = remote_proxy {
                 if let Some(bus) = event_bus.as_ref() {
                     let (proxy_cwd, proxy_program, proxy_args) =
@@ -2841,7 +2884,7 @@ impl Workspace {
                 return;
             }
 
-            let mut env = match cwd_for_env.as_deref() {
+            let mut env = match cwd.as_deref() {
                 Some(directory) => {
                     match project_environment
                         .get_environment_for_directory(directory)
@@ -19361,8 +19404,12 @@ mod tests {
     #[test]
     fn remote_terminal_proxy_command_routes_wsl_cwd_through_helper() {
         let args = vec!["test".to_string()];
-        let spec = Workspace::remote_terminal_proxy_command(
-            Some(Path::new(r"\\wsl.localhost\Ubuntu\home\me\project")),
+        let location =
+            classify_workspace_location(Path::new(r"\\wsl.localhost\Ubuntu\home\me\project"));
+        let options = nucleotide_remote::RemoteWorkspaceBackendOptions::default();
+        let spec = Workspace::remote_terminal_proxy_command_with_options(
+            &location,
+            &options,
             None,
             Some(("cargo", &args)),
             &[],
@@ -19380,8 +19427,11 @@ mod tests {
 
     #[test]
     fn remote_terminal_proxy_command_ignores_local_cwd() {
-        let spec = Workspace::remote_terminal_proxy_command(
-            Some(Path::new("/tmp/project")),
+        let location = classify_workspace_location(Path::new("/tmp/project"));
+        let options = nucleotide_remote::RemoteWorkspaceBackendOptions::default();
+        let spec = Workspace::remote_terminal_proxy_command_with_options(
+            &location,
+            &options,
             None,
             None,
             &[],
