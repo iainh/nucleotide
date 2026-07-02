@@ -692,8 +692,22 @@ fn workspace_marker_exists(path: &Path) -> bool {
         || path.join(".helix").exists()
 }
 
+fn buffer_text_matches_string(text: &Rope, file_text: &str) -> bool {
+    file_text == *text
+}
+
+#[cfg(test)]
 fn buffer_text_matches_path(text: &Rope, path: &Path) -> bool {
-    std::fs::read_to_string(path).is_ok_and(|file_text| file_text == *text)
+    std::fs::read_to_string(path)
+        .is_ok_and(|file_text| buffer_text_matches_string(text, &file_text))
+}
+
+struct DiffResetWorkspaceReconcile {
+    doc_id: DocumentId,
+    view_id: ViewId,
+    path: PathBuf,
+    expected_text: Rope,
+    workspace_backend: WorkspaceBackendHandle,
 }
 
 fn document_workspace_root(
@@ -3024,7 +3038,11 @@ impl Application {
         }
     }
 
-    pub(crate) fn reconcile_vcs_after_diff_reset(&mut self, cx: &mut gpui::Context<crate::Core>) {
+    pub(crate) fn reconcile_vcs_after_diff_reset(
+        &mut self,
+        cx: &mut gpui::Context<crate::Core>,
+        handle: &tokio::runtime::Handle,
+    ) {
         let view_id = self.editor.tree.focus;
         let Some(doc_id) = self.editor.tree.try_get(view_id).map(|view| view.doc) else {
             return;
@@ -3037,7 +3055,23 @@ impl Application {
             return;
         };
 
-        let modified_reset = self.reset_modified_if_buffer_matches_disk(doc_id, view_id, &path);
+        let workspace_backend = self.workspace_backend.clone();
+        let modified_reset = if matches!(workspace_backend.identity(), WorkspaceIdentity::Local) {
+            self.reset_modified_if_buffer_matches_disk(doc_id, view_id, &path)
+        } else {
+            self.reset_modified_if_buffer_matches_workspace_async(
+                DiffResetWorkspaceReconcile {
+                    doc_id,
+                    view_id,
+                    path: path.clone(),
+                    expected_text: text.clone(),
+                    workspace_backend,
+                },
+                handle.clone(),
+                cx,
+            );
+            false
+        };
 
         let vcs_service = cx
             .try_global::<nucleotide_vcs::VcsServiceHandle>()
@@ -3055,16 +3089,101 @@ impl Application {
         }
     }
 
+    fn reset_modified_if_buffer_matches_workspace_async(
+        &mut self,
+        request: DiffResetWorkspaceReconcile,
+        handle: tokio::runtime::Handle,
+        cx: &mut gpui::Context<crate::Core>,
+    ) {
+        let DiffResetWorkspaceReconcile {
+            doc_id,
+            view_id,
+            path,
+            expected_text,
+            workspace_backend,
+        } = request;
+
+        cx.spawn(async move |core, cx| {
+            let read_path = path.clone();
+            let result = handle
+                .spawn(async move {
+                    workspace_backend
+                        .read_file(&read_path, ReadOptions::default())
+                        .await
+                })
+                .await;
+
+            let matches = match result {
+                Ok(Ok(read)) if !read.truncated => String::from_utf8(read.bytes)
+                    .is_ok_and(|file_text| buffer_text_matches_string(&expected_text, &file_text)),
+                Ok(Ok(_)) => false,
+                Ok(Err(error)) => {
+                    debug!(
+                        path = %path.display(),
+                        error = %error,
+                        "Workspace file read failed while reconciling diff reset"
+                    );
+                    false
+                }
+                Err(error) => {
+                    warn!(
+                        path = %path.display(),
+                        error = %error,
+                        "Workspace file read task failed while reconciling diff reset"
+                    );
+                    false
+                }
+            };
+
+            if !matches {
+                return;
+            }
+
+            if let Some(core) = core.upgrade() {
+                core.update(cx, |core, cx| {
+                    if core.reset_modified_if_buffer_matches_text(
+                        doc_id,
+                        view_id,
+                        &path,
+                        &expected_text,
+                    ) {
+                        cx.emit(crate::Update::Event(AppEvent::Core(
+                            CoreEvent::RedrawRequested,
+                        )));
+                    }
+                });
+            }
+        })
+        .detach();
+    }
+
     fn reset_modified_if_buffer_matches_disk(
         &mut self,
         doc_id: DocumentId,
         view_id: ViewId,
         path: &Path,
     ) -> bool {
+        let Ok(file_text) = std::fs::read_to_string(path) else {
+            return false;
+        };
+        let expected_text = Rope::from_str(&file_text);
+        self.reset_modified_if_buffer_matches_text(doc_id, view_id, path, &expected_text)
+    }
+
+    fn reset_modified_if_buffer_matches_text(
+        &mut self,
+        doc_id: DocumentId,
+        view_id: ViewId,
+        path: &Path,
+        expected_text: &Rope,
+    ) -> bool {
         let Some(doc) = self.editor.document(doc_id) else {
             return false;
         };
-        if !buffer_text_matches_path(doc.text(), path) {
+        if doc.path().is_none_or(|doc_path| doc_path != path) {
+            return false;
+        }
+        if doc.text() != expected_text {
             return false;
         }
 
@@ -3121,7 +3240,7 @@ impl Application {
                     || outcome.viewport_cursor_requested.is_some();
 
                 if outcome.reset_diff_change_executed {
-                    self.reconcile_vcs_after_diff_reset(cx);
+                    self.reconcile_vcs_after_diff_reset(cx, &handle);
                 }
 
                 if outcome.selection_changed
@@ -8912,23 +9031,23 @@ mod tests {
         Application, ApplicationCore, EditorInputBridge, LspCompletionTrigger, MaintenanceWake,
         NativeOpenFileOutcome, NativeSymbolItem, NativeSymbolTarget, PendingCompletionRequest,
         RemoteLspLaunchProxyProvider, WorkspaceDocumentSaveHandler,
-        bridged_event_needs_gpui_context, buffer_text_matches_path, buffer_word_completion_items,
-        char_index_for_line_col, coalesce_bridged_events, completion_context_for_trigger,
-        current_dir_is_executable_dir, dedupe_completion_items, detect_project_lsp_metadata,
-        detect_project_type_from_workspace_backend, detect_project_type_from_workspace_listing,
-        diagnostic_picker_path_label, diagnostic_severity_label, document_workspace_root,
-        file_picker_current_directory, home_requires_login_shell_capture,
-        is_workspace_diagnostic_refresh_method, local_path_completion_context,
-        lsp_completion_insert_text, lsp_completion_insert_text_format,
-        lsp_completion_items_from_response, lsp_completion_items_from_response_for_server,
-        lsp_completion_resolve_supported, lsp_completion_response_is_incomplete, lsp_symbol_picker,
-        native_open_file_with_backend, native_symbol_item_from_lsp, open_workspace_document,
-        path_completion_items, path_completion_items_from_listing, project_health_status,
-        project_server_language_id, should_launch_lsp_on_local_host,
-        should_stat_picker_root_with_backend, should_use_workspace_syntax_symbol_fallback,
-        startup_path_should_open_as_file, str_prefix_at_byte_limit,
-        suppress_shadowed_buffer_word_completion_items, syntax_symbol_kind_from_capture_name,
-        workspace_diagnostic_refresh_reply,
+        bridged_event_needs_gpui_context, buffer_text_matches_path, buffer_text_matches_string,
+        buffer_word_completion_items, char_index_for_line_col, coalesce_bridged_events,
+        completion_context_for_trigger, current_dir_is_executable_dir, dedupe_completion_items,
+        detect_project_lsp_metadata, detect_project_type_from_workspace_backend,
+        detect_project_type_from_workspace_listing, diagnostic_picker_path_label,
+        diagnostic_severity_label, document_workspace_root, file_picker_current_directory,
+        home_requires_login_shell_capture, is_workspace_diagnostic_refresh_method,
+        local_path_completion_context, lsp_completion_insert_text,
+        lsp_completion_insert_text_format, lsp_completion_items_from_response,
+        lsp_completion_items_from_response_for_server, lsp_completion_resolve_supported,
+        lsp_completion_response_is_incomplete, lsp_symbol_picker, native_open_file_with_backend,
+        native_symbol_item_from_lsp, open_workspace_document, path_completion_items,
+        path_completion_items_from_listing, project_health_status, project_server_language_id,
+        should_launch_lsp_on_local_host, should_stat_picker_root_with_backend,
+        should_use_workspace_syntax_symbol_fallback, startup_path_should_open_as_file,
+        str_prefix_at_byte_limit, suppress_shadowed_buffer_word_completion_items,
+        syntax_symbol_kind_from_capture_name, workspace_diagnostic_refresh_reply,
     };
     use crate::test_utils::test_support::{
         TestUpdate, create_counting_channel, create_test_diagnostic_events,
@@ -9141,6 +9260,18 @@ mod tests {
         assert!(!buffer_text_matches_path(
             &helix_core::Rope::from_str("one\ntwo"),
             &path
+        ));
+    }
+
+    #[test]
+    fn buffer_text_matches_string_requires_exact_saved_text() {
+        assert!(buffer_text_matches_string(
+            &helix_core::Rope::from_str("one\ntwo\n"),
+            "one\ntwo\n"
+        ));
+        assert!(!buffer_text_matches_string(
+            &helix_core::Rope::from_str("one\ntwo"),
+            "one\ntwo\n"
         ));
     }
 
