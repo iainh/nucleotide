@@ -502,6 +502,21 @@ fn buffer_text_matches_path(text: &Rope, path: &Path) -> bool {
     std::fs::read_to_string(path).is_ok_and(|file_text| file_text == *text)
 }
 
+fn document_workspace_root(
+    workspace_identity: &WorkspaceIdentity,
+    project_directory: Option<&Path>,
+    document_path: &Path,
+) -> PathBuf {
+    let document_dir = document_path.parent().unwrap_or(document_path);
+    if matches!(workspace_identity, WorkspaceIdentity::Local) {
+        find_workspace_root_from(document_dir)
+    } else {
+        project_directory
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| document_dir.to_path_buf())
+    }
+}
+
 pub fn implicit_workspace_root_from_current_dir() -> Option<PathBuf> {
     let current_dir = std::env::current_dir().ok()?;
 
@@ -4579,6 +4594,7 @@ impl Application {
             warn!(doc_id = ?doc_id, "Document not found for LSP integration");
             return Ok(());
         };
+        let workspace_identity = self.workspace_backend.identity();
 
         // Check if ProjectLspManager is available and project-based startup is enabled
         if self.config.gui.lsp.project_lsp_startup
@@ -4586,8 +4602,11 @@ impl Application {
         {
             // Try to ensure document is tracked by any existing project servers
             if let Some(doc_path_ref) = doc_path.as_ref() {
-                let workspace_root =
-                    find_workspace_root_from(doc_path_ref.parent().unwrap_or(doc_path_ref));
+                let workspace_root = document_workspace_root(
+                    &workspace_identity,
+                    self.project_directory.as_deref(),
+                    doc_path_ref,
+                );
 
                 if let Some(manager_ref) = self.project_lsp_manager.read().await.as_ref() {
                     // Check if we have managed servers for this workspace
@@ -4625,7 +4644,6 @@ impl Application {
 
         // Use existing LspManager for fallback or primary startup
         // This handles both file-based startup and fallback scenarios
-        let workspace_identity = self.workspace_backend.identity();
         if !should_launch_lsp_on_local_host(&workspace_identity) {
             info!(
                 doc_id = ?doc_id,
@@ -4658,8 +4676,11 @@ impl Application {
                 if self.config.gui.lsp.project_lsp_startup
                     && let Some(doc_path_ref) = doc_path.as_ref()
                 {
-                    let workspace_root =
-                        find_workspace_root_from(doc_path_ref.parent().unwrap_or(doc_path_ref));
+                    let workspace_root = document_workspace_root(
+                        &workspace_identity,
+                        self.project_directory.as_deref(),
+                        doc_path_ref,
+                    );
 
                     // Check if this startup should be coordinated with project servers
                     if let Some(manager_ref) = self.project_lsp_manager.read().await.as_ref() {
@@ -8391,7 +8412,7 @@ mod tests {
         completion_context_for_trigger, current_dir_is_executable_dir, dedupe_completion_items,
         detect_project_lsp_metadata, detect_project_type_from_workspace_backend,
         detect_project_type_from_workspace_listing, diagnostic_picker_path_label,
-        diagnostic_severity_label, home_requires_login_shell_capture,
+        diagnostic_severity_label, document_workspace_root, home_requires_login_shell_capture,
         is_workspace_diagnostic_refresh_method, local_path_completion_context,
         lsp_completion_insert_text, lsp_completion_insert_text_format,
         lsp_completion_items_from_response, lsp_completion_items_from_response_for_server,
@@ -9060,6 +9081,21 @@ mod tests {
                 name: "devbox".to_string(),
             })
         ));
+    }
+
+    #[test]
+    fn document_workspace_root_uses_project_directory_for_remote_workspaces() {
+        let identity = WorkspaceIdentity::Remote(RemoteWorkspaceIdentity {
+            kind: RemoteWorkspaceKind::Wsl,
+            name: "Ubuntu".to_string(),
+        });
+        let project_directory = Path::new("//wsl.localhost/Ubuntu/home/me/project");
+        let document_path =
+            Path::new("//wsl.localhost/Ubuntu/home/me/project/crates/app/src/main.rs");
+
+        let root = document_workspace_root(&identity, Some(project_directory), document_path);
+
+        assert_eq!(root, project_directory);
     }
 
     #[test]

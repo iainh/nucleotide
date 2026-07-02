@@ -2199,6 +2199,14 @@ fn is_deleted_document_path(path: Option<&Path>, backend_identity: &WorkspaceIde
     matches!(backend_identity, WorkspaceIdentity::Local) && path.is_some_and(|path| !path.exists())
 }
 
+fn workspace_root_for_open_directory(path: &Path, backend_identity: &WorkspaceIdentity) -> PathBuf {
+    if matches!(backend_identity, WorkspaceIdentity::Local) {
+        find_workspace_root_from(path)
+    } else {
+        path.to_path_buf()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct GlobalSearchMatch {
     path: PathBuf,
@@ -8746,36 +8754,45 @@ impl Workspace {
 
     fn handle_open_directory(&mut self, path: &std::path::Path, cx: &mut Context<Self>) {
         // Find the workspace root from this directory and update working directory
-        let workspace_root = find_workspace_root_from(path);
+        let workspace_backend = self.core.read(cx).workspace_backend.clone();
+        let workspace_identity = workspace_backend.identity();
+        let workspace_root = workspace_root_for_open_directory(path, &workspace_identity);
         info!(
             directory_path = %path.display(),
             workspace_root = %workspace_root.display(),
             "🗂️ OPEN_DIR: Opening directory"
         );
 
-        // Update the editor's working directory FIRST
-        // This is critical for LSP servers to start with correct workspace
-        info!(
-            old_cwd = ?std::env::current_dir().ok(),
-            new_cwd = %workspace_root.display(),
-            "🗂️ OPEN_DIR: Changing working directory before LSP restart"
-        );
+        if matches!(workspace_identity, WorkspaceIdentity::Local) {
+            // Update the editor's working directory FIRST
+            // This is critical for LSP servers to start with correct workspace
+            info!(
+                old_cwd = ?std::env::current_dir().ok(),
+                new_cwd = %workspace_root.display(),
+                "🗂️ OPEN_DIR: Changing working directory before LSP restart"
+            );
 
-        if let Err(e) = std::env::set_current_dir(&workspace_root) {
-            error!("🗂️ OPEN_DIR: Failed to change working directory: {}", e);
+            if let Err(e) = std::env::set_current_dir(&workspace_root) {
+                error!("🗂️ OPEN_DIR: Failed to change working directory: {}", e);
+            } else {
+                info!(
+                    confirmed_cwd = ?std::env::current_dir().ok(),
+                    "🗂️ OPEN_DIR: Working directory successfully changed"
+                );
+            }
+
+            // CRITICAL: Use helix_stdx to set working directory for consistency
+            // This ensures Helix's internal working directory is also updated
+            if let Err(e) = helix_stdx::env::set_current_working_dir(&workspace_root) {
+                error!("🗂️ OPEN_DIR: Failed to set Helix working directory: {}", e);
+            } else {
+                info!("🗂️ OPEN_DIR: Helix working directory updated successfully");
+            }
         } else {
             info!(
-                confirmed_cwd = ?std::env::current_dir().ok(),
-                "🗂️ OPEN_DIR: Working directory successfully changed"
+                backend = ?workspace_identity,
+                "🗂️ OPEN_DIR: Skipping host working directory update for remote workspace"
             );
-        }
-
-        // CRITICAL: Use helix_stdx to set working directory for consistency
-        // This ensures Helix's internal working directory is also updated
-        if let Err(e) = helix_stdx::env::set_current_working_dir(&workspace_root) {
-            error!("🗂️ OPEN_DIR: Failed to set Helix working directory: {}", e);
-        } else {
-            info!("🗂️ OPEN_DIR: Helix working directory updated successfully");
         }
 
         // Use set_project_directory to properly initialize LSP and project management
@@ -8785,13 +8802,7 @@ impl Workspace {
 
         // Update the file tree with the new directory
         let handle_clone = self.handle.clone();
-        let (config, workspace_backend) = {
-            let core = self.core.read(cx);
-            (
-                file_tree_config_from_gui(&core.config.gui),
-                core.workspace_backend.clone(),
-            )
-        };
+        let config = file_tree_config_from_gui(&self.core.read(cx).config.gui);
         let new_file_tree = cx.new(|cx| {
             FileTreeView::new_with_runtime_and_backend(
                 path.to_path_buf(),
@@ -18843,6 +18854,20 @@ mod tests {
             Some(Path::new("/remote/project/missing.rs")),
             &remote_identity
         ));
+    }
+
+    #[test]
+    fn open_directory_root_uses_remote_directory_without_host_root_search() {
+        let remote_identity =
+            WorkspaceIdentity::Remote(nucleotide_workspace::RemoteWorkspaceIdentity {
+                kind: nucleotide_workspace::RemoteWorkspaceKind::Wsl,
+                name: "Ubuntu".to_string(),
+            });
+        let remote_dir = Path::new("//wsl.localhost/Ubuntu/home/me/project/crates/app");
+
+        let root = workspace_root_for_open_directory(remote_dir, &remote_identity);
+
+        assert_eq!(root, remote_dir);
     }
 
     fn activation_doc(id: char, age: u64) -> TabActivationDocument<char> {
