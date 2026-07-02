@@ -32,6 +32,8 @@ use std::{
 };
 
 const REMOTE_FILE_TREE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+const REMOTE_FILE_TREE_POLL_MAX_INTERVAL: std::time::Duration = std::time::Duration::from_secs(16);
+const REMOTE_FILE_TREE_IDLE_BACKOFF_AFTER_POLLS: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DirectoryListingFingerprint {
@@ -235,6 +237,21 @@ async fn poll_remote_directory_listings(
     results
 }
 
+fn remote_file_tree_poll_interval(idle_polls: u32) -> std::time::Duration {
+    if idle_polls < REMOTE_FILE_TREE_IDLE_BACKOFF_AFTER_POLLS {
+        return REMOTE_FILE_TREE_POLL_INTERVAL;
+    }
+
+    let backoff_steps = idle_polls
+        .saturating_sub(REMOTE_FILE_TREE_IDLE_BACKOFF_AFTER_POLLS)
+        .min(3);
+    let seconds = REMOTE_FILE_TREE_POLL_INTERVAL
+        .as_secs()
+        .saturating_mul(1_u64 << backoff_steps)
+        .min(REMOTE_FILE_TREE_POLL_MAX_INTERVAL.as_secs());
+    std::time::Duration::from_secs(seconds)
+}
+
 /// File tree view component
 pub struct FileTreeView {
     /// The underlying file tree data
@@ -265,6 +282,8 @@ pub struct FileTreeView {
     last_fs_event_time: Option<std::time::Instant>,
     /// Whether remote directory polling is currently active.
     remote_file_polling_active: bool,
+    /// Consecutive remote poll iterations that found no file tree changes.
+    remote_file_poll_idle_ticks: u32,
     /// Last seen fingerprints for expanded remote directories.
     remote_directory_fingerprints: std::collections::HashMap<PathBuf, DirectoryListingFingerprint>,
     /// Whether the initial tree load is running in the background.
@@ -308,6 +327,7 @@ impl FileTreeView {
             pending_fs_events: std::collections::HashMap::new(),
             last_fs_event_time: None,
             remote_file_polling_active: false,
+            remote_file_poll_idle_ticks: 0,
             remote_directory_fingerprints: std::collections::HashMap::new(),
             initial_load_in_flight: false,
             tree_revision: 0,
@@ -370,6 +390,7 @@ impl FileTreeView {
             pending_fs_events: std::collections::HashMap::new(),
             last_fs_event_time: None,
             remote_file_polling_active: false,
+            remote_file_poll_idle_ticks: 0,
             remote_directory_fingerprints: std::collections::HashMap::new(),
             initial_load_in_flight: false,
             tree_revision: 0,
@@ -515,6 +536,7 @@ impl FileTreeView {
     }
 
     fn seed_remote_directory_fingerprints(&mut self) {
+        self.reset_remote_file_poll_backoff();
         let expanded = self.tree.expanded_directory_paths();
         self.remote_directory_fingerprints
             .retain(|path, _| expanded.contains(path));
@@ -527,9 +549,14 @@ impl FileTreeView {
     }
 
     fn seed_remote_directory_fingerprint(&mut self, directory: &Path) {
+        self.reset_remote_file_poll_backoff();
         let children = self.tree.immediate_child_entries(directory);
         self.remote_directory_fingerprints
             .insert(directory.to_path_buf(), tree_entries_fingerprint(children));
+    }
+
+    fn reset_remote_file_poll_backoff(&mut self) {
+        self.remote_file_poll_idle_ticks = 0;
     }
 
     fn start_remote_file_polling(&mut self, cx: &mut Context<Self>) {
@@ -545,9 +572,28 @@ impl FileTreeView {
 
         cx.spawn(async move |this, cx| {
             loop {
-                cx.background_executor()
-                    .timer(REMOTE_FILE_TREE_POLL_INTERVAL)
-                    .await;
+                let Some(entity) = this.upgrade() else {
+                    break;
+                };
+
+                let interval = entity.update(cx, |view, _cx| {
+                    if !view.should_poll_remote_filesystem() {
+                        view.remote_file_polling_active = false;
+                        view.remote_file_poll_idle_ticks = 0;
+                        view.remote_directory_fingerprints.clear();
+                        return None;
+                    }
+
+                    Some(remote_file_tree_poll_interval(
+                        view.remote_file_poll_idle_ticks,
+                    ))
+                });
+
+                let Some(interval) = interval else {
+                    break;
+                };
+
+                cx.background_executor().timer(interval).await;
 
                 let Some(entity) = this.upgrade() else {
                     break;
@@ -556,6 +602,7 @@ impl FileTreeView {
                 let poll_plan = entity.update(cx, |view, _cx| {
                     if !view.should_poll_remote_filesystem() {
                         view.remote_file_polling_active = false;
+                        view.remote_file_poll_idle_ticks = 0;
                         view.remote_directory_fingerprints.clear();
                         return None;
                     }
@@ -601,6 +648,7 @@ impl FileTreeView {
     ) {
         if !self.should_poll_remote_filesystem() {
             self.remote_file_polling_active = false;
+            self.remote_file_poll_idle_ticks = 0;
             self.remote_directory_fingerprints.clear();
             return;
         }
@@ -652,9 +700,12 @@ impl FileTreeView {
         }
 
         if !changed_paths.is_empty() {
+            self.reset_remote_file_poll_backoff();
             self.tree_revision = self.tree_revision.wrapping_add(1);
             self.refresh_vcs_for_file_system_changes(&changed_paths, cx);
             cx.notify();
+        } else {
+            self.remote_file_poll_idle_ticks = self.remote_file_poll_idle_ticks.saturating_add(1);
         }
     }
 
@@ -710,6 +761,7 @@ impl FileTreeView {
             self.start_remote_file_polling(cx);
         } else {
             self.remote_file_polling_active = false;
+            self.remote_file_poll_idle_ticks = 0;
             self.remote_directory_fingerprints.clear();
         }
         cx.notify();
@@ -1036,6 +1088,7 @@ impl FileTreeView {
             } else {
                 self.tree_revision = self.tree_revision.wrapping_add(1);
                 self.remote_directory_fingerprints.remove(path);
+                self.reset_remote_file_poll_backoff();
                 cx.emit(FileTreeEvent::DirectoryToggled {
                     path: path.to_path_buf(),
                     expanded: false,
@@ -2155,6 +2208,34 @@ mod tests {
         assert_eq!(
             listing_fingerprint(&listing),
             tree_entries_fingerprint(vec![entry])
+        );
+    }
+
+    #[test]
+    fn remote_file_tree_poll_interval_stays_fast_initially() {
+        assert_eq!(
+            remote_file_tree_poll_interval(0),
+            REMOTE_FILE_TREE_POLL_INTERVAL
+        );
+        assert_eq!(
+            remote_file_tree_poll_interval(REMOTE_FILE_TREE_IDLE_BACKOFF_AFTER_POLLS - 1),
+            REMOTE_FILE_TREE_POLL_INTERVAL
+        );
+    }
+
+    #[test]
+    fn remote_file_tree_poll_interval_backs_off_while_idle() {
+        assert_eq!(
+            remote_file_tree_poll_interval(REMOTE_FILE_TREE_IDLE_BACKOFF_AFTER_POLLS + 1),
+            std::time::Duration::from_secs(4)
+        );
+        assert_eq!(
+            remote_file_tree_poll_interval(REMOTE_FILE_TREE_IDLE_BACKOFF_AFTER_POLLS + 3),
+            REMOTE_FILE_TREE_POLL_MAX_INTERVAL
+        );
+        assert_eq!(
+            remote_file_tree_poll_interval(u32::MAX),
+            REMOTE_FILE_TREE_POLL_MAX_INTERVAL
         );
     }
 
