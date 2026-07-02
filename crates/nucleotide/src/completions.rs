@@ -519,26 +519,28 @@ fn workspace_path_completion_query_for_arg(
         return None;
     }
 
-    let path = Path::new(current_arg);
-    let (directory, file_name) = if current_arg.ends_with(WORKSPACE_PATH_SEPARATOR) {
-        (resolve_completion_directory(base_dir, path), None)
+    let (directory, file_name) = if path_text_ends_with_workspace_separator(current_arg) {
+        (
+            resolve_completion_directory_text(
+                base_dir,
+                trim_completion_directory_text(current_arg),
+            ),
+            None,
+        )
     } else {
-        let is_period = (current_arg.ends_with(&format!("{WORKSPACE_PATH_SEPARATOR}."))
-            && current_arg.len() > 2)
-            || current_arg == ".";
+        let is_period = path_text_ends_with_period_segment(current_arg);
         let file_name = if is_period {
             Some(".".to_string())
         } else {
-            path.file_name()
-                .and_then(|file| file.to_str().map(str::to_string))
+            completion_file_name_text(current_arg).map(str::to_string)
         };
 
         let directory = if is_period {
-            resolve_completion_directory(base_dir, path)
+            resolve_completion_directory_text(base_dir, current_arg)
         } else {
-            path.parent()
-                .filter(|parent| !parent.as_os_str().is_empty())
-                .map(|parent| resolve_completion_directory(base_dir, parent))
+            completion_parent_text(current_arg)
+                .filter(|parent| !parent.is_empty())
+                .map(|parent| resolve_completion_directory_text(base_dir, parent))
                 .unwrap_or_else(|| base_dir.to_path_buf())
         };
 
@@ -555,9 +557,56 @@ fn workspace_path_completion_query_for_arg(
     })
 }
 
-fn resolve_completion_directory(base_dir: &Path, path: &Path) -> PathBuf {
-    if path.is_absolute() {
-        path.to_path_buf()
+fn path_text_ends_with_workspace_separator(path: &str) -> bool {
+    path.ends_with(WORKSPACE_PATH_SEPARATOR) || path.ends_with('\\')
+}
+
+fn trim_completion_directory_text(path: &str) -> &str {
+    let trimmed = path.trim_end_matches([WORKSPACE_PATH_SEPARATOR, '\\']);
+    if trimmed.is_empty() { path } else { trimmed }
+}
+
+fn path_text_ends_with_period_segment(path: &str) -> bool {
+    path == "."
+        || path
+            .strip_suffix('.')
+            .and_then(|prefix| prefix.chars().last())
+            .is_some_and(|ch| ch == WORKSPACE_PATH_SEPARATOR || ch == '\\')
+}
+
+fn completion_file_name_text(path: &str) -> Option<&str> {
+    let separator = path.rfind([WORKSPACE_PATH_SEPARATOR, '\\']);
+    let file_name = separator.map_or(path, |index| &path[index + 1..]);
+    (!file_name.is_empty()).then_some(file_name)
+}
+
+fn completion_parent_text(path: &str) -> Option<&str> {
+    let index = path.rfind([WORKSPACE_PATH_SEPARATOR, '\\'])?;
+    if index == 0 && path.starts_with(WORKSPACE_PATH_SEPARATOR) {
+        Some(&path[..1])
+    } else {
+        Some(&path[..index])
+    }
+}
+
+fn completion_path_text_is_absolute(path: &str) -> bool {
+    path.starts_with(WORKSPACE_PATH_SEPARATOR)
+        || Path::new(path).is_absolute()
+        || nucleotide_workspace::classify_workspace_location(Path::new(path)).is_remote()
+}
+
+fn resolve_completion_directory_text(base_dir: &Path, path: &str) -> PathBuf {
+    if path.is_empty() {
+        return base_dir.to_path_buf();
+    }
+
+    if completion_path_text_is_absolute(path) {
+        PathBuf::from(path)
+    } else if nucleotide_workspace::classify_workspace_location(base_dir).is_remote() {
+        let base = base_dir.to_string_lossy();
+        let base = base.trim_end_matches([WORKSPACE_PATH_SEPARATOR, '\\']);
+        let path = path.trim_start_matches([WORKSPACE_PATH_SEPARATOR, '\\']);
+        PathBuf::from(format!("{base}{WORKSPACE_PATH_SEPARATOR}{path}"))
     } else {
         base_dir.join(path)
     }
@@ -897,6 +946,61 @@ mod tests {
                 .iter()
                 .any(|item| item.text.as_ref() == "open src/main.rs")
         );
+    }
+
+    #[test]
+    fn workspace_path_completion_keeps_remote_uri_arguments_absolute() {
+        let base_dir = Path::new("ssh://devbox/home/me/project");
+        let query =
+            workspace_path_completion_query("open ssh://devbox/home/me/project/src/ma", base_dir)
+                .unwrap();
+
+        assert_eq!(
+            query.directory,
+            PathBuf::from("ssh://devbox/home/me/project/src")
+        );
+        assert_eq!(query.file_name.as_deref(), Some("ma"));
+
+        let items = path_completion_items(
+            "open ssh://devbox/home/me/project/src/ma",
+            &query,
+            vec![PathCandidate {
+                path: "main.rs".to_string(),
+                is_dir: false,
+            }],
+        );
+
+        assert!(
+            items.iter().any(|item| {
+                item.text.as_ref() == "open ssh://devbox/home/me/project/src/main.rs"
+            })
+        );
+    }
+
+    #[test]
+    fn workspace_path_completion_splits_wsl_unc_arguments() {
+        let base_dir = Path::new(r"\\wsl.localhost\Ubuntu\home\me\project");
+        let query = workspace_path_completion_query(
+            r"open \\wsl.localhost\Ubuntu\home\me\project\src\ma",
+            base_dir,
+        )
+        .unwrap();
+
+        assert_eq!(
+            query.directory,
+            PathBuf::from(r"\\wsl.localhost\Ubuntu\home\me\project\src")
+        );
+        assert_eq!(query.file_name.as_deref(), Some("ma"));
+    }
+
+    #[test]
+    fn workspace_path_completion_keeps_posix_absolute_arguments_absolute() {
+        let base_dir = Path::new("ssh://devbox/home/me/project");
+        let query =
+            workspace_path_completion_query("open /home/me/project/src/ma", base_dir).unwrap();
+
+        assert_eq!(query.directory, PathBuf::from("/home/me/project/src"));
+        assert_eq!(query.file_name.as_deref(), Some("ma"));
     }
 
     #[tokio::test]
