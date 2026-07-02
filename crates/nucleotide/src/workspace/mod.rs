@@ -4782,6 +4782,9 @@ impl Workspace {
 
     fn tab_cm_action_reveal_in_os(&mut self, tab_id: TabId, cx: &mut Context<Self>) {
         if let Some(path) = self.tab_document_path(tab_id, cx) {
+            if self.warn_reveal_in_os_unavailable_for_remote(&path, cx) {
+                return;
+            }
             let event = nucleotide_events::v2::workspace::Event::FileOpRequested {
                 intent: nucleotide_events::v2::workspace::FileOpIntent::RevealInOs { path },
             };
@@ -6423,12 +6426,41 @@ impl Workspace {
 
     fn cm_action_reveal_in_os(this: &mut Workspace, cx: &mut Context<Workspace>) {
         if let Some(path) = this.context_menu_path.clone() {
+            if this.warn_reveal_in_os_unavailable_for_remote(&path, cx) {
+                this.close_context_menu(cx);
+                return;
+            }
             let event = nucleotide_events::v2::workspace::Event::FileOpRequested {
                 intent: nucleotide_events::v2::workspace::FileOpIntent::RevealInOs { path },
             };
             this.core.read(cx).dispatch_workspace_event(event);
         }
         this.close_context_menu(cx);
+    }
+
+    fn warn_reveal_in_os_unavailable_for_remote(
+        &mut self,
+        path: &Path,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !matches!(
+            self.core.read(cx).workspace_backend.identity(),
+            WorkspaceIdentity::Remote(_)
+        ) {
+            return false;
+        }
+
+        self.push_editor_status_notification(
+            EditorStatus {
+                status: format!(
+                    "Reveal in OS is unavailable for remote paths: {}",
+                    path.display()
+                ),
+                severity: Severity::Warning,
+            },
+            cx,
+        );
+        true
     }
 
     /// Update the input context based on current focus state
