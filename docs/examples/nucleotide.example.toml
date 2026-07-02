@@ -170,6 +170,28 @@ flatten_empty_directories = true
 # Options: "trash", "permanent". Default: "trash".
 delete_behavior = "trash"
 
+[remote.ssh]
+# How Nucleotide installs nucleotide-remote on SSH hosts.
+# Options: "auto", "never", "upload", "remote_download". Default: "auto".
+# "remote_download" requires curl or wget plus sha256sum or shasum on the SSH
+# host. Set NUCLEOTIDE_REMOTE_HELPER_DOWNLOAD_BASE_URL to use a release mirror.
+helper_install = "auto"
+
+# Remote helper path override. Default: unset, which uses a versioned cache
+# under ${XDG_CACHE_HOME:-$HOME/.cache}/nucleotide/remote after auto-install.
+# helper_path = "/home/me/.local/bin/nucleotide-remote"
+
+# SSH connection timeout in seconds. Set to 0 to disable Nucleotide's timeout.
+connect_timeout_secs = 30
+
+# Extra arguments passed to ssh before the target. Prefer ~/.ssh/config for
+# long-lived host settings. Example: ["-J", "bastion"].
+extra_args = []
+
+# Reuse SSH connections with OpenSSH ControlMaster on Unix. Default: platform
+# default, enabled on Unix and disabled elsewhere.
+# use_control_master = true
+
 [lsp]
 # Start language servers from detected project roots instead of individual
 # files. Default: false.

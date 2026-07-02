@@ -490,6 +490,7 @@ dark_theme = "custom_dark"
             lsp: LspConfig::default(),
             project_markers: ProjectMarkersConfig::default(),
             file_ops: FileOpsConfig::default(),
+            remote: crate::config::RemoteConfig::default(),
         };
 
         // Serialize to TOML

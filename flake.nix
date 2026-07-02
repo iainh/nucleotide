@@ -191,6 +191,35 @@
           # Copy binary
           cp target/release/nucl Nucleotide.app/Contents/MacOS/Nucleotide
 
+          remote_helper_dir="''${NUCL_REMOTE_HELPER_DIR:-target/remote-helpers}"
+          remote_helpers_required="''${NUCL_REQUIRE_REMOTE_HELPERS:-0}"
+          remote_helpers_copied=0
+
+          if [ -d "$remote_helper_dir" ]; then
+            echo "Copying SSH remote helpers from $remote_helper_dir..."
+            for helper in nucleotide-remote-linux-x86_64 nucleotide-remote-linux-aarch64; do
+              if [ -f "$remote_helper_dir/$helper" ]; then
+                cp "$remote_helper_dir/$helper" "Nucleotide.app/Contents/MacOS/$helper"
+                chmod +x "Nucleotide.app/Contents/MacOS/$helper"
+                remote_helpers_copied=$((remote_helpers_copied + 1))
+                echo "  - $helper"
+              elif [ "$remote_helpers_required" = "1" ]; then
+                echo "Error: required SSH remote helper not found: $remote_helper_dir/$helper" >&2
+                exit 1
+              fi
+            done
+          elif [ "$remote_helpers_required" = "1" ]; then
+            echo "Error: required SSH remote helper directory not found: $remote_helper_dir" >&2
+            exit 1
+          else
+            echo "Warning: SSH remote helper directory not found at $remote_helper_dir" >&2
+          fi
+
+          if [ "$remote_helpers_required" = "1" ] && [ "$remote_helpers_copied" -ne 2 ]; then
+            echo "Error: expected 2 SSH remote helpers, copied $remote_helpers_copied" >&2
+            exit 1
+          fi
+
           # Copy runtime files (from Nix store to writable location)
           echo "Copying runtime files..."
           mkdir -p Nucleotide.app/Contents/MacOS/runtime
@@ -347,6 +376,10 @@
             echo "Error: Binary not found. Run 'nix develop --command cargo build --release' first"
             exit 1
           fi
+          if [ ! -f "target/release/nucleotide-remote" ]; then
+            echo "Error: Remote helper not found. Run 'nix develop --command cargo build --release -p nucleotide --bins -p nucleotide-remote' first"
+            exit 1
+          fi
 
           echo "Creating Linux package..."
 
@@ -358,6 +391,11 @@
 
           # Copy binary
           cp target/release/nucl nucleotide-linux/bin/
+          cp target/release/nucleotide-remote nucleotide-linux/bin/
+          cp target/release/nucleotide-remote nucleotide-linux/bin/nucleotide-remote-linux-x86_64
+          if [ -f "target/aarch64-unknown-linux-gnu/release/nucleotide-remote" ]; then
+            cp target/aarch64-unknown-linux-gnu/release/nucleotide-remote nucleotide-linux/bin/nucleotide-remote-linux-aarch64
+          fi
 
           # Copy runtime files (from Nix store to writable location)
           echo "Copying runtime files..."
