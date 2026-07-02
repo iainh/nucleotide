@@ -683,6 +683,14 @@ impl FileTreeView {
         self.selected_path.as_ref()
     }
 
+    /// Return whether the tree's current primary selection is a directory.
+    pub fn selected_path_is_directory(&self) -> bool {
+        self.selected_path
+            .as_deref()
+            .and_then(|path| self.tree.entry_by_path(path))
+            .is_some_and(|entry| entry.is_directory())
+    }
+
     /// Get all currently selected paths.
     pub fn selected_paths(&self) -> Vec<PathBuf> {
         self.selected_paths.iter().cloned().collect()
@@ -2205,6 +2213,24 @@ mod tests {
         view.read_with(cx, |view, _cx| {
             assert_eq!(view.selected_path(), Some(&file_path));
             assert_eq!(view.selected_paths(), vec![file_path]);
+        });
+    }
+
+    #[gpui::test]
+    async fn selected_path_is_directory_reflects_tree_entry_kind(cx: &mut TestAppContext) {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root_path = temp_dir.path().to_path_buf();
+        let file_path = root_path.join("main.rs");
+        std::fs::write(&file_path, "fn main() {}\n").unwrap();
+
+        let view = cx.new(|cx| FileTreeView::new(root_path.clone(), test_config(), cx));
+
+        view.update(cx, |view, cx| {
+            assert_eq!(view.selected_path(), Some(&root_path));
+            assert!(view.selected_path_is_directory());
+
+            view.select_path(Some(file_path), cx);
+            assert!(!view.selected_path_is_directory());
         });
     }
 
