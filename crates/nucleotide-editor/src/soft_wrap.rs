@@ -16,7 +16,10 @@ use helix_view::{Document, Theme, view::ViewPosition};
 
 use crate::{
     EditorSurfaceGeometry, document_text_format_for_surface,
-    line_text::{DisplayLineTextBuilder, DisplayTextMap, DisplayWhitespace, VirtualTextRange},
+    line_text::{
+        DisplayLineTextBuilder, DisplayTextMap, DisplayWhitespace, VirtualTextRange,
+        text_run_boundaries,
+    },
 };
 
 pub type VirtualHighlightRange = VirtualTextRange<Option<syntax::Highlight>>;
@@ -319,13 +322,12 @@ pub fn decorate_soft_wrap_line_runs(
         }
     }
 
-    let mut boundaries = vec![0, text_len, prefix_end, wrap_start, wrap_end];
+    let mut boundaries = vec![prefix_end, wrap_start, wrap_end];
     for (start, end, _) in &run_segments {
         boundaries.push(*start);
         boundaries.push(*end);
     }
-    boundaries.sort_unstable();
-    boundaries.dedup();
+    let boundaries = text_run_boundaries(visual.text.as_ref(), boundaries);
 
     let fallback = TextRun {
         len: 0,
@@ -591,6 +593,17 @@ mod tests {
         }
     }
 
+    fn run_boundaries_are_utf8_safe(text: &str, runs: &[TextRun]) -> bool {
+        let mut offset = 0usize;
+        for run in runs {
+            offset += run.len;
+            if !text.is_char_boundary(offset) {
+                return false;
+            }
+        }
+        offset == text.len()
+    }
+
     fn test_font() -> Font {
         font("TestFont")
     }
@@ -852,6 +865,35 @@ mod tests {
             runs.iter().map(|run| run.len).sum::<usize>(),
             visual.text.len()
         );
+    }
+
+    #[test]
+    fn decorated_runs_do_not_split_multibyte_wrap_indicator() {
+        let text = "↪wrapped";
+        let visual = SoftWrapVisualLine {
+            visual_line: 1,
+            doc_line: 0,
+            text: text.into(),
+            line_start_col: 0,
+            wrap_indicator_len: "↪".len(),
+            line_start_char: Some(0),
+            line_end_char: Some(7),
+            segment_char_offset: 0,
+            text_start_byte_offset: "↪".len(),
+            is_phantom_line: false,
+            display_map: DisplayTextMap::identity(text.len()),
+            virtual_text_ranges: Vec::new(),
+            whitespace_ranges: Vec::new(),
+        };
+        let decorated = decorate_soft_wrap_line_runs(
+            vec![run(2, white()), run(text.len() - 2, black())],
+            &visual,
+            &test_font(),
+            black(),
+            Some(blue()),
+        );
+
+        assert!(run_boundaries_are_utf8_safe(text, &decorated));
     }
 
     #[test]

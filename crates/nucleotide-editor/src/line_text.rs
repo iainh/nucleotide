@@ -366,6 +366,28 @@ pub fn byte_offset_for_char_offset(text: &str, char_offset: usize) -> usize {
         .map_or(text.len(), |(byte_idx, _)| byte_idx)
 }
 
+pub fn floor_char_boundary(text: &str, index: usize) -> usize {
+    let mut boundary = index.min(text.len());
+    while boundary > 0 && !text.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    boundary
+}
+
+pub fn text_run_boundaries(text: &str, boundaries: impl IntoIterator<Item = usize>) -> Vec<usize> {
+    let mut normalized = Vec::new();
+    normalized.push(0);
+    normalized.push(text.len());
+    normalized.extend(
+        boundaries
+            .into_iter()
+            .map(|boundary| floor_char_boundary(text, boundary)),
+    );
+    normalized.sort_unstable();
+    normalized.dedup();
+    normalized
+}
+
 fn char_display_width(ch: char) -> usize {
     let mut buf = [0; 4];
     grapheme_width(ch.encode_utf8(&mut buf))
@@ -375,8 +397,8 @@ fn char_display_width(ch: char) -> usize {
 mod tests {
     use super::{
         DisplayLineText, DisplayLineTextBuilder, DisplayTextMap, DisplayWhitespace,
-        byte_offset_for_char_offset, line_text_without_trailing_newline,
-        shared_line_text_without_trailing_newline, visual_columns_for_text,
+        byte_offset_for_char_offset, floor_char_boundary, line_text_without_trailing_newline,
+        shared_line_text_without_trailing_newline, text_run_boundaries, visual_columns_for_text,
     };
     use gpui::{TextRun, black, font};
 
@@ -410,6 +432,21 @@ mod tests {
     fn converts_char_offsets_to_byte_offsets() {
         assert_eq!(byte_offset_for_char_offset("aé𝌆z", 3), "aé𝌆".len());
         assert_eq!(byte_offset_for_char_offset("abc", 99), 3);
+    }
+
+    #[test]
+    fn floors_byte_offsets_to_utf8_boundaries() {
+        assert_eq!(floor_char_boundary("↪abc", 2), 0);
+        assert_eq!(floor_char_boundary("↪abc", "↪".len()), "↪".len());
+    }
+
+    #[test]
+    fn text_run_boundaries_never_split_utf8_characters() {
+        let text = "↪abc";
+        let boundaries = text_run_boundaries(text, [2, "↪".len(), "↪a".len()]);
+
+        assert_eq!(boundaries, vec![0, "↪".len(), "↪a".len(), text.len()]);
+        assert!(boundaries.iter().all(|index| text.is_char_boundary(*index)));
     }
 
     #[test]
