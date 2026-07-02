@@ -12,7 +12,7 @@ use std::cell::RefCell;
 #[cfg(target_os = "windows")]
 use std::collections::VecDeque;
 use std::collections::{HashMap, HashSet};
-use std::hash::Hash;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -167,6 +167,7 @@ const IMAGE_ZOOM_STEP: f32 = 0.25;
 const IMAGE_ZOOM_MIN: f32 = 0.10;
 const IMAGE_ZOOM_MAX: f32 = 8.0;
 const IMAGE_TRANSPARENCY_GRID_SIZE: f32 = 12.0;
+const REMOTE_IMAGE_READ_LIMIT_BYTES: u64 = 128 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum EnvironmentBadge {
@@ -185,6 +186,7 @@ enum RunnableAction {
 struct ImageTab {
     id: u64,
     path: PathBuf,
+    render_path: PathBuf,
     dimensions: Option<(u32, u32)>,
     focused_at: std::time::Instant,
     zoom: f32,
@@ -296,14 +298,78 @@ fn is_image_file_path(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn should_open_with_local_image_viewer(
+fn should_open_with_image_viewer(
     path: &Path,
     has_initial_position: bool,
     backend_identity: &WorkspaceIdentity,
 ) -> bool {
     !has_initial_position
-        && matches!(backend_identity, WorkspaceIdentity::Local)
         && is_image_file_path(path)
+        && matches!(
+            backend_identity,
+            WorkspaceIdentity::Local | WorkspaceIdentity::Remote(_)
+        )
+}
+
+fn remote_image_cache_dir() -> PathBuf {
+    dirs::cache_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("nucleotide")
+        .join("remote-images")
+}
+
+fn remote_image_cache_path(path: &Path) -> PathBuf {
+    let mut hasher = DefaultHasher::new();
+    path.hash(&mut hasher);
+    let hash = hasher.finish();
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("image");
+    remote_image_cache_dir().join(format!(
+        "{hash:016x}-{}",
+        sanitize_cache_file_name(file_name)
+    ))
+}
+
+fn sanitize_cache_file_name(file_name: &str) -> String {
+    file_name
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+fn cache_remote_image_file(
+    backend: &WorkspaceBackendHandle,
+    path: &Path,
+) -> anyhow::Result<PathBuf> {
+    let read = futures_executor::block_on(backend.read_file(
+        path,
+        ReadOptions {
+            max_bytes: Some(REMOTE_IMAGE_READ_LIMIT_BYTES),
+        },
+    ))?;
+
+    if read.truncated {
+        anyhow::bail!(
+            "remote image is larger than {} MiB",
+            REMOTE_IMAGE_READ_LIMIT_BYTES / (1024 * 1024)
+        );
+    }
+
+    let cache_path = remote_image_cache_path(path);
+    if let Some(parent) = cache_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&cache_path, read.bytes)?;
+    Ok(cache_path)
 }
 
 fn should_add_recent_project(backend_identity: &WorkspaceIdentity) -> bool {
@@ -3674,18 +3740,30 @@ impl Workspace {
         should_focus: bool,
         cx: &mut Context<Self>,
     ) {
+        self.open_image_file_with_render_path(path, path, should_focus, cx)
+    }
+
+    fn open_image_file_with_render_path(
+        &mut self,
+        path: &std::path::Path,
+        render_path: &std::path::Path,
+        should_focus: bool,
+        cx: &mut Context<Self>,
+    ) {
         let path = path.to_path_buf();
         if let Some(tab) = self.image_tabs.iter_mut().find(|tab| tab.path == path) {
             tab.focused_at = std::time::Instant::now();
             self.active_image_tab_id = Some(tab.id);
         } else {
+            let render_path = render_path.to_path_buf();
             let scroll_handle = ScrollHandle::new();
             let vertical_scrollbar_state = ScrollbarState::new(scroll_handle.clone());
             let horizontal_scrollbar_state = ScrollbarState::new(scroll_handle.clone());
             let tab = ImageTab {
                 id: self.next_image_tab_id(),
                 path: path.clone(),
-                dimensions: image_file_dimensions(&path),
+                dimensions: image_file_dimensions(&render_path),
+                render_path,
                 focused_at: std::time::Instant::now(),
                 zoom: 1.0,
                 scroll_handle,
@@ -9170,9 +9248,37 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let backend_identity = self.core.read(cx).workspace_backend.identity();
-        if should_open_with_local_image_viewer(path, initial_position.is_some(), &backend_identity)
-        {
-            self.open_image_file_internal(path, should_focus, cx);
+        if should_open_with_image_viewer(path, initial_position.is_some(), &backend_identity) {
+            match backend_identity {
+                WorkspaceIdentity::Local => {
+                    self.open_image_file_internal(path, should_focus, cx);
+                }
+                WorkspaceIdentity::Remote(_) => {
+                    let backend = self.core.read(cx).workspace_backend.clone();
+                    match cache_remote_image_file(&backend, path) {
+                        Ok(render_path) => {
+                            self.open_image_file_with_render_path(
+                                path,
+                                &render_path,
+                                should_focus,
+                                cx,
+                            );
+                        }
+                        Err(error) => {
+                            warn!(
+                                path = %path.display(),
+                                error = %error,
+                                "Failed to cache remote image"
+                            );
+                            self.set_run_status(
+                                format!("Failed to load remote image: {error}"),
+                                Severity::Error,
+                                cx,
+                            );
+                        }
+                    }
+                }
+            }
             return;
         }
 
@@ -10334,7 +10440,7 @@ impl Workspace {
         let tokens = &cx.theme().tokens;
         let tab_id = tab.id;
         let zoom = tab.zoom;
-        let image_path = tab.path.clone();
+        let image_path = tab.render_path.clone();
         let (grid_base, grid_alternate) = image_transparency_grid_colors(tokens.editor.background);
         let (image_element, image_size) = if let Some((width, height)) = tab.dimensions {
             let width = px(width as f32 * zoom);
@@ -16853,15 +16959,15 @@ mod tests {
     }
 
     #[test]
-    fn local_image_viewer_opens_image_paths_only_for_local_backends() {
+    fn image_viewer_opens_image_paths_for_local_and_remote_backends() {
         let path = Path::new("/project/assets/logo.png");
 
-        assert!(should_open_with_local_image_viewer(
+        assert!(should_open_with_image_viewer(
             path,
             false,
             &WorkspaceIdentity::Local
         ));
-        assert!(!should_open_with_local_image_viewer(
+        assert!(should_open_with_image_viewer(
             path,
             false,
             &WorkspaceIdentity::Remote(nucleotide_workspace::RemoteWorkspaceIdentity {
@@ -16872,17 +16978,30 @@ mod tests {
     }
 
     #[test]
-    fn local_image_viewer_ignores_non_images_and_positioned_opens() {
-        assert!(!should_open_with_local_image_viewer(
+    fn image_viewer_ignores_non_images_and_positioned_opens() {
+        assert!(!should_open_with_image_viewer(
             Path::new("/project/src/main.rs"),
             false,
             &WorkspaceIdentity::Local
         ));
-        assert!(!should_open_with_local_image_viewer(
+        assert!(!should_open_with_image_viewer(
             Path::new("/project/assets/logo.png"),
             true,
             &WorkspaceIdentity::Local
         ));
+    }
+
+    #[test]
+    fn remote_image_cache_paths_preserve_extension_and_escape_names() {
+        let path = Path::new("ssh://devbox/home/me/project/assets/logo one.png");
+        let cache_path = remote_image_cache_path(path);
+        let file_name = cache_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap();
+
+        assert!(cache_path.starts_with(remote_image_cache_dir()));
+        assert!(file_name.ends_with("-logo_one.png"));
     }
 
     #[test]
