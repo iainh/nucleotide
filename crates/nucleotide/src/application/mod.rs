@@ -29,7 +29,7 @@ use std::{
     future::Future,
     path::{Path, PathBuf},
     pin::Pin,
-    sync::Arc,
+    sync::{Arc, Mutex},
     task::{Context as TaskContext, Poll, Wake, Waker},
     time::{Duration, Instant, SystemTime},
 };
@@ -61,8 +61,8 @@ use nucleotide_lsp::{
 };
 use nucleotide_workspace::{
     DirectoryListing, FileKind, FileRead, ProcessSpec, ReadOptions, WorkspaceBackendHandle,
-    WorkspaceIdentity, WriteOptions, classify_workspace_location, local_workspace_backend,
-    remote_startup_workspace_root,
+    WorkspaceIdentity, WorkspaceLocation, WriteOptions, classify_workspace_location,
+    local_workspace_backend, remote_startup_workspace_root,
 };
 use slotmap::Key;
 
@@ -282,19 +282,46 @@ async fn read_remote_git_diff_base(
 
 pub struct RemoteLspLaunchProxyProvider {
     options: nucleotide_remote::RemoteWorkspaceBackendOptions,
+    helper_path_cache: Mutex<HashMap<WorkspaceLocation, PathBuf>>,
 }
 
 impl RemoteLspLaunchProxyProvider {
     pub fn from_environment() -> Self {
         Self {
             options: nucleotide_remote::RemoteWorkspaceBackendOptions::from_environment(),
+            helper_path_cache: Mutex::new(HashMap::new()),
         }
     }
 
     pub fn from_config(config: &crate::config::Config) -> Self {
         Self {
             options: config.remote_workspace_backend_options(),
+            helper_path_cache: Mutex::new(HashMap::new()),
         }
+    }
+
+    fn resolved_helper_path(
+        &self,
+        location: &WorkspaceLocation,
+    ) -> Result<PathBuf, Box<dyn std::error::Error + Send + Sync>> {
+        if let Some(helper_path) = self
+            .helper_path_cache
+            .lock()
+            .map_err(|_| std::io::Error::other("remote LSP helper cache lock poisoned"))?
+            .get(location)
+            .cloned()
+        {
+            return Ok(helper_path);
+        }
+
+        let helper_path =
+            nucleotide_remote::resolve_remote_helper_for_location(location, &self.options)?;
+        self.helper_path_cache
+            .lock()
+            .map_err(|_| std::io::Error::other("remote LSP helper cache lock poisoned"))?
+            .insert(location.clone(), helper_path.clone());
+
+        Ok(helper_path)
     }
 }
 
@@ -305,12 +332,17 @@ impl LspLaunchProxyProvider for RemoteLspLaunchProxyProvider {
         server_name: &str,
     ) -> Result<Option<LspLaunchProxy>, Box<dyn std::error::Error + Send + Sync>> {
         let location = classify_workspace_location(workspace_root);
-        let Some(command) = nucleotide_remote::resolved_remote_lsp_proxy_command_for_location(
+        if !location.is_remote() {
+            return Ok(None);
+        }
+
+        let helper_path = self.resolved_helper_path(&location)?;
+        let Some(command) = nucleotide_remote::remote_lsp_proxy_command_for_location_with_options(
             &location,
+            helper_path,
             &self.options,
             server_name,
-        )?
-        else {
+        ) else {
             return Ok(None);
         };
 
@@ -8968,6 +9000,7 @@ mod tests {
                 ssh_control_path: None,
                 use_local_service: false,
             },
+            helper_path_cache: std::sync::Mutex::new(HashMap::new()),
         };
 
         let proxy = nucleotide_lsp::LspLaunchProxyProvider::create_lsp_launch_proxy(
@@ -8986,6 +9019,7 @@ mod tests {
         assert!(script.contains("nucleotide-remote"));
         assert!(script.contains("lsp-proxy"));
         assert!(script.contains("rust-analyzer"));
+        assert_eq!(provider.helper_path_cache.lock().unwrap().len(), 1);
 
         for path in proxy.cleanup_paths {
             if path.is_dir() {
