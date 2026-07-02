@@ -9061,6 +9061,20 @@ mod tests {
         });
     }
 
+    fn status_update_seen(
+        updates: &Rc<RefCell<Vec<CapturedUpdate>>>,
+        expected_message: &str,
+        expected_severity: crate::types::Severity,
+    ) -> bool {
+        updates.borrow().iter().any(|update| {
+            matches!(
+                update,
+                CapturedUpdate::StatusChanged(message, severity)
+                    if message == expected_message && *severity == expected_severity
+            )
+        })
+    }
+
     #[test]
     fn coalesce_bridged_events_drops_duplicate_diagnostics() {
         let doc_id = helix_view::DocumentId::default();
@@ -9203,24 +9217,29 @@ mod tests {
 
         run_event_driven_maintenance(cx, &app);
 
-        assert!(updates.borrow().iter().any(|update| matches!(
-            update,
-            CapturedUpdate::StatusChanged(message, crate::types::Severity::Info)
-                if message == "Preparing language server environment: test-language-server"
-        )));
+        assert!(status_update_seen(
+            &updates,
+            "Preparing language server environment: test-language-server",
+            crate::types::Severity::Info
+        ));
 
-        TEST_RUNTIME.block_on(async {
-            tokio::task::yield_now().await;
-        });
+        sender
+            .send(
+                nucleotide_events::ProjectLspCommand::LspServerStartupRequested {
+                    server_name: "test-language-server".to_string(),
+                    workspace_root: workspace_root.path().to_path_buf(),
+                    language_id: "test".to_string(),
+                },
+            )
+            .expect("prewarmed startup command");
         run_event_driven_maintenance(cx, &app);
 
-        let updates = updates.borrow();
-        assert!(updates.iter().any(|update| matches!(
-            update,
-            CapturedUpdate::StatusChanged(message, crate::types::Severity::Info)
-                if message == "Starting language server: test-language-server"
-        )));
-        assert!(updates.iter().any(|update| matches!(
+        assert!(status_update_seen(
+            &updates,
+            "Starting language server: test-language-server",
+            crate::types::Severity::Info
+        ));
+        assert!(updates.borrow().iter().any(|update| matches!(
             update,
             CapturedUpdate::StatusChanged(message, crate::types::Severity::Error)
                 if message.contains("Failed to start language server test-language-server")
