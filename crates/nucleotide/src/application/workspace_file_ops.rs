@@ -147,10 +147,11 @@ impl WorkspaceFileOpHandler {
 
     fn handle_delete(&self, path: &Path, mode: DeleteMode) -> Result<(), WorkspaceError> {
         if mode == DeleteMode::Trash {
-            warn!(
-                path = %path.display(),
-                "Trash delete is not implemented by workspace backends; performing permanent delete"
-            );
+            return Err(WorkspaceError::CommandFailed {
+                operation: "move path to trash",
+                path: path.to_path_buf(),
+                message: "trash delete is not supported by workspace backends".to_string(),
+            });
         }
         let path = path.to_path_buf();
         let backend = self.backend.clone();
@@ -386,6 +387,27 @@ mod tests {
 
         assert_eq!(command.program, "explorer");
         assert_eq!(command.args, vec![format!("/select,{}", path.display())]);
+    }
+
+    #[test]
+    fn trash_delete_is_rejected_by_backend_handler() {
+        let bus = EventAggregatorHandle::new(EventAggregator::new());
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let handler = WorkspaceFileOpHandler::new(
+            bus,
+            nucleotide_workspace::local_workspace_backend(),
+            runtime.handle().clone(),
+        );
+
+        let result = handler.handle_delete(Path::new("/tmp/delete-me"), DeleteMode::Trash);
+
+        assert!(matches!(
+            result,
+            Err(WorkspaceError::CommandFailed {
+                operation: "move path to trash",
+                ..
+            })
+        ));
     }
 
     struct CapturedWorkspaceEvents {
