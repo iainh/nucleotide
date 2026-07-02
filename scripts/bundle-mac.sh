@@ -103,14 +103,30 @@ fi
 # Find Helix runtime directory
 HELIX_RUNTIME_SOURCE=""
 
+is_complete_runtime() {
+    local candidate="$1"
+    [ -d "${candidate}/queries" ] && [ -d "${candidate}/themes" ]
+}
+
 # Check multiple possible locations for runtime files
 # 1. Local runtime directory (prepared by CI or manual setup)
 if [ -d "runtime" ]; then
-    HELIX_RUNTIME_SOURCE="runtime"
-    echo -e "${GREEN}Found Helix runtime at: ${HELIX_RUNTIME_SOURCE}${NC}"
+    if is_complete_runtime "runtime"; then
+        HELIX_RUNTIME_SOURCE="runtime"
+        echo -e "${GREEN}Found Helix runtime at: ${HELIX_RUNTIME_SOURCE}${NC}"
+    else
+        echo -e "${YELLOW}Warning: local runtime directory is incomplete; looking for another Helix runtime${NC}"
+    fi
 # 2. Try to find any helix checkout in cargo
-elif [ -d "$HOME/.cargo/git/checkouts" ]; then
-    HELIX_RUNTIME_SOURCE=$(find "$HOME/.cargo/git/checkouts" -name "runtime" -path "*/helix-*/runtime" -type d | head -1)
+fi
+
+if [ -z "${HELIX_RUNTIME_SOURCE}" ] && [ -d "$HOME/.cargo/git/checkouts" ]; then
+    while IFS= read -r candidate; do
+        if is_complete_runtime "${candidate}"; then
+            HELIX_RUNTIME_SOURCE="${candidate}"
+            break
+        fi
+    done < <(find "$HOME/.cargo/git/checkouts" -name "runtime" -path "*/helix-*/runtime" -type d)
     if [ -n "${HELIX_RUNTIME_SOURCE}" ]; then
         echo -e "${GREEN}Found Helix runtime at: ${HELIX_RUNTIME_SOURCE}${NC}"
     fi
@@ -120,7 +136,7 @@ fi
 if [ -z "${HELIX_RUNTIME_SOURCE}" ] || [ ! -d "${HELIX_RUNTIME_SOURCE}" ]; then
     echo -e "${RED}Error: Helix runtime directory not found${NC}"
     echo "Please ensure runtime files are available in one of:"
-    echo "  - ./runtime (preferred for CI)"
+    echo "  - ./runtime with queries/ and themes/ subdirectories (preferred for CI)"
     echo "  - ~/.cargo/git/checkouts/helix-*/runtime"
     echo ""
     echo "You can clone helix and copy the runtime directory:"
@@ -149,6 +165,7 @@ fi
 # Build compiled tree-sitter grammars into the bundled runtime when the source
 # runtime does not already provide them. Helix uses ".so" for grammar dynamic
 # libraries on all Unix platforms, including macOS.
+mkdir -p "${RUNTIME_DEST}/grammars"
 GRAMMAR_COUNT=$(find "${RUNTIME_DEST}/grammars" -maxdepth 1 -name "*.so" | wc -l)
 if [ "${GRAMMAR_COUNT}" -eq 0 ]; then
     mkdir -p "${RUNTIME_DEST}/grammars/sources"

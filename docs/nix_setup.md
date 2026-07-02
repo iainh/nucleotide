@@ -74,9 +74,9 @@ nix run
 
 ## Features
 
-- **Latest Stable Rust**: Uses Fenix to provide the latest stable Rust toolchain
+- **Latest Stable Rust**: Uses rust-overlay to provide the latest stable Rust toolchain
 - **Platform Support**: Automatically configures dependencies for macOS and Linux
-- **Development Tools**: Includes rust-analyzer, cargo-watch, clippy, and rustfmt
+- **Development Tools**: Includes rust-analyzer, cargo-watch, clippy, rustfmt, Zig, and cargo-zigbuild
 - **macOS App Bundle**: Automatically creates a .app bundle on macOS builds
 - **Reproducible**: Ensures all developers use the same toolchain and dependencies
 

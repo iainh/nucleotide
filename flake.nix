@@ -9,6 +9,11 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
+    zig-overlay = {
+      url = "github:mitchellh/zig-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+
     flake-utils.url = "github:numtide/flake-utils";
 
     # Helix repository for runtime files
@@ -19,7 +24,7 @@
 
   };
 
-  outputs = { self, nixpkgs, rust-overlay, flake-utils, helix}:
+  outputs = { self, nixpkgs, rust-overlay, zig-overlay, flake-utils, helix}:
     flake-utils.lib.eachSystem [ "x86_64-darwin" "aarch64-darwin" "x86_64-linux" "aarch64-linux" ] (system:
       let
         pkgs = import nixpkgs {
@@ -31,13 +36,20 @@
         };
 
 
+        rustTargets = [
+          "x86_64-unknown-linux-musl"
+          "aarch64-unknown-linux-musl"
+        ];
+
         # Native Rust toolchain with extensions
         rustToolchain = pkgs.rust-bin.stable.latest.default.override {
           extensions = [ "rust-analyzer" "rust-src" ];
+          targets = rustTargets;
         };
 
         # Dependency management following Helix patterns
         inherit (pkgs) lib stdenv;
+        zig = zig-overlay.packages.${system}.default;
 
         # Keep Nix's cc wrapper so library paths and SDK flags are preserved,
         # while asking clang to use LLD's Darwin linker underneath.
@@ -392,9 +404,17 @@
           # Copy binary
           cp target/release/nucl nucleotide-linux/bin/
           cp target/release/nucleotide-remote nucleotide-linux/bin/
-          cp target/release/nucleotide-remote nucleotide-linux/bin/nucleotide-remote-linux-x86_64
-          if [ -f "target/aarch64-unknown-linux-gnu/release/nucleotide-remote" ]; then
-            cp target/aarch64-unknown-linux-gnu/release/nucleotide-remote nucleotide-linux/bin/nucleotide-remote-linux-aarch64
+
+          remote_helper_dir="''${NUCL_REMOTE_HELPER_DIR:-target/remote-helpers}"
+          if [ -d "$remote_helper_dir" ]; then
+            for helper in nucleotide-remote-linux-x86_64 nucleotide-remote-linux-aarch64; do
+              if [ -f "$remote_helper_dir/$helper" ]; then
+                cp "$remote_helper_dir/$helper" "nucleotide-linux/bin/$helper"
+                chmod +x "nucleotide-linux/bin/$helper"
+              fi
+            done
+          else
+            echo "Warning: SSH remote helper directory not found at $remote_helper_dir" >&2
           fi
 
           # Copy runtime files (from Nix store to writable location)
@@ -433,6 +453,14 @@
           echo "✓ Linux package created at nucleotide-linux.tar.gz"
         '';
 
+        # SSH remote helper builder
+        buildRemoteHelpers = pkgs.writeScriptBin "build-remote-helpers" ''
+          #!${pkgs.stdenv.shell}
+          set -e
+
+          exec ./scripts/build-remote-helpers.sh "$@"
+        '';
+
       in
       {
         packages = {
@@ -440,6 +468,7 @@
           buildScript = buildScript;
           makeMacOSBundle = makeMacOSBundle;
           makeLinuxPackage = makeLinuxPackage;
+          buildRemoteHelpers = buildRemoteHelpers;
         };
 
         devShells.default = pkgs.mkShell ({
@@ -454,6 +483,7 @@
             cargo-deny
             cargo-flamegraph
             cargo-machete
+            cargo-zigbuild
 
             # Build performance tools
             sccache
@@ -461,11 +491,13 @@
             # For running the application
             ripgrep
             tree-sitter
+            zig
 
             # Build helpers
             buildScript
             makeMacOSBundle
             makeLinuxPackage
+            buildRemoteHelpers
 
             # Platform-specific tools
           ] ++ lib.optionals stdenv.isDarwin [
@@ -516,6 +548,7 @@
             echo "  build-release-cached         - Release build with sccache" >&2
             echo "" >&2
             echo "Bundle creation:" >&2
+            echo "  build-remote-helpers       - Build Linux SSH helper binaries" >&2
             echo "  make-macos-bundle            - Create macOS .app bundle" >&2
             echo "  make-linux-package           - Create Linux distribution" >&2
             echo "" >&2
