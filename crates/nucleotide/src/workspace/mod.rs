@@ -82,9 +82,9 @@ use nucleotide_terminal::TerminalBounds;
 #[cfg(test)]
 use nucleotide_workspace::local_workspace_backend;
 use nucleotide_workspace::{
-    FileKind, FileSearchQuery, FileStat, ProjectEnvironmentOrigin, ProjectEnvironmentSnapshot,
-    ReadOptions, TextSearchQuery, WorkspaceBackend, WorkspaceBackendHandle, WorkspaceIdentity,
-    classify_workspace_location,
+    FileKind, FileSearchQuery, FileSearchResult, FileStat, ProjectEnvironmentOrigin,
+    ProjectEnvironmentSnapshot, ReadOptions, TextSearchQuery, WorkspaceBackend,
+    WorkspaceBackendHandle, WorkspaceIdentity, classify_workspace_location,
 };
 use slotmap::KeyData;
 // (no direct Workspace v2 items used here)
@@ -15809,10 +15809,11 @@ fn open(
 
 const FILE_PICKER_PREVIEW_MAX_BYTES: u64 = 10 * 1024;
 const FILE_PICKER_PREVIEW_MAX_DIR_ENTRIES: usize = 100;
+const FILE_PICKER_RESULT_LIMIT: usize = 1000;
 
 fn open_at(
     _core: Entity<Core>,
-    _handle: tokio::runtime::Handle,
+    handle: tokio::runtime::Handle,
     overlay: Entity<OverlayView>,
     base_dir: std::path::PathBuf,
     workspace_backend: WorkspaceBackendHandle,
@@ -15823,10 +15824,57 @@ fn open_at(
 
     debug!("Base directory for file picker: {:?}", base_dir);
 
-    let mut items = match file_picker_items_from_backend(
+    let workspace_identity = workspace_backend.identity();
+    if should_load_file_picker_items_async(&workspace_identity) {
+        info!(
+            workspace_root = %base_dir.display(),
+            backend = ?workspace_identity,
+            "Loading file picker items through workspace backend"
+        );
+
+        let overlay = overlay.clone();
+        let search_base_dir = base_dir.clone();
+        let item_base_dir = base_dir.clone();
+        let picker_backend = workspace_backend.clone();
+        cx.spawn(async move |this, cx| {
+            let search_result = match handle
+                .spawn(file_picker_search_result_from_backend(
+                    workspace_backend,
+                    search_base_dir,
+                    FILE_PICKER_RESULT_LIMIT,
+                    file_picker_config,
+                ))
+                .await
+            {
+                Ok(result) => result,
+                Err(err) => Err(err.to_string()),
+            };
+
+            if let Some(this) = this.upgrade() {
+                this.update(cx, |_workspace, cx| {
+                    let items = match search_result {
+                        Ok(result) => file_picker_items_from_search_result(&item_base_dir, result),
+                        Err(err) => {
+                            warn!(
+                                workspace_root = %item_base_dir.display(),
+                                error = %err,
+                                "Failed to build file picker items"
+                            );
+                            Vec::new()
+                        }
+                    };
+                    emit_file_picker_from_items(items, picker_backend, overlay, cx);
+                });
+            }
+        })
+        .detach();
+        return;
+    }
+
+    let items = match file_picker_items_from_backend(
         workspace_backend.as_ref(),
         &base_dir,
-        1000,
+        FILE_PICKER_RESULT_LIMIT,
         &file_picker_config,
     ) {
         Ok(items) => items,
@@ -15836,6 +15884,19 @@ fn open_at(
         }
     };
 
+    emit_file_picker_from_items(items, workspace_backend, overlay, cx);
+}
+
+fn should_load_file_picker_items_async(workspace_identity: &WorkspaceIdentity) -> bool {
+    !matches!(workspace_identity, WorkspaceIdentity::Local)
+}
+
+fn emit_file_picker_from_items(
+    mut items: Vec<crate::picker_view::PickerItem>,
+    workspace_backend: WorkspaceBackendHandle,
+    overlay: Entity<OverlayView>,
+    cx: &mut Context<Workspace>,
+) {
     // Sort items by label (path) for consistent ordering
     items.sort_by_key(|item| item.label.clone());
 
@@ -15990,10 +16051,38 @@ fn file_picker_items_from_backend(
     limit: usize,
     file_picker_config: &helix_view::editor::FilePickerConfig,
 ) -> Result<Vec<crate::picker_view::PickerItem>, String> {
-    use crate::picker_view::PickerItem;
-    use std::sync::Arc;
+    let result = futures_executor::block_on(backend.file_search(file_picker_search_query(
+        base_dir,
+        limit,
+        file_picker_config,
+    )))
+    .map_err(|err| err.to_string())?;
 
-    let result = futures_executor::block_on(backend.file_search(FileSearchQuery {
+    Ok(file_picker_items_from_search_result(base_dir, result))
+}
+
+async fn file_picker_search_result_from_backend(
+    backend: WorkspaceBackendHandle,
+    base_dir: PathBuf,
+    limit: usize,
+    file_picker_config: helix_view::editor::FilePickerConfig,
+) -> Result<FileSearchResult, String> {
+    backend
+        .file_search(file_picker_search_query(
+            &base_dir,
+            limit,
+            &file_picker_config,
+        ))
+        .await
+        .map_err(|err| err.to_string())
+}
+
+fn file_picker_search_query(
+    base_dir: &Path,
+    limit: usize,
+    file_picker_config: &helix_view::editor::FilePickerConfig,
+) -> FileSearchQuery {
+    FileSearchQuery {
         root: base_dir.to_path_buf(),
         pattern: None,
         limit,
@@ -16006,10 +16095,17 @@ fn file_picker_items_from_backend(
         follow_links: file_picker_config.follow_symlinks,
         max_depth: file_picker_config.max_depth,
         excluded_relative_prefixes: vec![PathBuf::from("zed-source")],
-    }))
-    .map_err(|err| err.to_string())?;
+    }
+}
 
-    Ok(result
+fn file_picker_items_from_search_result(
+    base_dir: &Path,
+    result: FileSearchResult,
+) -> Vec<crate::picker_view::PickerItem> {
+    use crate::picker_view::PickerItem;
+    use std::sync::Arc;
+
+    result
         .files
         .into_iter()
         .map(|relative_path| {
@@ -16024,7 +16120,7 @@ fn file_picker_items_from_backend(
                 columns: None,
             }
         })
-        .collect())
+        .collect()
 }
 
 fn open_directory(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &mut App) {
@@ -19618,6 +19714,20 @@ mod tests {
         });
 
         assert!(global_search_custom_ignore_filenames(identity).is_empty());
+    }
+
+    #[test]
+    fn file_picker_item_loading_is_async_for_remote_only() {
+        let remote_identity =
+            WorkspaceIdentity::Remote(nucleotide_workspace::RemoteWorkspaceIdentity {
+                kind: nucleotide_workspace::RemoteWorkspaceKind::Ssh,
+                name: "example.test".to_string(),
+            });
+
+        assert!(!should_load_file_picker_items_async(
+            &WorkspaceIdentity::Local
+        ));
+        assert!(should_load_file_picker_items_async(&remote_identity));
     }
 
     #[test]
