@@ -160,13 +160,25 @@ fn determine_workspace_root(args: &Args) -> Result<Option<PathBuf>> {
         return Ok(Some(dir.clone()));
     }
 
-    // Priority 2: If first file is a directory, use it
+    // Priority 2: Remote startup arguments must not be probed through the host filesystem.
+    if let Some((path, _)) = args.files.first()
+        && let Some(remote_root) = nucleotide_workspace::remote_startup_workspace_root(path)
+    {
+        info!(
+            file = ?path,
+            workspace_root = ?remote_root,
+            "Using remote startup workspace root without host filesystem probes"
+        );
+        return Ok(Some(remote_root));
+    }
+
+    // Priority 3: If first file is a directory, use it
     if let Some((path, _)) = args.files.first().filter(|p| p.0.is_dir()) {
         info!(directory = ?path, "Using directory argument as workspace root");
         return Ok(Some(path.clone()));
     }
 
-    // Priority 3: For file arguments, find the workspace root of the first file's parent
+    // Priority 4: For file arguments, find the workspace root of the first file's parent
     if let Some((first_file, _)) = args.files.first()
         && let Some(parent) = first_file.parent()
         && parent.exists()
@@ -181,7 +193,7 @@ fn determine_workspace_root(args: &Args) -> Result<Option<PathBuf>> {
         return Ok(Some(workspace_root));
     }
 
-    // Priority 4: Try to find workspace root from current directory
+    // Priority 5: Try to find workspace root from current directory
     if let Some(workspace_root) =
         nucleotide::application::implicit_workspace_root_from_current_dir()
     {
@@ -1619,6 +1631,19 @@ mod tests {
         assert_eq!(
             open_request_workspace_dir(&file_path),
             Some(temp_dir.path().to_path_buf())
+        );
+    }
+
+    #[test]
+    fn determine_workspace_root_uses_remote_file_parent_without_host_probe() {
+        let mut args = Args::default();
+        let path = PathBuf::from("ssh://me@example.com/home/me/project/src/main.rs");
+        args.files
+            .insert(path, vec![helix_core::Position::default()]);
+
+        assert_eq!(
+            determine_workspace_root(&args).unwrap(),
+            Some(PathBuf::from("ssh://me@example.com/home/me/project/src"))
         );
     }
 
