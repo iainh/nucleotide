@@ -92,6 +92,50 @@ use smallvec::{SmallVec, smallvec};
 
 type FileTreeContextMenuHandler = fn(&mut Workspace, &mut Context<Workspace>);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RemoteDocumentReloadDecision<D, V> {
+    Reload { doc_id: D, view_id: V },
+    Dirty { doc_id: D },
+    Hidden { doc_id: D },
+    NoMatch,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RemoteDocumentReloadApply {
+    Applied,
+    Dirty,
+    Skipped,
+}
+
+fn remote_document_reload_decision<'a, D, V>(
+    documents: impl IntoIterator<Item = (D, Option<&'a Path>, bool)>,
+    visible_views: impl IntoIterator<Item = (V, D)>,
+    path: &Path,
+) -> RemoteDocumentReloadDecision<D, V>
+where
+    D: Copy + Eq,
+    V: Copy,
+{
+    let Some((doc_id, _, is_modified)) = documents
+        .into_iter()
+        .find(|(_, doc_path, _)| doc_path.is_some_and(|doc_path| doc_path == path))
+    else {
+        return RemoteDocumentReloadDecision::NoMatch;
+    };
+
+    if is_modified {
+        return RemoteDocumentReloadDecision::Dirty { doc_id };
+    }
+
+    visible_views
+        .into_iter()
+        .find_map(|(view_id, view_doc_id)| {
+            (view_doc_id == doc_id)
+                .then_some(RemoteDocumentReloadDecision::Reload { doc_id, view_id })
+        })
+        .unwrap_or(RemoteDocumentReloadDecision::Hidden { doc_id })
+}
+
 fn project_status_types_from_lsp_project_type(
     project_type: &nucleotide_events::ProjectType,
 ) -> Vec<nucleotide_project::ProjectType> {
@@ -11394,6 +11438,7 @@ impl Workspace {
                 // Tree updates and VCS refreshes are handled by the file tree at
                 // the debounced watcher batch boundary before this event is emitted.
                 self.notify_lsp_file_system_change(path, kind, cx);
+                self.schedule_remote_document_reload(path, kind, cx);
                 cx.notify();
             }
             FileTreeEvent::VcsRefreshStarted { repository_root } => {
@@ -11458,6 +11503,212 @@ impl Workspace {
                 self.start_file_tree_search(initial_query.clone(), cx);
             }
         }
+    }
+
+    fn schedule_remote_document_reload(
+        &mut self,
+        path: &Path,
+        kind: &FileSystemEventKind,
+        cx: &mut Context<Self>,
+    ) {
+        if !matches!(
+            kind,
+            FileSystemEventKind::Created | FileSystemEventKind::Modified
+        ) {
+            return;
+        }
+
+        let (workspace_backend, decision) = {
+            let core = self.core.read(cx);
+            let workspace_backend = core.workspace_backend.clone();
+            let decision = if matches!(workspace_backend.identity(), WorkspaceIdentity::Remote(_)) {
+                let documents = core.editor.documents.iter().map(|(doc_id, doc)| {
+                    (*doc_id, doc.path().map(PathBuf::as_path), doc.is_modified())
+                });
+                let visible_views = core
+                    .editor
+                    .tree
+                    .views()
+                    .map(|(view, _)| (view.id, view.doc));
+                remote_document_reload_decision(documents, visible_views, path)
+            } else {
+                RemoteDocumentReloadDecision::<DocumentId, ViewId>::NoMatch
+            };
+
+            (workspace_backend, decision)
+        };
+
+        let (doc_id, view_id) = match decision {
+            RemoteDocumentReloadDecision::Reload { doc_id, view_id } => (doc_id, view_id),
+            RemoteDocumentReloadDecision::Dirty { .. } => {
+                self.warn_remote_document_changed_with_unsaved_edits(path, cx);
+                return;
+            }
+            RemoteDocumentReloadDecision::Hidden { doc_id } => {
+                debug!(
+                    path = %path.display(),
+                    ?doc_id,
+                    "Remote file changed for hidden buffer; leaving buffer unchanged"
+                );
+                return;
+            }
+            RemoteDocumentReloadDecision::NoMatch => return,
+        };
+
+        let runtime_handle = self.handle.clone();
+        let path = path.to_path_buf();
+        debug!(
+            path = %path.display(),
+            ?doc_id,
+            ?view_id,
+            "Scheduling remote document reload"
+        );
+
+        cx.spawn(async move |this, cx| {
+            let read = match runtime_handle
+                .spawn(crate::application::read_workspace_document(
+                    workspace_backend,
+                    path.clone(),
+                ))
+                .await
+            {
+                Ok(result) => result,
+                Err(error) => Err(anyhow::anyhow!(
+                    "remote document reload task failed: {error}"
+                )),
+            };
+
+            if let Some(this) = this.upgrade() {
+                this.update(cx, |workspace, cx| match read {
+                    Ok(document_read) => {
+                        match workspace.apply_remote_document_reload(
+                            doc_id,
+                            view_id,
+                            &path,
+                            document_read,
+                            cx,
+                        ) {
+                            Ok(RemoteDocumentReloadApply::Applied) => {
+                                info!(
+                                    path = %path.display(),
+                                    ?doc_id,
+                                    "Reloaded clean remote document after external change"
+                                );
+                                workspace.handle_document_changed(doc_id, cx);
+                            }
+                            Ok(RemoteDocumentReloadApply::Dirty) => {
+                                workspace
+                                    .warn_remote_document_changed_with_unsaved_edits(&path, cx);
+                            }
+                            Ok(RemoteDocumentReloadApply::Skipped) => {
+                                debug!(
+                                    path = %path.display(),
+                                    ?doc_id,
+                                    "Skipped stale remote document reload"
+                                );
+                            }
+                            Err(error) => {
+                                warn!(
+                                    path = %path.display(),
+                                    ?doc_id,
+                                    error = %error,
+                                    "Failed to reload remote document after external change"
+                                );
+                                workspace.push_editor_status_notification(
+                                    EditorStatus {
+                                        status: format!(
+                                            "Failed to reload remote file {}: {error}",
+                                            path.display()
+                                        ),
+                                        severity: Severity::Error,
+                                    },
+                                    cx,
+                                );
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        warn!(
+                            path = %path.display(),
+                            ?doc_id,
+                            error = %error,
+                            "Failed to read remote document after external change"
+                        );
+                        workspace.push_editor_status_notification(
+                            EditorStatus {
+                                status: format!(
+                                    "Failed to read changed remote file {}: {error}",
+                                    path.display()
+                                ),
+                                severity: Severity::Error,
+                            },
+                            cx,
+                        );
+                    }
+                });
+            }
+        })
+        .detach();
+    }
+
+    fn apply_remote_document_reload(
+        &mut self,
+        doc_id: DocumentId,
+        view_id: ViewId,
+        path: &Path,
+        document_read: crate::application::WorkspaceDocumentRead,
+        cx: &mut Context<Self>,
+    ) -> anyhow::Result<RemoteDocumentReloadApply> {
+        self.core.update(cx, |core, _| {
+            let documents = core.editor.documents.iter().map(|(doc_id, doc)| {
+                (*doc_id, doc.path().map(PathBuf::as_path), doc.is_modified())
+            });
+            let visible_views = core
+                .editor
+                .tree
+                .views()
+                .map(|(view, _)| (view.id, view.doc));
+
+            match remote_document_reload_decision(documents, visible_views, path) {
+                RemoteDocumentReloadDecision::Reload {
+                    doc_id: current_doc_id,
+                    view_id: current_view_id,
+                } if current_doc_id == doc_id && current_view_id == view_id => {
+                    crate::application::reload_workspace_document_from_read(
+                        &mut core.editor,
+                        doc_id,
+                        view_id,
+                        document_read,
+                    )?;
+                    Ok(RemoteDocumentReloadApply::Applied)
+                }
+                RemoteDocumentReloadDecision::Dirty {
+                    doc_id: current_doc_id,
+                } if current_doc_id == doc_id => Ok(RemoteDocumentReloadApply::Dirty),
+                _ => Ok(RemoteDocumentReloadApply::Skipped),
+            }
+        })
+    }
+
+    fn warn_remote_document_changed_with_unsaved_edits(
+        &mut self,
+        path: &Path,
+        cx: &mut Context<Self>,
+    ) {
+        warn!(
+            path = %path.display(),
+            "Remote file changed externally while buffer has unsaved edits"
+        );
+        self.push_editor_status_notification(
+            EditorStatus {
+                status: format!(
+                    "Remote file changed externally; unsaved buffer not reloaded: {}",
+                    path.display()
+                ),
+                severity: Severity::Warning,
+            },
+            cx,
+        );
     }
 
     fn notify_lsp_file_system_change(
@@ -17560,7 +17811,7 @@ mod tests {
     use super::*;
     use helix_core::{Range, Rope, SmallVec};
     use slotmap::KeyData;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     fn test_regex(pattern: &str) -> helix_stdx::rope::Regex {
         helix_stdx::rope::RegexBuilder::new()
@@ -17571,6 +17822,58 @@ mod tests {
 
     fn default_file_picker_config() -> helix_view::editor::FilePickerConfig {
         helix_view::editor::Config::default().file_picker
+    }
+
+    #[test]
+    fn remote_document_reload_decision_reloads_visible_clean_match() {
+        let path = Path::new("/remote/project/src/lib.rs");
+        let docs = [(1_u8, Some(path), false)];
+        let views = [(7_u8, 1_u8)];
+
+        assert_eq!(
+            remote_document_reload_decision(docs, views, path),
+            RemoteDocumentReloadDecision::Reload {
+                doc_id: 1,
+                view_id: 7,
+            }
+        );
+    }
+
+    #[test]
+    fn remote_document_reload_decision_reports_dirty_match() {
+        let path = Path::new("/remote/project/src/lib.rs");
+        let docs = [(1_u8, Some(path), true)];
+        let views = [(7_u8, 1_u8)];
+
+        assert_eq!(
+            remote_document_reload_decision(docs, views, path),
+            RemoteDocumentReloadDecision::Dirty { doc_id: 1 }
+        );
+    }
+
+    #[test]
+    fn remote_document_reload_decision_reports_hidden_match() {
+        let path = Path::new("/remote/project/src/lib.rs");
+        let docs = [(1_u8, Some(path), false)];
+        let views = [(7_u8, 2_u8)];
+
+        assert_eq!(
+            remote_document_reload_decision(docs, views, path),
+            RemoteDocumentReloadDecision::Hidden { doc_id: 1 }
+        );
+    }
+
+    #[test]
+    fn remote_document_reload_decision_ignores_unmatched_paths() {
+        let path = Path::new("/remote/project/src/lib.rs");
+        let other = Path::new("/remote/project/src/main.rs");
+        let docs = [(1_u8, Some(other), false), (2_u8, None, false)];
+        let views = [(7_u8, 1_u8)];
+
+        assert_eq!(
+            remote_document_reload_decision(docs, views, path),
+            RemoteDocumentReloadDecision::NoMatch
+        );
     }
 
     fn test_code_action(
