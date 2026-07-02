@@ -33,6 +33,7 @@ pub struct CommandCompletionCache {
     languages: Vec<String>,
     configured_language_servers: Vec<String>,
     active_language_servers: Vec<String>,
+    complete_filesystem_paths: bool,
 }
 
 impl CommandCompletionCache {
@@ -81,7 +82,13 @@ impl CommandCompletionCache {
             languages,
             configured_language_servers,
             active_language_servers,
+            complete_filesystem_paths: true,
         }
+    }
+
+    pub fn with_filesystem_paths(mut self, enabled: bool) -> Self {
+        self.complete_filesystem_paths = enabled;
+        self
     }
 }
 
@@ -93,6 +100,7 @@ impl Default for CommandCompletionCache {
             languages: Vec::new(),
             configured_language_servers: Vec::new(),
             active_language_servers: Vec::new(),
+            complete_filesystem_paths: true,
         }
     }
 }
@@ -245,13 +253,15 @@ fn complete_command_arguments_with_cache(
             false,
             |server| format!("Stop language server: {server}"),
         ),
-        command if is_file_command(command) => complete_filesystem_paths(
-            input,
-            context.current_arg,
-            PathCompletionKind::FileOrDirectory,
-            path_action_label(command, context.command),
-        ),
-        "change-current-directory" => complete_filesystem_paths(
+        command if cache.complete_filesystem_paths && is_file_command(command) => {
+            complete_filesystem_paths(
+                input,
+                context.current_arg,
+                PathCompletionKind::FileOrDirectory,
+                path_action_label(command, context.command),
+            )
+        }
+        "change-current-directory" if cache.complete_filesystem_paths => complete_filesystem_paths(
             input,
             context.current_arg,
             PathCompletionKind::Directory,
@@ -677,5 +687,21 @@ mod tests {
         let items = get_command_completions_with_cache(&input, None);
 
         assert!(items.iter().any(|item| item.text.as_ref() == expected));
+    }
+
+    #[test]
+    fn filesystem_completion_can_be_disabled_for_remote_workspaces() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("alpha.txt");
+        std::fs::write(&file_path, "").unwrap();
+
+        let partial_path = temp_dir.path().join("alp");
+        let input = format!("open {}", partial_path.display());
+        let expected = format!("open {}", file_path.display());
+        let cache = CommandCompletionCache::default().with_filesystem_paths(false);
+
+        let items = get_command_completions_with_cache(&input, Some(&cache));
+
+        assert!(!items.iter().any(|item| item.text.as_ref() == expected));
     }
 }

@@ -450,9 +450,15 @@ impl OverlayView {
                             .core
                             .upgrade()
                             .map(|core| {
+                                let core = core.read(cx);
+                                let complete_filesystem_paths = matches!(
+                                    core.workspace_backend.identity(),
+                                    nucleotide_workspace::WorkspaceIdentity::Local
+                                );
                                 crate::completions::CommandCompletionCache::from_editor(
-                                    &core.read(cx).editor,
+                                    &core.editor,
                                 )
+                                .with_filesystem_paths(complete_filesystem_paths)
                             })
                             .unwrap_or_default();
 
