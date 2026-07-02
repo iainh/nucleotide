@@ -7033,15 +7033,40 @@ impl Application {
 
     fn open_navigation_document(&mut self, path: &Path) -> anyhow::Result<DocumentId> {
         let workspace_backend = self.workspace_backend.clone();
+        let path = navigation_display_path(
+            path,
+            self.project_directory.as_deref(),
+            &workspace_backend.identity(),
+        );
         let action = if self.editor.tree.views().count() == 0 {
             helix_view::editor::Action::VerticalSplit
         } else {
             helix_view::editor::Action::Replace
         };
-        open_workspace_document(&mut self.editor, &workspace_backend, path, action)
+        open_workspace_document(&mut self.editor, &workspace_backend, &path, action)
     }
 
     // NOTE: handle_crank_event is defined earlier in the file and includes completion processing
+}
+
+fn navigation_display_path(
+    path: &Path,
+    project_directory: Option<&Path>,
+    workspace_identity: &WorkspaceIdentity,
+) -> PathBuf {
+    if !matches!(workspace_identity, WorkspaceIdentity::Remote(_)) {
+        return path.to_path_buf();
+    }
+
+    let Some(project_directory) = project_directory else {
+        return path.to_path_buf();
+    };
+    let location = classify_workspace_location(project_directory);
+    if !location.is_remote() {
+        return path.to_path_buf();
+    }
+
+    location.path_mapping().to_display_path(path)
 }
 
 /// Detect project root by walking up parent directories looking for project markers
@@ -9109,12 +9134,13 @@ mod tests {
         lsp_completion_insert_text_format, lsp_completion_items_from_response,
         lsp_completion_items_from_response_for_server, lsp_completion_resolve_supported,
         lsp_completion_response_is_incomplete, lsp_symbol_picker, native_open_file_with_backend,
-        native_symbol_item_from_lsp, open_workspace_document, path_completion_items,
-        path_completion_items_from_listing, project_health_status, project_server_language_id,
-        should_launch_lsp_on_local_host, should_stat_picker_root_with_backend,
-        should_use_workspace_syntax_symbol_fallback, startup_path_should_open_as_file,
-        str_prefix_at_byte_limit, suppress_shadowed_buffer_word_completion_items,
-        syntax_symbol_kind_from_capture_name, workspace_diagnostic_refresh_reply,
+        native_symbol_item_from_lsp, navigation_display_path, open_workspace_document,
+        path_completion_items, path_completion_items_from_listing, project_health_status,
+        project_server_language_id, should_launch_lsp_on_local_host,
+        should_stat_picker_root_with_backend, should_use_workspace_syntax_symbol_fallback,
+        startup_path_should_open_as_file, str_prefix_at_byte_limit,
+        suppress_shadowed_buffer_word_completion_items, syntax_symbol_kind_from_capture_name,
+        workspace_diagnostic_refresh_reply,
     };
     use crate::test_utils::test_support::{
         TestUpdate, create_counting_channel, create_test_diagnostic_events,
@@ -9782,6 +9808,32 @@ mod tests {
         assert!(doc.diff_handle().is_some());
     }
 
+    #[test]
+    fn navigation_display_path_maps_remote_native_paths_to_display_root() {
+        let identity = WorkspaceIdentity::Remote(RemoteWorkspaceIdentity {
+            kind: RemoteWorkspaceKind::Ssh,
+            name: "example.com".to_string(),
+        });
+        let project_root = Path::new("ssh://me@example.com/home/me/project");
+
+        assert_eq!(
+            navigation_display_path(
+                Path::new("/home/me/project/src/main.rs"),
+                Some(project_root),
+                &identity,
+            ),
+            PathBuf::from("ssh://me@example.com/home/me/project/src/main.rs")
+        );
+        assert_eq!(
+            navigation_display_path(
+                Path::new("ssh://me@example.com/home/me/project/src/main.rs"),
+                Some(project_root),
+                &identity,
+            ),
+            PathBuf::from("ssh://me@example.com/home/me/project/src/main.rs")
+        );
+    }
+
     #[gpui::test]
     async fn jump_to_global_search_location_uses_workspace_backend_for_remote_path(
         cx: &mut gpui::TestAppContext,
@@ -9813,6 +9865,49 @@ mod tests {
                 Some(display_path.as_path())
             );
             assert_eq!(doc.text(), "one\ntwo\nthree\n");
+            assert_eq!(
+                doc.selection(view_id)
+                    .primary()
+                    .cursor_line(doc.text().slice(..)),
+                1
+            );
+        });
+
+        assert!(!display_path.exists());
+    }
+
+    #[gpui::test]
+    async fn jump_to_lsp_location_maps_remote_native_path_to_display_path(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let temp = tempdir().unwrap();
+        fs::create_dir_all(temp.path().join("src")).unwrap();
+        fs::write(temp.path().join("src").join("main.rs"), "one\ntwo\n").unwrap();
+
+        let display_root = PathBuf::from("ssh://me@example.com/home/me/project");
+        let display_path = display_root.join("src").join("main.rs");
+        let backend = path_mapped_workspace_backend(
+            Arc::new(RemoteIdentityLocalBackend),
+            WorkspacePathMapping::new(&display_root, temp.path()),
+        );
+        let app = new_test_application(cx);
+
+        app.update(cx, |app, _cx| {
+            app.project_directory = Some(display_root.clone());
+            app.workspace_backend = backend;
+            let (doc_id, view_id) = app
+                .jump_to_lsp_location(&crate::types::LspLocation {
+                    path: PathBuf::from("/home/me/project/src/main.rs"),
+                    range: lsp::Range::new(lsp::Position::new(1, 0), lsp::Position::new(1, 1)),
+                    offset_encoding: OffsetEncoding::Utf8,
+                })
+                .expect("remote LSP jump");
+            let doc = app.editor.document(doc_id).expect("opened remote doc");
+
+            assert_eq!(
+                doc.path().map(PathBuf::as_path),
+                Some(display_path.as_path())
+            );
             assert_eq!(
                 doc.selection(view_id)
                     .primary()
