@@ -19,6 +19,7 @@ members = [
     "crates/nucleotide-terminal",
     "crates/nucleotide-terminal-view",
     "crates/nucleotide-terminal-panel",
+    "vendor/helix-stdx",
 ]
 exclude = [
     "vendor/block-0.1.6",
@@ -107,6 +108,7 @@ nucleotide-vcs = { path = "crates/nucleotide-vcs" }
 [patch."https://github.com/helix-editor/helix"]
 helix-lsp = { path = "vendor/helix-lsp" }
 helix-lsp-types = { path = "vendor/helix-lsp-types" }
+helix-stdx = { path = "vendor/helix-stdx" }
 
 [patch.crates-io]
 # Zed workspace crates rely on these patched async primitives. Patches in
