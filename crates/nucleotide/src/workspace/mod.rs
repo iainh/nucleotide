@@ -378,6 +378,16 @@ fn should_add_recent_project(backend_identity: &WorkspaceIdentity) -> bool {
     matches!(backend_identity, WorkspaceIdentity::Local)
 }
 
+fn native_window_document_path(
+    path: Option<PathBuf>,
+    backend_identity: &WorkspaceIdentity,
+) -> Option<PathBuf> {
+    path.filter(|path| {
+        matches!(backend_identity, WorkspaceIdentity::Local)
+            && !classify_workspace_location(path).is_remote()
+    })
+}
+
 fn image_zoom_percent(zoom: f32) -> String {
     format!("{:.0}%", zoom * 100.0)
 }
@@ -6888,6 +6898,9 @@ impl Workspace {
         &self,
         cx: &Context<Self>,
     ) -> (Option<String>, NativeWindowMetadata) {
+        let core = self.core.read(cx);
+        let workspace_identity = core.workspace_backend.identity();
+
         if let Some(tab) = self
             .active_image_tab_id
             .and_then(|doc_id| self.image_tabs.iter().find(|tab| tab.id == doc_id))
@@ -6902,19 +6915,15 @@ impl Workspace {
                 focused_file_name,
                 NativeWindowMetadata {
                     title,
-                    document_path: Some(tab.path.clone()),
-                    edited: self
-                        .core
-                        .read(cx)
-                        .editor
-                        .documents
-                        .values()
-                        .any(|doc| doc.is_modified()),
+                    document_path: native_window_document_path(
+                        Some(tab.path.clone()),
+                        &workspace_identity,
+                    ),
+                    edited: core.editor.documents.values().any(|doc| doc.is_modified()),
                 },
             );
         }
 
-        let core = self.core.read(cx);
         let editor = &core.editor;
         let mut focused_file_name = None;
         let mut focused_doc_path = None;
@@ -6938,7 +6947,7 @@ impl Workspace {
             focused_file_name,
             NativeWindowMetadata {
                 title,
-                document_path: focused_doc_path,
+                document_path: native_window_document_path(focused_doc_path, &workspace_identity),
                 edited,
             },
         )
@@ -17683,6 +17692,33 @@ mod tests {
                 name: "devbox".to_string(),
             }
         )));
+    }
+
+    #[test]
+    fn native_window_document_path_is_local_only() {
+        let local_path = PathBuf::from("/tmp/project/src/main.rs");
+        assert_eq!(
+            native_window_document_path(Some(local_path.clone()), &WorkspaceIdentity::Local),
+            Some(local_path)
+        );
+
+        assert_eq!(
+            native_window_document_path(
+                Some(PathBuf::from("ssh://devbox/home/me/project/src/main.rs")),
+                &WorkspaceIdentity::Local
+            ),
+            None
+        );
+        assert_eq!(
+            native_window_document_path(
+                Some(PathBuf::from("/home/me/project/src/main.rs")),
+                &WorkspaceIdentity::Remote(nucleotide_workspace::RemoteWorkspaceIdentity {
+                    kind: nucleotide_workspace::RemoteWorkspaceKind::Ssh,
+                    name: "devbox".to_string(),
+                })
+            ),
+            None
+        );
     }
 
     #[test]
