@@ -134,6 +134,7 @@ enum PromptSubmitAction {
     Search,
     GlobalSearch,
     FileTreeSearch,
+    RemoteOpen,
     RegexSelection(RegexSelectionAction),
 }
 
@@ -142,6 +143,7 @@ fn prompt_submit_action(prompt_text: &str) -> PromptSubmitAction {
         "search:" | "rsearch:" => PromptSubmitAction::Search,
         "global-search:" => PromptSubmitAction::GlobalSearch,
         "file-tree-search:" => PromptSubmitAction::FileTreeSearch,
+        crate::remote_open::REMOTE_OPEN_PROMPT => PromptSubmitAction::RemoteOpen,
         "select:" => PromptSubmitAction::RegexSelection(RegexSelectionAction::Select),
         "split:" => PromptSubmitAction::RegexSelection(RegexSelectionAction::Split),
         "keep:" => PromptSubmitAction::RegexSelection(RegexSelectionAction::Keep),
@@ -488,6 +490,9 @@ impl OverlayView {
                                         cx.emit(crate::Update::FileTreeSearchSubmitted(
                                             input.to_string(),
                                         ));
+                                    }
+                                    PromptSubmitAction::RemoteOpen => {
+                                        cx.emit(crate::Update::OpenRemote(input.to_string()));
                                     }
                                     PromptSubmitAction::RegexSelection(action) => {
                                         cx.emit(crate::Update::RegexSelectionSubmitted {

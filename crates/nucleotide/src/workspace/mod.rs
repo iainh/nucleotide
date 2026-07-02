@@ -52,7 +52,9 @@ use nucleotide_ui::{
 use crate::input_coordinator::{FocusGroup, InputContext, InputCoordinator};
 use nucleotide_lsp::ServerStatus;
 
-use crate::application::{LspCompletionTrigger, find_workspace_root_from};
+use crate::application::{
+    LspCompletionTrigger, find_workspace_root_from, workspace_backend_for_project_directory,
+};
 use crate::document::DocumentView;
 use crate::file_tree::{
     FileSystemEventKind, FileTreeConfig, FileTreeEvent, FileTreeView,
@@ -62,6 +64,7 @@ use crate::info_box::InfoBoxView;
 use crate::key_hint_view::KeyHintView;
 use crate::notification::NotificationView;
 use crate::overlay::OverlayView;
+use crate::remote_open::{RemoteOpenTarget, RemoteOpenTargetKind, parse_remote_open_input};
 use crate::tab::TabId;
 use crate::types::{
     EditorStatus, GlobalSearchLocation, HoverDocEntry, RegexSelectionAction, Severity,
@@ -8856,6 +8859,62 @@ impl Workspace {
         self.open_file_internal(path, true, false, None, cx);
     }
 
+    fn handle_open_remote_submitted(&mut self, input: &str, cx: &mut Context<Self>) {
+        match parse_remote_open_input(input) {
+            Ok(target) => self.open_remote_target(target, cx),
+            Err(message) => {
+                self.push_editor_status_notification(
+                    EditorStatus {
+                        status: message,
+                        severity: Severity::Error,
+                    },
+                    cx,
+                );
+            }
+        }
+    }
+
+    fn open_remote_target(&mut self, target: RemoteOpenTarget, cx: &mut Context<Self>) {
+        let workspace_root = match target.kind {
+            RemoteOpenTargetKind::File => {
+                nucleotide_workspace::remote_startup_workspace_root(&target.path)
+                    .unwrap_or_else(|| target.path.clone())
+            }
+            RemoteOpenTargetKind::Directory => target.path.clone(),
+        };
+
+        self.push_editor_status_notification(
+            EditorStatus {
+                status: format!("Connecting to remote project: {}", workspace_root.display()),
+                severity: Severity::Info,
+            },
+            cx,
+        );
+
+        let backend = match workspace_backend_for_project_directory(Some(&workspace_root)) {
+            Ok(backend) => backend,
+            Err(error) => {
+                self.push_editor_status_notification(
+                    EditorStatus {
+                        status: format!("Failed to open remote project: {error:#}"),
+                        severity: Severity::Error,
+                    },
+                    cx,
+                );
+                return;
+            }
+        };
+
+        self.core.update(cx, |core, _cx| {
+            core.set_workspace_backend(backend);
+        });
+
+        self.handle_open_directory(&workspace_root, cx);
+        if matches!(target.kind, RemoteOpenTargetKind::File) {
+            self.handle_open_file(&target.path, cx);
+        }
+    }
+
     pub fn open_file_at(
         &mut self,
         path: &std::path::Path,
@@ -9343,6 +9402,7 @@ impl Workspace {
             }
             crate::Update::OpenFile(path) => self.handle_open_file(path, cx),
             crate::Update::OpenDirectory(path) => self.handle_open_directory(path, cx),
+            crate::Update::OpenRemote(input) => self.handle_open_remote_submitted(input, cx),
             crate::Update::FileTreeEvent(event) => {
                 self.handle_file_tree_event(event, cx);
             }
@@ -12908,6 +12968,15 @@ impl Workspace {
         cx.emit(crate::Update::Prompt(prompt));
     }
 
+    fn show_open_remote_prompt(&mut self, cx: &mut Context<Self>) {
+        let prompt =
+            crate::prompt::Prompt::native(crate::remote_open::REMOTE_OPEN_PROMPT, "", |_| {})
+                .with_cancel(|| {});
+        self.core.update(cx, |_core, cx| {
+            cx.emit(crate::Update::Prompt(prompt));
+        });
+    }
+
     /// Start local search in current document
     pub fn start_search(&mut self, cx: &mut Context<Self>) {
         nucleotide_logging::debug!("Starting local search");
@@ -14361,6 +14430,12 @@ impl Render for Workspace {
         workspace_div = workspace_div.on_action(cx.listener(
             move |_, _: &crate::actions::editor::OpenDirectory, _window, cx| {
                 open_directory(core.clone(), handle.clone(), cx)
+            },
+        ));
+
+        workspace_div = workspace_div.on_action(cx.listener(
+            move |workspace, _: &crate::actions::editor::OpenRemote, _window, cx| {
+                workspace.show_open_remote_prompt(cx)
             },
         ));
 

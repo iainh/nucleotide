@@ -850,6 +850,14 @@ impl Application {
         }
     }
 
+    pub(crate) fn set_workspace_backend(&mut self, workspace_backend: WorkspaceBackendHandle) {
+        self.workspace_backend = workspace_backend.clone();
+        self.editor
+            .set_save_handler(Some(Arc::new(WorkspaceDocumentSaveHandler::new(
+                workspace_backend,
+            ))));
+    }
+
     fn lsp_title_for_state(state: &LspUiState) -> &'static str {
         match state {
             LspUiState::Idle => "Connected",
@@ -6877,7 +6885,7 @@ fn detect_and_create_project_environment() -> ProjectEnvironment {
     ProjectEnvironment::new(Some(cli_env))
 }
 
-fn initial_workspace_backend(
+pub(crate) fn workspace_backend_for_project_directory(
     project_directory: Option<&Path>,
 ) -> Result<WorkspaceBackendHandle, Error> {
     let Some(project_directory) = project_directory else {
@@ -6977,7 +6985,7 @@ pub fn init_editor(
             None
         }
     };
-    let workspace_backend = initial_workspace_backend(project_directory.as_deref())?;
+    let workspace_backend = workspace_backend_for_project_directory(project_directory.as_deref())?;
 
     let mut theme_parent_dirs = vec![helix_loader::config_dir()];
     theme_parent_dirs.extend(helix_loader::runtime_dirs().iter().cloned());
