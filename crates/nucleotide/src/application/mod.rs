@@ -7451,7 +7451,10 @@ pub fn init_editor(
         let agg = nucleotide_core::EventAggregator::new();
         let handle = nucleotide_core::EventAggregatorHandle::new(agg);
         // Register workspace file operations through the active backend.
-        let fs_handler = WorkspaceFileOpHandler::new(handle.clone(), workspace_backend.clone());
+        let file_op_runtime = tokio::runtime::Handle::try_current()
+            .context("workspace file operations require an active Tokio runtime")?;
+        let fs_handler =
+            WorkspaceFileOpHandler::new(handle.clone(), workspace_backend.clone(), file_op_runtime);
         handle.register_handler(fs_handler);
         // Register Terminal runtime handler (behind feature)
         #[cfg(feature = "terminal-emulator")]
