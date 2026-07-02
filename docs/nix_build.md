@@ -10,6 +10,7 @@ The Nix build system consists of:
 - **flake.nix**: Main configuration defining packages, development shell, and dependencies
 - **Runtime derivation**: Pure Nix build for Helix runtime files (themes, grammars, queries)
 - **Development shell**: Complete environment with Rust toolchain and dependencies
+- **Remote helper builds**: Linux musl `nucleotide-remote` artifacts built with `cargo-zigbuild`
 - **Build scripts**: Helper scripts for creating platform-specific packages
 
 ## Quick Start
@@ -24,6 +25,7 @@ The Nix build system consists of:
 # Or step by step:
 nix develop                   # Enter dev shell
 cargo build --release         # Build binary
+build-remote-helpers          # Build SSH remote helper artifacts
 make-macos-bundle            # Create .app bundle
 
 # Run the app
@@ -38,6 +40,7 @@ open Nucleotide.app
 # Enter development shell and build
 nix develop
 cargo build --release
+build-remote-helpers
 make-linux-package
 
 # Extract and run
@@ -89,7 +92,9 @@ While using traditional cargo for the actual build process.
 ### Dependencies
 
 **Platform-agnostic:**
-- Rust stable toolchain (via fenix)
+- Rust stable toolchain (via rust-overlay)
+- Zig (via zig-overlay)
+- cargo-zigbuild
 - OpenSSL, pkg-config, git, curl, sqlite
 
 **macOS-specific:**

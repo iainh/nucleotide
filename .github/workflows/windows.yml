@@ -13,25 +13,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-unknown-linux-gnu
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
 
-      - name: Install cross compiler
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
+      - name: Setup Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
 
       - name: Build Linux remote helpers
-        run: |
-          cargo build --release -p nucleotide-remote
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
-            cargo build --release -p nucleotide-remote --target aarch64-unknown-linux-gnu
-          mkdir -p target/remote-helpers
-          cp target/release/nucleotide-remote target/remote-helpers/nucleotide-remote-linux-x86_64
-          cp target/aarch64-unknown-linux-gnu/release/nucleotide-remote target/remote-helpers/nucleotide-remote-linux-aarch64
-          target/remote-helpers/nucleotide-remote-linux-x86_64 version --json
+        run: nix develop --command build-remote-helpers
 
       - name: Upload Linux remote helpers
         uses: actions/upload-artifact@v4

@@ -9,6 +9,7 @@ queries and grammar loading.
 Run the script from the repository root:
 
 ```bash
+./scripts/build-remote-helpers.sh
 ./scripts/bundle-mac.sh
 ```
 
@@ -20,6 +21,8 @@ The bundle script:
 
 - Builds `target/release/nucl` when it is missing
 - Copies the executable to `Nucleotide.app/Contents/MacOS/Nucleotide`
+- Copies Linux `nucleotide-remote` SSH helper artifacts from
+  `target/remote-helpers` when present
 - Copies `crates/nucleotide/assets/nucleotide.icns` into app resources
 - Copies the Helix runtime into `Nucleotide.app/Contents/Resources/runtime`
 - Builds missing tree-sitter grammars into the bundled runtime
@@ -103,3 +106,14 @@ rm -rf helix-temp
 ```
 
 Then run `./scripts/bundle-mac.sh` again.
+
+### SSH remote helpers not bundled
+
+Build the Linux helper artifacts before bundling:
+
+```bash
+./scripts/build-remote-helpers.sh
+```
+
+The Nix development shell includes the required Linux musl Rust targets, Zig,
+and `cargo-zigbuild`.

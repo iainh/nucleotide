@@ -21,8 +21,12 @@ jobs:
       
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-unknown-linux-gnu
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Setup Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
       
       - name: Install dependencies
         run: |
@@ -37,14 +41,12 @@ jobs:
             libgl1-mesa-dev \
             libvulkan-dev \
             libfreetype6-dev \
-            libfontconfig1-dev \
-            gcc-aarch64-linux-gnu
+            libfontconfig1-dev
       
       - name: Build release
         run: |
           cargo build --release -p nucleotide --bins -p nucleotide-remote
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
-            cargo build --release -p nucleotide-remote --target aarch64-unknown-linux-gnu
+          nix develop --command build-remote-helpers
       
       - name: Prepare distribution
         run: |
@@ -57,8 +59,6 @@ jobs:
           mkdir -p target/remote-helpers
           
           cp target/release/nucl nucleotide-linux/bin/
-          cp target/release/nucleotide-remote target/remote-helpers/nucleotide-remote-linux-x86_64
-          cp target/aarch64-unknown-linux-gnu/release/nucleotide-remote target/remote-helpers/nucleotide-remote-linux-aarch64
           cp target/release/nucleotide-remote nucleotide-linux/bin/nucleotide-remote
           cp target/remote-helpers/nucleotide-remote-linux-x86_64 nucleotide-linux/bin/
           cp target/remote-helpers/nucleotide-remote-linux-aarch64 nucleotide-linux/bin/

@@ -13,6 +13,10 @@ nix build '.#runtime' --print-build-logs
 echo "Building binary..."
 nix develop --command cargo build --release
 
+# Build Linux SSH remote helpers for app/package bundling
+echo "Building SSH remote helpers..."
+nix develop --command build-remote-helpers
+
 # Create bundle if on macOS
 if [[ "$OSTYPE" == "darwin"* ]]; then
   echo "Creating macOS app bundle..."
