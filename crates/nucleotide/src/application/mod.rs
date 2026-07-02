@@ -8185,70 +8185,54 @@ async fn detect_project_type_from_workspace_backend(
     workspace_root: &Path,
     workspace_backend: &WorkspaceBackendHandle,
 ) -> nucleotide_events::ProjectType {
+    let Ok(listing) = workspace_backend.list_dir(workspace_root).await else {
+        return nucleotide_events::ProjectType::Unknown;
+    };
+
+    detect_project_type_from_workspace_listing(&listing)
+}
+
+fn detect_project_type_from_workspace_listing(
+    listing: &DirectoryListing,
+) -> nucleotide_events::ProjectType {
     use nucleotide_events::ProjectType;
 
-    if workspace_file_marker_exists(workspace_backend, workspace_root, "Cargo.toml").await {
+    let has_marker = |markers: &[&str]| {
+        listing.entries.iter().any(|entry| {
+            markers.contains(&entry.name.as_str())
+                && matches!(entry.stat.kind, FileKind::File | FileKind::Symlink)
+        })
+    };
+
+    if has_marker(&["Cargo.toml"]) {
         return ProjectType::Rust;
     }
 
-    if workspace_file_marker_exists(workspace_backend, workspace_root, "tsconfig.json").await {
+    if has_marker(&["tsconfig.json"]) {
         return ProjectType::TypeScript;
     }
 
-    if workspace_file_marker_exists(workspace_backend, workspace_root, "package.json").await {
+    if has_marker(&["package.json"]) {
         return ProjectType::JavaScript;
     }
 
-    if workspace_any_file_marker_exists(
-        workspace_backend,
-        workspace_root,
-        &["pyproject.toml", "requirements.txt", "setup.py", "Pipfile"],
-    )
-    .await
-    {
+    if has_marker(&["pyproject.toml", "requirements.txt", "setup.py", "Pipfile"]) {
         return ProjectType::Python;
     }
 
-    if workspace_any_file_marker_exists(workspace_backend, workspace_root, &["go.mod", "go.sum"])
-        .await
-    {
+    if has_marker(&["go.mod", "go.sum"]) {
         return ProjectType::Go;
     }
 
-    if workspace_file_marker_exists(workspace_backend, workspace_root, "CMakeLists.txt").await {
+    if has_marker(&["CMakeLists.txt"]) {
         return ProjectType::Cpp;
     }
 
-    if workspace_file_marker_exists(workspace_backend, workspace_root, "Makefile").await {
+    if has_marker(&["Makefile"]) {
         return ProjectType::C;
     }
 
     ProjectType::Unknown
-}
-
-async fn workspace_any_file_marker_exists(
-    workspace_backend: &WorkspaceBackendHandle,
-    workspace_root: &Path,
-    markers: &[&str],
-) -> bool {
-    for marker in markers {
-        if workspace_file_marker_exists(workspace_backend, workspace_root, marker).await {
-            return true;
-        }
-    }
-    false
-}
-
-async fn workspace_file_marker_exists(
-    workspace_backend: &WorkspaceBackendHandle,
-    workspace_root: &Path,
-    marker: &str,
-) -> bool {
-    workspace_backend
-        .stat(&workspace_root.join(marker))
-        .await
-        .map(|stat| matches!(stat.kind, FileKind::File | FileKind::Symlink))
-        .unwrap_or(false)
 }
 
 fn language_servers_for_project_type(project_type: &nucleotide_events::ProjectType) -> Vec<String> {
@@ -8406,7 +8390,8 @@ mod tests {
         buffer_word_completion_items, char_index_for_line_col, coalesce_bridged_events,
         completion_context_for_trigger, current_dir_is_executable_dir, dedupe_completion_items,
         detect_project_lsp_metadata, detect_project_type_from_workspace_backend,
-        diagnostic_picker_path_label, diagnostic_severity_label, home_requires_login_shell_capture,
+        detect_project_type_from_workspace_listing, diagnostic_picker_path_label,
+        diagnostic_severity_label, home_requires_login_shell_capture,
         is_workspace_diagnostic_refresh_method, local_path_completion_context,
         lsp_completion_insert_text, lsp_completion_insert_text_format,
         lsp_completion_items_from_response, lsp_completion_items_from_response_for_server,
@@ -9192,7 +9177,7 @@ mod tests {
     }
 
     #[test]
-    fn project_lsp_metadata_backend_detector_uses_workspace_stat() {
+    fn project_lsp_metadata_backend_detector_uses_workspace_listing() {
         let rust_project = tempdir().unwrap();
         fs::write(
             rust_project.path().join("Cargo.toml"),
@@ -9204,6 +9189,27 @@ mod tests {
         let project_type = TEST_RUNTIME.block_on(async {
             detect_project_type_from_workspace_backend(rust_project.path(), &backend).await
         });
+
+        assert!(matches!(project_type, nucleotide_events::ProjectType::Rust));
+    }
+
+    #[test]
+    fn project_lsp_metadata_listing_detector_prefers_highest_priority_file_marker() {
+        let root = PathBuf::from("/remote/project");
+        let listing = DirectoryListing {
+            path: root.clone(),
+            entries: vec![
+                directory_entry("package.json", root.join("package.json"), FileKind::File),
+                directory_entry(
+                    "tsconfig.json",
+                    root.join("tsconfig.json"),
+                    FileKind::Directory,
+                ),
+                directory_entry("Cargo.toml", root.join("Cargo.toml"), FileKind::File),
+            ],
+        };
+
+        let project_type = detect_project_type_from_workspace_listing(&listing);
 
         assert!(matches!(project_type, nucleotide_events::ProjectType::Rust));
     }
