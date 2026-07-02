@@ -3163,14 +3163,48 @@ impl Application {
                         editor_input::NativePickerRequest::FileAt(path) => {
                             let workspace_backend = self.workspace_backend.clone();
                             let workspace_identity = workspace_backend.identity();
-                            let path_exists =
-                                if should_stat_picker_root_with_backend(&workspace_identity) {
-                                    handle.block_on(workspace_backend.stat(&path)).is_ok()
-                                } else {
-                                    path.exists()
-                                };
+                            if should_stat_picker_root_with_backend(&workspace_identity) {
+                                self.editor.set_status(format!(
+                                    "Checking file picker path: {}",
+                                    path.display()
+                                ));
+                                let runtime_handle = handle.clone();
+                                cx.spawn(async move |core, cx| {
+                                    let path_for_stat = path.clone();
+                                    let path_exists = match runtime_handle
+                                        .spawn(async move {
+                                            workspace_backend.stat(&path_for_stat).await.is_ok()
+                                        })
+                                        .await
+                                    {
+                                        Ok(path_exists) => path_exists,
+                                        Err(error) => {
+                                            warn!(
+                                                error = %error,
+                                                "File picker path stat task failed"
+                                            );
+                                            false
+                                        }
+                                    };
 
-                            if path_exists {
+                                    if let Some(core) = core.upgrade() {
+                                        core.update(cx, |core, cx| {
+                                            if path_exists {
+                                                cx.emit(crate::Update::ShowFilePickerAt(path));
+                                            } else {
+                                                core.editor.set_error(format!(
+                                                    "File picker path does not exist: {}",
+                                                    path.display()
+                                                ));
+                                            }
+                                        });
+                                    }
+                                })
+                                .detach();
+                                return;
+                            }
+
+                            if path.exists() {
                                 cx.emit(crate::Update::ShowFilePickerAt(path));
                             } else {
                                 self.editor.set_error(format!(
