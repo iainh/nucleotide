@@ -1150,6 +1150,29 @@ fn vcs_status_from_workspace_entry(entry: &GitStatusEntry) -> VcsStatus {
     }
 }
 
+fn parse_git_status_line(line: &str) -> Option<(&str, VcsStatus)> {
+    let bytes = line.as_bytes();
+    if bytes.len() < 3 {
+        return None;
+    }
+
+    let status = match &bytes[0..2] {
+        b"??" => VcsStatus::Untracked,
+        b" M" | b"MM" | b" T" => VcsStatus::Modified,
+        b"M " | b"MT" => VcsStatus::Modified,
+        b"A " => VcsStatus::Added,
+        b"AM" => VcsStatus::Modified,
+        b" D" | b"D " | b"AD" => VcsStatus::Deleted,
+        b"R " | b"RM" => VcsStatus::Renamed,
+        b"C " => VcsStatus::Added,
+        b"UU" | b"AA" | b"DD" => VcsStatus::Conflicted,
+        _ => return None,
+    };
+
+    let file_path = line.get(3..)?.trim();
+    Some((file_path, status))
+}
+
 /// Run git status command and parse results
 fn run_git_status(
     root_path: &Path,
@@ -1178,24 +1201,7 @@ fn run_git_status(
             break;
         }
 
-        if line.len() >= 3 {
-            let status_chars = &line[0..2];
-            let file_path = line[3..].trim();
-
-            // Parse git status format
-            let status = match status_chars {
-                "??" => VcsStatus::Untracked,
-                " M" | "MM" | " T" => VcsStatus::Modified,
-                "M " | "MT" => VcsStatus::Modified,
-                "A " => VcsStatus::Added,
-                "AM" => VcsStatus::Modified, // Added but then modified
-                " D" | "D " | "AD" => VcsStatus::Deleted,
-                "R " | "RM" => VcsStatus::Renamed,
-                "C " => VcsStatus::Added, // Copied, treat as added
-                "UU" | "AA" | "DD" => VcsStatus::Conflicted,
-                _ => continue, // Skip unknown status
-            };
-
+        if let Some((file_path, status)) = parse_git_status_line(line) {
             let full_path = root_path.join(file_path);
             status_map.insert(full_path, status);
             file_count += 1;
@@ -1388,6 +1394,23 @@ mod tests {
     #[test]
     fn parse_git_head_output_rejects_empty_output() {
         assert_eq!(parse_git_head_output(b"\n"), None);
+    }
+
+    #[test]
+    fn parse_git_status_line_reads_ascii_status_prefix() {
+        assert_eq!(
+            parse_git_status_line(" M src/lib.rs"),
+            Some(("src/lib.rs", VcsStatus::Modified))
+        );
+        assert_eq!(
+            parse_git_status_line("?? docs/notes.md"),
+            Some(("docs/notes.md", VcsStatus::Untracked))
+        );
+    }
+
+    #[test]
+    fn parse_git_status_line_ignores_unicode_without_panicking() {
+        assert_eq!(parse_git_status_line("↪ src/lib.rs"), None);
     }
 
     #[tokio::test]
