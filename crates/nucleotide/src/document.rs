@@ -15,7 +15,7 @@ use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::scrollbar::{Scrollbar, ScrollbarState};
 use nucleotide_ui::theme_manager::HelixThemedContext;
 use nucleotide_ui::{Button, ButtonSize, ButtonVariant, MarkdownStyle, Tooltipped, markdown};
-use nucleotide_workspace::WorkspaceIdentity;
+use nucleotide_workspace::{WorkspaceBackendHandle, WorkspaceIdentity};
 
 use crate::{Core, Input, InputEvent};
 use nucleotide_editor::{
@@ -102,6 +102,7 @@ pub struct DocumentView {
     markdown_scrollbar_state: ScrollbarState,
     markdown_snapshot_cache: Option<MarkdownSnapshotCache>,
     runnable_tasks_cache: Option<RunnableTasksCache>,
+    runnable_tasks_pending: Option<RunnableTasksPending>,
 }
 
 impl DocumentView {
@@ -132,6 +133,7 @@ impl DocumentView {
             markdown_scrollbar_state,
             markdown_snapshot_cache: None,
             runnable_tasks_cache: None,
+            runnable_tasks_pending: None,
         }
     }
 
@@ -265,16 +267,9 @@ impl DocumentView {
     fn runnable_tasks_by_line(&mut self, cx: &mut Context<Self>) -> BTreeMap<usize, ResolvedTask> {
         let Some(snapshot) = runnable_document_snapshot(&self.core, self.view_id, cx) else {
             self.runnable_tasks_cache = None;
+            self.runnable_tasks_pending = None;
             return BTreeMap::new();
         };
-
-        if !matches!(
-            self.core.read(cx).workspace_backend.identity(),
-            WorkspaceIdentity::Local
-        ) {
-            self.runnable_tasks_cache = None;
-            return BTreeMap::new();
-        }
 
         if self
             .runnable_tasks_cache
@@ -288,10 +283,16 @@ impl DocumentView {
                 .unwrap_or_default();
         }
 
+        let workspace_backend = self.core.read(cx).workspace_backend.clone();
+        if matches!(workspace_backend.identity(), WorkspaceIdentity::Remote(_)) {
+            return self.remote_runnable_tasks_by_line(snapshot, workspace_backend, cx);
+        }
+
         let document = {
             let core = self.core.read(cx);
             let Some(doc) = core.editor.documents.get(&snapshot.doc_id) else {
                 self.runnable_tasks_cache = None;
+                self.runnable_tasks_pending = None;
                 return BTreeMap::new();
             };
 
@@ -303,14 +304,9 @@ impl DocumentView {
             }
         };
 
-        let tasks_by_line = crate::runnables::discover_local_rust_runnables(&document)
-            .into_iter()
-            .filter(|task| !crate::runnables::is_file_tests_runnable(task))
-            .filter_map(|task| {
-                let source = task.source()?;
-                Some((source.line, task))
-            })
-            .collect::<BTreeMap<_, _>>();
+        let tasks_by_line = runnable_tasks_by_line_from_tasks(
+            crate::runnables::discover_local_rust_runnables(&document),
+        );
 
         self.runnable_tasks_cache = Some(RunnableTasksCache {
             doc_id: snapshot.doc_id,
@@ -318,8 +314,95 @@ impl DocumentView {
             path: snapshot.path,
             tasks_by_line: tasks_by_line.clone(),
         });
+        self.runnable_tasks_pending = None;
 
         tasks_by_line
+    }
+
+    fn remote_runnable_tasks_by_line(
+        &mut self,
+        snapshot: RunnableDocumentSnapshot,
+        workspace_backend: WorkspaceBackendHandle,
+        cx: &mut Context<Self>,
+    ) -> BTreeMap<usize, ResolvedTask> {
+        if self
+            .runnable_tasks_pending
+            .as_ref()
+            .is_some_and(|pending| pending.matches_snapshot(&snapshot))
+        {
+            return BTreeMap::new();
+        }
+
+        let document = {
+            let core = self.core.read(cx);
+            let Some(doc) = core.editor.documents.get(&snapshot.doc_id) else {
+                self.runnable_tasks_cache = None;
+                self.runnable_tasks_pending = None;
+                return BTreeMap::new();
+            };
+
+            crate::runnables::RunnableDocument {
+                path: snapshot.path.clone(),
+                text: String::from(doc.text().slice(..)),
+                cursor_line: 0,
+                project_root: None,
+            }
+        };
+
+        let Ok(runtime_handle) = tokio::runtime::Handle::try_current() else {
+            self.runnable_tasks_cache = None;
+            self.runnable_tasks_pending = None;
+            return BTreeMap::new();
+        };
+
+        self.runnable_tasks_cache = None;
+        self.runnable_tasks_pending = Some(RunnableTasksPending {
+            doc_id: snapshot.doc_id,
+            version: snapshot.version,
+            path: snapshot.path.clone(),
+        });
+
+        cx.spawn(async move |this, cx| {
+            let task_snapshot = snapshot.clone();
+            let tasks_by_line = match runtime_handle
+                .spawn(remote_runnable_tasks_by_line_from_backend(
+                    workspace_backend,
+                    document,
+                ))
+                .await
+            {
+                Ok(tasks) => tasks,
+                Err(error) => {
+                    nucleotide_logging::warn!(
+                        error = %error,
+                        "Remote gutter runnable discovery task failed"
+                    );
+                    BTreeMap::new()
+                }
+            };
+
+            if let Some(this) = this.upgrade() {
+                this.update(cx, |view, cx| {
+                    if view
+                        .runnable_tasks_pending
+                        .as_ref()
+                        .is_some_and(|pending| pending.matches_snapshot(&task_snapshot))
+                    {
+                        view.runnable_tasks_cache = Some(RunnableTasksCache {
+                            doc_id: task_snapshot.doc_id,
+                            version: task_snapshot.version,
+                            path: task_snapshot.path,
+                            tasks_by_line,
+                        });
+                        view.runnable_tasks_pending = None;
+                        cx.notify();
+                    }
+                });
+            }
+        })
+        .detach();
+
+        BTreeMap::new()
     }
 }
 
@@ -356,6 +439,51 @@ impl RunnableTasksCache {
             && self.version == snapshot.version
             && self.path == snapshot.path
     }
+}
+
+struct RunnableTasksPending {
+    doc_id: DocumentId,
+    version: i32,
+    path: PathBuf,
+}
+
+impl RunnableTasksPending {
+    fn matches_snapshot(&self, snapshot: &RunnableDocumentSnapshot) -> bool {
+        self.doc_id == snapshot.doc_id
+            && self.version == snapshot.version
+            && self.path == snapshot.path
+    }
+}
+
+fn runnable_tasks_by_line_from_tasks(
+    tasks: impl IntoIterator<Item = ResolvedTask>,
+) -> BTreeMap<usize, ResolvedTask> {
+    tasks
+        .into_iter()
+        .filter(|task| !crate::runnables::is_file_tests_runnable(task))
+        .filter_map(|task| {
+            let source = task.source()?;
+            Some((source.line, task))
+        })
+        .collect()
+}
+
+async fn remote_runnable_tasks_by_line_from_backend(
+    workspace_backend: WorkspaceBackendHandle,
+    document: crate::runnables::RunnableDocument,
+) -> BTreeMap<usize, ResolvedTask> {
+    let tasks = workspace_backend
+        .find_ancestor_file(&document.path, "Cargo.toml", 64)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|manifest| manifest.parent().map(Path::to_path_buf))
+        .map(|cargo_root| {
+            crate::runnables::discover_rust_runnables_with_cargo_root(&document, cargo_root)
+        })
+        .unwrap_or_default();
+
+    runnable_tasks_by_line_from_tasks(tasks)
 }
 
 impl EventEmitter<DismissEvent> for DocumentView {}
@@ -815,6 +943,7 @@ mod tests {
     use super::*;
     use gpui::px;
     use nucleotide_editor::run_gutter_button_left;
+    use nucleotide_events::v2::run::{CommandSpec, RunKind, SourceLocation, TaskTemplate};
 
     #[test]
     fn run_gutter_extra_columns_tracks_cell_width() {
@@ -828,6 +957,17 @@ mod tests {
             run_gutter_button_left(px(100.0), px(24.0), px(14.0)),
             px(81.0)
         );
+    }
+
+    #[test]
+    fn runnable_tasks_by_line_indexes_source_tasks_and_skips_file_tests() {
+        let function_task = test_task("Run Test sample", 7, &[]);
+        let file_task = test_task("Run File Tests", 0, &["file-tests"]);
+
+        let tasks_by_line = runnable_tasks_by_line_from_tasks([function_task.clone(), file_task]);
+
+        assert_eq!(tasks_by_line.len(), 1);
+        assert_eq!(tasks_by_line.get(&7), Some(&function_task));
     }
 
     #[test]
@@ -883,5 +1023,23 @@ mod tests {
             ),
             ButtonVariant::Secondary
         );
+    }
+
+    fn test_task(label: &str, line: usize, tags: &[&str]) -> ResolvedTask {
+        let command = CommandSpec::new("cargo").with_args(["test"]);
+        ResolvedTask {
+            template: TaskTemplate {
+                label: label.to_string(),
+                kind: RunKind::Test,
+                command: command.clone(),
+                source: Some(SourceLocation {
+                    path: PathBuf::from("/workspace/src/main.rs"),
+                    line,
+                    column: 0,
+                }),
+                tags: tags.iter().map(|tag| tag.to_string()).collect(),
+            },
+            command,
+        }
     }
 }
