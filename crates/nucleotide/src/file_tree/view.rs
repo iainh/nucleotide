@@ -27,7 +27,7 @@ use nucleotide_workspace::{
     absolutize_workspace_path, local_workspace_backend,
 };
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
 };
 
@@ -203,6 +203,45 @@ fn tree_entries_fingerprint(entries: Vec<FileTreeEntry>) -> DirectoryListingFing
         .collect::<Vec<_>>();
     entries.sort();
     DirectoryListingFingerprint { entries }
+}
+
+fn changed_paths_between_fingerprints(
+    previous: Option<&DirectoryListingFingerprint>,
+    current: &DirectoryListingFingerprint,
+) -> Vec<PathBuf> {
+    let mut changed = BTreeSet::new();
+    let Some(previous) = previous else {
+        return current
+            .entries
+            .iter()
+            .map(|entry| entry.path.clone())
+            .collect();
+    };
+
+    let previous_entries = previous
+        .entries
+        .iter()
+        .map(|entry| (&entry.path, entry))
+        .collect::<BTreeMap<_, _>>();
+    let current_entries = current
+        .entries
+        .iter()
+        .map(|entry| (&entry.path, entry))
+        .collect::<BTreeMap<_, _>>();
+
+    for (path, current_entry) in &current_entries {
+        if previous_entries.get(path).copied() != Some(*current_entry) {
+            changed.insert((*path).clone());
+        }
+    }
+
+    for path in previous_entries.keys() {
+        if !current_entries.contains_key(path) {
+            changed.insert((*path).clone());
+        }
+    }
+
+    changed.into_iter().collect()
 }
 
 fn workspace_file_kind_fingerprint(kind: WorkspaceFileKind) -> DirectoryEntryFingerprintKind {
@@ -676,9 +715,12 @@ impl FileTreeView {
             };
 
             let fingerprint = listing_fingerprint(&listing);
-            if self.remote_directory_fingerprints.get(&result.path) == Some(&fingerprint) {
+            let previous_fingerprint = self.remote_directory_fingerprints.get(&result.path);
+            if previous_fingerprint == Some(&fingerprint) {
                 continue;
             }
+            let changed_child_paths =
+                changed_paths_between_fingerprints(previous_fingerprint, &fingerprint);
 
             match self
                 .tree
@@ -687,7 +729,11 @@ impl FileTreeView {
                 Ok(()) => {
                     self.remote_directory_fingerprints
                         .insert(result.path.clone(), fingerprint);
-                    changed_paths.push(result.path);
+                    if changed_child_paths.is_empty() {
+                        changed_paths.push(result.path);
+                    } else {
+                        changed_paths.extend(changed_child_paths);
+                    }
                 }
                 Err(error) => {
                     warn!(
@@ -2176,6 +2222,18 @@ mod tests {
         events
     }
 
+    fn file_fingerprint(path: &str, size: u64) -> DirectoryEntryFingerprint {
+        DirectoryEntryFingerprint {
+            path: PathBuf::from(path),
+            kind: DirectoryEntryFingerprintKind::File,
+            size,
+            modified: None,
+            symlink_target: None,
+            target_exists: None,
+            ignored: Some(false),
+        }
+    }
+
     #[test]
     fn listing_and_tree_entry_fingerprints_match_common_metadata() {
         let path = PathBuf::from("/workspace/src/main.rs");
@@ -2208,6 +2266,53 @@ mod tests {
         assert_eq!(
             listing_fingerprint(&listing),
             tree_entries_fingerprint(vec![entry])
+        );
+    }
+
+    #[test]
+    fn changed_paths_between_fingerprints_reports_modified_added_and_deleted_children() {
+        let previous = DirectoryListingFingerprint {
+            entries: vec![
+                file_fingerprint("/workspace/src/deleted.rs", 1),
+                file_fingerprint("/workspace/src/main.rs", 1),
+            ],
+        };
+        let current = DirectoryListingFingerprint {
+            entries: vec![
+                file_fingerprint("/workspace/src/added.rs", 1),
+                file_fingerprint("/workspace/src/main.rs", 2),
+            ],
+        };
+
+        let paths = changed_paths_between_fingerprints(Some(&previous), &current);
+
+        assert_eq!(
+            paths,
+            vec![
+                PathBuf::from("/workspace/src/added.rs"),
+                PathBuf::from("/workspace/src/deleted.rs"),
+                PathBuf::from("/workspace/src/main.rs"),
+            ]
+        );
+    }
+
+    #[test]
+    fn changed_paths_between_fingerprints_reports_current_entries_without_previous_cache() {
+        let current = DirectoryListingFingerprint {
+            entries: vec![
+                file_fingerprint("/workspace/src/a.rs", 1),
+                file_fingerprint("/workspace/src/b.rs", 1),
+            ],
+        };
+
+        let paths = changed_paths_between_fingerprints(None, &current);
+
+        assert_eq!(
+            paths,
+            vec![
+                PathBuf::from("/workspace/src/a.rs"),
+                PathBuf::from("/workspace/src/b.rs"),
+            ]
         );
     }
 
