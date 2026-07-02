@@ -403,17 +403,39 @@ impl FileTreeView {
         let root_path = self.tree.root_path().to_path_buf();
         let config = self.tree.config().clone();
         let workspace_backend = self.workspace_backend.clone();
+        let runtime_handle = self._tokio_handle.clone();
 
         cx.spawn(async move |this, cx| {
-            let load_result = cx
-                .background_executor()
-                .spawn(async move {
-                    let mut tree =
-                        FileTree::new_for_backend(root_path, config, workspace_backend.identity());
-                    tree.load_with_backend(workspace_backend.as_ref())
-                        .map(|_| tree)
-                })
-                .await;
+            let load_result = if let Some(runtime_handle) = runtime_handle {
+                match runtime_handle
+                    .spawn(async move {
+                        let mut tree = FileTree::new_for_backend(
+                            root_path,
+                            config,
+                            workspace_backend.identity(),
+                        );
+                        tree.load_with_backend_async(workspace_backend)
+                            .await
+                            .map(|_| tree)
+                    })
+                    .await
+                {
+                    Ok(result) => result,
+                    Err(error) => Err(anyhow::anyhow!("file tree load task failed: {error}")),
+                }
+            } else {
+                cx.background_executor()
+                    .spawn(async move {
+                        let mut tree = FileTree::new_for_backend(
+                            root_path,
+                            config,
+                            workspace_backend.identity(),
+                        );
+                        tree.load_with_backend(workspace_backend.as_ref())
+                            .map(|_| tree)
+                    })
+                    .await
+            };
 
             if let Some(this) = this.upgrade() {
                 this.update(cx, |view, cx| {
