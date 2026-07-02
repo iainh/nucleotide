@@ -15179,9 +15179,10 @@ impl Render for Workspace {
         workspace_div = workspace_div.on_action(cx.listener(
             move |workspace, _: &crate::actions::editor::RevertCurrentChange, _window, cx| {
                 workspace.execute_raw_command("reset-diff-change", cx);
-                workspace
-                    .core
-                    .update(cx, |core, cx| core.reconcile_vcs_after_diff_reset(cx));
+                let handle = workspace.handle.clone();
+                workspace.core.update(cx, |core, cx| {
+                    core.reconcile_vcs_after_diff_reset(cx, &handle)
+                });
             },
         ));
 
