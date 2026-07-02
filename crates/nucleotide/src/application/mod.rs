@@ -25,7 +25,7 @@ pub use workspace_file_ops::WorkspaceFileOpHandler;
 pub use workspace_handler::WorkspaceHandler;
 
 use std::{
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     future::Future,
     path::{Path, PathBuf},
     pin::Pin,
@@ -60,8 +60,8 @@ use nucleotide_lsp::{
     HelixLspBridge, LspLaunchProxy, LspLaunchProxyProvider, ProjectLspManager, ServerStatus,
 };
 use nucleotide_workspace::{
-    DirectoryListing, FileKind, ReadOptions, WorkspaceBackendHandle, WorkspaceIdentity,
-    WriteOptions, classify_workspace_location, local_workspace_backend,
+    DirectoryListing, FileKind, ProcessSpec, ReadOptions, WorkspaceBackendHandle,
+    WorkspaceIdentity, WriteOptions, classify_workspace_location, local_workspace_backend,
     remote_startup_workspace_root,
 };
 use slotmap::Key;
@@ -193,6 +193,74 @@ async fn write_remote_document(
         .await?;
 
     Ok(result.modified.unwrap_or_else(SystemTime::now))
+}
+
+const REMOTE_DIFF_BASE_READ_LIMIT_BYTES: usize = 4 * 1024 * 1024;
+const REMOTE_DIFF_BASE_TIMEOUT_MS: u64 = 10_000;
+
+async fn read_remote_git_diff_base(
+    workspace_backend: &WorkspaceBackendHandle,
+    path: &Path,
+) -> anyhow::Result<Option<Vec<u8>>> {
+    let Some(parent) = path.parent() else {
+        return Ok(None);
+    };
+    let Some(file_name) = path.file_name() else {
+        return Ok(None);
+    };
+
+    let ls_files = workspace_backend
+        .run_process(ProcessSpec {
+            program: "git".to_string(),
+            args: vec![
+                "ls-files".to_string(),
+                "-z".to_string(),
+                "--full-name".to_string(),
+                "--".to_string(),
+                file_name.to_string_lossy().into_owned(),
+            ],
+            cwd: parent.to_path_buf(),
+            env: BTreeMap::new(),
+            clear_env: false,
+            inherit_project_environment: false,
+            stdin: Vec::new(),
+            max_output_bytes: Some(REMOTE_DIFF_BASE_READ_LIMIT_BYTES),
+            timeout_ms: Some(REMOTE_DIFF_BASE_TIMEOUT_MS),
+        })
+        .await?;
+
+    if !ls_files.success || ls_files.timed_out || ls_files.stdout_truncated {
+        return Ok(None);
+    }
+
+    let relative_path = ls_files
+        .stdout
+        .split(|byte| *byte == 0)
+        .find(|entry| !entry.is_empty());
+    let Some(relative_path) = relative_path else {
+        return Ok(None);
+    };
+    let relative_path = String::from_utf8_lossy(relative_path);
+
+    let show = workspace_backend
+        .run_process(ProcessSpec {
+            program: "git".to_string(),
+            args: vec!["show".to_string(), format!("HEAD:{relative_path}")],
+            cwd: parent.to_path_buf(),
+            env: BTreeMap::new(),
+            clear_env: false,
+            inherit_project_environment: false,
+            stdin: Vec::new(),
+            max_output_bytes: Some(REMOTE_DIFF_BASE_READ_LIMIT_BYTES),
+            timeout_ms: Some(REMOTE_DIFF_BASE_TIMEOUT_MS),
+        })
+        .await?;
+
+    if show.success && !show.timed_out && !show.stdout_truncated {
+        Ok(Some(show.stdout))
+    } else {
+        Ok(None)
+    }
 }
 
 pub struct RemoteLspLaunchProxyProvider {
@@ -7452,7 +7520,7 @@ pub(crate) fn open_workspace_document(
         last_saved_time: read.modified,
     };
     let mut bytes = read.bytes.as_slice();
-    let doc = Document::open_from_reader(
+    let mut doc = Document::open_from_reader(
         &read.path,
         &mut bytes,
         None,
@@ -7462,6 +7530,20 @@ pub(crate) fn open_workspace_document(
         editor.syn_loader.clone(),
     )
     .with_context(|| format!("failed to decode remote file {}", read.path.display()))?;
+
+    match futures_executor::block_on(read_remote_git_diff_base(workspace_backend, &read.path)) {
+        Ok(Some(diff_base)) => {
+            doc.set_diff_base(diff_base);
+        }
+        Ok(None) => {}
+        Err(error) => {
+            debug!(
+                path = %read.path.display(),
+                error = %error,
+                "Could not load remote git diff base"
+            );
+        }
+    }
 
     Ok(editor.open_document_with_options(
         &read.path,
@@ -8657,6 +8739,7 @@ mod tests {
     use std::collections::{HashMap, HashSet};
     use std::fs;
     use std::path::{Path, PathBuf};
+    use std::process::Command;
     use std::rc::Rc;
     use std::sync::{Arc, LazyLock, atomic::Ordering};
     use std::time::Duration;
@@ -9010,6 +9093,60 @@ mod tests {
             "updated\nfn remote() {}\n"
         );
         assert!(!editor.document(doc_id).unwrap().is_modified());
+    }
+
+    #[test]
+    fn open_workspace_document_sets_remote_diff_base_from_git() {
+        let temp = tempdir().unwrap();
+        init_git_repo(temp.path());
+        fs::create_dir_all(temp.path().join("src")).unwrap();
+        fs::write(temp.path().join("src").join("main.rs"), "fn remote() {}\n").unwrap();
+        run_git(temp.path(), &["add", "src/main.rs"]);
+        run_git(temp.path(), &["commit", "-m", "initial"]);
+        fs::write(
+            temp.path().join("src").join("main.rs"),
+            "fn remote() {\n    changed();\n}\n",
+        )
+        .unwrap();
+
+        let display_root = PathBuf::from("ssh://me@example.com/home/me/project");
+        let display_path = display_root.join("src").join("main.rs");
+        let backend = path_mapped_workspace_backend(
+            local_workspace_backend(),
+            WorkspacePathMapping::new(display_root, temp.path()),
+        );
+        let mut editor = new_test_editor();
+        let _runtime = TEST_RUNTIME.enter();
+
+        let doc_id = open_workspace_document(
+            &mut editor,
+            &backend,
+            &display_path,
+            helix_view::editor::Action::VerticalSplit,
+        )
+        .unwrap();
+
+        let doc = editor.document(doc_id).unwrap();
+        assert!(doc.diff_handle().is_some());
+    }
+
+    fn init_git_repo(root: &Path) {
+        run_git(root, &["init"]);
+        run_git(root, &["config", "user.email", "nucleotide@example.test"]);
+        run_git(root, &["config", "user.name", "Nucleotide Tests"]);
+    }
+
+    fn run_git(root: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .output()
+            .unwrap_or_else(|error| panic!("failed to run git {args:?}: {error}"));
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     fn new_test_application(cx: &mut gpui::TestAppContext) -> Entity<Application> {
