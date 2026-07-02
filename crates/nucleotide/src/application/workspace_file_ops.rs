@@ -1,9 +1,11 @@
 // ABOUTME: Backend-aware workspace file operation handler
 // ABOUTME: Routes file tree mutations through WorkspaceBackend instead of host filesystem calls
 
-use std::path::{Path, PathBuf};
+use std::{
+    future::Future,
+    path::{Path, PathBuf},
+};
 
-use futures_executor::block_on;
 use nucleotide_core::{EventAggregatorHandle, EventBus, EventHandler};
 use nucleotide_events::v2::workspace::{
     DeleteMode, Event as WorkspaceEvent, FileOpIntent, PathCopyKind,
@@ -14,15 +16,23 @@ use nucleotide_workspace::{FileKind, FileStat, WorkspaceBackendHandle, Workspace
 pub struct WorkspaceFileOpHandler {
     bus: EventAggregatorHandle,
     backend: WorkspaceBackendHandle,
+    runtime: tokio::runtime::Handle,
 }
 
 impl WorkspaceFileOpHandler {
-    pub fn new(bus: EventAggregatorHandle, backend: WorkspaceBackendHandle) -> Self {
-        Self { bus, backend }
+    pub fn new(
+        bus: EventAggregatorHandle,
+        backend: WorkspaceBackendHandle,
+        runtime: tokio::runtime::Handle,
+    ) -> Self {
+        Self {
+            bus,
+            backend,
+            runtime,
+        }
     }
 
     fn create_child_path(
-        &self,
         parent: &Path,
         name: &str,
         operation: &'static str,
@@ -41,32 +51,68 @@ impl WorkspaceFileOpHandler {
             .to_path_buf()
     }
 
-    fn dispatch_created(&self, stat: FileStat) {
+    fn created_event(stat: FileStat) -> WorkspaceEvent {
         let parent_directory = Self::parent_for(&stat.path);
-        self.bus.dispatch_workspace(WorkspaceEvent::FileCreated {
+        WorkspaceEvent::FileCreated {
             path: stat.path,
             parent_directory,
-        });
+        }
     }
 
-    fn dispatch_deleted(&self, stat: FileStat) {
-        self.bus.dispatch_workspace(WorkspaceEvent::FileDeleted {
+    fn deleted_event(stat: FileStat) -> WorkspaceEvent {
+        WorkspaceEvent::FileDeleted {
             was_directory: stat.kind == FileKind::Directory,
             path: stat.path,
+        }
+    }
+
+    fn spawn_file_op<F>(&self, intent: FileOpIntent, future: F)
+    where
+        F: Future<Output = Result<WorkspaceEvent, WorkspaceError>> + Send + 'static,
+    {
+        let bus = self.bus.clone();
+        self.runtime.spawn(async move {
+            match future.await {
+                Ok(event) => {
+                    bus.dispatch_workspace(event);
+                    bus.process_events();
+                }
+                Err(err) => {
+                    error!(error = %err, intent = ?intent, "Failed to perform workspace file operation");
+                }
+            }
         });
     }
 
     fn handle_new_file(&self, parent: &Path, name: &str) -> Result<(), WorkspaceError> {
-        let path = self.create_child_path(parent, name, "create file")?;
-        let stat = block_on(self.backend.create_file(&path))?;
-        self.dispatch_created(stat);
+        let path = Self::create_child_path(parent, name, "create file")?;
+        let backend = self.backend.clone();
+        self.spawn_file_op(
+            FileOpIntent::NewFile {
+                parent: parent.to_path_buf(),
+                name: name.to_string(),
+            },
+            async move {
+                let stat = backend.create_file(&path).await?;
+                Ok(Self::created_event(stat))
+            },
+        );
         Ok(())
     }
 
     fn handle_new_folder(&self, parent: &Path, name: &str) -> Result<(), WorkspaceError> {
-        let path = self.create_child_path(parent, name, "create directory")?;
-        let stat = block_on(self.backend.create_dir(&path))?;
-        self.dispatch_created(stat);
+        let path = Self::create_child_path(parent, name, "create directory")?;
+        let backend = self.backend.clone();
+        self.spawn_file_op(
+            FileOpIntent::NewFolder {
+                parent: parent.to_path_buf(),
+                name: name.to_string(),
+            },
+            async move {
+                let stat = backend.create_dir(&path).await?;
+                Ok(Self::created_event(stat))
+            },
+        );
         Ok(())
     }
 
@@ -76,12 +122,22 @@ impl WorkspaceFileOpHandler {
             path: path.to_path_buf(),
             message: "path has no parent".to_string(),
         })?;
-        let new_path = self.create_child_path(parent, new_name, "rename path")?;
-        let stat = block_on(self.backend.rename_path(path, &new_path))?;
-        self.bus.dispatch_workspace(WorkspaceEvent::FileRenamed {
-            old_path: path.to_path_buf(),
-            new_path: stat.path,
-        });
+        let new_path = Self::create_child_path(parent, new_name, "rename path")?;
+        let old_path = path.to_path_buf();
+        let backend = self.backend.clone();
+        self.spawn_file_op(
+            FileOpIntent::Rename {
+                path: old_path.clone(),
+                new_name: new_name.to_string(),
+            },
+            async move {
+                let stat = backend.rename_path(&old_path, &new_path).await?;
+                Ok(WorkspaceEvent::FileRenamed {
+                    old_path,
+                    new_path: stat.path,
+                })
+            },
+        );
         Ok(())
     }
 
@@ -92,8 +148,18 @@ impl WorkspaceFileOpHandler {
                 "Trash delete is not implemented by workspace backends; performing permanent delete"
             );
         }
-        let stat = block_on(self.backend.delete_path(path))?;
-        self.dispatch_deleted(stat);
+        let path = path.to_path_buf();
+        let backend = self.backend.clone();
+        self.spawn_file_op(
+            FileOpIntent::Delete {
+                path: path.clone(),
+                mode,
+            },
+            async move {
+                let stat = backend.delete_path(&path).await?;
+                Ok(Self::deleted_event(stat))
+            },
+        );
         Ok(())
     }
 
@@ -103,9 +169,19 @@ impl WorkspaceFileOpHandler {
             path: path.to_path_buf(),
             message: "path has no parent".to_string(),
         })?;
-        let target_path = self.create_child_path(parent, target_name, "copy path")?;
-        let stat = block_on(self.backend.copy_path(path, &target_path))?;
-        self.dispatch_created(stat);
+        let target_path = Self::create_child_path(parent, target_name, "copy path")?;
+        let source_path = path.to_path_buf();
+        let backend = self.backend.clone();
+        self.spawn_file_op(
+            FileOpIntent::Duplicate {
+                path: source_path.clone(),
+                target_name: target_name.to_string(),
+            },
+            async move {
+                let stat = backend.copy_path(&source_path, &target_path).await?;
+                Ok(Self::created_event(stat))
+            },
+        );
         Ok(())
     }
 
@@ -173,6 +249,8 @@ fn log_path_intent(intent: &'static str, path: &Path, kind: PathCopyKind) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nucleotide_core::EventAggregator;
+    use std::sync::{Arc, Mutex};
 
     #[test]
     fn validate_child_name_rejects_path_traversal_and_separators() {
@@ -187,5 +265,56 @@ mod tests {
     fn validate_child_name_accepts_plain_file_names() {
         assert!(validate_child_name("main.rs").is_ok());
         assert!(validate_child_name("README.md").is_ok());
+    }
+
+    struct CapturedWorkspaceEvents {
+        events: Arc<Mutex<Vec<WorkspaceEvent>>>,
+    }
+
+    impl EventHandler for CapturedWorkspaceEvents {
+        fn handle_workspace(&mut self, event: &WorkspaceEvent) {
+            self.events.lock().unwrap().push(event.clone());
+        }
+    }
+
+    #[tokio::test]
+    async fn file_op_handler_dispatches_created_event_after_backend_op() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let created_path = temp_dir.path().join("new.rs");
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let bus = EventAggregatorHandle::new(EventAggregator::new());
+
+        bus.register_handler(CapturedWorkspaceEvents {
+            events: events.clone(),
+        });
+        bus.register_handler(WorkspaceFileOpHandler::new(
+            bus.clone(),
+            nucleotide_workspace::local_workspace_backend(),
+            tokio::runtime::Handle::current(),
+        ));
+
+        bus.dispatch_workspace(WorkspaceEvent::FileOpRequested {
+            intent: FileOpIntent::NewFile {
+                parent: temp_dir.path().to_path_buf(),
+                name: "new.rs".to_string(),
+            },
+        });
+        bus.process_events();
+
+        for _ in 0..50 {
+            if created_path.exists()
+                && events.lock().unwrap().iter().any(|event| {
+                    matches!(
+                        event,
+                        WorkspaceEvent::FileCreated { path, .. } if path == &created_path
+                    )
+                })
+            {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        panic!("timed out waiting for async file creation event");
     }
 }
