@@ -618,11 +618,13 @@ impl OverlayView {
                         on_select,
                         show_preview,
                         preview_text_provider,
+                        preview_text_task_provider,
                     } => {
                         let is_file_finder = title.as_ref() == "Open File";
                         let items = items.clone();
                         let on_select = on_select.clone();
                         let preview_text_provider = preview_text_provider.clone();
+                        let preview_text_task_provider = preview_text_task_provider.clone();
                         let core_weak = self.core.clone();
                         let _items_count = items.len();
 
@@ -1008,16 +1010,17 @@ impl OverlayView {
                                             return Some((content, path_opt.clone()));
                                         }
                                     }
-                                } else if let Some(doc_id) = item.data.downcast_ref::<helix_view::DocumentId>()
-                                    && let Some(core) = text_core.upgrade() {
-                                        let core_read = core.read(cx);
-                                        if let Some(doc) = core_read.editor.documents.get(doc_id) {
-                                            let content = String::from(doc.text().slice(..));
-                                            let path_opt = doc.path().cloned();
-                                            return Some((content, path_opt));
-                                        }
+                                } else if let Some(doc_id) =
+                                    item.data.downcast_ref::<helix_view::DocumentId>()
+                                    && let Some(core) = text_core.upgrade()
+                                {
+                                    let core_read = core.read(cx);
+                                    if let Some(doc) = core_read.editor.documents.get(doc_id) {
+                                        let content = String::from(doc.text().slice(..));
+                                        let path_opt = doc.path().cloned();
+                                        return Some((content, path_opt));
                                     }
-                                else if let Some(task) = item
+                                } else if let Some(task) = item
                                     .data
                                     .downcast_ref::<nucleotide_events::v2::run::ResolvedTask>()
                                 {
@@ -1026,11 +1029,18 @@ impl OverlayView {
                                         task.source().map(|source| source.path.clone()),
                                     ));
                                 }
+
                                 if let Some(provider) = picker_preview_text_provider.as_ref() {
                                     return provider(item, cx);
                                 }
                                 None
                             });
+
+                            if let Some(provider) = preview_text_task_provider {
+                                view = view.with_preview_text_task_provider_fn(move |item, cx| {
+                                    provider(item, cx)
+                                });
+                            }
 
                             // Preview capability integration can be wired here in the future
 

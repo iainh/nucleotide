@@ -15836,6 +15836,7 @@ fn open_at(
         let search_base_dir = base_dir.clone();
         let item_base_dir = base_dir.clone();
         let picker_backend = workspace_backend.clone();
+        let picker_handle = handle.clone();
         cx.spawn(async move |this, cx| {
             let search_result = match handle
                 .spawn(file_picker_search_result_from_backend(
@@ -15863,7 +15864,7 @@ fn open_at(
                             Vec::new()
                         }
                     };
-                    emit_file_picker_from_items(items, picker_backend, overlay, cx);
+                    emit_file_picker_from_items(items, picker_backend, picker_handle, overlay, cx);
                 });
             }
         })
@@ -15884,7 +15885,7 @@ fn open_at(
         }
     };
 
-    emit_file_picker_from_items(items, workspace_backend, overlay, cx);
+    emit_file_picker_from_items(items, workspace_backend, handle, overlay, cx);
 }
 
 fn should_load_file_picker_items_async(workspace_identity: &WorkspaceIdentity) -> bool {
@@ -15894,6 +15895,7 @@ fn should_load_file_picker_items_async(workspace_identity: &WorkspaceIdentity) -
 fn emit_file_picker_from_items(
     mut items: Vec<crate::picker_view::PickerItem>,
     workspace_backend: WorkspaceBackendHandle,
+    handle: tokio::runtime::Handle,
     overlay: Entity<OverlayView>,
     cx: &mut Context<Workspace>,
 ) {
@@ -15937,12 +15939,24 @@ fn emit_file_picker_from_items(
 
     if !matches!(workspace_identity, WorkspaceIdentity::Local) {
         let preview_backend = workspace_backend.clone();
-        file_picker = file_picker.with_preview_text_provider_fn(move |item, _cx| {
-            let path = item.file_path.as_ref()?;
-            Some((
-                file_picker_preview_text_from_backend(preview_backend.as_ref(), path),
-                Some(path.clone()),
-            ))
+        let preview_handle = handle.clone();
+        file_picker = file_picker.with_preview_text_task_provider_fn(move |item, cx| {
+            let path = item.file_path.clone()?;
+            let backend = preview_backend.clone();
+            let handle = preview_handle.clone();
+            Some(cx.spawn(async move |_view, _cx| {
+                let preview_path = path.clone();
+                match handle
+                    .spawn(file_picker_preview_text_from_backend_async(
+                        backend,
+                        preview_path.clone(),
+                    ))
+                    .await
+                {
+                    Ok(text) => Some((text, Some(preview_path))),
+                    Err(err) => Some((format!("Error reading file: {err}"), Some(preview_path))),
+                }
+            }))
         });
     }
 
@@ -15951,6 +15965,7 @@ fn emit_file_picker_from_items(
     emit_picker_update(file_picker, &overlay, cx);
 }
 
+#[cfg(test)]
 fn file_picker_preview_text_from_backend(
     backend: &(impl WorkspaceBackend + ?Sized),
     path: &Path,
@@ -15967,37 +15982,68 @@ fn file_picker_preview_text_from_backend(
     }
 }
 
+async fn file_picker_preview_text_from_backend_async(
+    backend: WorkspaceBackendHandle,
+    path: PathBuf,
+) -> String {
+    match backend.stat(&path).await {
+        Ok(stat) => match stat.kind {
+            FileKind::Directory => {
+                file_picker_directory_preview_from_backend_async(backend, path).await
+            }
+            FileKind::File | FileKind::Symlink => {
+                file_picker_file_preview_from_backend_async(backend, path, stat).await
+            }
+            FileKind::Other => file_picker_binary_preview(&path, &stat),
+        },
+        Err(err) => format!("Error reading file: {err}"),
+    }
+}
+
+#[cfg(test)]
 fn file_picker_directory_preview_from_backend(
     backend: &(impl WorkspaceBackend + ?Sized),
     path: &Path,
 ) -> String {
     match futures_executor::block_on(backend.list_dir(path)) {
-        Ok(listing) => {
-            let mut content = format!("Directory: {}\n\n", path.display());
-            for entry in listing
-                .entries
-                .iter()
-                .take(FILE_PICKER_PREVIEW_MAX_DIR_ENTRIES)
-            {
-                let suffix = if matches!(entry.stat.kind, FileKind::Directory) {
-                    "/"
-                } else {
-                    ""
-                };
-                content.push_str(&format!("{}{}\n", entry.name, suffix));
-            }
-            if listing.entries.len() > FILE_PICKER_PREVIEW_MAX_DIR_ENTRIES {
-                content.push_str(&format!(
-                    "\n... and {} more items\n",
-                    listing.entries.len() - FILE_PICKER_PREVIEW_MAX_DIR_ENTRIES
-                ));
-            }
-            content
-        }
+        Ok(listing) => file_picker_directory_preview_from_listing(path, &listing.entries),
         Err(err) => format!("Error reading directory: {err}"),
     }
 }
 
+async fn file_picker_directory_preview_from_backend_async(
+    backend: WorkspaceBackendHandle,
+    path: PathBuf,
+) -> String {
+    match backend.list_dir(&path).await {
+        Ok(listing) => file_picker_directory_preview_from_listing(&path, &listing.entries),
+        Err(err) => format!("Error reading directory: {err}"),
+    }
+}
+
+fn file_picker_directory_preview_from_listing(
+    path: &Path,
+    entries: &[nucleotide_workspace::DirectoryEntry],
+) -> String {
+    let mut content = format!("Directory: {}\n\n", path.display());
+    for entry in entries.iter().take(FILE_PICKER_PREVIEW_MAX_DIR_ENTRIES) {
+        let suffix = if matches!(entry.stat.kind, FileKind::Directory) {
+            "/"
+        } else {
+            ""
+        };
+        content.push_str(&format!("{}{}\n", entry.name, suffix));
+    }
+    if entries.len() > FILE_PICKER_PREVIEW_MAX_DIR_ENTRIES {
+        content.push_str(&format!(
+            "\n... and {} more items\n",
+            entries.len() - FILE_PICKER_PREVIEW_MAX_DIR_ENTRIES
+        ));
+    }
+    content
+}
+
+#[cfg(test)]
 fn file_picker_file_preview_from_backend(
     backend: &(impl WorkspaceBackend + ?Sized),
     path: &Path,
@@ -16009,20 +16055,53 @@ fn file_picker_file_preview_from_backend(
             max_bytes: Some(FILE_PICKER_PREVIEW_MAX_BYTES),
         },
     )) {
-        Ok(read) => match file_picker_decode_preview_text(&read.bytes, read.truncated) {
-            Some(mut content) => {
-                if read.truncated {
-                    content.push_str(&format!(
-                        "\n\n[File truncated - showing first {}KB of {}KB total]",
-                        FILE_PICKER_PREVIEW_MAX_BYTES / 1024,
-                        read.size / 1024
-                    ));
-                }
-                content
-            }
-            None => file_picker_binary_preview(path, stat),
-        },
+        Ok(read) => {
+            file_picker_file_preview_from_read(path, stat, &read.bytes, read.truncated, read.size)
+        }
         Err(err) => format!("Error reading file: {err}"),
+    }
+}
+
+async fn file_picker_file_preview_from_backend_async(
+    backend: WorkspaceBackendHandle,
+    path: PathBuf,
+    stat: FileStat,
+) -> String {
+    match backend
+        .read_file(
+            &path,
+            ReadOptions {
+                max_bytes: Some(FILE_PICKER_PREVIEW_MAX_BYTES),
+            },
+        )
+        .await
+    {
+        Ok(read) => {
+            file_picker_file_preview_from_read(&path, &stat, &read.bytes, read.truncated, read.size)
+        }
+        Err(err) => format!("Error reading file: {err}"),
+    }
+}
+
+fn file_picker_file_preview_from_read(
+    path: &Path,
+    stat: &FileStat,
+    bytes: &[u8],
+    truncated: bool,
+    size: u64,
+) -> String {
+    match file_picker_decode_preview_text(bytes, truncated) {
+        Some(mut content) => {
+            if truncated {
+                content.push_str(&format!(
+                    "\n\n[File truncated - showing first {}KB of {}KB total]",
+                    FILE_PICKER_PREVIEW_MAX_BYTES / 1024,
+                    size / 1024
+                ));
+            }
+            content
+        }
+        None => file_picker_binary_preview(path, stat),
     }
 }
 
@@ -19898,6 +19977,23 @@ mod tests {
 
         let backend = local_workspace_backend();
         let preview = file_picker_preview_text_from_backend(backend.as_ref(), &path);
+
+        assert!(preview.starts_with(&"a".repeat(FILE_PICKER_PREVIEW_MAX_BYTES as usize)));
+        assert!(preview.contains("[File truncated - showing first 10KB"));
+    }
+
+    #[tokio::test]
+    async fn file_picker_preview_from_backend_async_reads_bounded_text() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("large.txt");
+        std::fs::write(
+            &path,
+            "a".repeat(FILE_PICKER_PREVIEW_MAX_BYTES as usize + 128),
+        )
+        .unwrap();
+
+        let backend = local_workspace_backend();
+        let preview = file_picker_preview_text_from_backend_async(backend, path).await;
 
         assert!(preview.starts_with(&"a".repeat(FILE_PICKER_PREVIEW_MAX_BYTES as usize)));
         assert!(preview.contains("[File truncated - showing first 10KB"));

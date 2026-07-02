@@ -7,11 +7,19 @@ use std::sync::Arc;
 
 use crate::picker_view::{PickerItem, PickerView};
 
+pub type PickerPreviewText = (String, Option<std::path::PathBuf>);
+
 pub type PickerPreviewTextProvider = Arc<
+    dyn for<'a> Fn(&PickerItem, &mut gpui::Context<PickerView>) -> Option<PickerPreviewText>
+        + Send
+        + Sync,
+>;
+
+pub type PickerPreviewTextTaskProvider = Arc<
     dyn for<'a> Fn(
             &PickerItem,
             &mut gpui::Context<PickerView>,
-        ) -> Option<(String, Option<std::path::PathBuf>)>
+        ) -> Option<gpui::Task<Option<PickerPreviewText>>>
         + Send
         + Sync,
 >;
@@ -24,6 +32,7 @@ pub enum Picker {
         on_select: Arc<dyn Fn(usize) + Send + Sync>,
         show_preview: bool,
         preview_text_provider: Option<PickerPreviewTextProvider>,
+        preview_text_task_provider: Option<PickerPreviewTextTaskProvider>,
     },
 }
 
@@ -40,6 +49,7 @@ impl Picker {
             on_select: Arc::new(on_select),
             show_preview: false,
             preview_text_provider: None,
+            preview_text_task_provider: None,
         }
     }
 
@@ -74,6 +84,26 @@ impl Picker {
         self
     }
 
+    /// Provide asynchronous text previews for picker items without blocking the UI.
+    pub fn with_preview_text_task_provider_fn(
+        mut self,
+        f: impl for<'a> Fn(
+            &PickerItem,
+            &mut gpui::Context<PickerView>,
+        ) -> Option<gpui::Task<Option<PickerPreviewText>>>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        match &mut self {
+            Picker::Native {
+                preview_text_task_provider,
+                ..
+            } => *preview_text_task_provider = Some(Arc::new(f)),
+        }
+        self
+    }
+
     /// Create a native directory picker
     pub fn native_directory(
         title: impl Into<SharedString>,
@@ -90,6 +120,7 @@ impl Picker {
             }),
             show_preview: false,
             preview_text_provider: None,
+            preview_text_task_provider: None,
         }
     }
 }
@@ -297,6 +328,21 @@ mod tests {
                 ..
             } => {
                 assert!(preview_text_provider.is_some());
+            }
+        }
+    }
+
+    #[test]
+    fn native_picker_can_store_preview_text_task_provider() {
+        let picker = Picker::native("Open File", Vec::new(), |_| {})
+            .with_preview_text_task_provider_fn(|_item, _cx| None);
+
+        match picker {
+            Picker::Native {
+                preview_text_task_provider,
+                ..
+            } => {
+                assert!(preview_text_task_provider.is_some());
             }
         }
     }
