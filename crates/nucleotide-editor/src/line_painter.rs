@@ -9,7 +9,7 @@ use gpui::{
 use crate::{
     line_cache::{LineLayout, LineLayoutCache},
     line_plan::UnwrappedLinePaintPlan,
-    line_text::DisplayLineText,
+    line_text::{DisplayLineText, normalize_text_runs_for_display_text},
     soft_wrap::SoftWrapLinePaintPlan,
 };
 
@@ -161,18 +161,23 @@ pub fn paint_unwrapped_editor_line(
             &[],
         )
     } else {
+        let line_runs = normalize_text_runs_for_display_text(
+            params.line_text.display.as_ref(),
+            params.line_runs,
+        );
+        let line_runs = line_runs.as_ref();
         let shaped_line = params.line_cache.shape_line_cached(
             text_system.as_ref(),
             params.line_text.display.clone(),
             params.font_size,
             params.viewport_width,
-            params.line_runs,
+            line_runs,
         );
         paint_editor_line(
             window,
             cx,
             &shaped_line,
-            params.line_runs,
+            line_runs,
             params.plan.text_origin,
             params.line_height,
             params.background_style,
@@ -215,18 +220,21 @@ pub fn paint_soft_wrap_editor_line(
     }
 
     let text_system = window.text_system().clone();
+    let line_runs =
+        normalize_text_runs_for_display_text(params.plan.visual.text.as_ref(), params.line_runs);
+    let line_runs = line_runs.as_ref();
     let shaped_line = params.line_cache.shape_line_cached(
         text_system.as_ref(),
         params.plan.visual.text.clone(),
         params.font_size,
         params.viewport_width,
-        params.line_runs,
+        line_runs,
     );
     paint_editor_line(
         window,
         cx,
         &shaped_line,
-        params.line_runs,
+        line_runs,
         params.plan.text_origin,
         params.line_height,
         params.background_style,
