@@ -402,6 +402,127 @@ pub fn ssh_lsp_proxy_command(
     }
 }
 
+pub fn wsl_terminal_proxy_command(
+    distro: impl AsRef<OsStr>,
+    linux_root: impl AsRef<Path>,
+    helper_path: impl AsRef<Path>,
+    shell: Option<&str>,
+    command: Option<(&str, &[String])>,
+    env: &[(String, String)],
+) -> RemoteServiceCommand {
+    let linux_root = linux_root.as_ref();
+    let helper_path = helper_path.as_ref();
+    let mut args = vec![
+        OsString::from("--distribution"),
+        distro.as_ref().to_os_string(),
+        OsString::from("--cd"),
+        linux_root.as_os_str().to_os_string(),
+        OsString::from("--exec"),
+        helper_path.as_os_str().to_os_string(),
+        OsString::from("terminal-proxy"),
+        OsString::from("--workspace"),
+        linux_root.as_os_str().to_os_string(),
+    ];
+    append_terminal_proxy_args(&mut args, shell, command, env);
+
+    RemoteServiceCommand {
+        program: OsString::from("wsl.exe"),
+        args,
+        current_dir: None,
+    }
+}
+
+pub fn ssh_terminal_proxy_command(
+    target: SshTarget,
+    remote_root: impl AsRef<Path>,
+    helper_path: impl AsRef<Path>,
+    shell: Option<&str>,
+    command: Option<(&str, &[String])>,
+    env: &[(String, String)],
+) -> RemoteServiceCommand {
+    let remote_command = terminal_proxy_shell_command(
+        helper_path.as_ref(),
+        remote_root.as_ref(),
+        shell,
+        command,
+        env,
+    );
+    let mut args = Vec::new();
+    if let Some(port) = target.port {
+        args.push(OsString::from("-p"));
+        args.push(OsString::from(port.to_string()));
+    }
+    args.push(OsString::from("-tt"));
+    args.push(OsString::from(target.target_arg()));
+    args.push(OsString::from("--"));
+    args.push(OsString::from(remote_command));
+
+    RemoteServiceCommand {
+        program: OsString::from("ssh"),
+        args,
+        current_dir: None,
+    }
+}
+
+fn append_terminal_proxy_args(
+    args: &mut Vec<OsString>,
+    shell: Option<&str>,
+    command: Option<(&str, &[String])>,
+    env: &[(String, String)],
+) {
+    if let Some(shell) = shell.filter(|shell| !shell.is_empty()) {
+        args.push(OsString::from("--shell"));
+        args.push(OsString::from(shell));
+    }
+    for (key, value) in env {
+        if terminal_env_entry_is_valid(key, value) {
+            args.push(OsString::from("--env"));
+            args.push(OsString::from(format!("{key}={value}")));
+        }
+    }
+    if let Some((program, program_args)) = command {
+        args.push(OsString::from("--"));
+        args.push(OsString::from(program));
+        args.extend(program_args.iter().map(OsString::from));
+    }
+}
+
+fn terminal_proxy_shell_command(
+    helper_path: &Path,
+    remote_root: &Path,
+    shell: Option<&str>,
+    command: Option<(&str, &[String])>,
+    env: &[(String, String)],
+) -> String {
+    let mut parts = vec![
+        "exec".to_string(),
+        quote_posix_shell(&helper_path.to_string_lossy()),
+        "terminal-proxy".to_string(),
+        "--workspace".to_string(),
+        quote_posix_shell(&remote_root.to_string_lossy()),
+    ];
+    if let Some(shell) = shell.filter(|shell| !shell.is_empty()) {
+        parts.push("--shell".to_string());
+        parts.push(quote_posix_shell(shell));
+    }
+    for (key, value) in env {
+        if terminal_env_entry_is_valid(key, value) {
+            parts.push("--env".to_string());
+            parts.push(quote_posix_shell(&format!("{key}={value}")));
+        }
+    }
+    if let Some((program, program_args)) = command {
+        parts.push("--".to_string());
+        parts.push(quote_posix_shell(program));
+        parts.extend(program_args.iter().map(|arg| quote_posix_shell(arg)));
+    }
+    parts.join(" ")
+}
+
+fn terminal_env_entry_is_valid(key: &str, value: &str) -> bool {
+    !key.is_empty() && !key.contains('=') && !key.contains('\0') && !value.contains('\0')
+}
+
 pub struct ChildProcessTransport {
     child: Child,
     reader: ChildStdout,
@@ -783,6 +904,37 @@ pub fn remote_lsp_proxy_command_for_location(
             path,
             helper_path,
             server,
+        )),
+    }
+}
+
+pub fn remote_terminal_proxy_command_for_location(
+    location: &WorkspaceLocation,
+    helper_path: impl AsRef<Path>,
+    shell: Option<&str>,
+    command: Option<(&str, &[String])>,
+    env: &[(String, String)],
+) -> Option<RemoteServiceCommand> {
+    let helper_path = helper_path.as_ref();
+    match location {
+        WorkspaceLocation::Local { .. } => None,
+        WorkspaceLocation::Wsl {
+            distro, linux_path, ..
+        } => Some(wsl_terminal_proxy_command(
+            distro,
+            linux_path,
+            helper_path,
+            shell,
+            command,
+            env,
+        )),
+        WorkspaceLocation::Ssh { target, path, .. } => Some(ssh_terminal_proxy_command(
+            ssh_target_from_workspace_target(target),
+            path,
+            helper_path,
+            shell,
+            command,
+            env,
         )),
     }
 }
@@ -2798,6 +2950,14 @@ where
                 .context("failed to create remote LSP proxy runtime")?;
             runtime.block_on(run_lsp_proxy(options))
         }
+        "terminal-proxy" => {
+            let options = parse_terminal_proxy_options(args)?;
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .context("failed to create remote terminal proxy runtime")?;
+            runtime.block_on(run_terminal_proxy(options))
+        }
         "--help" | "-h" | "help" => {
             print_help(&mut std::io::stdout()).context("failed to write help")
         }
@@ -2899,6 +3059,73 @@ where
     })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TerminalProxyOptions {
+    workspace_root: PathBuf,
+    shell: Option<String>,
+    env: Vec<(String, String)>,
+    command: Option<(String, Vec<String>)>,
+}
+
+fn parse_terminal_proxy_options<I>(args: I) -> Result<TerminalProxyOptions>
+where
+    I: IntoIterator<Item = String>,
+{
+    let mut args = args.into_iter();
+    let mut workspace_root = None;
+    let mut shell = None;
+    let mut env = Vec::new();
+    let mut command = None;
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--workspace" => {
+                let path = args
+                    .next()
+                    .context("--workspace requires a remote workspace path")?;
+                let path = PathBuf::from(path);
+                workspace_root = Some(if path.is_absolute() {
+                    path
+                } else {
+                    std::env::current_dir()
+                        .context("failed to resolve current directory")?
+                        .join(path)
+                });
+            }
+            "--shell" => {
+                shell = Some(args.next().context("--shell requires a shell path")?);
+            }
+            "--env" => {
+                let entry = args.next().context("--env requires KEY=VALUE")?;
+                let (key, value) = entry
+                    .split_once('=')
+                    .with_context(|| format!("terminal env entry must be KEY=VALUE: {entry}"))?;
+                if !terminal_env_entry_is_valid(key, value) {
+                    bail!("terminal env entry is invalid: {key}");
+                }
+                env.push((key.to_string(), value.to_string()));
+            }
+            "--" => {
+                if let Some(program) = args.next() {
+                    command = Some((program, args.collect()));
+                }
+                break;
+            }
+            other => bail!("unknown terminal-proxy argument: {other}"),
+        }
+    }
+
+    Ok(TerminalProxyOptions {
+        workspace_root: workspace_root
+            .map(Ok)
+            .unwrap_or_else(std::env::current_dir)
+            .context("failed to resolve workspace root")?,
+        shell,
+        env,
+        command,
+    })
+}
+
 async fn run_lsp_proxy(options: LspProxyOptions) -> Result<()> {
     let environment = load_lsp_proxy_environment(&options.workspace_root).await?;
     let server_program = resolve_program_from_environment_path(
@@ -2968,6 +3195,84 @@ async fn run_lsp_proxy(options: LspProxyOptions) -> Result<()> {
     }
 }
 
+async fn run_terminal_proxy(options: TerminalProxyOptions) -> Result<()> {
+    let mut environment = load_proxy_environment("terminal-proxy", &options.workspace_root).await?;
+    environment.extend(options.env.iter().cloned());
+
+    let (program, args) = terminal_proxy_process(&options, &environment);
+    let program_path =
+        resolve_program_from_environment_path(&program, &environment, &options.workspace_root);
+
+    exec_terminal_proxy_process(&program_path, &args, &environment, &options.workspace_root)
+        .with_context(|| {
+            format!(
+                "failed to run terminal command {} in {}",
+                program_path.display(),
+                options.workspace_root.display()
+            )
+        })
+}
+
+fn terminal_proxy_process(
+    options: &TerminalProxyOptions,
+    environment: &HashMap<String, String>,
+) -> (String, Vec<String>) {
+    match &options.command {
+        Some((program, args)) => (program.clone(), args.clone()),
+        None => {
+            let shell = options
+                .shell
+                .as_deref()
+                .filter(|shell| !shell.is_empty())
+                .or_else(|| environment.get("SHELL").map(String::as_str))
+                .filter(|shell| !shell.is_empty())
+                .unwrap_or("/bin/sh")
+                .to_string();
+            (shell, Vec::new())
+        }
+    }
+}
+
+#[cfg(unix)]
+fn exec_terminal_proxy_process(
+    program: &Path,
+    args: &[String],
+    environment: &HashMap<String, String>,
+    workspace_root: &Path,
+) -> io::Result<()> {
+    use std::os::unix::process::CommandExt;
+
+    let error = Command::new(program)
+        .args(args)
+        .current_dir(workspace_root)
+        .env_clear()
+        .envs(environment)
+        .exec();
+    Err(error)
+}
+
+#[cfg(not(unix))]
+fn exec_terminal_proxy_process(
+    program: &Path,
+    args: &[String],
+    environment: &HashMap<String, String>,
+    workspace_root: &Path,
+) -> io::Result<()> {
+    let status = Command::new(program)
+        .args(args)
+        .current_dir(workspace_root)
+        .env_clear()
+        .envs(environment)
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "terminal command exited with status {status}"
+        )))
+    }
+}
+
 fn pipe_task_result(
     result: std::result::Result<std::io::Result<u64>, tokio::task::JoinError>,
     operation: &'static str,
@@ -2978,6 +3283,10 @@ fn pipe_task_result(
 }
 
 async fn load_lsp_proxy_environment(root: &Path) -> Result<HashMap<String, String>> {
+    load_proxy_environment("lsp-proxy", root).await
+}
+
+async fn load_proxy_environment(label: &str, root: &Path) -> Result<HashMap<String, String>> {
     let project_environment = ProjectEnvironment::new(Some(std::env::vars().collect()));
     let environment = project_environment
         .get_environment_for_directory(root)
@@ -2985,7 +3294,7 @@ async fn load_lsp_proxy_environment(root: &Path) -> Result<HashMap<String, Strin
         .with_context(|| format!("failed to load project environment for {}", root.display()))?;
 
     for diagnostic in project_environment.get_environment_diagnostics(root).await {
-        eprintln!("nucleotide-remote lsp-proxy environment diagnostic: {diagnostic}");
+        eprintln!("nucleotide-remote {label} environment diagnostic: {diagnostic}");
     }
 
     Ok(environment)
@@ -3026,6 +3335,10 @@ fn print_help<W: Write>(writer: &mut W) -> io::Result<()> {
         writer,
         "nucleotide-remote lsp-proxy [--workspace <path>] --server <name> [-- <args>...]"
     )?;
+    writeln!(
+        writer,
+        "nucleotide-remote terminal-proxy [--workspace <path>] [--shell <path>] [--env KEY=VALUE]... [-- <command> <args>...]"
+    )?;
     writeln!(writer)?;
     writeln!(
         writer,
@@ -3033,7 +3346,7 @@ fn print_help<W: Write>(writer: &mut W) -> io::Result<()> {
     )?;
     writeln!(
         writer,
-        "LSP proxy traffic also uses stdin/stdout and diagnostics must be written to stderr."
+        "Proxy diagnostics are written to stderr so protocol and terminal streams stay clean."
     )
 }
 
@@ -3092,6 +3405,63 @@ mod tests {
         assert_eq!(options.workspace_root, temp.path());
         assert_eq!(options.server, "rust-analyzer");
         assert_eq!(options.server_args, ["--log-file", "ra.log"]);
+    }
+
+    #[test]
+    fn terminal_proxy_options_parse_shell_env_and_command() {
+        let temp = tempfile::tempdir().unwrap();
+
+        let options = parse_terminal_proxy_options([
+            "--workspace".to_string(),
+            temp.path().display().to_string(),
+            "--shell".to_string(),
+            "/bin/zsh".to_string(),
+            "--env".to_string(),
+            "RUST_LOG=debug".to_string(),
+            "--".to_string(),
+            "cargo".to_string(),
+            "test".to_string(),
+            "--workspace".to_string(),
+        ])
+        .unwrap();
+
+        assert_eq!(options.workspace_root, temp.path());
+        assert_eq!(options.shell.as_deref(), Some("/bin/zsh"));
+        assert_eq!(
+            options.env,
+            vec![("RUST_LOG".to_string(), "debug".to_string())]
+        );
+        assert_eq!(
+            options.command,
+            Some((
+                "cargo".to_string(),
+                vec!["test".to_string(), "--workspace".to_string()]
+            ))
+        );
+    }
+
+    #[test]
+    fn terminal_proxy_options_reject_invalid_env_entry() {
+        let error =
+            parse_terminal_proxy_options(["--env".to_string(), "BAD".to_string()]).unwrap_err();
+
+        assert!(error.to_string().contains("KEY=VALUE"));
+    }
+
+    #[test]
+    fn terminal_proxy_process_uses_environment_shell_without_extra_flags() {
+        let options = TerminalProxyOptions {
+            workspace_root: PathBuf::from("/workspace"),
+            shell: None,
+            env: Vec::new(),
+            command: None,
+        };
+        let environment = HashMap::from([("SHELL".to_string(), "/bin/zsh".to_string())]);
+
+        let (program, args) = terminal_proxy_process(&options, &environment);
+
+        assert_eq!(program, "/bin/zsh");
+        assert!(args.is_empty());
     }
 
     #[test]
@@ -3635,6 +4005,43 @@ mod tests {
     }
 
     #[test]
+    fn wsl_terminal_proxy_command_uses_remote_helper() {
+        let command_args = vec!["test".to_string()];
+        let spec = wsl_terminal_proxy_command(
+            "Ubuntu",
+            "/home/me/project",
+            "/home/me/.cache/nucl/remote",
+            Some("/bin/zsh"),
+            Some(("cargo", &command_args)),
+            &[("RUST_LOG".to_string(), "debug".to_string())],
+        );
+
+        assert_eq!(spec.program, OsString::from("wsl.exe"));
+        assert_eq!(
+            spec.args,
+            vec![
+                OsString::from("--distribution"),
+                OsString::from("Ubuntu"),
+                OsString::from("--cd"),
+                OsString::from("/home/me/project"),
+                OsString::from("--exec"),
+                OsString::from("/home/me/.cache/nucl/remote"),
+                OsString::from("terminal-proxy"),
+                OsString::from("--workspace"),
+                OsString::from("/home/me/project"),
+                OsString::from("--shell"),
+                OsString::from("/bin/zsh"),
+                OsString::from("--env"),
+                OsString::from("RUST_LOG=debug"),
+                OsString::from("--"),
+                OsString::from("cargo"),
+                OsString::from("test"),
+            ]
+        );
+        assert_eq!(spec.current_dir, None);
+    }
+
+    #[test]
     fn ssh_service_command_quotes_remote_paths() {
         let mut target = SshTarget::new("devbox");
         target.user = Some("me".to_string());
@@ -3682,6 +4089,38 @@ mod tests {
         assert!(command.contains("'/home/me/project with spaces/it'\"'\"'s'"));
         assert!(command.contains("typescript-language-server"));
         assert!(command.ends_with(" --"));
+    }
+
+    #[test]
+    fn ssh_terminal_proxy_command_quotes_remote_command_and_forces_tty() {
+        let mut target = SshTarget::new("devbox");
+        target.user = Some("me".to_string());
+        target.port = Some(2222);
+        let command_args = vec!["test".to_string(), "--workspace".to_string()];
+
+        let spec = ssh_terminal_proxy_command(
+            target,
+            "/home/me/project with spaces/it's",
+            "/home/me/.cache/nucleotide remote/bin",
+            None,
+            Some(("cargo", &command_args)),
+            &[("RUST_LOG".to_string(), "debug".to_string())],
+        );
+
+        assert_eq!(spec.program, OsString::from("ssh"));
+        assert_eq!(spec.args[0], OsString::from("-p"));
+        assert_eq!(spec.args[1], OsString::from("2222"));
+        assert_eq!(spec.args[2], OsString::from("-tt"));
+        assert_eq!(spec.args[3], OsString::from("me@devbox"));
+        assert_eq!(spec.args[4], OsString::from("--"));
+        let command = spec.args[5].to_string_lossy();
+        assert!(command.starts_with("exec "));
+        assert!(command.contains("'/home/me/.cache/nucleotide remote/bin'"));
+        assert!(command.contains(" terminal-proxy "));
+        assert!(command.contains("'/home/me/project with spaces/it'\"'\"'s'"));
+        assert!(command.contains("--env 'RUST_LOG=debug'"));
+        assert!(command.contains(" -- 'cargo' 'test' "));
+        assert!(command.ends_with("'--workspace'"));
     }
 
     #[test]
