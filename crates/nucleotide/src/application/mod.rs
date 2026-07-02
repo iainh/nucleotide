@@ -8176,8 +8176,11 @@ fn local_path_completion_context(
         path
     };
     let parent_dir = doc_path.and_then(Path::parent);
+    let path_is_remote = classify_workspace_location(&path).is_remote();
     let path = match parent_dir {
-        Some(parent_dir) if path.is_relative() => parent_dir.join(path.as_path()),
+        Some(parent_dir) if path.is_relative() && !path_is_remote => {
+            parent_dir.join(path.as_path())
+        }
         _ => path,
     };
 
@@ -10021,6 +10024,25 @@ mod tests {
 
         assert_eq!(context.dir_path, PathBuf::from("/workspace/project/src"));
         assert_eq!(context.typed_file_name, None);
+    }
+
+    #[test]
+    fn local_path_completion_context_keeps_remote_uri_rooted() {
+        let context = local_path_completion_context(
+            "ssh://devbox/home/me/project/src/ma",
+            Some(Path::new("ssh://devbox/home/me/project/lib.rs")),
+            WorkspaceIdentity::Remote(RemoteWorkspaceIdentity {
+                kind: RemoteWorkspaceKind::Ssh,
+                name: "devbox".to_string(),
+            }),
+        )
+        .expect("remote URI path context");
+
+        assert_eq!(
+            context.dir_path,
+            PathBuf::from("ssh://devbox/home/me/project/src")
+        );
+        assert_eq!(context.typed_file_name.as_deref(), Some("ma"));
     }
 
     #[tokio::test]

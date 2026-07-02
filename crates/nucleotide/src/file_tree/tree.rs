@@ -15,7 +15,7 @@ use crate::file_tree::{
 };
 use nucleotide_workspace::{
     DirectoryEntry, DirectoryListing, FileKind as WorkspaceFileKind, WorkspaceBackend,
-    WorkspaceIdentity,
+    WorkspaceIdentity, classify_workspace_location,
 };
 
 /// Core file tree data structure.
@@ -1427,6 +1427,10 @@ enum PathSetKind {
 }
 
 fn normalize_tree_path(path: &Path) -> PathBuf {
+    if classify_workspace_location(path).is_remote() {
+        return path.to_path_buf();
+    }
+
     let mut normalized = PathBuf::new();
 
     for component in path.components() {

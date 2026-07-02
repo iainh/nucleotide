@@ -15,6 +15,7 @@ use nucleotide_logging::{debug, error, info, warn};
 use nucleotide_types::{DiffChangeType, DiffHunkInfo, VcsStatus};
 use nucleotide_workspace::{
     FileKind, GitStatusEntry, GitStatusKind, GitStatusOptions, ReadOptions, WorkspaceBackendHandle,
+    absolutize_workspace_path,
 };
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -388,11 +389,10 @@ impl VcsService {
     }
 
     fn absolute_path(&self, path: &Path) -> Option<PathBuf> {
-        if path.is_absolute() {
-            Some(path.to_path_buf())
-        } else {
-            self.root_path.as_ref().map(|root| root.join(path))
-        }
+        self.root_path
+            .as_ref()
+            .map(|root| absolutize_workspace_path(root, path))
+            .or_else(|| path.is_absolute().then(|| path.to_path_buf()))
     }
 
     /// Get the VCS status for a specific file
@@ -1410,6 +1410,20 @@ mod tests {
             .unwrap();
 
         assert_eq!(text.as_deref(), Some("remote text\n"));
+    }
+
+    #[test]
+    fn absolute_path_keeps_remote_display_paths_rooted() {
+        let mut service = VcsService::new(VcsConfig::default());
+        let root = PathBuf::from("ssh://devbox/home/me/project");
+        let rooted = PathBuf::from("ssh://devbox/home/me/project/src/lib.rs");
+        service.root_path = Some(root);
+
+        assert_eq!(service.absolute_path(&rooted), Some(rooted));
+        assert_eq!(
+            service.absolute_path(Path::new("src/main.rs")),
+            Some(PathBuf::from("ssh://devbox/home/me/project/src/main.rs"))
+        );
     }
 
     #[tokio::test]

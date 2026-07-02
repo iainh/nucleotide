@@ -154,6 +154,19 @@ pub fn classify_workspace_location(path: impl AsRef<Path>) -> WorkspaceLocation 
     }
 }
 
+pub fn workspace_path_is_absolute(path: impl AsRef<Path>) -> bool {
+    let path = path.as_ref();
+    path.is_absolute() || classify_workspace_location(path).is_remote()
+}
+
+pub fn absolutize_workspace_path(root: &Path, path: &Path) -> PathBuf {
+    if path.starts_with(root) || workspace_path_is_absolute(path) {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    }
+}
+
 /// Returns a best-effort workspace root for a remote startup argument without
 /// probing the host filesystem.
 ///
@@ -2521,6 +2534,31 @@ mod tests {
                 .path_mapping()
                 .to_native_path(&path.join("src").join("main.rs")),
             PathBuf::from("/home/me/project/src/main.rs")
+        );
+    }
+
+    #[test]
+    fn workspace_path_is_absolute_accepts_remote_display_paths() {
+        assert!(workspace_path_is_absolute(Path::new(
+            "ssh://me@example.com/home/me/project"
+        )));
+        assert!(workspace_path_is_absolute(Path::new(
+            r"\\wsl.localhost\Ubuntu\home\me\project"
+        )));
+        assert!(workspace_path_is_absolute(Path::new("/tmp/project")));
+        assert!(!workspace_path_is_absolute(Path::new("src/main.rs")));
+    }
+
+    #[test]
+    fn absolutize_workspace_path_keeps_remote_display_paths_rooted() {
+        let root = Path::new("ssh://me@example.com/home/me/project");
+        let rooted_file = PathBuf::from("ssh://me@example.com/home/me/project/src/main.rs");
+        let relative_file = Path::new("src/main.rs");
+
+        assert_eq!(absolutize_workspace_path(root, &rooted_file), rooted_file);
+        assert_eq!(
+            absolutize_workspace_path(root, relative_file),
+            PathBuf::from("ssh://me@example.com/home/me/project/src/main.rs")
         );
     }
 
