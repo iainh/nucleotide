@@ -58,7 +58,7 @@ use nucleotide_lsp::{
 };
 use nucleotide_workspace::{
     DirectoryListing, FileKind, WorkspaceBackendHandle, WorkspaceIdentity,
-    classify_workspace_location, local_workspace_backend,
+    classify_workspace_location, local_workspace_backend, remote_startup_workspace_root,
 };
 use slotmap::Key;
 
@@ -6864,6 +6864,15 @@ pub fn init_editor(
     );
     let project_directory = if let Some(path) = &args.working_directory {
         Some(path.clone())
+    } else if let Some((path, _)) = args.files.first()
+        && let Some(remote_root) = remote_startup_workspace_root(path)
+    {
+        nucleotide_logging::info!(
+            file_path = %path.display(),
+            project_root = %remote_root.display(),
+            "Using remote startup workspace root without host filesystem probes"
+        );
+        Some(remote_root)
     } else if let Some((path, _)) = args.files.first().filter(|p| p.0.is_dir()) {
         // If the first file is a directory, use it as the project directory
         Some(path.clone())

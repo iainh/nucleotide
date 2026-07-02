@@ -154,6 +154,79 @@ pub fn classify_workspace_location(path: impl AsRef<Path>) -> WorkspaceLocation 
     }
 }
 
+/// Returns a best-effort workspace root for a remote startup argument without
+/// probing the host filesystem.
+///
+/// CLI positional arguments do not tell us whether a remote path is a file or a
+/// directory. When the path looks file-like, this returns the remote parent;
+/// otherwise it returns the remote path itself. Local paths return `None` so
+/// callers can keep using precise local filesystem checks.
+pub fn remote_startup_workspace_root(path: impl AsRef<Path>) -> Option<PathBuf> {
+    let path = path.as_ref();
+
+    match classify_workspace_location(path) {
+        WorkspaceLocation::Local { .. } => None,
+        WorkspaceLocation::Wsl {
+            original_path,
+            linux_path,
+            ..
+        } => Some(startup_display_workspace_root(&original_path, &linux_path)),
+        WorkspaceLocation::Ssh {
+            original_path,
+            path: remote_path,
+            ..
+        } => Some(startup_display_workspace_root(&original_path, &remote_path)),
+    }
+}
+
+fn remote_startup_path_is_probably_file(original_path: &Path, native_path: &Path) -> bool {
+    let original_text = original_path.to_string_lossy();
+    if original_text.ends_with('/') || original_text.ends_with('\\') {
+        return false;
+    }
+
+    let Some(file_name) = native_path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+
+    if native_path.extension().is_some() {
+        return true;
+    }
+
+    matches!(
+        file_name,
+        ".env"
+            | ".envrc"
+            | ".editorconfig"
+            | ".gitattributes"
+            | ".gitignore"
+            | ".gitmodules"
+            | "Containerfile"
+            | "Dockerfile"
+            | "Gemfile"
+            | "Justfile"
+            | "LICENSE"
+            | "Makefile"
+            | "Rakefile"
+            | "README"
+    )
+}
+
+fn startup_display_workspace_root(original_path: &Path, native_path: &Path) -> PathBuf {
+    let original_text = original_path.to_string_lossy();
+    let trimmed = original_text.trim_end_matches(['/', '\\']);
+
+    if remote_startup_path_is_probably_file(original_path, native_path)
+        && let Some((index, _)) = trimmed
+            .char_indices()
+            .rfind(|(_, ch)| matches!(ch, '/' | '\\'))
+    {
+        return PathBuf::from(&trimmed[..index]);
+    }
+
+    PathBuf::from(trimmed)
+}
+
 fn parse_wsl_unc_path(value: &str) -> Option<(String, PathBuf)> {
     let normalized = value.replace('\\', "/");
     let rest = normalized
@@ -2332,6 +2405,92 @@ mod tests {
                 .path_mapping()
                 .to_native_path(&path.join("src").join("main.rs")),
             PathBuf::from("/home/me/project/src/main.rs")
+        );
+    }
+
+    #[test]
+    fn remote_startup_workspace_root_uses_parent_for_wsl_file_hint() {
+        let path = PathBuf::from(r"\\wsl.localhost\Ubuntu-24.04\home\me\project\src\main.rs");
+
+        assert_eq!(
+            remote_startup_workspace_root(&path),
+            Some(PathBuf::from(
+                r"\\wsl.localhost\Ubuntu-24.04\home\me\project\src"
+            ))
+        );
+    }
+
+    #[test]
+    fn remote_startup_workspace_root_keeps_wsl_directory_hint() {
+        let path = PathBuf::from(r"\\wsl.localhost\Ubuntu-24.04\home\me\project");
+
+        assert_eq!(
+            remote_startup_workspace_root(&path),
+            Some(PathBuf::from(
+                r"\\wsl.localhost\Ubuntu-24.04\home\me\project"
+            ))
+        );
+    }
+
+    #[test]
+    fn remote_startup_workspace_root_uses_parent_for_ssh_file_hint() {
+        let path = PathBuf::from("ssh://me@example.com:2222/home/me/project/src/main.rs");
+
+        assert_eq!(
+            remote_startup_workspace_root(&path),
+            Some(PathBuf::from(
+                "ssh://me@example.com:2222/home/me/project/src"
+            ))
+        );
+    }
+
+    #[test]
+    fn remote_startup_workspace_root_encodes_ssh_display_parent() {
+        let path = PathBuf::from("ssh://me@example.com/home/me/Project%20One/src/main.rs");
+
+        assert_eq!(
+            remote_startup_workspace_root(&path),
+            Some(PathBuf::from(
+                "ssh://me@example.com/home/me/Project%20One/src"
+            ))
+        );
+    }
+
+    #[test]
+    fn remote_startup_workspace_root_uses_parent_for_known_extensionless_files() {
+        let path = PathBuf::from("ssh://example.com/home/me/project/Makefile");
+
+        assert_eq!(
+            remote_startup_workspace_root(&path),
+            Some(PathBuf::from("ssh://example.com/home/me/project"))
+        );
+    }
+
+    #[test]
+    fn remote_startup_workspace_root_keeps_ssh_directory_hint() {
+        let path = PathBuf::from("ssh://me@example.com/home/me/project");
+
+        assert_eq!(
+            remote_startup_workspace_root(&path),
+            Some(PathBuf::from("ssh://me@example.com/home/me/project"))
+        );
+    }
+
+    #[test]
+    fn remote_startup_workspace_root_keeps_trailing_slash_directory_hint() {
+        let path = PathBuf::from("ssh://me@example.com/home/me/project.v1/");
+
+        assert_eq!(
+            remote_startup_workspace_root(&path),
+            Some(PathBuf::from("ssh://me@example.com/home/me/project.v1"))
+        );
+    }
+
+    #[test]
+    fn remote_startup_workspace_root_ignores_local_paths() {
+        assert_eq!(
+            remote_startup_workspace_root(Path::new("/tmp/project/src/main.rs")),
+            None
         );
     }
 
