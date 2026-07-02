@@ -654,6 +654,15 @@ pub trait WorkspaceBackend: Send + Sync {
 
     async fn list_dir(&self, path: &Path) -> Result<DirectoryListing>;
 
+    async fn list_dirs(&self, paths: Vec<PathBuf>) -> Vec<(PathBuf, Result<DirectoryListing>)> {
+        let mut listings = Vec::with_capacity(paths.len());
+        for path in paths {
+            let listing = self.list_dir(&path).await;
+            listings.push((path, listing));
+        }
+        listings
+    }
+
     async fn find_ancestor_file(
         &self,
         start: &Path,

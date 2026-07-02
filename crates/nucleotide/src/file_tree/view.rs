@@ -226,15 +226,15 @@ async fn poll_remote_directory_listings(
     workspace_backend: WorkspaceBackendHandle,
     directories: Vec<PathBuf>,
 ) -> Vec<RemoteDirectoryPollResult> {
-    let mut results = Vec::with_capacity(directories.len());
-    for path in directories {
-        let listing = workspace_backend
-            .list_dir(&path)
-            .await
-            .map_err(|error| error.to_string());
-        results.push(RemoteDirectoryPollResult { path, listing });
-    }
-    results
+    workspace_backend
+        .list_dirs(directories)
+        .await
+        .into_iter()
+        .map(|(path, listing)| RemoteDirectoryPollResult {
+            path,
+            listing: listing.map_err(|error| error.to_string()),
+        })
+        .collect()
 }
 
 fn remote_file_tree_poll_interval(idle_polls: u32) -> std::time::Duration {
