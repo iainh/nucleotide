@@ -725,6 +725,25 @@ fn document_workspace_root(
     }
 }
 
+fn remote_lsp_project_root_for_document(
+    workspace_identity: &WorkspaceIdentity,
+    project_directory: Option<&Path>,
+    document_path: Option<&Path>,
+) -> Option<PathBuf> {
+    if !matches!(workspace_identity, WorkspaceIdentity::Remote(_)) {
+        return None;
+    }
+
+    project_directory
+        .filter(|path| classify_workspace_location(path).is_remote())
+        .map(Path::to_path_buf)
+        .or_else(|| {
+            document_path
+                .filter(|path| classify_workspace_location(path).is_remote())
+                .and_then(|path| path.parent().map(Path::to_path_buf))
+        })
+}
+
 fn file_picker_current_directory(
     workspace_identity: &WorkspaceIdentity,
     project_directory: Option<&Path>,
@@ -6526,6 +6545,15 @@ impl Application {
         request: editor_input::NativeLspNavigationRequest,
         cx: &mut gpui::Context<crate::Core>,
     ) {
+        self.trigger_lsp_navigation_with_remote_startup(request, true, cx);
+    }
+
+    fn trigger_lsp_navigation_with_remote_startup(
+        &mut self,
+        request: editor_input::NativeLspNavigationRequest,
+        allow_remote_startup: bool,
+        cx: &mut gpui::Context<crate::Core>,
+    ) {
         let feature = request.language_server_feature();
         let include_declaration = self.editor.config().lsp.goto_reference_include_declaration;
         let mut futures: FuturesOrdered<LspLocationFuture> = FuturesOrdered::new();
@@ -6642,6 +6670,9 @@ impl Application {
         }
 
         if futures.is_empty() {
+            if allow_remote_startup && self.trigger_remote_lsp_navigation_startup(request, cx) {
+                return;
+            }
             self.editor.set_error(request.unsupported_message());
             return;
         }
@@ -6664,6 +6695,86 @@ impl Application {
             }
         })
         .detach();
+    }
+
+    fn trigger_remote_lsp_navigation_startup(
+        &mut self,
+        request: editor_input::NativeLspNavigationRequest,
+        cx: &mut gpui::Context<crate::Core>,
+    ) -> bool {
+        let workspace_identity = self.workspace_backend.identity();
+        let document_path = self
+            .editor
+            .tree
+            .try_get(self.editor.tree.focus)
+            .and_then(|view| self.editor.document(view.doc))
+            .and_then(|doc| doc.path())
+            .map(|path| path.to_path_buf());
+        let Some(project_root) = remote_lsp_project_root_for_document(
+            &workspace_identity,
+            self.project_directory.as_deref(),
+            document_path.as_deref(),
+        ) else {
+            return false;
+        };
+        let Some(command_tx) = self.project_lsp_command_tx.clone() else {
+            return false;
+        };
+
+        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+        let span = tracing::info_span!(
+            "remote_lsp_navigation_startup",
+            workspace_root = %project_root.display(),
+            request = ?request,
+        );
+        let command = ProjectLspCommand::DetectAndStartProject {
+            workspace_root: project_root.clone(),
+            response: response_tx,
+            span,
+        };
+
+        if let Err(error) = command_tx.send(command) {
+            warn!(
+                error = %error,
+                workspace_root = %project_root.display(),
+                "Failed to request remote project LSP startup for navigation"
+            );
+            return false;
+        }
+
+        self.editor.set_status(format!(
+            "Starting remote language server for {}...",
+            request.picker_title().to_ascii_lowercase()
+        ));
+        self.request_event_driven_maintenance();
+
+        cx.spawn(async move |core, cx| {
+            let result = tokio::time::timeout(Duration::from_secs(30), response_rx).await;
+            let Some(core) = core.upgrade() else {
+                return;
+            };
+
+            core.update(cx, move |core, cx| match result {
+                Ok(Ok(Ok(_))) => {
+                    core.trigger_lsp_navigation_with_remote_startup(request, false, cx);
+                }
+                Ok(Ok(Err(error))) => {
+                    core.editor
+                        .set_error(format!("Remote language server startup failed: {error}"));
+                }
+                Ok(Err(_)) => {
+                    core.editor
+                        .set_error("Remote language server startup was cancelled");
+                }
+                Err(_) => {
+                    core.editor
+                        .set_error("Remote language server startup timed out");
+                }
+            });
+        })
+        .detach();
+
+        true
     }
 
     pub fn trigger_lsp_symbol_picker(
@@ -9156,11 +9267,11 @@ mod tests {
         lsp_completion_response_is_incomplete, lsp_symbol_picker, native_open_file_with_backend,
         native_symbol_item_from_lsp, navigation_display_path, open_workspace_document,
         path_completion_items, path_completion_items_from_listing, project_health_status,
-        project_server_language_id, should_launch_lsp_on_local_host,
-        should_stat_picker_root_with_backend, should_use_workspace_syntax_symbol_fallback,
-        startup_path_should_open_as_file, str_prefix_at_byte_limit,
-        suppress_shadowed_buffer_word_completion_items, syntax_symbol_kind_from_capture_name,
-        workspace_diagnostic_refresh_reply,
+        project_server_language_id, remote_lsp_project_root_for_document,
+        should_launch_lsp_on_local_host, should_stat_picker_root_with_backend,
+        should_use_workspace_syntax_symbol_fallback, startup_path_should_open_as_file,
+        str_prefix_at_byte_limit, suppress_shadowed_buffer_word_completion_items,
+        syntax_symbol_kind_from_capture_name, workspace_diagnostic_refresh_reply,
     };
     use crate::test_utils::test_support::{
         TestUpdate, create_counting_channel, create_test_diagnostic_events,
@@ -10385,6 +10496,54 @@ mod tests {
         let root = document_workspace_root(&identity, Some(project_directory), document_path);
 
         assert_eq!(root, project_directory);
+    }
+
+    #[test]
+    fn remote_lsp_project_root_uses_remote_project_directory() {
+        let identity = WorkspaceIdentity::Remote(RemoteWorkspaceIdentity {
+            kind: RemoteWorkspaceKind::Ssh,
+            name: "devbox".to_string(),
+        });
+        let project_directory = Path::new("ssh://devbox/home/me/project");
+        let document_path = Path::new("ssh://devbox/home/me/project/src/main.rs");
+
+        let root = remote_lsp_project_root_for_document(
+            &identity,
+            Some(project_directory),
+            Some(document_path),
+        );
+
+        assert_eq!(root.as_deref(), Some(project_directory));
+    }
+
+    #[test]
+    fn remote_lsp_project_root_falls_back_to_remote_document_parent() {
+        let identity = WorkspaceIdentity::Remote(RemoteWorkspaceIdentity {
+            kind: RemoteWorkspaceKind::Ssh,
+            name: "devbox".to_string(),
+        });
+        let document_path = Path::new("ssh://devbox/home/me/project/src/main.rs");
+
+        let root = remote_lsp_project_root_for_document(&identity, None, Some(document_path));
+
+        assert_eq!(
+            root.as_deref(),
+            Some(Path::new("ssh://devbox/home/me/project/src"))
+        );
+    }
+
+    #[test]
+    fn remote_lsp_project_root_is_remote_only() {
+        let project_directory = Path::new("ssh://devbox/home/me/project");
+        let document_path = Path::new("ssh://devbox/home/me/project/src/main.rs");
+
+        let root = remote_lsp_project_root_for_document(
+            &WorkspaceIdentity::Local,
+            Some(project_directory),
+            Some(document_path),
+        );
+
+        assert_eq!(root, None);
     }
 
     #[test]
