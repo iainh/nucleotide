@@ -1715,7 +1715,7 @@ pub fn remote_lsp_proxy_command_for_location(
     }
 }
 
-fn remote_lsp_proxy_command_for_location_with_options(
+pub fn remote_lsp_proxy_command_for_location_with_options(
     location: &WorkspaceLocation,
     helper_path: impl AsRef<Path>,
     options: &RemoteWorkspaceBackendOptions,
