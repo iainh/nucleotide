@@ -136,6 +136,25 @@ where
         .unwrap_or(RemoteDocumentReloadDecision::Hidden { doc_id })
 }
 
+fn remote_project_lsp_root_for_opened_document(
+    workspace_identity: &WorkspaceIdentity,
+    project_directory: Option<&Path>,
+    document_path: Option<&Path>,
+) -> Option<PathBuf> {
+    if matches!(workspace_identity, WorkspaceIdentity::Local) {
+        return None;
+    }
+
+    project_directory
+        .filter(|path| classify_workspace_location(path).is_remote())
+        .map(Path::to_path_buf)
+        .or_else(|| {
+            document_path
+                .filter(|path| classify_workspace_location(path).is_remote())
+                .and_then(|path| path.parent().map(Path::to_path_buf))
+        })
+}
+
 fn project_status_types_from_lsp_project_type(
     project_type: &nucleotide_events::ProjectType,
 ) -> Vec<nucleotide_project::ProjectType> {
@@ -8443,6 +8462,30 @@ impl Workspace {
                     "LSP startup skipped for newly opened document"
                 );
             }
+        }
+
+        let remote_project_lsp_root = {
+            let core = self.core.read(cx);
+            let workspace_identity = core.workspace_backend.identity();
+            let document_path = core
+                .editor
+                .document(doc_id)
+                .and_then(|doc| doc.path())
+                .map(|path| path.to_path_buf());
+
+            remote_project_lsp_root_for_opened_document(
+                &workspace_identity,
+                core.project_directory.as_deref(),
+                document_path.as_deref(),
+            )
+        };
+        if let Some(project_root) = remote_project_lsp_root {
+            info!(
+                doc_id = ?doc_id,
+                project_root = %project_root.display(),
+                "Requesting remote project LSP tracking for opened document"
+            );
+            self.trigger_project_detection_and_lsp_startup(project_root, cx);
         }
 
         // Sync file tree selection with the newly opened document
@@ -17959,6 +18002,60 @@ mod tests {
         assert_eq!(
             remote_document_reload_decision(docs, views, path),
             RemoteDocumentReloadDecision::NoMatch
+        );
+    }
+
+    #[test]
+    fn remote_project_lsp_root_for_opened_document_uses_project_directory() {
+        let remote_identity =
+            WorkspaceIdentity::Remote(nucleotide_workspace::RemoteWorkspaceIdentity {
+                kind: nucleotide_workspace::RemoteWorkspaceKind::Ssh,
+                name: "example.test".to_string(),
+            });
+        let project_root = Path::new("ssh://me@example.test/home/me/project");
+        let document_path = Path::new("ssh://me@example.test/home/me/project/src/main.rs");
+
+        assert_eq!(
+            remote_project_lsp_root_for_opened_document(
+                &remote_identity,
+                Some(project_root),
+                Some(document_path)
+            ),
+            Some(project_root.to_path_buf())
+        );
+    }
+
+    #[test]
+    fn remote_project_lsp_root_for_opened_document_ignores_local_workspace() {
+        let project_root = Path::new("/tmp/project");
+        let document_path = Path::new("/tmp/project/src/main.rs");
+
+        assert_eq!(
+            remote_project_lsp_root_for_opened_document(
+                &WorkspaceIdentity::Local,
+                Some(project_root),
+                Some(document_path)
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn remote_project_lsp_root_for_opened_document_falls_back_to_document_parent() {
+        let remote_identity =
+            WorkspaceIdentity::Remote(nucleotide_workspace::RemoteWorkspaceIdentity {
+                kind: nucleotide_workspace::RemoteWorkspaceKind::Wsl,
+                name: "Ubuntu".to_string(),
+            });
+        let document_path = Path::new("//wsl.localhost/Ubuntu/home/me/project/src/main.rs");
+
+        assert_eq!(
+            remote_project_lsp_root_for_opened_document(
+                &remote_identity,
+                None,
+                Some(document_path)
+            ),
+            Some(PathBuf::from("//wsl.localhost/Ubuntu/home/me/project/src"))
         );
     }
 
