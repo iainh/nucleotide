@@ -65,8 +65,91 @@ REMOTE_HELPERS=(
     "nucleotide-remote-linux-aarch64"
 )
 REMOTE_HELPERS_COPIED=0
+REMOTE_HELPERS_CAN_COPY=1
+REMOTE_HELPERS_AUTO_BUILD="${NUCL_BUILD_REMOTE_HELPERS:-auto}"
+REMOTE_HELPER_SOURCE_PATHS=(
+    "Cargo.toml"
+    "Cargo.lock"
+    "crates/nucleotide-remote"
+    "crates/nucleotide-workspace"
+    "crates/nucleotide-env"
+    "crates/nucleotide-logging"
+    "crates/nucleotide-process"
+)
 
-if [ -d "${REMOTE_HELPER_DIR}" ]; then
+remote_helpers_need_rebuild() {
+    if [ ! -d "${REMOTE_HELPER_DIR}" ]; then
+        return 0
+    fi
+
+    for helper in "${REMOTE_HELPERS[@]}"; do
+        local helper_path="${REMOTE_HELPER_DIR}/${helper}"
+        if [ ! -f "${helper_path}" ]; then
+            return 0
+        fi
+
+        for source_path in "${REMOTE_HELPER_SOURCE_PATHS[@]}"; do
+            if [ ! -e "${source_path}" ]; then
+                continue
+            fi
+
+            if [ -n "$(find "${source_path}" -type f \( -name '*.rs' -o -name 'Cargo.toml' -o -name 'Cargo.lock' \) -newer "${helper_path}" -print -quit)" ]; then
+                return 0
+            fi
+        done
+    done
+
+    return 1
+}
+
+refresh_remote_helpers_if_needed() {
+    if ! remote_helpers_need_rebuild; then
+        return
+    fi
+
+    case "${REMOTE_HELPERS_AUTO_BUILD}" in
+        1|true|yes|auto)
+            if command -v cargo-zigbuild >/dev/null 2>&1; then
+                echo -e "${GREEN}Building SSH remote helpers...${NC}"
+                NUCL_REMOTE_HELPER_DIR="${REMOTE_HELPER_DIR}" ./scripts/build-remote-helpers.sh
+                return
+            fi
+
+            if command -v nix >/dev/null 2>&1; then
+                echo -e "${GREEN}Building SSH remote helpers with Nix...${NC}"
+                NUCL_REMOTE_HELPER_DIR="${REMOTE_HELPER_DIR}" nix develop -c build-remote-helpers
+                return
+            fi
+
+            if [ "${REMOTE_HELPERS_REQUIRED}" = "1" ]; then
+                echo -e "${RED}Error: SSH remote helpers are stale or missing, and cargo-zigbuild/Nix are not available${NC}"
+                echo "Install cargo-zigbuild or Nix, then rerun the bundle script."
+                exit 1
+            fi
+
+            echo -e "${YELLOW}Warning: SSH remote helpers are stale or missing; skipping them because cargo-zigbuild/Nix are not available${NC}"
+            REMOTE_HELPERS_CAN_COPY=0
+            ;;
+        0|false|no)
+            if [ "${REMOTE_HELPERS_REQUIRED}" = "1" ]; then
+                echo -e "${RED}Error: SSH remote helpers are stale or missing and NUCL_BUILD_REMOTE_HELPERS=0${NC}"
+                exit 1
+            fi
+
+            echo -e "${YELLOW}Warning: SSH remote helpers are stale or missing; skipping them because NUCL_BUILD_REMOTE_HELPERS=0${NC}"
+            REMOTE_HELPERS_CAN_COPY=0
+            ;;
+        *)
+            echo -e "${RED}Error: invalid NUCL_BUILD_REMOTE_HELPERS value: ${REMOTE_HELPERS_AUTO_BUILD}${NC}"
+            echo "Use auto, 1, true, yes, 0, false, or no."
+            exit 1
+            ;;
+    esac
+}
+
+refresh_remote_helpers_if_needed
+
+if [ "${REMOTE_HELPERS_CAN_COPY}" = "1" ] && [ -d "${REMOTE_HELPER_DIR}" ]; then
     echo -e "${GREEN}Copying SSH remote helpers from ${REMOTE_HELPER_DIR}...${NC}"
     for helper in "${REMOTE_HELPERS[@]}"; do
         helper_path="${REMOTE_HELPER_DIR}/${helper}"
