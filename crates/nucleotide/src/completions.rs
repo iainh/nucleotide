@@ -7,7 +7,10 @@ use helix_view::{Editor, document::SCRATCH_BUFFER_NAME, editor::Config};
 use nucleotide_ui::prompt_view::CompletionItem;
 use nucleotide_workspace::{DirectoryEntry, FileKind, WorkspaceBackendHandle};
 use once_cell::sync::Lazy;
+use std::collections::{HashMap, HashSet};
 use std::path::{MAIN_SEPARATOR, Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 const WORKSPACE_PATH_SEPARATOR: char = '/';
 
@@ -92,6 +95,71 @@ impl CommandCompletionCache {
     pub fn with_filesystem_paths(mut self, enabled: bool) -> Self {
         self.complete_filesystem_paths = enabled;
         self
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct PathCompletionCandidateCache {
+    inner: Arc<Mutex<PathCompletionCandidateCacheState>>,
+    ttl: Duration,
+}
+
+#[derive(Debug, Default)]
+struct PathCompletionCandidateCacheState {
+    cached: HashMap<PathBuf, CachedPathCandidates>,
+    in_flight: HashSet<PathBuf>,
+}
+
+#[derive(Clone, Debug)]
+struct CachedPathCandidates {
+    stored_at: Instant,
+    candidates: Vec<PathCandidate>,
+}
+
+impl PathCompletionCandidateCache {
+    pub(crate) fn new(ttl: Duration) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(PathCompletionCandidateCacheState::default())),
+            ttl,
+        }
+    }
+
+    pub(crate) fn cached_candidates(&self, directory: &Path) -> Option<Vec<PathCandidate>> {
+        let mut inner = self.inner.lock().ok()?;
+        let cached = inner.cached.get(directory)?;
+        if cached.stored_at.elapsed() <= self.ttl {
+            return Some(cached.candidates.clone());
+        }
+
+        inner.cached.remove(directory);
+        None
+    }
+
+    pub(crate) fn begin_request(&self, directory: PathBuf) -> bool {
+        let Ok(mut inner) = self.inner.lock() else {
+            return true;
+        };
+
+        inner.in_flight.insert(directory)
+    }
+
+    pub(crate) fn finish_request(&self, directory: PathBuf, candidates: Vec<PathCandidate>) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.in_flight.remove(&directory);
+            inner.cached.insert(
+                directory,
+                CachedPathCandidates {
+                    stored_at: Instant::now(),
+                    candidates,
+                },
+            );
+        }
+    }
+
+    pub(crate) fn is_in_flight(&self, directory: &Path) -> bool {
+        self.inner
+            .lock()
+            .is_ok_and(|inner| inner.in_flight.contains(directory))
     }
 }
 
@@ -1001,6 +1069,37 @@ mod tests {
 
         assert_eq!(query.directory, PathBuf::from("/home/me/project/src"));
         assert_eq!(query.file_name.as_deref(), Some("ma"));
+    }
+
+    #[test]
+    fn path_completion_candidate_cache_coalesces_in_flight_directories() {
+        let cache = PathCompletionCandidateCache::new(std::time::Duration::from_secs(1));
+        let directory = PathBuf::from("ssh://devbox/home/me/project/src");
+
+        assert!(cache.begin_request(directory.clone()));
+        assert!(!cache.begin_request(directory.clone()));
+        assert!(cache.is_in_flight(&directory));
+
+        cache.finish_request(directory.clone(), Vec::new());
+
+        assert!(!cache.is_in_flight(&directory));
+        assert!(cache.begin_request(directory));
+    }
+
+    #[test]
+    fn path_completion_candidate_cache_reuses_fresh_candidates() {
+        let cache = PathCompletionCandidateCache::new(std::time::Duration::from_secs(1));
+        let directory = PathBuf::from("ssh://devbox/home/me/project/src");
+        let candidates = vec![PathCandidate {
+            path: "main.rs".to_string(),
+            is_dir: false,
+        }];
+
+        assert!(cache.begin_request(directory.clone()));
+        cache.finish_request(directory.clone(), candidates.clone());
+
+        assert!(!cache.is_in_flight(&directory));
+        assert_eq!(cache.cached_candidates(&directory), Some(candidates));
     }
 
     #[tokio::test]
