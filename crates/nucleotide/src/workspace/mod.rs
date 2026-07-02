@@ -8,13 +8,11 @@ use prefix_extraction::PrefixExtractor;
 pub use view_manager::ViewManager;
 
 // Main workspace implementation
-use std::cell::RefCell;
 #[cfg(target_os = "windows")]
 use std::collections::VecDeque;
 use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
 use std::sync::Arc;
 #[cfg(target_os = "windows")]
 use std::sync::{LazyLock, Mutex};
@@ -9305,73 +9303,90 @@ impl Workspace {
             cx,
         );
 
-        let deployment_progress = Rc::new(RefCell::new(Vec::new()));
-        let progress_sink = {
-            let deployment_progress = Rc::clone(&deployment_progress);
-            move |progress: nucleotide_remote::RemoteDeploymentProgress| {
-                deployment_progress.borrow_mut().push(progress);
-            }
-        };
-
-        let backend = match workspace_backend_for_project_directory_with_progress(
-            Some(&workspace_root),
-            &progress_sink,
-        ) {
-            Ok(backend) => backend,
-            Err(error) => {
-                let progress_events = deployment_progress.borrow().clone();
-                for progress in progress_events {
-                    self.push_editor_status_notification(
-                        EditorStatus {
-                            status: progress.message(),
-                            severity: Severity::Info,
-                        },
-                        cx,
-                    );
-                }
-                self.push_editor_status_notification(
-                    EditorStatus {
-                        status: format!("Failed to open remote project: {error:#}"),
-                        severity: Severity::Error,
-                    },
-                    cx,
-                );
-                return;
-            }
-        };
-
-        let progress_events = deployment_progress.borrow().clone();
-        for progress in progress_events {
-            self.push_editor_status_notification(
-                EditorStatus {
-                    status: progress.message(),
-                    severity: Severity::Info,
-                },
-                cx,
-            );
+        enum RemoteOpenEvent {
+            Progress(nucleotide_remote::RemoteDeploymentProgress),
+            Finished(Result<WorkspaceBackendHandle, anyhow::Error>),
         }
 
-        self.core.update(cx, |core, _cx| {
-            core.set_workspace_backend(backend);
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
+        let progress_tx = event_tx.clone();
+        let task_root = workspace_root.clone();
+        let runtime_handle = self.handle.clone();
+        let join = runtime_handle.spawn_blocking(move || {
+            let progress_sink = move |progress: nucleotide_remote::RemoteDeploymentProgress| {
+                let _ = progress_tx.send(RemoteOpenEvent::Progress(progress));
+            };
+
+            workspace_backend_for_project_directory_with_progress(Some(&task_root), &progress_sink)
         });
 
-        self.push_editor_status_notification(
-            EditorStatus {
-                status: nucleotide_remote::RemoteDeploymentProgress {
-                    phase: nucleotide_remote::RemoteDeploymentPhase::LoadingProjectEnvironment,
-                    target: Some(workspace_root.display().to_string()),
-                    detail: None,
-                }
-                .message(),
-                severity: Severity::Info,
-            },
-            cx,
-        );
+        runtime_handle.spawn(async move {
+            let result = match join.await {
+                Ok(result) => result,
+                Err(error) => Err(anyhow::anyhow!("remote open task failed: {error}")),
+            };
+            let _ = event_tx.send(RemoteOpenEvent::Finished(result));
+        });
 
-        self.handle_open_directory(&workspace_root, cx);
-        if matches!(target.kind, RemoteOpenTargetKind::File) {
-            self.handle_open_file(&target.path, cx);
-        }
+        cx.spawn(async move |this, cx| {
+            while let Some(event) = event_rx.recv().await {
+                let Some(this) = this.upgrade() else {
+                    break;
+                };
+
+                match event {
+                    RemoteOpenEvent::Progress(progress) => {
+                        this.update(cx, |workspace, cx| {
+                            workspace.push_editor_status_notification(
+                                EditorStatus {
+                                    status: progress.message(),
+                                    severity: Severity::Info,
+                                },
+                                cx,
+                            );
+                        });
+                    }
+                    RemoteOpenEvent::Finished(result) => {
+                        this.update(cx, |workspace, cx| match result {
+                            Ok(backend) => {
+                                workspace.core.update(cx, |core, _cx| {
+                                    core.set_workspace_backend(backend);
+                                });
+
+                                workspace.push_editor_status_notification(
+                                    EditorStatus {
+                                        status: nucleotide_remote::RemoteDeploymentProgress {
+                                            phase: nucleotide_remote::RemoteDeploymentPhase::LoadingProjectEnvironment,
+                                            target: Some(workspace_root.display().to_string()),
+                                            detail: None,
+                                        }
+                                        .message(),
+                                        severity: Severity::Info,
+                                    },
+                                    cx,
+                                );
+
+                                workspace.handle_open_directory(&workspace_root, cx);
+                                if matches!(target.kind, RemoteOpenTargetKind::File) {
+                                    workspace.handle_open_file(&target.path, cx);
+                                }
+                            }
+                            Err(error) => {
+                                workspace.push_editor_status_notification(
+                                    EditorStatus {
+                                        status: format!("Failed to open remote project: {error:#}"),
+                                        severity: Severity::Error,
+                                    },
+                                    cx,
+                                );
+                            }
+                        });
+                        break;
+                    }
+                }
+            }
+        })
+        .detach();
     }
 
     pub fn open_file_at(
