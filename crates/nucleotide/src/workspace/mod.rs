@@ -432,6 +432,59 @@ fn native_window_document_path(
     })
 }
 
+fn workspace_backend_supports_trash(_backend_identity: &WorkspaceIdentity) -> bool {
+    false
+}
+
+fn effective_delete_mode(
+    delete_behavior: crate::config::DeleteBehavior,
+    backend_identity: &WorkspaceIdentity,
+) -> nucleotide_events::v2::workspace::DeleteMode {
+    match delete_behavior {
+        crate::config::DeleteBehavior::Trash
+            if workspace_backend_supports_trash(backend_identity) =>
+        {
+            nucleotide_events::v2::workspace::DeleteMode::Trash
+        }
+        crate::config::DeleteBehavior::Trash | crate::config::DeleteBehavior::Permanent => {
+            nucleotide_events::v2::workspace::DeleteMode::Permanent
+        }
+    }
+}
+
+fn delete_confirmation_required(mode: nucleotide_events::v2::workspace::DeleteMode) -> bool {
+    matches!(
+        mode,
+        nucleotide_events::v2::workspace::DeleteMode::Permanent
+    )
+}
+
+fn delete_confirmation_label(mode: nucleotide_events::v2::workspace::DeleteMode) -> &'static str {
+    match mode {
+        nucleotide_events::v2::workspace::DeleteMode::Trash => "Move to Trash",
+        nucleotide_events::v2::workspace::DeleteMode::Permanent => "Delete Permanently",
+    }
+}
+
+fn delete_confirmation_message(
+    path: Option<&Path>,
+    mode: nucleotide_events::v2::workspace::DeleteMode,
+) -> String {
+    let name = path
+        .and_then(|path| path.file_name())
+        .and_then(|name| name.to_str())
+        .unwrap_or("this item");
+
+    match mode {
+        nucleotide_events::v2::workspace::DeleteMode::Trash => {
+            format!("Move '{name}' to Trash?")
+        }
+        nucleotide_events::v2::workspace::DeleteMode::Permanent => {
+            format!("Delete '{name}' permanently?")
+        }
+    }
+}
+
 fn image_zoom_percent(zoom: f32) -> String {
     format!("{:.0}%", zoom * 100.0)
 }
@@ -5419,12 +5472,19 @@ impl Workspace {
     fn request_delete_path(&mut self, path: PathBuf, was_directory: bool, cx: &mut Context<Self>) {
         self.delete_confirm_path = Some(path);
         self.delete_confirm_was_directory = was_directory;
-        match self.core.read(cx).config.gui.file_ops.delete_behavior {
-            crate::config::DeleteBehavior::Trash => self.perform_delete_confirm(cx),
-            crate::config::DeleteBehavior::Permanent => {
+        let delete_mode = {
+            let core = self.core.read(cx);
+            effective_delete_mode(
+                core.config.gui.file_ops.delete_behavior,
+                &core.workspace_backend.identity(),
+            )
+        };
+        match delete_confirmation_required(delete_mode) {
+            true => {
                 self.delete_confirm_open = true;
                 cx.notify();
             }
+            false => self.perform_delete_confirm(cx),
         }
     }
 
@@ -5434,20 +5494,15 @@ impl Workspace {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let message = if let Some(path) = &self.delete_confirm_path {
-            let name = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("this item");
-            format!("Delete '{}' permanently?", name)
-        } else {
-            "Delete permanently?".to_string()
+        let delete_mode = {
+            let core = self.core.read(cx);
+            effective_delete_mode(
+                core.config.gui.file_ops.delete_behavior,
+                &core.workspace_backend.identity(),
+            )
         };
-
-        let confirm_label = match self.core.read(cx).config.gui.file_ops.delete_behavior {
-            crate::config::DeleteBehavior::Trash => "Move to Trash",
-            crate::config::DeleteBehavior::Permanent => "Delete Permanently",
-        };
+        let message = delete_confirmation_message(self.delete_confirm_path.as_deref(), delete_mode);
+        let confirm_label = delete_confirmation_label(delete_mode);
 
         render_confirm_dialog(
             ConfirmDialog::new("Confirm Delete", message, confirm_label)
@@ -5640,13 +5695,12 @@ impl Workspace {
     fn perform_delete_confirm(&mut self, cx: &mut Context<Self>) {
         if let Some(path) = self.delete_confirm_path.clone() {
             let was_dir = self.delete_confirm_was_directory;
-            let mode = match self.core.read(cx).config.gui.file_ops.delete_behavior {
-                crate::config::DeleteBehavior::Trash => {
-                    nucleotide_events::v2::workspace::DeleteMode::Trash
-                }
-                crate::config::DeleteBehavior::Permanent => {
-                    nucleotide_events::v2::workspace::DeleteMode::Permanent
-                }
+            let mode = {
+                let core = self.core.read(cx);
+                effective_delete_mode(
+                    core.config.gui.file_ops.delete_behavior,
+                    &core.workspace_backend.identity(),
+                )
             };
             let event = nucleotide_events::v2::workspace::Event::FileOpRequested {
                 intent: nucleotide_events::v2::workspace::FileOpIntent::Delete {
@@ -17905,6 +17959,44 @@ mod tests {
         assert_eq!(
             remote_document_reload_decision(docs, views, path),
             RemoteDocumentReloadDecision::NoMatch
+        );
+    }
+
+    #[test]
+    fn trash_delete_preference_degrades_to_confirmed_permanent_delete() {
+        let remote_identity =
+            WorkspaceIdentity::Remote(nucleotide_workspace::RemoteWorkspaceIdentity {
+                kind: nucleotide_workspace::RemoteWorkspaceKind::Ssh,
+                name: "example.test".to_string(),
+            });
+
+        let mode = effective_delete_mode(crate::config::DeleteBehavior::Trash, &remote_identity);
+
+        assert_eq!(
+            mode,
+            nucleotide_events::v2::workspace::DeleteMode::Permanent
+        );
+        assert!(delete_confirmation_required(mode));
+        assert_eq!(delete_confirmation_label(mode), "Delete Permanently");
+    }
+
+    #[test]
+    fn delete_confirmation_message_matches_effective_mode() {
+        let path = Path::new("/remote/project/src/lib.rs");
+
+        assert_eq!(
+            delete_confirmation_message(
+                Some(path),
+                nucleotide_events::v2::workspace::DeleteMode::Permanent,
+            ),
+            "Delete 'lib.rs' permanently?"
+        );
+        assert_eq!(
+            delete_confirmation_message(
+                Some(path),
+                nucleotide_events::v2::workspace::DeleteMode::Trash,
+            ),
+            "Move 'lib.rs' to Trash?"
         );
     }
 
