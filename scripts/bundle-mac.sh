@@ -11,6 +11,8 @@ EXECUTABLE_NAME="nucl"
 BUNDLE_ID="org.spiralpoint.nucleotide"
 BINARY_PATH="${NUCL_BINARY:-target/release/${EXECUTABLE_NAME}}"
 BINARY_PATH_EXPLICIT="${NUCL_BINARY:+1}"
+REMOTE_HELPER_DIR="${NUCL_REMOTE_HELPER_DIR:-target/remote-helpers}"
+REMOTE_HELPERS_REQUIRED="${NUCL_REQUIRE_REMOTE_HELPERS:-0}"
 
 # Colors for output
 RED='\033[0;31m'
@@ -54,6 +56,41 @@ mkdir -p "${BUNDLE_NAME}/Contents/Resources"
 echo -e "${GREEN}Copying executable...${NC}"
 cp "${BINARY_PATH}" "${BUNDLE_NAME}/Contents/MacOS/${APP_NAME}"
 chmod +x "${BUNDLE_NAME}/Contents/MacOS/${APP_NAME}"
+
+# Copy Linux remote helper binaries for SSH auto-upload. They live beside the
+# app executable because helper discovery checks the current executable's
+# directory before falling back to PATH or explicit config.
+REMOTE_HELPERS=(
+    "nucleotide-remote-linux-x86_64"
+    "nucleotide-remote-linux-aarch64"
+)
+REMOTE_HELPERS_COPIED=0
+
+if [ -d "${REMOTE_HELPER_DIR}" ]; then
+    echo -e "${GREEN}Copying SSH remote helpers from ${REMOTE_HELPER_DIR}...${NC}"
+    for helper in "${REMOTE_HELPERS[@]}"; do
+        helper_path="${REMOTE_HELPER_DIR}/${helper}"
+        if [ -f "${helper_path}" ]; then
+            cp "${helper_path}" "${BUNDLE_NAME}/Contents/MacOS/${helper}"
+            chmod +x "${BUNDLE_NAME}/Contents/MacOS/${helper}"
+            REMOTE_HELPERS_COPIED=$((REMOTE_HELPERS_COPIED + 1))
+            echo "  - ${helper}"
+        elif [ "${REMOTE_HELPERS_REQUIRED}" = "1" ]; then
+            echo -e "${RED}Error: required SSH remote helper not found: ${helper_path}${NC}"
+            exit 1
+        fi
+    done
+elif [ "${REMOTE_HELPERS_REQUIRED}" = "1" ]; then
+    echo -e "${RED}Error: required SSH remote helper directory not found: ${REMOTE_HELPER_DIR}${NC}"
+    exit 1
+else
+    echo -e "${YELLOW}Warning: SSH remote helper directory not found at ${REMOTE_HELPER_DIR}${NC}"
+fi
+
+if [ "${REMOTE_HELPERS_REQUIRED}" = "1" ] && [ "${REMOTE_HELPERS_COPIED}" -ne "${#REMOTE_HELPERS[@]}" ]; then
+    echo -e "${RED}Error: expected ${#REMOTE_HELPERS[@]} SSH remote helpers, copied ${REMOTE_HELPERS_COPIED}${NC}"
+    exit 1
+fi
 
 # Copy the icon file
 echo -e "${GREEN}Copying icon...${NC}"

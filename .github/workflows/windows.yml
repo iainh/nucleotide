@@ -6,12 +6,63 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
-    name: Build Windows installer
-    runs-on: windows-latest
+  build-linux-remote-helpers:
+    name: Build Linux remote helpers
+    runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+
+      - name: Install cross compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Build Linux remote helpers
+        run: |
+          cargo build --release -p nucleotide-remote
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
+            cargo build --release -p nucleotide-remote --target aarch64-unknown-linux-gnu
+          mkdir -p target/remote-helpers
+          cp target/release/nucleotide-remote target/remote-helpers/nucleotide-remote-linux-x86_64
+          cp target/aarch64-unknown-linux-gnu/release/nucleotide-remote target/remote-helpers/nucleotide-remote-linux-aarch64
+          target/remote-helpers/nucleotide-remote-linux-x86_64 version --json
+
+      - name: Upload Linux remote helpers
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-remote-helpers
+          path: target/remote-helpers/nucleotide-remote-linux-*
+          retention-days: 7
+
+  build:
+    name: Build Windows installer
+    runs-on: windows-latest
+    needs: build-linux-remote-helpers
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Linux remote helpers
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-remote-helpers
+          path: target/remote-helpers
+
+      - name: Verify Linux remote helpers
+        shell: pwsh
+        run: |
+          foreach ($helper in @("nucleotide-remote-linux-x86_64", "nucleotide-remote-linux-aarch64")) {
+            $path = Join-Path "target\remote-helpers" $helper
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Linux remote helper not found: $path"
+            }
+          }
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -67,7 +118,7 @@ jobs:
       - name: Build Windows MSI
         shell: pwsh
         run: |
-          .\scripts\build-windows-msi.ps1
+          .\scripts\build-windows-msi.ps1 -RequireRemoteHelpers
 
           $installer = "target\release\bundle\wxsmsi\bin\Release\nucleotide.msi"
           if (-not (Test-Path $installer)) {
@@ -109,6 +160,14 @@ jobs:
             Select-Object -First 1
           if (-not $exe) {
             throw "Extracted MSI does not contain nucl.exe."
+          }
+
+          foreach ($helper in @("nucleotide-remote-linux-x86_64", "nucleotide-remote-linux-aarch64")) {
+            $installed = Get-ChildItem -Path $extractDir -Recurse -Filter $helper -File |
+              Select-Object -First 1
+            if (-not $installed) {
+              throw "Extracted MSI does not contain $helper."
+            }
           }
 
       - name: Upload Windows installer

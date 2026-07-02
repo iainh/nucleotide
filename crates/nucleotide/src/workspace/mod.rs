@@ -8,11 +8,13 @@ use prefix_extraction::PrefixExtractor;
 pub use view_manager::ViewManager;
 
 // Main workspace implementation
+use std::cell::RefCell;
 #[cfg(target_os = "windows")]
 use std::collections::VecDeque;
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 #[cfg(target_os = "windows")]
 use std::sync::{LazyLock, Mutex};
@@ -53,7 +55,8 @@ use crate::input_coordinator::{FocusGroup, InputContext, InputCoordinator};
 use nucleotide_lsp::ServerStatus;
 
 use crate::application::{
-    LspCompletionTrigger, find_workspace_root_from, workspace_backend_for_project_directory,
+    LspCompletionTrigger, find_workspace_root_from,
+    workspace_backend_for_project_directory_with_progress,
 };
 use crate::document::DocumentView;
 use crate::file_tree::{
@@ -2433,14 +2436,21 @@ impl Workspace {
         env: &[(String, String)],
     ) -> Option<nucleotide_remote::RemoteServiceCommand> {
         let location = classify_workspace_location(cwd?);
-        let options = nucleotide_remote::RemoteWorkspaceBackendOptions::from_environment();
-        nucleotide_remote::remote_terminal_proxy_command_for_location(
-            &location,
-            &options.remote_helper_path,
-            shell,
-            command,
-            env,
-        )
+        let options = crate::config::Config::load()
+            .map(|config| config.remote_workspace_backend_options())
+            .unwrap_or_else(|error| {
+                warn!(error = %error, "Failed to load config for remote terminal helper");
+                nucleotide_remote::RemoteWorkspaceBackendOptions::from_environment()
+            });
+        match nucleotide_remote::resolved_remote_terminal_proxy_command_for_location(
+            &location, &options, shell, command, env,
+        ) {
+            Ok(command) => command,
+            Err(error) => {
+                warn!(error = %error, "Failed to resolve remote terminal helper");
+                None
+            }
+        }
     }
 
     fn terminal_proxy_event_command(
@@ -8891,9 +8901,30 @@ impl Workspace {
             cx,
         );
 
-        let backend = match workspace_backend_for_project_directory(Some(&workspace_root)) {
+        let deployment_progress = Rc::new(RefCell::new(Vec::new()));
+        let progress_sink = {
+            let deployment_progress = Rc::clone(&deployment_progress);
+            move |progress: nucleotide_remote::RemoteDeploymentProgress| {
+                deployment_progress.borrow_mut().push(progress);
+            }
+        };
+
+        let backend = match workspace_backend_for_project_directory_with_progress(
+            Some(&workspace_root),
+            &progress_sink,
+        ) {
             Ok(backend) => backend,
             Err(error) => {
+                let progress_events = deployment_progress.borrow().clone();
+                for progress in progress_events {
+                    self.push_editor_status_notification(
+                        EditorStatus {
+                            status: progress.message(),
+                            severity: Severity::Info,
+                        },
+                        cx,
+                    );
+                }
                 self.push_editor_status_notification(
                     EditorStatus {
                         status: format!("Failed to open remote project: {error:#}"),
@@ -8905,9 +8936,33 @@ impl Workspace {
             }
         };
 
+        let progress_events = deployment_progress.borrow().clone();
+        for progress in progress_events {
+            self.push_editor_status_notification(
+                EditorStatus {
+                    status: progress.message(),
+                    severity: Severity::Info,
+                },
+                cx,
+            );
+        }
+
         self.core.update(cx, |core, _cx| {
             core.set_workspace_backend(backend);
         });
+
+        self.push_editor_status_notification(
+            EditorStatus {
+                status: nucleotide_remote::RemoteDeploymentProgress {
+                    phase: nucleotide_remote::RemoteDeploymentPhase::LoadingProjectEnvironment,
+                    target: Some(workspace_root.display().to_string()),
+                    detail: None,
+                }
+                .message(),
+                severity: Severity::Info,
+            },
+            cx,
+        );
 
         self.handle_open_directory(&workspace_root, cx);
         if matches!(target.kind, RemoteOpenTargetKind::File) {

@@ -6,15 +6,61 @@ on:
   workflow_dispatch:
 
 jobs:
+  build-linux-remote-helpers:
+    name: Build Linux remote helpers
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+
+      - name: Install cross compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Build Linux remote helpers
+        run: |
+          cargo build --release -p nucleotide-remote
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
+            cargo build --release -p nucleotide-remote --target aarch64-unknown-linux-gnu
+          mkdir -p target/remote-helpers
+          cp target/release/nucleotide-remote target/remote-helpers/nucleotide-remote-linux-x86_64
+          cp target/aarch64-unknown-linux-gnu/release/nucleotide-remote target/remote-helpers/nucleotide-remote-linux-aarch64
+          target/remote-helpers/nucleotide-remote-linux-x86_64 version --json
+
+      - name: Upload Linux remote helpers
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-remote-helpers
+          path: target/remote-helpers/nucleotide-remote-linux-*
+          retention-days: 7
+
   build:
     name: Build macOS app
     runs-on: macos-latest
+    needs: build-linux-remote-helpers
     strategy:
       matrix:
         arch: [x86_64, aarch64]
     
     steps:
       - uses: actions/checkout@v4
+
+      - name: Download Linux remote helpers
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-remote-helpers
+          path: target/remote-helpers
+
+      - name: Verify Linux remote helpers
+        run: |
+          test -f target/remote-helpers/nucleotide-remote-linux-x86_64
+          test -f target/remote-helpers/nucleotide-remote-linux-aarch64
       
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -57,7 +103,10 @@ jobs:
           # Use the bundle script
           chmod +x scripts/bundle-mac.sh
           TARGET=${{ matrix.arch == 'x86_64' && 'x86_64-apple-darwin' || 'aarch64-apple-darwin' }}
-          NUCL_BINARY="target/$TARGET/release/nucl" ./scripts/bundle-mac.sh
+          NUCL_REMOTE_HELPER_DIR="target/remote-helpers" \
+            NUCL_REQUIRE_REMOTE_HELPERS=1 \
+            NUCL_BINARY="target/$TARGET/release/nucl" \
+            ./scripts/bundle-mac.sh
           
           # Verify the app bundle
           if [ -d "Nucleotide.app" ]; then
@@ -65,6 +114,8 @@ jobs:
             echo "App bundle contents:"
             ls -la Nucleotide.app/Contents/
             ls -la Nucleotide.app/Contents/MacOS/
+            test -x Nucleotide.app/Contents/MacOS/nucleotide-remote-linux-x86_64
+            test -x Nucleotide.app/Contents/MacOS/nucleotide-remote-linux-aarch64
             
             # Check if runtime is included
             if [ -d "Nucleotide.app/Contents/MacOS/runtime" ]; then
@@ -157,6 +208,8 @@ jobs:
             Nucleotide-x86_64.app/Contents/MacOS/Nucleotide \
             Nucleotide-aarch64.app/Contents/MacOS/Nucleotide \
             -output Nucleotide-Universal.app/Contents/MacOS/Nucleotide
+          test -x Nucleotide-Universal.app/Contents/MacOS/nucleotide-remote-linux-x86_64
+          test -x Nucleotide-Universal.app/Contents/MacOS/nucleotide-remote-linux-aarch64
           
           # Verify universal binary
           echo "Universal binary created:"
@@ -186,10 +239,17 @@ jobs:
   build-with-nix:
     name: Build with Nix on macOS (using GitHub cache)
     runs-on: macos-latest
+    needs: build-linux-remote-helpers
     continue-on-error: true  # Optional build - don't fail the whole workflow
     
     steps:
       - uses: actions/checkout@v4
+
+      - name: Download Linux remote helpers
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-remote-helpers
+          path: target/remote-helpers
       
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@main
@@ -217,11 +277,15 @@ jobs:
       - name: Create Nix app bundle
         run: |
           # Run the Nix-based bundle command
-          nix develop --command make-macos-bundle
+          NUCL_REMOTE_HELPER_DIR="target/remote-helpers" \
+            NUCL_REQUIRE_REMOTE_HELPERS=1 \
+            nix develop --command make-macos-bundle
           
           # Verify the app
           if [ -d "Nucleotide.app" ]; then
             echo "✓ Nix app bundle created"
+            test -x Nucleotide.app/Contents/MacOS/nucleotide-remote-linux-x86_64
+            test -x Nucleotide.app/Contents/MacOS/nucleotide-remote-linux-aarch64
             
             # Create DMG
             mkdir -p dmg-content

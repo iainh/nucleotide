@@ -7,7 +7,7 @@ use helix_term::config::Config as HelixConfig;
 use nucleotide_appearance::UiChromeStyle;
 use nucleotide_types::{FontConfig, FontWeight, ProjectMarkersConfig};
 use serde::{Deserialize, Deserializer, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Default theme for light mode
 pub const DEFAULT_LIGHT_THEME: &str = "nucleotide-cyan-light";
@@ -320,6 +320,67 @@ fn default_window_directwrite_config() -> Option<DirectWriteConfig> {
 #[cfg(not(target_os = "windows"))]
 fn default_window_directwrite_config() -> Option<DirectWriteConfig> {
     None
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RemoteConfig {
+    #[serde(default)]
+    pub ssh: RemoteSshConfig,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteSshHelperInstall {
+    #[default]
+    Auto,
+    Never,
+    Upload,
+    RemoteDownload,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RemoteSshConfig {
+    #[serde(default)]
+    pub helper_install: RemoteSshHelperInstall,
+
+    #[serde(default)]
+    pub helper_path: Option<PathBuf>,
+
+    #[serde(default = "default_remote_ssh_connect_timeout_secs")]
+    pub connect_timeout_secs: Option<u64>,
+
+    #[serde(default)]
+    pub extra_args: Vec<String>,
+
+    #[serde(default)]
+    pub use_control_master: Option<bool>,
+}
+
+impl Default for RemoteSshConfig {
+    fn default() -> Self {
+        Self {
+            helper_install: RemoteSshHelperInstall::Auto,
+            helper_path: None,
+            connect_timeout_secs: default_remote_ssh_connect_timeout_secs(),
+            extra_args: Vec::new(),
+            use_control_master: None,
+        }
+    }
+}
+
+fn default_remote_ssh_connect_timeout_secs() -> Option<u64> {
+    Some(nucleotide_remote::DEFAULT_SSH_CONNECT_TIMEOUT_SECS)
+}
+
+impl RemoteSshHelperInstall {
+    fn to_backend_policy(self) -> nucleotide_remote::RemoteHelperInstallPolicy {
+        match self {
+            Self::Auto => nucleotide_remote::RemoteHelperInstallPolicy::Auto,
+            Self::Never => nucleotide_remote::RemoteHelperInstallPolicy::Never,
+            Self::Upload => nucleotide_remote::RemoteHelperInstallPolicy::Upload,
+            Self::RemoteDownload => nucleotide_remote::RemoteHelperInstallPolicy::RemoteDownload,
+        }
+    }
 }
 
 /// Windows DirectWrite text rendering configuration.
@@ -841,6 +902,10 @@ pub struct GuiConfig {
     /// File operations behavior
     #[serde(default)]
     pub file_ops: FileOpsConfig,
+
+    /// Remote workspace settings
+    #[serde(default)]
+    pub remote: RemoteConfig,
 }
 
 /// Delete behavior preference
@@ -1021,6 +1086,43 @@ impl Config {
     /// Get the project markers configuration
     pub fn project_markers(&self) -> &ProjectMarkersConfig {
         &self.gui.project_markers
+    }
+
+    /// Build remote backend options from nucleotide.toml, then apply environment overrides.
+    pub fn remote_workspace_backend_options(
+        &self,
+    ) -> nucleotide_remote::RemoteWorkspaceBackendOptions {
+        let ssh = &self.gui.remote.ssh;
+        let mut options = nucleotide_remote::RemoteWorkspaceBackendOptions {
+            ssh_helper_install_policy: ssh.helper_install.to_backend_policy(),
+            ssh_connect_timeout_secs: ssh.connect_timeout_secs.filter(|timeout| *timeout > 0),
+            ssh_extra_args: ssh
+                .extra_args
+                .iter()
+                .map(std::ffi::OsString::from)
+                .collect(),
+            ..nucleotide_remote::RemoteWorkspaceBackendOptions::default()
+        };
+
+        if let Some(helper_path) = ssh.helper_path.as_ref()
+            && !helper_path.as_os_str().is_empty()
+        {
+            options.remote_helper_path = helper_path.clone();
+            options.remote_helper_path_is_override = true;
+        }
+
+        if let Some(use_control_master) = ssh.use_control_master {
+            options.ssh_control_path = if use_control_master {
+                options.ssh_control_path.or_else(|| {
+                    dirs::cache_dir()
+                        .map(|dir| dir.join("nucleotide").join("ssh-control").join("%C"))
+                })
+            } else {
+                None
+            };
+        }
+
+        options.with_environment_overrides()
     }
 }
 
@@ -1576,6 +1678,12 @@ flatten_empty_directories = false
         assert!(config.preview_tabs.enabled);
         assert_eq!(config.file_tree.density, FileTreeDisplayDensity::Default);
         assert_eq!(config.file_ops.delete_behavior, DeleteBehavior::Trash);
+        assert_eq!(
+            config.remote.ssh.helper_install,
+            RemoteSshHelperInstall::Auto
+        );
+        assert_eq!(config.remote.ssh.connect_timeout_secs, Some(30));
+        assert!(config.remote.ssh.extra_args.is_empty());
         assert!(!config.lsp.project_lsp_startup);
         assert!(!config.project_markers.enable_project_markers);
 
@@ -1625,6 +1733,12 @@ flatten_empty_directories = false
             "flatten_empty_directories",
             "[file_ops]",
             "delete_behavior",
+            "[remote.ssh]",
+            "helper_install",
+            "helper_path",
+            "connect_timeout_secs",
+            "extra_args",
+            "use_control_master",
             "[lsp]",
             "project_lsp_startup",
             "startup_timeout_ms",
@@ -1644,6 +1758,45 @@ flatten_empty_directories = false
                 "example config should document `{setting}`"
             );
         }
+    }
+
+    #[test]
+    fn remote_ssh_config_maps_to_backend_options() {
+        let config: GuiConfig = toml::from_str(
+            r#"
+            [remote.ssh]
+            helper_install = "never"
+            helper_path = "/opt/nucleotide/nucleotide-remote"
+            connect_timeout_secs = 12
+            extra_args = ["-J", "bastion"]
+            use_control_master = false
+            "#,
+        )
+        .expect("remote ssh config parses");
+        let options = Config {
+            helix: HelixConfig::default(),
+            gui: config,
+        }
+        .remote_workspace_backend_options();
+
+        assert_eq!(
+            options.ssh_helper_install_policy,
+            nucleotide_remote::RemoteHelperInstallPolicy::Never
+        );
+        assert_eq!(
+            options.remote_helper_path,
+            PathBuf::from("/opt/nucleotide/nucleotide-remote")
+        );
+        assert!(options.remote_helper_path_is_override);
+        assert_eq!(options.ssh_connect_timeout_secs, Some(12));
+        assert_eq!(
+            options.ssh_extra_args,
+            [
+                std::ffi::OsString::from("-J"),
+                std::ffi::OsString::from("bastion")
+            ]
+        );
+        assert_eq!(options.ssh_control_path, None);
     }
 
     #[test]

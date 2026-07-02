@@ -37,6 +37,7 @@
             <File Id="nucl_exe" Source="{{NUCL_EXE}}"/>
             <RegistryValue Root="HKCU" Key="Software\the nucleotide contributors\Nucleotide\Components" Name="MainExecutableComponent" Type="integer" Value="1" KeyPath="yes"/>
           </Component>
+{{REMOTE_HELPER_COMPONENTS}}
 {{RUNTIME_DIRECTORY}}
         </Directory>
       </Directory>

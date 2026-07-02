@@ -196,14 +196,19 @@ async fn write_remote_document(
 }
 
 pub struct RemoteLspLaunchProxyProvider {
-    helper_path: PathBuf,
+    options: nucleotide_remote::RemoteWorkspaceBackendOptions,
 }
 
 impl RemoteLspLaunchProxyProvider {
     pub fn from_environment() -> Self {
         Self {
-            helper_path: nucleotide_remote::RemoteWorkspaceBackendOptions::from_environment()
-                .remote_helper_path,
+            options: nucleotide_remote::RemoteWorkspaceBackendOptions::from_environment(),
+        }
+    }
+
+    pub fn from_config(config: &crate::config::Config) -> Self {
+        Self {
+            options: config.remote_workspace_backend_options(),
         }
     }
 }
@@ -215,11 +220,12 @@ impl LspLaunchProxyProvider for RemoteLspLaunchProxyProvider {
         server_name: &str,
     ) -> Result<Option<LspLaunchProxy>, Box<dyn std::error::Error + Send + Sync>> {
         let location = classify_workspace_location(workspace_root);
-        let Some(command) = nucleotide_remote::remote_lsp_proxy_command_for_location(
+        let Some(command) = nucleotide_remote::resolved_remote_lsp_proxy_command_for_location(
             &location,
-            &self.helper_path,
+            &self.options,
             server_name,
-        ) else {
+        )?
+        else {
             return Ok(None);
         };
 
@@ -4567,7 +4573,8 @@ impl Application {
             self.project_environment.clone(),
             self.workspace_backend.clone(),
         ));
-        let launch_proxy_provider = Arc::new(RemoteLspLaunchProxyProvider::from_environment());
+        let launch_proxy_provider =
+            Arc::new(RemoteLspLaunchProxyProvider::from_config(&self.config));
         let helix_bridge = nucleotide_lsp::HelixLspBridge::new_with_environment_and_launch_proxy(
             event_tx,
             env_provider,
@@ -4930,7 +4937,7 @@ impl Application {
                             self.workspace_backend.clone(),
                         ));
                     let launch_proxy_provider =
-                        Arc::new(RemoteLspLaunchProxyProvider::from_environment());
+                        Arc::new(RemoteLspLaunchProxyProvider::from_config(&self.config));
                     let bridge = HelixLspBridge::new_with_environment_and_launch_proxy(
                         event_sender,
                         env_provider,
@@ -6885,8 +6892,34 @@ fn detect_and_create_project_environment() -> ProjectEnvironment {
     ProjectEnvironment::new(Some(cli_env))
 }
 
-pub(crate) fn workspace_backend_for_project_directory(
+pub(crate) fn workspace_backend_for_project_directory_with_progress(
     project_directory: Option<&Path>,
+    progress: &dyn Fn(nucleotide_remote::RemoteDeploymentProgress),
+) -> Result<WorkspaceBackendHandle, Error> {
+    let options = nucleotide_remote::RemoteWorkspaceBackendOptions::from_environment();
+    workspace_backend_for_project_directory_with_options_and_progress(
+        project_directory,
+        &options,
+        Some(progress),
+    )
+}
+
+pub(crate) fn workspace_backend_for_project_directory_with_config(
+    project_directory: Option<&Path>,
+    config: &crate::config::Config,
+) -> Result<WorkspaceBackendHandle, Error> {
+    let options = config.remote_workspace_backend_options();
+    workspace_backend_for_project_directory_with_options_and_progress(
+        project_directory,
+        &options,
+        None,
+    )
+}
+
+fn workspace_backend_for_project_directory_with_options_and_progress(
+    project_directory: Option<&Path>,
+    options: &nucleotide_remote::RemoteWorkspaceBackendOptions,
+    progress_handler: Option<&dyn Fn(nucleotide_remote::RemoteDeploymentProgress)>,
 ) -> Result<WorkspaceBackendHandle, Error> {
     let Some(project_directory) = project_directory else {
         return Ok(local_workspace_backend());
@@ -6895,14 +6928,29 @@ pub(crate) fn workspace_backend_for_project_directory(
     let location = classify_workspace_location(project_directory);
     let display_root = location.display_root().to_path_buf();
     let native_root = location.native_root().to_path_buf();
-    let options = nucleotide_remote::RemoteWorkspaceBackendOptions::from_environment();
-    let connection = nucleotide_remote::connect_workspace_backend_for_location(location, &options)
-        .with_context(|| {
-            format!(
-                "failed to initialize workspace backend for {}",
-                display_root.display()
-            )
-        })?;
+    let deployment_progress = |progress: nucleotide_remote::RemoteDeploymentProgress| {
+        let message = progress.message();
+        nucleotide_logging::info!(
+            phase = ?progress.phase,
+            target = ?progress.target,
+            detail = ?progress.detail,
+            "Remote workspace deployment progress: {message}"
+        );
+        if let Some(progress_handler) = progress_handler {
+            progress_handler(progress.clone());
+        }
+    };
+    let connection = nucleotide_remote::connect_workspace_backend_for_location_with_progress(
+        location,
+        options,
+        &deployment_progress,
+    )
+    .with_context(|| {
+        format!(
+            "failed to initialize workspace backend for {}",
+            display_root.display()
+        )
+    })?;
 
     match &connection.hello {
         Some(hello) => {
@@ -6985,7 +7033,10 @@ pub fn init_editor(
             None
         }
     };
-    let workspace_backend = workspace_backend_for_project_directory(project_directory.as_deref())?;
+    let workspace_backend = workspace_backend_for_project_directory_with_config(
+        project_directory.as_deref(),
+        &gui_config,
+    )?;
 
     let mut theme_parent_dirs = vec![helix_loader::config_dir()];
     theme_parent_dirs.extend(helix_loader::runtime_dirs().iter().cloned());
@@ -8729,7 +8780,19 @@ mod tests {
     #[test]
     fn remote_lsp_launch_proxy_provider_creates_remote_helper_shim() {
         let provider = RemoteLspLaunchProxyProvider {
-            helper_path: PathBuf::from("/remote/bin/nucleotide-remote"),
+            options: nucleotide_remote::RemoteWorkspaceBackendOptions {
+                remote_helper_path: PathBuf::from("/remote/bin/nucleotide-remote"),
+                remote_helper_path_is_override: true,
+                local_helper_path: None,
+                ssh_helper_upload_path: None,
+                ssh_helper_artifact_dir: None,
+                ssh_helper_download_base_url: None,
+                ssh_helper_install_policy: nucleotide_remote::RemoteHelperInstallPolicy::Never,
+                ssh_connect_timeout_secs: None,
+                ssh_extra_args: Vec::new(),
+                ssh_control_path: None,
+                use_local_service: false,
+            },
         };
 
         let proxy = nucleotide_lsp::LspLaunchProxyProvider::create_lsp_launch_proxy(

@@ -33,6 +33,77 @@ pub const FRAME_MAGIC: [u8; 4] = *b"NUCL";
 pub const FRAME_HEADER_LEN: usize = 36;
 pub const MAX_FRAME_HEADER_LEN: u32 = 1024 * 1024;
 pub const MAX_FRAME_BODY_LEN: u64 = 128 * 1024 * 1024;
+pub const DEFAULT_SSH_CONNECT_TIMEOUT_SECS: u64 = 30;
+const DEFAULT_SSH_CONTROL_PERSIST: &str = "10m";
+const DEFAULT_RELEASE_TAG_PREFIX: &str = "v";
+const RELEASE_CHECKSUMS_ASSET: &str = "SHA256SUMS";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HelperVersionInfo {
+    pub helper_version: String,
+    pub protocol_version: u32,
+    pub frame_version: u16,
+    pub os: String,
+    pub arch: String,
+}
+
+impl HelperVersionInfo {
+    pub fn current() -> Self {
+        Self {
+            helper_version: env!("CARGO_PKG_VERSION").to_string(),
+            protocol_version: PROTOCOL_VERSION,
+            frame_version: FRAME_VERSION,
+            os: std::env::consts::OS.to_string(),
+            arch: std::env::consts::ARCH.to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteDeploymentPhase {
+    ConnectingSshHost,
+    DetectingRemotePlatform,
+    CheckingRemoteHelper,
+    InstallingRemoteHelper,
+    StartingRemoteWorkspaceService,
+    LoadingProjectEnvironment,
+}
+
+impl RemoteDeploymentPhase {
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::ConnectingSshHost => "Connecting to SSH host",
+            Self::DetectingRemotePlatform => "Detecting remote platform",
+            Self::CheckingRemoteHelper => "Checking nucleotide-remote",
+            Self::InstallingRemoteHelper => "Installing nucleotide-remote",
+            Self::StartingRemoteWorkspaceService => "Starting remote workspace service",
+            Self::LoadingProjectEnvironment => "Loading project environment",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteDeploymentProgress {
+    pub phase: RemoteDeploymentPhase,
+    pub target: Option<String>,
+    pub detail: Option<String>,
+}
+
+impl RemoteDeploymentProgress {
+    pub fn message(&self) -> String {
+        let mut message = self.phase.message().to_string();
+        if let Some(target) = self.target.as_deref().filter(|target| !target.is_empty()) {
+            message.push_str(": ");
+            message.push_str(target);
+        }
+        if let Some(detail) = self.detail.as_deref().filter(|detail| !detail.is_empty()) {
+            message.push_str(" (");
+            message.push_str(detail);
+            message.push(')');
+        }
+        message
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
@@ -324,6 +395,9 @@ pub struct SshTarget {
     pub host: String,
     pub user: Option<String>,
     pub port: Option<u16>,
+    pub connect_timeout_secs: Option<u64>,
+    pub extra_args: Vec<OsString>,
+    pub control_path: Option<PathBuf>,
 }
 
 impl SshTarget {
@@ -332,6 +406,9 @@ impl SshTarget {
             host: host.into(),
             user: None,
             port: None,
+            connect_timeout_secs: None,
+            extra_args: Vec::new(),
+            control_path: None,
         }
     }
 
@@ -356,12 +433,14 @@ pub fn ssh_service_command(
         quote_posix_shell(&remote_root)
     );
     let mut args = Vec::new();
+    args.push(OsString::from("-T"));
+    append_ssh_connection_args(&mut args, &target);
     if let Some(port) = target.port {
         args.push(OsString::from("-p"));
         args.push(OsString::from(port.to_string()));
     }
-    args.push(OsString::from(target.target_arg()));
     args.push(OsString::from("--"));
+    args.push(OsString::from(target.target_arg()));
     args.push(OsString::from(remote_command));
 
     RemoteServiceCommand {
@@ -387,12 +466,14 @@ pub fn ssh_lsp_proxy_command(
         quote_posix_shell(&server)
     );
     let mut args = Vec::new();
+    args.push(OsString::from("-T"));
+    append_ssh_connection_args(&mut args, &target);
     if let Some(port) = target.port {
         args.push(OsString::from("-p"));
         args.push(OsString::from(port.to_string()));
     }
-    args.push(OsString::from(target.target_arg()));
     args.push(OsString::from("--"));
+    args.push(OsString::from(target.target_arg()));
     args.push(OsString::from(remote_command));
 
     RemoteServiceCommand {
@@ -448,13 +529,14 @@ pub fn ssh_terminal_proxy_command(
         env,
     );
     let mut args = Vec::new();
+    append_ssh_connection_args(&mut args, &target);
     if let Some(port) = target.port {
         args.push(OsString::from("-p"));
         args.push(OsString::from(port.to_string()));
     }
     args.push(OsString::from("-tt"));
-    args.push(OsString::from(target.target_arg()));
     args.push(OsString::from("--"));
+    args.push(OsString::from(target.target_arg()));
     args.push(OsString::from(remote_command));
 
     RemoteServiceCommand {
@@ -462,6 +544,33 @@ pub fn ssh_terminal_proxy_command(
         args,
         current_dir: None,
     }
+}
+
+fn append_ssh_connection_args(args: &mut Vec<OsString>, target: &SshTarget) {
+    if let Some(timeout_secs) = target.connect_timeout_secs {
+        args.push(OsString::from("-o"));
+        args.push(OsString::from(format!("ConnectTimeout={timeout_secs}")));
+    }
+
+    if let Some(control_path) = target.control_path.as_ref() {
+        if let Some(parent) = control_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+
+        args.push(OsString::from("-o"));
+        args.push(OsString::from("ControlMaster=auto"));
+        args.push(OsString::from("-o"));
+        args.push(OsString::from(format!(
+            "ControlPersist={DEFAULT_SSH_CONTROL_PERSIST}"
+        )));
+        args.push(OsString::from("-o"));
+        args.push(OsString::from(format!(
+            "ControlPath={}",
+            control_path.display()
+        )));
+    }
+
+    args.extend(target.extra_args.iter().cloned());
 }
 
 fn append_terminal_proxy_args(
@@ -795,10 +904,38 @@ impl HelloResponse {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteHelperInstallPolicy {
+    Auto,
+    Never,
+    Upload,
+    RemoteDownload,
+}
+
+impl RemoteHelperInstallPolicy {
+    fn from_env_value(value: Option<String>) -> Self {
+        match value.as_deref() {
+            None | Some("") | Some("auto") | Some("AUTO") => Self::Auto,
+            Some("never") | Some("NEVER") => Self::Never,
+            Some("upload") | Some("UPLOAD") => Self::Upload,
+            Some("remote_download") | Some("REMOTE_DOWNLOAD") => Self::RemoteDownload,
+            Some(_) => Self::Auto,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteWorkspaceBackendOptions {
     pub remote_helper_path: PathBuf,
+    pub remote_helper_path_is_override: bool,
     pub local_helper_path: Option<PathBuf>,
+    pub ssh_helper_upload_path: Option<PathBuf>,
+    pub ssh_helper_artifact_dir: Option<PathBuf>,
+    pub ssh_helper_download_base_url: Option<String>,
+    pub ssh_helper_install_policy: RemoteHelperInstallPolicy,
+    pub ssh_connect_timeout_secs: Option<u64>,
+    pub ssh_extra_args: Vec<OsString>,
+    pub ssh_control_path: Option<PathBuf>,
     pub use_local_service: bool,
 }
 
@@ -806,42 +943,691 @@ impl Default for RemoteWorkspaceBackendOptions {
     fn default() -> Self {
         Self {
             remote_helper_path: PathBuf::from("nucleotide-remote"),
+            remote_helper_path_is_override: false,
             local_helper_path: None,
+            ssh_helper_upload_path: None,
+            ssh_helper_artifact_dir: None,
+            ssh_helper_download_base_url: None,
+            ssh_helper_install_policy: RemoteHelperInstallPolicy::Auto,
+            ssh_connect_timeout_secs: Some(DEFAULT_SSH_CONNECT_TIMEOUT_SECS),
+            ssh_extra_args: Vec::new(),
+            ssh_control_path: default_ssh_control_master_enabled()
+                .then(default_ssh_control_path)
+                .flatten(),
             use_local_service: false,
         }
     }
 }
 
+#[derive(Default)]
+struct RemoteWorkspaceBackendEnvironment {
+    remote_helper_path: Option<OsString>,
+    local_helper_path: Option<OsString>,
+    ssh_helper_upload_path: Option<OsString>,
+    ssh_helper_artifact_dir: Option<OsString>,
+    ssh_helper_download_base_url: Option<String>,
+    ssh_helper_install_policy: Option<String>,
+    ssh_connect_timeout_secs: Option<String>,
+    ssh_extra_args: Option<OsString>,
+    ssh_control_master: Option<String>,
+    ssh_control_path: Option<OsString>,
+    use_local_service: bool,
+    current_exe: Option<PathBuf>,
+}
+
 impl RemoteWorkspaceBackendOptions {
     pub fn from_environment() -> Self {
-        let current_exe = std::env::current_exe().ok();
-        Self::from_environment_values(
-            std::env::var_os("NUCLEOTIDE_REMOTE_HELPER"),
-            std::env::var_os("NUCLEOTIDE_LOCAL_REMOTE_HELPER"),
-            env_flag_enabled("NUCLEOTIDE_LOCAL_REMOTE_SERVICE"),
-            current_exe.as_deref(),
+        Self::default().with_environment_overrides()
+    }
+
+    pub fn with_environment_overrides(self) -> Self {
+        Self::from_environment_values_with_base(
+            RemoteWorkspaceBackendEnvironment {
+                remote_helper_path: std::env::var_os("NUCLEOTIDE_REMOTE_HELPER"),
+                local_helper_path: std::env::var_os("NUCLEOTIDE_LOCAL_REMOTE_HELPER"),
+                ssh_helper_upload_path: std::env::var_os("NUCLEOTIDE_REMOTE_HELPER_UPLOAD"),
+                ssh_helper_artifact_dir: std::env::var_os("NUCLEOTIDE_REMOTE_HELPER_ARTIFACT_DIR"),
+                ssh_helper_download_base_url: std::env::var(
+                    "NUCLEOTIDE_REMOTE_HELPER_DOWNLOAD_BASE_URL",
+                )
+                .ok(),
+                ssh_helper_install_policy: std::env::var("NUCLEOTIDE_REMOTE_HELPER_INSTALL").ok(),
+                ssh_connect_timeout_secs: std::env::var("NUCLEOTIDE_SSH_CONNECT_TIMEOUT_SECS").ok(),
+                ssh_extra_args: std::env::var_os("NUCLEOTIDE_SSH_EXTRA_ARGS"),
+                ssh_control_master: std::env::var("NUCLEOTIDE_SSH_CONTROL_MASTER").ok(),
+                ssh_control_path: std::env::var_os("NUCLEOTIDE_SSH_CONTROL_PATH"),
+                use_local_service: env_flag_enabled("NUCLEOTIDE_LOCAL_REMOTE_SERVICE"),
+                current_exe: std::env::current_exe().ok(),
+            },
+            self,
         )
     }
 
-    fn from_environment_values(
-        remote_helper_path: Option<OsString>,
-        local_helper_path: Option<OsString>,
-        use_local_service: bool,
-        current_exe: Option<&Path>,
+    #[cfg(test)]
+    fn from_environment_values(values: RemoteWorkspaceBackendEnvironment) -> Self {
+        Self::from_environment_values_with_base(values, Self::default())
+    }
+
+    fn from_environment_values_with_base(
+        values: RemoteWorkspaceBackendEnvironment,
+        mut options: Self,
     ) -> Self {
-        let mut options = Self {
-            use_local_service,
-            ..Self::default()
+        let base_control_path = options.ssh_control_path.clone();
+        let base_use_local_service = options.use_local_service;
+        let base_remote_helper_path_is_override = options.remote_helper_path_is_override;
+        let env_remote_helper_path = values.remote_helper_path;
+        let env_local_helper_path = values.local_helper_path;
+        let env_ssh_helper_upload_path = values.ssh_helper_upload_path;
+        let env_ssh_helper_artifact_dir = values.ssh_helper_artifact_dir;
+        let env_ssh_helper_download_base_url = values.ssh_helper_download_base_url;
+        let env_ssh_helper_install_policy = values.ssh_helper_install_policy;
+        let env_ssh_connect_timeout_secs = values.ssh_connect_timeout_secs;
+        let env_ssh_extra_args = values.ssh_extra_args;
+        let env_ssh_control_master = values.ssh_control_master;
+        let env_ssh_control_path = values.ssh_control_path;
+        let env_use_local_service = values.use_local_service;
+        let current_exe = values.current_exe;
+
+        let remote_helper_path_is_override =
+            base_remote_helper_path_is_override || env_remote_helper_path.is_some();
+        let bundled_helper = current_exe.as_deref().and_then(bundled_local_helper_path);
+        let bundled_artifact_dir = current_exe
+            .as_deref()
+            .and_then(Path::parent)
+            .map(Path::to_path_buf);
+        let ssh_control_enabled = env_ssh_control_master
+            .as_deref()
+            .map(|value| env_flag_enabled_with_default(Some(value), base_control_path.is_some()))
+            .unwrap_or_else(|| base_control_path.is_some());
+
+        options.remote_helper_path_is_override = remote_helper_path_is_override;
+
+        if let Some(policy) = env_ssh_helper_install_policy {
+            options.ssh_helper_install_policy =
+                RemoteHelperInstallPolicy::from_env_value(Some(policy));
+        }
+
+        if let Some(timeout) = env_ssh_connect_timeout_secs {
+            options.ssh_connect_timeout_secs = ssh_connect_timeout_from_env(Some(&timeout));
+        }
+
+        if let Some(args) = env_ssh_extra_args {
+            options.ssh_extra_args = ssh_extra_args_from_env(Some(args));
+        }
+
+        options.ssh_control_path = if ssh_control_enabled {
+            env_ssh_control_path
+                .map(PathBuf::from)
+                .or(base_control_path)
+                .or_else(default_ssh_control_path)
+        } else {
+            None
         };
 
-        if let Some(path) = remote_helper_path {
+        options.use_local_service = base_use_local_service || env_use_local_service;
+
+        if let Some(path) = env_remote_helper_path {
             options.remote_helper_path = PathBuf::from(path);
         }
-        options.local_helper_path = local_helper_path
-            .map(PathBuf::from)
-            .or_else(|| current_exe.and_then(bundled_local_helper_path));
+        if let Some(path) = env_local_helper_path {
+            options.local_helper_path = Some(PathBuf::from(path));
+        } else if options.local_helper_path.is_none() {
+            options.local_helper_path = bundled_helper.clone();
+        }
+        if let Some(path) = env_ssh_helper_upload_path {
+            options.ssh_helper_upload_path = Some(PathBuf::from(path));
+        }
+        if let Some(path) = env_ssh_helper_artifact_dir {
+            options.ssh_helper_artifact_dir = Some(PathBuf::from(path));
+        } else if options.ssh_helper_artifact_dir.is_none() {
+            options.ssh_helper_artifact_dir = bundled_artifact_dir;
+        }
+        if let Some(url) = env_ssh_helper_download_base_url
+            && !url.trim().is_empty()
+        {
+            options.ssh_helper_download_base_url = Some(url);
+        }
         options
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SshRemotePlatform {
+    pub os: String,
+    pub arch: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SshRemoteProbe {
+    platform: SshRemotePlatform,
+    cache_root: String,
+}
+
+pub struct RemoteHelperManager<'a> {
+    options: &'a RemoteWorkspaceBackendOptions,
+    progress: Option<&'a dyn Fn(RemoteDeploymentProgress)>,
+}
+
+impl<'a> RemoteHelperManager<'a> {
+    pub fn new(options: &'a RemoteWorkspaceBackendOptions) -> Self {
+        Self {
+            options,
+            progress: None,
+        }
+    }
+
+    pub fn with_progress(
+        options: &'a RemoteWorkspaceBackendOptions,
+        progress: &'a dyn Fn(RemoteDeploymentProgress),
+    ) -> Self {
+        Self {
+            options,
+            progress: Some(progress),
+        }
+    }
+
+    pub fn resolve_helper_for_location(&self, location: &WorkspaceLocation) -> Result<PathBuf> {
+        match location {
+            WorkspaceLocation::Ssh { target, .. } => self.resolve_ssh_helper(
+                &ssh_target_from_workspace_target_with_options(target, self.options),
+            ),
+            WorkspaceLocation::Local { .. } | WorkspaceLocation::Wsl { .. } => {
+                Ok(self.options.remote_helper_path.clone())
+            }
+        }
+    }
+
+    pub fn reinstall_helper_for_location(
+        &self,
+        location: &WorkspaceLocation,
+    ) -> Result<Option<PathBuf>> {
+        match location {
+            WorkspaceLocation::Ssh { target, .. } => self
+                .reinstall_ssh_helper(&ssh_target_from_workspace_target_with_options(
+                    target,
+                    self.options,
+                ))
+                .map(Some),
+            WorkspaceLocation::Local { .. } | WorkspaceLocation::Wsl { .. } => Ok(None),
+        }
+    }
+
+    fn resolve_ssh_helper(&self, target: &SshTarget) -> Result<PathBuf> {
+        if self.options.remote_helper_path_is_override
+            && self.options.ssh_helper_install_policy != RemoteHelperInstallPolicy::Upload
+            && self.options.ssh_helper_install_policy != RemoteHelperInstallPolicy::RemoteDownload
+        {
+            return Ok(self.options.remote_helper_path.clone());
+        }
+
+        if self.options.ssh_helper_install_policy == RemoteHelperInstallPolicy::Never {
+            return Ok(self.options.remote_helper_path.clone());
+        }
+
+        self.emit_progress(
+            RemoteDeploymentPhase::ConnectingSshHost,
+            Some(target.target_arg()),
+            None,
+        );
+        let probe = match self.probe_ssh_platform(target) {
+            Ok(probe) => probe,
+            Err(_) if self.options.ssh_helper_install_policy == RemoteHelperInstallPolicy::Auto => {
+                return Ok(self.options.remote_helper_path.clone());
+            }
+            Err(error) => return Err(error),
+        };
+
+        let helper_path = if self.options.remote_helper_path_is_override {
+            self.options.remote_helper_path.clone()
+        } else {
+            ssh_remote_helper_path(&probe)
+        };
+
+        self.emit_progress(
+            RemoteDeploymentPhase::CheckingRemoteHelper,
+            Some(target.target_arg()),
+            Some(helper_path.display().to_string()),
+        );
+        if self.remote_helper_matches(target, &helper_path, &probe.platform) {
+            return Ok(helper_path);
+        }
+
+        if self.options.ssh_helper_install_policy == RemoteHelperInstallPolicy::RemoteDownload {
+            self.install_ssh_helper_by_remote_download(target, &probe.platform, &helper_path)?;
+            if !self.remote_helper_matches(target, &helper_path, &probe.platform) {
+                bail!(
+                    "downloaded nucleotide-remote on SSH target {} but version probe did not match protocol {}",
+                    target.target_arg(),
+                    PROTOCOL_VERSION
+                );
+            }
+            return Ok(helper_path);
+        }
+
+        let Some(local_helper) = self.local_upload_artifact_for_platform(&probe.platform) else {
+            if self.options.ssh_helper_install_policy == RemoteHelperInstallPolicy::Auto
+                && self
+                    .install_ssh_helper_by_remote_download(target, &probe.platform, &helper_path)
+                    .is_ok()
+            {
+                if !self.remote_helper_matches(target, &helper_path, &probe.platform) {
+                    bail!(
+                        "downloaded nucleotide-remote on SSH target {} but version probe did not match protocol {}",
+                        target.target_arg(),
+                        PROTOCOL_VERSION
+                    );
+                }
+                return Ok(helper_path);
+            }
+
+            if self.options.ssh_helper_install_policy == RemoteHelperInstallPolicy::Upload {
+                bail!(
+                    "SSH helper upload requested, but no local nucleotide-remote artifact is configured"
+                );
+            }
+            return Ok(self.options.remote_helper_path.clone());
+        };
+
+        if !local_helper.is_file() {
+            if self.options.ssh_helper_install_policy == RemoteHelperInstallPolicy::Upload {
+                bail!(
+                    "SSH helper upload requested, but local artifact does not exist: {}",
+                    local_helper.display()
+                );
+            }
+            return Ok(self.options.remote_helper_path.clone());
+        }
+
+        self.emit_progress(
+            RemoteDeploymentPhase::InstallingRemoteHelper,
+            Some(target.target_arg()),
+            Some(format!("upload {}", local_helper.display())),
+        );
+        self.upload_ssh_helper(target, &local_helper, &helper_path)
+            .with_context(|| {
+                format!(
+                    "failed to upload nucleotide-remote to SSH target {}",
+                    target.target_arg()
+                )
+            })?;
+
+        if !self.remote_helper_matches(target, &helper_path, &probe.platform) {
+            bail!(
+                "uploaded nucleotide-remote on SSH target {} but version probe did not match protocol {}",
+                target.target_arg(),
+                PROTOCOL_VERSION
+            );
+        }
+
+        Ok(helper_path)
+    }
+
+    fn reinstall_ssh_helper(&self, target: &SshTarget) -> Result<PathBuf> {
+        if self.options.remote_helper_path_is_override
+            && self.options.ssh_helper_install_policy != RemoteHelperInstallPolicy::Upload
+            && self.options.ssh_helper_install_policy != RemoteHelperInstallPolicy::RemoteDownload
+        {
+            bail!("NUCLEOTIDE_REMOTE_HELPER is set; automatic SSH helper reinstall is disabled");
+        }
+
+        if self.options.ssh_helper_install_policy == RemoteHelperInstallPolicy::Never {
+            bail!("SSH helper auto-install is disabled");
+        }
+
+        let probe = self.probe_ssh_platform(target)?;
+        let helper_path = if self.options.remote_helper_path_is_override {
+            self.options.remote_helper_path.clone()
+        } else {
+            ssh_remote_helper_path(&probe)
+        };
+
+        if self.options.ssh_helper_install_policy == RemoteHelperInstallPolicy::RemoteDownload {
+            self.install_ssh_helper_by_remote_download(target, &probe.platform, &helper_path)?;
+            if !self.remote_helper_matches(target, &helper_path, &probe.platform) {
+                bail!(
+                    "reinstalled nucleotide-remote on SSH target {} by download but version probe did not match protocol {}",
+                    target.target_arg(),
+                    PROTOCOL_VERSION
+                );
+            }
+            return Ok(helper_path);
+        }
+
+        let local_helper = self
+            .local_upload_artifact_for_platform(&probe.platform)
+            .with_context(|| {
+                format!(
+                    "no bundled helper for {}-{}",
+                    probe.platform.os, probe.platform.arch
+                )
+            })?;
+
+        if !local_helper.is_file() {
+            bail!(
+                "local helper artifact does not exist: {}",
+                local_helper.display()
+            );
+        }
+
+        self.emit_progress(
+            RemoteDeploymentPhase::InstallingRemoteHelper,
+            Some(target.target_arg()),
+            Some(format!("upload {}", local_helper.display())),
+        );
+        self.upload_ssh_helper(target, &local_helper, &helper_path)
+            .with_context(|| {
+                format!(
+                    "failed to reinstall nucleotide-remote on SSH target {}",
+                    target.target_arg()
+                )
+            })?;
+
+        if !self.remote_helper_matches(target, &helper_path, &probe.platform) {
+            bail!(
+                "reinstalled nucleotide-remote on SSH target {} but version probe did not match protocol {}",
+                target.target_arg(),
+                PROTOCOL_VERSION
+            );
+        }
+
+        Ok(helper_path)
+    }
+
+    fn local_upload_artifact_for_platform(&self, platform: &SshRemotePlatform) -> Option<PathBuf> {
+        if let Some(path) = self.options.ssh_helper_upload_path.as_ref() {
+            return Some(path.clone());
+        }
+
+        let artifact_dir = self.options.ssh_helper_artifact_dir.as_ref()?;
+        bundled_ssh_helper_artifact_path(artifact_dir, platform)
+    }
+
+    fn probe_ssh_platform(&self, target: &SshTarget) -> Result<SshRemoteProbe> {
+        self.emit_progress(
+            RemoteDeploymentPhase::DetectingRemotePlatform,
+            Some(target.target_arg()),
+            None,
+        );
+        let script = concat!(
+            "printf 'NUCL_PLATFORM '; uname -sm; ",
+            "printf 'NUCL_CACHE %s\\n' \"${XDG_CACHE_HOME:-$HOME/.cache}\""
+        );
+        let output = self.run_ssh_command_output(
+            target,
+            "detecting remote platform",
+            &format!("sh -lc {}", quote_posix_shell(script)),
+        )?;
+        parse_ssh_probe_output(&output)
+    }
+
+    fn remote_helper_matches(
+        &self,
+        target: &SshTarget,
+        helper_path: &Path,
+        platform: &SshRemotePlatform,
+    ) -> bool {
+        self.remote_helper_version(target, helper_path)
+            .map(|info| helper_version_matches_current(&info, platform))
+            .unwrap_or(false)
+    }
+
+    fn remote_helper_version(
+        &self,
+        target: &SshTarget,
+        helper_path: &Path,
+    ) -> Result<HelperVersionInfo> {
+        let helper_path = helper_path.to_string_lossy();
+        let remote_command = format!("exec {} version --json", quote_posix_shell(&helper_path));
+        let output =
+            self.run_ssh_command_output(target, "checking nucleotide-remote", &remote_command)?;
+        parse_helper_version_output(&output)
+    }
+
+    fn install_ssh_helper_by_remote_download(
+        &self,
+        target: &SshTarget,
+        platform: &SshRemotePlatform,
+        helper_path: &Path,
+    ) -> Result<()> {
+        let asset_name = remote_helper_release_asset_name(platform);
+        let (asset_url, checksums_url) = self.remote_helper_download_urls(platform)?;
+        self.emit_progress(
+            RemoteDeploymentPhase::InstallingRemoteHelper,
+            Some(target.target_arg()),
+            Some(format!("download {asset_name}")),
+        );
+        self.remote_download_ssh_helper(
+            target,
+            helper_path,
+            &asset_url,
+            &checksums_url,
+            &asset_name,
+        )
+        .with_context(|| {
+            format!(
+                "failed to download nucleotide-remote on SSH target {}",
+                target.target_arg()
+            )
+        })
+    }
+
+    fn remote_helper_download_urls(
+        &self,
+        platform: &SshRemotePlatform,
+    ) -> Result<(String, String)> {
+        let base_url = self
+            .options
+            .ssh_helper_download_base_url
+            .clone()
+            .unwrap_or_else(default_remote_helper_download_base_url);
+        let base_url = base_url.trim_end_matches('/');
+        if base_url.is_empty() {
+            bail!("SSH helper remote-download base URL is empty");
+        }
+
+        Ok((
+            format!("{base_url}/{}", remote_helper_release_asset_name(platform)),
+            format!("{base_url}/{RELEASE_CHECKSUMS_ASSET}"),
+        ))
+    }
+
+    fn upload_ssh_helper(
+        &self,
+        target: &SshTarget,
+        local_helper: &Path,
+        helper_path: &Path,
+    ) -> Result<()> {
+        let helper_path = helper_path.to_string_lossy();
+        let helper_dir = posix_parent(&helper_path);
+        let tmp_path = format!(
+            "{helper_path}.tmp-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default()
+        );
+        let script = concat!(
+            "set -eu\n",
+            "dir=$1\n",
+            "tmp=$2\n",
+            "final=$3\n",
+            "mkdir -p \"$dir\"\n",
+            "chmod 700 \"$dir\"\n",
+            "cat > \"$tmp\"\n",
+            "chmod 755 \"$tmp\"\n",
+            "mv -f \"$tmp\" \"$final\"\n",
+        );
+        let remote_command = format!(
+            "sh -lc {} sh {} {} {}",
+            quote_posix_shell(script),
+            quote_posix_shell(&helper_dir),
+            quote_posix_shell(&tmp_path),
+            quote_posix_shell(&helper_path)
+        );
+        let spec = ssh_non_tty_command(target.clone(), remote_command);
+        let local_file = std::fs::File::open(local_helper)
+            .with_context(|| format!("failed to open {}", local_helper.display()))?;
+        let output = spec
+            .command()
+            .stdin(Stdio::from(local_file))
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .with_context(|| {
+                format!(
+                    "failed to run SSH helper upload command: {}",
+                    spec.display_context()
+                )
+            })?;
+
+        if output.status.success() {
+            Ok(())
+        } else {
+            bail!(
+                "SSH helper upload command failed with status {}: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim()
+            )
+        }
+    }
+
+    fn remote_download_ssh_helper(
+        &self,
+        target: &SshTarget,
+        helper_path: &Path,
+        asset_url: &str,
+        checksums_url: &str,
+        asset_name: &str,
+    ) -> Result<()> {
+        let helper_path = helper_path.to_string_lossy();
+        let helper_dir = posix_parent(&helper_path);
+        let tmp_path = format!(
+            "{helper_path}.tmp-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default()
+        );
+        let remote_command = ssh_remote_helper_download_command(
+            &helper_dir,
+            &tmp_path,
+            &helper_path,
+            asset_url,
+            checksums_url,
+            asset_name,
+        );
+        let output = ssh_non_tty_command(target.clone(), remote_command)
+            .command()
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .with_context(|| {
+                format!(
+                    "failed to run SSH helper download command for {}",
+                    target.target_arg()
+                )
+            })?;
+
+        if output.status.success() {
+            Ok(())
+        } else {
+            bail!(
+                "SSH helper download command failed with status {}: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim()
+            )
+        }
+    }
+
+    fn run_ssh_command_output(
+        &self,
+        target: &SshTarget,
+        label: &'static str,
+        remote_command: &str,
+    ) -> Result<String> {
+        let spec = ssh_non_tty_command(target.clone(), remote_command.to_string());
+        let output = spec.command().output().with_context(|| {
+            format!(
+                "failed to run SSH command while {label}: {}",
+                spec.display_context()
+            )
+        })?;
+
+        if output.status.success() {
+            String::from_utf8(output.stdout)
+                .with_context(|| format!("SSH command while {label} returned non-UTF-8 stdout"))
+        } else {
+            bail!(
+                "SSH command while {label} failed with status {}: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim()
+            )
+        }
+    }
+
+    fn emit_progress(
+        &self,
+        phase: RemoteDeploymentPhase,
+        target: Option<String>,
+        detail: Option<String>,
+    ) {
+        if let Some(progress) = self.progress {
+            progress(RemoteDeploymentProgress {
+                phase,
+                target,
+                detail,
+            });
+        }
+    }
+}
+
+pub fn resolve_remote_helper_for_location(
+    location: &WorkspaceLocation,
+    options: &RemoteWorkspaceBackendOptions,
+) -> Result<PathBuf> {
+    RemoteHelperManager::new(options).resolve_helper_for_location(location)
+}
+
+pub fn resolve_remote_helper_for_location_with_progress(
+    location: &WorkspaceLocation,
+    options: &RemoteWorkspaceBackendOptions,
+    progress: &dyn Fn(RemoteDeploymentProgress),
+) -> Result<PathBuf> {
+    RemoteHelperManager::with_progress(options, progress).resolve_helper_for_location(location)
+}
+
+pub fn resolved_remote_lsp_proxy_command_for_location(
+    location: &WorkspaceLocation,
+    options: &RemoteWorkspaceBackendOptions,
+    server: impl AsRef<OsStr>,
+) -> Result<Option<RemoteServiceCommand>> {
+    let helper_path = resolve_remote_helper_for_location(location, options)?;
+    Ok(remote_lsp_proxy_command_for_location_with_options(
+        location,
+        helper_path,
+        options,
+        server,
+    ))
+}
+
+pub fn resolved_remote_terminal_proxy_command_for_location(
+    location: &WorkspaceLocation,
+    options: &RemoteWorkspaceBackendOptions,
+    shell: Option<&str>,
+    command: Option<(&str, &[String])>,
+    env: &[(String, String)],
+) -> Result<Option<RemoteServiceCommand>> {
+    let helper_path = resolve_remote_helper_for_location(location, options)?;
+    Ok(remote_terminal_proxy_command_for_location_with_options(
+        location,
+        helper_path,
+        options,
+        shell,
+        command,
+        env,
+    ))
 }
 
 #[derive(Clone)]
@@ -884,6 +1670,24 @@ pub fn remote_service_command_for_location(
     }
 }
 
+fn remote_service_command_for_location_with_options(
+    location: &WorkspaceLocation,
+    helper_path: impl AsRef<Path>,
+    options: &RemoteWorkspaceBackendOptions,
+) -> Option<RemoteServiceCommand> {
+    match location {
+        WorkspaceLocation::Local { .. } => None,
+        WorkspaceLocation::Wsl {
+            distro, linux_path, ..
+        } => Some(wsl_service_command(distro, linux_path, helper_path)),
+        WorkspaceLocation::Ssh { target, path, .. } => Some(ssh_service_command(
+            ssh_target_from_workspace_target_with_options(target, options),
+            path,
+            helper_path,
+        )),
+    }
+}
+
 pub fn remote_lsp_proxy_command_for_location(
     location: &WorkspaceLocation,
     helper_path: impl AsRef<Path>,
@@ -901,6 +1705,31 @@ pub fn remote_lsp_proxy_command_for_location(
         )),
         WorkspaceLocation::Ssh { target, path, .. } => Some(ssh_lsp_proxy_command(
             ssh_target_from_workspace_target(target),
+            path,
+            helper_path,
+            server,
+        )),
+    }
+}
+
+fn remote_lsp_proxy_command_for_location_with_options(
+    location: &WorkspaceLocation,
+    helper_path: impl AsRef<Path>,
+    options: &RemoteWorkspaceBackendOptions,
+    server: impl AsRef<OsStr>,
+) -> Option<RemoteServiceCommand> {
+    match location {
+        WorkspaceLocation::Local { .. } => None,
+        WorkspaceLocation::Wsl {
+            distro, linux_path, ..
+        } => Some(wsl_lsp_proxy_command(
+            distro,
+            linux_path,
+            helper_path,
+            server,
+        )),
+        WorkspaceLocation::Ssh { target, path, .. } => Some(ssh_lsp_proxy_command(
+            ssh_target_from_workspace_target_with_options(target, options),
             path,
             helper_path,
             server,
@@ -939,9 +1768,57 @@ pub fn remote_terminal_proxy_command_for_location(
     }
 }
 
+fn remote_terminal_proxy_command_for_location_with_options(
+    location: &WorkspaceLocation,
+    helper_path: impl AsRef<Path>,
+    options: &RemoteWorkspaceBackendOptions,
+    shell: Option<&str>,
+    command: Option<(&str, &[String])>,
+    env: &[(String, String)],
+) -> Option<RemoteServiceCommand> {
+    let helper_path = helper_path.as_ref();
+    match location {
+        WorkspaceLocation::Local { .. } => None,
+        WorkspaceLocation::Wsl {
+            distro, linux_path, ..
+        } => Some(wsl_terminal_proxy_command(
+            distro,
+            linux_path,
+            helper_path,
+            shell,
+            command,
+            env,
+        )),
+        WorkspaceLocation::Ssh { target, path, .. } => Some(ssh_terminal_proxy_command(
+            ssh_target_from_workspace_target_with_options(target, options),
+            path,
+            helper_path,
+            shell,
+            command,
+            env,
+        )),
+    }
+}
+
 pub fn connect_workspace_backend_for_location(
     location: WorkspaceLocation,
     options: &RemoteWorkspaceBackendOptions,
+) -> Result<WorkspaceBackendConnection> {
+    connect_workspace_backend_for_location_with_optional_progress(location, options, None)
+}
+
+pub fn connect_workspace_backend_for_location_with_progress(
+    location: WorkspaceLocation,
+    options: &RemoteWorkspaceBackendOptions,
+    progress: &dyn Fn(RemoteDeploymentProgress),
+) -> Result<WorkspaceBackendConnection> {
+    connect_workspace_backend_for_location_with_optional_progress(location, options, Some(progress))
+}
+
+fn connect_workspace_backend_for_location_with_optional_progress(
+    location: WorkspaceLocation,
+    options: &RemoteWorkspaceBackendOptions,
+    progress: Option<&dyn Fn(RemoteDeploymentProgress)>,
 ) -> Result<WorkspaceBackendConnection> {
     if let WorkspaceLocation::Local { path } = &location {
         if options.use_local_service {
@@ -981,23 +1858,113 @@ pub fn connect_workspace_backend_for_location(
 
     let identity = remote_workspace_identity_for_location(&location)
         .context("remote workspace location is missing an identity")?;
-    let command = remote_service_command_for_location(&location, &options.remote_helper_path)
-        .context("remote workspace location is missing a service command")?;
+    let helper_path = match progress {
+        Some(progress) => {
+            resolve_remote_helper_for_location_with_progress(&location, options, progress)?
+        }
+        None => resolve_remote_helper_for_location(&location, options)?,
+    };
+    let command =
+        remote_service_command_for_location_with_options(&location, &helper_path, options)
+            .context("remote workspace location is missing a service command")?;
     let mapping = location.path_mapping();
     let display_root = location.display_root().to_path_buf();
-    let (backend, hello) =
-        spawn_child_process_workspace_backend(identity, &command).with_context(|| {
-            format!(
-                "failed to initialize remote workspace service for {}. {}",
-                display_root.display(),
-                remote_helper_setup_hint(&location, &options.remote_helper_path)
+    emit_remote_deployment_progress(
+        progress,
+        RemoteDeploymentPhase::StartingRemoteWorkspaceService,
+        &location,
+        Some(display_root.display().to_string()),
+    );
+    let (backend, hello) = match spawn_child_process_workspace_backend(identity.clone(), &command) {
+        Ok(connection) => connection,
+        Err(error) if remote_startup_error_can_retry_helper_install(&location, &error) => {
+            let retry_helper_path = match progress {
+                Some(progress) => RemoteHelperManager::with_progress(options, progress),
+                None => RemoteHelperManager::new(options),
+            }
+            .reinstall_helper_for_location(&location)
+            .with_context(|| {
+                format!(
+                    "failed to reinstall remote helper after startup failure. Initial error: {error:#}"
+                )
+            })?
+            .context("remote helper reinstall did not apply to this workspace location")?;
+            let retry_command = remote_service_command_for_location_with_options(
+                &location,
+                &retry_helper_path,
+                options,
             )
-        })?;
+            .context("remote workspace location is missing a service command")?;
+            emit_remote_deployment_progress(
+                progress,
+                RemoteDeploymentPhase::StartingRemoteWorkspaceService,
+                &location,
+                Some(display_root.display().to_string()),
+            );
+            spawn_child_process_workspace_backend(identity, &retry_command).with_context(|| {
+                format!(
+                    "failed to initialize remote workspace service for {} after reinstalling helper. Initial error: {error:#}",
+                    display_root.display()
+                )
+            })?
+        }
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to initialize remote workspace service for {}. {}",
+                    display_root.display(),
+                    remote_helper_setup_hint(&location, &helper_path)
+                )
+            });
+        }
+    };
 
     Ok(WorkspaceBackendConnection {
         backend: path_mapped_workspace_backend(backend, mapping),
         location,
         hello: Some(hello),
+    })
+}
+
+fn emit_remote_deployment_progress(
+    progress: Option<&dyn Fn(RemoteDeploymentProgress)>,
+    phase: RemoteDeploymentPhase,
+    location: &WorkspaceLocation,
+    detail: Option<String>,
+) {
+    if let Some(progress) = progress {
+        progress(RemoteDeploymentProgress {
+            phase,
+            target: remote_deployment_target(location),
+            detail,
+        });
+    }
+}
+
+fn remote_deployment_target(location: &WorkspaceLocation) -> Option<String> {
+    match location {
+        WorkspaceLocation::Ssh { target, .. } => Some(ssh_target_display_name(target)),
+        WorkspaceLocation::Wsl { distro, .. } => Some(distro.clone()),
+        WorkspaceLocation::Local { .. } => None,
+    }
+}
+
+fn remote_startup_error_can_retry_helper_install(
+    location: &WorkspaceLocation,
+    error: &anyhow::Error,
+) -> bool {
+    if !matches!(location, WorkspaceLocation::Ssh { .. }) {
+        return false;
+    }
+
+    error.chain().any(|cause| {
+        let message = cause.to_string();
+        message.contains("protocol version")
+            || message.contains("frame version")
+            || message.contains("invalid frame magic")
+            || message.contains("unexpected hello response")
+            || message.contains("remote service disconnected")
+            || message.contains("verify the helper exists and speaks protocol version")
     })
 }
 
@@ -1012,10 +1979,354 @@ fn env_flag_enabled(name: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn env_flag_enabled_with_default(value: Option<&str>, default: bool) -> bool {
+    match value {
+        None | Some("") => default,
+        Some("1") | Some("true") | Some("TRUE") | Some("yes") | Some("YES") | Some("on")
+        | Some("ON") => true,
+        Some("0") | Some("false") | Some("FALSE") | Some("no") | Some("NO") | Some("off")
+        | Some("OFF") => false,
+        Some(_) => default,
+    }
+}
+
+fn ssh_connect_timeout_from_env(value: Option<&str>) -> Option<u64> {
+    match value {
+        None | Some("") => Some(DEFAULT_SSH_CONNECT_TIMEOUT_SECS),
+        Some("0") => None,
+        Some(value) => value
+            .parse::<u64>()
+            .ok()
+            .filter(|timeout| *timeout > 0)
+            .or(Some(DEFAULT_SSH_CONNECT_TIMEOUT_SECS)),
+    }
+}
+
+fn ssh_extra_args_from_env(value: Option<OsString>) -> Vec<OsString> {
+    let Some(value) = value else {
+        return Vec::new();
+    };
+    split_ssh_extra_args(&value.to_string_lossy())
+        .into_iter()
+        .map(OsString::from)
+        .collect()
+}
+
+fn split_ssh_extra_args(value: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut quote = None;
+    let mut chars = value.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        match (quote, ch) {
+            (None, ch) if ch.is_whitespace() => {
+                if !current.is_empty() {
+                    args.push(std::mem::take(&mut current));
+                }
+            }
+            (None, '\'' | '"') => quote = Some(ch),
+            (Some(active), ch) if ch == active => quote = None,
+            (_, '\\') => {
+                if let Some(next) = chars.next() {
+                    current.push(next);
+                }
+            }
+            _ => current.push(ch),
+        }
+    }
+
+    if !current.is_empty() {
+        args.push(current);
+    }
+
+    args
+}
+
+fn default_ssh_control_master_enabled() -> bool {
+    cfg!(unix)
+}
+
+fn default_ssh_control_path() -> Option<PathBuf> {
+    let control_dir = dirs::cache_dir()?.join("nucleotide").join("ssh-control");
+    Some(control_dir.join("%C"))
+}
+
+fn ssh_non_tty_command(target: SshTarget, remote_command: String) -> RemoteServiceCommand {
+    let mut args = Vec::new();
+    args.push(OsString::from("-T"));
+    append_ssh_connection_args(&mut args, &target);
+    if let Some(port) = target.port {
+        args.push(OsString::from("-p"));
+        args.push(OsString::from(port.to_string()));
+    }
+    args.push(OsString::from("--"));
+    args.push(OsString::from(target.target_arg()));
+    args.push(OsString::from(remote_command));
+
+    RemoteServiceCommand {
+        program: OsString::from("ssh"),
+        args,
+        current_dir: None,
+    }
+}
+
+fn parse_ssh_probe_output(output: &str) -> Result<SshRemoteProbe> {
+    let mut platform = None;
+    let mut cache_root = None;
+
+    for line in output.lines() {
+        let line = line.trim();
+        if let Some(value) = line.strip_prefix("NUCL_PLATFORM ") {
+            platform = Some(parse_uname_platform(value)?);
+        } else if let Some(value) = line.strip_prefix("NUCL_CACHE ") {
+            let value = value.trim();
+            if !value.is_empty() {
+                cache_root = Some(value.to_string());
+            }
+        }
+    }
+
+    Ok(SshRemoteProbe {
+        platform: platform.context("SSH platform probe did not report NUCL_PLATFORM")?,
+        cache_root: cache_root.context("SSH platform probe did not report NUCL_CACHE")?,
+    })
+}
+
+fn parse_uname_platform(value: &str) -> Result<SshRemotePlatform> {
+    let mut parts = value.split_whitespace();
+    let os = parts.next().context("remote uname output is missing OS")?;
+    let arch = parts
+        .next()
+        .context("remote uname output is missing architecture")?;
+
+    let os = match os {
+        "Linux" => "linux",
+        other => bail!("unsupported SSH remote platform: {other} {arch}"),
+    };
+    let arch = match arch {
+        "x86_64" | "amd64" => "x86_64",
+        "aarch64" | "arm64" => "aarch64",
+        arch if arch.starts_with("armv8") || arch.starts_with("armv9") => "aarch64",
+        other => bail!("unsupported SSH remote platform: {os} {other}"),
+    };
+
+    Ok(SshRemotePlatform {
+        os: os.to_string(),
+        arch: arch.to_string(),
+    })
+}
+
+fn ssh_remote_helper_path(probe: &SshRemoteProbe) -> PathBuf {
+    PathBuf::from(posix_join(
+        &probe.cache_root,
+        &[
+            "nucleotide",
+            "remote",
+            &format!("protocol-{PROTOCOL_VERSION}"),
+            &remote_helper_file_name(&probe.platform),
+        ],
+    ))
+}
+
+fn remote_helper_file_name(platform: &SshRemotePlatform) -> String {
+    format!(
+        "nucleotide-remote-{}-{}-{}",
+        env!("CARGO_PKG_VERSION"),
+        platform.os,
+        platform.arch
+    )
+}
+
+fn remote_helper_release_asset_name(platform: &SshRemotePlatform) -> String {
+    format!("nucleotide-remote-{}-{}", platform.os, platform.arch)
+}
+
+fn default_remote_helper_download_base_url() -> String {
+    format!(
+        "{}/releases/download/{DEFAULT_RELEASE_TAG_PREFIX}{}",
+        env!("CARGO_PKG_REPOSITORY").trim_end_matches('/'),
+        env!("CARGO_PKG_VERSION")
+    )
+}
+
+fn helper_version_matches_current(info: &HelperVersionInfo, platform: &SshRemotePlatform) -> bool {
+    info.helper_version == env!("CARGO_PKG_VERSION")
+        && info.protocol_version == PROTOCOL_VERSION
+        && info.frame_version == FRAME_VERSION
+        && info.os == platform.os
+        && info.arch == platform.arch
+}
+
+fn parse_helper_version_output(output: &str) -> Result<HelperVersionInfo> {
+    let trimmed = output.trim();
+    if let Ok(info) = serde_json::from_str::<HelperVersionInfo>(trimmed) {
+        return Ok(info);
+    }
+
+    for line in output.lines().rev() {
+        let line = line.trim();
+        if line.starts_with('{') {
+            return serde_json::from_str(line)
+                .context("failed to parse nucleotide-remote version JSON");
+        }
+    }
+
+    bail!("nucleotide-remote version output did not contain JSON")
+}
+
+fn posix_join(base: &str, parts: &[&str]) -> String {
+    let mut output = base.trim_end_matches('/').to_string();
+    for part in parts {
+        let part = part.trim_matches('/');
+        if part.is_empty() {
+            continue;
+        }
+        if output.is_empty() || !output.ends_with('/') {
+            output.push('/');
+        }
+        output.push_str(part);
+    }
+    output
+}
+
+fn posix_parent(path: &str) -> String {
+    match path.rsplit_once('/') {
+        Some(("", _)) => "/".to_string(),
+        Some((parent, _)) if !parent.is_empty() => parent.to_string(),
+        _ => ".".to_string(),
+    }
+}
+
+fn ssh_remote_helper_download_command(
+    helper_dir: &str,
+    tmp_path: &str,
+    helper_path: &str,
+    asset_url: &str,
+    checksums_url: &str,
+    asset_name: &str,
+) -> String {
+    let script = concat!(
+        "set -eu\n",
+        "dir=$1\n",
+        "tmp=$2\n",
+        "final=$3\n",
+        "asset_url=$4\n",
+        "checksums_url=$5\n",
+        "asset_name=$6\n",
+        "sums=\"$tmp.sha256sums\"\n",
+        "download() {\n",
+        "  url=$1\n",
+        "  out=$2\n",
+        "  if command -v curl >/dev/null 2>&1; then\n",
+        "    curl -fsSL \"$url\" -o \"$out\"\n",
+        "  elif command -v wget >/dev/null 2>&1; then\n",
+        "    wget -qO \"$out\" \"$url\"\n",
+        "  else\n",
+        "    echo \"neither curl nor wget is available for remote helper download\" >&2\n",
+        "    return 127\n",
+        "  fi\n",
+        "}\n",
+        "hash_file() {\n",
+        "  file=$1\n",
+        "  if command -v sha256sum >/dev/null 2>&1; then\n",
+        "    sha256sum \"$file\" | awk '{print $1}'\n",
+        "  elif command -v shasum >/dev/null 2>&1; then\n",
+        "    shasum -a 256 \"$file\" | awk '{print $1}'\n",
+        "  else\n",
+        "    echo \"neither sha256sum nor shasum is available for helper verification\" >&2\n",
+        "    return 127\n",
+        "  fi\n",
+        "}\n",
+        "cleanup() { rm -f \"$tmp\" \"$sums\"; }\n",
+        "trap cleanup EXIT INT TERM HUP\n",
+        "mkdir -p \"$dir\"\n",
+        "chmod 700 \"$dir\"\n",
+        "rm -f \"$tmp\" \"$sums\"\n",
+        "download \"$asset_url\" \"$tmp\"\n",
+        "download \"$checksums_url\" \"$sums\"\n",
+        "expected=$(awk -v name=\"$asset_name\" '$2 == name || $2 == (\"*\" name) { print $1; found=1; exit } END { if (!found) exit 1 }' \"$sums\") || {\n",
+        "  echo \"checksum for $asset_name not found in SHA256SUMS\" >&2\n",
+        "  cleanup\n",
+        "  exit 1\n",
+        "}\n",
+        "actual=$(hash_file \"$tmp\")\n",
+        "if [ \"$expected\" != \"$actual\" ]; then\n",
+        "  echo \"checksum mismatch for $asset_name\" >&2\n",
+        "  cleanup\n",
+        "  exit 1\n",
+        "fi\n",
+        "chmod 755 \"$tmp\"\n",
+        "mv -f \"$tmp\" \"$final\"\n",
+    );
+
+    format!(
+        "sh -lc {} sh {} {} {} {} {} {}",
+        quote_posix_shell(script),
+        quote_posix_shell(helper_dir),
+        quote_posix_shell(tmp_path),
+        quote_posix_shell(helper_path),
+        quote_posix_shell(asset_url),
+        quote_posix_shell(checksums_url),
+        quote_posix_shell(asset_name)
+    )
+}
+
 fn bundled_local_helper_path(current_exe: &Path) -> Option<PathBuf> {
     let executable_dir = current_exe.parent()?;
     let helper_path = executable_dir.join(local_helper_binary_name());
     helper_path.is_file().then_some(helper_path)
+}
+
+fn bundled_ssh_helper_artifact_path(
+    artifact_dir: &Path,
+    platform: &SshRemotePlatform,
+) -> Option<PathBuf> {
+    for candidate in ssh_helper_artifact_candidate_names(platform) {
+        let path = artifact_dir.join(candidate);
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+    None
+}
+
+fn ssh_helper_artifact_candidate_names(platform: &SshRemotePlatform) -> Vec<String> {
+    let mut candidates = vec![
+        remote_helper_file_name(platform),
+        format!("nucleotide-remote-{}-{}", platform.os, platform.arch),
+    ];
+
+    if current_host_platform_matches(platform) {
+        candidates.push(local_helper_binary_name().to_string());
+    }
+
+    candidates
+}
+
+fn current_host_platform_matches(platform: &SshRemotePlatform) -> bool {
+    let Some(host) = current_host_remote_platform() else {
+        return false;
+    };
+
+    host == *platform
+}
+
+fn current_host_remote_platform() -> Option<SshRemotePlatform> {
+    let os = match std::env::consts::OS {
+        "linux" => "linux",
+        _ => return None,
+    };
+    let arch = match std::env::consts::ARCH {
+        "x86_64" => "x86_64",
+        "aarch64" => "aarch64",
+        _ => return None,
+    };
+
+    Some(SshRemotePlatform {
+        os: os.to_string(),
+        arch: arch.to_string(),
+    })
 }
 
 fn local_helper_binary_name() -> &'static str {
@@ -1054,6 +2365,23 @@ fn ssh_target_from_workspace_target(target: &SshWorkspaceTarget) -> SshTarget {
         host: target.host.clone(),
         user: target.user.clone(),
         port: target.port,
+        connect_timeout_secs: None,
+        extra_args: Vec::new(),
+        control_path: None,
+    }
+}
+
+fn ssh_target_from_workspace_target_with_options(
+    target: &SshWorkspaceTarget,
+    options: &RemoteWorkspaceBackendOptions,
+) -> SshTarget {
+    SshTarget {
+        host: target.host.clone(),
+        user: target.user.clone(),
+        port: target.port,
+        connect_timeout_secs: options.ssh_connect_timeout_secs,
+        extra_args: options.ssh_extra_args.clone(),
+        control_path: options.ssh_control_path.clone(),
     }
 }
 
@@ -2988,10 +4316,46 @@ where
                 .context("failed to create remote terminal proxy runtime")?;
             runtime.block_on(run_terminal_proxy(options))
         }
+        "version" => print_version(args, &mut std::io::stdout()).context("failed to write version"),
         "--help" | "-h" | "help" => {
             print_help(&mut std::io::stdout()).context("failed to write help")
         }
         other => bail!("unknown nucleotide-remote command: {other}"),
+    }
+}
+
+fn print_version<I, W>(args: I, writer: &mut W) -> io::Result<()>
+where
+    I: IntoIterator<Item = String>,
+    W: Write,
+{
+    let mut json = false;
+    for arg in args {
+        match arg.as_str() {
+            "--json" => json = true,
+            "--help" | "-h" => {
+                writeln!(writer, "nucleotide-remote version [--json]")?;
+                return Ok(());
+            }
+            other => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("unknown version argument: {other}"),
+                ));
+            }
+        }
+    }
+
+    let info = HelperVersionInfo::current();
+    if json {
+        serde_json::to_writer(&mut *writer, &info).map_err(io::Error::other)?;
+        writeln!(writer)
+    } else {
+        writeln!(
+            writer,
+            "nucleotide-remote {} protocol {} frame {} {}-{}",
+            info.helper_version, info.protocol_version, info.frame_version, info.os, info.arch
+        )
     }
 }
 
@@ -3361,6 +4725,7 @@ fn resolve_program_from_environment_path(
 
 fn print_help<W: Write>(writer: &mut W) -> io::Result<()> {
     writeln!(writer, "nucleotide-remote serve [--workspace <path>]")?;
+    writeln!(writer, "nucleotide-remote version [--json]")?;
     writeln!(
         writer,
         "nucleotide-remote lsp-proxy [--workspace <path>] --server <name> [-- <args>...]"
@@ -4084,11 +5449,12 @@ mod tests {
         );
 
         assert_eq!(spec.program, OsString::from("ssh"));
-        assert_eq!(spec.args[0], OsString::from("-p"));
-        assert_eq!(spec.args[1], OsString::from("2222"));
-        assert_eq!(spec.args[2], OsString::from("me@devbox"));
+        assert_eq!(spec.args[0], OsString::from("-T"));
+        assert_eq!(spec.args[1], OsString::from("-p"));
+        assert_eq!(spec.args[2], OsString::from("2222"));
         assert_eq!(spec.args[3], OsString::from("--"));
-        let command = spec.args[4].to_string_lossy();
+        assert_eq!(spec.args[4], OsString::from("me@devbox"));
+        let command = spec.args[5].to_string_lossy();
         assert!(command.starts_with("exec "));
         assert!(command.contains("'/home/me/.cache/nucleotide remote/bin'"));
         assert!(command.contains("'/home/me/project with spaces/it'\"'\"'s'"));
@@ -4108,11 +5474,12 @@ mod tests {
         );
 
         assert_eq!(spec.program, OsString::from("ssh"));
-        assert_eq!(spec.args[0], OsString::from("-p"));
-        assert_eq!(spec.args[1], OsString::from("2222"));
-        assert_eq!(spec.args[2], OsString::from("me@devbox"));
+        assert_eq!(spec.args[0], OsString::from("-T"));
+        assert_eq!(spec.args[1], OsString::from("-p"));
+        assert_eq!(spec.args[2], OsString::from("2222"));
         assert_eq!(spec.args[3], OsString::from("--"));
-        let command = spec.args[4].to_string_lossy();
+        assert_eq!(spec.args[4], OsString::from("me@devbox"));
+        let command = spec.args[5].to_string_lossy();
         assert!(command.starts_with("exec "));
         assert!(command.contains("'/home/me/.cache/nucleotide remote/bin'"));
         assert!(command.contains(" lsp-proxy "));
@@ -4141,8 +5508,8 @@ mod tests {
         assert_eq!(spec.args[0], OsString::from("-p"));
         assert_eq!(spec.args[1], OsString::from("2222"));
         assert_eq!(spec.args[2], OsString::from("-tt"));
-        assert_eq!(spec.args[3], OsString::from("me@devbox"));
-        assert_eq!(spec.args[4], OsString::from("--"));
+        assert_eq!(spec.args[3], OsString::from("--"));
+        assert_eq!(spec.args[4], OsString::from("me@devbox"));
         let command = spec.args[5].to_string_lossy();
         assert!(command.starts_with("exec "));
         assert!(command.contains("'/home/me/.cache/nucleotide remote/bin'"));
@@ -4151,6 +5518,42 @@ mod tests {
         assert!(command.contains("--env 'RUST_LOG=debug'"));
         assert!(command.contains(" -- 'cargo' 'test' "));
         assert!(command.ends_with("'--workspace'"));
+    }
+
+    #[test]
+    fn ssh_service_command_applies_connection_options_before_target() {
+        let mut target = SshTarget::new("devbox");
+        target.connect_timeout_secs = Some(12);
+        target.control_path = Some(PathBuf::from("/tmp/nucl-ssh/%C"));
+        target.extra_args = vec![
+            OsString::from("-J"),
+            OsString::from("bastion"),
+            OsString::from("-F"),
+            OsString::from("/tmp/ssh config"),
+        ];
+
+        let spec = ssh_service_command(target, "/home/me/project", "/remote/bin/nucleotide-remote");
+
+        assert_eq!(
+            spec.args[..13],
+            [
+                OsString::from("-T"),
+                OsString::from("-o"),
+                OsString::from("ConnectTimeout=12"),
+                OsString::from("-o"),
+                OsString::from("ControlMaster=auto"),
+                OsString::from("-o"),
+                OsString::from("ControlPersist=10m"),
+                OsString::from("-o"),
+                OsString::from("ControlPath=/tmp/nucl-ssh/%C"),
+                OsString::from("-J"),
+                OsString::from("bastion"),
+                OsString::from("-F"),
+                OsString::from("/tmp/ssh config"),
+            ]
+        );
+        assert_eq!(spec.args[13], OsString::from("--"));
+        assert_eq!(spec.args[14], OsString::from("devbox"));
     }
 
     #[test]
@@ -4272,13 +5675,51 @@ mod tests {
             .unwrap();
 
         assert_eq!(spec.program, OsString::from("ssh"));
-        assert_eq!(spec.args[0], OsString::from("-p"));
-        assert_eq!(spec.args[1], OsString::from("2222"));
-        assert_eq!(spec.args[2], OsString::from("me@example.com"));
+        assert_eq!(spec.args[0], OsString::from("-T"));
+        assert_eq!(spec.args[1], OsString::from("-p"));
+        assert_eq!(spec.args[2], OsString::from("2222"));
         assert_eq!(spec.args[3], OsString::from("--"));
-        let command = spec.args[4].to_string_lossy();
+        assert_eq!(spec.args[4], OsString::from("me@example.com"));
+        let command = spec.args[5].to_string_lossy();
         assert!(command.contains("/remote/bin/nucleotide-remote"));
         assert!(command.contains("/home/me/project"));
+    }
+
+    #[test]
+    fn remote_service_command_with_options_applies_ssh_settings() {
+        let location = WorkspaceLocation::Ssh {
+            original_path: PathBuf::from("ssh://me@example.com/home/me/project"),
+            target: SshWorkspaceTarget {
+                host: "example.com".to_string(),
+                user: Some("me".to_string()),
+                port: None,
+            },
+            path: PathBuf::from("/home/me/project"),
+        };
+        let mut options = RemoteWorkspaceBackendOptions::default();
+        options.ssh_connect_timeout_secs = Some(4);
+        options.ssh_control_path = None;
+        options.ssh_extra_args = vec![OsString::from("-J"), OsString::from("bastion")];
+
+        let spec = remote_service_command_for_location_with_options(
+            &location,
+            "/remote/bin/nucleotide-remote",
+            &options,
+        )
+        .unwrap();
+
+        assert_eq!(
+            spec.args[..5],
+            [
+                OsString::from("-T"),
+                OsString::from("-o"),
+                OsString::from("ConnectTimeout=4"),
+                OsString::from("-J"),
+                OsString::from("bastion"),
+            ]
+        );
+        assert_eq!(spec.args[5], OsString::from("--"));
+        assert_eq!(spec.args[6], OsString::from("me@example.com"));
     }
 
     #[test]
@@ -4301,15 +5742,63 @@ mod tests {
         .unwrap();
 
         assert_eq!(spec.program, OsString::from("ssh"));
-        assert_eq!(spec.args[0], OsString::from("-p"));
-        assert_eq!(spec.args[1], OsString::from("2222"));
-        assert_eq!(spec.args[2], OsString::from("me@example.com"));
+        assert_eq!(spec.args[0], OsString::from("-T"));
+        assert_eq!(spec.args[1], OsString::from("-p"));
+        assert_eq!(spec.args[2], OsString::from("2222"));
         assert_eq!(spec.args[3], OsString::from("--"));
-        let command = spec.args[4].to_string_lossy();
+        assert_eq!(spec.args[4], OsString::from("me@example.com"));
+        let command = spec.args[5].to_string_lossy();
         assert!(command.contains("/remote/bin/nucleotide-remote"));
         assert!(command.contains("lsp-proxy"));
         assert!(command.contains("/home/me/project"));
         assert!(command.contains("rust-analyzer"));
+    }
+
+    #[test]
+    fn ssh_startup_protocol_error_allows_helper_reinstall_retry() {
+        let location = WorkspaceLocation::Ssh {
+            original_path: PathBuf::from("ssh://me@example.com/home/me/project"),
+            target: SshWorkspaceTarget {
+                host: "example.com".to_string(),
+                user: Some("me".to_string()),
+                port: None,
+            },
+            path: PathBuf::from("/home/me/project"),
+        };
+        let error = anyhow::anyhow!(
+            "failed to connect to remote workspace service: unsupported response protocol version 1; expected 2"
+        );
+
+        assert!(remote_startup_error_can_retry_helper_install(
+            &location, &error
+        ));
+    }
+
+    #[test]
+    fn startup_retry_is_limited_to_ssh_helper_failures() {
+        let ssh_location = WorkspaceLocation::Ssh {
+            original_path: PathBuf::from("ssh://me@example.com/home/me/project"),
+            target: SshWorkspaceTarget {
+                host: "example.com".to_string(),
+                user: Some("me".to_string()),
+                port: None,
+            },
+            path: PathBuf::from("/home/me/project"),
+        };
+        let local_location = WorkspaceLocation::Local {
+            path: PathBuf::from("/home/me/project"),
+        };
+        let auth_error = anyhow::anyhow!("Permission denied (publickey)");
+        let protocol_error = anyhow::anyhow!("unsupported response protocol version 1; expected 2");
+
+        assert!(!remote_startup_error_can_retry_helper_install(
+            &ssh_location,
+            &auth_error
+        ));
+        assert!(!remote_startup_error_can_retry_helper_install(
+            &local_location,
+            &protocol_error
+        ));
     }
 
     #[test]
@@ -4338,10 +5827,12 @@ mod tests {
         std::fs::write(&helper, "").unwrap();
 
         let options = RemoteWorkspaceBackendOptions::from_environment_values(
-            None,
-            None,
-            true,
-            Some(&executable),
+            RemoteWorkspaceBackendEnvironment {
+                use_local_service: true,
+                current_exe: Some(executable),
+                ssh_control_master: Some("false".to_string()),
+                ..RemoteWorkspaceBackendEnvironment::default()
+            },
         );
 
         assert_eq!(options.local_helper_path.as_deref(), Some(helper.as_path()));
@@ -4358,16 +5849,239 @@ mod tests {
         std::fs::write(&bundled_helper, "").unwrap();
 
         let options = RemoteWorkspaceBackendOptions::from_environment_values(
-            None,
-            Some(env_helper.clone().into_os_string()),
-            true,
-            Some(&executable),
+            RemoteWorkspaceBackendEnvironment {
+                local_helper_path: Some(env_helper.clone().into_os_string()),
+                use_local_service: true,
+                current_exe: Some(executable),
+                ssh_control_master: Some("false".to_string()),
+                ..RemoteWorkspaceBackendEnvironment::default()
+            },
         );
 
         assert_eq!(
             options.local_helper_path.as_deref(),
             Some(env_helper.as_path())
         );
+    }
+
+    #[test]
+    fn backend_options_discover_ssh_helper_upload_artifact() {
+        let temp = tempfile::tempdir().unwrap();
+        let executable = temp.path().join("nucl");
+        let upload_helper = temp.path().join("nucleotide-remote-linux-x86_64");
+        std::fs::write(&executable, "").unwrap();
+
+        let options = RemoteWorkspaceBackendOptions::from_environment_values(
+            RemoteWorkspaceBackendEnvironment {
+                ssh_helper_upload_path: Some(upload_helper.clone().into_os_string()),
+                ssh_helper_install_policy: Some("upload".to_string()),
+                current_exe: Some(executable),
+                ssh_control_master: Some("false".to_string()),
+                ..RemoteWorkspaceBackendEnvironment::default()
+            },
+        );
+
+        assert_eq!(
+            options.ssh_helper_upload_path.as_deref(),
+            Some(upload_helper.as_path())
+        );
+        assert_eq!(
+            options.ssh_helper_install_policy,
+            RemoteHelperInstallPolicy::Upload
+        );
+    }
+
+    #[test]
+    fn backend_options_parse_ssh_connection_environment_values() {
+        let control_path = PathBuf::from("/tmp/nucl-control/%C");
+
+        let options = RemoteWorkspaceBackendOptions::from_environment_values(
+            RemoteWorkspaceBackendEnvironment {
+                ssh_connect_timeout_secs: Some("9".to_string()),
+                ssh_extra_args: Some(OsString::from("-J bastion -F '/tmp/ssh config'")),
+                ssh_control_master: Some("true".to_string()),
+                ssh_control_path: Some(control_path.clone().into_os_string()),
+                ssh_helper_download_base_url: Some(
+                    "https://mirror.example/releases/v1".to_string(),
+                ),
+                ..RemoteWorkspaceBackendEnvironment::default()
+            },
+        );
+
+        assert_eq!(options.ssh_connect_timeout_secs, Some(9));
+        assert_eq!(
+            options.ssh_extra_args,
+            [
+                OsString::from("-J"),
+                OsString::from("bastion"),
+                OsString::from("-F"),
+                OsString::from("/tmp/ssh config"),
+            ]
+        );
+        assert_eq!(
+            options.ssh_control_path.as_deref(),
+            Some(control_path.as_path())
+        );
+        assert_eq!(
+            options.ssh_helper_download_base_url.as_deref(),
+            Some("https://mirror.example/releases/v1")
+        );
+    }
+
+    #[test]
+    fn backend_options_discover_platform_named_ssh_helper_artifact() {
+        let temp = tempfile::tempdir().unwrap();
+        let executable = temp.path().join("nucl");
+        let artifact = temp.path().join("nucleotide-remote-linux-x86_64");
+        std::fs::write(&executable, "").unwrap();
+        std::fs::write(&artifact, "").unwrap();
+
+        let options = RemoteWorkspaceBackendOptions::from_environment_values(
+            RemoteWorkspaceBackendEnvironment {
+                current_exe: Some(executable),
+                ssh_control_master: Some("false".to_string()),
+                ..RemoteWorkspaceBackendEnvironment::default()
+            },
+        );
+        let platform = SshRemotePlatform {
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+        };
+
+        assert_eq!(
+            RemoteHelperManager::new(&options).local_upload_artifact_for_platform(&platform),
+            Some(artifact)
+        );
+    }
+
+    #[test]
+    fn helper_version_command_writes_json_probe_payload() {
+        let mut output = Vec::new();
+
+        print_version(["--json".to_string()], &mut output).unwrap();
+
+        let info: HelperVersionInfo = serde_json::from_slice(&output).unwrap();
+        assert_eq!(info.helper_version, env!("CARGO_PKG_VERSION"));
+        assert_eq!(info.protocol_version, PROTOCOL_VERSION);
+        assert_eq!(info.frame_version, FRAME_VERSION);
+        assert_eq!(info.os, std::env::consts::OS);
+        assert_eq!(info.arch, std::env::consts::ARCH);
+    }
+
+    #[test]
+    fn ssh_probe_parser_accepts_shell_noise_and_platform_markers() {
+        let probe = parse_ssh_probe_output(
+            "profile says hi\nNUCL_PLATFORM Linux aarch64\nNUCL_CACHE /home/me/.cache\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            probe.platform,
+            SshRemotePlatform {
+                os: "linux".to_string(),
+                arch: "aarch64".to_string(),
+            }
+        );
+        assert_eq!(probe.cache_root, "/home/me/.cache");
+    }
+
+    #[test]
+    fn ssh_helper_cache_path_includes_protocol_version_and_platform() {
+        let probe = SshRemoteProbe {
+            platform: SshRemotePlatform {
+                os: "linux".to_string(),
+                arch: "x86_64".to_string(),
+            },
+            cache_root: "/home/me/.cache".to_string(),
+        };
+
+        assert_eq!(
+            ssh_remote_helper_path(&probe),
+            PathBuf::from(format!(
+                "/home/me/.cache/nucleotide/remote/protocol-{PROTOCOL_VERSION}/nucleotide-remote-{}-linux-x86_64",
+                env!("CARGO_PKG_VERSION")
+            ))
+        );
+    }
+
+    #[test]
+    fn helper_version_match_checks_protocol_version_and_platform() {
+        let platform = SshRemotePlatform {
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+        };
+        let mut info = HelperVersionInfo {
+            helper_version: env!("CARGO_PKG_VERSION").to_string(),
+            protocol_version: PROTOCOL_VERSION,
+            frame_version: FRAME_VERSION,
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+        };
+
+        assert!(helper_version_matches_current(&info, &platform));
+
+        info.protocol_version += 1;
+        assert!(!helper_version_matches_current(&info, &platform));
+    }
+
+    #[test]
+    fn remote_deployment_progress_formats_status_message() {
+        let progress = RemoteDeploymentProgress {
+            phase: RemoteDeploymentPhase::InstallingRemoteHelper,
+            target: Some("me@example.com".to_string()),
+            detail: Some("download nucleotide-remote-linux-x86_64".to_string()),
+        };
+
+        assert_eq!(
+            progress.message(),
+            "Installing nucleotide-remote: me@example.com (download nucleotide-remote-linux-x86_64)"
+        );
+    }
+
+    #[test]
+    fn remote_helper_download_urls_use_release_assets_and_checksums() {
+        let mut options = RemoteWorkspaceBackendOptions::default();
+        options.ssh_helper_download_base_url =
+            Some("https://downloads.example/nucleotide/v1/".to_string());
+        let manager = RemoteHelperManager::new(&options);
+        let platform = SshRemotePlatform {
+            os: "linux".to_string(),
+            arch: "aarch64".to_string(),
+        };
+
+        let (asset_url, checksums_url) = manager.remote_helper_download_urls(&platform).unwrap();
+
+        assert_eq!(
+            asset_url,
+            "https://downloads.example/nucleotide/v1/nucleotide-remote-linux-aarch64"
+        );
+        assert_eq!(
+            checksums_url,
+            "https://downloads.example/nucleotide/v1/SHA256SUMS"
+        );
+    }
+
+    #[test]
+    fn ssh_remote_helper_download_command_verifies_checksum_before_install() {
+        let command = ssh_remote_helper_download_command(
+            "/home/me/.cache/nucleotide/remote",
+            "/home/me/.cache/nucleotide/remote/helper tmp",
+            "/home/me/.cache/nucleotide/remote/helper",
+            "https://downloads.example/nucleotide-remote-linux-x86_64",
+            "https://downloads.example/SHA256SUMS",
+            "nucleotide-remote-linux-x86_64",
+        );
+
+        assert!(command.starts_with("sh -lc "));
+        assert!(command.contains("curl -fsSL"));
+        assert!(command.contains("wget -qO"));
+        assert!(command.contains("sha256sum"));
+        assert!(command.contains("shasum -a 256"));
+        assert!(command.contains("checksum mismatch"));
+        assert!(command.contains("mv -f"));
+        assert!(command.contains("'/home/me/.cache/nucleotide/remote/helper tmp'"));
+        assert!(command.contains("nucleotide-remote-linux-x86_64"));
+        assert!(command.contains("SHA256SUMS"));
     }
 
     #[test]

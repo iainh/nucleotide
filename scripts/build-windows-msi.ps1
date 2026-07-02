@@ -1,9 +1,11 @@
 param(
   [string]$NuclExe = "target\release\nucl.exe",
   [string]$RuntimeDir = "crates\nucleotide\runtime",
+  [string]$RemoteHelperDir = "target\remote-helpers",
   [string]$OutputDir = "target\release\bundle\wxsmsi",
   [string]$OutputName = "nucleotide",
   [string]$ProductVersion,
+  [switch]$RequireRemoteHelpers,
   [switch]$GenerateOnly
 )
 
@@ -218,8 +220,58 @@ function Emit-RuntimeDirectory {
   return $lines
 }
 
+function Emit-RemoteHelperComponents {
+  param(
+    [string]$Directory,
+    [int]$Level,
+    [System.Collections.Generic.List[string]]$ComponentRefs,
+    [switch]$Required
+  )
+
+  $indent = " " * $Level
+  $lines = [System.Collections.Generic.List[string]]::new()
+  $helperNames = @(
+    "nucleotide-remote-linux-x86_64",
+    "nucleotide-remote-linux-aarch64"
+  )
+
+  if (-not (Test-Path -LiteralPath $Directory -PathType Container)) {
+    if ($Required) {
+      throw "Required SSH remote helper directory not found: $Directory"
+    }
+
+    Write-Warning "SSH remote helper directory not found: $Directory"
+    return $lines
+  }
+
+  foreach ($helperName in $helperNames) {
+    $helperPath = Join-Path $Directory $helperName
+    if (-not (Test-Path -LiteralPath $helperPath -PathType Leaf)) {
+      if ($Required) {
+        throw "Required SSH remote helper not found: $helperPath"
+      }
+
+      continue
+    }
+
+    $componentId = Get-WixId "cmp_remote_helper_" $helperName
+    $componentGuid = Get-WixGuid "nucleotide:remote-helper:$helperName"
+    $fileId = Get-WixId "fil_remote_helper_" $helperName
+    $source = Escape-Xml ([System.IO.Path]::GetFullPath($helperPath))
+
+    $lines.Add("$indent<Component Id=`"$componentId`" Guid=`"$componentGuid`">")
+    $lines.Add("$indent  <File Id=`"$fileId`" Name=`"$helperName`" Source=`"$source`"/>")
+    $lines.Add("$indent  <RegistryValue Root=`"HKCU`" Key=`"Software\the nucleotide contributors\Nucleotide\Components`" Name=`"$componentId`" Type=`"integer`" Value=`"1`" KeyPath=`"yes`"/>")
+    $lines.Add("$indent</Component>")
+    $ComponentRefs.Add("      <ComponentRef Id=`"$componentId`"/>")
+  }
+
+  return $lines
+}
+
 $nuclExePath = Resolve-RepoPath $NuclExe
 $runtimePath = Resolve-RepoPath $RuntimeDir
+$remoteHelperPath = Resolve-RepoPath $RemoteHelperDir
 $outputPath = Resolve-RepoPath $OutputDir
 $templateDir = Resolve-RepoPath "build\windows"
 $wxsTemplatePath = Join-Path $templateDir "installer.wxs.in"
@@ -246,6 +298,12 @@ if (-not $ProductVersion) {
 New-Item -ItemType Directory -Path $outputPath -Force | Out-Null
 
 $componentRefs = [System.Collections.Generic.List[string]]::new()
+$remoteHelperComponents = Emit-RemoteHelperComponents `
+  -Directory $remoteHelperPath `
+  -Level 10 `
+  -ComponentRefs $componentRefs `
+  -Required:$RequireRemoteHelpers
+
 $runtimeDirectory = Emit-RuntimeDirectory `
   -Directory $runtimePath `
   -DirectoryId "runtime_Dir" `
@@ -259,6 +317,7 @@ $replacements = @{
   "{{OUTPUT_NAME}}" = Escape-Xml $OutputName
   "{{NUCL_EXE}}" = Escape-Xml $nuclExePath
   "{{MAIN_EXECUTABLE_GUID}}" = Get-WixGuid "nucleotide:nucl.exe"
+  "{{REMOTE_HELPER_COMPONENTS}}" = ($remoteHelperComponents -join [Environment]::NewLine)
   "{{RUNTIME_DIRECTORY}}" = ($runtimeDirectory -join [Environment]::NewLine)
   "{{COMPONENT_REFS}}" = ($componentRefs -join [Environment]::NewLine)
   "{{ICON_PATH}}" = Escape-Xml $iconPath
