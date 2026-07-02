@@ -24,7 +24,7 @@ use nucleotide_ui::scrollbar::{Scrollbar, ScrollbarState};
 use nucleotide_vcs::VcsServiceHandle;
 use nucleotide_workspace::{
     DirectoryListing, FileKind as WorkspaceFileKind, WorkspaceBackendHandle, WorkspaceIdentity,
-    local_workspace_backend,
+    absolutize_workspace_path, local_workspace_backend,
 };
 use std::{
     collections::BTreeSet,
@@ -1410,17 +1410,7 @@ impl FileTreeView {
         }
 
         let root_path = self.tree.root_path().to_path_buf();
-        let changed_paths: Vec<PathBuf> = changed_paths
-            .iter()
-            .map(|path| {
-                if path.is_absolute() {
-                    path.clone()
-                } else {
-                    root_path.join(path)
-                }
-            })
-            .filter(|path| path.starts_with(&root_path))
-            .collect();
+        let changed_paths = Self::vcs_changed_paths_for_root(&root_path, changed_paths);
 
         if changed_paths.is_empty() {
             return;
@@ -1441,6 +1431,14 @@ impl FileTreeView {
         });
 
         self.update_entries_with_vcs_status(cx);
+    }
+
+    fn vcs_changed_paths_for_root(root_path: &Path, changed_paths: &[PathBuf]) -> Vec<PathBuf> {
+        changed_paths
+            .iter()
+            .map(|path| absolutize_workspace_path(root_path, path))
+            .filter(|path| path.starts_with(root_path))
+            .collect()
     }
 
     /// Handle a file system event and update the tree structure
@@ -2330,6 +2328,36 @@ mod tests {
         let paths = FileTreeView::vcs_paths_for_file_system_event(&event);
 
         assert_eq!(paths, vec![from, to]);
+    }
+
+    #[test]
+    fn vcs_changed_paths_keep_remote_display_paths_rooted() {
+        let root = PathBuf::from("ssh://devbox/home/me/project");
+        let rooted = PathBuf::from("ssh://devbox/home/me/project/src/lib.rs");
+        let relative = PathBuf::from("src/main.rs");
+
+        let paths = FileTreeView::vcs_changed_paths_for_root(&root, &[rooted.clone(), relative]);
+
+        assert_eq!(
+            paths,
+            vec![
+                rooted,
+                PathBuf::from("ssh://devbox/home/me/project/src/main.rs")
+            ]
+        );
+    }
+
+    #[test]
+    fn file_tree_preserves_remote_display_root_spelling() {
+        let root = PathBuf::from("ssh://devbox/home/me/project");
+        let identity = WorkspaceIdentity::Remote(nucleotide_workspace::RemoteWorkspaceIdentity {
+            kind: nucleotide_workspace::RemoteWorkspaceKind::Ssh,
+            name: "devbox".to_string(),
+        });
+
+        let tree = FileTree::new_for_backend(root.clone(), test_config(), identity);
+
+        assert_eq!(tree.root_path(), root.as_path());
     }
 
     #[test]

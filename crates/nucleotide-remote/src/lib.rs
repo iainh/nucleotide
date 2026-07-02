@@ -3,7 +3,7 @@
 
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
-use futures::executor::block_on;
+use futures::{channel::oneshot, executor::block_on};
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use nucleotide_env::{EnvironmentOrigin, ProjectEnvironment, ShellEnvironmentError};
 use nucleotide_workspace::{
@@ -24,7 +24,7 @@ use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncWriteExt;
 
 pub const PROTOCOL_VERSION: u32 = 2;
@@ -2815,7 +2815,7 @@ where
 
 pub struct RemoteWorkspaceBackend<T: RemoteTransport> {
     identity: RemoteWorkspaceIdentity,
-    client: Mutex<RemoteWorkspaceClient<T>>,
+    client: Arc<Mutex<RemoteWorkspaceClient<T>>>,
 }
 
 impl<T> RemoteWorkspaceBackend<T>
@@ -2825,7 +2825,7 @@ where
     pub fn new(identity: RemoteWorkspaceIdentity, client: RemoteWorkspaceClient<T>) -> Self {
         Self {
             identity,
-            client: Mutex::new(client),
+            client: Arc::new(Mutex::new(client)),
         }
     }
 
@@ -2837,21 +2837,115 @@ where
         Ok((Self::new(identity, client), hello))
     }
 
-    fn request(
+    async fn request(
         &self,
         operation: &'static str,
         path: &Path,
         request: RemoteRequest,
         body: Vec<u8>,
-    ) -> nucleotide_workspace::Result<(RemoteResponse, Vec<u8>)> {
-        let mut client = self
-            .client
-            .lock()
-            .map_err(|_| remote_lock_error(operation, path))?;
-        client
-            .request(request, body)
-            .map_err(|error| client_error_to_workspace(operation, path, error))
+    ) -> nucleotide_workspace::Result<(RemoteResponse, Vec<u8>)>
+    where
+        T: 'static,
+    {
+        let client = self.client.clone();
+        let identity = self.identity.clone();
+        let path = path.to_path_buf();
+        let worker_path = path.clone();
+        let (sender, receiver) = oneshot::channel();
+        let queued_at = Instant::now();
+
+        tracing::info!(
+            operation,
+            path = %path.display(),
+            remote_kind = ?identity.kind,
+            remote_name = %identity.name,
+            "Remote workspace request queued"
+        );
+
+        std::thread::Builder::new()
+            .name(format!("nucleotide-remote-{operation}"))
+            .spawn(move || {
+                tracing::info!(
+                    operation,
+                    path = %worker_path.display(),
+                    remote_kind = ?identity.kind,
+                    remote_name = %identity.name,
+                    queued_ms = queued_at.elapsed().as_millis() as u64,
+                    "Remote workspace request started"
+                );
+                let started_at = Instant::now();
+                let result =
+                    request_with_client(&client, &identity, operation, &worker_path, request, body);
+                let elapsed_ms = started_at.elapsed().as_millis() as u64;
+                match &result {
+                    Ok(_) => tracing::info!(
+                        operation,
+                        path = %worker_path.display(),
+                        remote_kind = ?identity.kind,
+                        remote_name = %identity.name,
+                        elapsed_ms,
+                        "Remote workspace request completed"
+                    ),
+                    Err(error) => tracing::warn!(
+                        operation,
+                        path = %worker_path.display(),
+                        remote_kind = ?identity.kind,
+                        remote_name = %identity.name,
+                        elapsed_ms,
+                        error = %error,
+                        "Remote workspace request failed"
+                    ),
+                }
+                let _ = sender.send(result);
+            })
+            .map_err(|source| WorkspaceError::Io {
+                operation,
+                path: path.clone(),
+                source,
+            })?;
+
+        receiver.await.map_err(|_| WorkspaceError::Remote {
+            operation,
+            path,
+            message: "remote request worker exited before returning a response".to_string(),
+            diagnostic: None,
+        })?
     }
+}
+
+fn request_with_client<T>(
+    client: &Mutex<RemoteWorkspaceClient<T>>,
+    identity: &RemoteWorkspaceIdentity,
+    operation: &'static str,
+    path: &Path,
+    request: RemoteRequest,
+    body: Vec<u8>,
+) -> nucleotide_workspace::Result<(RemoteResponse, Vec<u8>)>
+where
+    T: RemoteTransport,
+{
+    let waiting_at = Instant::now();
+    tracing::info!(
+        operation,
+        path = %path.display(),
+        remote_kind = ?identity.kind,
+        remote_name = %identity.name,
+        "Remote workspace request waiting for transport"
+    );
+    let mut client = client
+        .lock()
+        .map_err(|_| remote_lock_error(operation, path))?;
+    tracing::info!(
+        operation,
+        path = %path.display(),
+        remote_kind = ?identity.kind,
+        remote_name = %identity.name,
+        transport_wait_ms = waiting_at.elapsed().as_millis() as u64,
+        "Remote workspace request acquired transport"
+    );
+    client
+        .request(request, body)
+        .map_err(|error| client_error_to_workspace(operation, path, error))
 }
 
 impl<T> Drop for RemoteWorkspaceBackend<T>
@@ -2859,7 +2953,7 @@ where
     T: RemoteTransport,
 {
     fn drop(&mut self) {
-        if let Ok(mut client) = self.client.lock() {
+        if let Ok(mut client) = self.client.try_lock() {
             let _ = client.shutdown();
         }
     }
@@ -2869,6 +2963,12 @@ pub fn spawn_child_process_workspace_backend(
     identity: RemoteWorkspaceIdentity,
     command: &RemoteServiceCommand,
 ) -> Result<(WorkspaceBackendHandle, HelloResponse)> {
+    tracing::info!(
+        remote_kind = ?identity.kind,
+        remote_name = %identity.name,
+        command = %command.display_context(),
+        "Starting remote workspace service process"
+    );
     let transport = command.spawn().with_context(|| {
         format!(
             "failed to start remote workspace service: {}",
@@ -2876,17 +2976,42 @@ pub fn spawn_child_process_workspace_backend(
         )
     })?;
     let client = RemoteWorkspaceClient::new(transport);
-    let (backend, hello) =
-        RemoteWorkspaceBackend::connect(identity, client).with_context(|| {
-            format!(
-                concat!(
-                    "failed to connect to remote workspace service after starting {}; ",
-                    "verify the helper exists and speaks protocol version {}"
-                ),
-                command.display_context(),
-                PROTOCOL_VERSION
-            )
-        })?;
+    tracing::info!(
+        remote_kind = ?identity.kind,
+        remote_name = %identity.name,
+        protocol_version = PROTOCOL_VERSION,
+        "Remote workspace service process started; waiting for hello"
+    );
+    let (backend, hello) = match RemoteWorkspaceBackend::connect(identity.clone(), client) {
+        Ok(connection) => connection,
+        Err(error) => {
+            tracing::warn!(
+                remote_kind = ?identity.kind,
+                remote_name = %identity.name,
+                error = %error,
+                "Remote workspace service hello failed"
+            );
+            return Err(error).with_context(|| {
+                format!(
+                    concat!(
+                        "failed to connect to remote workspace service after starting {}; ",
+                        "verify the helper exists and speaks protocol version {}"
+                    ),
+                    command.display_context(),
+                    PROTOCOL_VERSION
+                )
+            });
+        }
+    };
+    tracing::info!(
+        remote_kind = ?identity.kind,
+        remote_name = %identity.name,
+        workspace_root = %hello.workspace_root.display(),
+        helper_version = %hello.helper_version,
+        helper_os = %hello.os,
+        helper_arch = %hello.arch,
+        "Remote workspace service hello completed"
+    );
 
     Ok((Arc::new(backend), hello))
 }
@@ -2894,21 +3019,23 @@ pub fn spawn_child_process_workspace_backend(
 #[async_trait]
 impl<T> WorkspaceBackend for RemoteWorkspaceBackend<T>
 where
-    T: RemoteTransport + Send,
+    T: RemoteTransport + Send + 'static,
 {
     fn identity(&self) -> WorkspaceIdentity {
         WorkspaceIdentity::Remote(self.identity.clone())
     }
 
     async fn stat(&self, path: &Path) -> nucleotide_workspace::Result<FileStat> {
-        let (response, _) = self.request(
-            "stat",
-            path,
-            RemoteRequest::Stat {
-                path: path.to_path_buf(),
-            },
-            Vec::new(),
-        )?;
+        let (response, _) = self
+            .request(
+                "stat",
+                path,
+                RemoteRequest::Stat {
+                    path: path.to_path_buf(),
+                },
+                Vec::new(),
+            )
+            .await?;
         match response {
             RemoteResponse::Stat(stat) => Ok(file_stat_from_response(stat)),
             other => Err(unexpected_response_error("stat", path, other)),
@@ -2916,14 +3043,16 @@ where
     }
 
     async fn list_dir(&self, path: &Path) -> nucleotide_workspace::Result<DirectoryListing> {
-        let (response, _) = self.request(
-            "list directory",
-            path,
-            RemoteRequest::ListDir {
-                path: path.to_path_buf(),
-            },
-            Vec::new(),
-        )?;
+        let (response, _) = self
+            .request(
+                "list directory",
+                path,
+                RemoteRequest::ListDir {
+                    path: path.to_path_buf(),
+                },
+                Vec::new(),
+            )
+            .await?;
         match response {
             RemoteResponse::ListDir(listing) => Ok(directory_listing_from_response(listing)),
             other => Err(unexpected_response_error("list directory", path, other)),
@@ -2936,16 +3065,18 @@ where
         file_name: &str,
         limit: usize,
     ) -> nucleotide_workspace::Result<Option<PathBuf>> {
-        let (response, _) = self.request(
-            "find ancestor file",
-            start,
-            RemoteRequest::FindAncestorFile {
-                start: start.to_path_buf(),
-                file_name: file_name.to_string(),
-                limit,
-            },
-            Vec::new(),
-        )?;
+        let (response, _) = self
+            .request(
+                "find ancestor file",
+                start,
+                RemoteRequest::FindAncestorFile {
+                    start: start.to_path_buf(),
+                    file_name: file_name.to_string(),
+                    limit,
+                },
+                Vec::new(),
+            )
+            .await?;
         match response {
             RemoteResponse::FindAncestorFile(path) => Ok(path),
             other => Err(unexpected_response_error(
@@ -2957,14 +3088,16 @@ where
     }
 
     async fn create_file(&self, path: &Path) -> nucleotide_workspace::Result<FileStat> {
-        let (response, _) = self.request(
-            "create file",
-            path,
-            RemoteRequest::CreateFile {
-                path: path.to_path_buf(),
-            },
-            Vec::new(),
-        )?;
+        let (response, _) = self
+            .request(
+                "create file",
+                path,
+                RemoteRequest::CreateFile {
+                    path: path.to_path_buf(),
+                },
+                Vec::new(),
+            )
+            .await?;
         match response {
             RemoteResponse::CreateFile(stat) => Ok(file_stat_from_response(stat)),
             other => Err(unexpected_response_error("create file", path, other)),
@@ -2972,14 +3105,16 @@ where
     }
 
     async fn create_dir(&self, path: &Path) -> nucleotide_workspace::Result<FileStat> {
-        let (response, _) = self.request(
-            "create directory",
-            path,
-            RemoteRequest::CreateDir {
-                path: path.to_path_buf(),
-            },
-            Vec::new(),
-        )?;
+        let (response, _) = self
+            .request(
+                "create directory",
+                path,
+                RemoteRequest::CreateDir {
+                    path: path.to_path_buf(),
+                },
+                Vec::new(),
+            )
+            .await?;
         match response {
             RemoteResponse::CreateDir(stat) => Ok(file_stat_from_response(stat)),
             other => Err(unexpected_response_error("create directory", path, other)),
@@ -2987,15 +3122,17 @@ where
     }
 
     async fn rename_path(&self, from: &Path, to: &Path) -> nucleotide_workspace::Result<FileStat> {
-        let (response, _) = self.request(
-            "rename path",
-            from,
-            RemoteRequest::RenamePath {
-                from: from.to_path_buf(),
-                to: to.to_path_buf(),
-            },
-            Vec::new(),
-        )?;
+        let (response, _) = self
+            .request(
+                "rename path",
+                from,
+                RemoteRequest::RenamePath {
+                    from: from.to_path_buf(),
+                    to: to.to_path_buf(),
+                },
+                Vec::new(),
+            )
+            .await?;
         match response {
             RemoteResponse::RenamePath(stat) => Ok(file_stat_from_response(stat)),
             other => Err(unexpected_response_error("rename path", from, other)),
@@ -3003,14 +3140,16 @@ where
     }
 
     async fn delete_path(&self, path: &Path) -> nucleotide_workspace::Result<FileStat> {
-        let (response, _) = self.request(
-            "delete path",
-            path,
-            RemoteRequest::DeletePath {
-                path: path.to_path_buf(),
-            },
-            Vec::new(),
-        )?;
+        let (response, _) = self
+            .request(
+                "delete path",
+                path,
+                RemoteRequest::DeletePath {
+                    path: path.to_path_buf(),
+                },
+                Vec::new(),
+            )
+            .await?;
         match response {
             RemoteResponse::DeletePath(stat) => Ok(file_stat_from_response(stat)),
             other => Err(unexpected_response_error("delete path", path, other)),
@@ -3018,15 +3157,17 @@ where
     }
 
     async fn copy_path(&self, from: &Path, to: &Path) -> nucleotide_workspace::Result<FileStat> {
-        let (response, _) = self.request(
-            "copy path",
-            from,
-            RemoteRequest::CopyPath {
-                from: from.to_path_buf(),
-                to: to.to_path_buf(),
-            },
-            Vec::new(),
-        )?;
+        let (response, _) = self
+            .request(
+                "copy path",
+                from,
+                RemoteRequest::CopyPath {
+                    from: from.to_path_buf(),
+                    to: to.to_path_buf(),
+                },
+                Vec::new(),
+            )
+            .await?;
         match response {
             RemoteResponse::CopyPath(stat) => Ok(file_stat_from_response(stat)),
             other => Err(unexpected_response_error("copy path", from, other)),
@@ -3038,15 +3179,17 @@ where
         path: &Path,
         options: ReadOptions,
     ) -> nucleotide_workspace::Result<FileRead> {
-        let (response, body) = self.request(
-            "read file",
-            path,
-            RemoteRequest::ReadFile {
-                path: path.to_path_buf(),
-                max_bytes: options.max_bytes,
-            },
-            Vec::new(),
-        )?;
+        let (response, body) = self
+            .request(
+                "read file",
+                path,
+                RemoteRequest::ReadFile {
+                    path: path.to_path_buf(),
+                    max_bytes: options.max_bytes,
+                },
+                Vec::new(),
+            )
+            .await?;
         match response {
             RemoteResponse::ReadFile(read) => file_read_from_response(read, body)
                 .map_err(|error| client_error_to_workspace("read file", path, error)),
@@ -3060,18 +3203,20 @@ where
         bytes: &[u8],
         options: WriteOptions,
     ) -> nucleotide_workspace::Result<WriteResult> {
-        let (response, _) = self.request(
-            "write file",
-            path,
-            RemoteRequest::WriteFile {
-                path: path.to_path_buf(),
-                create_parent_dirs: options.create_parent_dirs,
-                expected_modified_unix_millis: options
-                    .expected_modified
-                    .and_then(system_time_unix_millis),
-            },
-            bytes.to_vec(),
-        )?;
+        let (response, _) = self
+            .request(
+                "write file",
+                path,
+                RemoteRequest::WriteFile {
+                    path: path.to_path_buf(),
+                    create_parent_dirs: options.create_parent_dirs,
+                    expected_modified_unix_millis: options
+                        .expected_modified
+                        .and_then(system_time_unix_millis),
+                },
+                bytes.to_vec(),
+            )
+            .await?;
         match response {
             RemoteResponse::WriteFile(result) => Ok(write_result_from_response(result)),
             other => Err(unexpected_response_error("write file", path, other)),
@@ -3097,12 +3242,14 @@ where
             max_depth: query.max_depth,
             excluded_relative_prefixes: query.excluded_relative_prefixes,
         };
-        let (response, _) = self.request(
-            "file search",
-            &root,
-            RemoteRequest::FileSearch(request),
-            Vec::new(),
-        )?;
+        let (response, _) = self
+            .request(
+                "file search",
+                &root,
+                RemoteRequest::FileSearch(request),
+                Vec::new(),
+            )
+            .await?;
         match response {
             RemoteResponse::FileSearch(result) => Ok(file_search_from_response(result)),
             other => Err(unexpected_response_error("file search", &root, other)),
@@ -3131,12 +3278,14 @@ where
             excluded_relative_paths: query.excluded_relative_paths,
             custom_ignore_filenames: query.custom_ignore_filenames,
         };
-        let (response, _) = self.request(
-            "text search",
-            &root,
-            RemoteRequest::TextSearch(request),
-            Vec::new(),
-        )?;
+        let (response, _) = self
+            .request(
+                "text search",
+                &root,
+                RemoteRequest::TextSearch(request),
+                Vec::new(),
+            )
+            .await?;
         match response {
             RemoteResponse::TextSearch(result) => Ok(text_search_from_response(result)),
             other => Err(unexpected_response_error("text search", &root, other)),
@@ -3147,14 +3296,16 @@ where
         &self,
         root: &Path,
     ) -> nucleotide_workspace::Result<ProjectEnvironmentSnapshot> {
-        let (response, _) = self.request(
-            "project environment",
-            root,
-            RemoteRequest::ProjectEnvironment {
-                root: root.to_path_buf(),
-            },
-            Vec::new(),
-        )?;
+        let (response, _) = self
+            .request(
+                "project environment",
+                root,
+                RemoteRequest::ProjectEnvironment {
+                    root: root.to_path_buf(),
+                },
+                Vec::new(),
+            )
+            .await?;
         match response {
             RemoteResponse::ProjectEnvironment(snapshot) => {
                 Ok(project_environment_from_response(snapshot))
@@ -3168,14 +3319,16 @@ where
     }
 
     async fn git_head(&self, root: &Path) -> nucleotide_workspace::Result<GitHeadResult> {
-        let (response, _) = self.request(
-            "git head",
-            root,
-            RemoteRequest::GitHead {
-                root: root.to_path_buf(),
-            },
-            Vec::new(),
-        )?;
+        let (response, _) = self
+            .request(
+                "git head",
+                root,
+                RemoteRequest::GitHead {
+                    root: root.to_path_buf(),
+                },
+                Vec::new(),
+            )
+            .await?;
         match response {
             RemoteResponse::GitHead(result) => Ok(git_head_from_response(result)),
             other => Err(unexpected_response_error("git head", root, other)),
@@ -3187,16 +3340,18 @@ where
         root: &Path,
         options: GitStatusOptions,
     ) -> nucleotide_workspace::Result<GitStatusResult> {
-        let (response, _) = self.request(
-            "git status",
-            root,
-            RemoteRequest::GitStatus {
-                root: root.to_path_buf(),
-                include_untracked: options.include_untracked,
-                limit: options.limit,
-            },
-            Vec::new(),
-        )?;
+        let (response, _) = self
+            .request(
+                "git status",
+                root,
+                RemoteRequest::GitStatus {
+                    root: root.to_path_buf(),
+                    include_untracked: options.include_untracked,
+                    limit: options.limit,
+                },
+                Vec::new(),
+            )
+            .await?;
         match response {
             RemoteResponse::GitStatus(result) => Ok(git_status_from_response(result)),
             other => Err(unexpected_response_error("git status", root, other)),
@@ -3215,12 +3370,14 @@ where
             max_output_bytes: spec.max_output_bytes,
             timeout_ms: spec.timeout_ms,
         };
-        let (response, body) = self.request(
-            "run process",
-            &cwd,
-            RemoteRequest::RunProcess(request),
-            spec.stdin,
-        )?;
+        let (response, body) = self
+            .request(
+                "run process",
+                &cwd,
+                RemoteRequest::RunProcess(request),
+                spec.stdin,
+            )
+            .await?;
         match response {
             RemoteResponse::RunProcess(result) => process_output_from_response(result, body)
                 .map_err(|error| client_error_to_workspace("run process", &cwd, error)),
@@ -4785,6 +4942,7 @@ fn print_help<W: Write>(writer: &mut W) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::FutureExt;
     use nucleotide_workspace::RemoteWorkspaceKind;
     use std::collections::VecDeque;
     use std::io::Cursor;
@@ -5117,6 +5275,28 @@ mod tests {
         drop(backend);
 
         assert!(saw_shutdown.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn remote_backend_request_yields_when_client_lock_is_busy() {
+        let backend = static_response_backend(
+            RemoteResponse::ListDir(DirectoryListingResponse {
+                path: PathBuf::new(),
+                entries: Vec::new(),
+            }),
+            Vec::new(),
+        );
+        let client = backend.client.clone();
+        let guard = client.lock().unwrap();
+
+        let future = backend.list_dir(Path::new(""));
+        futures::pin_mut!(future);
+
+        assert!(future.as_mut().now_or_never().is_none());
+        drop(guard);
+
+        let listing = block_on(future).unwrap();
+        assert!(listing.entries.is_empty());
     }
 
     #[test]
