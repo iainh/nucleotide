@@ -15,7 +15,10 @@ use helix_view::DocumentId;
 use nucleo::Nucleo;
 use nucleotide_logging::warn;
 use nucleotide_types::VcsStatus;
-use std::{ops::Range, sync::Arc};
+use std::{ops::Range, path::PathBuf, sync::Arc};
+
+type PreviewText = (String, Option<PathBuf>);
+type PreviewTextTask = Task<Option<PreviewText>>;
 
 #[derive(Clone, Debug)]
 pub enum ColumnData {
@@ -157,6 +160,7 @@ pub struct PickerView {
     // Preview state
     show_preview: bool,
     preview_content: Option<String>,
+    preview_content_path: Option<PathBuf>,
     preview_loading: bool,
     preview_doc_id: Option<DocumentId>,
     preview_view_id: Option<helix_view::ViewId>,
@@ -190,13 +194,10 @@ pub struct PickerView {
         >,
     >,
     // Optional provider to fetch preview text for non-file items (e.g., buffers)
-    preview_text_provider_cb: Option<
-        Box<
-            dyn for<'a> Fn(
-                &PickerItem,
-                &mut Context<PickerView>,
-            ) -> Option<(String, Option<std::path::PathBuf>)>,
-        >,
+    preview_text_provider_cb:
+        Option<Box<dyn for<'a> Fn(&PickerItem, &mut Context<PickerView>) -> Option<PreviewText>>>,
+    preview_text_task_provider_cb: Option<
+        Box<dyn for<'a> Fn(&PickerItem, &mut Context<PickerView>) -> Option<PreviewTextTask>>,
     >,
     initial_preview_loaded: bool,
     preview_task: Option<Task<()>>,
@@ -339,6 +340,7 @@ impl PickerView {
             list_scroll_handle: UniformListScrollHandle::new(),
             show_preview: true,
             preview_content: None,
+            preview_content_path: None,
             preview_loading: false,
             preview_doc_id: None,
             preview_view_id: None,
@@ -347,6 +349,7 @@ impl PickerView {
             preview_element_cb: None,
             preview_text_renderer_cb: None,
             preview_text_provider_cb: None,
+            preview_text_task_provider_cb: None,
             initial_preview_loaded: false,
             preview_task: None,
             on_select: None,
@@ -377,6 +380,7 @@ impl PickerView {
             list_scroll_handle: UniformListScrollHandle::new(),
             show_preview: true,
             preview_content: None,
+            preview_content_path: None,
             preview_loading: false,
             preview_doc_id: None,
             preview_view_id: None,
@@ -385,6 +389,7 @@ impl PickerView {
             preview_element_cb: None,
             preview_text_renderer_cb: None,
             preview_text_provider_cb: None,
+            preview_text_task_provider_cb: None,
             initial_preview_loaded: false,
             preview_task: None,
             on_select: None,
@@ -451,13 +456,18 @@ impl PickerView {
     /// Provide a function that fetches preview text for non-file items (e.g., buffers)
     pub fn with_preview_text_provider_fn(
         mut self,
-        f: impl for<'a> Fn(
-            &PickerItem,
-            &mut Context<PickerView>,
-        ) -> Option<(String, Option<std::path::PathBuf>)>
-        + 'static,
+        f: impl for<'a> Fn(&PickerItem, &mut Context<PickerView>) -> Option<PreviewText> + 'static,
     ) -> Self {
         self.preview_text_provider_cb = Some(Box::new(f));
+        self
+    }
+
+    /// Provide a function that asynchronously fetches preview text for items.
+    pub fn with_preview_text_task_provider_fn(
+        mut self,
+        f: impl for<'a> Fn(&PickerItem, &mut Context<PickerView>) -> Option<PreviewTextTask> + 'static,
+    ) -> Self {
+        self.preview_text_task_provider_cb = Some(Box::new(f));
         self
     }
 
@@ -474,6 +484,7 @@ impl PickerView {
         self.preview_doc_id = None;
         self.preview_view_id = None;
         self.preview_content = None;
+        self.preview_content_path = None;
         // VCS status will be fetched from global service as needed
         self
     }
@@ -825,13 +836,15 @@ impl PickerView {
             return;
         }
 
-        let Some(selected_idx) = self.filtered_indices.get(self.selected_index) else {
+        let Some(selected_idx) = self.filtered_indices.get(self.selected_index).copied() else {
             self.preview_content = None;
+            self.preview_content_path = None;
             return;
         };
 
-        let Some(item) = self.items.get(*selected_idx as usize) else {
+        let Some(item) = self.items.get(selected_idx as usize).cloned() else {
             self.preview_content = None;
+            self.preview_content_path = None;
             return;
         };
 
@@ -845,24 +858,31 @@ impl PickerView {
             // Don't create a new document for preview
             // Try provider to fetch buffer content
             if let Some(provider) = &self.preview_text_provider_cb
-                && let Some((text, _path)) = provider(item, cx)
+                && let Some((text, path)) = provider(&item, cx)
             {
                 self.preview_loading = false;
                 self.preview_content = Some(text);
+                self.preview_content_path = path;
                 cx.notify();
             }
         }
         // Try standalone PathBuf (for file picker)
-        else if let Some(path_buf) = item.data.downcast_ref::<std::path::PathBuf>() {
+        else if let Some(path_buf) = item.data.downcast_ref::<std::path::PathBuf>().cloned() {
             if let Some(provider) = &self.preview_text_provider_cb
-                && let Some((text, _path)) = provider(item, cx)
+                && let Some((text, path)) = provider(&item, cx)
             {
                 self.preview_loading = false;
                 self.preview_content = Some(text);
+                self.preview_content_path = path;
                 cx.notify();
                 return;
             }
-            self.load_file_preview(path_buf.clone(), cx);
+
+            if self.start_preview_text_task_for_item(item.clone(), selected_idx, cx) {
+                return;
+            }
+
+            self.load_file_preview(path_buf, cx);
         } else {
             // Debug: check what type we actually have
             warn!(
@@ -871,16 +891,84 @@ impl PickerView {
             );
             // Try provider as a last resort for non-file items
             if let Some(provider) = &self.preview_text_provider_cb
-                && let Some((text, _path)) = provider(item, cx)
+                && let Some((text, path)) = provider(&item, cx)
             {
                 self.preview_loading = false;
                 self.preview_content = Some(text);
+                self.preview_content_path = path;
                 cx.notify();
                 return;
             }
+            if self.start_preview_text_task_for_item(item, selected_idx, cx) {
+                return;
+            }
             self.preview_content = Some("Preview not available".to_string());
+            self.preview_content_path = None;
             cx.notify();
         }
+    }
+
+    fn start_preview_text_task_for_item(
+        &mut self,
+        item: PickerItem,
+        selected_idx: u32,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let task = self
+            .preview_text_task_provider_cb
+            .as_ref()
+            .and_then(|provider| provider(&item, cx));
+        let Some(task) = task else {
+            return false;
+        };
+
+        self.cleanup_preview_document(cx);
+
+        let expected_label = item.label.clone();
+        let expected_file_path = item.file_path.clone();
+
+        self.preview_loading = true;
+        self.preview_content = Some("Loading...".to_string());
+        self.preview_content_path = expected_file_path.clone();
+        cx.notify();
+
+        self.preview_task = Some(cx.spawn(async move |view_weak, cx| {
+            let result = task.await;
+
+            _ = view_weak.update(cx, |this, cx| {
+                let selected_item_still_current = this
+                    .filtered_indices
+                    .get(this.selected_index)
+                    .copied()
+                    .and_then(|current_idx| {
+                        this.items.get(current_idx as usize).map(|item| {
+                            current_idx == selected_idx
+                                && item.label == expected_label
+                                && item.file_path == expected_file_path
+                        })
+                    })
+                    .unwrap_or(false);
+
+                if !selected_item_still_current {
+                    return;
+                }
+
+                this.preview_loading = false;
+                match result {
+                    Some((text, path)) => {
+                        this.preview_content = Some(text);
+                        this.preview_content_path = path.or(expected_file_path);
+                    }
+                    None => {
+                        this.preview_content = Some("Preview not available".to_string());
+                        this.preview_content_path = expected_file_path;
+                    }
+                }
+                cx.notify();
+            });
+        }));
+
+        true
     }
 
     fn load_file_preview(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
@@ -893,10 +981,12 @@ impl PickerView {
 
         self.preview_loading = true;
         self.preview_content = Some("Loading...".to_string());
+        self.preview_content_path = Some(path.clone());
         cx.notify();
 
         // Capability-driven open is not used in this minimal integration; rely on callbacks
         // When spawning from Context<T>, the closure gets WeakEntity<T> as first param
+        let preview_path = path.clone();
         self.preview_task = Some(cx.spawn(async move |view_weak, cx| {
             let content = if path.is_dir() {
                 // Load directory listing
@@ -966,6 +1056,7 @@ impl PickerView {
                 if path.is_dir() {
                     this.preview_loading = false;
                     this.preview_content = Some(content);
+                    this.preview_content_path = Some(preview_path.clone());
                     cx.notify();
                     return;
                 }
@@ -981,6 +1072,7 @@ impl PickerView {
 
                 // Always store the loaded preview text so the text renderer can use it
                 this.preview_content = Some(content);
+                this.preview_content_path = Some(preview_path);
 
                 // Display the plain text or syntax-rendered preview regardless of capability
                 // (Rich document rendering can be added in a future step.)
@@ -1000,6 +1092,7 @@ impl PickerView {
     fn cleanup_preview_document(&mut self, cx: &mut Context<Self>) {
         // Cancel any pending preview task
         self.preview_task = None;
+        self.preview_content_path = None;
 
         // Only clean up if we have both doc_id and view_id
         // (view_id indicates we created a new document for preview)
@@ -1618,7 +1711,11 @@ impl PickerView {
                                                 self.preview_content.as_deref(),
                                                 self.preview_text_renderer_cb.as_ref(),
                                             ) {
-                                                (renderer)(text, None, cx)
+                                                (renderer)(
+                                                    text,
+                                                    self.preview_content_path.as_deref(),
+                                                    cx,
+                                                )
                                             } else {
                                                 // Fallback: plain text preview content
                                                 div()
