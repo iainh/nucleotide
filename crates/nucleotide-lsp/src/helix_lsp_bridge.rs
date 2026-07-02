@@ -582,47 +582,16 @@ impl HelixLspBridge {
     ) -> Result<(), ProjectLspError> {
         debug!("Ensuring document is tracked by language server");
 
-        // Get the language server first (immutable borrow)
-        let supports_server = {
-            let doc = editor
-                .document(doc_id)
-                .ok_or_else(|| ProjectLspError::Internal("Document not found".to_string()))?;
-            doc.supports_language_server(server_id)
-        };
-
-        if supports_server {
-            // Get document info before getting language server
-            let (url, version, text, language_id) = {
-                let doc = editor
-                    .document(doc_id)
-                    .ok_or_else(|| ProjectLspError::Internal("Document not found".to_string()))?;
-
-                let url = doc.url();
-                let version = doc.version();
-                let text = doc.text();
-                // Prefer explicit language_id; fall back to lowercased language_name if needed
-                let language_id = doc
-                    .language_id()
-                    .map(ToOwned::to_owned)
-                    .or_else(|| doc.language_name().map(|s| s.to_ascii_lowercase()))
-                    .unwrap_or_default();
-
-                (url, version, text, language_id)
-            };
-
-            if let Some(url) = url {
-                // Now get the language server
-                let language_server = editor.language_server_by_id(server_id).ok_or_else(|| {
-                    ProjectLspError::Internal("Language server not found".to_string())
-                })?;
-
-                language_server.text_document_did_open(url, version, text, language_id);
-                debug!("Document tracking ensured");
-            } else {
-                warn!("Document has no URL, cannot track with LSP server");
-            }
+        if editor.ensure_document_tracked_by_language_server(doc_id, server_id) {
+            debug!("Document tracking ensured");
+        } else if editor.document(doc_id).is_none() {
+            return Err(ProjectLspError::Internal("Document not found".to_string()));
         } else {
-            debug!("Document does not support this language server");
+            warn!(
+                doc_id = ?doc_id,
+                server_id = ?server_id,
+                "Document cannot be tracked by language server"
+            );
         }
 
         Ok(())

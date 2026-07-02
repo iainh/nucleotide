@@ -1461,6 +1461,55 @@ impl Editor {
             .map(|client| &**client)
     }
 
+    /// Attach an already-started language server to a document and send didOpen.
+    ///
+    /// This is used by frontends that start a project-scoped server outside the
+    /// document-driven launch path. It preserves the same language-server
+    /// filtering as [`Self::launch_language_servers`] by only attaching servers
+    /// listed in the document's language configuration.
+    pub fn ensure_document_tracked_by_language_server(
+        &mut self,
+        doc_id: DocumentId,
+        language_server_id: LanguageServerId,
+    ) -> bool {
+        let Some(language_server) = self.language_servers.get_by_id(language_server_id).cloned()
+        else {
+            return false;
+        };
+
+        let Some(doc) = self.documents.get_mut(&doc_id) else {
+            return false;
+        };
+        let Some(doc_url) = doc.url() else {
+            return false;
+        };
+
+        let server_name = language_server.name().to_string();
+        let is_configured_for_document = doc.language_config().is_some_and(|config| {
+            config
+                .language_servers
+                .iter()
+                .any(|features| features.name == server_name)
+        });
+        if !is_configured_for_document {
+            return false;
+        }
+
+        if doc
+            .language_servers
+            .get(&server_name)
+            .is_some_and(|existing| existing.id() == language_server_id)
+        {
+            return true;
+        }
+
+        let language_id = doc.language_id().map(ToOwned::to_owned).unwrap_or_default();
+        language_server.text_document_did_open(doc_url, doc.version(), doc.text(), language_id);
+        doc.language_servers.insert(server_name, language_server);
+
+        true
+    }
+
     /// Refreshes the language server for a given document
     pub fn refresh_language_servers(&mut self, doc_id: DocumentId) {
         self.launch_language_servers(doc_id)

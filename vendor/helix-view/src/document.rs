@@ -171,6 +171,7 @@ pub struct Document {
     pub inlay_hints_oudated: bool,
 
     path: Option<PathBuf>,
+    lsp_url: Option<helix_lsp::Url>,
     relative_path: OnceCell<Option<PathBuf>>,
     encoding: &'static encoding::Encoding,
     has_bom: bool,
@@ -844,6 +845,7 @@ impl Document {
             id: DocumentId::default(),
             active_snippet: None,
             path: None,
+            lsp_url: None,
             relative_path: OnceCell::new(),
             encoding,
             has_bom,
@@ -1398,6 +1400,7 @@ impl Document {
         // if parent doesn't exist we still want to open the document
         // and error out when document is saved
         self.path = path;
+        self.lsp_url = None;
 
         if let Some(readonly) = readonly {
             self.readonly = readonly;
@@ -2067,12 +2070,29 @@ impl Document {
         self.path.as_ref()
     }
 
+    /// Override the file URL used for LSP requests.
+    ///
+    /// Frontends that load remote files through a virtual/display path can keep
+    /// [`Self::path`] set to that display path while sending LSP servers the
+    /// native file URL for the filesystem where the server is running.
+    pub fn set_lsp_url(&mut self, url: Option<Url>) {
+        self.lsp_url = url;
+    }
+
     /// File path as a URL.
     pub fn url(&self) -> Option<Url> {
+        if let Some(url) = &self.lsp_url {
+            return Some(url.clone());
+        }
+
         Url::from_file_path(self.path()?).ok()
     }
 
     pub fn uri(&self) -> Option<helix_core::Uri> {
+        if let Some(url) = &self.lsp_url {
+            return helix_core::Uri::try_from(url).ok();
+        }
+
         Some(self.path()?.clone().into())
     }
 
@@ -2522,6 +2542,37 @@ mod test {
         assert_eq!(doc.last_saved_time(), save_time);
         assert!(doc.readonly);
         assert!(!doc.is_modified());
+    }
+
+    #[test]
+    fn lsp_url_override_makes_remote_document_file_backed() {
+        let display_path = Path::new("ssh://example.test/home/me/main.rs");
+        let native_path = Path::new("/home/me/main.rs");
+        let mut bytes = b"fn main() {}\n".as_slice();
+
+        let mut doc = Document::open_from_reader(
+            display_path,
+            &mut bytes,
+            None,
+            false,
+            DocumentOpenMetadata::default(),
+            Arc::new(ArcSwap::new(Arc::new(Config::default()))),
+            Arc::new(ArcSwap::from_pointee(syntax::Loader::default())),
+        )
+        .unwrap();
+
+        assert!(doc.url().is_none());
+
+        let lsp_url = Url::from_file_path(native_path).unwrap();
+        doc.set_lsp_url(Some(lsp_url.clone()));
+
+        assert_eq!(doc.path().map(PathBuf::as_path), Some(display_path));
+        assert_eq!(doc.url(), Some(lsp_url));
+        assert_eq!(
+            doc.uri()
+                .and_then(|uri| uri.as_path().map(Path::to_path_buf)),
+            Some(native_path.to_path_buf())
+        );
     }
 
     #[test]

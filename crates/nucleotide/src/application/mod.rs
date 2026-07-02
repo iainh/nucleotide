@@ -6694,9 +6694,7 @@ impl Application {
                 syntax_fallback_symbols =
                     Some(syntax_symbol_items_from_document(view.doc, doc, &loader));
             }
-            let doc_path = doc
-                .uri()
-                .and_then(|uri| uri.as_path().map(Path::to_path_buf));
+            let doc_path = doc.path().cloned();
             let mut seen_language_servers = HashSet::new();
 
             for language_server in doc
@@ -7820,12 +7818,17 @@ pub(crate) fn open_workspace_document_from_read(
         doc.set_diff_base(diff_base);
     }
 
-    Ok(editor.open_document_with_options(
+    let doc_id = editor.open_document_with_options(
         &read.path,
         action,
         doc,
         helix_view::editor::OpenDocumentOptions { local_diff: false },
-    ))
+    );
+    if let Some(doc) = editor.document_mut(doc_id) {
+        set_remote_document_lsp_url(doc, &read.path);
+    }
+
+    Ok(doc_id)
 }
 
 pub(crate) fn reload_workspace_document_from_read(
@@ -7875,6 +7878,7 @@ pub(crate) fn reload_workspace_document_from_read(
     }
 
     doc.set_path_with_metadata(Some(&read.path), Some(read.readonly), read.modified);
+    set_remote_document_lsp_url(doc, &read.path);
     if !doc.apply(&transaction, view.id) {
         bail!(
             "failed to apply reload transaction for {}",
@@ -7890,6 +7894,22 @@ pub(crate) fn reload_workspace_document_from_read(
     }
 
     Ok(())
+}
+
+fn set_remote_document_lsp_url(doc: &mut Document, display_path: &Path) {
+    let location = classify_workspace_location(display_path);
+    if !location.is_remote() {
+        return;
+    }
+
+    match lsp::Url::from_file_path(location.native_root()) {
+        Ok(url) => doc.set_lsp_url(Some(url)),
+        Err(()) => warn!(
+            path = %display_path.display(),
+            native_path = %location.native_root().display(),
+            "Remote document path cannot be represented as an LSP file URL"
+        ),
+    }
 }
 
 enum NativeOpenFileOutcome {
@@ -9637,6 +9657,10 @@ mod tests {
         assert_eq!(
             doc.path().map(PathBuf::as_path),
             Some(display_path.as_path())
+        );
+        assert_eq!(
+            doc.url().and_then(|url| url.to_file_path().ok()),
+            Some(PathBuf::from("/home/me/project/src/main.rs"))
         );
         assert_eq!(doc.text(), "fn remote() {}\n");
         assert!(!doc.is_modified());
