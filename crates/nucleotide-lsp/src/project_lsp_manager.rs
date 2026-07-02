@@ -65,6 +65,7 @@ impl Default for ProjectLspConfig {
 }
 
 /// Manages LSP servers at the project level
+#[derive(Clone)]
 pub struct ProjectLspManager {
     /// Configuration
     config: ProjectLspConfig,
@@ -173,24 +174,7 @@ impl ProjectLspManager {
             .await
             .map_err(|e| ProjectLspError::ProjectDetection(e.to_string()))?;
 
-        // Register the project
-        self.projects
-            .write()
-            .await
-            .insert(workspace_root.clone(), project_info.clone());
-
-        // Send project detection event
-        let _ = self.event_tx.send(ProjectLspEvent::ProjectDetected {
-            workspace_root: project_info.workspace_root.clone(),
-            project_type: project_info.project_type.clone(),
-            language_servers: project_info.language_servers.clone(),
-        });
-
-        info!(
-            project_type = ?project_info.project_type,
-            language_servers = ?project_info.language_servers,
-            "Project detected and registered"
-        );
+        self.register_project_info(project_info.clone()).await;
 
         // Start language servers if proactive startup is enabled
         if self.config.enable_proactive_startup {
@@ -198,6 +182,47 @@ impl ProjectLspManager {
         }
 
         Ok(())
+    }
+
+    /// Register externally detected project metadata.
+    ///
+    /// Application-level remote detection uses `WorkspaceBackend` instead of
+    /// host filesystem probes. Recording the result here keeps this manager as
+    /// the project-LSP source of truth for both local and remote workspaces.
+    pub async fn register_project(
+        &self,
+        workspace_root: PathBuf,
+        project_type: ProjectType,
+        language_servers: Vec<String>,
+    ) -> ProjectInfo {
+        let project_info = ProjectInfo {
+            workspace_root,
+            project_type,
+            language_servers,
+            detected_at: Instant::now(),
+        };
+        self.register_project_info(project_info.clone()).await;
+        project_info
+    }
+
+    async fn register_project_info(&self, project_info: ProjectInfo) {
+        self.projects
+            .write()
+            .await
+            .insert(project_info.workspace_root.clone(), project_info.clone());
+
+        let _ = self.event_tx.send(ProjectLspEvent::ProjectDetected {
+            workspace_root: project_info.workspace_root.clone(),
+            project_type: project_info.project_type.clone(),
+            language_servers: project_info.language_servers.clone(),
+        });
+
+        info!(
+            workspace_root = %project_info.workspace_root.display(),
+            project_type = ?project_info.project_type,
+            language_servers = ?project_info.language_servers,
+            "Project detected and registered"
+        );
     }
 
     /// Request server startup for a project
@@ -331,6 +356,86 @@ impl ProjectLspManager {
             .unwrap_or_default()
     }
 
+    /// Record or replace the managed server for a workspace and server name.
+    ///
+    /// Some application paths must start servers directly because Helix editor
+    /// access lives on the application thread. They still report the resulting
+    /// server id here so project status, tracking, and health all read from the
+    /// same manager state.
+    pub async fn upsert_managed_server(
+        &self,
+        workspace_root: PathBuf,
+        server_name: String,
+        language_id: String,
+        server_id: LanguageServerId,
+    ) -> ManagedServer {
+        let managed_server = ManagedServer {
+            server_id,
+            server_name,
+            language_id,
+            workspace_root: workspace_root.clone(),
+            started_at: Instant::now(),
+            last_health_check: None,
+            health_status: ServerHealthStatus::Healthy,
+        };
+
+        {
+            let mut map = self.servers.write().await;
+            for servers in map.values_mut() {
+                servers.retain(|server| server.server_id != managed_server.server_id);
+            }
+            map.retain(|_, servers| !servers.is_empty());
+
+            let servers = map.entry(workspace_root.clone()).or_default();
+            servers.retain(|server| server.server_name != managed_server.server_name);
+            servers.push(managed_server.clone());
+        }
+
+        info!(
+            workspace_root = %workspace_root.display(),
+            server_id = ?managed_server.server_id,
+            server_name = %managed_server.server_name,
+            language_id = %managed_server.language_id,
+            "Recorded managed project language server"
+        );
+
+        managed_server
+    }
+
+    /// Remove a managed server from all workspace records.
+    pub async fn remove_managed_server(&self, server_id: LanguageServerId) -> bool {
+        let mut removed_workspaces = Vec::new();
+        {
+            let mut map = self.servers.write().await;
+            map.retain(|workspace_root, servers| {
+                let previous_len = servers.len();
+                servers.retain(|server| server.server_id != server_id);
+                if servers.len() != previous_len {
+                    removed_workspaces.push(workspace_root.clone());
+                }
+                !servers.is_empty()
+            });
+        }
+
+        for workspace_root in &removed_workspaces {
+            let _ = self.event_tx.send(ProjectLspEvent::ServerCleanupCompleted {
+                workspace_root: workspace_root.clone(),
+                server_id,
+            });
+        }
+
+        let removed = !removed_workspaces.is_empty();
+        if removed {
+            info!(
+                server_id = ?server_id,
+                workspaces = ?removed_workspaces,
+                "Removed managed project language server"
+            );
+        }
+
+        removed
+    }
+
     /// Get event sender for external coordination
     pub fn get_event_sender(&self) -> broadcast::Sender<ProjectLspEvent> {
         self.event_tx.clone()
@@ -411,28 +516,19 @@ impl ProjectLspManager {
 
                         let server_id = server_result.server_id;
 
-                        let managed_server = ManagedServer {
-                            server_id,
-                            server_name: server_name.to_string(),
-                            language_id: language_id.to_string(),
-                            workspace_root: workspace_root.to_path_buf(),
-                            started_at: Instant::now(),
-                            last_health_check: None,
-                            health_status: ServerHealthStatus::Healthy,
-                        };
-
                         info!(
                             server_id = ?server_id,
                             "Language server started successfully via event bridge"
                         );
 
-                        // Record managed server for this workspace
-                        {
-                            let mut map = self.servers.write().await;
-                            map.entry(workspace_root.to_path_buf())
-                                .or_default()
-                                .push(managed_server.clone());
-                        }
+                        let managed_server = self
+                            .upsert_managed_server(
+                                workspace_root.to_path_buf(),
+                                server_name.to_string(),
+                                language_id.to_string(),
+                                server_id,
+                            )
+                            .await;
 
                         Ok(managed_server)
                     }
@@ -954,6 +1050,118 @@ mod tests {
         // Manager should be created successfully
         assert!(manager.projects.read().await.is_empty());
         assert!(manager.servers.read().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn project_lsp_manager_registers_external_project_metadata() {
+        let manager = ProjectLspManager::new(ProjectLspConfig::default(), None);
+        let workspace_root = PathBuf::from("ssh://devbox/home/me/project");
+
+        manager
+            .register_project(
+                workspace_root.clone(),
+                ProjectType::Rust,
+                vec!["rust-analyzer".to_string()],
+            )
+            .await;
+
+        let project = manager
+            .get_project_info(&workspace_root)
+            .await
+            .expect("registered project");
+        assert!(matches!(project.project_type, ProjectType::Rust));
+        assert_eq!(project.language_servers, vec!["rust-analyzer"]);
+    }
+
+    #[tokio::test]
+    async fn project_lsp_manager_upserts_managed_servers_by_workspace_and_name() {
+        let manager = ProjectLspManager::new(ProjectLspConfig::default(), None);
+        let workspace_root = PathBuf::from("/home/me/project");
+        let first_id = slotmap::KeyData::from_ffi(10).into();
+        let second_id = slotmap::KeyData::from_ffi(11).into();
+
+        manager
+            .upsert_managed_server(
+                workspace_root.clone(),
+                "rust-analyzer".to_string(),
+                "rust".to_string(),
+                first_id,
+            )
+            .await;
+        manager
+            .upsert_managed_server(
+                workspace_root.clone(),
+                "rust-analyzer".to_string(),
+                "rust".to_string(),
+                second_id,
+            )
+            .await;
+
+        let servers = manager.get_managed_servers(&workspace_root).await;
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0].server_id, second_id);
+        assert_eq!(servers[0].server_name, "rust-analyzer");
+    }
+
+    #[tokio::test]
+    async fn project_lsp_manager_upserts_managed_servers_by_global_id() {
+        let manager = ProjectLspManager::new(ProjectLspConfig::default(), None);
+        let first_workspace = PathBuf::from("/home/me/project");
+        let second_workspace = PathBuf::from("/home/me/project/crates/app");
+        let server_id = slotmap::KeyData::from_ffi(13).into();
+
+        manager
+            .upsert_managed_server(
+                first_workspace.clone(),
+                "rust-analyzer".to_string(),
+                "rust".to_string(),
+                server_id,
+            )
+            .await;
+        manager
+            .upsert_managed_server(
+                second_workspace.clone(),
+                "rust-analyzer".to_string(),
+                "rust".to_string(),
+                server_id,
+            )
+            .await;
+
+        assert!(
+            manager
+                .get_managed_servers(&first_workspace)
+                .await
+                .is_empty()
+        );
+
+        let servers = manager.get_managed_servers(&second_workspace).await;
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0].server_id, server_id);
+    }
+
+    #[tokio::test]
+    async fn project_lsp_manager_removes_managed_servers_by_id() {
+        let manager = ProjectLspManager::new(ProjectLspConfig::default(), None);
+        let workspace_root = PathBuf::from("/home/me/project");
+        let server_id = slotmap::KeyData::from_ffi(12).into();
+
+        manager
+            .upsert_managed_server(
+                workspace_root.clone(),
+                "rust-analyzer".to_string(),
+                "rust".to_string(),
+                server_id,
+            )
+            .await;
+
+        assert!(manager.remove_managed_server(server_id).await);
+        assert!(
+            manager
+                .get_managed_servers(&workspace_root)
+                .await
+                .is_empty()
+        );
+        assert!(!manager.remove_managed_server(server_id).await);
     }
 
     #[tokio::test]
