@@ -47,7 +47,9 @@ use helix_core::{
 use helix_lsp::{LanguageServerId, LspProgressMap, OffsetEncoding, lsp};
 use helix_stdx::path::{self as helix_path, get_path_suffix, get_relative_path};
 use helix_view::{
-    document::{Document, DocumentInlayHints, DocumentInlayHintsId, Mode, from_reader},
+    document::{
+        Document, DocumentInlayHints, DocumentInlayHintsId, DocumentOpenMetadata, Mode, from_reader,
+    },
     input::KeyEvent,
     keyboard::{KeyCode, KeyModifiers},
     view::View,
@@ -57,7 +59,7 @@ use nucleotide_lsp::{
     HelixLspBridge, LspLaunchProxy, LspLaunchProxyProvider, ProjectLspManager, ServerStatus,
 };
 use nucleotide_workspace::{
-    DirectoryListing, FileKind, WorkspaceBackendHandle, WorkspaceIdentity,
+    DirectoryListing, FileKind, ReadOptions, WorkspaceBackendHandle, WorkspaceIdentity,
     classify_workspace_location, local_workspace_backend, remote_startup_workspace_root,
 };
 use slotmap::Key;
@@ -552,7 +554,7 @@ pub fn implicit_workspace_root_from_current_dir() -> Option<PathBuf> {
 
 // Removed unused Tag-related structs and enums
 
-use anyhow::{Context as _, Error};
+use anyhow::{Context as _, Error, bail};
 use nucleotide_core::{EventAggregatorHandle, EventBus, event_bridge, gpui_to_helix_bridge};
 use nucleotide_events::v2::diagnostics::Event as DiagnosticsEvent;
 use nucleotide_logging::{
@@ -7133,7 +7135,7 @@ pub fn init_editor(
                 action = ?action,
                 "Opening file from command line"
             );
-            match editor.open(&file, action) {
+            match open_workspace_document(&mut editor, &workspace_backend, &file, action) {
                 Ok(doc_id) => {
                     info!(
                         file = ?file,
@@ -7295,6 +7297,47 @@ pub fn init_editor(
 
 fn startup_path_should_open_as_file(path: &Path) -> bool {
     nucleotide_workspace::remote_path_is_probably_file(path).unwrap_or_else(|| !path.is_dir())
+}
+
+pub(crate) fn open_workspace_document(
+    editor: &mut Editor,
+    workspace_backend: &WorkspaceBackendHandle,
+    path: &Path,
+    action: helix_view::editor::Action,
+) -> Result<DocumentId, Error> {
+    if !classify_workspace_location(path).is_remote() {
+        return editor.open(path, action).map_err(Error::from);
+    }
+
+    let read =
+        futures_executor::block_on(workspace_backend.read_file(path, ReadOptions::default()))
+            .with_context(|| format!("failed to read remote file {}", path.display()))?;
+    if read.truncated {
+        bail!("remote file was truncated while opening {}", path.display());
+    }
+
+    let metadata = DocumentOpenMetadata {
+        readonly: read.readonly,
+        last_saved_time: read.modified,
+    };
+    let mut bytes = read.bytes.as_slice();
+    let doc = Document::open_from_reader(
+        &read.path,
+        &mut bytes,
+        None,
+        true,
+        metadata,
+        editor.config.clone(),
+        editor.syn_loader.clone(),
+    )
+    .with_context(|| format!("failed to decode remote file {}", read.path.display()))?;
+
+    Ok(editor.open_document_with_options(
+        &read.path,
+        action,
+        doc,
+        helix_view::editor::OpenDocumentOptions { local_diff: false },
+    ))
 }
 
 impl Application {
@@ -8448,8 +8491,8 @@ mod tests {
         lsp_completion_insert_text_format, lsp_completion_items_from_response,
         lsp_completion_items_from_response_for_server, lsp_completion_resolve_supported,
         lsp_completion_response_is_incomplete, lsp_symbol_picker, native_symbol_item_from_lsp,
-        path_completion_items, path_completion_items_from_listing, project_health_status,
-        project_server_language_id, should_launch_lsp_on_local_host,
+        open_workspace_document, path_completion_items, path_completion_items_from_listing,
+        project_health_status, project_server_language_id, should_launch_lsp_on_local_host,
         should_stat_picker_root_with_backend, should_use_workspace_syntax_symbol_fallback,
         startup_path_should_open_as_file, str_prefix_at_byte_limit,
         suppress_shadowed_buffer_word_completion_items, syntax_symbol_kind_from_capture_name,
@@ -8472,7 +8515,8 @@ mod tests {
     use nucleotide_events::completion::{CompletionItem, CompletionItemKind};
     use nucleotide_workspace::{
         DirectoryEntry, DirectoryListing, FileKind, FileStat, RemoteWorkspaceIdentity,
-        RemoteWorkspaceKind, WorkspaceIdentity, local_workspace_backend,
+        RemoteWorkspaceKind, WorkspaceIdentity, WorkspacePathMapping, local_workspace_backend,
+        path_mapped_workspace_backend,
     };
     use slotmap::{Key, KeyData};
     use std::cell::RefCell;
@@ -8745,6 +8789,57 @@ mod tests {
             document_colors: doc_colors_tx,
             word_index: helix_view::handlers::word_index::Handler::spawn(),
         }
+    }
+
+    fn new_test_editor() -> helix_view::Editor {
+        let _runtime = TEST_RUNTIME.enter();
+        let mut helix_config = HelixConfig::default();
+        helix_config.editor.lsp.enable = false;
+        let helix_config = Arc::new(ArcSwap::from_pointee(helix_config));
+        let syntax_loader = Arc::new(ArcSwap::from_pointee(syntax::Loader::default()));
+        let theme_loader = Arc::new(theme::Loader::new(&[]));
+
+        helix_view::Editor::new(
+            Rect::new(0, 0, 80, 24),
+            theme_loader,
+            syntax_loader,
+            Arc::new(Map::new(
+                Arc::clone(&helix_config),
+                |config: &HelixConfig| &config.editor,
+            )),
+            test_handlers(),
+        )
+    }
+
+    #[test]
+    fn open_workspace_document_reads_remote_content_through_backend() {
+        let temp = tempdir().unwrap();
+        fs::create_dir_all(temp.path().join("src")).unwrap();
+        fs::write(temp.path().join("src").join("main.rs"), "fn remote() {}\n").unwrap();
+
+        let display_root = PathBuf::from("ssh://me@example.com/home/me/project");
+        let display_path = display_root.join("src").join("main.rs");
+        let backend = path_mapped_workspace_backend(
+            local_workspace_backend(),
+            WorkspacePathMapping::new(display_root, temp.path()),
+        );
+        let mut editor = new_test_editor();
+
+        let doc_id = open_workspace_document(
+            &mut editor,
+            &backend,
+            &display_path,
+            helix_view::editor::Action::VerticalSplit,
+        )
+        .unwrap();
+
+        let doc = editor.document(doc_id).unwrap();
+        assert_eq!(
+            doc.path().map(PathBuf::as_path),
+            Some(display_path.as_path())
+        );
+        assert_eq!(doc.text(), "fn remote() {}\n");
+        assert!(!doc.is_modified());
     }
 
     fn new_test_application(cx: &mut gpui::TestAppContext) -> Entity<Application> {
