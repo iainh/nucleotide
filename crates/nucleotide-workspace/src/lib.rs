@@ -229,9 +229,8 @@ fn startup_display_workspace_root(original_path: &Path, native_path: &Path) -> P
 
 fn parse_wsl_unc_path(value: &str) -> Option<(String, PathBuf)> {
     let normalized = value.replace('\\', "/");
-    let rest = normalized
-        .strip_prefix("//wsl.localhost/")
-        .or_else(|| normalized.strip_prefix("//wsl$/"))?;
+    let rest = strip_prefix_ignore_ascii_case(&normalized, "//wsl.localhost/")
+        .or_else(|| strip_prefix_ignore_ascii_case(&normalized, "//wsl$/"))?;
     let mut parts = rest.split('/').filter(|part| !part.is_empty());
     let distro = parts.next()?.to_string();
     let linux_path = path_from_posix_segments(parts);
@@ -240,7 +239,7 @@ fn parse_wsl_unc_path(value: &str) -> Option<(String, PathBuf)> {
 }
 
 fn parse_ssh_uri_path(value: &str) -> Option<(SshWorkspaceTarget, PathBuf)> {
-    let rest = value.strip_prefix("ssh://")?;
+    let rest = strip_prefix_ignore_ascii_case(value, "ssh://")?;
     let (authority, remote_path) = rest.split_once('/').unwrap_or((rest, ""));
     if authority.is_empty() {
         return None;
@@ -271,6 +270,13 @@ fn parse_ssh_host_and_port(value: &str) -> Option<(String, Option<u16>)> {
     }
 
     Some((value.to_string(), None))
+}
+
+fn strip_prefix_ignore_ascii_case<'a>(value: &'a str, prefix: &str) -> Option<&'a str> {
+    value
+        .get(..prefix.len())
+        .is_some_and(|candidate| candidate.eq_ignore_ascii_case(prefix))
+        .then(|| &value[prefix.len()..])
 }
 
 fn path_from_posix_segments<'a>(segments: impl IntoIterator<Item = &'a str>) -> PathBuf {
@@ -2347,8 +2353,40 @@ mod tests {
     }
 
     #[test]
+    fn workspace_location_classifies_wsl_unc_prefix_case_insensitively() {
+        let path = PathBuf::from(r"\\WSL.LocalHost\Ubuntu-24.04\home\me\project");
+
+        assert_eq!(
+            classify_workspace_location(&path),
+            WorkspaceLocation::Wsl {
+                original_path: path,
+                distro: "Ubuntu-24.04".to_string(),
+                linux_path: PathBuf::from("/home/me/project"),
+            }
+        );
+    }
+
+    #[test]
     fn workspace_location_classifies_ssh_uri_without_probing() {
         let path = PathBuf::from("ssh://me@example.com:2222/home/me/project");
+
+        assert_eq!(
+            classify_workspace_location(&path),
+            WorkspaceLocation::Ssh {
+                original_path: path,
+                target: SshWorkspaceTarget {
+                    host: "example.com".to_string(),
+                    user: Some("me".to_string()),
+                    port: Some(2222),
+                },
+                path: PathBuf::from("/home/me/project"),
+            }
+        );
+    }
+
+    #[test]
+    fn workspace_location_classifies_ssh_uri_scheme_case_insensitively() {
+        let path = PathBuf::from("SSH://me@example.com:2222/home/me/project");
 
         assert_eq!(
             classify_workspace_location(&path),
