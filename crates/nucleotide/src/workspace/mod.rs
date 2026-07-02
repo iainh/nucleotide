@@ -78,6 +78,7 @@ use nucleotide_workspace::local_workspace_backend;
 use nucleotide_workspace::{
     FileKind, FileSearchQuery, ProjectEnvironmentOrigin, ProjectEnvironmentSnapshot,
     TextSearchQuery, WorkspaceBackend, WorkspaceBackendHandle, WorkspaceIdentity,
+    classify_workspace_location,
 };
 use slotmap::KeyData;
 // (no direct Workspace v2 items used here)
@@ -2376,6 +2377,12 @@ fn global_search_picker(root: &Path, matches: Vec<GlobalSearchMatch>) -> crate::
     })
 }
 
+fn os_string_to_string(value: std::ffi::OsString) -> String {
+    value
+        .into_string()
+        .unwrap_or_else(|value| value.to_string_lossy().into_owned())
+}
+
 fn regex_selection_result(
     action: RegexSelectionAction,
     text: RopeSlice<'_>,
@@ -2406,6 +2413,31 @@ impl EventEmitter<crate::Update> for Workspace {}
 impl Workspace {
     fn terminal_spawn_cwd(current_project_root: Option<&Path>) -> Option<PathBuf> {
         current_project_root.map(Path::to_path_buf)
+    }
+
+    fn remote_terminal_proxy_command(
+        cwd: Option<&Path>,
+        shell: Option<&str>,
+        command: Option<(&str, &[String])>,
+        env: &[(String, String)],
+    ) -> Option<nucleotide_remote::RemoteServiceCommand> {
+        let location = classify_workspace_location(cwd?);
+        let options = nucleotide_remote::RemoteWorkspaceBackendOptions::from_environment();
+        nucleotide_remote::remote_terminal_proxy_command_for_location(
+            &location,
+            &options.remote_helper_path,
+            shell,
+            command,
+            env,
+        )
+    }
+
+    fn terminal_proxy_event_command(
+        spec: nucleotide_remote::RemoteServiceCommand,
+    ) -> (Option<PathBuf>, String, Vec<String>) {
+        let program = os_string_to_string(spec.program);
+        let args = spec.args.into_iter().map(os_string_to_string).collect();
+        (spec.current_dir, program, args)
     }
 
     fn terminal_cwd_matches(terminal_cwd: Option<&Path>, desired_cwd: Option<&Path>) -> bool {
@@ -2447,7 +2479,9 @@ impl Workspace {
         self.run_output_terminal = None;
         self.last_terminal_bounds = None;
 
-        let shell = None;
+        let shell: Option<String> = None;
+        let remote_proxy =
+            Self::remote_terminal_proxy_command(cwd.as_deref(), shell.as_deref(), None, &extra_env);
         let (event_bus, project_environment) = {
             let core = self.core.read(cx);
             (
@@ -2457,6 +2491,29 @@ impl Workspace {
         };
         let cwd_for_env = cwd.clone();
         self.handle.spawn(async move {
+            if let Some(remote_proxy) = remote_proxy {
+                if let Some(bus) = event_bus.as_ref() {
+                    let (proxy_cwd, program, args) =
+                        Self::terminal_proxy_event_command(remote_proxy);
+                    bus.dispatch_terminal(TerminalEvent::CommandSpawnRequested {
+                        id,
+                        cwd: proxy_cwd,
+                        program,
+                        args,
+                        env: Vec::new(),
+                    });
+                    bus.process_events();
+
+                    if let Some(bytes) = initial_input {
+                        bus.dispatch_terminal(TerminalEvent::Input { id, bytes });
+                        bus.process_events();
+                    }
+                } else {
+                    warn!("No event aggregator; remote terminal spawn not dispatched");
+                }
+                return;
+            }
+
             let mut env = match cwd_for_env.as_deref() {
                 Some(directory) => {
                     match project_environment
@@ -2515,6 +2572,12 @@ impl Workspace {
         self.run_output_terminal = Some(id);
         self.last_terminal_bounds = None;
 
+        let remote_proxy = Self::remote_terminal_proxy_command(
+            cwd.as_deref(),
+            None,
+            Some((program.as_str(), &args)),
+            &extra_env,
+        );
         let (event_bus, project_environment) = {
             let core = self.core.read(cx);
             (
@@ -2524,6 +2587,24 @@ impl Workspace {
         };
         let cwd_for_env = cwd.clone();
         self.handle.spawn(async move {
+            if let Some(remote_proxy) = remote_proxy {
+                if let Some(bus) = event_bus.as_ref() {
+                    let (proxy_cwd, proxy_program, proxy_args) =
+                        Self::terminal_proxy_event_command(remote_proxy);
+                    bus.dispatch_terminal(TerminalEvent::CommandSpawnRequested {
+                        id,
+                        cwd: proxy_cwd,
+                        program: proxy_program,
+                        args: proxy_args,
+                        env: Vec::new(),
+                    });
+                    bus.process_events();
+                } else {
+                    warn!("No event aggregator; remote runnable terminal spawn not dispatched");
+                }
+                return;
+            }
+
             let mut env = match cwd_for_env.as_deref() {
                 Some(directory) => {
                     match project_environment
@@ -18178,6 +18259,38 @@ mod tests {
             Some(project_root)
         );
         assert_eq!(Workspace::terminal_spawn_cwd(None), None);
+    }
+
+    #[test]
+    fn remote_terminal_proxy_command_routes_wsl_cwd_through_helper() {
+        let args = vec!["test".to_string()];
+        let spec = Workspace::remote_terminal_proxy_command(
+            Some(Path::new(r"\\wsl.localhost\Ubuntu\home\me\project")),
+            None,
+            Some(("cargo", &args)),
+            &[],
+        )
+        .unwrap();
+
+        assert_eq!(spec.program, std::ffi::OsString::from("wsl.exe"));
+        assert!(
+            spec.args
+                .contains(&std::ffi::OsString::from("terminal-proxy"))
+        );
+        assert!(spec.args.contains(&std::ffi::OsString::from("cargo")));
+        assert!(spec.args.contains(&std::ffi::OsString::from("test")));
+    }
+
+    #[test]
+    fn remote_terminal_proxy_command_ignores_local_cwd() {
+        let spec = Workspace::remote_terminal_proxy_command(
+            Some(Path::new("/tmp/project")),
+            None,
+            None,
+            &[],
+        );
+
+        assert!(spec.is_none());
     }
 
     #[test]
