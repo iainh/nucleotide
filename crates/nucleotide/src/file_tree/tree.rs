@@ -607,6 +607,26 @@ impl FileTree {
         self.expanded_dirs.contains(&normalize_tree_path(path))
     }
 
+    /// Return expanded directories in stable order.
+    pub fn expanded_directory_paths(&self) -> Vec<PathBuf> {
+        let mut paths: Vec<_> = self.expanded_dirs.iter().cloned().collect();
+        paths.sort();
+        paths
+    }
+
+    /// Return loaded immediate children for a directory.
+    pub fn immediate_child_entries(&self, path: &Path) -> Vec<FileTreeEntry> {
+        let path = normalize_tree_path(path);
+        let mut children: Vec<_> = self
+            .entries
+            .values()
+            .filter(|entry| entry.path.parent() == Some(path.as_path()))
+            .cloned()
+            .collect();
+        children.sort_by(|left, right| left.path.cmp(&right.path));
+        children
+    }
+
     /// Check if a directory is currently being loaded.
     pub fn is_directory_loading(&self, path: &Path) -> bool {
         self.loading_dirs.contains(&normalize_tree_path(path))
@@ -750,6 +770,92 @@ impl FileTree {
         }
 
         self.insert_entries(children);
+        self.loading_dirs.remove(&path);
+        self.invalidate_cache();
+
+        Ok(())
+    }
+
+    /// Refresh a loaded directory from a backend listing while preserving loaded
+    /// descendants for unchanged child directories.
+    pub fn refresh_directory_with_listing(
+        &mut self,
+        path: &Path,
+        listing: DirectoryListing,
+    ) -> Result<()> {
+        let path = normalize_tree_path(path);
+        let mut parent_entry = self.entry_by_path(&path).context("Entry not found")?;
+
+        if !parent_entry.is_directory() {
+            anyhow::bail!("Not a directory");
+        }
+
+        self.expanded_dirs.insert(path.clone());
+
+        let parent_depth = if path == self.root_path {
+            0
+        } else {
+            parent_entry.depth
+        };
+
+        let mut children = Vec::new();
+        let mut new_child_paths = HashSet::new();
+        for directory_entry in listing.entries {
+            let child_path = normalize_tree_path(&directory_entry.path);
+
+            if !self.config.show_hidden && self.is_hidden_file(&child_path) {
+                continue;
+            }
+
+            if !self.config.show_ignored && self.is_ignored_file(&child_path) {
+                continue;
+            }
+
+            let mut child_entry =
+                self.entry_from_directory_entry(directory_entry, parent_depth + 1);
+            child_entry.is_visible = true;
+            new_child_paths.insert(child_entry.path.clone());
+            children.push(child_entry);
+        }
+
+        let previous_child_paths: Vec<_> = self
+            .entries
+            .values()
+            .filter(|entry| entry.path.parent() == Some(path.as_path()))
+            .map(|entry| entry.path.clone())
+            .collect();
+
+        for previous_child_path in previous_child_paths {
+            if !new_child_paths.contains(&previous_child_path) {
+                self.remove_entry(&previous_child_path);
+            }
+        }
+
+        for child in children {
+            let old_was_directory = self
+                .entries
+                .get(&child.path)
+                .is_some_and(FileTreeEntry::is_directory);
+            if old_was_directory && !child.is_directory() {
+                self.remove_descendants(&child.path);
+                self.expanded_dirs.remove(&child.path);
+            }
+            self.upsert_entry(child);
+        }
+
+        if path != self.root_path {
+            parent_entry.is_expanded = true;
+            if let FileKind::Directory {
+                ref mut child_count,
+                ref mut is_loaded,
+            } = parent_entry.kind
+            {
+                *child_count = new_child_paths.len();
+                *is_loaded = true;
+            }
+            self.upsert_entry(parent_entry);
+        }
+
         self.loading_dirs.remove(&path);
         self.invalidate_cache();
 
@@ -1629,6 +1735,65 @@ mod tests {
         assert!(tree.is_expanded(&root));
         assert!(paths.contains(&readme));
         assert!(paths.contains(&src));
+        assert!(tree.entry_by_path(&lib).is_some());
+    }
+
+    #[test]
+    fn refresh_directory_with_listing_preserves_expanded_child_descendants() {
+        let root = PathBuf::from("/__nucleotide_remote_virtual__/project");
+        let src = root.join("src");
+        let lib = src.join("lib.rs");
+        let readme = root.join("README.md");
+        let changelog = root.join("CHANGELOG.md");
+        let backend = StaticBackend {
+            listings: HashMap::from([
+                (
+                    root.clone(),
+                    DirectoryListing {
+                        path: root.clone(),
+                        entries: vec![
+                            static_entry(readme.clone(), WorkspaceFileKind::File),
+                            static_entry(src.clone(), WorkspaceFileKind::Directory),
+                        ],
+                    },
+                ),
+                (
+                    src.clone(),
+                    DirectoryListing {
+                        path: src.clone(),
+                        entries: vec![static_entry(lib.clone(), WorkspaceFileKind::File)],
+                    },
+                ),
+            ]),
+        };
+
+        let mut tree = FileTree::new_for_backend(root.clone(), config(), backend.identity());
+        tree.load_with_backend(&backend).unwrap();
+        tree.expand_directory_with_listing(
+            &src,
+            DirectoryListing {
+                path: src.clone(),
+                entries: vec![static_entry(lib.clone(), WorkspaceFileKind::File)],
+            },
+        )
+        .unwrap();
+
+        tree.refresh_directory_with_listing(
+            &root,
+            DirectoryListing {
+                path: root.clone(),
+                entries: vec![
+                    static_entry(changelog.clone(), WorkspaceFileKind::File),
+                    static_entry(src.clone(), WorkspaceFileKind::Directory),
+                ],
+            },
+        )
+        .unwrap();
+
+        assert!(tree.is_expanded(&root));
+        assert!(tree.is_expanded(&src));
+        assert!(tree.entry_by_path(&readme).is_none());
+        assert!(tree.entry_by_path(&changelog).is_some());
         assert!(tree.entry_by_path(&lib).is_some());
     }
 
