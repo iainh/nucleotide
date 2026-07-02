@@ -346,16 +346,18 @@ fn sanitize_cache_file_name(file_name: &str) -> String {
         .collect()
 }
 
-fn cache_remote_image_file(
-    backend: &WorkspaceBackendHandle,
-    path: &Path,
+async fn cache_remote_image_file(
+    backend: WorkspaceBackendHandle,
+    path: PathBuf,
 ) -> anyhow::Result<PathBuf> {
-    let read = futures_executor::block_on(backend.read_file(
-        path,
-        ReadOptions {
-            max_bytes: Some(REMOTE_IMAGE_READ_LIMIT_BYTES),
-        },
-    ))?;
+    let read = backend
+        .read_file(
+            &path,
+            ReadOptions {
+                max_bytes: Some(REMOTE_IMAGE_READ_LIMIT_BYTES),
+            },
+        )
+        .await?;
 
     if read.truncated {
         anyhow::bail!(
@@ -364,7 +366,7 @@ fn cache_remote_image_file(
         );
     }
 
-    let cache_path = remote_image_cache_path(path);
+    let cache_path = remote_image_cache_path(&path);
     if let Some(parent) = cache_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -9431,28 +9433,51 @@ impl Workspace {
                 }
                 WorkspaceIdentity::Remote(_) => {
                     let backend = self.core.read(cx).workspace_backend.clone();
-                    match cache_remote_image_file(&backend, path) {
-                        Ok(render_path) => {
-                            self.open_image_file_with_render_path(
-                                path,
-                                &render_path,
-                                should_focus,
-                                cx,
-                            );
+                    let runtime_handle = self.handle.clone();
+                    let source_path = path.to_path_buf();
+                    self.set_run_status(
+                        format!("Loading remote image: {}", source_path.display()),
+                        Severity::Info,
+                        cx,
+                    );
+                    cx.spawn(async move |this, cx| {
+                        let cache_path = source_path.clone();
+                        let result = match runtime_handle
+                            .spawn(cache_remote_image_file(backend, cache_path))
+                            .await
+                        {
+                            Ok(result) => result,
+                            Err(error) => {
+                                Err(anyhow::anyhow!("remote image cache task failed: {error}"))
+                            }
+                        };
+
+                        if let Some(this) = this.upgrade() {
+                            this.update(cx, |workspace, cx| match result {
+                                Ok(render_path) => {
+                                    workspace.open_image_file_with_render_path(
+                                        &source_path,
+                                        &render_path,
+                                        should_focus,
+                                        cx,
+                                    );
+                                }
+                                Err(error) => {
+                                    warn!(
+                                        path = %source_path.display(),
+                                        error = %error,
+                                        "Failed to cache remote image"
+                                    );
+                                    workspace.set_run_status(
+                                        format!("Failed to load remote image: {error}"),
+                                        Severity::Error,
+                                        cx,
+                                    );
+                                }
+                            });
                         }
-                        Err(error) => {
-                            warn!(
-                                path = %path.display(),
-                                error = %error,
-                                "Failed to cache remote image"
-                            );
-                            self.set_run_status(
-                                format!("Failed to load remote image: {error}"),
-                                Severity::Error,
-                                cx,
-                            );
-                        }
-                    }
+                    })
+                    .detach();
                 }
             }
             return;
