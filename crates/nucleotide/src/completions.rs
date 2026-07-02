@@ -9,6 +9,8 @@ use nucleotide_workspace::{DirectoryEntry, FileKind, WorkspaceBackendHandle};
 use once_cell::sync::Lazy;
 use std::path::{MAIN_SEPARATOR, Path, PathBuf};
 
+const WORKSPACE_PATH_SEPARATOR: char = '/';
+
 const RUNNABLE_COMMANDS: &[(&str, &str)] = &[
     ("run", "Show runnables for the focused Rust file"),
     ("runnables", "Show runnables for the focused Rust file"),
@@ -518,10 +520,10 @@ fn workspace_path_completion_query_for_arg(
     }
 
     let path = Path::new(current_arg);
-    let (directory, file_name) = if current_arg.ends_with(MAIN_SEPARATOR) {
+    let (directory, file_name) = if current_arg.ends_with(WORKSPACE_PATH_SEPARATOR) {
         (resolve_completion_directory(base_dir, path), None)
     } else {
-        let is_period = (current_arg.ends_with(&format!("{MAIN_SEPARATOR}."))
+        let is_period = (current_arg.ends_with(&format!("{WORKSPACE_PATH_SEPARATOR}."))
             && current_arg.len() > 2)
             || current_arg == ".";
         let file_name = if is_period {
@@ -595,7 +597,7 @@ fn path_candidate_from_directory_entry(
 
     let mut path = entry.name;
     if candidate_match == PathCandidateMatch::AcceptIncomplete {
-        path.push(MAIN_SEPARATOR);
+        path.push(WORKSPACE_PATH_SEPARATOR);
     }
 
     Some(PathCandidate { path, is_dir })
@@ -638,7 +640,7 @@ pub(crate) fn path_completion_items(
 }
 
 fn argument_path_prefix(current_arg: &str, file_name: Option<&str>) -> String {
-    if current_arg.ends_with(MAIN_SEPARATOR) {
+    if current_arg.ends_with(WORKSPACE_PATH_SEPARATOR) {
         return current_arg.to_string();
     }
 
@@ -871,6 +873,30 @@ mod tests {
         let items = path_completion_items(input, &query, candidates);
 
         assert!(items.iter().any(|item| item.text.as_ref() == "open src/"));
+    }
+
+    #[test]
+    fn workspace_path_completion_uses_forward_slash_separator() {
+        let base_dir = Path::new("/workspace");
+        let query = workspace_path_completion_query("open src/", base_dir).unwrap();
+
+        assert_eq!(query.directory, base_dir.join("src"));
+        assert_eq!(query.file_name, None);
+
+        let items = path_completion_items(
+            "open src/",
+            &query,
+            vec![PathCandidate {
+                path: "main.rs".to_string(),
+                is_dir: false,
+            }],
+        );
+
+        assert!(
+            items
+                .iter()
+                .any(|item| item.text.as_ref() == "open src/main.rs")
+        );
     }
 
     #[tokio::test]
