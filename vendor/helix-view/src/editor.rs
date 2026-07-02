@@ -1217,6 +1217,17 @@ impl Action {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OpenDocumentOptions {
+    pub local_diff: bool,
+}
+
+impl Default for OpenDocumentOptions {
+    fn default() -> Self {
+        Self { local_diff: true }
+    }
+}
+
 /// Error thrown on failed document closed
 pub enum CloseError {
     /// Document doesn't exist
@@ -1814,14 +1825,21 @@ impl Editor {
         self.document_by_path(path).map(|doc| doc.id)
     }
 
-    fn register_open_document(&mut self, path: &Path, mut doc: Document) -> DocumentId {
+    fn register_open_document(
+        &mut self,
+        path: &Path,
+        mut doc: Document,
+        options: OpenDocumentOptions,
+    ) -> DocumentId {
         let diagnostics = Editor::doc_diagnostics(&self.language_servers, &self.diagnostics, &doc);
         doc.replace_diagnostics(diagnostics, &[], None);
 
-        if let Some(diff_base) = self.diff_providers.get_diff_base(path) {
-            doc.set_diff_base(diff_base);
+        if options.local_diff {
+            if let Some(diff_base) = self.diff_providers.get_diff_base(path) {
+                doc.set_diff_base(diff_base);
+            }
+            doc.set_version_control_head(self.diff_providers.get_current_head_name(path));
         }
-        doc.set_version_control_head(self.diff_providers.get_current_head_name(path));
 
         let id = self.new_document(doc);
         self.launch_language_servers(id);
@@ -1836,7 +1854,19 @@ impl Editor {
 
     /// Register a document whose contents were loaded by the caller, then show
     /// it using the same action semantics as [`Self::open`].
-    pub fn open_document(&mut self, path: &Path, action: Action, mut doc: Document) -> DocumentId {
+    pub fn open_document(&mut self, path: &Path, action: Action, doc: Document) -> DocumentId {
+        self.open_document_with_options(path, action, doc, OpenDocumentOptions::default())
+    }
+
+    /// Register a document whose contents were loaded by the caller, then show
+    /// it using the same action semantics as [`Self::open`].
+    pub fn open_document_with_options(
+        &mut self,
+        path: &Path,
+        action: Action,
+        mut doc: Document,
+        options: OpenDocumentOptions,
+    ) -> DocumentId {
         let path = helix_stdx::path::canonicalize(path);
         let id = self.document_id_by_path(&path);
 
@@ -1846,7 +1876,7 @@ impl Editor {
             if doc.path().map(PathBuf::as_path) != Some(path.as_path()) {
                 doc.set_path(Some(&path));
             }
-            self.register_open_document(&path, doc)
+            self.register_open_document(&path, doc, options)
         };
 
         self.switch(id, action);
@@ -1870,7 +1900,7 @@ impl Editor {
                 self.syn_loader.clone(),
             )?;
 
-            self.register_open_document(&path, doc)
+            self.register_open_document(&path, doc, OpenDocumentOptions::default())
         };
 
         self.switch(id, action);

@@ -9089,7 +9089,13 @@ impl Workspace {
                 "About to open file from picker: {path:?} with action: {:?}",
                 action
             );
-            match core.editor.open(path, action) {
+            let workspace_backend = core.workspace_backend.clone();
+            match crate::application::open_workspace_document(
+                &mut core.editor,
+                &workspace_backend,
+                path,
+                action,
+            ) {
                 Err(e) => {
                     nucleotide_logging::error!(path = ?path, error = %e, "Failed to open file");
                 }
