@@ -25,7 +25,7 @@ use crate::{
     line_plan::VisibleLinePlan,
     line_text::{
         DisplayLineText, DisplayLineTextBuilder, DisplayWhitespace, VirtualTextRange,
-        expand_text_runs_for_display, line_text_without_trailing_newline,
+        expand_text_runs_for_display, line_text_without_trailing_newline, text_run_boundaries,
     },
     soft_wrap::{SoftWrapVisualLine, VirtualHighlightRange, decorate_soft_wrap_line_runs},
     style::{create_styled_text_run, helix_color_to_hsla},
@@ -448,13 +448,13 @@ pub fn soft_wrap_highlighted_line_runs(
     line_runs = expand_text_runs_for_display(&line_runs, &params.visual.display_map);
     line_runs = apply_whitespace_text_runs(
         line_runs,
-        params.visual.text.len(),
+        params.visual.text.as_ref(),
         &params.visual.whitespace_ranges,
         &context,
     );
     line_runs = apply_virtual_text_runs(
         line_runs,
-        params.visual.text.len(),
+        params.visual.text.as_ref(),
         &params.visual.virtual_text_ranges,
         &context,
     );
@@ -497,13 +497,13 @@ pub fn soft_wrap_highlighted_line_runs_batch(
             line_runs = expand_text_runs_for_display(&line_runs, &visual.display_map);
             line_runs = apply_whitespace_text_runs(
                 line_runs,
-                visual.text.len(),
+                visual.text.as_ref(),
                 &visual.whitespace_ranges,
                 &context,
             );
             line_runs = apply_virtual_text_runs(
                 line_runs,
-                visual.text.len(),
+                visual.text.as_ref(),
                 &visual.virtual_text_ranges,
                 &context,
             );
@@ -551,13 +551,13 @@ pub fn unwrapped_highlighted_line(
     let line_runs = expand_text_runs_for_display(&line_runs, &line_text.map);
     let line_runs = apply_whitespace_text_runs(
         line_runs,
-        line_text.display.len(),
+        line_text.display.as_ref(),
         &line_text.whitespace_ranges,
         &context,
     );
     let line_runs = apply_virtual_text_runs(
         line_runs,
-        line_text.display.len(),
+        line_text.display.as_ref(),
         &virtual_text_ranges,
         &context,
     );
@@ -590,13 +590,13 @@ pub fn unwrapped_highlighted_lines(
             let line_runs = expand_text_runs_for_display(&line_runs, &line_text.map);
             let line_runs = apply_whitespace_text_runs(
                 line_runs,
-                line_text.display.len(),
+                line_text.display.as_ref(),
                 &line_text.whitespace_ranges,
                 &context,
             );
             let line_runs = apply_virtual_text_runs(
                 line_runs,
-                line_text.display.len(),
+                line_text.display.as_ref(),
                 &virtual_text_ranges,
                 &context,
             );
@@ -852,10 +852,11 @@ fn visible_char_range(ranges: impl IntoIterator<Item = Range<usize>>) -> Option<
 
 fn apply_virtual_text_runs(
     runs: Vec<TextRun>,
-    display_len: usize,
+    display_text: &str,
     virtual_ranges: &[VirtualHighlightRange],
     context: &EditorLineHighlightContext<'_>,
 ) -> Vec<TextRun> {
+    let display_len = display_text.len();
     if virtual_ranges.is_empty() || display_len == 0 {
         return runs;
     }
@@ -875,7 +876,7 @@ fn apply_virtual_text_runs(
         context.default_bg,
         &context.font,
     );
-    let mut boundaries = vec![0, display_len];
+    let mut boundaries = Vec::new();
     for (start, end, _) in &run_segments {
         boundaries.push((*start).min(display_len));
         boundaries.push((*end).min(display_len));
@@ -889,8 +890,7 @@ fn apply_virtual_text_runs(
                 .min(display_len),
         );
     }
-    boundaries.sort_unstable();
-    boundaries.dedup();
+    let boundaries = text_run_boundaries(display_text, boundaries);
 
     let mut merged = Vec::new();
     for window in boundaries.windows(2) {
@@ -937,10 +937,11 @@ fn apply_virtual_text_runs(
 
 fn apply_whitespace_text_runs(
     runs: Vec<TextRun>,
-    display_len: usize,
+    display_text: &str,
     whitespace_ranges: &[VirtualTextRange<()>],
     context: &EditorLineHighlightContext<'_>,
 ) -> Vec<TextRun> {
+    let display_len = display_text.len();
     if whitespace_ranges.is_empty() || display_len == 0 {
         return runs;
     }
@@ -953,7 +954,7 @@ fn apply_whitespace_text_runs(
         run_segments.push((start, offset, run));
     }
 
-    let mut boundaries = vec![0, display_len];
+    let mut boundaries = Vec::new();
     for (start, end, _) in &run_segments {
         boundaries.push((*start).min(display_len));
         boundaries.push((*end).min(display_len));
@@ -967,8 +968,7 @@ fn apply_whitespace_text_runs(
                 .min(display_len),
         );
     }
-    boundaries.sort_unstable();
-    boundaries.dedup();
+    let boundaries = text_run_boundaries(display_text, boundaries);
 
     let fallback = text_run_from_style(
         0,
