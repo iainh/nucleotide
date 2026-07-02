@@ -679,12 +679,46 @@ fn parse_nucleotide_url(url_str: &str) -> Option<ProtocolOpenRequest> {
     })
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ForwardedOpenPathKind {
+    File,
+    Directory,
+}
+
 fn open_request_workspace_dir(path: &Path) -> Option<PathBuf> {
+    if let Some(remote_root) = nucleotide_workspace::remote_startup_workspace_root(path) {
+        return Some(remote_root);
+    }
+
+    if !path.exists() {
+        return None;
+    }
+
     if path.is_dir() {
         Some(path.to_path_buf())
     } else {
         path.parent().map(Path::to_path_buf)
     }
+}
+
+fn forwarded_open_path_kind(path: &Path) -> Option<ForwardedOpenPathKind> {
+    if let Some(probably_file) = nucleotide_workspace::remote_path_is_probably_file(path) {
+        return Some(if probably_file {
+            ForwardedOpenPathKind::File
+        } else {
+            ForwardedOpenPathKind::Directory
+        });
+    }
+
+    if !path.exists() {
+        return None;
+    }
+
+    Some(if path.is_file() {
+        ForwardedOpenPathKind::File
+    } else {
+        ForwardedOpenPathKind::Directory
+    })
 }
 
 fn window_options(
@@ -1539,9 +1573,7 @@ fn gui_main(
 
                         if new_working_dir.is_none() {
                             for file in &request.files {
-                                if file.path.exists()
-                                    && let Some(dir) = open_request_workspace_dir(&file.path)
-                                {
+                                if let Some(dir) = open_request_workspace_dir(&file.path) {
                                     new_working_dir = Some(dir.clone());
                                     info!(directory = ?dir, "Will change working directory");
                                     break;
@@ -1551,8 +1583,19 @@ fn gui_main(
 
                         // Change working directory if needed
                         if let Some(dir) = new_working_dir.clone() {
-                            if dir.exists() {
-                                if let Err(e) = helix_stdx::env::set_current_working_dir(&dir) {
+                            let remote_dir =
+                                nucleotide_workspace::classify_workspace_location(&dir).is_remote();
+                            if remote_dir || dir.exists() {
+                                let mut update_workspace_directory = true;
+
+                                if remote_dir {
+                                    info!(
+                                        directory = ?dir,
+                                        "Keeping host working directory unchanged for forwarded remote directory"
+                                    );
+                                } else if let Err(e) = helix_stdx::env::set_current_working_dir(&dir)
+                                {
+                                    update_workspace_directory = false;
                                     error!(
                                         directory = ?dir,
                                         error = %e,
@@ -1560,7 +1603,9 @@ fn gui_main(
                                     );
                                 } else {
                                     info!(directory = ?dir, "Changed working directory");
+                                }
 
+                                if update_workspace_directory {
                                     // Update the core's project directory and emit OpenDirectory event
                                     cx.update(|cx| {
                                         workspace_clone.update(cx, |workspace, cx| {
@@ -1587,15 +1632,16 @@ fn gui_main(
                         // Now open all files/folders in the request.
                         for file in request.files {
                             let path = file.path;
-                            if path.exists() {
-                                if path.is_file() {
+                            match forwarded_open_path_kind(&path) {
+                                Some(ForwardedOpenPathKind::File) => {
                                     let position = file.position.into();
                                     cx.update(|cx| {
                                         workspace_clone.update(cx, |workspace, cx| {
                                             workspace.open_file_at(&path, position, cx);
                                         });
                                     });
-                                } else {
+                                }
+                                Some(ForwardedOpenPathKind::Directory) => {
                                     // Send folder selections through the workspace event path.
                                     cx.update(|cx| {
                                         workspace_clone.update(cx, |_workspace, cx| {
@@ -1611,8 +1657,9 @@ fn gui_main(
                                         });
                                     });
                                 }
-                            } else {
-                                warn!(file = %path.display(), "File does not exist");
+                                None => {
+                                    warn!(file = %path.display(), "File does not exist");
+                                }
                             }
                         }
                     }
@@ -1670,6 +1717,60 @@ mod tests {
             open_request_workspace_dir(&file_path),
             Some(temp_dir.path().to_path_buf())
         );
+    }
+
+    #[test]
+    fn open_request_workspace_dir_uses_remote_parent_for_file_hint() {
+        let path = PathBuf::from("ssh://me@example.com/home/me/project/src/main.rs");
+
+        assert_eq!(
+            open_request_workspace_dir(&path),
+            Some(PathBuf::from("ssh://me@example.com/home/me/project/src"))
+        );
+    }
+
+    #[test]
+    fn open_request_workspace_dir_uses_remote_directory_hint_without_host_probe() {
+        let path = PathBuf::from("ssh://me@example.com/home/me/project/");
+
+        assert_eq!(
+            open_request_workspace_dir(&path),
+            Some(PathBuf::from("ssh://me@example.com/home/me/project"))
+        );
+    }
+
+    #[test]
+    fn open_request_workspace_dir_ignores_missing_local_paths() {
+        let path = PathBuf::from("/path/that/should/not/exist/main.rs");
+
+        assert_eq!(open_request_workspace_dir(&path), None);
+    }
+
+    #[test]
+    fn forwarded_open_path_kind_uses_remote_file_hint() {
+        let path = PathBuf::from("ssh://me@example.com/home/me/project/src/main.rs");
+
+        assert_eq!(
+            forwarded_open_path_kind(&path),
+            Some(ForwardedOpenPathKind::File)
+        );
+    }
+
+    #[test]
+    fn forwarded_open_path_kind_uses_remote_directory_hint() {
+        let path = PathBuf::from(r"\\wsl.localhost\Ubuntu-24.04\home\me\project\");
+
+        assert_eq!(
+            forwarded_open_path_kind(&path),
+            Some(ForwardedOpenPathKind::Directory)
+        );
+    }
+
+    #[test]
+    fn forwarded_open_path_kind_ignores_missing_local_paths() {
+        let path = PathBuf::from("/path/that/should/not/exist/main.rs");
+
+        assert_eq!(forwarded_open_path_kind(&path), None);
     }
 
     #[test]

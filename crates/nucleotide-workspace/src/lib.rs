@@ -179,6 +179,32 @@ pub fn remote_startup_workspace_root(path: impl AsRef<Path>) -> Option<PathBuf> 
     }
 }
 
+/// Returns a best-effort file/directory hint for a remote path without probing
+/// the host filesystem. Local paths return `None`.
+pub fn remote_path_is_probably_file(path: impl AsRef<Path>) -> Option<bool> {
+    let path = path.as_ref();
+
+    match classify_workspace_location(path) {
+        WorkspaceLocation::Local { .. } => None,
+        WorkspaceLocation::Wsl {
+            original_path,
+            linux_path,
+            ..
+        } => Some(remote_startup_path_is_probably_file(
+            &original_path,
+            &linux_path,
+        )),
+        WorkspaceLocation::Ssh {
+            original_path,
+            path: remote_path,
+            ..
+        } => Some(remote_startup_path_is_probably_file(
+            &original_path,
+            &remote_path,
+        )),
+    }
+}
+
 fn remote_startup_path_is_probably_file(original_path: &Path, native_path: &Path) -> bool {
     let original_text = original_path.to_string_lossy();
     if original_text.ends_with('/') || original_text.ends_with('\\') {
@@ -2455,6 +2481,28 @@ mod tests {
             Some(PathBuf::from(
                 r"\\wsl.localhost\Ubuntu-24.04\home\me\project\src"
             ))
+        );
+    }
+
+    #[test]
+    fn remote_path_is_probably_file_uses_wsl_file_hint() {
+        let path = PathBuf::from(r"\\wsl.localhost\Ubuntu-24.04\home\me\project\src\main.rs");
+
+        assert_eq!(remote_path_is_probably_file(&path), Some(true));
+    }
+
+    #[test]
+    fn remote_path_is_probably_file_uses_ssh_directory_hint() {
+        let path = PathBuf::from("ssh://me@example.com/home/me/project/");
+
+        assert_eq!(remote_path_is_probably_file(&path), Some(false));
+    }
+
+    #[test]
+    fn remote_path_is_probably_file_ignores_local_paths() {
+        assert_eq!(
+            remote_path_is_probably_file(Path::new("/tmp/project/src/main.rs")),
+            None
         );
     }
 
