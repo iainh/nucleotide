@@ -20,6 +20,7 @@ members = [
     "crates/nucleotide-terminal-view",
     "crates/nucleotide-terminal-panel",
     "vendor/helix-stdx",
+    "vendor/helix-view",
 ]
 exclude = [
     "vendor/block-0.1.6",
@@ -44,10 +45,12 @@ gpui_platform = { path = "vendor/zed/crates/gpui_platform", package = "gpui_plat
 # Helix dependencies - pinned to the upstream base revision that our vendored
 # Nucleotide-specific patches were developed against.
 helix-core = { git = "https://github.com/helix-editor/helix", rev = "5a8fb732f26d6aabe757ffd2108ee66e8ef25236" }
+helix-dap = { git = "https://github.com/helix-editor/helix", rev = "5a8fb732f26d6aabe757ffd2108ee66e8ef25236" }
 helix-event = { git = "https://github.com/helix-editor/helix", rev = "5a8fb732f26d6aabe757ffd2108ee66e8ef25236" }
 helix-loader = { git = "https://github.com/helix-editor/helix", rev = "5a8fb732f26d6aabe757ffd2108ee66e8ef25236" }
 helix-lsp = { git = "https://github.com/helix-editor/helix", rev = "5a8fb732f26d6aabe757ffd2108ee66e8ef25236" }
 helix-term = { git = "https://github.com/helix-editor/helix", rev = "5a8fb732f26d6aabe757ffd2108ee66e8ef25236" }
+helix-tui = { git = "https://github.com/helix-editor/helix", rev = "5a8fb732f26d6aabe757ffd2108ee66e8ef25236" }
 helix-view = { git = "https://github.com/helix-editor/helix", rev = "5a8fb732f26d6aabe757ffd2108ee66e8ef25236" }
 helix-vcs = { git = "https://github.com/helix-editor/helix", rev = "5a8fb732f26d6aabe757ffd2108ee66e8ef25236" }
 helix-stdx = { git = "https://github.com/helix-editor/helix", rev = "5a8fb732f26d6aabe757ffd2108ee66e8ef25236" }
@@ -109,6 +112,7 @@ nucleotide-vcs = { path = "crates/nucleotide-vcs" }
 helix-lsp = { path = "vendor/helix-lsp" }
 helix-lsp-types = { path = "vendor/helix-lsp-types" }
 helix-stdx = { path = "vendor/helix-stdx" }
+helix-view = { path = "vendor/helix-view" }
 
 [patch.crates-io]
 # Zed workspace crates rely on these patched async primitives. Patches in
