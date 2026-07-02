@@ -444,9 +444,9 @@ impl LspState {
             "clangd" => "cpp".to_string(),
             "gopls" => "go".to_string(),
             "java-language-server" => "java".to_string(),
-            name if name.len() > 8 => {
-                // Take first 6 chars + ".."
-                format!("{}..", &name[..6.min(name.len())])
+            name if name.chars().count() > 8 => {
+                let prefix = name.chars().take(6).collect::<String>();
+                format!("{prefix}..")
             }
             name => name.to_string(),
         }
@@ -486,5 +486,24 @@ impl LspState {
 impl Default for LspState {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn short_server_name_truncates_unicode_on_char_boundaries() {
+        let state = LspState::new();
+
+        assert_eq!(state.get_short_server_name("↪a↪server"), "↪a↪ser..");
+    }
+
+    #[test]
+    fn short_server_name_counts_chars_instead_of_bytes() {
+        let state = LspState::new();
+
+        assert_eq!(state.get_short_server_name("ééééé"), "ééééé");
     }
 }
