@@ -27,6 +27,8 @@ type PromptCompletionTask = Task<Vec<CompletionItem>>;
 type PromptCompletionTaskFn =
     Box<dyn Fn(&str, &mut Context<PromptView>) -> Option<PromptCompletionTask> + 'static>;
 
+const ASYNC_COMPLETION_TASK_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(100);
+
 pub struct PromptView {
     // Core prompt state
     prompt: SharedString,
@@ -235,17 +237,31 @@ impl PromptView {
             self.apply_completions(completions, cx);
         }
 
-        let Some(completion_task_fn) = &self.completion_task_fn else {
+        if self.completion_task_fn.is_none() {
             return;
-        };
-
-        let Some(task) = completion_task_fn(&input, cx) else {
-            return;
-        };
+        }
 
         let expected_input = input.clone();
         let generation = self.completion_generation;
+        let executor = cx.background_executor().clone();
         self.completion_task = Some(cx.spawn(async move |view_weak, cx| {
+            executor.timer(ASYNC_COMPLETION_TASK_DEBOUNCE).await;
+
+            let task = view_weak
+                .update(cx, |this, cx| {
+                    if this.completion_generation != generation || this.input != expected_input {
+                        return None;
+                    }
+
+                    this.completion_task_fn
+                        .as_ref()
+                        .and_then(|completion_task_fn| completion_task_fn(&expected_input, cx))
+                })
+                .unwrap_or_default();
+            let Some(task) = task else {
+                return;
+            };
+
             let completions = task.await;
             _ = view_weak.update(cx, |this, cx| {
                 if this.completion_generation != generation || this.input != expected_input {
@@ -749,5 +765,13 @@ mod tests {
         assert_eq!(font.family, "Test UI Font");
         assert_eq!(font.weight, gpui::FontWeight::MEDIUM);
         assert_eq!(font.style, gpui::FontStyle::Normal);
+    }
+
+    #[test]
+    fn async_completion_tasks_are_debounced_briefly() {
+        assert_eq!(
+            ASYNC_COMPLETION_TASK_DEBOUNCE,
+            std::time::Duration::from_millis(100)
+        );
     }
 }
