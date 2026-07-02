@@ -1508,10 +1508,6 @@ fn handle_native_file_navigation(
         let target_path = path::expand(&target);
         let target_path = base_path.join(target_path.as_ref());
 
-        if target_path.is_dir() {
-            return KeymapDispatch::RequestPicker(NativePickerRequest::FileAt(target_path));
-        }
-
         paths.push(target_path);
     }
 
@@ -3758,7 +3754,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn editor_input_bridge_requests_native_picker_for_goto_directory() {
+    async fn editor_input_bridge_requests_workspace_open_for_goto_directory() {
         let temp_dir = tempfile::tempdir().unwrap();
         let target_text = temp_dir.path().display().to_string();
 
@@ -3776,10 +3772,14 @@ mod tests {
 
         let outcome = bridge.handle_key(f, &mut compositor, &mut editor, &mut jobs);
         assert!(outcome.handled_by_native_command);
-        assert_eq!(
-            outcome.picker_requested,
-            Some(NativePickerRequest::FileAt(temp_dir.path().to_path_buf()))
-        );
+        assert_eq!(outcome.picker_requested, None);
+        match outcome.workspace_requested {
+            Some(NativeWorkspaceRequest::OpenFiles { paths, action }) => {
+                assert_eq!(paths, vec![temp_dir.path().to_path_buf()]);
+                assert_eq!(action, NativeFileOpenAction::Replace);
+            }
+            other => panic!("expected workspace open request, got {other:?}"),
+        }
     }
 
     #[test]
