@@ -27,7 +27,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncWriteExt;
 
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 pub const FRAME_VERSION: u16 = 1;
 pub const FRAME_MAGIC: [u8; 4] = *b"NUCL";
 pub const FRAME_HEADER_LEN: usize = 36;
@@ -786,6 +786,8 @@ pub enum RemoteRequest {
         path: PathBuf,
         create_parent_dirs: bool,
         expected_modified_unix_millis: Option<i64>,
+        #[serde(default)]
+        expected_modified_unix_nanos: Option<u32>,
     },
     FileSearch(FileSearchRequest),
     TextSearch(TextSearchRequest),
@@ -2458,6 +2460,8 @@ pub struct FileStatResponse {
     pub kind: RemoteFileKind,
     pub size: u64,
     pub modified_unix_millis: Option<i64>,
+    #[serde(default)]
+    pub modified_unix_nanos: Option<u32>,
     pub readonly: bool,
 }
 
@@ -2483,6 +2487,8 @@ pub struct FileReadResponse {
     pub path: PathBuf,
     pub size: u64,
     pub modified_unix_millis: Option<i64>,
+    #[serde(default)]
+    pub modified_unix_nanos: Option<u32>,
     pub readonly: bool,
     pub truncated: bool,
 }
@@ -2492,6 +2498,8 @@ pub struct WriteResultResponse {
     pub path: PathBuf,
     pub size: u64,
     pub modified_unix_millis: Option<i64>,
+    #[serde(default)]
+    pub modified_unix_nanos: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -3213,6 +3221,9 @@ where
                     expected_modified_unix_millis: options
                         .expected_modified
                         .and_then(system_time_unix_millis),
+                    expected_modified_unix_nanos: options
+                        .expected_modified
+                        .and_then(system_time_unix_nanos),
                 },
                 bytes.to_vec(),
             )
@@ -3630,10 +3641,13 @@ where
                 path,
                 create_parent_dirs,
                 expected_modified_unix_millis,
+                expected_modified_unix_nanos,
             } => {
                 let path = self.resolve_path(&path)?;
-                let expected_modified =
-                    expected_modified_unix_millis.and_then(system_time_from_unix_millis);
+                let expected_modified = system_time_from_unix_millis_and_nanos(
+                    expected_modified_unix_millis,
+                    expected_modified_unix_nanos,
+                );
                 let result = block_on(self.backend.write_file(
                     &path,
                     &request_body,
@@ -3947,6 +3961,7 @@ fn file_stat_response(stat: FileStat) -> FileStatResponse {
         kind: remote_file_kind(stat.kind),
         size: stat.size,
         modified_unix_millis: stat.modified.and_then(system_time_unix_millis),
+        modified_unix_nanos: stat.modified.and_then(system_time_unix_nanos),
         readonly: stat.readonly,
     }
 }
@@ -3974,6 +3989,7 @@ fn file_read_response(read: &FileRead) -> FileReadResponse {
         path: read.path.clone(),
         size: read.size,
         modified_unix_millis: read.modified.and_then(system_time_unix_millis),
+        modified_unix_nanos: read.modified.and_then(system_time_unix_nanos),
         readonly: read.readonly,
         truncated: read.truncated,
     }
@@ -3984,6 +4000,7 @@ fn write_result_response(result: WriteResult) -> WriteResultResponse {
         path: result.path,
         size: result.size,
         modified_unix_millis: result.modified.and_then(system_time_unix_millis),
+        modified_unix_nanos: result.modified.and_then(system_time_unix_nanos),
     }
 }
 
@@ -4140,9 +4157,10 @@ fn file_stat_from_response(stat: FileStatResponse) -> FileStat {
         path: stat.path,
         kind: file_kind_from_response(stat.kind),
         size: stat.size,
-        modified: stat
-            .modified_unix_millis
-            .and_then(system_time_from_unix_millis),
+        modified: system_time_from_unix_millis_and_nanos(
+            stat.modified_unix_millis,
+            stat.modified_unix_nanos,
+        ),
         readonly: stat.readonly,
     }
 }
@@ -4189,9 +4207,10 @@ fn file_read_from_response(
         path: read.path,
         bytes,
         size: read.size,
-        modified: read
-            .modified_unix_millis
-            .and_then(system_time_from_unix_millis),
+        modified: system_time_from_unix_millis_and_nanos(
+            read.modified_unix_millis,
+            read.modified_unix_nanos,
+        ),
         readonly: read.readonly,
         truncated: read.truncated,
     })
@@ -4201,9 +4220,10 @@ fn write_result_from_response(result: WriteResultResponse) -> WriteResult {
     WriteResult {
         path: result.path,
         size: result.size,
-        modified: result
-            .modified_unix_millis
-            .and_then(system_time_from_unix_millis),
+        modified: system_time_from_unix_millis_and_nanos(
+            result.modified_unix_millis,
+            result.modified_unix_nanos,
+        ),
     }
 }
 
@@ -4474,10 +4494,30 @@ fn system_time_unix_millis(time: SystemTime) -> Option<i64> {
         .and_then(|duration| i64::try_from(duration.as_millis()).ok())
 }
 
+fn system_time_unix_nanos(time: SystemTime) -> Option<u32> {
+    time.duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|duration| duration.subsec_nanos())
+}
+
 fn system_time_from_unix_millis(millis: i64) -> Option<SystemTime> {
     u64::try_from(millis)
         .ok()
         .map(|millis| UNIX_EPOCH + Duration::from_millis(millis))
+}
+
+fn system_time_from_unix_millis_and_nanos(
+    millis: Option<i64>,
+    nanos: Option<u32>,
+) -> Option<SystemTime> {
+    if let (Some(millis), Some(nanos)) = (millis, nanos)
+        && nanos < 1_000_000_000
+    {
+        let seconds = u64::try_from(millis.div_euclid(1_000)).ok()?;
+        return Some(UNIX_EPOCH + Duration::new(seconds, nanos));
+    }
+
+    millis.and_then(system_time_from_unix_millis)
 }
 
 pub fn run_from_args<I>(args: I) -> Result<()>
@@ -5454,6 +5494,7 @@ mod tests {
                 path: PathBuf::from("main.rs"),
                 size: 6,
                 modified_unix_millis: None,
+                modified_unix_nanos: None,
                 readonly: false,
                 truncated: false,
             }),
@@ -5467,6 +5508,19 @@ mod tests {
             Err(WorkspaceError::Remote { message, .. })
                 if message.contains("malformed read_file body")
         ));
+    }
+
+    #[test]
+    fn remote_time_conversion_preserves_sub_millisecond_precision() {
+        let time = UNIX_EPOCH + Duration::new(42, 123_456_789);
+        let millis = system_time_unix_millis(time);
+        let nanos = system_time_unix_nanos(time);
+
+        assert_eq!(
+            system_time_from_unix_millis_and_nanos(millis, nanos),
+            Some(time)
+        );
+        assert_ne!(millis.and_then(system_time_from_unix_millis), Some(time));
     }
 
     fn request_frame(id: u64, request: RemoteRequest, body: Vec<u8>) -> Frame {
@@ -6410,6 +6464,7 @@ mod tests {
                 path: PathBuf::from("src/main.rs"),
                 create_parent_dirs: true,
                 expected_modified_unix_millis: None,
+                expected_modified_unix_nanos: None,
             },
             b"fn main() {}\n".to_vec(),
         ));
@@ -6460,6 +6515,7 @@ mod tests {
                 path: PathBuf::from("../outside.txt"),
                 create_parent_dirs: false,
                 expected_modified_unix_millis: None,
+                expected_modified_unix_nanos: None,
             },
             b"escaped".to_vec(),
         ));
@@ -7020,6 +7076,31 @@ esac
         assert_eq!(
             std::fs::read_to_string(temp.path().join("src").join("main.rs")).unwrap(),
             "fn main() {}\n"
+        );
+    }
+
+    #[test]
+    fn remote_workspace_backend_accepts_exact_read_mtime_on_write() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("main.rs"), "old").unwrap();
+        let backend = remote_backend(temp.path());
+        let read =
+            block_on(backend.read_file(Path::new("main.rs"), ReadOptions::default())).unwrap();
+
+        let result = block_on(backend.write_file(
+            Path::new("main.rs"),
+            b"new",
+            WriteOptions {
+                create_parent_dirs: false,
+                expected_modified: read.modified,
+            },
+        ))
+        .unwrap();
+
+        assert_eq!(result.size, 3);
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("main.rs")).unwrap(),
+            "new"
         );
     }
 
