@@ -2347,6 +2347,28 @@ fn workspace_root_for_open_directory(path: &Path, backend_identity: &WorkspaceId
     }
 }
 
+fn terminal_directory_for_workspace_path(
+    directory: &Path,
+    current_project_root: Option<&Path>,
+    backend_identity: &WorkspaceIdentity,
+) -> PathBuf {
+    if matches!(backend_identity, WorkspaceIdentity::Local)
+        || classify_workspace_location(directory).is_remote()
+    {
+        return directory.to_path_buf();
+    }
+
+    let Some(project_root) = current_project_root else {
+        return directory.to_path_buf();
+    };
+    let location = classify_workspace_location(project_root);
+    if !location.is_remote() {
+        return directory.to_path_buf();
+    }
+
+    location.path_mapping().to_display_path(directory)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct GlobalSearchMatch {
     path: PathBuf,
@@ -4602,10 +4624,17 @@ impl Workspace {
     fn tab_terminal_directory(&self, tab_id: TabId, cx: &mut Context<Self>) -> Option<PathBuf> {
         let path = self.tab_document_path(tab_id, cx)?;
         let parent = path.parent()?;
-        if parent.as_os_str().is_empty() {
-            return self.current_project_root.clone();
-        }
-        Some(parent.to_path_buf())
+        let directory = if parent.as_os_str().is_empty() {
+            self.current_project_root.clone()?
+        } else {
+            parent.to_path_buf()
+        };
+        let backend_identity = self.core.read(cx).workspace_backend.identity();
+        Some(terminal_directory_for_workspace_path(
+            &directory,
+            self.current_project_root.as_deref(),
+            &backend_identity,
+        ))
     }
 
     fn tab_context_menu_capabilities(&self, cx: &mut Context<Self>) -> TabContextMenuCapabilities {
@@ -17802,6 +17831,49 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn terminal_directory_for_workspace_path_keeps_local_paths() {
+        let directory = Path::new("/tmp/project/src");
+
+        assert_eq!(
+            terminal_directory_for_workspace_path(directory, None, &WorkspaceIdentity::Local),
+            directory
+        );
+    }
+
+    #[test]
+    fn terminal_directory_for_workspace_path_rebases_ssh_native_paths_to_display_root() {
+        let identity = WorkspaceIdentity::Remote(nucleotide_workspace::RemoteWorkspaceIdentity {
+            kind: nucleotide_workspace::RemoteWorkspaceKind::Ssh,
+            name: "devbox".to_string(),
+        });
+        let directory = Path::new("/home/me/project/src");
+        let project_root = Path::new("ssh://devbox/home/me/project");
+
+        let cwd = terminal_directory_for_workspace_path(directory, Some(project_root), &identity);
+
+        assert_eq!(cwd, PathBuf::from("ssh://devbox/home/me/project/src"));
+        assert!(classify_workspace_location(&cwd).is_remote());
+    }
+
+    #[test]
+    fn terminal_directory_for_workspace_path_rebases_wsl_native_paths_to_display_root() {
+        let identity = WorkspaceIdentity::Remote(nucleotide_workspace::RemoteWorkspaceIdentity {
+            kind: nucleotide_workspace::RemoteWorkspaceKind::Wsl,
+            name: "Ubuntu".to_string(),
+        });
+        let directory = Path::new("/home/me/project/src");
+        let project_root = Path::new("//wsl.localhost/Ubuntu/home/me/project");
+
+        let cwd = terminal_directory_for_workspace_path(directory, Some(project_root), &identity);
+
+        assert_eq!(
+            cwd,
+            PathBuf::from("//wsl.localhost/Ubuntu/home/me/project/src")
+        );
+        assert!(classify_workspace_location(&cwd).is_remote());
     }
 
     #[test]
