@@ -6,6 +6,7 @@ use helix_core::{
     RopeSlice,
     graphemes::{grapheme_width, tab_width_at},
 };
+use std::borrow::Cow;
 
 pub fn line_text_without_trailing_newline(line: RopeSlice<'_>) -> String {
     let mut line_text = line.to_string();
@@ -388,6 +389,95 @@ pub fn text_run_boundaries(text: &str, boundaries: impl IntoIterator<Item = usiz
     normalized
 }
 
+pub fn normalize_text_runs_for_display_text<'a>(
+    text: &str,
+    runs: &'a [TextRun],
+) -> Cow<'a, [TextRun]> {
+    if runs.is_empty() || text.is_empty() || text_run_lengths_are_utf8_safe(text, runs) {
+        return Cow::Borrowed(runs);
+    }
+
+    let text_len = text.len();
+    let mut run_segments = Vec::with_capacity(runs.len());
+    let mut offset = 0usize;
+    for run in runs {
+        let start = offset.min(text_len);
+        offset = offset.saturating_add(run.len);
+        let end = offset.min(text_len);
+        if start < end {
+            run_segments.push((start, end, run.clone()));
+        }
+    }
+
+    if run_segments.is_empty() {
+        return Cow::Borrowed(runs);
+    }
+
+    let mut boundaries = Vec::with_capacity((run_segments.len() * 2) + 2);
+    boundaries.push(0);
+    boundaries.push(text_len);
+    for (start, end, _) in &run_segments {
+        boundaries.push(*start);
+        boundaries.push(*end);
+    }
+    let boundaries = text_run_boundaries(text, boundaries);
+
+    let mut normalized = Vec::with_capacity(boundaries.len().saturating_sub(1));
+    for window in boundaries.windows(2) {
+        let start = window[0];
+        let end = window[1];
+        if start >= end {
+            continue;
+        }
+
+        let Some((_, _, source_run)) = run_segments
+            .iter()
+            .find(|(run_start, run_end, _)| start >= *run_start && start < *run_end)
+            .or_else(|| run_segments.iter().find(|(_, run_end, _)| *run_end > start))
+            .or_else(|| run_segments.last())
+        else {
+            continue;
+        };
+
+        let mut run = source_run.clone();
+        run.len = end - start;
+        push_text_run(&mut normalized, run);
+    }
+
+    Cow::Owned(normalized)
+}
+
+fn text_run_lengths_are_utf8_safe(text: &str, runs: &[TextRun]) -> bool {
+    let mut offset = 0usize;
+    for run in runs {
+        offset = offset.saturating_add(run.len);
+        if offset > text.len() || !text.is_char_boundary(offset) {
+            return false;
+        }
+    }
+
+    offset == text.len()
+}
+
+fn push_text_run(runs: &mut Vec<TextRun>, run: TextRun) {
+    if run.len == 0 {
+        return;
+    }
+
+    if let Some(last) = runs.last_mut()
+        && last.font == run.font
+        && last.color == run.color
+        && last.background_color == run.background_color
+        && last.underline == run.underline
+        && last.strikethrough == run.strikethrough
+    {
+        last.len += run.len;
+        return;
+    }
+
+    runs.push(run);
+}
+
 fn char_display_width(ch: char) -> usize {
     let mut buf = [0; 4];
     grapheme_width(ch.encode_utf8(&mut buf))
@@ -398,9 +488,11 @@ mod tests {
     use super::{
         DisplayLineText, DisplayLineTextBuilder, DisplayTextMap, DisplayWhitespace,
         byte_offset_for_char_offset, floor_char_boundary, line_text_without_trailing_newline,
-        shared_line_text_without_trailing_newline, text_run_boundaries, visual_columns_for_text,
+        normalize_text_runs_for_display_text, shared_line_text_without_trailing_newline,
+        text_run_boundaries, visual_columns_for_text,
     };
     use gpui::{TextRun, black, font};
+    use std::borrow::Cow;
 
     #[test]
     fn strips_lf() {
@@ -447,6 +539,29 @@ mod tests {
 
         assert_eq!(boundaries, vec![0, "↪".len(), "↪a".len(), text.len()]);
         assert!(boundaries.iter().all(|index| text.is_char_boundary(*index)));
+    }
+
+    #[test]
+    fn normalizes_text_runs_that_split_utf8_characters() {
+        let text = "↪wrapped";
+        let runs = vec![run(2), run(text.len() - 2)];
+        let normalized = normalize_text_runs_for_display_text(text, &runs);
+        let normalized = normalized.as_ref();
+
+        assert!(run_boundaries_are_utf8_safe(text, normalized));
+        assert_eq!(
+            normalized.iter().map(|run| run.len).sum::<usize>(),
+            text.len()
+        );
+    }
+
+    #[test]
+    fn leaves_utf8_safe_text_runs_borrowed() {
+        let text = "↪wrapped";
+        let runs = vec![run("↪".len()), run("wrapped".len())];
+        let normalized = normalize_text_runs_for_display_text(text, &runs);
+
+        assert!(matches!(normalized, Cow::Borrowed(_)));
     }
 
     #[test]
@@ -559,5 +674,16 @@ mod tests {
             underline: None,
             strikethrough: None,
         }
+    }
+
+    fn run_boundaries_are_utf8_safe(text: &str, runs: &[TextRun]) -> bool {
+        let mut offset = 0usize;
+        for run in runs {
+            offset += run.len;
+            if !text.is_char_boundary(offset) {
+                return false;
+            }
+        }
+        offset == text.len()
     }
 }
