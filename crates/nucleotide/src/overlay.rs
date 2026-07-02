@@ -32,6 +32,7 @@ pub struct OverlayView {
     last_terminal_size: Option<(nucleotide_events::v2::terminal::TerminalId, u16, u16)>,
     focus: FocusHandle,
     core: gpui::WeakEntity<crate::Core>,
+    handle: tokio::runtime::Handle,
     // Cached terminal font metrics to avoid per-frame font measurement
     cached_font_key: Option<(String, f32, nucleotide_types::FontWeight)>, // (family, size, weight)
     cached_char_width: Option<f32>,
@@ -153,7 +154,11 @@ fn prompt_submit_action(prompt_text: &str) -> PromptSubmitAction {
 }
 
 impl OverlayView {
-    pub fn new(focus: &FocusHandle, core: &Entity<crate::Core>) -> Self {
+    pub fn new(
+        focus: &FocusHandle,
+        core: &Entity<crate::Core>,
+        handle: tokio::runtime::Handle,
+    ) -> Self {
         Self {
             native_picker_view: None,
             native_prompt_view: None,
@@ -172,6 +177,7 @@ impl OverlayView {
             last_terminal_size: None,
             focus: focus.clone(),
             core: core.downgrade(),
+            handle,
             cached_font_key: None,
             cached_char_width: None,
             cached_line_height: None,
@@ -446,7 +452,7 @@ impl OverlayView {
 
                     // Only set up completion for command prompts, not search/regex prompts.
                     if matches!(submit_action, PromptSubmitAction::Command) {
-                        let completion_cache = self
+                        let completion_context = self
                             .core
                             .upgrade()
                             .map(|core| {
@@ -455,12 +461,23 @@ impl OverlayView {
                                     core.workspace_backend.identity(),
                                     nucleotide_workspace::WorkspaceIdentity::Local
                                 );
-                                crate::completions::CommandCompletionCache::from_editor(
-                                    &core.editor,
-                                )
-                                .with_filesystem_paths(complete_filesystem_paths)
+                                let completion_cache =
+                                    crate::completions::CommandCompletionCache::from_editor(
+                                        &core.editor,
+                                    )
+                                    .with_filesystem_paths(complete_filesystem_paths);
+                                let remote_path_context = (!complete_filesystem_paths)
+                                    .then(|| {
+                                        core.project_directory.clone().map(|base_dir| {
+                                            (core.workspace_backend.clone(), base_dir)
+                                        })
+                                    })
+                                    .flatten();
+
+                                (completion_cache, remote_path_context)
                             })
                             .unwrap_or_default();
+                        let (completion_cache, remote_path_context) = completion_context;
 
                         view = view.with_completion_fn(move |input| {
                             // Strip leading colon if present
@@ -473,6 +490,44 @@ impl OverlayView {
                                 Some(&completion_cache),
                             )
                         });
+
+                        if let Some((workspace_backend, base_dir)) = remote_path_context {
+                            let handle = self.handle.clone();
+                            view = view.with_completion_task_fn(move |input, cx| {
+                                let input = input.strip_prefix(':').unwrap_or(input).to_string();
+                                let query = crate::completions::workspace_path_completion_query(
+                                    &input, &base_dir,
+                                )?;
+                                let query_for_items = query.clone();
+                                let backend = workspace_backend.clone();
+                                let handle = handle.clone();
+
+                                Some(cx.spawn(async move |_view, _cx| {
+                                    let candidates = match handle
+                                        .spawn(crate::completions::workspace_path_completion_candidates(
+                                            backend,
+                                            query,
+                                        ))
+                                        .await
+                                    {
+                                        Ok(candidates) => candidates,
+                                        Err(error) => {
+                                            nucleotide_logging::warn!(
+                                                error = %error,
+                                                "Remote command path completion task failed"
+                                            );
+                                            Vec::new()
+                                        }
+                                    };
+
+                                    crate::completions::path_completion_items(
+                                        &input,
+                                        &query_for_items,
+                                        candidates,
+                                    )
+                                }))
+                            });
+                        }
                     }
 
                     // Set up the submit callback with command/search execution

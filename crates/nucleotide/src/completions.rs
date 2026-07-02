@@ -5,8 +5,9 @@ use helix_core::fuzzy::fuzzy_match;
 use helix_term::commands::{TYPABLE_COMMAND_LIST, TypableCommand};
 use helix_view::{Editor, document::SCRATCH_BUFFER_NAME, editor::Config};
 use nucleotide_ui::prompt_view::CompletionItem;
+use nucleotide_workspace::{DirectoryEntry, FileKind, WorkspaceBackendHandle};
 use once_cell::sync::Lazy;
-use std::path::{MAIN_SEPARATOR, Path};
+use std::path::{MAIN_SEPARATOR, Path, PathBuf};
 
 const RUNNABLE_COMMANDS: &[(&str, &str)] = &[
     ("run", "Show runnables for the focused Rust file"),
@@ -341,15 +342,15 @@ fn complete_list(
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-enum PathCompletionKind {
+pub(crate) enum PathCompletionKind {
     FileOrDirectory,
     Directory,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct PathCandidate {
-    path: String,
-    is_dir: bool,
+pub(crate) struct PathCandidate {
+    pub path: String,
+    pub is_dir: bool,
 }
 
 impl AsRef<str> for PathCandidate {
@@ -365,11 +366,21 @@ enum PathCandidateMatch {
     Accept,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct WorkspacePathCompletionQuery {
+    pub directory: PathBuf,
+    pub current_arg: String,
+    file_name: Option<String>,
+    is_tilde: bool,
+    pub kind: PathCompletionKind,
+    action_label: &'static str,
+}
+
 fn complete_filesystem_paths(
     input: &str,
     current_arg: &str,
     kind: PathCompletionKind,
-    action_label: &str,
+    action_label: &'static str,
 ) -> Vec<CompletionItem> {
     let is_tilde = current_arg == "~";
     let path = helix_stdx::path::expand_tilde(Path::new(current_arg));
@@ -399,6 +410,7 @@ fn complete_filesystem_paths(
         (path, file_name)
     };
 
+    let directory = dir.as_ref().to_path_buf();
     let candidates = ignore::WalkBuilder::new(&dir)
         .hidden(false)
         .follow_links(false)
@@ -459,30 +471,166 @@ fn complete_filesystem_paths(
             Some(PathCandidate { path, is_dir })
         });
 
-    let arg_prefix = argument_path_prefix(current_arg, file_name.as_deref());
-    let matches = if let Some(file_name) = file_name {
-        fuzzy_match(&file_name, candidates, true)
+    path_completion_items(
+        input,
+        &WorkspacePathCompletionQuery {
+            directory,
+            current_arg: current_arg.to_string(),
+            file_name,
+            is_tilde,
+            kind,
+            action_label,
+        },
+        candidates,
+    )
+}
+
+pub(crate) fn workspace_path_completion_query(
+    input: &str,
+    base_dir: &Path,
+) -> Option<WorkspacePathCompletionQuery> {
+    let parts: Vec<&str> = input.split_whitespace().collect();
+    let context = ArgumentContext::new(&parts, input)?;
+    let command = TYPABLE_COMMAND_LIST
+        .iter()
+        .find(|cmd| cmd.name == context.command || cmd.aliases.contains(&context.command))?;
+
+    let (kind, action_label) = match command.name {
+        command if is_file_command(command) => (
+            PathCompletionKind::FileOrDirectory,
+            path_action_label(command, context.command),
+        ),
+        "change-current-directory" => (PathCompletionKind::Directory, "Change directory to"),
+        _ => return None,
+    };
+
+    workspace_path_completion_query_for_arg(context.current_arg, base_dir, kind, action_label)
+}
+
+fn workspace_path_completion_query_for_arg(
+    current_arg: &str,
+    base_dir: &Path,
+    kind: PathCompletionKind,
+    action_label: &'static str,
+) -> Option<WorkspacePathCompletionQuery> {
+    if current_arg.starts_with('~') {
+        return None;
+    }
+
+    let path = Path::new(current_arg);
+    let (directory, file_name) = if current_arg.ends_with(MAIN_SEPARATOR) {
+        (resolve_completion_directory(base_dir, path), None)
+    } else {
+        let is_period = (current_arg.ends_with(&format!("{MAIN_SEPARATOR}."))
+            && current_arg.len() > 2)
+            || current_arg == ".";
+        let file_name = if is_period {
+            Some(".".to_string())
+        } else {
+            path.file_name()
+                .and_then(|file| file.to_str().map(str::to_string))
+        };
+
+        let directory = if is_period {
+            resolve_completion_directory(base_dir, path)
+        } else {
+            path.parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .map(|parent| resolve_completion_directory(base_dir, parent))
+                .unwrap_or_else(|| base_dir.to_path_buf())
+        };
+
+        (directory, file_name)
+    };
+
+    Some(WorkspacePathCompletionQuery {
+        directory,
+        current_arg: current_arg.to_string(),
+        file_name,
+        is_tilde: false,
+        kind,
+        action_label,
+    })
+}
+
+fn resolve_completion_directory(base_dir: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        base_dir.join(path)
+    }
+}
+
+pub(crate) async fn workspace_path_completion_candidates(
+    backend: WorkspaceBackendHandle,
+    query: WorkspacePathCompletionQuery,
+) -> Vec<PathCandidate> {
+    let Ok(listing) = backend.list_dir(&query.directory).await else {
+        return Vec::new();
+    };
+
+    listing
+        .entries
+        .into_iter()
+        .filter(|entry| entry.ignored != Some(true))
+        .filter_map(|entry| path_candidate_from_directory_entry(entry, query.kind))
+        .collect()
+}
+
+fn path_candidate_from_directory_entry(
+    entry: DirectoryEntry,
+    kind: PathCompletionKind,
+) -> Option<PathCandidate> {
+    let is_dir = matches!(entry.stat.kind, FileKind::Directory);
+    let candidate_match = match kind {
+        PathCompletionKind::FileOrDirectory if is_dir => PathCandidateMatch::AcceptIncomplete,
+        PathCompletionKind::FileOrDirectory => PathCandidateMatch::Accept,
+        PathCompletionKind::Directory if is_dir => PathCandidateMatch::Accept,
+        PathCompletionKind::Directory => PathCandidateMatch::Reject,
+    };
+
+    if candidate_match == PathCandidateMatch::Reject {
+        return None;
+    }
+
+    let mut path = entry.name;
+    if candidate_match == PathCandidateMatch::AcceptIncomplete {
+        path.push(MAIN_SEPARATOR);
+    }
+
+    Some(PathCandidate { path, is_dir })
+}
+
+pub(crate) fn path_completion_items(
+    input: &str,
+    query: &WorkspacePathCompletionQuery,
+    candidates: impl IntoIterator<Item = PathCandidate>,
+) -> Vec<CompletionItem> {
+    let matches = if let Some(file_name) = query.file_name.as_deref() {
+        fuzzy_match(file_name, candidates, true)
             .into_iter()
             .map(|(candidate, _score)| candidate)
             .collect()
     } else {
-        let mut candidates: Vec<_> = candidates.collect();
+        let mut candidates: Vec<_> = candidates.into_iter().collect();
         candidates
             .sort_by(|left, right| (!left.is_dir, &left.path).cmp(&(!right.is_dir, &right.path)));
         candidates
     };
 
+    let arg_prefix = argument_path_prefix(&query.current_arg, query.file_name.as_deref());
+
     matches
         .into_iter()
         .map(|candidate| {
-            let completed_arg = if is_tilde {
+            let completed_arg = if query.is_tilde {
                 candidate.path
             } else {
                 format!("{arg_prefix}{}", candidate.path)
             };
             CompletionItem {
-                text: replace_current_arg(input, current_arg, &completed_arg).into(),
-                description: Some(format!("{action_label} {completed_arg}").into()),
+                text: replace_current_arg(input, &query.current_arg, &completed_arg).into(),
+                description: Some(format!("{} {completed_arg}", query.action_label).into()),
                 display_text: None,
             }
         })
@@ -703,5 +851,44 @@ mod tests {
         let items = get_command_completions_with_cache(&input, Some(&cache));
 
         assert!(!items.iter().any(|item| item.text.as_ref() == expected));
+    }
+
+    #[tokio::test]
+    async fn workspace_path_completion_uses_backend_listing() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        std::fs::write(temp_dir.path().join("alpha.txt"), "").unwrap();
+        std::fs::create_dir(temp_dir.path().join("src")).unwrap();
+
+        let input = "open s";
+        let query = workspace_path_completion_query(input, temp_dir.path()).unwrap();
+        assert_eq!(query.directory, temp_dir.path());
+
+        let candidates = workspace_path_completion_candidates(
+            nucleotide_workspace::local_workspace_backend(),
+            query.clone(),
+        )
+        .await;
+        let items = path_completion_items(input, &query, candidates);
+
+        assert!(items.iter().any(|item| item.text.as_ref() == "open src/"));
+    }
+
+    #[tokio::test]
+    async fn workspace_path_completion_filters_cd_to_directories() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        std::fs::write(temp_dir.path().join("src.rs"), "").unwrap();
+        std::fs::create_dir(temp_dir.path().join("src")).unwrap();
+
+        let input = "cd s";
+        let query = workspace_path_completion_query(input, temp_dir.path()).unwrap();
+        let candidates = workspace_path_completion_candidates(
+            nucleotide_workspace::local_workspace_backend(),
+            query.clone(),
+        )
+        .await;
+        let items = path_completion_items(input, &query, candidates);
+
+        assert!(items.iter().any(|item| item.text.as_ref() == "cd src"));
+        assert!(!items.iter().any(|item| item.text.as_ref() == "cd src.rs"));
     }
 }

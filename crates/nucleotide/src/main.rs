@@ -1497,8 +1497,10 @@ fn gui_main(
 
                 let input_1 = input.clone();
                 // Create overlay view
+                let overlay_handle = handle.clone();
                 let overlay = cx.new(|cx| {
-                    let view = overlay::OverlayView::new(&cx.focus_handle(), &app);
+                    let view =
+                        overlay::OverlayView::new(&cx.focus_handle(), &app, overlay_handle.clone());
                     view.subscribe(&app, cx);
                     view
                 });
