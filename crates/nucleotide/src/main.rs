@@ -217,6 +217,39 @@ fn normalize_startup_file_path(path: &Path) -> PathBuf {
     }
 }
 
+fn startup_host_working_directory(args: &Args, workspace_root: Option<&Path>) -> Option<PathBuf> {
+    if let Some(root) = workspace_root {
+        if nucleotide_workspace::classify_workspace_location(root).is_remote() {
+            info!(
+                workspace_root = ?root,
+                "Keeping host working directory unchanged for remote workspace root"
+            );
+            return None;
+        }
+
+        return Some(root.to_path_buf());
+    }
+
+    if let Some(path) = &args.working_directory {
+        if nucleotide_workspace::classify_workspace_location(path).is_remote() {
+            info!(
+                working_directory = ?path,
+                "Keeping host working directory unchanged for remote working directory"
+            );
+            return None;
+        }
+
+        return Some(path.clone());
+    }
+
+    args.files
+        .first()
+        .filter(|(path, _)| {
+            !nucleotide_workspace::classify_workspace_location(path).is_remote() && path.is_dir()
+        })
+        .map(|(path, _)| path.clone())
+}
+
 #[cfg(any(target_os = "windows", test))]
 fn parse_startup_dock_action<I, S>(args: I) -> Result<Option<usize>>
 where
@@ -446,19 +479,16 @@ fn main() -> Result<()> {
     // Determine workspace root before creating application
     let workspace_root = determine_workspace_root(&args)?;
 
-    // Set the working directory based on workspace root determination
-    if let Some(root) = &workspace_root {
-        info!(workspace_root = ?root, "Setting workspace root before Editor/LSP initialization");
-        helix_stdx::env::set_current_working_dir(root)?;
-    } else {
-        // NOTE: Set the working directory early so the correct configuration is loaded. Be aware that
-        // Application::new() depends on this logic so it must be updated if this changes.
-        if let Some(path) = &args.working_directory {
-            helix_stdx::env::set_current_working_dir(path)?;
-        } else if let Some((path, _)) = args.files.first().filter(|p| p.0.is_dir()) {
-            // If the first file is a directory, it will be the working directory unless -w was specified
-            helix_stdx::env::set_current_working_dir(path)?;
-        }
+    // NOTE: Set the host working directory early so the correct configuration is loaded. Remote
+    // workspace roots are project identifiers for the backend, not valid host process directories.
+    if let Some(host_working_directory) =
+        startup_host_working_directory(&args, workspace_root.as_deref())
+    {
+        info!(
+            directory = ?host_working_directory,
+            "Setting host working directory before Editor/LSP initialization"
+        );
+        helix_stdx::env::set_current_working_dir(&host_working_directory)?;
     }
 
     let rt = match tokio::runtime::Runtime::new() {
@@ -1667,6 +1697,59 @@ mod tests {
         let path = PathBuf::from(r"\\wsl.localhost\Ubuntu-24.04\home\me\project\src\main.rs");
 
         assert_eq!(normalize_startup_file_path(&path), path);
+    }
+
+    #[test]
+    fn startup_host_working_directory_uses_local_workspace_root() {
+        let mut args = Args::default();
+        args.working_directory = Some(PathBuf::from("/ignored"));
+        let workspace_root = PathBuf::from("/tmp/project");
+
+        assert_eq!(
+            startup_host_working_directory(&args, Some(&workspace_root)),
+            Some(workspace_root)
+        );
+    }
+
+    #[test]
+    fn startup_host_working_directory_skips_ssh_workspace_root() {
+        let args = Args::default();
+        let workspace_root = PathBuf::from("ssh://me@example.com/home/me/project");
+
+        assert_eq!(
+            startup_host_working_directory(&args, Some(&workspace_root)),
+            None
+        );
+    }
+
+    #[test]
+    fn startup_host_working_directory_skips_wsl_workspace_root() {
+        let args = Args::default();
+        let workspace_root = PathBuf::from(r"\\wsl.localhost\Ubuntu-24.04\home\me\project");
+
+        assert_eq!(
+            startup_host_working_directory(&args, Some(&workspace_root)),
+            None
+        );
+    }
+
+    #[test]
+    fn startup_host_working_directory_skips_remote_explicit_working_directory() {
+        let mut args = Args::default();
+        args.working_directory = Some(PathBuf::from("ssh://me@example.com/home/me/project"));
+
+        assert_eq!(startup_host_working_directory(&args, None), None);
+    }
+
+    #[test]
+    fn startup_host_working_directory_uses_local_explicit_working_directory() {
+        let mut args = Args::default();
+        args.working_directory = Some(PathBuf::from("/tmp/project"));
+
+        assert_eq!(
+            startup_host_working_directory(&args, None),
+            Some(PathBuf::from("/tmp/project"))
+        );
     }
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
