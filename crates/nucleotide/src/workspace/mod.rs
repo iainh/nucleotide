@@ -83,7 +83,7 @@ use nucleotide_terminal::TerminalBounds;
 use nucleotide_workspace::local_workspace_backend;
 use nucleotide_workspace::{
     FileKind, FileSearchQuery, FileSearchResult, FileStat, ProjectEnvironmentOrigin,
-    ProjectEnvironmentSnapshot, ReadOptions, TextSearchQuery, WorkspaceBackend,
+    ProjectEnvironmentSnapshot, ReadOptions, TextSearchQuery, TextSearchResult, WorkspaceBackend,
     WorkspaceBackendHandle, WorkspaceIdentity, classify_workspace_location,
 };
 use slotmap::KeyData;
@@ -2370,6 +2370,80 @@ fn global_search_matches_with_backend(
         return Err("Current working directory is not a directory".to_string());
     }
 
+    let excluded_relative_paths =
+        global_search_open_document_matches(&mut matches, root, open_documents, &regex, limit);
+
+    let disk_limit = limit.saturating_sub(matches.len());
+    if disk_limit == 0 {
+        return Ok(matches);
+    }
+
+    let disk_matches = futures_executor::block_on(backend.text_search(global_search_text_query(
+        root,
+        query,
+        smart_case,
+        file_picker_config,
+        excluded_relative_paths,
+        disk_limit,
+        backend.identity(),
+    )))
+    .map_err(|err| err.to_string())?;
+
+    append_global_search_text_matches(&mut matches, root, disk_matches, limit);
+
+    Ok(matches)
+}
+
+async fn global_search_disk_matches_with_backend_async(
+    backend: WorkspaceBackendHandle,
+    root: PathBuf,
+    query: String,
+    smart_case: bool,
+    file_picker_config: helix_view::editor::FilePickerConfig,
+    excluded_relative_paths: Vec<PathBuf>,
+    limit: usize,
+) -> Result<Vec<GlobalSearchMatch>, String> {
+    let root_stat = backend
+        .stat(&root)
+        .await
+        .map_err(|_| "Current working directory does not exist".to_string())?;
+    if root_stat.kind == FileKind::File {
+        return Err("Current working directory is not a directory".to_string());
+    }
+
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+
+    let disk_matches = backend
+        .text_search(global_search_text_query(
+            &root,
+            &query,
+            smart_case,
+            &file_picker_config,
+            excluded_relative_paths,
+            limit,
+            backend.identity(),
+        ))
+        .await
+        .map_err(|err| err.to_string())?;
+
+    let mut matches = Vec::new();
+    append_global_search_text_matches(&mut matches, &root, disk_matches, limit);
+    Ok(matches)
+}
+
+fn should_run_global_search_async(workspace_identity: &WorkspaceIdentity) -> bool {
+    !matches!(workspace_identity, WorkspaceIdentity::Local)
+}
+
+fn global_search_open_document_matches(
+    matches: &mut Vec<GlobalSearchMatch>,
+    root: &Path,
+    open_documents: &[(PathBuf, Rope)],
+    regex: &helix_stdx::rope::Regex,
+    limit: usize,
+) -> Vec<PathBuf> {
     let mut excluded_relative_paths = Vec::new();
     for (path, doc_text) in open_documents {
         let Ok(relative_path) = path.strip_prefix(root) else {
@@ -2381,21 +2455,26 @@ fn global_search_matches_with_backend(
 
         excluded_relative_paths.push(relative_path.to_path_buf());
 
-        if push_global_search_matches(&mut matches, path, doc_text.slice(..), &regex, limit) {
-            return Ok(matches);
+        if push_global_search_matches(matches, path, doc_text.slice(..), regex, limit) {
+            break;
         }
     }
+    excluded_relative_paths
+}
 
-    let disk_limit = limit.saturating_sub(matches.len());
-    if disk_limit == 0 {
-        return Ok(matches);
-    }
-
-    let custom_ignore_filenames = global_search_custom_ignore_filenames(backend.identity());
-    let disk_matches = futures_executor::block_on(backend.text_search(TextSearchQuery {
+fn global_search_text_query(
+    root: &Path,
+    query: &str,
+    smart_case: bool,
+    file_picker_config: &helix_view::editor::FilePickerConfig,
+    excluded_relative_paths: Vec<PathBuf>,
+    limit: usize,
+    workspace_identity: WorkspaceIdentity,
+) -> TextSearchQuery {
+    TextSearchQuery {
         root: root.to_path_buf(),
         pattern: query.to_string(),
-        limit: disk_limit,
+        limit,
         smart_case,
         hidden: !file_picker_config.hidden,
         parents: file_picker_config.parents,
@@ -2406,11 +2485,17 @@ fn global_search_matches_with_backend(
         follow_links: file_picker_config.follow_symlinks,
         max_depth: file_picker_config.max_depth,
         excluded_relative_paths,
-        custom_ignore_filenames,
+        custom_ignore_filenames: global_search_custom_ignore_filenames(workspace_identity),
         ..TextSearchQuery::default()
-    }))
-    .map_err(|err| err.to_string())?;
+    }
+}
 
+fn append_global_search_text_matches(
+    matches: &mut Vec<GlobalSearchMatch>,
+    root: &Path,
+    disk_matches: TextSearchResult,
+    limit: usize,
+) {
     for disk_match in disk_matches.matches {
         let path = root.join(&disk_match.relative_path);
         matches.push(GlobalSearchMatch {
@@ -2422,8 +2507,6 @@ fn global_search_matches_with_backend(
             break;
         }
     }
-
-    Ok(matches)
 }
 
 fn global_search_custom_ignore_filenames(identity: WorkspaceIdentity) -> Vec<PathBuf> {
@@ -8377,6 +8460,79 @@ impl Workspace {
             let _ = core.editor.registers.push('/', query.to_string());
         });
 
+        if should_run_global_search_async(&workspace_backend.identity()) {
+            let regex = match compile_global_search_regex(query, smart_case) {
+                Ok(regex) => regex,
+                Err(err) => {
+                    self.core.update(cx, |core, _cx| {
+                        core.editor
+                            .set_error(format!("Failed to compile regex: {err}"));
+                    });
+                    return;
+                }
+            };
+
+            let mut matches = Vec::new();
+            let excluded_relative_paths = global_search_open_document_matches(
+                &mut matches,
+                &search_root,
+                &open_documents,
+                &regex,
+                GLOBAL_SEARCH_RESULT_LIMIT,
+            );
+
+            let disk_limit = GLOBAL_SEARCH_RESULT_LIMIT.saturating_sub(matches.len());
+            if disk_limit == 0 {
+                self.finish_global_search_submitted(&search_root, query, Ok(matches), cx);
+                return;
+            }
+
+            self.core.update(cx, |core, _cx| {
+                core.editor
+                    .set_status(format!("Searching remote workspace for: {query}"));
+            });
+
+            let runtime_handle = self.handle.clone();
+            let root_for_task = search_root.clone();
+            let root_for_result = search_root.clone();
+            let query_for_task = query.to_string();
+            let query_for_result = query.to_string();
+            cx.spawn(async move |this, cx| {
+                let disk_result = match runtime_handle
+                    .spawn(global_search_disk_matches_with_backend_async(
+                        workspace_backend,
+                        root_for_task,
+                        query_for_task,
+                        smart_case,
+                        file_picker_config,
+                        excluded_relative_paths,
+                        disk_limit,
+                    ))
+                    .await
+                {
+                    Ok(result) => result,
+                    Err(err) => Err(err.to_string()),
+                };
+
+                if let Some(this) = this.upgrade() {
+                    this.update(cx, |workspace, cx| {
+                        let result = disk_result.map(|disk_matches| {
+                            matches.extend(disk_matches);
+                            matches
+                        });
+                        workspace.finish_global_search_submitted(
+                            &root_for_result,
+                            &query_for_result,
+                            result,
+                            cx,
+                        );
+                    });
+                }
+            })
+            .detach();
+            return;
+        }
+
         let matches = match global_search_matches_with_backend(
             workspace_backend.as_ref(),
             &search_root,
@@ -8395,6 +8551,26 @@ impl Workspace {
             }
         };
 
+        self.finish_global_search_submitted(&search_root, query, Ok(matches), cx);
+    }
+
+    fn finish_global_search_submitted(
+        &mut self,
+        search_root: &Path,
+        query: &str,
+        result: Result<Vec<GlobalSearchMatch>, String>,
+        cx: &mut Context<Self>,
+    ) {
+        let matches = match result {
+            Ok(matches) => matches,
+            Err(err) => {
+                self.core.update(cx, |core, _cx| {
+                    core.editor.set_error(err);
+                });
+                return;
+            }
+        };
+
         if matches.is_empty() {
             self.core.update(cx, |core, _cx| {
                 core.editor.set_error(format!("Pattern not found: {query}"));
@@ -8403,7 +8579,7 @@ impl Workspace {
         }
 
         let match_count = matches.len();
-        let picker = global_search_picker(&search_root, matches);
+        let picker = global_search_picker(search_root, matches);
         self.core.update(cx, |core, cx| {
             if match_count >= GLOBAL_SEARCH_RESULT_LIMIT {
                 core.editor.set_status(format!(
@@ -19807,6 +19983,8 @@ mod tests {
             &WorkspaceIdentity::Local
         ));
         assert!(should_load_file_picker_items_async(&remote_identity));
+        assert!(!should_run_global_search_async(&WorkspaceIdentity::Local));
+        assert!(should_run_global_search_async(&remote_identity));
     }
 
     #[test]
@@ -19916,6 +20094,33 @@ mod tests {
         .unwrap();
 
         assert!(matches.is_empty());
+    }
+
+    #[tokio::test]
+    async fn global_search_disk_matches_with_backend_async_finds_line_matches() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        std::fs::write(temp_dir.path().join("file.txt"), "needle\n").unwrap();
+
+        let matches = global_search_disk_matches_with_backend_async(
+            local_workspace_backend(),
+            temp_dir.path().to_path_buf(),
+            "needle".to_string(),
+            true,
+            default_file_picker_config(),
+            Vec::new(),
+            10,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            matches,
+            vec![GlobalSearchMatch {
+                path: temp_dir.path().join("file.txt"),
+                line: 0,
+                line_text: "needle".to_string(),
+            }]
+        );
     }
 
     #[test]
