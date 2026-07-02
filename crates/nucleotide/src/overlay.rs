@@ -47,6 +47,12 @@ struct ResizeStateInner {
     height: f32,
 }
 
+const REMOTE_PATH_COMPLETION_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(1);
+const REMOTE_PATH_COMPLETION_WAIT_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_millis(500);
+const REMOTE_PATH_COMPLETION_POLL_INTERVAL: std::time::Duration =
+    std::time::Duration::from_millis(25);
+
 fn document_revisions(editor: &mut helix_view::Editor) -> Vec<(helix_view::DocumentId, usize)> {
     editor
         .documents
@@ -493,6 +499,10 @@ impl OverlayView {
 
                         if let Some((workspace_backend, base_dir)) = remote_path_context {
                             let handle = self.handle.clone();
+                            let remote_completion_cache =
+                                crate::completions::PathCompletionCandidateCache::new(
+                                    REMOTE_PATH_COMPLETION_CACHE_TTL,
+                                );
                             view = view.with_completion_task_fn(move |input, cx| {
                                 let input = input.strip_prefix(':').unwrap_or(input).to_string();
                                 let query = crate::completions::workspace_path_completion_query(
@@ -501,30 +511,58 @@ impl OverlayView {
                                 let query_for_items = query.clone();
                                 let backend = workspace_backend.clone();
                                 let handle = handle.clone();
+                                let cache = remote_completion_cache.clone();
 
-                                Some(cx.spawn(async move |_view, _cx| {
-                                    let candidates = match handle
-                                        .spawn(crate::completions::workspace_path_completion_candidates(
-                                            backend,
-                                            query,
-                                        ))
-                                        .await
-                                    {
-                                        Ok(candidates) => candidates,
-                                        Err(error) => {
-                                            nucleotide_logging::warn!(
-                                                error = %error,
-                                                "Remote command path completion task failed"
+                                if let Some(candidates) = cache.cached_candidates(&query.directory)
+                                {
+                                    return Some(cx.spawn(async move |_view, _cx| {
+                                        crate::completions::path_completion_items(
+                                            &input,
+                                            &query_for_items,
+                                            candidates,
+                                        )
+                                    }));
+                                }
+
+                                let directory = query.directory.clone();
+                                if cache.begin_request(directory.clone()) {
+                                    let backend = backend.clone();
+                                    let query = query.clone();
+                                    let cache = cache.clone();
+                                    handle.spawn(async move {
+                                        let candidates =
+                                            crate::completions::workspace_path_completion_candidates(
+                                                backend, query,
+                                            )
+                                            .await;
+                                        cache.finish_request(directory, candidates);
+                                    });
+                                }
+
+                                Some(cx.spawn(async move |_view, cx| {
+                                    let started = std::time::Instant::now();
+                                    loop {
+                                        if let Some(candidates) =
+                                            cache.cached_candidates(&query_for_items.directory)
+                                        {
+                                            return crate::completions::path_completion_items(
+                                                &input,
+                                                &query_for_items,
+                                                candidates,
                                             );
-                                            Vec::new()
                                         }
-                                    };
 
-                                    crate::completions::path_completion_items(
-                                        &input,
-                                        &query_for_items,
-                                        candidates,
-                                    )
+                                        if !cache.is_in_flight(&query_for_items.directory)
+                                            || started.elapsed()
+                                                >= REMOTE_PATH_COMPLETION_WAIT_TIMEOUT
+                                        {
+                                            return Vec::new();
+                                        }
+
+                                        cx.background_executor()
+                                            .timer(REMOTE_PATH_COMPLETION_POLL_INTERVAL)
+                                            .await;
+                                    }
                                 }))
                             });
                         }
