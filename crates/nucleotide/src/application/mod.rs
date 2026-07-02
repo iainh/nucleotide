@@ -145,7 +145,8 @@ impl helix_view::editor::DocumentSaveHandler for WorkspaceDocumentSaveHandler {
         path: Option<PathBuf>,
         force: bool,
     ) -> Option<anyhow::Result<helix_view::document::DocumentSavedEventFuture>> {
-        let target_path = remote_document_save_target(doc, path)?;
+        let target_path =
+            workspace_document_save_target(&self.workspace_backend.identity(), doc, path)?;
         let workspace_backend = self.workspace_backend.clone();
         let save = doc.save_with(Some(target_path), force, move |save| {
             let workspace_backend = workspace_backend.clone();
@@ -156,17 +157,33 @@ impl helix_view::editor::DocumentSaveHandler for WorkspaceDocumentSaveHandler {
     }
 }
 
-fn remote_document_save_target(doc: &Document, requested_path: Option<PathBuf>) -> Option<PathBuf> {
+fn should_use_workspace_backend_for_document_io(
+    backend_identity: &WorkspaceIdentity,
+    path: &Path,
+) -> bool {
+    !matches!(backend_identity, WorkspaceIdentity::Local)
+        || classify_workspace_location(path).is_remote()
+}
+
+fn workspace_document_save_target(
+    backend_identity: &WorkspaceIdentity,
+    doc: &Document,
+    requested_path: Option<PathBuf>,
+) -> Option<PathBuf> {
     match requested_path {
-        Some(path) if classify_workspace_location(&path).is_remote() => Some(path),
+        Some(path) if should_use_workspace_backend_for_document_io(backend_identity, &path) => {
+            Some(path)
+        }
         Some(path) if path.is_relative() => doc
             .path()
-            .filter(|doc_path| classify_workspace_location(doc_path).is_remote())
+            .filter(|doc_path| {
+                should_use_workspace_backend_for_document_io(backend_identity, doc_path)
+            })
             .and_then(|doc_path| doc_path.parent().map(|parent| parent.join(path))),
         Some(_) => None,
         None => doc
             .path()
-            .filter(|path| classify_workspace_location(path).is_remote())
+            .filter(|path| should_use_workspace_backend_for_document_io(backend_identity, path))
             .cloned(),
     }
 }
@@ -7504,15 +7521,18 @@ pub(crate) fn open_workspace_document(
     path: &Path,
     action: helix_view::editor::Action,
 ) -> Result<DocumentId, Error> {
-    if !classify_workspace_location(path).is_remote() {
+    if !should_use_workspace_backend_for_document_io(&workspace_backend.identity(), path) {
         return editor.open(path, action).map_err(Error::from);
     }
 
     let read =
         futures_executor::block_on(workspace_backend.read_file(path, ReadOptions::default()))
-            .with_context(|| format!("failed to read remote file {}", path.display()))?;
+            .with_context(|| format!("failed to read workspace file {}", path.display()))?;
     if read.truncated {
-        bail!("remote file was truncated while opening {}", path.display());
+        bail!(
+            "workspace file was truncated while opening {}",
+            path.display()
+        );
     }
 
     let metadata = DocumentOpenMetadata {
@@ -7529,7 +7549,7 @@ pub(crate) fn open_workspace_document(
         editor.config.clone(),
         editor.syn_loader.clone(),
     )
-    .with_context(|| format!("failed to decode remote file {}", read.path.display()))?;
+    .with_context(|| format!("failed to decode workspace file {}", read.path.display()))?;
 
     match futures_executor::block_on(read_remote_git_diff_base(workspace_backend, &read.path)) {
         Ok(Some(diff_base)) => {
@@ -8730,8 +8750,11 @@ mod tests {
     use nucleotide_core::event_bridge;
     use nucleotide_events::completion::{CompletionItem, CompletionItemKind};
     use nucleotide_workspace::{
-        DirectoryEntry, DirectoryListing, FileKind, FileStat, RemoteWorkspaceIdentity,
-        RemoteWorkspaceKind, WorkspaceIdentity, WorkspacePathMapping, local_workspace_backend,
+        DirectoryEntry, DirectoryListing, FileKind, FileSearchQuery, FileSearchResult, FileStat,
+        GitHeadResult, GitStatusOptions, GitStatusResult, ProcessOutput, ProcessSpec,
+        ProjectEnvironmentSnapshot, ReadOptions, RemoteWorkspaceIdentity, RemoteWorkspaceKind,
+        TextSearchQuery, TextSearchResult, WorkspaceBackend, WorkspaceBackendHandle,
+        WorkspaceIdentity, WorkspacePathMapping, WriteOptions, local_workspace_backend,
         path_mapped_workspace_backend,
     };
     use slotmap::{Key, KeyData};
@@ -9040,6 +9063,129 @@ mod tests {
         )
     }
 
+    #[derive(Debug)]
+    struct RemoteIdentityLocalBackend;
+
+    impl RemoteIdentityLocalBackend {
+        fn delegate() -> WorkspaceBackendHandle {
+            local_workspace_backend()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl WorkspaceBackend for RemoteIdentityLocalBackend {
+        fn identity(&self) -> WorkspaceIdentity {
+            WorkspaceIdentity::Remote(RemoteWorkspaceIdentity {
+                kind: RemoteWorkspaceKind::Other("local-service".to_string()),
+                name: "local-service".to_string(),
+            })
+        }
+
+        async fn stat(&self, path: &Path) -> nucleotide_workspace::Result<FileStat> {
+            Self::delegate().stat(path).await
+        }
+
+        async fn list_dir(&self, path: &Path) -> nucleotide_workspace::Result<DirectoryListing> {
+            Self::delegate().list_dir(path).await
+        }
+
+        async fn find_ancestor_file(
+            &self,
+            start: &Path,
+            file_name: &str,
+            limit: usize,
+        ) -> nucleotide_workspace::Result<Option<PathBuf>> {
+            Self::delegate()
+                .find_ancestor_file(start, file_name, limit)
+                .await
+        }
+
+        async fn create_file(&self, path: &Path) -> nucleotide_workspace::Result<FileStat> {
+            Self::delegate().create_file(path).await
+        }
+
+        async fn create_dir(&self, path: &Path) -> nucleotide_workspace::Result<FileStat> {
+            Self::delegate().create_dir(path).await
+        }
+
+        async fn rename_path(
+            &self,
+            from: &Path,
+            to: &Path,
+        ) -> nucleotide_workspace::Result<FileStat> {
+            Self::delegate().rename_path(from, to).await
+        }
+
+        async fn delete_path(&self, path: &Path) -> nucleotide_workspace::Result<FileStat> {
+            Self::delegate().delete_path(path).await
+        }
+
+        async fn copy_path(
+            &self,
+            from: &Path,
+            to: &Path,
+        ) -> nucleotide_workspace::Result<FileStat> {
+            Self::delegate().copy_path(from, to).await
+        }
+
+        async fn read_file(
+            &self,
+            path: &Path,
+            options: ReadOptions,
+        ) -> nucleotide_workspace::Result<nucleotide_workspace::FileRead> {
+            Self::delegate().read_file(path, options).await
+        }
+
+        async fn write_file(
+            &self,
+            path: &Path,
+            bytes: &[u8],
+            options: WriteOptions,
+        ) -> nucleotide_workspace::Result<nucleotide_workspace::WriteResult> {
+            Self::delegate().write_file(path, bytes, options).await
+        }
+
+        async fn file_search(
+            &self,
+            query: FileSearchQuery,
+        ) -> nucleotide_workspace::Result<FileSearchResult> {
+            Self::delegate().file_search(query).await
+        }
+
+        async fn text_search(
+            &self,
+            query: TextSearchQuery,
+        ) -> nucleotide_workspace::Result<TextSearchResult> {
+            Self::delegate().text_search(query).await
+        }
+
+        async fn project_environment(
+            &self,
+            root: &Path,
+        ) -> nucleotide_workspace::Result<ProjectEnvironmentSnapshot> {
+            Self::delegate().project_environment(root).await
+        }
+
+        async fn git_head(&self, root: &Path) -> nucleotide_workspace::Result<GitHeadResult> {
+            Self::delegate().git_head(root).await
+        }
+
+        async fn git_status(
+            &self,
+            root: &Path,
+            options: GitStatusOptions,
+        ) -> nucleotide_workspace::Result<GitStatusResult> {
+            Self::delegate().git_status(root, options).await
+        }
+
+        async fn run_process(
+            &self,
+            spec: ProcessSpec,
+        ) -> nucleotide_workspace::Result<ProcessOutput> {
+            Self::delegate().run_process(spec).await
+        }
+    }
+
     #[test]
     fn open_workspace_document_reads_remote_content_through_backend() {
         let temp = tempdir().unwrap();
@@ -9093,6 +9239,63 @@ mod tests {
             "updated\nfn remote() {}\n"
         );
         assert!(!editor.document(doc_id).unwrap().is_modified());
+    }
+
+    #[test]
+    fn open_workspace_document_uses_backend_for_service_identity() {
+        let temp = tempdir().unwrap();
+        let native_root = temp.path().join("native");
+        let display_root = temp.path().join("display");
+        let native_path = native_root.join("src").join("main.rs");
+        fs::create_dir_all(native_path.parent().unwrap()).unwrap();
+        fs::write(&native_path, "fn service_backed() {}\n").unwrap();
+
+        let display_path = display_root.join("src").join("main.rs");
+        let backend = path_mapped_workspace_backend(
+            Arc::new(RemoteIdentityLocalBackend),
+            WorkspacePathMapping::new(&display_root, &native_root),
+        );
+        let mut editor = new_test_editor();
+        editor.set_save_handler(Some(Arc::new(WorkspaceDocumentSaveHandler::new(
+            backend.clone(),
+        ))));
+
+        let doc_id = open_workspace_document(
+            &mut editor,
+            &backend,
+            &display_path,
+            helix_view::editor::Action::VerticalSplit,
+        )
+        .unwrap();
+
+        let doc = editor.document(doc_id).unwrap();
+        assert_eq!(
+            doc.path().map(PathBuf::as_path),
+            Some(display_path.as_path())
+        );
+        assert_eq!(doc.text(), "fn service_backed() {}\n");
+        assert!(!display_path.exists());
+
+        let view_id = editor.tree.focus;
+        {
+            let tree = &mut editor.tree;
+            let documents = &mut editor.documents;
+            let view = tree.get_mut(view_id);
+            let doc = documents.get_mut(&doc_id).unwrap();
+            let transaction =
+                Transaction::change(doc.text(), [(0, 0, Some("updated\n".into()))].into_iter());
+            doc.apply(&transaction, view_id);
+            doc.append_changes_to_history(view);
+        }
+
+        editor.save::<PathBuf>(doc_id, None, false).unwrap();
+        TEST_RUNTIME.block_on(editor.flush_writes()).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(&native_path).unwrap(),
+            "updated\nfn service_backed() {}\n"
+        );
+        assert!(!display_path.exists());
     }
 
     #[test]
