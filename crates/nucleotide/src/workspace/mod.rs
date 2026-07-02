@@ -1642,6 +1642,27 @@ fn workspace_selection_target_for_path(
     }
 }
 
+async fn workspace_selection_target_for_path_async(
+    backend: WorkspaceBackendHandle,
+    path: PathBuf,
+) -> Option<WorkspaceSelectionTarget> {
+    if matches!(backend.identity(), WorkspaceIdentity::Local) {
+        if path.is_file() {
+            Some(WorkspaceSelectionTarget::File)
+        } else if path.is_dir() {
+            Some(WorkspaceSelectionTarget::Directory)
+        } else {
+            None
+        }
+    } else {
+        backend
+            .stat(&path)
+            .await
+            .ok()
+            .and_then(|stat| workspace_selection_target_from_file_kind(stat.kind))
+    }
+}
+
 fn context_menu_target_parent_path(clicked: &Path, is_directory: bool) -> PathBuf {
     if is_directory {
         clicked.to_path_buf()
@@ -9182,6 +9203,67 @@ impl Workspace {
         self.open_file_internal(path, true, false, None, cx);
     }
 
+    fn handle_workspace_selection(&mut self, path: &std::path::Path, cx: &mut Context<Self>) {
+        let workspace_backend = self.core.read(cx).workspace_backend.clone();
+        if matches!(workspace_backend.identity(), WorkspaceIdentity::Local) {
+            if let Some(target) =
+                workspace_selection_target_for_path(workspace_backend.as_ref(), path)
+            {
+                self.open_workspace_selection_target(path, target, cx);
+            }
+            return;
+        }
+
+        let path = path.to_path_buf();
+        let runtime_handle = self.handle.clone();
+        cx.spawn(async move |this, cx| {
+            let path_for_task = path.clone();
+            let target = match runtime_handle
+                .spawn(workspace_selection_target_for_path_async(
+                    workspace_backend,
+                    path_for_task,
+                ))
+                .await
+            {
+                Ok(target) => target,
+                Err(error) => {
+                    warn!(
+                        path = %path.display(),
+                        error = %error,
+                        "Workspace selection classification task failed"
+                    );
+                    None
+                }
+            };
+
+            if let Some(this) = this.upgrade() {
+                this.update(cx, |workspace, cx| {
+                    if let Some(target) = target {
+                        workspace.open_workspace_selection_target(&path, target, cx);
+                    } else {
+                        warn!(
+                            path = %path.display(),
+                            "Workspace selection did not resolve to a file or directory"
+                        );
+                    }
+                });
+            }
+        })
+        .detach();
+    }
+
+    fn open_workspace_selection_target(
+        &mut self,
+        path: &std::path::Path,
+        target: WorkspaceSelectionTarget,
+        cx: &mut Context<Self>,
+    ) {
+        match target {
+            WorkspaceSelectionTarget::File => self.handle_open_file(path, cx),
+            WorkspaceSelectionTarget::Directory => self.handle_open_directory(path, cx),
+        }
+    }
+
     fn handle_open_remote_submitted(&mut self, input: &str, cx: &mut Context<Self>) {
         match parse_remote_open_input(input) {
             Ok(target) => self.open_remote_target(target, cx),
@@ -10157,20 +10239,7 @@ impl Workspace {
                             use nucleotide_events::v2::workspace::SelectionSource;
                             match source {
                                 SelectionSource::Click | SelectionSource::Command => {
-                                    let workspace_backend =
-                                        self.core.read(cx).workspace_backend.clone();
-                                    match workspace_selection_target_for_path(
-                                        workspace_backend.as_ref(),
-                                        path,
-                                    ) {
-                                        Some(WorkspaceSelectionTarget::File) => {
-                                            self.handle_open_file(path, cx);
-                                        }
-                                        Some(WorkspaceSelectionTarget::Directory) => {
-                                            self.handle_open_directory(path, cx);
-                                        }
-                                        None => {}
-                                    }
+                                    self.handle_workspace_selection(path, cx);
                                 }
                                 _ => {
                                     // Other selection sources
@@ -17512,6 +17581,26 @@ mod tests {
         assert_eq!(
             workspace_selection_target_from_file_kind(FileKind::Other),
             None
+        );
+    }
+
+    #[tokio::test]
+    async fn workspace_selection_target_async_classifies_local_paths() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("main.rs");
+        std::fs::write(&file_path, "fn main() {}\n").unwrap();
+
+        assert_eq!(
+            workspace_selection_target_for_path_async(local_workspace_backend(), file_path).await,
+            Some(WorkspaceSelectionTarget::File)
+        );
+        assert_eq!(
+            workspace_selection_target_for_path_async(
+                local_workspace_backend(),
+                temp_dir.path().to_path_buf()
+            )
+            .await,
+            Some(WorkspaceSelectionTarget::Directory)
         );
     }
 
