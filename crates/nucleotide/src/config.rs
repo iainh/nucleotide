@@ -1113,10 +1113,9 @@ impl Config {
 
         if let Some(use_control_master) = ssh.use_control_master {
             options.ssh_control_path = if use_control_master {
-                options.ssh_control_path.or_else(|| {
-                    dirs::cache_dir()
-                        .map(|dir| dir.join("nucleotide").join("ssh-control").join("%C"))
-                })
+                options
+                    .ssh_control_path
+                    .or_else(nucleotide_remote::default_ssh_control_path)
             } else {
                 None
             };

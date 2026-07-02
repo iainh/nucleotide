@@ -555,6 +555,7 @@ fn append_ssh_connection_args(args: &mut Vec<OsString>, target: &SshTarget) {
     if let Some(control_path) = target.control_path.as_ref() {
         if let Some(parent) = control_path.parent() {
             let _ = std::fs::create_dir_all(parent);
+            ensure_private_ssh_control_dir(parent);
         }
 
         args.push(OsString::from("-o"));
@@ -2047,10 +2048,46 @@ fn default_ssh_control_master_enabled() -> bool {
     cfg!(unix)
 }
 
-fn default_ssh_control_path() -> Option<PathBuf> {
-    let control_dir = dirs::cache_dir()?.join("nucleotide").join("ssh-control");
-    Some(control_dir.join("%C"))
+pub fn default_ssh_control_path() -> Option<PathBuf> {
+    if !cfg!(unix) {
+        return None;
+    }
+
+    Some(short_ssh_control_dir().join("%C"))
 }
+
+fn short_ssh_control_dir() -> PathBuf {
+    let user = std::env::var("USER")
+        .or_else(|_| std::env::var("LOGNAME"))
+        .unwrap_or_else(|_| "user".to_string());
+    let mut user = user
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .take(16)
+        .collect::<String>();
+    if user.is_empty() {
+        user.push_str("user");
+    }
+
+    PathBuf::from("/tmp").join(format!("nucl-ssh-{user}"))
+}
+
+#[cfg(unix)]
+fn ensure_private_ssh_control_dir(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let permissions = std::fs::Permissions::from_mode(0o700);
+    let _ = std::fs::set_permissions(path, permissions);
+}
+
+#[cfg(not(unix))]
+fn ensure_private_ssh_control_dir(_path: &Path) {}
 
 fn ssh_non_tty_command(target: SshTarget, remote_command: String) -> RemoteServiceCommand {
     let mut args = Vec::new();
@@ -5925,6 +5962,27 @@ mod tests {
         assert_eq!(
             options.ssh_helper_download_base_url.as_deref(),
             Some("https://mirror.example/releases/v1")
+        );
+    }
+
+    #[test]
+    fn default_ssh_control_path_leaves_room_for_openssh_suffix() {
+        let Some(control_path) = default_ssh_control_path() else {
+            assert!(!cfg!(unix));
+            return;
+        };
+
+        let expanded_hash = "0123456789abcdef0123456789abcdef01234567";
+        let openssh_bind_suffix = ".abcdefghijklmnop";
+        let expanded_path = control_path
+            .display()
+            .to_string()
+            .replace("%C", expanded_hash);
+        let bind_path = format!("{expanded_path}{openssh_bind_suffix}");
+
+        assert!(
+            bind_path.len() < 104,
+            "OpenSSH ControlPath is too long for macOS Unix sockets: {bind_path}"
         );
     }
 
