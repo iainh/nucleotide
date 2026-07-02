@@ -1221,11 +1221,15 @@ impl Action {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OpenDocumentOptions {
     pub local_diff: bool,
+    pub launch_language_servers: bool,
 }
 
 impl Default for OpenDocumentOptions {
     fn default() -> Self {
-        Self { local_diff: true }
+        Self {
+            local_diff: true,
+            launch_language_servers: true,
+        }
     }
 }
 
@@ -1906,7 +1910,9 @@ impl Editor {
         }
 
         let id = self.new_document(doc);
-        self.launch_language_servers(id);
+        if options.launch_language_servers {
+            self.launch_language_servers(id);
+        }
 
         helix_event::dispatch(DocumentDidOpen {
             editor: self,

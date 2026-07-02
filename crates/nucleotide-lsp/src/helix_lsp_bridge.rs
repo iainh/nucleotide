@@ -592,6 +592,9 @@ impl HelixLspBridge {
                 server_id = ?server_id,
                 "Document cannot be tracked by language server"
             );
+            return Err(ProjectLspError::Internal(
+                "Document cannot be tracked by language server".to_string(),
+            ));
         }
 
         Ok(())

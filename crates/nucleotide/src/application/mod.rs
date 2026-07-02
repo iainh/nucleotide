@@ -1481,6 +1481,9 @@ impl Application {
 
                     match result {
                         Ok(server_result) => {
+                            handle.block_on(
+                                self.record_project_lsp_server(workspace_root, &server_result),
+                            );
                             info!(
                                 server_id = ?server_result.server_id,
                                 server_name = %server_result.server_name,
@@ -4282,6 +4285,8 @@ type SymbolItemFuture = BoxFuture<'static, anyhow::Result<Vec<NativeSymbolItem>>
 
 const WORKSPACE_SYNTAX_SYMBOL_FILE_LIMIT: usize = 10_000;
 const WORKSPACE_SYNTAX_SYMBOL_ITEM_LIMIT: usize = 20_000;
+const REMOTE_LSP_NAVIGATION_READY_TIMEOUT: Duration = Duration::from_secs(30);
+const REMOTE_LSP_NAVIGATION_READY_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const REMOTE_WORKSPACE_SYMBOL_FALLBACK_UNAVAILABLE: &str =
     "Workspace symbol fallback is unavailable for remote workspaces without LSP workspace symbols";
 
@@ -4820,6 +4825,44 @@ impl Application {
         result
     }
 
+    async fn project_lsp_manager_handle(&self) -> Option<ProjectLspManager> {
+        self.project_lsp_manager.read().await.clone()
+    }
+
+    async fn register_project_lsp_detection(
+        &self,
+        workspace_root: &Path,
+        project_type: &nucleotide_events::ProjectType,
+        language_servers: &[String],
+    ) {
+        if let Some(manager) = self.project_lsp_manager_handle().await {
+            manager
+                .register_project(
+                    workspace_root.to_path_buf(),
+                    project_type.clone(),
+                    language_servers.to_vec(),
+                )
+                .await;
+        }
+    }
+
+    async fn record_project_lsp_server(
+        &self,
+        workspace_root: &Path,
+        server_result: &nucleotide_events::ServerStartResult,
+    ) {
+        if let Some(manager) = self.project_lsp_manager_handle().await {
+            manager
+                .upsert_managed_server(
+                    workspace_root.to_path_buf(),
+                    server_result.server_name.clone(),
+                    server_result.language_id.clone(),
+                    server_result.server_id,
+                )
+                .await;
+        }
+    }
+
     /// Take the project LSP command receiver, leaving None in its place
     pub fn take_project_lsp_command_receiver(
         &mut self,
@@ -4939,6 +4982,8 @@ impl Application {
         if !use_manager_detection && let Some(project_dir) = project_directory {
             let (project_type, language_servers) =
                 detect_project_lsp_metadata_with_backend(&project_dir, workspace_backend).await;
+            self.register_project_lsp_detection(&project_dir, &project_type, &language_servers)
+                .await;
             let servers_started = self
                 .start_detected_project_servers(&project_dir, &project_type, &language_servers)
                 .await;
@@ -5010,7 +5055,7 @@ impl Application {
                     doc_path_ref,
                 );
 
-                if let Some(manager_ref) = self.project_lsp_manager.read().await.as_ref() {
+                if let Some(manager_ref) = self.project_lsp_manager_handle().await {
                     // Check if we have managed servers for this workspace
                     let managed_servers = manager_ref.get_managed_servers(&workspace_root).await;
 
@@ -5085,7 +5130,7 @@ impl Application {
                     );
 
                     // Check if this startup should be coordinated with project servers
-                    if let Some(manager_ref) = self.project_lsp_manager.read().await.as_ref() {
+                    if let Some(manager_ref) = self.project_lsp_manager_handle().await {
                         let managed_servers =
                             manager_ref.get_managed_servers(&workspace_root).await;
                         if !managed_servers.is_empty() {
@@ -5291,13 +5336,15 @@ impl Application {
                 self.workspace_backend.clone(),
             )
             .await;
+            self.register_project_lsp_detection(&workspace_root, &project_type, &language_servers)
+                .await;
             self.start_detected_project_servers(&workspace_root, &project_type, &language_servers)
                 .await;
             return Ok(());
         }
 
         // Detect the project and get language server requirements
-        if let Some(manager_ref) = self.project_lsp_manager.read().await.as_ref() {
+        if let Some(manager_ref) = self.project_lsp_manager_handle().await {
             if let Err(e) = manager_ref.detect_project(workspace_root.clone()).await {
                 // Use error handler for project detection failure
                 self.handle_project_lsp_error(Box::new(e), "project_detection")
@@ -5339,6 +5386,14 @@ impl Application {
                             .await
                         {
                             Ok(server_id) => {
+                                manager_ref
+                                    .upsert_managed_server(
+                                        workspace_root.clone(),
+                                        server_name.clone(),
+                                        language_id.to_string(),
+                                        server_id,
+                                    )
+                                    .await;
                                 info!(
                                     server_id = ?server_id,
                                     server_name = %server_name,
@@ -5885,6 +5940,10 @@ impl Application {
                 let result = self
                     .handle_start_server_command(&workspace_root, &server_name, &language_id)
                     .await;
+                if let Ok(server_result) = &result {
+                    self.record_project_lsp_server(&workspace_root, server_result)
+                        .await;
+                }
 
                 if response.send(result).is_err() {
                     warn!("Failed to send StartServer response - receiver dropped");
@@ -6134,21 +6193,27 @@ impl Application {
             "Processing DetectAndStartProject command"
         );
 
-        let manager_project_info =
-            if let Some(manager) = self.project_lsp_manager.read().await.as_ref() {
-                manager.get_project_info(workspace_root).await
-            } else {
-                None
-            };
+        let manager_project_info = if let Some(manager) = self.project_lsp_manager_handle().await {
+            manager.get_project_info(workspace_root).await
+        } else {
+            None
+        };
 
         let (project_type, language_servers) = match manager_project_info {
             Some(project) => (project.project_type, project.language_servers),
             None => {
-                detect_project_lsp_metadata_with_backend(
+                let (project_type, language_servers) = detect_project_lsp_metadata_with_backend(
                     workspace_root,
                     self.workspace_backend.clone(),
                 )
-                .await
+                .await;
+                self.register_project_lsp_detection(
+                    workspace_root,
+                    &project_type,
+                    &language_servers,
+                )
+                .await;
+                (project_type, language_servers)
             }
         };
 
@@ -6181,7 +6246,13 @@ impl Application {
         bridge
             .stop_server(&mut self.editor, server_id)
             .await
-            .map_err(|error| ProjectLspCommandError::Internal(error.to_string()))
+            .map_err(|error| ProjectLspCommandError::Internal(error.to_string()))?;
+
+        if let Some(manager) = self.project_lsp_manager_handle().await {
+            manager.remove_managed_server(server_id).await;
+        }
+
+        Ok(())
     }
 
     /// Handle GetProjectStatus command
@@ -6197,7 +6268,7 @@ impl Application {
             "Processing GetProjectStatus command"
         );
 
-        let manager_state = if let Some(manager) = self.project_lsp_manager.read().await.as_ref() {
+        let manager_state = if let Some(manager) = self.project_lsp_manager_handle().await {
             Some((
                 manager.get_project_info(workspace_root).await,
                 manager.get_managed_servers(workspace_root).await,
@@ -6459,6 +6530,8 @@ impl Application {
             self.workspace_backend.clone(),
         )
         .await;
+        self.register_project_lsp_detection(workspace_root, &project_type, &language_servers)
+            .await;
         self.start_detected_project_servers(workspace_root, &project_type, &language_servers)
             .await
     }
@@ -6491,6 +6564,8 @@ impl Application {
                 .await
             {
                 Ok(server_result) => {
+                    self.record_project_lsp_server(workspace_root, &server_result)
+                        .await;
                     results.push(server_result);
                     info!(server_name = %server_name, "Successfully started detected language server");
                 }
@@ -6540,6 +6615,98 @@ impl Application {
             .map_err(|error| ProjectLspCommandError::Internal(error.to_string()))
     }
 
+    fn ensure_document_tracked_by_running_servers(&mut self, doc_id: DocumentId) -> usize {
+        let Some((doc_path, doc_url, language_id, configured_server_names)) =
+            self.editor.document(doc_id).map(|doc| {
+                let configured_server_names = doc
+                    .language_config()
+                    .map(|config| {
+                        config
+                            .language_servers
+                            .iter()
+                            .map(|features| features.name.clone())
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+
+                (
+                    doc.path().cloned(),
+                    doc.url().map(|url| url.to_string()),
+                    doc.language_id().map(ToOwned::to_owned),
+                    configured_server_names,
+                )
+            })
+        else {
+            warn!(doc_id = ?doc_id, "Cannot attach running LSP servers; document not found");
+            return 0;
+        };
+
+        if configured_server_names.is_empty() {
+            debug!(
+                doc_id = ?doc_id,
+                path = ?doc_path,
+                language_id = ?language_id,
+                "Cannot attach running LSP servers; document has no configured language servers"
+            );
+            return 0;
+        }
+
+        let candidates = self
+            .editor
+            .language_servers
+            .iter_clients()
+            .filter(|client| {
+                client.is_initialized()
+                    && configured_server_names
+                        .iter()
+                        .any(|server_name| server_name == client.name())
+            })
+            .map(|client| (client.id(), client.name().to_string()))
+            .collect::<Vec<_>>();
+
+        if candidates.is_empty() {
+            debug!(
+                doc_id = ?doc_id,
+                path = ?doc_path,
+                language_id = ?language_id,
+                configured_servers = ?configured_server_names,
+                "No initialized running LSP servers match document configuration"
+            );
+            return 0;
+        }
+
+        let mut tracked_count = 0;
+        for (server_id, server_name) in candidates {
+            if self
+                .editor
+                .ensure_document_tracked_by_language_server(doc_id, server_id)
+            {
+                tracked_count += 1;
+                info!(
+                    doc_id = ?doc_id,
+                    server_id = ?server_id,
+                    server_name = %server_name,
+                    path = ?doc_path,
+                    url = ?doc_url,
+                    "Ensured document is tracked by running LSP server"
+                );
+            } else {
+                warn!(
+                    doc_id = ?doc_id,
+                    server_id = ?server_id,
+                    server_name = %server_name,
+                    path = ?doc_path,
+                    url = ?doc_url,
+                    language_id = ?language_id,
+                    configured_servers = ?configured_server_names,
+                    "Running LSP server could not track document"
+                );
+            }
+        }
+
+        tracked_count
+    }
+
     pub fn trigger_lsp_navigation(
         &mut self,
         request: editor_input::NativeLspNavigationRequest,
@@ -6557,9 +6724,19 @@ impl Application {
         let feature = request.language_server_feature();
         let include_declaration = self.editor.config().lsp.goto_reference_include_declaration;
         let mut futures: FuturesOrdered<LspLocationFuture> = FuturesOrdered::new();
+        let workspace_identity = self.workspace_backend.identity();
 
         {
             let Some(view) = self.editor.tree.try_get(self.editor.tree.focus) else {
+                self.editor.set_error("No active view for LSP navigation");
+                return;
+            };
+            let view_id = view.id;
+            let doc_id = view.doc;
+            if matches!(workspace_identity, WorkspaceIdentity::Remote(_)) {
+                self.ensure_document_tracked_by_running_servers(doc_id);
+            }
+            let Some(view) = self.editor.tree.try_get(view_id) else {
                 self.editor.set_error("No active view for LSP navigation");
                 return;
             };
@@ -6697,6 +6874,85 @@ impl Application {
         .detach();
     }
 
+    fn active_document_lsp_navigation_readiness(
+        &mut self,
+        request: editor_input::NativeLspNavigationRequest,
+    ) -> (bool, Vec<String>) {
+        let feature = request.language_server_feature();
+        let workspace_identity = self.workspace_backend.identity();
+
+        let Some(view) = self.editor.tree.try_get(self.editor.tree.focus) else {
+            return (false, vec!["no active view".to_string()]);
+        };
+        let doc_id = view.doc;
+
+        if matches!(workspace_identity, WorkspaceIdentity::Remote(_)) {
+            self.ensure_document_tracked_by_running_servers(doc_id);
+        }
+
+        let Some(doc) = self.editor.document(doc_id) else {
+            return (false, vec![format!("document {doc_id:?} not found")]);
+        };
+
+        let configured_servers = doc
+            .language_config()
+            .map(|config| {
+                config
+                    .language_servers
+                    .iter()
+                    .map(|features| {
+                        format!(
+                            "{}(feature_enabled={})",
+                            features.name,
+                            features.has_feature(feature)
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        let active_doc_servers = doc
+            .language_servers()
+            .map(|server| format!("{}({:?})", server.name(), server.id()))
+            .collect::<Vec<_>>();
+
+        let registry_servers = self
+            .editor
+            .language_servers
+            .iter_clients()
+            .map(|client| {
+                let initialized = client.is_initialized();
+                let supports_feature = initialized && client.supports_feature(feature);
+                let configured_for_feature = doc.language_config().is_some_and(|config| {
+                    config.language_servers.iter().any(|features| {
+                        features.name == client.name() && features.has_feature(feature)
+                    })
+                });
+                format!(
+                    "{}({:?}, initialized={}, configured_feature={}, supports_feature={})",
+                    client.name(),
+                    client.id(),
+                    initialized,
+                    configured_for_feature,
+                    supports_feature
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let ready = doc.language_servers_with_feature(feature).next().is_some();
+        let state = vec![
+            format!("doc_id={doc_id:?}"),
+            format!("path={:?}", doc.path()),
+            format!("url={:?}", doc.url()),
+            format!("language_id={:?}", doc.language_id()),
+            format!("configured_servers={configured_servers:?}"),
+            format!("active_doc_servers={active_doc_servers:?}"),
+            format!("registry_servers={registry_servers:?}"),
+        ];
+
+        (ready, state)
+    }
+
     fn trigger_remote_lsp_navigation_startup(
         &mut self,
         request: editor_input::NativeLspNavigationRequest,
@@ -6754,23 +7010,77 @@ impl Application {
                 return;
             };
 
-            core.update(cx, move |core, cx| match result {
-                Ok(Ok(Ok(_))) => {
-                    core.trigger_lsp_navigation_with_remote_startup(request, false, cx);
+            match result {
+                Ok(Ok(Ok(project_result))) => {
+                    let started_servers = project_result
+                        .servers_started
+                        .iter()
+                        .map(|server| format!("{}({:?})", server.server_name, server.server_id))
+                        .collect::<Vec<_>>();
+                    let deadline = Instant::now() + REMOTE_LSP_NAVIGATION_READY_TIMEOUT;
+                    let mut readiness_state = Vec::new();
+                    let mut ready_for_retry = false;
+
+                    loop {
+                        let ready = core.update(cx, |core, _cx| {
+                            let (ready, state) =
+                                core.active_document_lsp_navigation_readiness(request);
+                            readiness_state = state;
+                            if !ready {
+                                core.request_event_driven_maintenance();
+                            }
+                            ready
+                        });
+                        if ready {
+                            ready_for_retry = true;
+                            break;
+                        }
+
+                        if Instant::now() >= deadline {
+                            warn!(
+                                request = ?request,
+                                started_servers = ?started_servers,
+                                readiness_state = ?readiness_state,
+                                "Remote language server startup completed but navigation capability did not become ready"
+                            );
+                            break;
+                        }
+
+                        tokio::time::sleep(REMOTE_LSP_NAVIGATION_READY_POLL_INTERVAL).await;
+                    }
+
+                    if ready_for_retry {
+                        core.update(cx, move |core, cx| {
+                            core.trigger_lsp_navigation_with_remote_startup(request, false, cx);
+                        });
+                    } else {
+                        core.update(cx, move |core, _cx| {
+                            core.editor.set_error(format!(
+                                "Remote language server did not become ready for {}",
+                                request.picker_title().to_ascii_lowercase()
+                            ));
+                        });
+                    }
                 }
                 Ok(Ok(Err(error))) => {
-                    core.editor
-                        .set_error(format!("Remote language server startup failed: {error}"));
+                    core.update(cx, move |core, _cx| {
+                        core.editor
+                            .set_error(format!("Remote language server startup failed: {error}"));
+                    });
                 }
                 Ok(Err(_)) => {
-                    core.editor
-                        .set_error("Remote language server startup was cancelled");
+                    core.update(cx, |core, _cx| {
+                        core.editor
+                            .set_error("Remote language server startup was cancelled");
+                    });
                 }
                 Err(_) => {
-                    core.editor
-                        .set_error("Remote language server startup timed out");
+                    core.update(cx, |core, _cx| {
+                        core.editor
+                            .set_error("Remote language server startup timed out");
+                    });
                 }
-            });
+            }
         })
         .detach();
 
@@ -7925,6 +8235,8 @@ pub(crate) fn open_workspace_document_from_read(
     )
     .with_context(|| format!("failed to decode workspace file {}", read.path.display()))?;
 
+    set_remote_document_lsp_url(&mut doc, &read.path);
+
     if let Some(diff_base) = diff_base {
         doc.set_diff_base(diff_base);
     }
@@ -7933,7 +8245,10 @@ pub(crate) fn open_workspace_document_from_read(
         &read.path,
         action,
         doc,
-        helix_view::editor::OpenDocumentOptions { local_diff: false },
+        helix_view::editor::OpenDocumentOptions {
+            local_diff: false,
+            launch_language_servers: false,
+        },
     );
     if let Some(doc) = editor.document_mut(doc_id) {
         set_remote_document_lsp_url(doc, &read.path);
@@ -9250,6 +9565,7 @@ fn should_update_env_var(key: &str) -> bool {
 #[allow(dead_code)]
 mod tests {
 
+    use super::editor_input::NativeLspNavigationRequest;
     use super::{
         Application, ApplicationCore, EditorInputBridge, LspCompletionTrigger, MaintenanceWake,
         NativeOpenFileOutcome, NativeSymbolItem, NativeSymbolTarget, PendingCompletionRequest,
@@ -9773,6 +10089,7 @@ mod tests {
             doc.url().and_then(|url| url.to_file_path().ok()),
             Some(PathBuf::from("/home/me/project/src/main.rs"))
         );
+        assert_eq!(editor.language_servers.iter_clients().count(), 0);
         assert_eq!(doc.text(), "fn remote() {}\n");
         assert!(!doc.is_modified());
 
@@ -9796,6 +10113,42 @@ mod tests {
             "updated\nfn remote() {}\n"
         );
         assert!(!editor.document(doc_id).unwrap().is_modified());
+    }
+
+    #[gpui::test]
+    async fn remote_lsp_navigation_readiness_is_false_without_capable_server(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let temp = tempdir().unwrap();
+        fs::create_dir_all(temp.path().join("src")).unwrap();
+        fs::write(temp.path().join("src").join("main.rs"), "fn remote() {}\n").unwrap();
+
+        let display_root = PathBuf::from("ssh://me@example.com/home/me/project");
+        let display_path = display_root.join("src").join("main.rs");
+        let backend = path_mapped_workspace_backend(
+            Arc::new(RemoteIdentityLocalBackend),
+            WorkspacePathMapping::new(&display_root, temp.path()),
+        );
+        let app = new_test_application(cx);
+
+        app.update(cx, |app, _cx| {
+            app.project_directory = Some(display_root);
+            app.workspace_backend = backend.clone();
+            open_workspace_document(
+                &mut app.editor,
+                &backend,
+                &display_path,
+                helix_view::editor::Action::VerticalSplit,
+            )
+            .unwrap();
+
+            assert!(
+                !app.active_document_lsp_navigation_readiness(
+                    NativeLspNavigationRequest::GotoDefinition,
+                )
+                .0
+            );
+        });
     }
 
     #[test]
