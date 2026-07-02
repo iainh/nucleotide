@@ -7109,7 +7109,7 @@ pub fn init_editor(
         let mut first = true;
         for (file, pos) in args.files {
             // Skip directories
-            if file.is_dir() {
+            if !startup_path_should_open_as_file(&file) {
                 continue;
             }
 
@@ -7291,6 +7291,10 @@ pub fn init_editor(
         terminal_input_senders,
         sync_cycle_counter: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     })
+}
+
+fn startup_path_should_open_as_file(path: &Path) -> bool {
+    nucleotide_workspace::remote_path_is_probably_file(path).unwrap_or_else(|| !path.is_dir())
 }
 
 impl Application {
@@ -8447,8 +8451,9 @@ mod tests {
         path_completion_items, path_completion_items_from_listing, project_health_status,
         project_server_language_id, should_launch_lsp_on_local_host,
         should_stat_picker_root_with_backend, should_use_workspace_syntax_symbol_fallback,
-        str_prefix_at_byte_limit, suppress_shadowed_buffer_word_completion_items,
-        syntax_symbol_kind_from_capture_name, workspace_diagnostic_refresh_reply,
+        startup_path_should_open_as_file, str_prefix_at_byte_limit,
+        suppress_shadowed_buffer_word_completion_items, syntax_symbol_kind_from_capture_name,
+        workspace_diagnostic_refresh_reply,
     };
     use crate::test_utils::test_support::{
         TestUpdate, create_counting_channel, create_test_diagnostic_events,
@@ -9095,6 +9100,29 @@ mod tests {
                 name: "devbox".to_string(),
             })
         ));
+    }
+
+    #[test]
+    fn startup_path_should_open_local_files_only() {
+        let temp_dir = tempdir().unwrap();
+        let file_path = temp_dir.path().join("main.rs");
+        std::fs::write(&file_path, "fn main() {}\n").unwrap();
+
+        assert!(startup_path_should_open_as_file(&file_path));
+        assert!(!startup_path_should_open_as_file(temp_dir.path()));
+    }
+
+    #[test]
+    fn startup_path_should_open_remote_file_hints_only() {
+        assert!(startup_path_should_open_as_file(&PathBuf::from(
+            "ssh://me@example.com/home/me/project/src/main.rs"
+        )));
+        assert!(!startup_path_should_open_as_file(&PathBuf::from(
+            "ssh://me@example.com/home/me/project/"
+        )));
+        assert!(!startup_path_should_open_as_file(&PathBuf::from(
+            r"\\wsl.localhost\Ubuntu-24.04\home\me\project\"
+        )));
     }
 
     #[test]
