@@ -209,6 +209,14 @@ fn determine_workspace_root(args: &Args) -> Result<Option<PathBuf>> {
     Ok(None)
 }
 
+fn normalize_startup_file_path(path: &Path) -> PathBuf {
+    if nucleotide_workspace::classify_workspace_location(path).is_remote() {
+        path.to_path_buf()
+    } else {
+        helix_stdx::path::canonicalize(path)
+    }
+}
+
 #[cfg(any(target_os = "windows", test))]
 fn parse_startup_dock_action<I, S>(args: I) -> Result<Option<usize>>
 where
@@ -396,7 +404,7 @@ fn main() -> Result<()> {
     args.files = args
         .files
         .into_iter()
-        .map(|(path, pos)| (helix_stdx::path::canonicalize(&path), pos))
+        .map(|(path, pos)| (normalize_startup_file_path(&path), pos))
         .collect();
 
     #[cfg(target_os = "windows")]
@@ -1645,6 +1653,20 @@ mod tests {
             determine_workspace_root(&args).unwrap(),
             Some(PathBuf::from("ssh://me@example.com/home/me/project/src"))
         );
+    }
+
+    #[test]
+    fn normalize_startup_file_path_preserves_ssh_uri() {
+        let path = PathBuf::from("ssh://me@example.com/home/me/project/src/main.rs");
+
+        assert_eq!(normalize_startup_file_path(&path), path);
+    }
+
+    #[test]
+    fn normalize_startup_file_path_preserves_wsl_unc_path() {
+        let path = PathBuf::from(r"\\wsl.localhost\Ubuntu-24.04\home\me\project\src\main.rs");
+
+        assert_eq!(normalize_startup_file_path(&path), path);
     }
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
