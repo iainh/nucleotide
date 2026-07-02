@@ -2211,8 +2211,9 @@ where
                         .min((MAX_FRAME_BODY_LEN / 2) as usize),
                 );
                 let env = if request.inherit_project_environment {
+                    let environment_root = self.project_environment_root_for_process(&cwd);
                     let mut project_environment = self
-                        .load_project_environment(&cwd)
+                        .load_project_environment(&environment_root)
                         .map_err(remote_error_from_environment)?
                         .variables;
                     project_environment.extend(request.env);
@@ -2276,6 +2277,26 @@ where
                 diagnostics,
             })
         })
+    }
+
+    fn project_environment_root_for_process(&self, cwd: &Path) -> PathBuf {
+        let mut candidate = normalize_path_lexically(cwd);
+
+        loop {
+            if candidate.join(".envrc").is_file() {
+                return candidate;
+            }
+
+            if candidate == self.workspace_root || !candidate.starts_with(&self.workspace_root) {
+                break;
+            }
+
+            if !candidate.pop() {
+                break;
+            }
+        }
+
+        cwd.to_path_buf()
     }
 
     fn resolve_path(&self, path: &Path) -> std::result::Result<PathBuf, RemoteError> {
@@ -4860,6 +4881,99 @@ esac
         assert!(process.success);
         assert_eq!(process.stdout_len, "devshell:override".len());
         assert_eq!(&frame.body[..process.stdout_len], b"devshell:override");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn service_run_process_uses_workspace_envrc_for_nested_cwd() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let nested = temp.path().join("crates").join("app");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(temp.path().join(".envrc"), "use flake\n").unwrap();
+
+        let fake_bin = executable_tempdir();
+        let fake_nix = fake_bin.path().join("nix");
+        std::fs::write(
+            &fake_nix,
+            r#"#!/bin/sh
+case "$*" in
+  *"print-dev-env"*)
+    printf '{"variables":{"PATH":{"type":"exported","value":"/nix/dev/bin"},"DEV_ONLY":{"type":"exported","value":"nested-devshell"}}}\n'
+    ;;
+  *"profile wipe-history"*)
+    exit 0
+    ;;
+  *)
+    exit 2
+    ;;
+esac
+"#,
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&fake_nix).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&fake_nix, permissions).unwrap();
+        if !generated_executable_is_allowed(&fake_nix) {
+            return;
+        }
+
+        let baseline = HashMap::from([
+            (
+                "PATH".to_string(),
+                format!("{}:/usr/bin:/bin", fake_bin.path().display()),
+            ),
+            (
+                "HOME".to_string(),
+                temp.path().join("home").display().to_string(),
+            ),
+            (
+                "NUCLEOTIDE_CACHE_DIR".to_string(),
+                temp.path().join("cache").display().to_string(),
+            ),
+        ]);
+        let request = request_frame(
+            12,
+            RemoteRequest::RunProcess(ProcessRequest {
+                program: "/bin/sh".to_string(),
+                args: vec![
+                    "-c".to_string(),
+                    "printf '%s:%s' \"$DEV_ONLY\" \"$(pwd -P)\"".to_string(),
+                ],
+                cwd: nested.strip_prefix(temp.path()).unwrap().to_path_buf(),
+                env: BTreeMap::new(),
+                clear_env: true,
+                inherit_project_environment: true,
+                max_output_bytes: None,
+                timeout_ms: None,
+            }),
+            Vec::new(),
+        );
+        let mut input = Vec::new();
+        write_frame(&mut input, &request).unwrap();
+
+        let service = WorkspaceService::with_environment_baseline(
+            LocalWorkspaceBackend,
+            temp.path().to_path_buf(),
+            baseline,
+        )
+        .unwrap();
+        let mut output = Vec::new();
+        service.serve(&mut Cursor::new(input), &mut output).unwrap();
+
+        let frame = read_first_output_frame(output);
+        let response = frame.decode_json_header::<ResponseEnvelope>().unwrap();
+        let RemoteResponse::RunProcess(process) = response.response else {
+            panic!("expected run process response");
+        };
+        let expected = format!(
+            "nested-devshell:{}",
+            nested.canonicalize().unwrap().display()
+        );
+        assert!(process.success);
+        assert_eq!(process.stdout_len, expected.len());
+        assert_eq!(&frame.body[..process.stdout_len], expected.as_bytes());
     }
 
     #[test]
