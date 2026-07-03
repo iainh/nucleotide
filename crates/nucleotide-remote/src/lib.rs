@@ -2118,6 +2118,13 @@ fn ssh_non_tty_command(target: SshTarget, remote_command: String) -> RemoteServi
     }
 }
 
+pub fn ssh_non_tty_remote_command(
+    target: SshTarget,
+    remote_command: impl Into<String>,
+) -> RemoteServiceCommand {
+    ssh_non_tty_command(target, remote_command.into())
+}
+
 fn parse_ssh_probe_output(output: &str) -> Result<SshRemoteProbe> {
     let mut platform = None;
     let mut cache_root = None;
