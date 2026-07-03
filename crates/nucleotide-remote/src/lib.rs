@@ -27,7 +27,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncWriteExt;
 
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 pub const FRAME_VERSION: u16 = 1;
 pub const FRAME_MAGIC: [u8; 4] = *b"NUCL";
 pub const FRAME_HEADER_LEN: usize = 36;
@@ -3751,7 +3751,7 @@ where
                 ))
             }
             RemoteRequest::ReadFile { path, max_bytes } => {
-                let path = self.resolve_path(&path)?;
+                let path = self.resolve_read_path(&path)?;
                 let max_bytes = Some(
                     max_bytes
                         .unwrap_or(MAX_FRAME_BODY_LEN)
@@ -3988,6 +3988,14 @@ where
         } else {
             Err(path_outside_workspace_error(path, &self.workspace_root))
         }
+    }
+
+    fn resolve_read_path(&self, path: &Path) -> std::result::Result<PathBuf, RemoteError> {
+        if path.as_os_str().is_empty() || !path.is_absolute() {
+            return self.resolve_path(path);
+        }
+
+        Ok(normalize_path_lexically(path))
     }
 
     fn resolve_search_root(&self, root: &Path) -> std::result::Result<PathBuf, RemoteError> {
@@ -6622,7 +6630,7 @@ mod tests {
     }
 
     #[test]
-    fn service_rejects_absolute_paths_outside_workspace() {
+    fn service_read_file_allows_absolute_paths_outside_workspace() {
         let temp = tempfile::tempdir().unwrap();
         let workspace = temp.path().join("workspace");
         let outside = temp.path().join("outside.txt");
@@ -6632,15 +6640,44 @@ mod tests {
         let frame = read_first_output_frame(single_request_output(
             &workspace,
             RemoteRequest::ReadFile {
-                path: outside,
+                path: outside.clone(),
                 max_bytes: None,
             },
             Vec::new(),
         ));
 
+        assert_eq!(frame.kind, FrameKind::Response);
+        assert_eq!(frame.body, b"secret");
+        let response = frame.decode_json_header::<ResponseEnvelope>().unwrap();
+        let RemoteResponse::ReadFile(read) = response.response else {
+            panic!("expected read response");
+        };
+        assert_eq!(read.path, outside);
+        assert_eq!(read.size, 6);
+    }
+
+    #[test]
+    fn service_rejects_absolute_write_paths_outside_workspace() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("workspace");
+        let outside = temp.path().join("outside.txt");
+        std::fs::create_dir(&workspace).unwrap();
+
+        let frame = read_first_output_frame(single_request_output(
+            &workspace,
+            RemoteRequest::WriteFile {
+                path: outside.clone(),
+                create_parent_dirs: false,
+                expected_modified_unix_millis: None,
+                expected_modified_unix_nanos: None,
+            },
+            b"secret".to_vec(),
+        ));
+
         assert_eq!(frame.kind, FrameKind::Error);
         let error = frame.decode_json_header::<ErrorEnvelope>().unwrap();
         assert_eq!(error.error.code, "path_outside_workspace");
+        assert!(!outside.exists());
     }
 
     #[test]

@@ -2,7 +2,8 @@ use crate::{
     file_operations::FileOperationsInterest,
     find_lsp_workspace, jsonrpc,
     transport::{Payload, Transport},
-    Call, Error, LanguageServerId, OffsetEncoding, Result,
+    workspace_for_context, Call, Error, LanguageServerId, LspWorkspaceContext, OffsetEncoding,
+    Result,
 };
 
 use crate::lsp::{
@@ -10,9 +11,8 @@ use crate::lsp::{
     DidChangeWorkspaceFoldersParams, OneOf, PositionEncodingKind, SignatureHelp, Url,
     WorkspaceFolder, WorkspaceFoldersChangeEvent,
 };
-use helix_core::{find_workspace, syntax::config::LanguageServerFeature, ChangeSet, Rope};
+use helix_core::{syntax::config::LanguageServerFeature, ChangeSet, Rope};
 use helix_loader::VERSION_AND_GIT_HASH;
-use helix_stdx::path;
 use parking_lot::Mutex;
 use serde::Deserialize;
 use serde_json::Value;
@@ -44,6 +44,10 @@ fn workspace_for_uri(uri: lsp::Url) -> WorkspaceFolder {
             .unwrap_or_default(),
         uri,
     }
+}
+
+fn root_uri_file_path_matches(root_uri: Option<&lsp::Url>, root_path: &Path) -> bool {
+    root_uri.and_then(|uri| uri.to_file_path().ok()).as_deref() == Some(root_path)
 }
 
 fn file_operation_uri(path: &Path, is_dir: bool) -> Option<String> {
@@ -204,9 +208,9 @@ impl Client {
         manual_roots: &[PathBuf],
         doc_path: Option<&std::path::PathBuf>,
         may_support_workspace: bool,
+        workspace_context: Option<&LspWorkspaceContext>,
     ) -> bool {
-        let (workspace, workspace_is_cwd) = find_workspace();
-        let workspace = path::normalize(workspace);
+        let (workspace, workspace_is_cwd) = workspace_for_context(workspace_context);
         let root = find_lsp_workspace(
             doc_path
                 .and_then(|x| x.parent().and_then(|x| x.to_str()))
@@ -220,7 +224,15 @@ impl Client {
             .as_ref()
             .and_then(|root| lsp::Url::from_file_path(root).ok());
 
-        if self.root_path == root.unwrap_or(workspace)
+        let candidate_root = root.unwrap_or(workspace);
+        if workspace_context.is_some()
+            && (self.root_path != candidate_root
+                || !root_uri_file_path_matches(self.root_uri.as_ref(), &candidate_root))
+        {
+            return false;
+        }
+
+        if self.root_path == candidate_root
             || root_uri.as_ref().is_some_and(|root_uri| {
                 self.workspace_folders
                     .lock()
@@ -340,6 +352,7 @@ impl Client {
         server_environment: impl IntoIterator<Item = (impl AsRef<OsStr>, impl AsRef<OsStr>)>,
         root_path: PathBuf,
         root_uri: Option<lsp::Url>,
+        process_cwd: PathBuf,
         id: LanguageServerId,
         name: String,
         req_timeout: u64,
@@ -357,7 +370,7 @@ impl Client {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .current_dir(&root_path)
+            .current_dir(&process_cwd)
             // make sure the process is reaped on drop
             .kill_on_drop(true)
             .spawn();
@@ -402,6 +415,14 @@ impl Client {
 
     pub fn id(&self) -> LanguageServerId {
         self.id
+    }
+
+    pub fn root_path(&self) -> &Path {
+        &self.root_path
+    }
+
+    pub fn root_uri(&self) -> Option<&lsp::Url> {
+        self.root_uri.as_ref()
     }
 
     fn next_request_id(&self) -> jsonrpc::Id {
@@ -1660,6 +1681,16 @@ impl Client {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn root_uri_file_path_matches_native_file_uri() {
+        let root = Path::new("/home/me/project");
+        let uri = lsp::Url::from_file_path(root).unwrap();
+
+        assert!(root_uri_file_path_matches(Some(&uri), root));
+        assert!(!root_uri_file_path_matches(Some(&uri), Path::new("/tmp")));
+        assert!(!root_uri_file_path_matches(None, root));
+    }
 
     #[test]
     fn text_document_capabilities_advertise_hierarchical_document_symbols() {

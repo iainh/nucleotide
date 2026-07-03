@@ -744,6 +744,32 @@ fn remote_lsp_project_root_for_document(
         })
 }
 
+fn remote_lsp_root_uri_matches_document_workspace(
+    workspace_identity: &WorkspaceIdentity,
+    project_directory: Option<&Path>,
+    document_path: Option<&Path>,
+    root_path: &Path,
+    root_uri: Option<&lsp::Url>,
+) -> bool {
+    if !matches!(workspace_identity, WorkspaceIdentity::Remote(_)) {
+        return true;
+    }
+
+    let Some(display_root) =
+        remote_lsp_project_root_for_document(workspace_identity, project_directory, document_path)
+    else {
+        return true;
+    };
+    let location = classify_workspace_location(&display_root);
+    if !location.is_remote() {
+        return true;
+    }
+
+    let native_root = location.native_root();
+    root_path == native_root
+        && root_uri.and_then(|uri| uri.to_file_path().ok()).as_deref() == Some(native_root)
+}
+
 fn file_picker_current_directory(
     workspace_identity: &WorkspaceIdentity,
     project_directory: Option<&Path>,
@@ -6616,6 +6642,8 @@ impl Application {
     }
 
     fn ensure_document_tracked_by_running_servers(&mut self, doc_id: DocumentId) -> usize {
+        let workspace_identity = self.workspace_backend.identity();
+        let project_directory = self.project_directory.clone();
         let Some((doc_path, doc_url, language_id, configured_server_names)) =
             self.editor.document(doc_id).map(|doc| {
                 let configured_server_names = doc
@@ -6651,6 +6679,57 @@ impl Application {
             return 0;
         }
 
+        if matches!(workspace_identity, WorkspaceIdentity::Remote(_)) {
+            let stale_servers = self
+                .editor
+                .document(doc_id)
+                .map(|doc| {
+                    doc.language_servers()
+                        .filter(|client| {
+                            !remote_lsp_root_uri_matches_document_workspace(
+                                &workspace_identity,
+                                project_directory.as_deref(),
+                                doc.path().map(PathBuf::as_path),
+                                client.root_path(),
+                                client.root_uri(),
+                            )
+                        })
+                        .map(|client| {
+                            (
+                                client.name().to_string(),
+                                client.id(),
+                                client.root_path().to_path_buf(),
+                                client.root_uri().map(|url| url.as_str().to_string()),
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+
+            if !stale_servers.is_empty()
+                && let Some(doc) = self.editor.document_mut(doc_id)
+            {
+                let identifier = document_lsp_identifier(doc);
+                for (server_name, server_id, root_path, root_uri) in stale_servers {
+                    if let Some(language_server) = doc.remove_language_server_by_name(&server_name)
+                        && let Some(identifier) = identifier.as_ref()
+                    {
+                        language_server.text_document_did_close(identifier.clone());
+                    }
+                    warn!(
+                        doc_id = ?doc_id,
+                        server_id = ?server_id,
+                        server_name = %server_name,
+                        path = ?doc_path,
+                        url = ?doc_url,
+                        client_root = %root_path.display(),
+                        client_root_uri = ?root_uri,
+                        "Removed stale remote LSP document attachment"
+                    );
+                }
+            }
+        }
+
         let candidates = self
             .editor
             .language_servers
@@ -6660,8 +6739,22 @@ impl Application {
                     && configured_server_names
                         .iter()
                         .any(|server_name| server_name == client.name())
+                    && remote_lsp_root_uri_matches_document_workspace(
+                        &workspace_identity,
+                        project_directory.as_deref(),
+                        doc_path.as_deref(),
+                        client.root_path(),
+                        client.root_uri(),
+                    )
             })
-            .map(|client| (client.id(), client.name().to_string()))
+            .map(|client| {
+                (
+                    client.id(),
+                    client.name().to_string(),
+                    client.root_path().to_path_buf(),
+                    client.root_uri().map(|url| url.as_str().to_string()),
+                )
+            })
             .collect::<Vec<_>>();
 
         if candidates.is_empty() {
@@ -6670,13 +6763,14 @@ impl Application {
                 path = ?doc_path,
                 language_id = ?language_id,
                 configured_servers = ?configured_server_names,
+                project_directory = ?project_directory,
                 "No initialized running LSP servers match document configuration"
             );
             return 0;
         }
 
         let mut tracked_count = 0;
-        for (server_id, server_name) in candidates {
+        for (server_id, server_name, root_path, root_uri) in candidates {
             if self
                 .editor
                 .ensure_document_tracked_by_language_server(doc_id, server_id)
@@ -6688,6 +6782,8 @@ impl Application {
                     server_name = %server_name,
                     path = ?doc_path,
                     url = ?doc_url,
+                    client_root = %root_path.display(),
+                    client_root_uri = ?root_uri,
                     "Ensured document is tracked by running LSP server"
                 );
             } else {
@@ -6697,6 +6793,8 @@ impl Application {
                     server_name = %server_name,
                     path = ?doc_path,
                     url = ?doc_url,
+                    client_root = %root_path.display(),
+                    client_root_uri = ?root_uri,
                     language_id = ?language_id,
                     configured_servers = ?configured_server_names,
                     "Running LSP server could not track document"
@@ -9584,10 +9682,11 @@ mod tests {
         native_symbol_item_from_lsp, navigation_display_path, open_workspace_document,
         path_completion_items, path_completion_items_from_listing, project_health_status,
         project_server_language_id, remote_lsp_project_root_for_document,
-        should_launch_lsp_on_local_host, should_stat_picker_root_with_backend,
-        should_use_workspace_syntax_symbol_fallback, startup_path_should_open_as_file,
-        str_prefix_at_byte_limit, suppress_shadowed_buffer_word_completion_items,
-        syntax_symbol_kind_from_capture_name, workspace_diagnostic_refresh_reply,
+        remote_lsp_root_uri_matches_document_workspace, should_launch_lsp_on_local_host,
+        should_stat_picker_root_with_backend, should_use_workspace_syntax_symbol_fallback,
+        startup_path_should_open_as_file, str_prefix_at_byte_limit,
+        suppress_shadowed_buffer_word_completion_items, syntax_symbol_kind_from_capture_name,
+        workspace_diagnostic_refresh_reply,
     };
     use crate::test_utils::test_support::{
         TestUpdate, create_counting_channel, create_test_diagnostic_events,
@@ -10320,6 +10419,14 @@ mod tests {
             ),
             PathBuf::from("ssh://me@example.com/home/me/project/src/main.rs")
         );
+        assert_eq!(
+            navigation_display_path(
+                Path::new("/nix/store/rust/src/lib.rs"),
+                Some(project_root),
+                &identity,
+            ),
+            PathBuf::from("ssh://me@example.com/nix/store/rust/src/lib.rs")
+        );
     }
 
     #[gpui::test]
@@ -10390,6 +10497,56 @@ mod tests {
                     offset_encoding: OffsetEncoding::Utf8,
                 })
                 .expect("remote LSP jump");
+            let doc = app.editor.document(doc_id).expect("opened remote doc");
+
+            assert_eq!(
+                doc.path().map(PathBuf::as_path),
+                Some(display_path.as_path())
+            );
+            assert_eq!(
+                doc.selection(view_id)
+                    .primary()
+                    .cursor_line(doc.text().slice(..)),
+                1
+            );
+        });
+
+        assert!(!display_path.exists());
+    }
+
+    #[gpui::test]
+    async fn jump_to_lsp_location_maps_external_remote_native_path_to_same_remote(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let temp = tempdir().unwrap();
+        let project_native_root = temp.path().join("project");
+        let external_native_root = temp.path().join("cargo").join("git");
+        fs::create_dir_all(project_native_root.join("src")).unwrap();
+        fs::create_dir_all(&external_native_root).unwrap();
+        let external_native_path = external_native_root.join("lib.rs");
+        fs::write(&external_native_path, "zero\none\n").unwrap();
+
+        let display_root = PathBuf::from("ssh://me@example.com/home/me/project");
+        let display_path = PathBuf::from(format!(
+            "ssh://me@example.com{}",
+            external_native_path.to_string_lossy()
+        ));
+        let backend = path_mapped_workspace_backend(
+            Arc::new(RemoteIdentityLocalBackend),
+            WorkspacePathMapping::new(&display_root, &project_native_root),
+        );
+        let app = new_test_application(cx);
+
+        app.update(cx, |app, _cx| {
+            app.project_directory = Some(display_root.clone());
+            app.workspace_backend = backend;
+            let (doc_id, view_id) = app
+                .jump_to_lsp_location(&crate::types::LspLocation {
+                    path: external_native_path.clone(),
+                    range: lsp::Range::new(lsp::Position::new(1, 0), lsp::Position::new(1, 1)),
+                    offset_encoding: OffsetEncoding::Utf8,
+                })
+                .expect("external remote LSP jump");
             let doc = app.editor.document(doc_id).expect("opened remote doc");
 
             assert_eq!(
@@ -10897,6 +11054,70 @@ mod tests {
         );
 
         assert_eq!(root, None);
+    }
+
+    #[test]
+    fn remote_lsp_root_uri_matches_native_remote_workspace() {
+        let identity = WorkspaceIdentity::Remote(RemoteWorkspaceIdentity {
+            kind: RemoteWorkspaceKind::Ssh,
+            name: "devbox".to_string(),
+        });
+        let project_directory = Path::new("ssh://devbox/home/me/project");
+        let document_path = Path::new("ssh://devbox/home/me/project/src/main.rs");
+        let native_uri = lsp::Url::from_file_path("/home/me/project").unwrap();
+
+        assert!(remote_lsp_root_uri_matches_document_workspace(
+            &identity,
+            Some(project_directory),
+            Some(document_path),
+            Path::new("/home/me/project"),
+            Some(&native_uri),
+        ));
+    }
+
+    #[test]
+    fn remote_lsp_root_uri_rejects_missing_or_display_root_uri() {
+        let identity = WorkspaceIdentity::Remote(RemoteWorkspaceIdentity {
+            kind: RemoteWorkspaceKind::Ssh,
+            name: "devbox".to_string(),
+        });
+        let project_directory = Path::new("ssh://devbox/home/me/project");
+        let document_path = Path::new("ssh://devbox/home/me/project/src/main.rs");
+        let native_uri = lsp::Url::from_file_path("/home/me/project").unwrap();
+        let display_uri = lsp::Url::parse("file:///ssh%3A/devbox/home/me/project").unwrap();
+
+        assert!(!remote_lsp_root_uri_matches_document_workspace(
+            &identity,
+            Some(project_directory),
+            Some(document_path),
+            Path::new("/home/me/project"),
+            None,
+        ));
+        assert!(!remote_lsp_root_uri_matches_document_workspace(
+            &identity,
+            Some(project_directory),
+            Some(document_path),
+            Path::new("/home/me/project"),
+            Some(&display_uri),
+        ));
+        assert!(!remote_lsp_root_uri_matches_document_workspace(
+            &identity,
+            Some(project_directory),
+            Some(document_path),
+            Path::new("ssh://devbox/home/me/project"),
+            Some(&native_uri),
+        ));
+    }
+
+    #[test]
+    fn remote_lsp_root_uri_check_leaves_local_workspaces_unchanged() {
+        assert!(remote_lsp_root_uri_matches_document_workspace(
+            &WorkspaceIdentity::Local,
+            Some(Path::new("/Users/me/project")),
+            Some(Path::new("/Users/me/project/src/main.rs")),
+            Path::new("/tmp/stale"),
+            None,
+        ));
     }
 
     #[test]

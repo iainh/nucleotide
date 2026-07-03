@@ -127,6 +127,52 @@ impl WorkspaceLocation {
     pub fn path_mapping(&self) -> WorkspacePathMapping {
         WorkspacePathMapping::new(self.display_root(), self.native_root())
     }
+
+    pub fn display_path_for_native_path(&self, native_path: &Path) -> PathBuf {
+        match self {
+            WorkspaceLocation::Local { .. } => native_path.to_path_buf(),
+            WorkspaceLocation::Wsl {
+                original_path,
+                distro,
+                linux_path,
+            } => {
+                if let Ok(relative_path) = native_path.strip_prefix(linux_path) {
+                    return join_display_root(original_path, relative_path);
+                }
+                wsl_display_path_for_native_path(original_path, distro, native_path)
+            }
+            WorkspaceLocation::Ssh {
+                original_path,
+                target,
+                path,
+            } => {
+                if let Ok(relative_path) = native_path.strip_prefix(path) {
+                    return join_display_root(original_path, relative_path);
+                }
+                ssh_display_path_for_native_path(target, native_path)
+            }
+        }
+    }
+
+    pub fn matches_remote_identity(&self, other: &WorkspaceLocation) -> bool {
+        match (self, other) {
+            (
+                WorkspaceLocation::Wsl { distro, .. },
+                WorkspaceLocation::Wsl {
+                    distro: other_distro,
+                    ..
+                },
+            ) => distro == other_distro,
+            (
+                WorkspaceLocation::Ssh { target, .. },
+                WorkspaceLocation::Ssh {
+                    target: other_target,
+                    ..
+                },
+            ) => target == other_target,
+            _ => false,
+        }
+    }
 }
 
 pub fn classify_workspace_location(path: impl AsRef<Path>) -> WorkspaceLocation {
@@ -264,6 +310,87 @@ fn startup_display_workspace_root(original_path: &Path, native_path: &Path) -> P
     }
 
     PathBuf::from(trimmed)
+}
+
+fn join_display_root(display_root: &Path, relative_path: &Path) -> PathBuf {
+    if relative_path.as_os_str().is_empty() {
+        display_root.to_path_buf()
+    } else {
+        display_root.join(relative_path)
+    }
+}
+
+fn ssh_display_path_for_native_path(target: &SshWorkspaceTarget, native_path: &Path) -> PathBuf {
+    let authority = ssh_authority(target);
+    let path = percent_encode_posix_path(&native_path.to_string_lossy());
+    PathBuf::from(format!("ssh://{authority}{path}"))
+}
+
+fn ssh_authority(target: &SshWorkspaceTarget) -> String {
+    let mut authority = String::new();
+    if let Some(user) = &target.user {
+        authority.push_str(user);
+        authority.push('@');
+    }
+
+    if target.host.contains(':') {
+        authority.push('[');
+        authority.push_str(&target.host);
+        authority.push(']');
+    } else {
+        authority.push_str(&target.host);
+    }
+
+    if let Some(port) = target.port {
+        authority.push(':');
+        authority.push_str(&port.to_string());
+    }
+
+    authority
+}
+
+fn wsl_display_path_for_native_path(
+    original_path: &Path,
+    distro: &str,
+    native_path: &Path,
+) -> PathBuf {
+    let original_text = original_path.to_string_lossy();
+    let native_text = native_path.to_string_lossy();
+    if original_text.contains('\\') {
+        let relative_text = native_text.trim_start_matches('/').replace('/', "\\");
+        if relative_text.is_empty() {
+            PathBuf::from(format!(r"\\wsl.localhost\{distro}"))
+        } else {
+            PathBuf::from(format!(r"\\wsl.localhost\{distro}\{relative_text}"))
+        }
+    } else {
+        let relative_text = native_text.trim_start_matches('/');
+        if relative_text.is_empty() {
+            PathBuf::from(format!("//wsl.localhost/{distro}"))
+        } else {
+            PathBuf::from(format!("//wsl.localhost/{distro}/{relative_text}"))
+        }
+    }
+}
+
+fn percent_encode_posix_path(path: &str) -> String {
+    path.split('/')
+        .map(percent_encode_uri_component)
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn percent_encode_uri_component(value: &str) -> String {
+    let mut output = String::new();
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            output.push(char::from(byte));
+        } else {
+            output.push('%');
+            output.push_str(&format!("{byte:02X}"));
+        }
+    }
+    output
 }
 
 fn parse_wsl_unc_path(value: &str) -> Option<(String, PathBuf)> {
@@ -734,11 +861,36 @@ impl WorkspacePathMapping {
     }
 
     pub fn to_native_path(&self, path: &Path) -> PathBuf {
-        rebase_workspace_path(path, &self.display_root, &self.native_root)
+        let mapped_path = rebase_workspace_path(path, &self.display_root, &self.native_root);
+        if mapped_path != path {
+            return mapped_path;
+        }
+
+        let display_location = classify_workspace_location(&self.display_root);
+        if !display_location.is_remote() {
+            return path.to_path_buf();
+        }
+
+        let path_location = classify_workspace_location(path);
+        if display_location.matches_remote_identity(&path_location) {
+            path_location.native_root().to_path_buf()
+        } else {
+            path.to_path_buf()
+        }
     }
 
     pub fn to_display_path(&self, path: &Path) -> PathBuf {
-        rebase_workspace_path(path, &self.native_root, &self.display_root)
+        let mapped_path = rebase_workspace_path(path, &self.native_root, &self.display_root);
+        if mapped_path != path {
+            return mapped_path;
+        }
+
+        let display_location = classify_workspace_location(&self.display_root);
+        if display_location.is_remote() && path.is_absolute() {
+            display_location.display_path_for_native_path(path)
+        } else {
+            path.to_path_buf()
+        }
     }
 }
 
@@ -2581,6 +2733,45 @@ mod tests {
                 .path_mapping()
                 .to_native_path(&path.join("src").join("main.rs")),
             PathBuf::from("/home/me/project/src/main.rs")
+        );
+    }
+
+    #[test]
+    fn workspace_location_maps_external_ssh_native_path_to_same_target_display_path() {
+        let path = PathBuf::from("ssh://me@example.com:2222/home/me/project");
+        let location = classify_workspace_location(&path);
+
+        assert_eq!(
+            location.display_path_for_native_path(Path::new("/nix/store/rust source/lib.rs")),
+            PathBuf::from("ssh://me@example.com:2222/nix/store/rust%20source/lib.rs")
+        );
+    }
+
+    #[test]
+    fn workspace_location_maps_external_wsl_native_path_to_same_distro_display_path() {
+        let path = PathBuf::from(r"\\wsl.localhost\Ubuntu-24.04\home\me\project");
+        let location = classify_workspace_location(&path);
+
+        assert_eq!(
+            location.display_path_for_native_path(Path::new("/nix/store/rust/lib.rs")),
+            PathBuf::from(r"\\wsl.localhost\Ubuntu-24.04\nix\store\rust\lib.rs")
+        );
+    }
+
+    #[test]
+    fn workspace_mapping_maps_external_same_remote_paths() {
+        let mapping =
+            WorkspacePathMapping::new("ssh://me@example.com/home/me/project", "/home/me/project");
+
+        assert_eq!(
+            mapping.to_display_path(Path::new("/home/me/.cargo/git/checkout/lib.rs")),
+            PathBuf::from("ssh://me@example.com/home/me/.cargo/git/checkout/lib.rs")
+        );
+        assert_eq!(
+            mapping.to_native_path(Path::new(
+                "ssh://me@example.com/home/me/.cargo/git/checkout/lib.rs"
+            )),
+            PathBuf::from("/home/me/.cargo/git/checkout/lib.rs")
         );
     }
 
