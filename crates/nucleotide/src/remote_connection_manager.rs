@@ -18,7 +18,8 @@ use nucleotide_core::{EditorStatus, Severity};
 use nucleotide_types::scrollbar::SCROLLBAR_THICKNESS;
 use nucleotide_ui::scrollbar::{Scrollbar, ScrollbarState};
 use nucleotide_ui::{
-    Button, ButtonSize, ButtonVariant, IconPosition, MenuCheckSide, PopupMenu, ThemedContext,
+    Button, ButtonSize, ButtonVariant, FileIcon, IconPosition, ListItem, ListItemSpacing,
+    ListItemVariant, MenuCheckSide, PopupMenu, ThemedContext,
 };
 use nucleotide_workspace::{
     DirectoryListing, FileKind, SshWorkspaceTarget, WorkspaceBackendHandle,
@@ -26,7 +27,7 @@ use nucleotide_workspace::{
 };
 
 use crate::application::workspace_backend_for_project_directory_with_progress;
-use crate::file_tree::icons::{chevron_icon, folder_icon};
+use crate::file_tree::icons::chevron_icon;
 use crate::remote_connections::{RemoteConnectionStore, target_to_string, valid_connection_name};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -916,32 +917,35 @@ impl RemoteConnectionManagerView {
     ) -> impl IntoElement {
         let theme = cx.theme();
         let tokens = &theme.tokens;
+        let dropdown_tokens = tokens.dropdown_tokens();
+        let background = if selected {
+            dropdown_tokens.item_background_selected
+        } else {
+            dropdown_tokens.item_background
+        };
+        let text_color = if selected {
+            dropdown_tokens.item_text_selected
+        } else {
+            dropdown_tokens.item_text
+        };
+        let secondary_text = tokens.chrome.text_chrome_secondary;
+        let text_sm = tokens.sizes.text_sm;
         let suggestion_for_click = suggestion.clone();
+        let click_listener = cx.listener(move |this, _event, _window, cx| {
+            this.apply_suggestion(suggestion_for_click.clone(), cx);
+        });
 
-        div()
-            .id(("remote-suggestion", index))
-            .flex()
-            .items_center()
-            .justify_between()
-            .px_3()
-            .py_2()
-            .cursor_pointer()
-            .bg(if selected {
-                tokens.dropdown_tokens().item_background_selected
-            } else {
-                tokens.dropdown_tokens().item_background
+        ListItem::new(("remote-suggestion", index))
+            .variant(ListItemVariant::Ghost)
+            .spacing(ListItemSpacing::Default)
+            .selected(selected)
+            .focusable(false)
+            .with_listener(move |item| {
+                item.cursor_pointer()
+                    .bg(background)
+                    .text_color(text_color)
+                    .on_mouse_down(MouseButton::Left, click_listener)
             })
-            .text_color(if selected {
-                tokens.dropdown_tokens().item_text_selected
-            } else {
-                tokens.dropdown_tokens().item_text
-            })
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, _event, _window, cx| {
-                    this.apply_suggestion(suggestion_for_click.clone(), cx);
-                }),
-            )
             .child(
                 div()
                     .flex()
@@ -950,15 +954,15 @@ impl RemoteConnectionManagerView {
                     .child(div().child(suggestion.display_text.clone()))
                     .child(
                         div()
-                            .text_size(tokens.sizes.text_sm)
-                            .text_color(tokens.chrome.text_chrome_secondary)
+                            .text_size(text_sm)
+                            .text_color(secondary_text)
                             .child(suggestion.description.clone()),
                     ),
             )
-            .child(
+            .end_slot(
                 div()
-                    .text_size(tokens.sizes.text_sm)
-                    .text_color(tokens.chrome.text_chrome_secondary)
+                    .text_size(text_sm)
+                    .text_color(secondary_text)
                     .child(suggestion.source.label()),
             )
     }
@@ -1110,55 +1114,57 @@ impl RemoteConnectionManagerView {
         } else {
             file_tree_tokens.item_text
         };
+        let background = if selected {
+            file_tree_tokens.item_background_selected
+        } else {
+            file_tree_tokens.background
+        };
+        let hover_background = file_tree_tokens.item_background_hover;
+        let click_listener = cx.listener(move |this, _event, _window, cx| {
+            this.directory_selection = index;
+            this.load_directory(row_path.clone(), cx);
+        });
 
-        div()
-            .id(("remote-directory", index))
-            .flex()
-            .items_center()
-            .gap_2()
-            .px_3()
-            .py_2()
-            .cursor_pointer()
-            .bg(if selected {
-                file_tree_tokens.item_background_selected
-            } else {
-                file_tree_tokens.background
+        ListItem::new(("remote-directory", index))
+            .variant(ListItemVariant::Ghost)
+            .spacing(ListItemSpacing::Default)
+            .selected(selected)
+            .focusable(false)
+            .with_listener(move |item| {
+                item.cursor_pointer()
+                    .bg(background)
+                    .text_color(text_color)
+                    .when(!selected, |item| {
+                        item.hover(move |item| item.bg(hover_background))
+                    })
+                    .on_mouse_down(MouseButton::Left, click_listener)
             })
-            .text_color(text_color)
-            .when(!selected, |row| {
-                row.hover(move |row| row.bg(file_tree_tokens.item_background_hover))
-            })
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, _event, _window, cx| {
-                    this.directory_selection = index;
-                    this.load_directory(row_path.clone(), cx);
-                }),
-            )
-            .child(
+            .start_slot(
                 div()
-                    .w(px(14.0))
-                    .h(px(14.0))
-                    .flex_shrink_0()
                     .flex()
                     .items_center()
-                    .justify_center()
+                    .gap_2()
                     .child(
-                        chevron_icon("right")
-                            .size(px(14.0))
-                            .text_color(chevron_color),
-                    ),
-            )
-            .child(
-                folder_icon(false)
-                    .size(px(16.0))
-                    .text_color(icon_color)
-                    .flex_shrink_0(),
+                        div()
+                            .w(px(14.0))
+                            .h(px(14.0))
+                            .flex_shrink_0()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                chevron_icon("right")
+                                    .size(px(14.0))
+                                    .text_color(chevron_color),
+                            ),
+                    )
+                    .child(FileIcon::directory(false).size(16.0).text_color(icon_color)),
             )
             .child(
                 div()
                     .min_w(px(0.0))
                     .flex_1()
+                    .ml(px(4.0))
                     .whitespace_nowrap()
                     .child(row_name),
             )
