@@ -97,6 +97,8 @@ pub mod editor {
             OpenFile,
             OpenDirectory,
             OpenRemote,
+            ReconnectRemote,
+            CancelRemoteConnection,
             OpenSettings,
             ReloadConfiguration,
             Save,
