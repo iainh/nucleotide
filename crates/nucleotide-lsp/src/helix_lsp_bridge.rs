@@ -7,10 +7,11 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 
-use helix_lsp::LanguageServerId;
+use helix_lsp::{LanguageServerId, LspWorkspaceContext};
 use helix_view::Editor;
 use nucleotide_events::{ProjectLspEvent, ServerStartupResult};
 use nucleotide_logging::{debug, error, info, instrument, warn};
+use nucleotide_workspace::{WorkspacePathMapping, classify_workspace_location};
 use serde_json::Value as JsonValue;
 use tokio::sync::broadcast;
 
@@ -52,6 +53,33 @@ pub trait LspLaunchProxyProvider: Send + Sync {
     ) -> Result<Option<LspLaunchProxy>, Box<dyn std::error::Error + Send + Sync>>;
 }
 
+#[derive(Debug, Default)]
+struct LaunchProxyCleanupRegistry {
+    paths: std::sync::Mutex<Vec<PathBuf>>,
+}
+
+impl LaunchProxyCleanupRegistry {
+    fn retain(&self, mut paths: Vec<PathBuf>) {
+        if paths.is_empty() {
+            return;
+        }
+
+        match self.paths.lock() {
+            Ok(mut retained_paths) => retained_paths.append(&mut paths),
+            Err(_) => cleanup_launch_proxy_paths(paths),
+        }
+    }
+}
+
+impl Drop for LaunchProxyCleanupRegistry {
+    fn drop(&mut self) {
+        let Ok(mut paths) = self.paths.lock() else {
+            return;
+        };
+        cleanup_launch_proxy_paths(std::mem::take(&mut *paths));
+    }
+}
+
 /// Bridge between ProjectLspManager and Helix's LSP system
 #[derive(Clone)]
 pub struct HelixLspBridge {
@@ -63,6 +91,9 @@ pub struct HelixLspBridge {
     launch_proxy_provider: Option<Arc<dyn LspLaunchProxyProvider>>,
     /// Map of (workspace_root, server_name) -> LanguageServerId to scope reuse by workspace
     workspace_server_map: Arc<std::sync::Mutex<HashMap<(PathBuf, String), LanguageServerId>>>,
+    /// Temporary proxy shims must outlive server startup because POSIX shebang
+    /// scripts are reopened by /bin/sh after exec.
+    launch_proxy_cleanup_registry: Arc<LaunchProxyCleanupRegistry>,
 }
 
 impl HelixLspBridge {
@@ -73,6 +104,7 @@ impl HelixLspBridge {
             environment_provider: None,
             launch_proxy_provider: None,
             workspace_server_map: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            launch_proxy_cleanup_registry: Arc::new(LaunchProxyCleanupRegistry::default()),
         }
     }
 
@@ -140,6 +172,7 @@ impl HelixLspBridge {
             environment_provider: Some(environment_provider),
             launch_proxy_provider: None,
             workspace_server_map: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            launch_proxy_cleanup_registry: Arc::new(LaunchProxyCleanupRegistry::default()),
         }
     }
 
@@ -153,6 +186,7 @@ impl HelixLspBridge {
             environment_provider: Some(environment_provider),
             launch_proxy_provider: Some(launch_proxy_provider),
             workspace_server_map: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            launch_proxy_cleanup_registry: Arc::new(LaunchProxyCleanupRegistry::default()),
         }
     }
 
@@ -249,7 +283,27 @@ impl HelixLspBridge {
             .get(&(workspace_root.to_path_buf(), server_name.to_string()))
         {
             // Verify the client is still alive in the editor
-            if editor.language_server_by_id(id).is_some() {
+            if let Some(client) = editor.language_server_by_id(id) {
+                if !cached_lsp_client_matches_workspace(
+                    workspace_root,
+                    client.root_path(),
+                    client.root_uri(),
+                ) {
+                    warn!(
+                        server_id = ?id,
+                        server_name = %server_name,
+                        workspace_root = %workspace_root.display(),
+                        client_root = %client.root_path().display(),
+                        client_root_uri = ?client.root_uri().map(|url| url.as_str().to_string()),
+                        expected_root = ?remote_lsp_expected_native_root(workspace_root),
+                        expected_root_uri = ?remote_lsp_expected_native_root_uri(workspace_root).map(|url| url.as_str().to_string()),
+                        "Ignoring cached remote LSP server because its root does not match the native workspace root and URI"
+                    );
+                    let mut map = self.workspace_server_map.lock().unwrap();
+                    map.remove(&(workspace_root.to_path_buf(), server_name.to_string()));
+                    return None;
+                }
+
                 return Some(id);
             } else {
                 // Clean up stale mapping
@@ -390,12 +444,31 @@ impl HelixLspBridge {
             debug!("No environment provider configured, using default environment");
         }
 
-        // Create root directories for server startup
-        // For Rust, prefer a single Cargo workspace root and let rust-analyzer expand members
+        let remote_path_mapping = remote_lsp_path_mapping(workspace_root, launch_proxy_enabled);
+        let lsp_workspace_root = remote_path_mapping
+            .as_ref()
+            .map(|mapping| mapping.native_root().to_path_buf())
+            .unwrap_or_else(|| workspace_root.to_path_buf());
+
+        // Create root directories for server startup. For remote launch proxies
+        // these are the native remote roots sent in initialize, not display URIs.
         let root_dirs = if language_id == "rust" {
-            rust_root_dirs(workspace_root)
+            rust_root_dirs(&lsp_workspace_root)
         } else {
-            vec![workspace_root.to_path_buf()]
+            vec![lsp_workspace_root.clone()]
+        };
+
+        let lsp_workspace_context = remote_path_mapping
+            .as_ref()
+            .map(|_| LspWorkspaceContext::remote(lsp_workspace_root.clone(), host_process_cwd()));
+
+        if let Some(context) = &lsp_workspace_context {
+            info!(
+                display_workspace_root = %workspace_root.display(),
+                lsp_workspace_root = %context.workspace_root.display(),
+                process_cwd = %context.process_cwd.display(),
+                "Using explicit remote LSP workspace context"
+            );
         };
 
         // Optionally wrap the server launch through our stdio proxy by PATH shimming.
@@ -474,11 +547,13 @@ impl HelixLspBridge {
             language_id,
             &root_dirs,
             !launch_proxy_enabled,
-        );
+        )
+        .map(|path| lsp_document_path_for_launch(path, remote_path_mapping.as_ref()));
 
         info!(
             doc_path = ?doc_path,
             workspace_root = %workspace_root.display(),
+            lsp_workspace_root = %lsp_workspace_root.display(),
             language_id = %language_id,
             "Representative file found for LSP initialization"
         );
@@ -488,11 +563,12 @@ impl HelixLspBridge {
 
         let mut servers: Vec<_> = editor
             .language_servers
-            .get(
+            .get_with_workspace_context(
                 language_config,
                 doc_path.as_ref(),
                 &root_dirs,
                 true, // enable_snippets
+                lsp_workspace_context.as_ref(),
             )
             .collect();
 
@@ -527,13 +603,22 @@ impl HelixLspBridge {
             let _ = std::fs::remove_file(dir.join(server_name));
             let _ = std::fs::remove_dir(dir);
         }
-        cleanup_launch_proxy_paths(launch_proxy_cleanup_paths);
 
         // Find the server with matching name
         for (name, result) in &mut servers {
             if name == server_name {
                 match result {
                     Ok(client) => {
+                        if !launch_proxy_cleanup_paths.is_empty() {
+                            debug!(
+                                server_id = ?client.id(),
+                                server_name = %name,
+                                retained_paths = launch_proxy_cleanup_paths.len(),
+                                "Retaining LSP launch proxy shims for active server"
+                            );
+                            self.launch_proxy_cleanup_registry
+                                .retain(std::mem::take(&mut launch_proxy_cleanup_paths));
+                        }
                         info!(
                             server_id = ?client.id(),
                             server_name = %name,
@@ -542,6 +627,7 @@ impl HelixLspBridge {
                         return Ok(client.id());
                     }
                     Err(e) => {
+                        cleanup_launch_proxy_paths(std::mem::take(&mut launch_proxy_cleanup_paths));
                         let error_msg = format!("Failed to start server: {}", e);
                         error!(error = %error_msg);
 
@@ -563,6 +649,7 @@ impl HelixLspBridge {
             }
         }
 
+        cleanup_launch_proxy_paths(launch_proxy_cleanup_paths);
         Err(ProjectLspError::Configuration(format!(
             "No server configuration found for: {}",
             server_name
@@ -644,6 +731,61 @@ fn cleanup_launch_proxy_paths(paths: Vec<PathBuf>) {
             let _ = std::fs::remove_file(&path);
         }
     }
+}
+
+fn remote_lsp_path_mapping(
+    workspace_root: &std::path::Path,
+    launch_proxy_enabled: bool,
+) -> Option<WorkspacePathMapping> {
+    if !launch_proxy_enabled {
+        return None;
+    }
+
+    let location = classify_workspace_location(workspace_root);
+    location.is_remote().then(|| location.path_mapping())
+}
+
+fn lsp_document_path_for_launch(
+    path: PathBuf,
+    remote_path_mapping: Option<&WorkspacePathMapping>,
+) -> PathBuf {
+    remote_path_mapping
+        .map(|mapping| mapping.to_native_path(&path))
+        .unwrap_or(path)
+}
+
+fn host_process_cwd() -> PathBuf {
+    std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir())
+}
+
+fn remote_lsp_expected_native_root(workspace_root: &std::path::Path) -> Option<PathBuf> {
+    let location = classify_workspace_location(workspace_root);
+    location
+        .is_remote()
+        .then(|| location.native_root().to_path_buf())
+}
+
+fn remote_lsp_expected_native_root_uri(workspace_root: &std::path::Path) -> Option<helix_lsp::Url> {
+    remote_lsp_expected_native_root(workspace_root)
+        .and_then(|root| helix_lsp::Url::from_file_path(root).ok())
+}
+
+fn cached_lsp_client_matches_workspace(
+    workspace_root: &std::path::Path,
+    client_root: &Path,
+    client_root_uri: Option<&helix_lsp::Url>,
+) -> bool {
+    let Some(expected_root) = remote_lsp_expected_native_root(workspace_root) else {
+        return true;
+    };
+    if client_root != expected_root {
+        return false;
+    }
+
+    client_root_uri
+        .and_then(|uri| uri.to_file_path().ok())
+        .as_deref()
+        == Some(expected_root.as_path())
 }
 
 /// Helper trait for integrating ProjectLspManager with Editor
@@ -1024,6 +1166,96 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.path);
         }
+    }
+
+    #[test]
+    fn remote_lsp_path_mapping_uses_native_root_for_proxied_ssh_launches() {
+        let display_root = PathBuf::from("ssh://me@example.com/home/me/project");
+
+        let mapping = remote_lsp_path_mapping(&display_root, true).expect("remote mapping");
+        let root_dirs = rust_root_dirs(mapping.native_root());
+        let display_doc = display_root.join("src").join("main.rs");
+        let lsp_doc = lsp_document_path_for_launch(display_doc, Some(&mapping));
+
+        assert_eq!(mapping.display_root(), display_root.as_path());
+        assert_eq!(mapping.native_root(), Path::new("/home/me/project"));
+        assert_eq!(root_dirs, vec![PathBuf::from("/home/me/project")]);
+        assert_eq!(lsp_doc, PathBuf::from("/home/me/project/src/main.rs"));
+    }
+
+    #[test]
+    fn remote_lsp_path_mapping_is_none_without_launch_proxy() {
+        let display_root = PathBuf::from("ssh://me@example.com/home/me/project");
+
+        assert!(remote_lsp_path_mapping(&display_root, false).is_none());
+    }
+
+    #[test]
+    fn launch_proxy_cleanup_registry_retains_paths_until_drop() {
+        let temp = TestDir::new("launch-proxy-cleanup");
+        let shim_dir = temp.path().join("shims");
+        let shim_path = shim_dir.join("rust-analyzer");
+        std::fs::create_dir_all(&shim_dir).unwrap();
+        std::fs::write(&shim_path, "#!/bin/sh\n").unwrap();
+
+        {
+            let registry = LaunchProxyCleanupRegistry::default();
+            registry.retain(vec![shim_path.clone(), shim_dir.clone()]);
+
+            assert!(shim_path.exists());
+            assert!(shim_dir.exists());
+        }
+
+        assert!(!shim_path.exists());
+        assert!(!shim_dir.exists());
+    }
+
+    #[test]
+    fn cached_lsp_root_matches_remote_native_root_only() {
+        let display_root = PathBuf::from("ssh://me@example.com/home/me/project");
+        let native_uri = helix_lsp::Url::from_file_path("/home/me/project").unwrap();
+        let display_uri =
+            helix_lsp::Url::parse("file:///ssh%3A/me@example.com/home/me/project").unwrap();
+
+        assert!(cached_lsp_client_matches_workspace(
+            &display_root,
+            Path::new("/home/me/project"),
+            Some(&native_uri)
+        ));
+        assert!(!cached_lsp_client_matches_workspace(
+            &display_root,
+            Path::new("/home/me/project"),
+            None
+        ));
+        assert!(!cached_lsp_client_matches_workspace(
+            &display_root,
+            Path::new("/home/me/project"),
+            Some(&display_uri)
+        ));
+        assert!(!cached_lsp_client_matches_workspace(
+            &display_root,
+            display_root.as_path(),
+            Some(&native_uri)
+        ));
+        assert!(!cached_lsp_client_matches_workspace(
+            &display_root,
+            Path::new("/Users/me/projects/nucleotide"),
+            Some(&native_uri)
+        ));
+    }
+
+    #[test]
+    fn cached_lsp_root_accepts_local_workspace_roots() {
+        assert!(cached_lsp_client_matches_workspace(
+            Path::new("/Users/me/project"),
+            Path::new("/Users/me/project"),
+            None
+        ));
+        assert!(cached_lsp_client_matches_workspace(
+            Path::new("/Users/me/project"),
+            Path::new("/tmp/other-root"),
+            None
+        ));
     }
 
     #[test]

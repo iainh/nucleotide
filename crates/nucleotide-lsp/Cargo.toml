@@ -16,6 +16,7 @@ rust-version = "1.95"
 nucleotide-events.workspace = true
 nucleotide-logging.workspace = true
 nucleotide-types.workspace = true
+nucleotide-workspace.workspace = true
 
 # Helix dependencies
 helix-core.workspace = true

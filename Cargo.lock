@@ -5113,6 +5113,7 @@ dependencies = [
  "nucleotide-events",
  "nucleotide-logging",
  "nucleotide-types",
+ "nucleotide-workspace",
  "rand 0.10.1",
  "serde_json",
  "slotmap",

@@ -32,6 +32,52 @@ pub type Result<T, E = Error> = core::result::Result<T, E>;
 pub type LanguageServerName = String;
 pub use helix_core::diagnostic::LanguageServerId;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LspWorkspaceContext {
+    pub workspace_root: PathBuf,
+    pub workspace_is_cwd: bool,
+    pub process_cwd: PathBuf,
+    pub skip_required_root_patterns: bool,
+}
+
+impl LspWorkspaceContext {
+    pub fn new(
+        workspace_root: PathBuf,
+        workspace_is_cwd: bool,
+        process_cwd: PathBuf,
+    ) -> Self {
+        Self {
+            workspace_root,
+            workspace_is_cwd,
+            process_cwd,
+            skip_required_root_patterns: false,
+        }
+    }
+
+    pub fn remote(workspace_root: PathBuf, process_cwd: PathBuf) -> Self {
+        Self {
+            workspace_root,
+            workspace_is_cwd: false,
+            process_cwd,
+            skip_required_root_patterns: true,
+        }
+    }
+}
+
+pub(crate) fn workspace_for_context(
+    workspace_context: Option<&LspWorkspaceContext>,
+) -> (PathBuf, bool) {
+    if let Some(context) = workspace_context {
+        (
+            path::normalize(&context.workspace_root),
+            context.workspace_is_cwd,
+        )
+    } else {
+        let (workspace, workspace_is_cwd) = helix_loader::find_workspace();
+        (path::normalize(workspace), workspace_is_cwd)
+    }
+}
+
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("protocol error: {0}")]
@@ -594,6 +640,7 @@ impl Registry {
         doc_path: Option<&std::path::PathBuf>,
         root_dirs: &[PathBuf],
         enable_snippets: bool,
+        workspace_context: Option<&LspWorkspaceContext>,
     ) -> Result<Arc<Client>, StartupError> {
         let syn_loader = self.syn_loader.load();
         let config = syn_loader
@@ -609,6 +656,7 @@ impl Registry {
                 doc_path,
                 root_dirs,
                 enable_snippets,
+                workspace_context,
             )
             .map(|client| {
                 self.incoming.push(UnboundedReceiverStream::new(client.1));
@@ -648,6 +696,7 @@ impl Registry {
             doc_path,
             root_dirs,
             enable_snippets,
+            None,
         ) {
             Ok(client) => client,
             Err(StartupError::NoRequiredRootFound) => return None,
@@ -683,6 +732,23 @@ impl Registry {
         root_dirs: &'a [PathBuf],
         enable_snippets: bool,
     ) -> impl Iterator<Item = (LanguageServerName, Result<Arc<Client>>)> + 'a {
+        self.get_with_workspace_context(
+            language_config,
+            doc_path,
+            root_dirs,
+            enable_snippets,
+            None,
+        )
+    }
+
+    pub fn get_with_workspace_context<'a>(
+        &'a mut self,
+        language_config: &'a LanguageConfiguration,
+        doc_path: Option<&'a std::path::PathBuf>,
+        root_dirs: &'a [PathBuf],
+        enable_snippets: bool,
+        workspace_context: Option<&'a LspWorkspaceContext>,
+    ) -> impl Iterator<Item = (LanguageServerName, Result<Arc<Client>>)> + 'a {
         language_config.language_servers.iter().filter_map(
             move |LanguageServerFeatures { name, .. }| {
                 if let Some(clients) = self.inner_by_name.get(name) {
@@ -699,7 +765,13 @@ impl Registry {
                             .workspace_lsp_roots
                             .as_deref()
                             .unwrap_or(root_dirs);
-                        client.try_add_doc(&language_config.roots, manual_roots, doc_path, *i == 0)
+                        client.try_add_doc(
+                            &language_config.roots,
+                            manual_roots,
+                            doc_path,
+                            *i == 0,
+                            workspace_context,
+                        )
                     }) {
                         return Some((name.to_owned(), Ok(client.clone())));
                     }
@@ -710,6 +782,7 @@ impl Registry {
                     doc_path,
                     root_dirs,
                     enable_snippets,
+                    workspace_context,
                 ) {
                     Ok(client) => {
                         self.inner_by_name
@@ -870,9 +943,9 @@ fn start_client(
     doc_path: Option<&std::path::PathBuf>,
     root_dirs: &[PathBuf],
     enable_snippets: bool,
+    workspace_context: Option<&LspWorkspaceContext>,
 ) -> Result<NewClient, StartupError> {
-    let (workspace, workspace_is_cwd) = helix_loader::find_workspace();
-    let workspace = path::normalize(workspace);
+    let (workspace, workspace_is_cwd) = workspace_for_context(workspace_context);
     let root = find_lsp_workspace(
         doc_path
             .and_then(|x| x.parent().and_then(|x| x.to_str()))
@@ -886,16 +959,21 @@ fn start_client(
     // `root_uri` and `workspace_folder` can be empty in case there is no workspace
     // `root_url` can not, use `workspace` as a fallback
     let root_path = root.clone().unwrap_or_else(|| workspace.clone());
-    let root_uri = root.and_then(|root| lsp::Url::from_file_path(root).ok());
+    let root_uri = root_uri_for_startup(root.as_deref(), &root_path, workspace_context);
+    let process_cwd = workspace_context
+        .map(|context| context.process_cwd.clone())
+        .unwrap_or_else(|| root_path.clone());
 
-    if let Some(globset) = &ls_config.required_root_patterns {
-        if !root_path
-            .read_dir()?
-            .flatten()
-            .map(|entry| entry.file_name())
-            .any(|entry| globset.is_match(entry))
-        {
-            return Err(StartupError::NoRequiredRootFound);
+    if !workspace_context.is_some_and(|context| context.skip_required_root_patterns) {
+        if let Some(globset) = &ls_config.required_root_patterns {
+            if !root_path
+                .read_dir()?
+                .flatten()
+                .map(|entry| entry.file_name())
+                .any(|entry| globset.is_match(entry))
+            {
+                return Err(StartupError::NoRequiredRootFound);
+            }
         }
     }
 
@@ -906,6 +984,7 @@ fn start_client(
         &ls_config.environment,
         root_path,
         root_uri,
+        process_cwd,
         id,
         name,
         ls_config.timeout,
@@ -938,6 +1017,15 @@ fn start_client(
     });
 
     Ok(NewClient(client, incoming))
+}
+
+fn root_uri_for_startup(
+    root: Option<&Path>,
+    root_path: &Path,
+    workspace_context: Option<&LspWorkspaceContext>,
+) -> Option<lsp::Url> {
+    root.or_else(|| workspace_context.map(|_| root_path))
+        .and_then(|root| lsp::Url::from_file_path(root).ok())
 }
 
 /// Find an LSP workspace of a file using the following mechanism:
@@ -1001,8 +1089,49 @@ pub fn find_lsp_workspace(
 
 #[cfg(test)]
 mod tests {
-    use super::{lsp, util::*, OffsetEncoding};
+    use super::{
+        find_lsp_workspace, lsp, root_uri_for_startup, util::*, workspace_for_context,
+        LspWorkspaceContext, OffsetEncoding,
+    };
     use helix_core::Rope;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn workspace_context_finds_native_remote_root_without_host_cwd() {
+        let workspace = PathBuf::from("/home/me/project");
+        let context = LspWorkspaceContext::remote(workspace.clone(), PathBuf::from("/tmp"));
+        let (resolved_workspace, workspace_is_cwd) = workspace_for_context(Some(&context));
+
+        let root = find_lsp_workspace(
+            "/home/me/project/src/main.rs",
+            &[],
+            &[workspace.clone()],
+            &resolved_workspace,
+            workspace_is_cwd,
+        );
+
+        assert_eq!(resolved_workspace, workspace);
+        assert!(!workspace_is_cwd);
+        assert_eq!(root, Some(PathBuf::from("/home/me/project")));
+    }
+
+    #[test]
+    fn workspace_context_uses_native_remote_root_uri_without_document_root() {
+        let workspace = PathBuf::from("/home/me/project");
+        let context = LspWorkspaceContext::remote(workspace.clone(), PathBuf::from("/tmp"));
+
+        let root_uri = root_uri_for_startup(None, &workspace, Some(&context));
+
+        assert_eq!(
+            root_uri.as_ref().map(|uri| uri.as_str()),
+            Some("file:///home/me/project")
+        );
+    }
+
+    #[test]
+    fn default_workspace_keeps_empty_root_uri_without_document_root() {
+        assert!(root_uri_for_startup(None, Path::new("/home/me/project"), None).is_none());
+    }
 
     #[test]
     fn converts_lsp_pos_to_pos() {
