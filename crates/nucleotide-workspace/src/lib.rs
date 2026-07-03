@@ -326,6 +326,10 @@ fn ssh_display_path_for_native_path(target: &SshWorkspaceTarget, native_path: &P
     PathBuf::from(format!("ssh://{authority}{path}"))
 }
 
+pub fn ssh_display_path(target: &SshWorkspaceTarget, native_path: impl AsRef<Path>) -> PathBuf {
+    ssh_display_path_for_native_path(target, native_path.as_ref())
+}
+
 fn ssh_authority(target: &SshWorkspaceTarget) -> String {
     let mut authority = String::new();
     if let Some(user) = &target.user {
@@ -371,6 +375,14 @@ fn wsl_display_path_for_native_path(
             PathBuf::from(format!("//wsl.localhost/{distro}/{relative_text}"))
         }
     }
+}
+
+pub fn wsl_display_path(distro: &str, native_path: impl AsRef<Path>) -> PathBuf {
+    wsl_display_path_for_native_path(
+        Path::new(&format!("//wsl.localhost/{distro}")),
+        distro,
+        native_path.as_ref(),
+    )
 }
 
 fn percent_encode_posix_path(path: &str) -> String {
@@ -2748,6 +2760,20 @@ mod tests {
     }
 
     #[test]
+    fn ssh_display_path_encodes_native_path_for_target() {
+        let target = SshWorkspaceTarget {
+            host: "example.com".to_string(),
+            user: Some("me".to_string()),
+            port: Some(2222),
+        };
+
+        assert_eq!(
+            ssh_display_path(&target, Path::new("/home/me/Project One/src/lib.rs")),
+            PathBuf::from("ssh://me@example.com:2222/home/me/Project%20One/src/lib.rs")
+        );
+    }
+
+    #[test]
     fn workspace_location_maps_external_wsl_native_path_to_same_distro_display_path() {
         let path = PathBuf::from(r"\\wsl.localhost\Ubuntu-24.04\home\me\project");
         let location = classify_workspace_location(&path);
@@ -2755,6 +2781,14 @@ mod tests {
         assert_eq!(
             location.display_path_for_native_path(Path::new("/nix/store/rust/lib.rs")),
             PathBuf::from(r"\\wsl.localhost\Ubuntu-24.04\nix\store\rust\lib.rs")
+        );
+    }
+
+    #[test]
+    fn wsl_display_path_uses_localhost_unc_shape() {
+        assert_eq!(
+            wsl_display_path("Ubuntu-24.04", Path::new("/home/me/project")),
+            PathBuf::from("//wsl.localhost/Ubuntu-24.04/home/me/project")
         );
     }
 

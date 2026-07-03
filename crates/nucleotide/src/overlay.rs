@@ -18,6 +18,8 @@ use std::sync::{Arc, Mutex};
 pub struct OverlayView {
     native_picker_view: Option<Entity<PickerView>>,
     native_prompt_view: Option<Entity<PromptView>>,
+    remote_connection_manager_view:
+        Option<Entity<crate::remote_connection_manager::RemoteConnectionManagerView>>,
     completion_view: Option<Entity<CompletionView>>,
     terminal_panel: Option<Entity<nucleotide_terminal_panel::TerminalPanel>>,
     // Resizable terminal panel height (pixels)
@@ -168,6 +170,7 @@ impl OverlayView {
         Self {
             native_picker_view: None,
             native_prompt_view: None,
+            remote_connection_manager_view: None,
             completion_view: None,
             terminal_panel: None,
             terminal_height_px: 220.0,
@@ -193,6 +196,7 @@ impl OverlayView {
     pub fn is_empty(&self) -> bool {
         let empty = self.native_picker_view.is_none()
             && self.native_prompt_view.is_none()
+            && self.remote_connection_manager_view.is_none()
             && self.completion_view.is_none()
             && self.terminal_panel.is_none();
 
@@ -323,9 +327,10 @@ impl OverlayView {
     fn clear_overlays(&mut self, cx: &mut Context<Self>) -> bool {
         let dismissed_picker = self.clear_picker(cx);
         let dismissed_prompt = self.clear_prompt(cx);
+        let dismissed_remote_manager = self.clear_remote_connection_manager(cx);
         let dismissed_completion = self.clear_completion(cx);
 
-        dismissed_picker || dismissed_prompt || dismissed_completion
+        dismissed_picker || dismissed_prompt || dismissed_remote_manager || dismissed_completion
     }
 
     fn clear_picker(&mut self, cx: &mut Context<Self>) -> bool {
@@ -342,6 +347,14 @@ impl OverlayView {
 
     fn clear_prompt(&mut self, cx: &mut Context<Self>) -> bool {
         let dismissed = self.native_prompt_view.take().is_some();
+        if dismissed {
+            Self::clear_prompt_focus(cx);
+        }
+        dismissed
+    }
+
+    fn clear_remote_connection_manager(&mut self, cx: &mut Context<Self>) -> bool {
+        let dismissed = self.remote_connection_manager_view.take().is_some();
         if dismissed {
             Self::clear_prompt_focus(cx);
         }
@@ -388,6 +401,13 @@ impl OverlayView {
         }
     }
 
+    fn dismiss_remote_connection_manager(&mut self, cx: &mut Context<Self>) {
+        if self.clear_remote_connection_manager(cx) {
+            cx.emit(DismissEvent);
+            cx.notify();
+        }
+    }
+
     fn replace_picker(&mut self, cx: &mut Context<Self>) {
         if self.clear_picker(cx) {
             cx.notify();
@@ -396,6 +416,12 @@ impl OverlayView {
 
     fn replace_prompt(&mut self, cx: &mut Context<Self>) {
         if self.clear_prompt(cx) {
+            cx.notify();
+        }
+    }
+
+    fn replace_remote_connection_manager(&mut self, cx: &mut Context<Self>) {
+        if self.clear_remote_connection_manager(cx) {
             cx.notify();
         }
     }
@@ -432,6 +458,7 @@ impl OverlayView {
             crate::Update::Prompt(prompt) => {
                 nucleotide_logging::trace!("DIAG: Overlay Update::Prompt received");
                 self.replace_prompt(cx);
+                self.replace_remote_connection_manager(cx);
                 let Prompt {
                     prompt: prompt_text,
                     initial_input,
@@ -674,6 +701,33 @@ impl OverlayView {
 
                 cx.notify();
             }
+            crate::Update::RemoteConnectionManager => {
+                nucleotide_logging::trace!("Overlay Update::RemoteConnectionManager received");
+                self.replace_prompt(cx);
+                self.replace_picker(cx);
+                self.replace_remote_connection_manager(cx);
+
+                let manager_view = cx.new(|cx| {
+                    crate::remote_connection_manager::RemoteConnectionManagerView::new(
+                        self.core.clone(),
+                        self.handle.clone(),
+                        cx,
+                    )
+                });
+
+                cx.subscribe(
+                    &manager_view,
+                    |this, manager_view, _event: &DismissEvent, cx| {
+                        if this.remote_connection_manager_view.as_ref() == Some(&manager_view) {
+                            this.dismiss_remote_connection_manager(cx);
+                        }
+                    },
+                )
+                .detach();
+
+                self.remote_connection_manager_view = Some(manager_view);
+                cx.notify();
+            }
             crate::Update::Completion(completion_view) => {
                 nucleotide_logging::trace!("DIAG: Overlay Update::Completion received");
                 nucleotide_logging::debug!(
@@ -737,6 +791,7 @@ impl OverlayView {
                 nucleotide_logging::trace!("DIAG: Overlay Update::Picker received");
                 // Clean up any existing picker before creating a new one
                 self.replace_picker(cx);
+                self.replace_remote_connection_manager(cx);
 
                 match picker {
                     Picker::Native {
@@ -1760,6 +1815,8 @@ impl Focusable for OverlayView {
             picker_view.focus_handle(cx)
         } else if let Some(prompt_view) = &self.native_prompt_view {
             prompt_view.focus_handle(cx)
+        } else if let Some(remote_manager) = &self.remote_connection_manager_view {
+            remote_manager.focus_handle(cx)
         } else {
             // Don't delegate to completion_view - let editor keep focus
             self.focus.clone()
@@ -1838,6 +1895,38 @@ impl Render for OverlayView {
                         // Consume clicks inside the prompt so they don't dismiss
                         .on_mouse_down(MouseButton::Left, |_, _, _| {})
                         .child(prompt_view.clone()),
+                )
+                .into_any_element();
+        }
+
+        if let Some(remote_manager) = &self.remote_connection_manager_view {
+            nucleotide_logging::trace!("DIAG: Render overlay branch: remote connection manager");
+            let theme = cx.theme();
+            let tokens = &theme.tokens;
+
+            return div()
+                .key_context("Overlay")
+                .absolute()
+                .size_full()
+                .bottom_0()
+                .left_0()
+                .occlude()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this: &mut OverlayView, _e, window, cx| {
+                        window.disable_focus();
+                        this.dismiss_remote_connection_manager(cx);
+                    }),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .size_full()
+                        .justify_center()
+                        .items_start()
+                        .pt(tokens.sizes.space_8)
+                        .on_any_mouse_down(|_, _, cx| cx.stop_propagation())
+                        .child(remote_manager.clone()),
                 )
                 .into_any_element();
         }

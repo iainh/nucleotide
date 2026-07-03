@@ -10515,6 +10515,7 @@ impl Workspace {
             crate::Update::Prompt(_)
             | crate::Update::Picker(_)
             | crate::Update::DirectoryPicker(_)
+            | crate::Update::RemoteConnectionManager
             | crate::Update::TerminalPanel(_) => {
                 self.handle_overlay_update(cx);
             }
@@ -14339,11 +14340,8 @@ impl Workspace {
     }
 
     fn show_open_remote_prompt(&mut self, cx: &mut Context<Self>) {
-        let prompt =
-            crate::prompt::Prompt::native(crate::remote_open::REMOTE_OPEN_PROMPT, "", |_| {})
-                .with_cancel(|| {});
         self.core.update(cx, |_core, cx| {
-            cx.emit(crate::Update::Prompt(prompt));
+            cx.emit(crate::Update::RemoteConnectionManager);
         });
     }
 
