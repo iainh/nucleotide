@@ -34,6 +34,9 @@ pub const FRAME_HEADER_LEN: usize = 36;
 pub const MAX_FRAME_HEADER_LEN: u32 = 1024 * 1024;
 pub const MAX_FRAME_BODY_LEN: u64 = 128 * 1024 * 1024;
 pub const DEFAULT_SSH_CONNECT_TIMEOUT_SECS: u64 = 30;
+const REMOTE_REQUEST_SLOW_LOG_MS: u64 = 500;
+const REMOTE_TRANSPORT_WAIT_SLOW_LOG_MS: u64 = 100;
+const REMOTE_QUEUE_SLOW_LOG_MS: u64 = 100;
 const DEFAULT_SSH_CONTROL_PERSIST: &str = "10m";
 const DEFAULT_RELEASE_TAG_PREFIX: &str = "v";
 const RELEASE_CHECKSUMS_ASSET: &str = "SHA256SUMS";
@@ -2879,7 +2882,7 @@ where
         let (sender, receiver) = oneshot::channel();
         let queued_at = Instant::now();
 
-        tracing::info!(
+        tracing::trace!(
             operation,
             path = %path.display(),
             remote_kind = ?identity.kind,
@@ -2890,27 +2893,52 @@ where
         std::thread::Builder::new()
             .name(format!("nucleotide-remote-{operation}"))
             .spawn(move || {
-                tracing::info!(
-                    operation,
-                    path = %worker_path.display(),
-                    remote_kind = ?identity.kind,
-                    remote_name = %identity.name,
-                    queued_ms = queued_at.elapsed().as_millis() as u64,
-                    "Remote workspace request started"
-                );
+                let queued_ms = queued_at.elapsed().as_millis() as u64;
+                if queued_ms >= REMOTE_QUEUE_SLOW_LOG_MS {
+                    tracing::info!(
+                        operation,
+                        path = %worker_path.display(),
+                        remote_kind = ?identity.kind,
+                        remote_name = %identity.name,
+                        queued_ms,
+                        "Slow remote workspace request queue"
+                    );
+                } else {
+                    tracing::debug!(
+                        operation,
+                        path = %worker_path.display(),
+                        remote_kind = ?identity.kind,
+                        remote_name = %identity.name,
+                        queued_ms,
+                        "Remote workspace request started"
+                    );
+                }
                 let started_at = Instant::now();
                 let result =
                     request_with_client(&client, &identity, operation, &worker_path, request, body);
                 let elapsed_ms = started_at.elapsed().as_millis() as u64;
                 match &result {
-                    Ok(_) => tracing::info!(
-                        operation,
-                        path = %worker_path.display(),
-                        remote_kind = ?identity.kind,
-                        remote_name = %identity.name,
-                        elapsed_ms,
-                        "Remote workspace request completed"
-                    ),
+                    Ok(_) => {
+                        if elapsed_ms >= REMOTE_REQUEST_SLOW_LOG_MS {
+                            tracing::info!(
+                                operation,
+                                path = %worker_path.display(),
+                                remote_kind = ?identity.kind,
+                                remote_name = %identity.name,
+                                elapsed_ms,
+                                "Slow remote workspace request completed"
+                            );
+                        } else {
+                            tracing::debug!(
+                                operation,
+                                path = %worker_path.display(),
+                                remote_kind = ?identity.kind,
+                                remote_name = %identity.name,
+                                elapsed_ms,
+                                "Remote workspace request completed"
+                            );
+                        }
+                    }
                     Err(error) => tracing::warn!(
                         operation,
                         path = %worker_path.display(),
@@ -2950,7 +2978,7 @@ where
     T: RemoteTransport,
 {
     let waiting_at = Instant::now();
-    tracing::info!(
+    tracing::trace!(
         operation,
         path = %path.display(),
         remote_kind = ?identity.kind,
@@ -2960,14 +2988,26 @@ where
     let mut client = client
         .lock()
         .map_err(|_| remote_lock_error(operation, path))?;
-    tracing::info!(
-        operation,
-        path = %path.display(),
-        remote_kind = ?identity.kind,
-        remote_name = %identity.name,
-        transport_wait_ms = waiting_at.elapsed().as_millis() as u64,
-        "Remote workspace request acquired transport"
-    );
+    let transport_wait_ms = waiting_at.elapsed().as_millis() as u64;
+    if transport_wait_ms >= REMOTE_TRANSPORT_WAIT_SLOW_LOG_MS {
+        tracing::info!(
+            operation,
+            path = %path.display(),
+            remote_kind = ?identity.kind,
+            remote_name = %identity.name,
+            transport_wait_ms,
+            "Remote workspace request waited for transport"
+        );
+    } else {
+        tracing::debug!(
+            operation,
+            path = %path.display(),
+            remote_kind = ?identity.kind,
+            remote_name = %identity.name,
+            transport_wait_ms,
+            "Remote workspace request acquired transport"
+        );
+    }
     client
         .request(request, body)
         .map_err(|error| client_error_to_workspace(operation, path, error))
