@@ -19,6 +19,7 @@ pub mod integration_test_phase2;
 pub mod lsp_traffic_logger;
 pub mod overlay;
 pub mod picker_capability;
+mod remote_connections;
 mod remote_open;
 pub mod runnables;
 pub mod tab;

@@ -3,6 +3,7 @@
 
 use std::path::PathBuf;
 
+use crate::remote_connections::{RemoteConnectionStore, valid_connection_name};
 use nucleotide_workspace::{classify_workspace_location, remote_path_is_probably_file};
 
 pub const REMOTE_OPEN_PROMPT: &str = "remote:";
@@ -17,6 +18,82 @@ pub struct RemoteOpenTarget {
 pub enum RemoteOpenTargetKind {
     File,
     Directory,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RemoteOpenRequest {
+    Open(RemoteOpenTarget),
+    Save {
+        name: String,
+        target: RemoteOpenTarget,
+    },
+    Forget {
+        name: String,
+    },
+    Reconnect,
+    Cancel,
+}
+
+pub fn parse_remote_open_request(
+    input: &str,
+    store: &RemoteConnectionStore,
+) -> Result<RemoteOpenRequest, String> {
+    let input = input.trim();
+    if input.is_empty() {
+        return Err(remote_open_usage());
+    }
+
+    let (command, rest) = split_command(input);
+    match command {
+        "open" => {
+            let rest =
+                rest.ok_or_else(|| "Open remote requires a saved name or target".to_string())?;
+            let target = parse_saved_or_direct_target(rest, store)?;
+            Ok(RemoteOpenRequest::Open(target))
+        }
+        "save" => {
+            let rest =
+                rest.ok_or_else(|| "Save remote requires: save <name> <target>".to_string())?;
+            let (name, target_input) = split_required_name_and_target(rest)?;
+            if !valid_connection_name(name) {
+                return Err(format!(
+                    "Saved remote name must use letters, numbers, '.', '_' or '-': {name}"
+                ));
+            }
+            let target = parse_remote_open_input(target_input)
+                .map_err(|error| format!("Cannot save remote target: {error}"))?;
+            Ok(RemoteOpenRequest::Save {
+                name: name.to_string(),
+                target,
+            })
+        }
+        "forget" => {
+            let rest = rest.ok_or_else(|| "Forget remote requires a saved name".to_string())?;
+            let name = rest.trim();
+            if name.is_empty() || name.split_whitespace().count() != 1 {
+                return Err("Forget remote requires exactly one saved name".to_string());
+            }
+            Ok(RemoteOpenRequest::Forget {
+                name: name.to_string(),
+            })
+        }
+        "reconnect" => {
+            if rest.is_some_and(|rest| !rest.trim().is_empty()) {
+                return Err("Reconnect remote does not accept arguments".to_string());
+            }
+            Ok(RemoteOpenRequest::Reconnect)
+        }
+        "cancel" => {
+            if rest.is_some_and(|rest| !rest.trim().is_empty()) {
+                return Err("Cancel remote does not accept arguments".to_string());
+            }
+            Ok(RemoteOpenRequest::Cancel)
+        }
+        _ => {
+            let target = parse_saved_or_direct_target(input, store)?;
+            Ok(RemoteOpenRequest::Open(target))
+        }
+    }
 }
 
 pub fn parse_remote_open_input(input: &str) -> Result<RemoteOpenTarget, String> {
@@ -35,6 +112,36 @@ pub fn parse_remote_open_input(input: &str) -> Result<RemoteOpenTarget, String> 
     }
 
     Err(remote_open_usage())
+}
+
+fn parse_saved_or_direct_target(
+    input: &str,
+    store: &RemoteConnectionStore,
+) -> Result<RemoteOpenTarget, String> {
+    if let Some(target) = store.saved_target(input.trim()) {
+        return parse_remote_open_input(target);
+    }
+
+    parse_remote_open_input(input)
+}
+
+fn split_command(input: &str) -> (&str, Option<&str>) {
+    input
+        .split_once(char::is_whitespace)
+        .map(|(command, rest)| (command, Some(rest.trim_start())))
+        .unwrap_or((input, None))
+}
+
+fn split_required_name_and_target(input: &str) -> Result<(&str, &str), String> {
+    let input = input.trim();
+    let Some((name, target)) = input.split_once(char::is_whitespace) else {
+        return Err("Save remote requires: save <name> <target>".to_string());
+    };
+    let target = target.trim_start();
+    if name.is_empty() || target.is_empty() {
+        return Err("Save remote requires: save <name> <target>".to_string());
+    }
+    Ok((name, target))
 }
 
 fn remote_open_target_for_path(path: PathBuf) -> RemoteOpenTarget {
@@ -350,5 +457,58 @@ mod tests {
     #[test]
     fn rejects_local_paths() {
         assert!(parse_remote_open_input("/home/me/project").is_err());
+    }
+
+    #[test]
+    fn request_opens_saved_connection_by_name() {
+        let mut store = RemoteConnectionStore::default();
+        store.save_named("devbox", "ssh://me@example.com/home/me/project");
+
+        assert_eq!(
+            parse_remote_open_request("devbox", &store).unwrap(),
+            RemoteOpenRequest::Open(RemoteOpenTarget {
+                path: PathBuf::from("ssh://me@example.com/home/me/project"),
+                kind: RemoteOpenTargetKind::Directory,
+            })
+        );
+    }
+
+    #[test]
+    fn request_supports_save_for_remote_target() {
+        let request = parse_remote_open_request(
+            "save devbox ssh -p 2222 me@example.com /home/me/project",
+            &RemoteConnectionStore::default(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            request,
+            RemoteOpenRequest::Save {
+                name: "devbox".to_string(),
+                target: RemoteOpenTarget {
+                    path: PathBuf::from("ssh://me@example.com:2222/home/me/project"),
+                    kind: RemoteOpenTargetKind::Directory,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn request_supports_management_commands() {
+        let store = RemoteConnectionStore::default();
+        assert_eq!(
+            parse_remote_open_request("forget devbox", &store).unwrap(),
+            RemoteOpenRequest::Forget {
+                name: "devbox".to_string()
+            }
+        );
+        assert_eq!(
+            parse_remote_open_request("reconnect", &store).unwrap(),
+            RemoteOpenRequest::Reconnect
+        );
+        assert_eq!(
+            parse_remote_open_request("cancel", &store).unwrap(),
+            RemoteOpenRequest::Cancel
+        );
     }
 }

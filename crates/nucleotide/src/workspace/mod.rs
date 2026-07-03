@@ -65,7 +65,11 @@ use crate::info_box::InfoBoxView;
 use crate::key_hint_view::KeyHintView;
 use crate::notification::NotificationView;
 use crate::overlay::OverlayView;
-use crate::remote_open::{RemoteOpenTarget, RemoteOpenTargetKind, parse_remote_open_input};
+use crate::remote_connections::{RemoteConnectionStore, target_to_string};
+use crate::remote_open::{
+    RemoteOpenRequest, RemoteOpenTarget, RemoteOpenTargetKind, parse_remote_open_input,
+    parse_remote_open_request,
+};
 use crate::tab::TabId;
 use crate::types::{
     EditorStatus, GlobalSearchLocation, HoverDocEntry, RegexSelectionAction, Severity,
@@ -82,7 +86,7 @@ use nucleotide_workspace::local_workspace_backend;
 use nucleotide_workspace::{
     FileKind, FileSearchQuery, FileSearchResult, FileStat, ProjectEnvironmentOrigin,
     ProjectEnvironmentSnapshot, ReadOptions, TextSearchQuery, TextSearchResult, WorkspaceBackend,
-    WorkspaceBackendHandle, WorkspaceIdentity, classify_workspace_location,
+    WorkspaceBackendHandle, WorkspaceIdentity, WorkspaceLocation, classify_workspace_location,
 };
 use slotmap::KeyData;
 // (no direct Workspace v2 items used here)
@@ -1489,6 +1493,15 @@ pub struct Workspace {
     active_completion_session: Option<ActiveCompletionSession>,
     completion_memory: CompletionMemory,
     last_native_window_metadata: Option<NativeWindowMetadata>,
+    pending_remote_open: Option<PendingRemoteOpen>,
+    remote_open_generation: u64,
+    last_remote_open_target: Option<RemoteOpenTarget>,
+}
+
+#[derive(Clone, Debug)]
+struct PendingRemoteOpen {
+    id: u64,
+    workspace_root: PathBuf,
 }
 
 #[derive(Clone, Debug)]
@@ -2322,6 +2335,53 @@ fn close_error_status(error: helix_view::editor::CloseError) -> EditorStatus {
             severity: Severity::Error,
         },
     }
+}
+
+fn remote_open_failure_status(workspace_root: &Path, error: &anyhow::Error) -> EditorStatus {
+    let cause = format!("{error:#}");
+    let guidance = match classify_workspace_location(workspace_root) {
+        WorkspaceLocation::Ssh { target, path, .. } => format!(
+            "Check that `ssh {}` connects, `{}` exists on the target, and the remote helper install settings are valid.",
+            ssh_target_guidance_arg(&target),
+            path.display()
+        ),
+        WorkspaceLocation::Wsl {
+            distro,
+            linux_path,
+            ..
+        } => format!(
+            "Check that WSL distro `{distro}` is running, `{}` exists, and `nucleotide-remote` is installed in the distro or configured with NUCLEOTIDE_REMOTE_HELPER.",
+            linux_path.display()
+        ),
+        WorkspaceLocation::Local { .. } => {
+            "Enter a remote target such as `ssh://host/path`, `ssh user@host /path`, or `\\\\wsl.localhost\\Distro\\path`.".to_string()
+        }
+    };
+
+    EditorStatus {
+        status: format!(
+            "Failed to open remote project {}: {cause}. {guidance}",
+            workspace_root.display()
+        ),
+        severity: Severity::Error,
+    }
+}
+
+fn ssh_target_guidance_arg(target: &nucleotide_workspace::SshWorkspaceTarget) -> String {
+    let mut value = String::new();
+    if let Some(port) = target.port {
+        value.push_str("-p ");
+        value.push_str(&port.to_string());
+        value.push(' ');
+    }
+    if let Some(user) = target.user.as_deref()
+        && !user.is_empty()
+    {
+        value.push_str(user);
+        value.push('@');
+    }
+    value.push_str(&target.host);
+    value
 }
 
 fn unsaved_close_confirmation_title(count: usize) -> &'static str {
@@ -5380,6 +5440,9 @@ impl Workspace {
             active_completion_session: None,
             completion_memory: CompletionMemory::default(),
             last_native_window_metadata: None,
+            pending_remote_open: None,
+            remote_open_generation: 0,
+            last_remote_open_target: None,
         };
 
         // Compute initial theme-derived colors once
@@ -9527,8 +9590,17 @@ impl Workspace {
     }
 
     fn handle_open_remote_submitted(&mut self, input: &str, cx: &mut Context<Self>) {
-        match parse_remote_open_input(input) {
-            Ok(target) => self.open_remote_target(target, cx),
+        let store = self.load_remote_connection_store(cx);
+        match parse_remote_open_request(input, &store) {
+            Ok(RemoteOpenRequest::Open(target)) => self.open_remote_target(target, cx),
+            Ok(RemoteOpenRequest::Save { name, target }) => {
+                self.save_remote_connection(name, target, cx);
+            }
+            Ok(RemoteOpenRequest::Forget { name }) => {
+                self.forget_remote_connection(&name, cx);
+            }
+            Ok(RemoteOpenRequest::Reconnect) => self.reconnect_remote(cx),
+            Ok(RemoteOpenRequest::Cancel) => self.cancel_remote_open(cx),
             Err(message) => {
                 self.push_editor_status_notification(
                     EditorStatus {
@@ -9541,6 +9613,128 @@ impl Workspace {
         }
     }
 
+    fn load_remote_connection_store(&mut self, cx: &mut Context<Self>) -> RemoteConnectionStore {
+        match RemoteConnectionStore::load_default() {
+            Ok(store) => store,
+            Err(error) => {
+                self.push_editor_status_notification(
+                    EditorStatus {
+                        status: format!("Could not load saved remote projects: {error:#}"),
+                        severity: Severity::Warning,
+                    },
+                    cx,
+                );
+                RemoteConnectionStore::default()
+            }
+        }
+    }
+
+    fn save_remote_connection(
+        &mut self,
+        name: String,
+        target: RemoteOpenTarget,
+        cx: &mut Context<Self>,
+    ) {
+        let target_text = target_to_string(&target.path);
+        let mut store = self.load_remote_connection_store(cx);
+        store.save_named(name.clone(), target_text.clone());
+
+        match store.save_default() {
+            Ok(()) => self.push_editor_status_notification(
+                EditorStatus {
+                    status: format!(
+                        "Saved remote project '{name}'. Type '{name}' in Open Remote to connect."
+                    ),
+                    severity: Severity::Info,
+                },
+                cx,
+            ),
+            Err(error) => self.push_editor_status_notification(
+                EditorStatus {
+                    status: format!("Could not save remote project '{name}': {error:#}"),
+                    severity: Severity::Error,
+                },
+                cx,
+            ),
+        }
+    }
+
+    fn forget_remote_connection(&mut self, name: &str, cx: &mut Context<Self>) {
+        let mut store = self.load_remote_connection_store(cx);
+        if !store.remove_saved(name) {
+            self.push_editor_status_notification(
+                EditorStatus {
+                    status: format!("No saved remote project named '{name}'"),
+                    severity: Severity::Warning,
+                },
+                cx,
+            );
+            return;
+        }
+
+        match store.save_default() {
+            Ok(()) => self.push_editor_status_notification(
+                EditorStatus {
+                    status: format!("Removed saved remote project '{name}'"),
+                    severity: Severity::Info,
+                },
+                cx,
+            ),
+            Err(error) => self.push_editor_status_notification(
+                EditorStatus {
+                    status: format!("Could not update saved remote projects: {error:#}"),
+                    severity: Severity::Error,
+                },
+                cx,
+            ),
+        }
+    }
+
+    fn reconnect_remote(&mut self, cx: &mut Context<Self>) {
+        let target = self.last_remote_open_target.clone().or_else(|| {
+            let store = self.load_remote_connection_store(cx);
+            store
+                .last_recent_target()
+                .and_then(|target| parse_remote_open_input(target).ok())
+        });
+
+        match target {
+            Some(target) => self.open_remote_target(target, cx),
+            None => self.push_editor_status_notification(
+                EditorStatus {
+                    status: "No recent remote project to reconnect".to_string(),
+                    severity: Severity::Warning,
+                },
+                cx,
+            ),
+        }
+    }
+
+    fn cancel_remote_open(&mut self, cx: &mut Context<Self>) {
+        let Some(pending) = self.pending_remote_open.take() else {
+            self.push_editor_status_notification(
+                EditorStatus {
+                    status: "No remote connection attempt is active".to_string(),
+                    severity: Severity::Info,
+                },
+                cx,
+            );
+            return;
+        };
+
+        self.remote_open_generation = self.remote_open_generation.wrapping_add(1).max(1);
+        self.push_editor_status_notification(
+            EditorStatus {
+                status: format!(
+                    "Cancelled remote connection attempt to {}",
+                    pending.workspace_root.display()
+                ),
+                severity: Severity::Warning,
+            },
+            cx,
+        );
+    }
+
     fn open_remote_target(&mut self, target: RemoteOpenTarget, cx: &mut Context<Self>) {
         let workspace_root = match target.kind {
             RemoteOpenTargetKind::File => {
@@ -9549,6 +9743,13 @@ impl Workspace {
             }
             RemoteOpenTargetKind::Directory => target.path.clone(),
         };
+
+        self.remote_open_generation = self.remote_open_generation.wrapping_add(1).max(1);
+        let remote_open_id = self.remote_open_generation;
+        self.pending_remote_open = Some(PendingRemoteOpen {
+            id: remote_open_id,
+            workspace_root: workspace_root.clone(),
+        });
 
         self.push_editor_status_notification(
             EditorStatus {
@@ -9559,8 +9760,14 @@ impl Workspace {
         );
 
         enum RemoteOpenEvent {
-            Progress(nucleotide_remote::RemoteDeploymentProgress),
-            Finished(Result<WorkspaceBackendHandle, anyhow::Error>),
+            Progress {
+                id: u64,
+                progress: nucleotide_remote::RemoteDeploymentProgress,
+            },
+            Finished {
+                id: u64,
+                result: Result<WorkspaceBackendHandle, anyhow::Error>,
+            },
         }
 
         let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -9569,7 +9776,10 @@ impl Workspace {
         let runtime_handle = self.handle.clone();
         let join = runtime_handle.spawn_blocking(move || {
             let progress_sink = move |progress: nucleotide_remote::RemoteDeploymentProgress| {
-                let _ = progress_tx.send(RemoteOpenEvent::Progress(progress));
+                let _ = progress_tx.send(RemoteOpenEvent::Progress {
+                    id: remote_open_id,
+                    progress,
+                });
             };
 
             workspace_backend_for_project_directory_with_progress(Some(&task_root), &progress_sink)
@@ -9580,7 +9790,10 @@ impl Workspace {
                 Ok(result) => result,
                 Err(error) => Err(anyhow::anyhow!("remote open task failed: {error}")),
             };
-            let _ = event_tx.send(RemoteOpenEvent::Finished(result));
+            let _ = event_tx.send(RemoteOpenEvent::Finished {
+                id: remote_open_id,
+                result,
+            });
         });
 
         cx.spawn(async move |this, cx| {
@@ -9590,8 +9803,12 @@ impl Workspace {
                 };
 
                 match event {
-                    RemoteOpenEvent::Progress(progress) => {
+                    RemoteOpenEvent::Progress { id, progress } => {
                         this.update(cx, |workspace, cx| {
+                            if !workspace.remote_open_is_current(id) {
+                                return;
+                            }
+
                             workspace.push_editor_status_notification(
                                 EditorStatus {
                                     status: progress.message(),
@@ -9601,9 +9818,17 @@ impl Workspace {
                             );
                         });
                     }
-                    RemoteOpenEvent::Finished(result) => {
+                    RemoteOpenEvent::Finished { id, result } => {
                         this.update(cx, |workspace, cx| match result {
                             Ok(backend) => {
+                                if !workspace.remote_open_is_current(id) {
+                                    return;
+                                }
+
+                                workspace.pending_remote_open = None;
+                                workspace.last_remote_open_target = Some(target.clone());
+                                workspace.record_successful_remote_open(&workspace_root, cx);
+
                                 workspace.core.update(cx, |core, _cx| {
                                     core.set_workspace_backend(backend);
                                 });
@@ -9627,11 +9852,13 @@ impl Workspace {
                                 }
                             }
                             Err(error) => {
+                                if !workspace.remote_open_is_current(id) {
+                                    return;
+                                }
+
+                                workspace.pending_remote_open = None;
                                 workspace.push_editor_status_notification(
-                                    EditorStatus {
-                                        status: format!("Failed to open remote project: {error:#}"),
-                                        severity: Severity::Error,
-                                    },
+                                    remote_open_failure_status(&workspace_root, &error),
                                     cx,
                                 );
                             }
@@ -9642,6 +9869,28 @@ impl Workspace {
             }
         })
         .detach();
+    }
+
+    fn remote_open_is_current(&self, id: u64) -> bool {
+        self.pending_remote_open
+            .as_ref()
+            .is_some_and(|pending| pending.id == id)
+    }
+
+    fn record_successful_remote_open(&mut self, workspace_root: &Path, cx: &mut Context<Self>) {
+        let mut store = self.load_remote_connection_store(cx);
+        store.record_successful_open(target_to_string(workspace_root));
+        if let Err(error) = store.save_default() {
+            self.push_editor_status_notification(
+                EditorStatus {
+                    status: format!(
+                        "Connected, but could not update recent remote projects: {error:#}"
+                    ),
+                    severity: Severity::Warning,
+                },
+                cx,
+            );
+        }
     }
 
     pub fn open_file_at(
@@ -15561,6 +15810,18 @@ impl Render for Workspace {
             },
         ));
 
+        workspace_div = workspace_div.on_action(cx.listener(
+            move |workspace, _: &crate::actions::editor::ReconnectRemote, _window, cx| {
+                workspace.reconnect_remote(cx)
+            },
+        ));
+
+        workspace_div = workspace_div.on_action(cx.listener(
+            move |workspace, _: &crate::actions::editor::CancelRemoteConnection, _window, cx| {
+                workspace.cancel_remote_open(cx)
+            },
+        ));
+
         // Settings action - open nucleotide.toml configuration file
         workspace_div = workspace_div.on_action(cx.listener(
             move |workspace, _: &crate::actions::editor::OpenSettings, _window, cx| {
@@ -18336,6 +18597,32 @@ mod tests {
                 name: "devbox".to_string(),
             }
         )));
+    }
+
+    #[test]
+    fn remote_open_failure_guidance_is_specific_for_ssh() {
+        let status = remote_open_failure_status(
+            Path::new("ssh://me@example.com:2222/home/me/project"),
+            &anyhow::anyhow!("connection refused"),
+        );
+
+        assert_eq!(status.severity, Severity::Error);
+        assert!(status.status.contains("ssh -p 2222 me@example.com"));
+        assert!(status.status.contains("/home/me/project"));
+        assert!(status.status.contains("remote helper install settings"));
+    }
+
+    #[test]
+    fn remote_open_failure_guidance_is_specific_for_wsl() {
+        let status = remote_open_failure_status(
+            Path::new(r"\\wsl.localhost\Ubuntu\home\me\project"),
+            &anyhow::anyhow!("helper missing"),
+        );
+
+        assert_eq!(status.severity, Severity::Error);
+        assert!(status.status.contains("WSL distro `Ubuntu`"));
+        assert!(status.status.contains("/home/me/project"));
+        assert!(status.status.contains("NUCLEOTIDE_REMOTE_HELPER"));
     }
 
     #[test]

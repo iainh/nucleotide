@@ -568,6 +568,34 @@ impl OverlayView {
                         }
                     }
 
+                    if matches!(submit_action, PromptSubmitAction::RemoteOpen) {
+                        let connection_store =
+                            match crate::remote_connections::RemoteConnectionStore::load_default()
+                            {
+                                Ok(store) => store,
+                                Err(error) => {
+                                    nucleotide_logging::warn!(
+                                        error = %error,
+                                        "Failed to load remote connection history for prompt completions"
+                                    );
+                                    crate::remote_connections::RemoteConnectionStore::default()
+                                }
+                            };
+                        view = view.with_completion_fn(move |input| {
+                            crate::remote_connections::completions_for_input(
+                                input,
+                                &connection_store,
+                            )
+                            .into_iter()
+                            .map(|completion| nucleotide_ui::prompt_view::CompletionItem {
+                                text: completion.insert_text.into(),
+                                description: Some(completion.description.into()),
+                                display_text: Some(completion.display_text.into()),
+                            })
+                            .collect()
+                        });
+                    }
+
                     // Set up the submit callback with command/search execution
                     let core_weak_submit = self.core.clone();
                     view = view.on_submit(move |input: &str, cx| {
