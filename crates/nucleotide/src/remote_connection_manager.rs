@@ -982,6 +982,7 @@ impl RemoteConnectionManagerView {
         let Some(session) = self.browse_session.as_ref() else {
             return div().into_any_element();
         };
+        let at_home_directory = session.current_path == session.home_path;
 
         div()
             .flex()
@@ -1003,9 +1004,7 @@ impl RemoteConnectionManagerView {
                                 .child(short_display_path(&session.current_path)),
                         ),
                     )
-                    .child(self.render_text_button("Back", false, cx, |this, cx| {
-                        this.go_to_parent_directory(cx);
-                    })),
+                    .child(self.render_up_button(at_home_directory, cx)),
             )
             .child(
                 div()
@@ -1168,6 +1167,23 @@ impl RemoteConnectionManagerView {
                     .whitespace_nowrap()
                     .child(row_name),
             )
+    }
+
+    fn render_up_button(&self, disabled: bool, cx: &mut Context<Self>) -> impl IntoElement {
+        let manager = cx.entity().clone();
+
+        Button::new("remote-up-directory", "Up")
+            .variant(ButtonVariant::Secondary)
+            .size(ButtonSize::Medium)
+            .icon("icons/chevron-up.svg")
+            .icon_position(IconPosition::Start)
+            .disabled(disabled)
+            .activate_on_mouse_down()
+            .on_click(move |_event, _window, cx| {
+                manager.update(cx, |this, cx| {
+                    this.go_to_parent_directory(cx);
+                });
+            })
     }
 
     fn render_text_button<F>(
