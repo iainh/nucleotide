@@ -141,10 +141,10 @@ Use `nucleotide_ui::ModalLayer` for modal surfaces that need dismissal policy,
 background occlusion, and focus restoration.
 
 Use `nucleotide_ui::OverlaySurface` for transient app overlays such as prompts,
-pickers, and manager panels that need full-window occlusion, light-dismiss, and
-click containment but are still hosted by an app-specific overlay controller.
-The caller supplies the domain view and dismiss callback; the wrapper owns the
-GPUI event recipe.
+pickers, and manager panels that need full-window occlusion, Escape dismissal,
+light-dismiss, and click containment but are still hosted by an app-specific
+overlay controller. The caller supplies the domain view and dismiss callbacks;
+the wrapper owns the GPUI event recipe.
 
 ## Text Input
 

@@ -114,7 +114,7 @@ pub use markdown::{
 pub use menu::{MenuCheckSide, PopupMenu, PopupMenuItem};
 pub use modal_layer::{DismissDecision, ModalLayer, ModalOpenedEvent, ModalView};
 pub use navigable::{NAVIGABLE_CONTEXT, Navigable, NavigableEntry};
-pub use overlay_surface::OverlaySurface;
+pub use overlay_surface::{OVERLAY_SURFACE_CONTEXT, OverlaySurface};
 pub use picker::Picker;
 pub use prompt::Prompt;
 pub use providers::{
@@ -326,6 +326,7 @@ pub fn init(cx: &mut App, config: Option<UIConfig>) {
     menu::init(cx);
     modal_layer::init(cx);
     navigable::init(cx);
+    overlay_surface::init(cx);
     picker_view::init(cx);
     prompt_view::init(cx);
     text_input::init(cx);

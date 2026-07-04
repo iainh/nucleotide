@@ -2,11 +2,24 @@
 // ABOUTME: Owns light-dismiss, occlusion, and click containment for app overlays
 
 use gpui::{
-    AnyElement, App, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, ParentElement,
-    Pixels, RenderOnce, Styled, Window, div, px,
+    AnyElement, App, InteractiveElement, IntoElement, KeyBinding, MouseButton, MouseDownEvent,
+    ParentElement, Pixels, RenderOnce, Styled, Window, div, px,
 };
 
+use crate::actions::dialog::Cancel as CancelDialogAction;
+
 type LightDismissHandler = Box<dyn Fn(&MouseDownEvent, &mut Window, &mut App) + 'static>;
+type CancelHandler = Box<dyn Fn(&CancelDialogAction, &mut Window, &mut App) + 'static>;
+
+pub const OVERLAY_SURFACE_CONTEXT: &str = "OverlaySurface";
+
+pub(crate) fn init(cx: &mut App) {
+    cx.bind_keys([KeyBinding::new(
+        "escape",
+        CancelDialogAction,
+        Some(OVERLAY_SURFACE_CONTEXT),
+    )]);
+}
 
 /// Full-window overlay wrapper for one centred, top-aligned surface.
 #[derive(IntoElement)]
@@ -15,6 +28,7 @@ pub struct OverlaySurface {
     top: Pixels,
     key_context: Option<&'static str>,
     on_light_dismiss: Option<LightDismissHandler>,
+    on_cancel: Option<CancelHandler>,
 }
 
 impl OverlaySurface {
@@ -22,8 +36,9 @@ impl OverlaySurface {
         Self {
             children: Vec::new(),
             top: px(32.0),
-            key_context: None,
+            key_context: Some(OVERLAY_SURFACE_CONTEXT),
             on_light_dismiss: None,
+            on_cancel: None,
         }
     }
 
@@ -37,11 +52,24 @@ impl OverlaySurface {
         self
     }
 
+    pub fn without_key_context(mut self) -> Self {
+        self.key_context = None;
+        self
+    }
+
     pub fn on_light_dismiss(
         mut self,
         handler: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
     ) -> Self {
         self.on_light_dismiss = Some(Box::new(handler));
+        self
+    }
+
+    pub fn on_cancel(
+        mut self,
+        handler: impl Fn(&CancelDialogAction, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_cancel = Some(Box::new(handler));
         self
     }
 }
@@ -73,6 +101,13 @@ impl RenderOnce for OverlaySurface {
             });
         }
 
+        if let Some(on_cancel) = self.on_cancel {
+            root = root.on_action(move |event: &CancelDialogAction, window, cx| {
+                on_cancel(event, window, cx);
+                cx.stop_propagation();
+            });
+        }
+
         root.child(
             div()
                 .flex()
@@ -88,35 +123,69 @@ impl RenderOnce for OverlaySurface {
 
 #[cfg(test)]
 mod tests {
-    use gpui::{Context, IntoElement, ParentElement as _, Render, TestAppContext, Window, div, px};
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use gpui::{
+        Context, FocusHandle, IntoElement, ParentElement as _, Render, TestAppContext, Window, div,
+        px,
+    };
 
     use super::*;
 
-    struct OverlaySurfaceHarness;
+    struct OverlaySurfaceHarness {
+        focus_handle: FocusHandle,
+        cancel_count: Rc<Cell<usize>>,
+    }
 
     impl OverlaySurfaceHarness {
-        fn new(_window: &mut Window, _cx: &mut Context<Self>) -> Self {
-            Self
+        fn new(cancel_count: Rc<Cell<usize>>, cx: &mut Context<Self>) -> Self {
+            Self {
+                focus_handle: cx.focus_handle(),
+                cancel_count,
+            }
         }
     }
 
     impl Render for OverlaySurfaceHarness {
         fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            let cancel_count = Rc::clone(&self.cancel_count);
+
             div().size_full().child(
                 OverlaySurface::new()
-                    .key_context("Overlay")
                     .top(px(16.0))
-                    .child("overlay"),
+                    .on_cancel(move |_, _, _| {
+                        cancel_count.set(cancel_count.get() + 1);
+                    })
+                    .child(div().track_focus(&self.focus_handle).child("overlay")),
             )
         }
     }
 
     #[gpui::test]
     fn overlay_surface_renders_in_test_harness(cx: &mut TestAppContext) {
-        let (_harness, cx) = cx.add_window_view(OverlaySurfaceHarness::new);
+        let cancel_count = Rc::new(Cell::new(0));
+        let (_harness, cx) =
+            cx.add_window_view(|_, cx| OverlaySurfaceHarness::new(Rc::clone(&cancel_count), cx));
 
         cx.update(|window, _cx| {
             assert!(window.viewport_size().width > px(0.0));
         });
+    }
+
+    #[gpui::test]
+    fn default_context_maps_escape_to_cancel(cx: &mut TestAppContext) {
+        cx.update(init);
+        let cancel_count = Rc::new(Cell::new(0));
+        let (harness, cx) =
+            cx.add_window_view(|_, cx| OverlaySurfaceHarness::new(Rc::clone(&cancel_count), cx));
+        let focus_handle = harness.read_with(cx, |harness, _| harness.focus_handle.clone());
+
+        cx.update(|window, cx| {
+            window.focus(&focus_handle, cx);
+            window.dispatch_keystroke(gpui::Keystroke::parse("escape").unwrap(), cx);
+        });
+
+        assert_eq!(cancel_count.get(), 1);
     }
 }

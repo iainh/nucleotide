@@ -1839,9 +1839,12 @@ impl Render for OverlayView {
             let tokens = &theme.tokens;
 
             return OverlaySurface::new()
-                .key_context("Overlay")
                 .top(tokens.sizes.space_8)
                 .on_light_dismiss(cx.listener(|this: &mut OverlayView, _e, window, cx| {
+                    window.disable_focus();
+                    this.dismiss_picker(cx);
+                }))
+                .on_cancel(cx.listener(|this: &mut OverlayView, _action, window, cx| {
                     window.disable_focus();
                     this.dismiss_picker(cx);
                 }))
@@ -1855,9 +1858,12 @@ impl Render for OverlayView {
             let tokens = &theme.tokens;
 
             return OverlaySurface::new()
-                .key_context("Overlay")
                 .top(tokens.sizes.space_8)
                 .on_light_dismiss(cx.listener(|this: &mut OverlayView, _e, window, cx| {
+                    window.disable_focus();
+                    this.dismiss_prompt(cx);
+                }))
+                .on_cancel(cx.listener(|this: &mut OverlayView, _action, window, cx| {
                     window.disable_focus();
                     this.dismiss_prompt(cx);
                 }))
@@ -1871,9 +1877,12 @@ impl Render for OverlayView {
             let tokens = &theme.tokens;
 
             return OverlaySurface::new()
-                .key_context("Overlay")
                 .top(tokens.sizes.space_8)
                 .on_light_dismiss(cx.listener(|this: &mut OverlayView, _e, window, cx| {
+                    window.disable_focus();
+                    this.dismiss_remote_connection_manager(cx);
+                }))
+                .on_cancel(cx.listener(|this: &mut OverlayView, _action, window, cx| {
                     window.disable_focus();
                     this.dismiss_remote_connection_manager(cx);
                 }))
