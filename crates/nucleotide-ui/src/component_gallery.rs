@@ -2,19 +2,20 @@
 // ABOUTME: Provides a small storybook-style surface backed by real GPUI components.
 
 use gpui::{
-    AppContext, Context, Element, Entity, FocusHandle, IntoElement, ParentElement, Render,
-    SharedString, Styled, Window, div, px,
+    AppContext, Context, Element, Entity, FocusHandle, InteractiveElement, IntoElement,
+    ParentElement, Render, SharedString, Styled, Window, div, px,
 };
 
 use crate::{
-    AppShell, BottomPanel, Button, ButtonSize, ButtonVariant, EditorPaneGrid, Panel, PanelVariant,
-    StatusBar, TextInput, Toolbar,
+    AppShell, BottomPanel, Button, ButtonSize, ButtonVariant, EditorPaneGrid, Navigable,
+    NavigableEntry, Panel, PanelVariant, StatusBar, TextInput, Toolbar,
 };
 
 pub struct ComponentGallery {
     primary_focus: FocusHandle,
     secondary_focus: FocusHandle,
     danger_focus: FocusHandle,
+    navigable_entries: Vec<NavigableEntry>,
     text_input: Entity<TextInput>,
 }
 
@@ -30,6 +31,11 @@ impl ComponentGallery {
             primary_focus: cx.focus_handle().tab_index(1).tab_stop(true),
             secondary_focus: cx.focus_handle().tab_index(2).tab_stop(true),
             danger_focus: cx.focus_handle().tab_index(3).tab_stop(true),
+            navigable_entries: vec![
+                NavigableEntry::from_focus_handle(cx.focus_handle().tab_index(4).tab_stop(true)),
+                NavigableEntry::from_focus_handle(cx.focus_handle().tab_index(5).tab_stop(true)),
+                NavigableEntry::from_focus_handle(cx.focus_handle().tab_index(6).tab_stop(true)),
+            ],
             text_input,
         }
     }
@@ -83,6 +89,35 @@ impl Render for ComponentGallery {
                     .on_click(|_, _, _| {}),
             );
 
+        let navigable_list = Navigable::new(
+            div().flex().flex_col().gap(tokens.sizes.space_1).children(
+                self.navigable_entries
+                    .iter()
+                    .enumerate()
+                    .map(|(index, entry)| {
+                        div()
+                            .id(("component-gallery-navigable-entry", index))
+                            .track_focus(&entry.focus_handle)
+                            .tab_stop(true)
+                            .h(tokens.sizes.space_7)
+                            .px(tokens.sizes.space_2)
+                            .flex()
+                            .items_center()
+                            .rounded(tokens.sizes.radius_sm)
+                            .bg(tokens.chrome.surface)
+                            .focus(|this| {
+                                this.bg(tokens.chrome.surface_elevated)
+                                    .border_1()
+                                    .border_color(tokens.editor.focus_ring)
+                            })
+                            .text_size(tokens.sizes.text_sm)
+                            .text_color(tokens.chrome.text_on_chrome)
+                            .child(format!("Focusable row {}", index + 1))
+                    }),
+            ),
+        )
+        .entries(self.navigable_entries.clone());
+
         AppShell::new("component-gallery")
             .header(
                 Toolbar::new("component-gallery-toolbar")
@@ -127,6 +162,16 @@ impl Render for ComponentGallery {
                                 tokens,
                             ))
                             .child(div().mt(tokens.sizes.space_3).child(button_row)),
+                    )
+                    .child(
+                        Panel::new("component-gallery-navigable-panel")
+                            .variant(PanelVariant::Surface)
+                            .child(section_title("Navigable", tokens))
+                            .child(section_note(
+                                "Action-driven list focus with default Up/Down bindings.",
+                                tokens,
+                            ))
+                            .child(div().mt(tokens.sizes.space_3).child(navigable_list)),
                     )
                     .child(
                         Panel::new("component-gallery-layout-panel")

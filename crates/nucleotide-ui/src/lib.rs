@@ -113,7 +113,7 @@ pub use markdown::{
 };
 pub use menu::{MenuCheckSide, PopupMenu, PopupMenuItem};
 pub use modal_layer::{DismissDecision, ModalLayer, ModalOpenedEvent, ModalView};
-pub use navigable::{Navigable, NavigableEntry};
+pub use navigable::{NAVIGABLE_CONTEXT, Navigable, NavigableEntry};
 pub use overlay_surface::OverlaySurface;
 pub use picker::Picker;
 pub use prompt::Prompt;
@@ -323,6 +323,7 @@ pub fn init(cx: &mut App, config: Option<UIConfig>) {
     confirm_dialog::init(cx);
     menu::init(cx);
     modal_layer::init(cx);
+    navigable::init(cx);
     picker_view::init(cx);
     prompt_view::init(cx);
     text_input::init(cx);
@@ -358,6 +359,7 @@ pub fn init(cx: &mut App, config: Option<UIConfig>) {
     registry.register_component("ListItem");
     registry.register_component("FileIcon");
     registry.register_component("Picker");
+    registry.register_component("Navigable");
     registry.register_component("Prompt");
     registry.register_component("TextInput");
     registry.register_component("CompletionView");
