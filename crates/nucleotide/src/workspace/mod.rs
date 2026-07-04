@@ -15237,59 +15237,42 @@ impl Render for Workspace {
                 let (x, y) = self.lsp_menu_pos;
 
                 container.child(
-                    div()
-                        .absolute()
-                        .size_full()
-                        .top_0()
-                        .left_0()
-                        .occlude()
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this: &mut Workspace, _ev, window, cx| {
-                                this.lsp_menu_open = false;
-                                if let Some(coord) =
-                                    cx.try_global::<nucleotide_ui::FocusCoordinator>().cloned()
-                                {
-                                    let _ = coord.focus_first(
-                                        window,
-                                        cx,
-                                        &[
-                                            nucleotide_ui::FocusRole::Editor,
-                                            nucleotide_ui::FocusRole::FileTree,
-                                        ],
-                                    );
-                                }
-                                cx.notify();
-                            }),
-                        )
-                        .child(
-                            gpui::anchored()
-                                .position(point(px(x), px(y)))
-                                .anchor(Anchor::BottomLeft)
-                                .offset(point(px(0.0), px(4.0)))
-                                .snap_to_window_with_margin(ui_theme.tokens.sizes.space_2)
-                                .child(
-                                    div()
-                                        .min_w(px(260.0))
-                                        .max_w(px(480.0))
-                                        .bg(dd_tokens.container_background)
-                                        .border_1()
-                                        .border_color(dd_tokens.border)
-                                        .rounded(ui_theme.tokens.sizes.radius_md)
-                                        .shadow(vec![
-                                            ui_theme.tokens.chrome.shadow_md.to_box_shadow(false),
-                                            ui_theme
-                                                .tokens
-                                                .chrome
-                                                .inset_highlight
-                                                .to_box_shadow(true),
-                                        ])
-                                        .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                                            cx.stop_propagation()
-                                        })
-                                        .children(server_rows),
-                                ),
-                        ),
+                    PopupMenuSurface::new(
+                        div()
+                            .min_w(px(260.0))
+                            .max_w(px(480.0))
+                            .bg(dd_tokens.container_background)
+                            .border_1()
+                            .border_color(dd_tokens.border)
+                            .rounded(ui_theme.tokens.sizes.radius_md)
+                            .shadow(vec![
+                                ui_theme.tokens.chrome.shadow_md.to_box_shadow(false),
+                                ui_theme.tokens.chrome.inset_highlight.to_box_shadow(true),
+                            ])
+                            .children(server_rows),
+                    )
+                    .position(point(px(x), px(y)))
+                    .anchor(Anchor::BottomLeft)
+                    .offset(point(px(0.0), px(4.0)))
+                    .snap_margin(ui_theme.tokens.sizes.space_2)
+                    .on_light_dismiss(cx.listener(
+                        |this: &mut Workspace, _ev, window, cx| {
+                            this.lsp_menu_open = false;
+                            if let Some(coord) =
+                                cx.try_global::<nucleotide_ui::FocusCoordinator>().cloned()
+                            {
+                                let _ = coord.focus_first(
+                                    window,
+                                    cx,
+                                    &[
+                                        nucleotide_ui::FocusRole::Editor,
+                                        nucleotide_ui::FocusRole::FileTree,
+                                    ],
+                                );
+                            }
+                            cx.notify();
+                        },
+                    )),
                 )
             })
             .child(self.modal_layer.clone())
