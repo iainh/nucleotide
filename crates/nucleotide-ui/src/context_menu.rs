@@ -3,8 +3,8 @@
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    Anchor, Context, FocusHandle, InteractiveElement, IntoElement, MouseButton, MouseDownEvent,
-    MouseMoveEvent, ParentElement, Pixels, SharedString, Styled, Window, anchored, div, point, px,
+    Anchor, Context, FocusHandle, InteractiveElement, IntoElement, MouseButton, ParentElement,
+    Pixels, SharedString, Styled, Window, anchored, div, point, px,
 };
 
 use crate::ThemedContext;
@@ -44,6 +44,16 @@ impl<T> ContextMenuEntry<T> {
 
     pub fn is_action(&self) -> bool {
         matches!(self, Self::Action { .. })
+    }
+
+    pub fn is_enabled_action(&self) -> bool {
+        matches!(
+            self,
+            Self::Action {
+                disabled: false,
+                ..
+            }
+        )
     }
 }
 
@@ -98,39 +108,28 @@ impl<'a, T> ContextMenuState<'a, T> {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ContextMenuKeyboardAction {
-    SelectNext,
-    SelectPrevious,
-    Confirm,
-    Cancel,
-}
-
-pub struct ContextMenuCallbacks<Hover, Activate, Dismiss, Keyboard> {
-    pub on_item_hover: Hover,
+pub struct ContextMenuCallbacks<Select, Activate, Dismiss> {
+    pub on_item_select: Select,
     pub on_item_activate: Activate,
     pub on_dismiss: Dismiss,
-    pub on_keyboard_action: Keyboard,
 }
 
-pub fn render_context_menu<T, I, Hover, Activate, Dismiss, Keyboard>(
+pub fn render_context_menu<T, I, Select, Activate, Dismiss>(
     state: ContextMenuState<'_, I>,
     cx: &mut Context<T>,
-    callbacks: ContextMenuCallbacks<Hover, Activate, Dismiss, Keyboard>,
+    callbacks: ContextMenuCallbacks<Select, Activate, Dismiss>,
 ) -> gpui::AnyElement
 where
     T: 'static,
     I: Copy + 'static,
-    Hover: Fn(&mut T, usize, &MouseMoveEvent, &mut Window, &mut Context<T>) + Copy + 'static,
-    Activate: Fn(&mut T, I, &MouseDownEvent, &mut Window, &mut Context<T>) + Copy + 'static,
-    Dismiss: Fn(&mut T, &MouseDownEvent, &mut Window, &mut Context<T>) + Copy + 'static,
-    Keyboard: Fn(&mut T, ContextMenuKeyboardAction, &mut Window, &mut Context<T>) + Copy + 'static,
+    Select: Fn(&mut T, usize, &mut Window, &mut Context<T>) + Copy + 'static,
+    Activate: Fn(&mut T, I, &mut Window, &mut Context<T>) + Copy + 'static,
+    Dismiss: Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
 {
     let ContextMenuCallbacks {
-        on_item_hover,
+        on_item_select,
         on_item_activate,
         on_dismiss,
-        on_keyboard_action,
     } = callbacks;
     let tokens = &cx.theme().tokens;
     let dropdown_tokens = tokens.dropdown_tokens();
@@ -143,6 +142,10 @@ where
     let inner_radius = tokens.sizes.radius_md - px(0.5);
     let (x, y) = state.position;
     let (offset_x, offset_y) = state.offset;
+    let selected_index = state.selected_index;
+    let next_index = next_enabled_action_index(state.entries, selected_index);
+    let previous_index = previous_enabled_action_index(state.entries, selected_index);
+    let selected_value = enabled_action_value(state.entries, selected_index);
 
     let popup = div()
         .bg(dropdown_tokens.container_background)
@@ -198,14 +201,15 @@ where
                         item.rounded_bl(inner_radius).rounded_br(inner_radius)
                     })
                     .when(!disabled, |item| {
-                        item.on_mouse_move(cx.listener(move |state, event, window, cx| {
-                            on_item_hover(state, index, event, window, cx);
+                        item.on_mouse_move(cx.listener(move |state, _event, window, cx| {
+                            on_item_select(state, index, window, cx);
                         }))
                         .on_mouse_down(
                             MouseButton::Left,
-                            cx.listener(move |state, event, window, cx| {
+                            cx.listener(move |state, _event, window, cx| {
                                 window.prevent_default();
-                                on_item_activate(state, value, event, window, cx);
+                                on_item_activate(state, value, window, cx);
+                                cx.stop_propagation();
                             }),
                         )
                     })
@@ -239,24 +243,42 @@ where
                 .track_focus(&focus_handle)
         })
         .on_action(cx.listener(move |state, _: &SelectDown, window, cx| {
-            on_keyboard_action(state, ContextMenuKeyboardAction::SelectNext, window, cx);
+            if let Some(index) = next_index {
+                on_item_select(state, index, window, cx);
+            }
             cx.stop_propagation();
         }))
         .on_action(cx.listener(move |state, _: &SelectUp, window, cx| {
-            on_keyboard_action(state, ContextMenuKeyboardAction::SelectPrevious, window, cx);
+            if let Some(index) = previous_index {
+                on_item_select(state, index, window, cx);
+            }
             cx.stop_propagation();
         }))
         .on_action(cx.listener(move |state, _: &Confirm, window, cx| {
-            on_keyboard_action(state, ContextMenuKeyboardAction::Confirm, window, cx);
+            if let Some(value) = selected_value {
+                on_item_activate(state, value, window, cx);
+            }
             cx.stop_propagation();
         }))
         .on_action(cx.listener(move |state, _: &Cancel, window, cx| {
-            on_keyboard_action(state, ContextMenuKeyboardAction::Cancel, window, cx);
+            on_dismiss(state, window, cx);
             cx.stop_propagation();
         }))
         .on_mouse_move(|_, _, cx| cx.stop_propagation())
-        .on_mouse_down(MouseButton::Left, cx.listener(on_dismiss))
-        .on_mouse_down(MouseButton::Right, cx.listener(on_dismiss))
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |state, _event, window, cx| {
+                on_dismiss(state, window, cx);
+                cx.stop_propagation();
+            }),
+        )
+        .on_mouse_down(
+            MouseButton::Right,
+            cx.listener(move |state, _event, window, cx| {
+                on_dismiss(state, window, cx);
+                cx.stop_propagation();
+            }),
+        )
         .child(
             anchored()
                 .position(point(px(x), px(y)))
@@ -266,6 +288,73 @@ where
                 .child(popup),
         )
         .into_any_element()
+}
+
+fn next_enabled_action_index<T>(
+    entries: &[ContextMenuEntry<T>],
+    selected_index: usize,
+) -> Option<usize> {
+    let mut first = None;
+    let mut next = None;
+    let mut action_index = 0;
+
+    for entry in entries {
+        if entry.is_action() {
+            if entry.is_enabled_action() {
+                first.get_or_insert(action_index);
+                if action_index > selected_index && next.is_none() {
+                    next = Some(action_index);
+                }
+            }
+            action_index += 1;
+        }
+    }
+
+    next.or(first)
+}
+
+fn previous_enabled_action_index<T>(
+    entries: &[ContextMenuEntry<T>],
+    selected_index: usize,
+) -> Option<usize> {
+    let mut previous = None;
+    let mut last = None;
+    let mut action_index = 0;
+
+    for entry in entries {
+        if entry.is_action() {
+            if entry.is_enabled_action() {
+                last = Some(action_index);
+                if action_index < selected_index {
+                    previous = Some(action_index);
+                }
+            }
+            action_index += 1;
+        }
+    }
+
+    previous.or(last)
+}
+
+fn enabled_action_value<T: Copy>(
+    entries: &[ContextMenuEntry<T>],
+    selected_index: usize,
+) -> Option<T> {
+    let mut action_index = 0;
+
+    for entry in entries {
+        match entry {
+            ContextMenuEntry::Action {
+                value,
+                disabled: false,
+                ..
+            } if action_index == selected_index => return Some(*value),
+            ContextMenuEntry::Action { .. } => action_index += 1,
+            ContextMenuEntry::Separator => {}
+        }
+    }
+
+    None
 }
 
 #[cfg(test)]
@@ -315,10 +404,9 @@ mod tests {
                     .focus_handle(self.focus_handle.clone()),
                 cx,
                 ContextMenuCallbacks {
-                    on_item_hover:
+                    on_item_select:
                         |harness: &mut ContextMenuHarness,
                          index: usize,
-                         _event: &MouseMoveEvent,
                          _window: &mut Window,
                          cx: &mut Context<ContextMenuHarness>| {
                             harness.selected_index = index;
@@ -327,7 +415,6 @@ mod tests {
                     on_item_activate:
                         |harness: &mut ContextMenuHarness,
                          value: u8,
-                         _event: &MouseDownEvent,
                          _window: &mut Window,
                          cx: &mut Context<ContextMenuHarness>| {
                             harness.activated = Some(value);
@@ -335,38 +422,9 @@ mod tests {
                         },
                     on_dismiss:
                         |harness: &mut ContextMenuHarness,
-                         _event: &MouseDownEvent,
                          _window: &mut Window,
                          cx: &mut Context<ContextMenuHarness>| {
                             harness.dismissed = true;
-                            cx.notify();
-                        },
-                    on_keyboard_action:
-                        |harness: &mut ContextMenuHarness,
-                         action: ContextMenuKeyboardAction,
-                         _window: &mut Window,
-                         cx: &mut Context<ContextMenuHarness>| {
-                            match action {
-                                ContextMenuKeyboardAction::SelectNext => {
-                                    harness.selected_index =
-                                        (harness.selected_index + 1) % harness.entries.len();
-                                }
-                                ContextMenuKeyboardAction::SelectPrevious => {
-                                    harness.selected_index =
-                                        (harness.selected_index + harness.entries.len() - 1)
-                                            % harness.entries.len();
-                                }
-                                ContextMenuKeyboardAction::Confirm => {
-                                    harness.activated =
-                                        Some(match harness.entries.get(harness.selected_index) {
-                                            Some(ContextMenuEntry::Action { value, .. }) => *value,
-                                            Some(ContextMenuEntry::Separator) | None => 0,
-                                        });
-                                }
-                                ContextMenuKeyboardAction::Cancel => {
-                                    harness.dismissed = true;
-                                }
-                            }
                             cx.notify();
                         },
                 },
@@ -390,7 +448,13 @@ mod tests {
         cx.update(|window, cx| {
             window.focus(&focus, cx);
             focus.dispatch_action(&SelectDown, window, cx);
+        });
+
+        cx.update(|window, cx| {
             focus.dispatch_action(&Confirm, window, cx);
+        });
+
+        cx.update(|window, cx| {
             focus.dispatch_action(&Cancel, window, cx);
         });
 
@@ -415,5 +479,19 @@ mod tests {
         harness.read_with(cx, |harness, _| {
             assert_eq!(harness.selected_index, 1);
         });
+    }
+
+    #[test]
+    fn context_menu_navigation_skips_disabled_actions() {
+        let entries = vec![
+            ContextMenuEntry::disabled_action(1, "Disabled"),
+            ContextMenuEntry::separator(),
+            ContextMenuEntry::action(2, "Open"),
+        ];
+
+        assert_eq!(next_enabled_action_index(&entries, 0), Some(1));
+        assert_eq!(previous_enabled_action_index(&entries, 0), Some(1));
+        assert_eq!(enabled_action_value(&entries, 0), None);
+        assert_eq!(enabled_action_value(&entries, 1), Some(2));
     }
 }
