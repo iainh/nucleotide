@@ -45,9 +45,8 @@ use nucleotide_ui::notification::{StatusBarNotification, StatusBarNotificationSe
 use nucleotide_ui::scrollbar::{Scrollbar, ScrollbarState};
 use nucleotide_ui::{
     AboutWindow, Button, ButtonSize, ButtonVariant, ConfirmDialog, ConfirmDialogEvent,
-    ConfirmDialogView, ContextMenuCallbacks, ContextMenuEntry, ContextMenuKeyboardAction,
-    ContextMenuState, MarkdownStyle, ModalLayer, ResizeDragController, Tooltipped,
-    markdown_extended, render_context_menu,
+    ConfirmDialogView, ContextMenuCallbacks, ContextMenuEntry, ContextMenuState, MarkdownStyle,
+    ModalLayer, ResizeDragController, Tooltipped, markdown_extended, render_context_menu,
 };
 
 use crate::input_coordinator::{FocusGroup, InputContext, InputCoordinator};
@@ -3954,6 +3953,7 @@ impl Workspace {
         }
     }
 
+    #[cfg(test)]
     fn tab_context_menu_intents(
         has_file_path: bool,
         has_project_panel_path: bool,
@@ -4110,6 +4110,7 @@ impl Workspace {
         handler(self, cx);
     }
 
+    #[cfg(test)]
     fn tab_bar_new_menu_intents() -> &'static [TabBarNewMenuIntent] {
         &[
             TabBarNewMenuIntent::NewFile,
@@ -5821,240 +5822,6 @@ impl Workspace {
         cx.notify();
     }
 
-    fn next_menu_index(current: usize, len: usize) -> Option<usize> {
-        (len > 0).then_some((current + 1) % len)
-    }
-
-    fn previous_menu_index(current: usize, len: usize) -> Option<usize> {
-        (len > 0).then_some((current + len - 1) % len)
-    }
-
-    fn activate_file_tree_context_menu_selection(&mut self, cx: &mut Context<Self>) {
-        if let Some(intent) = Self::context_menu_intents().get(self.context_menu_index) {
-            let handler_fn = Self::context_menu_handler(*intent);
-            self.context_menu_open = false;
-            handler_fn(self, cx);
-        } else {
-            self.context_menu_open = false;
-            cx.notify();
-        }
-    }
-
-    fn handle_file_tree_context_menu_keyboard_action(
-        &mut self,
-        action: ContextMenuKeyboardAction,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        match action {
-            ContextMenuKeyboardAction::SelectNext => {
-                if let Some(index) = Self::next_menu_index(
-                    self.context_menu_index,
-                    Self::context_menu_intents().len(),
-                ) {
-                    self.context_menu_index = index;
-                    cx.notify();
-                }
-            }
-            ContextMenuKeyboardAction::SelectPrevious => {
-                if let Some(index) = Self::previous_menu_index(
-                    self.context_menu_index,
-                    Self::context_menu_intents().len(),
-                ) {
-                    self.context_menu_index = index;
-                    cx.notify();
-                }
-            }
-            ContextMenuKeyboardAction::Confirm => {
-                self.activate_file_tree_context_menu_selection(cx)
-            }
-            ContextMenuKeyboardAction::Cancel => self.dismiss_file_tree_context_menu(window, cx),
-        }
-    }
-
-    fn tab_context_menu_action_len(&self, cx: &mut Context<Self>) -> usize {
-        let menu_capabilities = self.tab_context_menu_capabilities(cx);
-        Self::tab_context_menu_intents(
-            menu_capabilities.has_file_path,
-            menu_capabilities.has_project_panel_path,
-            menu_capabilities.has_terminal_directory,
-        )
-        .len()
-    }
-
-    fn activate_tab_context_menu_selection(&mut self, cx: &mut Context<Self>) {
-        let Some(doc_id) = self.tab_context_menu_doc_id else {
-            self.tab_context_menu_open = false;
-            self.tab_context_menu_doc_id = None;
-            cx.notify();
-            return;
-        };
-
-        let menu_capabilities = self.tab_context_menu_capabilities(cx);
-        let intents = Self::tab_context_menu_intents(
-            menu_capabilities.has_file_path,
-            menu_capabilities.has_project_panel_path,
-            menu_capabilities.has_terminal_directory,
-        );
-        let Some(intent) = intents.get(self.tab_context_menu_index).copied() else {
-            self.tab_context_menu_open = false;
-            self.tab_context_menu_doc_id = None;
-            cx.notify();
-            return;
-        };
-
-        let visible_doc_ids = self.visible_tab_document_ids(cx);
-        let target_index = visible_doc_ids.iter().position(|id| *id == doc_id);
-        let has_clean_items = {
-            let core = self.core.read(cx);
-            visible_doc_ids.iter().any(|tab_id| match tab_id {
-                TabId::Image(_) => true,
-                TabId::Document(doc_id) => core
-                    .editor
-                    .documents
-                    .get(doc_id)
-                    .is_some_and(|doc| !doc.is_modified()),
-            })
-        };
-
-        if Self::tab_context_menu_intent_disabled(
-            intent,
-            target_index,
-            visible_doc_ids.len(),
-            has_clean_items,
-        ) {
-            cx.notify();
-            return;
-        }
-
-        let handler = Self::tab_context_menu_handler(intent);
-        self.tab_context_menu_open = false;
-        self.tab_context_menu_doc_id = None;
-        handler(self, doc_id, cx);
-    }
-
-    fn dismiss_tab_context_menu(&mut self, cx: &mut Context<Self>) {
-        self.tab_context_menu_open = false;
-        self.tab_context_menu_doc_id = None;
-        cx.notify();
-    }
-
-    fn handle_tab_context_menu_keyboard_action(
-        &mut self,
-        action: ContextMenuKeyboardAction,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        match action {
-            ContextMenuKeyboardAction::SelectNext => {
-                if let Some(index) = Self::next_menu_index(
-                    self.tab_context_menu_index,
-                    self.tab_context_menu_action_len(cx),
-                ) {
-                    self.tab_context_menu_index = index;
-                    cx.notify();
-                }
-            }
-            ContextMenuKeyboardAction::SelectPrevious => {
-                if let Some(index) = Self::previous_menu_index(
-                    self.tab_context_menu_index,
-                    self.tab_context_menu_action_len(cx),
-                ) {
-                    self.tab_context_menu_index = index;
-                    cx.notify();
-                }
-            }
-            ContextMenuKeyboardAction::Confirm => self.activate_tab_context_menu_selection(cx),
-            ContextMenuKeyboardAction::Cancel => self.dismiss_tab_context_menu(cx),
-        }
-    }
-
-    fn handle_tab_bar_split_menu_keyboard_action(
-        &mut self,
-        action: ContextMenuKeyboardAction,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        match action {
-            ContextMenuKeyboardAction::SelectNext => {
-                if let Some(index) = Self::next_menu_index(
-                    self.tab_bar_split_menu_index,
-                    Self::tab_bar_split_menu_intents().len(),
-                ) {
-                    self.tab_bar_split_menu_index = index;
-                    cx.notify();
-                }
-            }
-            ContextMenuKeyboardAction::SelectPrevious => {
-                if let Some(index) = Self::previous_menu_index(
-                    self.tab_bar_split_menu_index,
-                    Self::tab_bar_split_menu_intents().len(),
-                ) {
-                    self.tab_bar_split_menu_index = index;
-                    cx.notify();
-                }
-            }
-            ContextMenuKeyboardAction::Confirm => {
-                if let Some(intent) =
-                    Self::tab_bar_split_menu_intents().get(self.tab_bar_split_menu_index)
-                {
-                    self.activate_tab_bar_split_menu_intent(*intent, cx);
-                } else {
-                    self.tab_bar_split_menu_open = false;
-                    cx.notify();
-                }
-            }
-            ContextMenuKeyboardAction::Cancel => {
-                self.tab_bar_split_menu_open = false;
-                cx.notify();
-            }
-        }
-    }
-
-    fn handle_tab_bar_new_menu_keyboard_action(
-        &mut self,
-        action: ContextMenuKeyboardAction,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        match action {
-            ContextMenuKeyboardAction::SelectNext => {
-                if let Some(index) = Self::next_menu_index(
-                    self.tab_bar_new_menu_index,
-                    Self::tab_bar_new_menu_intents().len(),
-                ) {
-                    self.tab_bar_new_menu_index = index;
-                    cx.notify();
-                }
-            }
-            ContextMenuKeyboardAction::SelectPrevious => {
-                if let Some(index) = Self::previous_menu_index(
-                    self.tab_bar_new_menu_index,
-                    Self::tab_bar_new_menu_intents().len(),
-                ) {
-                    self.tab_bar_new_menu_index = index;
-                    cx.notify();
-                }
-            }
-            ContextMenuKeyboardAction::Confirm => {
-                if let Some(intent) =
-                    Self::tab_bar_new_menu_intents().get(self.tab_bar_new_menu_index)
-                {
-                    let handler = Self::tab_bar_new_menu_handler(*intent);
-                    self.tab_bar_new_menu_open = false;
-                    handler(self, cx);
-                } else {
-                    self.tab_bar_new_menu_open = false;
-                    cx.notify();
-                }
-            }
-            ContextMenuKeyboardAction::Cancel => {
-                self.tab_bar_new_menu_open = false;
-                cx.notify();
-            }
-        }
-    }
-
     /// Render the file tree context menu anchored at the last click position
     fn render_file_tree_context_menu(
         &self,
@@ -6077,11 +5844,10 @@ impl Workspace {
                 .focus_handle(self.context_menu_focus.clone()),
             cx,
             ContextMenuCallbacks {
-                on_item_hover: |workspace: &mut Workspace,
-                                index: usize,
-                                _event: &MouseMoveEvent,
-                                _window: &mut Window,
-                                cx: &mut Context<Workspace>| {
+                on_item_select: |workspace: &mut Workspace,
+                                 index: usize,
+                                 _window: &mut Window,
+                                 cx: &mut Context<Workspace>| {
                     if workspace.context_menu_index != index {
                         workspace.context_menu_index = index;
                         cx.notify();
@@ -6089,7 +5855,6 @@ impl Workspace {
                 },
                 on_item_activate: |workspace: &mut Workspace,
                                    intent: ProjectTreeContextMenuIntent,
-                                   _event: &MouseDownEvent,
                                    window: &mut Window,
                                    cx: &mut Context<Workspace>| {
                     window.prevent_default();
@@ -6099,19 +5864,11 @@ impl Workspace {
                     cx.stop_propagation();
                 },
                 on_dismiss: |workspace: &mut Workspace,
-                             _event: &MouseDownEvent,
                              window: &mut Window,
                              cx: &mut Context<Workspace>| {
                     workspace.dismiss_file_tree_context_menu(window, cx);
                     cx.stop_propagation();
                 },
-                on_keyboard_action:
-                    |workspace: &mut Workspace,
-                     action: ContextMenuKeyboardAction,
-                     window: &mut Window,
-                     cx: &mut Context<Workspace>| {
-                        workspace.handle_file_tree_context_menu_keyboard_action(action, window, cx);
-                    },
             },
         )
     }
@@ -6174,11 +5931,10 @@ impl Workspace {
                 .focus_handle(self.context_menu_focus.clone()),
             cx,
             ContextMenuCallbacks {
-                on_item_hover: |workspace: &mut Workspace,
-                                index: usize,
-                                _event: &MouseMoveEvent,
-                                _window: &mut Window,
-                                cx: &mut Context<Workspace>| {
+                on_item_select: |workspace: &mut Workspace,
+                                 index: usize,
+                                 _window: &mut Window,
+                                 cx: &mut Context<Workspace>| {
                     if workspace.tab_context_menu_index != index {
                         workspace.tab_context_menu_index = index;
                         cx.notify();
@@ -6186,7 +5942,6 @@ impl Workspace {
                 },
                 on_item_activate: |workspace: &mut Workspace,
                                    intent: TabContextMenuIntent,
-                                   _event: &MouseDownEvent,
                                    _window: &mut Window,
                                    cx: &mut Context<Workspace>| {
                     if let Some(doc_id) = workspace.tab_context_menu_doc_id {
@@ -6201,7 +5956,6 @@ impl Workspace {
                     cx.stop_propagation();
                 },
                 on_dismiss: |workspace: &mut Workspace,
-                             _event: &MouseDownEvent,
                              _window: &mut Window,
                              cx: &mut Context<Workspace>| {
                     workspace.tab_context_menu_open = false;
@@ -6209,13 +5963,6 @@ impl Workspace {
                     cx.notify();
                     cx.stop_propagation();
                 },
-                on_keyboard_action:
-                    |workspace: &mut Workspace,
-                     action: ContextMenuKeyboardAction,
-                     window: &mut Window,
-                     cx: &mut Context<Workspace>| {
-                        workspace.handle_tab_context_menu_keyboard_action(action, window, cx);
-                    },
             },
         )
     }
@@ -6241,11 +5988,10 @@ impl Workspace {
                 .focus_handle(self.context_menu_focus.clone()),
             cx,
             ContextMenuCallbacks {
-                on_item_hover: |workspace: &mut Workspace,
-                                index: usize,
-                                _event: &MouseMoveEvent,
-                                _window: &mut Window,
-                                cx: &mut Context<Workspace>| {
+                on_item_select: |workspace: &mut Workspace,
+                                 index: usize,
+                                 _window: &mut Window,
+                                 cx: &mut Context<Workspace>| {
                     if workspace.tab_bar_split_menu_index != index {
                         workspace.tab_bar_split_menu_index = index;
                         cx.notify();
@@ -6253,27 +5999,18 @@ impl Workspace {
                 },
                 on_item_activate: |workspace: &mut Workspace,
                                    intent: TabBarSplitMenuIntent,
-                                   _event: &MouseDownEvent,
                                    _window: &mut Window,
                                    cx: &mut Context<Workspace>| {
                     workspace.activate_tab_bar_split_menu_intent(intent, cx);
                     cx.stop_propagation();
                 },
                 on_dismiss: |workspace: &mut Workspace,
-                             _event: &MouseDownEvent,
                              _window: &mut Window,
                              cx: &mut Context<Workspace>| {
                     workspace.tab_bar_split_menu_open = false;
                     cx.notify();
                     cx.stop_propagation();
                 },
-                on_keyboard_action:
-                    |workspace: &mut Workspace,
-                     action: ContextMenuKeyboardAction,
-                     window: &mut Window,
-                     cx: &mut Context<Workspace>| {
-                        workspace.handle_tab_bar_split_menu_keyboard_action(action, window, cx);
-                    },
             },
         )
     }
@@ -6304,11 +6041,10 @@ impl Workspace {
                 .focus_handle(self.context_menu_focus.clone()),
             cx,
             ContextMenuCallbacks {
-                on_item_hover: |workspace: &mut Workspace,
-                                index: usize,
-                                _event: &MouseMoveEvent,
-                                _window: &mut Window,
-                                cx: &mut Context<Workspace>| {
+                on_item_select: |workspace: &mut Workspace,
+                                 index: usize,
+                                 _window: &mut Window,
+                                 cx: &mut Context<Workspace>| {
                     if workspace.tab_bar_new_menu_index != index {
                         workspace.tab_bar_new_menu_index = index;
                         cx.notify();
@@ -6316,7 +6052,6 @@ impl Workspace {
                 },
                 on_item_activate: |workspace: &mut Workspace,
                                    intent: TabBarNewMenuIntent,
-                                   _event: &MouseDownEvent,
                                    _window: &mut Window,
                                    cx: &mut Context<Workspace>| {
                     workspace.tab_bar_new_menu_open = false;
@@ -6325,20 +6060,12 @@ impl Workspace {
                     cx.stop_propagation();
                 },
                 on_dismiss: |workspace: &mut Workspace,
-                             _event: &MouseDownEvent,
                              _window: &mut Window,
                              cx: &mut Context<Workspace>| {
                     workspace.tab_bar_new_menu_open = false;
                     cx.notify();
                     cx.stop_propagation();
                 },
-                on_keyboard_action:
-                    |workspace: &mut Workspace,
-                     action: ContextMenuKeyboardAction,
-                     window: &mut Window,
-                     cx: &mut Context<Workspace>| {
-                        workspace.handle_tab_bar_new_menu_keyboard_action(action, window, cx);
-                    },
             },
         )
     }
