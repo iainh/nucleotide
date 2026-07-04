@@ -1,10 +1,10 @@
-// ABOUTME: Central hub for keyboard input routing and focus management in Nucleotide
-// ABOUTME: Replaces fragmented input handling with unified GPUI-native action system
+// ABOUTME: Central hub for workspace keyboard context routing in Nucleotide
+// ABOUTME: Keeps app/Helix key handoff separate from component-owned GPUI actions
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use gpui::{FocusHandle, KeyDownEvent, Window, actions};
+use gpui::{KeyDownEvent, Window, actions};
 use nucleotide_logging::{debug, info, instrument};
 
 // Import for Helix integration
@@ -24,7 +24,7 @@ pub enum InputResult {
     WorkspaceAction(String),
 }
 
-/// Central coordinator for all keyboard input routing and focus management
+/// Central coordinator for workspace-level keyboard context routing.
 #[derive(Clone)]
 pub struct InputCoordinator {
     /// Current active input context
@@ -33,10 +33,6 @@ pub struct InputCoordinator {
     context_stack: Arc<RwLock<Vec<InputContext>>>,
     /// Action handler registry by context
     action_handlers: Arc<RwLock<HashMap<InputContext, ContextActionHandlers>>>,
-    /// Focus group management
-    focus_groups: Arc<RwLock<FocusGroupManager>>,
-    /// Current active focus group
-    active_focus_group: Arc<RwLock<Option<FocusGroup>>>,
 }
 
 /// Input contexts that determine which shortcuts are active
@@ -66,19 +62,6 @@ pub enum ContextPriority {
     Critical = 4,
 }
 
-/// Focus groups for Tab navigation between major UI areas
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum FocusGroup {
-    /// Text editor area
-    Editor,
-    /// File tree sidebar
-    FileTree,
-    /// Status bar and bottom panel
-    StatusBar,
-    /// Overlays and modal dialogs
-    Overlays,
-}
-
 /// Action handlers for a specific context
 #[derive(Default)]
 pub struct ContextActionHandlers {
@@ -86,27 +69,6 @@ pub struct ContextActionHandlers {
     global_handlers: HashMap<String, Arc<dyn Fn() + Send + Sync>>,
     /// Context-specific action handlers
     _context_handlers: HashMap<String, Arc<dyn Fn() + Send + Sync>>,
-}
-
-/// Focus group manager for Tab navigation
-#[derive(Default)]
-pub struct FocusGroupManager {
-    /// Available focus groups and their states
-    groups: HashMap<FocusGroup, FocusGroupState>,
-    /// Current navigation order
-    navigation_order: Vec<FocusGroup>,
-    /// Currently active group
-    active_group: Option<FocusGroup>,
-}
-
-/// State of a focus group
-pub struct FocusGroupState {
-    /// Whether this group is available for navigation
-    available: bool,
-    /// Focus handle for this group (if any)
-    focus_handle: Option<FocusHandle>,
-    /// Callback to activate this group
-    activate_callback: Option<Box<dyn Fn() + Send + Sync>>,
 }
 
 // Define global actions for the input coordinator
@@ -118,12 +80,6 @@ actions!(
         ShowFileFinder,
         ShowCommandPrompt,
         ShowBufferPicker,
-        // Focus group navigation
-        NextFocusGroup,
-        PrevFocusGroup,
-        FocusEditor,
-        FocusFileTree,
-        FocusStatusBar,
         // Modal handling
         Escape,
         // Quick navigation
@@ -148,8 +104,6 @@ impl InputCoordinator {
             active_context: Arc::new(RwLock::new(InputContext::Normal)),
             context_stack: Arc::new(RwLock::new(Vec::new())),
             action_handlers: Arc::new(RwLock::new(HashMap::new())),
-            focus_groups: Arc::new(RwLock::new(FocusGroupManager::new())),
-            active_focus_group: Arc::new(RwLock::new(None)),
         };
 
         coordinator.setup_default_handlers();
@@ -373,125 +327,6 @@ impl InputCoordinator {
         // Prompt should handle its own input, so don't send to Helix
         InputResult::NotHandled
     }
-
-    /// Register a focus group with the coordinator
-    pub fn register_focus_group(
-        &self,
-        group: FocusGroup,
-        focus_handle: Option<FocusHandle>,
-        activate_callback: Option<Box<dyn Fn() + Send + Sync>>,
-    ) {
-        let mut focus_manager = self.focus_groups.write().unwrap();
-        focus_manager.register_group(group, focus_handle, activate_callback);
-        debug!(group = ?group, "Registered focus group");
-    }
-
-    /// Set focus group availability
-    pub fn set_focus_group_available(&self, group: FocusGroup, available: bool) {
-        let mut focus_manager = self.focus_groups.write().unwrap();
-        focus_manager.set_group_available(group, available);
-        debug!(group = ?group, available = available, "Updated focus group availability");
-    }
-
-    /// Get the currently active focus group
-    pub fn active_focus_group(&self) -> Option<FocusGroup> {
-        *self.active_focus_group.read().unwrap()
-    }
-}
-
-impl FocusGroupManager {
-    /// Create a new focus group manager
-    pub fn new() -> Self {
-        let mut manager = Self {
-            groups: HashMap::new(),
-            navigation_order: vec![
-                FocusGroup::Editor,
-                FocusGroup::FileTree,
-                FocusGroup::StatusBar,
-                FocusGroup::Overlays,
-            ],
-            active_group: None,
-        };
-
-        // Initialize all groups as unavailable
-        for &group in &manager.navigation_order {
-            manager.groups.insert(
-                group,
-                FocusGroupState {
-                    available: false,
-                    focus_handle: None,
-                    activate_callback: None,
-                },
-            );
-        }
-
-        manager
-    }
-
-    /// Register a focus group
-    pub fn register_group(
-        &mut self,
-        group: FocusGroup,
-        focus_handle: Option<FocusHandle>,
-        activate_callback: Option<Box<dyn Fn() + Send + Sync>>,
-    ) {
-        if let Some(state) = self.groups.get_mut(&group) {
-            state.focus_handle = focus_handle;
-            state.activate_callback = activate_callback;
-            state.available = true;
-        }
-    }
-
-    /// Set focus group availability
-    pub fn set_group_available(&mut self, group: FocusGroup, available: bool) {
-        if let Some(state) = self.groups.get_mut(&group) {
-            state.available = available;
-        }
-    }
-
-    /// Navigate to the next/previous focus group
-    pub fn navigate(&mut self, forward: bool) {
-        let available_groups: Vec<_> = self
-            .navigation_order
-            .iter()
-            .filter(|&&group| {
-                self.groups
-                    .get(&group)
-                    .map(|state| state.available)
-                    .unwrap_or(false)
-            })
-            .copied()
-            .collect();
-
-        if available_groups.is_empty() {
-            return;
-        }
-
-        let new_group = if let Some(current) = self.active_group {
-            // Find current position and move to next/prev
-            if let Some(current_index) = available_groups.iter().position(|&g| g == current) {
-                let new_index = if forward {
-                    (current_index + 1) % available_groups.len()
-                } else {
-                    (current_index + available_groups.len() - 1) % available_groups.len()
-                };
-                available_groups[new_index]
-            } else {
-                available_groups[0]
-            }
-        } else {
-            available_groups[0]
-        };
-
-        self.active_group = Some(new_group);
-
-        // Activate the new group
-        if let Some(state) = self.groups.get(&new_group)
-            && let Some(ref callback) = state.activate_callback
-        {
-            callback();
-        }
-    }
 }
 
 impl Default for InputCoordinator {
@@ -566,21 +401,5 @@ mod tests {
         });
 
         coordinator.register_global_action("global_test_action", || { /* global test handler */ });
-    }
-
-    #[test]
-    fn test_focus_group_management() {
-        let coordinator = InputCoordinator::new();
-
-        // Register focus groups
-        coordinator.register_focus_group(FocusGroup::Editor, None, None);
-        coordinator.register_focus_group(FocusGroup::FileTree, None, None);
-
-        // Set availability
-        coordinator.set_focus_group_available(FocusGroup::Editor, true);
-        coordinator.set_focus_group_available(FocusGroup::FileTree, true);
-
-        // Initially no focus group should be active
-        assert_eq!(coordinator.active_focus_group(), None);
     }
 }
