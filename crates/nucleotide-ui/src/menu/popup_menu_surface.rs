@@ -85,7 +85,12 @@ impl RenderOnce for PopupMenuSurface {
                 .anchor(self.anchor)
                 .offset(self.offset)
                 .snap_to_window_with_margin(self.snap_margin)
-                .child(div().occlude().child(self.child)),
+                .child(
+                    div()
+                        .occlude()
+                        .on_any_mouse_down(|_, _, cx| cx.stop_propagation())
+                        .child(self.child),
+                ),
         )
     }
 }
@@ -133,5 +138,17 @@ mod tests {
         cx.simulate_click(point(px(1.0), px(1.0)), Modifiers::default());
 
         assert_eq!(dismiss_count.get(), 1);
+    }
+
+    #[gpui::test]
+    fn popup_menu_surface_contains_child_clicks(cx: &mut TestAppContext) {
+        let dismiss_count = Rc::new(Cell::new(0));
+        let (_harness, cx) =
+            cx.add_window_view(|_, _| PopupMenuSurfaceHarness::new(Rc::clone(&dismiss_count)));
+
+        cx.run_until_parked();
+        cx.simulate_click(point(px(105.0), px(105.0)), Modifiers::default());
+
+        assert_eq!(dismiss_count.get(), 0);
     }
 }
