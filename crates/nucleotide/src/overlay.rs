@@ -6,7 +6,6 @@ use gpui::{
 };
 use helix_stdx::rope::RopeSliceExt;
 use nucleotide_core::EventBus;
-use nucleotide_ui::OverlaySurface;
 use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::completion_v2::CompletionView;
 use nucleotide_ui::picker::Picker;
@@ -14,6 +13,7 @@ use nucleotide_ui::picker_view::{PickerItem, PickerView};
 use nucleotide_ui::prompt::Prompt;
 use nucleotide_ui::prompt_view::PromptView;
 use nucleotide_ui::theme_manager::HelixThemedContext; // bring dispatch_* trait methods into scope
+use nucleotide_ui::{CompletionMenuAction, OverlaySurface};
 use std::sync::{Arc, Mutex};
 
 pub struct OverlayView {
@@ -243,7 +243,7 @@ impl OverlayView {
         }
     }
 
-    pub fn handle_completion_arrow_key(&self, key: &str, cx: &mut Context<Self>) -> bool {
+    fn handle_completion_arrow_key(&self, key: &str, cx: &mut Context<Self>) -> bool {
         if let Some(completion_view) = &self.completion_view {
             completion_view.update(cx, |view, cx| match key {
                 "up" => view.select_prev(cx),
@@ -253,6 +253,22 @@ impl OverlayView {
             true // Key was handled
         } else {
             false // No completion view to handle the key
+        }
+    }
+
+    pub fn handle_completion_menu_action(
+        &mut self,
+        action: CompletionMenuAction,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        match action {
+            CompletionMenuAction::Confirm => self.handle_completion_tab_key(cx),
+            CompletionMenuAction::Dismiss => {
+                self.dismiss_completion(cx);
+                true
+            }
+            CompletionMenuAction::SelectNext => self.handle_completion_arrow_key("down", cx),
+            CompletionMenuAction::SelectPrevious => self.handle_completion_arrow_key("up", cx),
         }
     }
 

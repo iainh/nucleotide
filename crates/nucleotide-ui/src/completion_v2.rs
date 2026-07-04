@@ -33,6 +33,33 @@ const COMPLETION_ROW_HEIGHT_PX: f32 = 32.0;
 const COMPLETION_LIST_MAX_HEIGHT_PX: f32 =
     COMPLETION_VISIBLE_ROWS as f32 * COMPLETION_ROW_HEIGHT_PX;
 
+/// Logical menu operations used by focused completion views and editor bridges.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompletionMenuAction {
+    Confirm,
+    Dismiss,
+    SelectNext,
+    SelectPrevious,
+}
+
+/// Maps Helix-style completion navigation keys to logical completion actions.
+///
+/// This keeps the editor bridge from duplicating completion menu semantics while
+/// still allowing the editor to keep focus during completion.
+pub fn completion_menu_action_for_key(
+    key: &str,
+    control: bool,
+    shift: bool,
+) -> Option<CompletionMenuAction> {
+    match (key, control, shift) {
+        ("escape", false, false) => Some(CompletionMenuAction::Dismiss),
+        ("tab", false, false) | ("y", true, false) => Some(CompletionMenuAction::Confirm),
+        ("down", false, false) | ("n", true, false) => Some(CompletionMenuAction::SelectNext),
+        ("up", false, false) | ("p", true, false) => Some(CompletionMenuAction::SelectPrevious),
+        _ => None,
+    }
+}
+
 /// Event emitted to request completion acceptance via Helix's Transaction system
 /// This event signals that Helix should handle the completion acceptance
 #[derive(Debug, Clone)]
@@ -2379,6 +2406,46 @@ mod tests {
             .collect();
 
         assert_eq!(prefixes, vec!["éclai", "écla", "écl", "éc", "é"]);
+    }
+
+    #[test]
+    fn completion_menu_keys_match_helix_completion_navigation() {
+        assert_eq!(
+            completion_menu_action_for_key("tab", false, false),
+            Some(CompletionMenuAction::Confirm)
+        );
+        assert_eq!(
+            completion_menu_action_for_key("y", true, false),
+            Some(CompletionMenuAction::Confirm)
+        );
+        assert_eq!(
+            completion_menu_action_for_key("down", false, false),
+            Some(CompletionMenuAction::SelectNext)
+        );
+        assert_eq!(
+            completion_menu_action_for_key("n", true, false),
+            Some(CompletionMenuAction::SelectNext)
+        );
+        assert_eq!(
+            completion_menu_action_for_key("up", false, false),
+            Some(CompletionMenuAction::SelectPrevious)
+        );
+        assert_eq!(
+            completion_menu_action_for_key("p", true, false),
+            Some(CompletionMenuAction::SelectPrevious)
+        );
+        assert_eq!(
+            completion_menu_action_for_key("escape", false, false),
+            Some(CompletionMenuAction::Dismiss)
+        );
+    }
+
+    #[test]
+    fn completion_menu_keys_ignore_non_helix_completion_bindings() {
+        assert_eq!(completion_menu_action_for_key("enter", false, false), None);
+        assert_eq!(completion_menu_action_for_key("tab", false, true), None);
+        assert_eq!(completion_menu_action_for_key("c", true, false), None);
+        assert_eq!(completion_menu_action_for_key("down", true, false), None);
     }
 
     #[test]

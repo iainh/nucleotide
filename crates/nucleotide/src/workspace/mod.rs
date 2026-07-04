@@ -46,7 +46,8 @@ use nucleotide_ui::scrollbar::{Scrollbar, ScrollbarState};
 use nucleotide_ui::{
     AboutWindow, Button, ButtonSize, ButtonVariant, ConfirmDialog, ConfirmDialogEvent,
     ConfirmDialogView, ContextMenuCallbacks, ContextMenuEntry, ContextMenuState, MarkdownStyle,
-    ModalLayer, ResizeDragController, Tooltipped, markdown_extended, render_context_menu,
+    ModalLayer, ResizeDragController, Tooltipped, completion_menu_action_for_key,
+    markdown_extended, render_context_menu,
 };
 
 use crate::input_coordinator::{FocusGroup, InputContext, InputCoordinator};
@@ -2397,24 +2398,6 @@ fn unsaved_close_confirmation_message(names: &[String]) -> String {
             names.len(),
             names.join(", ")
         ),
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MenuKeyAction {
-    Accept,
-    Cancel,
-    SelectNext,
-    SelectPrevious,
-}
-
-fn completion_menu_action(key: &str, control: bool, shift: bool) -> Option<MenuKeyAction> {
-    match (key, control, shift) {
-        ("escape", false, false) => Some(MenuKeyAction::Cancel),
-        ("tab", false, false) | ("y", true, false) => Some(MenuKeyAction::Accept),
-        ("down", false, false) | ("n", true, false) => Some(MenuKeyAction::SelectNext),
-        ("up", false, false) | ("p", true, false) => Some(MenuKeyAction::SelectPrevious),
-        _ => None,
     }
 }
 
@@ -6654,24 +6637,6 @@ impl Workspace {
         }
     }
 
-    fn handle_completion_overlay_action(
-        &mut self,
-        action: MenuKeyAction,
-        accept_with_enter: bool,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        self.overlay.update(cx, |overlay, cx| match action {
-            MenuKeyAction::Accept if accept_with_enter => overlay.handle_completion_enter_key(cx),
-            MenuKeyAction::Accept => overlay.handle_completion_tab_key(cx),
-            MenuKeyAction::Cancel => {
-                overlay.dismiss_completion(cx);
-                true
-            }
-            MenuKeyAction::SelectNext => overlay.handle_completion_arrow_key("down", cx),
-            MenuKeyAction::SelectPrevious => overlay.handle_completion_arrow_key("up", cx),
-        })
-    }
-
     /// Routes Helix-style completion keys while the completion menu is open.
     fn handle_regular_completion_menu_key(
         &mut self,
@@ -6682,7 +6647,7 @@ impl Workspace {
             return false;
         }
 
-        let Some(action) = completion_menu_action(
+        let Some(action) = completion_menu_action_for_key(
             ev.keystroke.key.as_str(),
             ev.keystroke.modifiers.control,
             ev.keystroke.modifiers.shift,
@@ -6690,7 +6655,9 @@ impl Workspace {
             return false;
         };
 
-        self.handle_completion_overlay_action(action, false, cx)
+        self.overlay.update(cx, |overlay, cx| {
+            overlay.handle_completion_menu_action(action, cx)
+        })
     }
 
     fn handle_completion_commit_character(
@@ -18291,46 +18258,6 @@ mod tests {
                 was_dir: false,
             }
         ));
-    }
-
-    #[test]
-    fn completion_menu_keys_match_helix_completion_navigation() {
-        assert_eq!(
-            completion_menu_action("tab", false, false),
-            Some(MenuKeyAction::Accept)
-        );
-        assert_eq!(
-            completion_menu_action("y", true, false),
-            Some(MenuKeyAction::Accept)
-        );
-        assert_eq!(
-            completion_menu_action("down", false, false),
-            Some(MenuKeyAction::SelectNext)
-        );
-        assert_eq!(
-            completion_menu_action("n", true, false),
-            Some(MenuKeyAction::SelectNext)
-        );
-        assert_eq!(
-            completion_menu_action("up", false, false),
-            Some(MenuKeyAction::SelectPrevious)
-        );
-        assert_eq!(
-            completion_menu_action("p", true, false),
-            Some(MenuKeyAction::SelectPrevious)
-        );
-        assert_eq!(
-            completion_menu_action("escape", false, false),
-            Some(MenuKeyAction::Cancel)
-        );
-    }
-
-    #[test]
-    fn completion_menu_keys_ignore_non_helix_completion_bindings() {
-        assert_eq!(completion_menu_action("enter", false, false), None);
-        assert_eq!(completion_menu_action("tab", false, true), None);
-        assert_eq!(completion_menu_action("c", true, false), None);
-        assert_eq!(completion_menu_action("down", true, false), None);
     }
 
     #[test]
