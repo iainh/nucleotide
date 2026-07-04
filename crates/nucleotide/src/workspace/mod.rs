@@ -15385,7 +15385,7 @@ impl Render for Workspace {
                                     if ev.dragging()
                                         && let Some(new_h) = this
                                             .basic_term_resize
-                                            .top_edge_value(f32::from(ev.position.y), min_h, max_h)
+                                            .top_edge_value_from_mouse_move(ev, min_h, max_h)
                                         && (this.basic_terminal_height - new_h).abs() > 0.5
                                     {
                                         this.basic_terminal_height = new_h;
@@ -15460,9 +15460,8 @@ impl Render for Workspace {
                                             cx.stop_propagation();
                                             return;
                                         }
-                                        this.basic_term_resize.begin(
-                                            f32::from(ev.position.x),
-                                            f32::from(ev.position.y),
+                                        this.basic_term_resize.begin_from_mouse_down(
+                                            ev,
                                             this.basic_terminal_height,
                                         );
                                         this.terminal_active = true;
@@ -15523,11 +15522,8 @@ impl Render for Workspace {
                                             return;
                                         }
 
-                                        this.doc_sidebar_resize.begin(
-                                            f32::from(ev.position.x),
-                                            f32::from(ev.position.y),
-                                            this.doc_sidebar_width,
-                                        );
+                                        this.doc_sidebar_resize
+                                            .begin_from_mouse_down(ev, this.doc_sidebar_width);
                                         cx.notify();
                                         window.refresh();
                                         cx.stop_propagation();
@@ -15730,11 +15726,8 @@ impl Render for Workspace {
                                     cx.stop_propagation();
                                     return;
                                 }
-                                this.file_tree_resize.begin(
-                                    f32::from(ev.position.x),
-                                    f32::from(ev.position.y),
-                                    this.file_tree_width,
-                                );
+                                this.file_tree_resize
+                                    .begin_from_mouse_down(ev, this.file_tree_width);
                                 cx.notify();
                                 window.refresh();
                                 cx.stop_propagation();

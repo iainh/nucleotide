@@ -118,6 +118,14 @@ impl ResizeDragController {
         self.start_primary.set(start_primary);
     }
 
+    pub fn begin_from_mouse_down(&self, event: &MouseDownEvent, start_primary: f32) {
+        self.begin(
+            f32::from(event.position.x),
+            f32::from(event.position.y),
+            start_primary,
+        );
+    }
+
     pub fn is_dragging(&self) -> bool {
         self.dragging.get()
     }
@@ -160,6 +168,15 @@ impl ResizeDragController {
         Some(clamp_primary(self.start_primary.get(), dx, min_px, max_px))
     }
 
+    pub fn horizontal_value_from_mouse_move(
+        &self,
+        event: &MouseMoveEvent,
+        min_px: f32,
+        max_px: f32,
+    ) -> Option<f32> {
+        self.horizontal_value(f32::from(event.position.x), min_px, max_px)
+    }
+
     pub fn left_edge_value(&self, mouse_x: f32, min_px: f32, max_px: f32) -> Option<f32> {
         if !self.dragging.get() {
             return None;
@@ -168,6 +185,15 @@ impl ResizeDragController {
         let start_x = self.start_mouse.get().0;
         let dx = mouse_x - start_x;
         Some(clamp_primary(self.start_primary.get(), -dx, min_px, max_px))
+    }
+
+    pub fn left_edge_value_from_mouse_move(
+        &self,
+        event: &MouseMoveEvent,
+        min_px: f32,
+        max_px: f32,
+    ) -> Option<f32> {
+        self.left_edge_value(f32::from(event.position.x), min_px, max_px)
     }
 
     pub fn top_edge_value(&self, mouse_y: f32, min_px: f32, max_px: f32) -> Option<f32> {
@@ -183,6 +209,15 @@ impl ResizeDragController {
             min_px,
             max_px,
         ))
+    }
+
+    pub fn top_edge_value_from_mouse_move(
+        &self,
+        event: &MouseMoveEvent,
+        min_px: f32,
+        max_px: f32,
+    ) -> Option<f32> {
+        self.top_edge_value(f32::from(event.position.y), min_px, max_px)
     }
 }
 
@@ -232,11 +267,9 @@ pub fn sidebar_split<L: IntoElement, R: IntoElement>(
                     // Ensure a minimum width for right pane (200px) so editor never collapses
                     let viewport_w = f32::from(window.viewport_size().width);
                     let max_allowed = (viewport_w - 200.0).max(min_px);
-                    if let Some(new_w) = drag.horizontal_value(
-                        f32::from(ev.position.x),
-                        min_px,
-                        max_allowed.min(max_px),
-                    ) {
+                    if let Some(new_w) =
+                        drag.horizontal_value_from_mouse_move(ev, min_px, max_allowed.min(max_px))
+                    {
                         on_change(new_w, cx);
                         window.refresh();
                     }
@@ -297,7 +330,7 @@ pub fn sidebar_split<L: IntoElement, R: IntoElement>(
                     cx.stop_propagation();
                     return;
                 }
-                drag.begin(f32::from(ev.position.x), f32::from(ev.position.y), width_px);
+                drag.begin_from_mouse_down(ev, width_px);
                 window.refresh();
                 cx.stop_propagation();
             }
@@ -347,8 +380,7 @@ pub fn bottom_panel_split<C: IntoElement>(
             let on_change = on_change.clone();
             move |ev: &MouseMoveEvent, window: &mut Window, cx: &mut App| {
                 if ev.dragging()
-                    && let Some(new_h) =
-                        drag.top_edge_value(f32::from(ev.position.y), min_px, max_px)
+                    && let Some(new_h) = drag.top_edge_value_from_mouse_move(ev, min_px, max_px)
                 {
                     on_change(new_h, cx);
                     window.refresh();
@@ -398,11 +430,7 @@ pub fn bottom_panel_split<C: IntoElement>(
                         cx.stop_propagation();
                         return;
                     }
-                    drag.begin(
-                        f32::from(ev.position.x),
-                        f32::from(ev.position.y),
-                        height_px,
-                    );
+                    drag.begin_from_mouse_down(ev, height_px);
                     window.refresh();
                     cx.stop_propagation();
                 }
@@ -475,7 +503,7 @@ pub fn two_pane_split<A: IntoElement, B: IntoElement>(
         .on_mouse_down(MouseButton::Left, {
             let drag = drag.clone();
             move |ev: &MouseDownEvent, window: &mut Window, _cx: &mut App| {
-                drag.begin(f32::from(ev.position.x), f32::from(ev.position.y), fraction);
+                drag.begin_from_mouse_down(ev, fraction);
                 window.refresh();
             }
         })
