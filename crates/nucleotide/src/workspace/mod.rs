@@ -1847,24 +1847,6 @@ async fn wait_for_file_operation_notification(
 }
 
 #[derive(Clone)]
-struct DraggedFileTreeResize;
-
-impl Render for DraggedFileTreeResize {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        Empty
-    }
-}
-
-#[derive(Clone)]
-struct DraggedDocumentationSidebarResize;
-
-impl Render for DraggedDocumentationSidebarResize {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        Empty
-    }
-}
-
-#[derive(Clone)]
 struct DraggedSplitPaneResize;
 
 impl Render for DraggedSplitPaneResize {
@@ -15636,26 +15618,6 @@ impl Render for Workspace {
                                     },
                                 ),
                             )
-                            .on_drag(DraggedDocumentationSidebarResize, |_, _, _, cx| {
-                                cx.new(|_| DraggedDocumentationSidebarResize)
-                            })
-                            .on_drag_move::<DraggedDocumentationSidebarResize>(cx.listener(
-                                move |this: &mut Workspace,
-                                      event: &DragMoveEvent<DraggedDocumentationSidebarResize>,
-                                      window,
-                                      cx| {
-                                    if event.event.dragging()
-                                        && this.update_documentation_sidebar_resize(
-                                            f32::from(event.event.position.x),
-                                            resize_available_w,
-                                            cx,
-                                        )
-                                    {
-                                        window.refresh();
-                                    }
-                                    cx.stop_propagation();
-                                },
-                            ))
                             .on_mouse_up(
                                 MouseButton::Left,
                                 cx.listener(
@@ -15840,26 +15802,6 @@ impl Render for Workspace {
                             },
                         ),
                     )
-                    .on_drag(DraggedFileTreeResize, |_, _, _, cx| {
-                        cx.new(|_| DraggedFileTreeResize)
-                    })
-                    .on_drag_move::<DraggedFileTreeResize>(cx.listener(
-                        |this: &mut Workspace,
-                         event: &DragMoveEvent<DraggedFileTreeResize>,
-                         window,
-                         cx| {
-                            if event.event.dragging()
-                                && this.update_file_tree_resize(
-                                    f32::from(event.event.position.x),
-                                    f32::from(window.viewport_size().width),
-                                    cx,
-                                )
-                            {
-                                window.refresh();
-                            }
-                            cx.stop_propagation();
-                        },
-                    ))
                     .on_mouse_up(
                         MouseButton::Left,
                         cx.listener(|this: &mut Workspace, _ev: &MouseUpEvent, window, cx| {
