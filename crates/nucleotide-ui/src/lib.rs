@@ -27,6 +27,7 @@ pub mod key_hint_view;
 pub mod list_item;
 pub mod markdown;
 pub mod menu;
+pub mod modal_layer;
 pub mod navigable;
 pub mod notification;
 pub mod picker;
@@ -113,6 +114,7 @@ pub use markdown::{
     MarkdownElement, MarkdownParseMode, MarkdownStyle, markdown, markdown_extended,
 };
 pub use menu::{MenuCheckSide, PopupMenu, PopupMenuItem};
+pub use modal_layer::{DismissDecision, ModalLayer, ModalOpenedEvent, ModalView};
 pub use navigable::{Navigable, NavigableEntry};
 pub use picker::Picker;
 pub use prompt::Prompt;
