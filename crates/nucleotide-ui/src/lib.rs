@@ -16,6 +16,7 @@ pub mod completion_perf;
 pub mod completion_popup;
 pub mod completion_renderer;
 pub mod completion_v2;
+pub mod component_gallery;
 pub mod confirm_dialog;
 pub mod context_menu;
 pub mod debouncer;
@@ -94,6 +95,7 @@ pub use completion_v2::{
     CompletionOffsetEncoding, CompletionPosition, CompletionRange, CompletionTextEdit,
     CompletionView, CompletionWarningEvent, Position, StringMatch, StringMatchCandidate,
 };
+pub use component_gallery::ComponentGallery;
 pub use confirm_dialog::{
     ConfirmDialog, ConfirmDialogCallbacks, ConfirmDialogEvent, ConfirmDialogView, Dialog,
     DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
@@ -365,6 +367,7 @@ pub fn init(cx: &mut App, config: Option<UIConfig>) {
     registry.register_component("Panel");
     registry.register_component("Toolbar");
     registry.register_component("StatusBar");
+    registry.register_component("ComponentGallery");
 
     cx.set_global(registry);
 }

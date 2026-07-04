@@ -181,3 +181,7 @@ Add GPUI tests for interaction contracts when adding or changing wrappers:
 
 The contract should be proven at the wrapper level first. Feature code can then
 depend on that behaviour instead of retesting every GPUI event branch locally.
+
+Use `nucleotide_ui::ComponentGallery` for quick visual coverage of shared UI
+primitives. New reusable components should get a focused GPUI test first, then a
+small gallery section when visual state or composition matters.
