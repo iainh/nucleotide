@@ -843,7 +843,6 @@ use nucleotide::actions::{
         ReloadConfiguration, RevertCurrentChange, Save, SaveAs, Undo,
     },
     help::{About, OpenTutorial, ThemeDebug},
-    picker::{ConfirmSelection, DismissPicker, SelectFirst, SelectLast, TogglePreview},
     test::{TestCompletion, TestPrompt},
     window::{Minimize, Zoom},
     workspace::{
@@ -1391,19 +1390,6 @@ fn gui_main(
                     gpui::KeyBinding::new("escape", Cancel, Some("Editor")),
                 ]);
 
-                // Picker-specific keybindings
-                cx.bind_keys([
-                    gpui::KeyBinding::new("up", SelectPrev, Some("Picker")),
-                    gpui::KeyBinding::new("down", SelectNext, Some("Picker")),
-                    gpui::KeyBinding::new("ctrl-p", SelectPrev, Some("Picker")),
-                    gpui::KeyBinding::new("ctrl-n", SelectNext, Some("Picker")),
-                    gpui::KeyBinding::new("enter", ConfirmSelection, Some("Picker")),
-                    gpui::KeyBinding::new("escape", DismissPicker, Some("Picker")),
-                    gpui::KeyBinding::new("cmd-p", TogglePreview, Some("Picker")),
-                    gpui::KeyBinding::new("home", SelectFirst, Some("Picker")),
-                    gpui::KeyBinding::new("end", SelectLast, Some("Picker")),
-                ]);
-
                 // Completion-specific keybindings
                 cx.bind_keys([
                     gpui::KeyBinding::new("up", CompletionSelectPrev, Some("Completion")),
@@ -1419,7 +1405,6 @@ fn gui_main(
                 ]);
 
                 // FileTree-specific keybindings
-                use nucleotide::actions::file_tree::{OpenFile, SelectNext, SelectPrev};
                 cx.bind_keys([
                     gpui::KeyBinding::new(
                         "up",
