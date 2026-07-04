@@ -13,3 +13,25 @@ pub mod project_tree {
         pub intent: ProjectTreeContextMenuIntent,
     }
 }
+
+pub(crate) mod tab_menus {
+    use crate::workspace::{TabBarNewMenuIntent, TabBarSplitMenuIntent, TabContextMenuIntent};
+
+    #[derive(Clone, PartialEq, Debug, gpui::Action)]
+    #[action(namespace = tab_context_menu, no_json)]
+    pub(crate) struct ContextOperation {
+        pub(crate) intent: TabContextMenuIntent,
+    }
+
+    #[derive(Clone, PartialEq, Debug, gpui::Action)]
+    #[action(namespace = tab_bar_split_menu, no_json)]
+    pub(crate) struct SplitOperation {
+        pub(crate) intent: TabBarSplitMenuIntent,
+    }
+
+    #[derive(Clone, PartialEq, Debug, gpui::Action)]
+    #[action(namespace = tab_bar_new_menu, no_json)]
+    pub(crate) struct NewOperation {
+        pub(crate) intent: TabBarNewMenuIntent,
+    }
+}
