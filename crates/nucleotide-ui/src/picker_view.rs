@@ -6,12 +6,13 @@ use crate::VcsIcon;
 use crate::actions::picker::{
     ConfirmSelection, DismissPicker, SelectFirst, SelectLast, SelectNext, SelectPrev, TogglePreview,
 };
-use crate::common::{FocusableModal, ModalStyle, SearchInput};
+use crate::common::{FocusableModal, ModalStyle};
+use crate::{InputSize, InputVariant, TextInput, TextInputEvent};
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    App, DismissEvent, EventEmitter, FocusHandle, Focusable, Hsla, InteractiveElement, IntoElement,
-    KeyBinding, KeyDownEvent, ParentElement, Pixels, Render, Result, SharedString, Size, Styled,
-    Task, UniformListScrollHandle, div, px, svg, uniform_list,
+    App, AppContext as _, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, Hsla,
+    InteractiveElement, IntoElement, KeyBinding, ParentElement, Pixels, Render, Result,
+    SharedString, Size, Styled, Task, UniformListScrollHandle, div, px, svg, uniform_list,
 };
 use gpui::{Context, ScrollStrategy, Window};
 use helix_view::DocumentId;
@@ -164,7 +165,7 @@ fn str_prefix_at_byte_limit(value: &str, max_bytes: usize) -> &str {
 pub struct PickerView {
     // Core picker state
     query: SharedString,
-    cursor_position: usize,
+    query_input: Entity<TextInput>,
     items: Vec<PickerItem>,
     filtered_indices: Vec<u32>,
     selected_index: usize,
@@ -342,15 +343,28 @@ impl PickerView {
             .into()
     }
 
+    fn new_query_input(cx: &mut Context<Self>) -> Entity<TextInput> {
+        let input = cx.new(|cx| {
+            TextInput::new("picker-query-input", cx)
+                .variant(InputVariant::Ghost)
+                .size(InputSize::Small)
+                .placeholder("Search")
+        });
+        cx.subscribe(&input, Self::handle_query_input_event)
+            .detach();
+        input
+    }
+
     pub fn new(cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
         if let Some(coord) = cx.try_global::<crate::FocusCoordinator>() {
             coord.set_picker_focus(focus_handle.clone());
         }
+        let query_input = Self::new_query_input(cx);
 
         Self {
             query: SharedString::default(),
-            cursor_position: 0,
+            query_input,
             items: Vec::new(),
             filtered_indices: Vec::new(),
             selected_index: 0,
@@ -387,10 +401,11 @@ impl PickerView {
         if let Some(coord) = cx.try_global::<crate::FocusCoordinator>() {
             coord.set_picker_focus(focus_handle.clone());
         }
+        let query_input = Self::new_query_input(cx);
 
         Self {
             query: SharedString::default(),
-            cursor_position: 0,
+            query_input,
             items: Vec::new(),
             filtered_indices: Vec::new(),
             selected_index: 0,
@@ -532,8 +547,36 @@ impl PickerView {
     }
 
     pub fn set_query(&mut self, query: impl Into<SharedString>, cx: &mut Context<Self>) {
-        self.query = query.into();
-        self.cursor_position = self.query.len();
+        let query = query.into();
+        self.query_input.update(cx, |input, cx| {
+            input.set_value_silent(query.clone(), cx);
+        });
+        self.apply_query(query, cx);
+    }
+
+    fn handle_query_input_event(
+        &mut self,
+        _input: Entity<TextInput>,
+        event: &TextInputEvent,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            TextInputEvent::Changed(query) => {
+                self.apply_query(query.clone(), cx);
+            }
+            TextInputEvent::Submitted(_) => self.confirm_selection(cx),
+            TextInputEvent::Cancelled => {
+                if self.query.is_empty() {
+                    self.cancel(cx);
+                } else {
+                    self.set_query("", cx);
+                }
+            }
+        }
+    }
+
+    fn apply_query(&mut self, query: SharedString, cx: &mut Context<Self>) {
+        self.query = query;
         self.filter_items(cx);
         self.selected_index = 0;
         // Scroll to top when query changes
@@ -744,66 +787,6 @@ impl PickerView {
         }
 
         cx.notify();
-    }
-
-    fn insert_char(&mut self, ch: char, cx: &mut Context<Self>) {
-        let mut query = self.query.to_string();
-        let chars: Vec<char> = query.chars().collect();
-
-        // Calculate byte position from character position
-        let mut byte_pos = 0;
-        for (i, c) in chars.iter().enumerate() {
-            if i >= self.cursor_position {
-                break;
-            }
-            byte_pos += c.len_utf8();
-        }
-
-        query.insert(byte_pos, ch);
-        self.cursor_position += 1; // Move cursor by one character position
-        self.query = query.into();
-        self.filter_items(cx);
-        self.selected_index = 0;
-        self.list_scroll_handle
-            .scroll_to_item(0, ScrollStrategy::Top);
-        self.load_preview_for_selected_item(cx);
-        cx.notify();
-    }
-
-    fn delete_char(&mut self, cx: &mut Context<Self>) {
-        if self.cursor_position > 0 {
-            let mut query = self.query.to_string();
-            let char_pos = self.cursor_position.saturating_sub(1);
-            let char_count = query.chars().count();
-            if char_pos < char_count {
-                // Find the byte position for the character position
-                let mut byte_pos = 0;
-                for (i, ch) in query.chars().enumerate() {
-                    if i == char_pos {
-                        break;
-                    }
-                    byte_pos += ch.len_utf8();
-                }
-                // Safe access to character at position
-                if let Some(ch) = query.chars().nth(char_pos) {
-                    let ch_len = ch.len_utf8();
-                    query.drain(byte_pos..byte_pos + ch_len);
-                } else {
-                    warn!(
-                        char_pos = char_pos,
-                        "Attempted to delete character at invalid position"
-                    );
-                }
-                self.query = query.into();
-                self.cursor_position = char_pos;
-                self.filter_items(cx);
-                self.selected_index = 0;
-                self.list_scroll_handle
-                    .scroll_to_item(0, ScrollStrategy::Top);
-                self.load_preview_for_selected_item(cx);
-                cx.notify();
-            }
-        }
     }
 
     fn calculate_dimensions(&self, window_size: Size<Pixels>) -> CachedDimensions {
@@ -1172,8 +1155,9 @@ impl PickerView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        // Ensure the picker has focus when rendered
-        self.ensure_focus(window, cx, &self.focus_handle);
+        // Ensure text entry works as soon as the picker opens.
+        let query_focus = self.query_input.read(cx).focus_handle(cx);
+        self.ensure_focus(window, cx, &query_focus);
 
         // Load initial preview if not already loaded
         if !self.initial_preview_loaded && !self.filtered_indices.is_empty() {
@@ -1229,68 +1213,6 @@ impl PickerView {
             .text_size(px(cx.global::<nucleotide_types::UiFontConfig>().size))
             .overflow_hidden()
             .track_focus(&self.focus_handle)
-            // Handle keyboard input for filtering
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
-                match event.keystroke.key.as_str() {
-                    "backspace" => {
-                        this.delete_char(cx);
-                    }
-                    "enter" => {
-                        this.confirm_selection(cx);
-                    }
-                    "escape" => {
-                        if this.query.is_empty() {
-                            this.cancel(cx);
-                        } else {
-                            // Clear the query instead of cancelling
-                            this.set_query("", cx);
-                        }
-                    }
-                    "up" => {
-                        this.move_selection(-1, cx);
-                    }
-                    "down" => {
-                        this.move_selection(1, cx);
-                    }
-                    "left" => {
-                        if this.cursor_position > 0 {
-                            this.cursor_position -= 1;
-                            cx.notify();
-                        }
-                    }
-                    "right" => {
-                        let char_count = this.query.chars().count();
-                        if this.cursor_position < char_count {
-                            this.cursor_position += 1;
-                            cx.notify();
-                        }
-                    }
-                    "home" => {
-                        this.cursor_position = 0;
-                        cx.notify();
-                    }
-                    "end" => {
-                        this.cursor_position = this.query.chars().count();
-                        cx.notify();
-                    }
-                    key if key.len() == 1 => {
-                        if let Some(ch) = key.chars().next()
-                            && (ch.is_alphanumeric()
-                                || ch.is_ascii_punctuation()
-                                || ch == ' '
-                                || ch == '/'
-                                || ch == '.'
-                                || ch == '-'
-                                || ch == '_')
-                        {
-                            this.insert_char(ch, cx);
-                        }
-                    }
-                    _ => {
-                        // Let other keys be handled by actions
-                    }
-                }
-            }))
             // Use GPUI actions instead of direct key handling
             .on_action(cx.listener(
                 |this, _: &crate::actions::picker::SelectPrev, _window, cx| {
@@ -1343,13 +1265,7 @@ impl PickerView {
                             .flex_1()
                             .flex()
                             .items_center()
-                            .child(SearchInput::render(
-                                &self.query,
-                                self.cursor_position,
-                                self.style.cursor,
-                                self.style.modal_style.prompt_text,
-                                self.focus_handle.is_focused(window),
-                            )),
+                            .child(self.query_input.clone()),
                     )
                     .child(
                         // File count display
@@ -1795,7 +1711,7 @@ impl Render for PickerView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::{AppContext as _, TestAppContext, size};
+    use gpui::{TestAppContext, size};
     use std::sync::Arc;
 
     #[test]
@@ -1883,6 +1799,63 @@ mod tests {
     fn no_preview_rows_do_not_force_text_truncation() {
         assert!(!PickerView::should_truncate_row_text(false));
         assert!(PickerView::should_truncate_row_text(true));
+    }
+
+    #[gpui::test]
+    fn query_input_changes_filter_items(cx: &mut TestAppContext) {
+        let picker = cx.new(PickerView::new);
+
+        picker.update(cx, |picker, _| {
+            picker.items = vec![
+                PickerItem {
+                    label: "write".into(),
+                    sublabel: None,
+                    data: Arc::new(()),
+                    file_path: None,
+                    vcs_status: None,
+                    columns: None,
+                },
+                PickerItem {
+                    label: "quit".into(),
+                    sublabel: None,
+                    data: Arc::new(()),
+                    file_path: None,
+                    vcs_status: None,
+                    columns: None,
+                },
+            ];
+            picker.filtered_indices = vec![0, 1];
+        });
+        let query_input = picker.read_with(cx, |picker, _| picker.query_input.clone());
+
+        cx.update(|cx| {
+            query_input.update(cx, |input, cx| {
+                input.set_value("wri", cx);
+            });
+        });
+
+        picker.read_with(cx, |picker, _| {
+            assert_eq!(picker.query.as_ref(), "wri");
+            assert_eq!(picker.filtered_indices, vec![0]);
+        });
+    }
+
+    #[gpui::test]
+    fn query_input_cancel_clears_non_empty_query(cx: &mut TestAppContext) {
+        let picker = cx.new(PickerView::new);
+        picker.update(cx, |picker, cx| picker.set_query("abc", cx));
+        let query_input = picker.read_with(cx, |picker, _| picker.query_input.clone());
+
+        cx.update(|cx| {
+            query_input.update(cx, |_, cx| {
+                cx.emit(TextInputEvent::Cancelled);
+            });
+        });
+
+        picker.read_with(cx, |picker, cx| {
+            assert_eq!(picker.query.as_ref(), "");
+            assert_eq!(picker.query_input.read(cx).value().as_ref(), "");
+        });
     }
 
     #[gpui::test]
