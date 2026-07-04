@@ -49,12 +49,6 @@ pub mod prompt {
         [
             Confirm,
             Cancel,
-            DeleteWord,
-            DeleteChar,
-            MoveToStart,
-            MoveToEnd,
-            MoveCursorLeft,
-            MoveCursorRight,
             NextCompletion,
             PrevCompletion,
             AcceptCompletion,

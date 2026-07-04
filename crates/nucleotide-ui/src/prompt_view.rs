@@ -1,10 +1,7 @@
 // ABOUTME: GPUI-native prompt component for text input with completion support
 // ABOUTME: Replaces the terminal prompt widget with a proper GPUI implementation
 
-use crate::actions::prompt::{
-    AcceptCompletion, Cancel, Confirm, DeleteChar, MoveCursorLeft, MoveCursorRight, MoveToEnd,
-    MoveToStart, NextCompletion, PrevCompletion,
-};
+use crate::actions::prompt::{AcceptCompletion, Cancel, Confirm, NextCompletion, PrevCompletion};
 use crate::common::ModalStyle;
 use crate::{InputSize, InputVariant, TextInput, TextInputEvent};
 use gpui::prelude::FluentBuilder;
@@ -50,7 +47,6 @@ pub struct PromptView {
     // Core prompt state
     prompt: SharedString,
     input: SharedString,
-    cursor_position: usize,
     input_view: Entity<TextInput>,
 
     // Command history
@@ -164,7 +160,6 @@ impl PromptView {
         Self {
             prompt: prompt.into(),
             input: SharedString::default(),
-            cursor_position: 0,
             input_view,
             history: Vec::new(),
             history_position: None,
@@ -228,7 +223,6 @@ impl PromptView {
 
     pub fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
         self.input = SharedString::from(text.to_string());
-        self.cursor_position = text.chars().count();
         self.sync_input_view(cx);
 
         // Recalculate completions for the initial text
@@ -239,20 +233,13 @@ impl PromptView {
 
     fn handle_input_event(
         &mut self,
-        input: Entity<TextInput>,
+        _input: Entity<TextInput>,
         event: &TextInputEvent,
         cx: &mut Context<Self>,
     ) {
         match event {
             TextInputEvent::Changed(value) => {
                 self.input = value.clone();
-                let cursor_offset = input.read(cx).cursor_offset();
-                self.cursor_position = self
-                    .input
-                    .as_ref()
-                    .get(..cursor_offset)
-                    .map(|prefix| prefix.chars().count())
-                    .unwrap_or_else(|| self.input.chars().count());
                 self.recalculate_completions(cx);
 
                 if let Some(on_change) = &mut self.on_change {
@@ -268,10 +255,8 @@ impl PromptView {
 
     fn sync_input_view(&mut self, cx: &mut Context<Self>) {
         let value = self.input.clone();
-        let cursor_offset = self.byte_position_from_char_position(&value, self.cursor_position);
         self.input_view.update(cx, |input, cx| {
             input.set_value_silent(value, cx);
-            input.move_cursor_to(cursor_offset, cx);
         });
         self.update_input_ghost_suffix(cx);
     }
@@ -295,10 +280,6 @@ impl PromptView {
         let ghost_suffix = self.completion_ghost_suffix();
         self.input_view
             .update(cx, |input, cx| input.set_ghost_suffix(ghost_suffix, cx));
-    }
-
-    fn byte_position_from_char_position(&self, s: &str, char_pos: usize) -> usize {
-        s.chars().take(char_pos).map(char::len_utf8).sum()
     }
 
     fn recalculate_completions(&mut self, cx: &mut Context<Self>) {
@@ -364,43 +345,6 @@ impl PromptView {
         cx.notify();
     }
 
-    fn delete_char(&mut self, cx: &mut Context<Self>) {
-        if self.cursor_position > 0 {
-            let mut input = self.input.to_string();
-            let mut chars: Vec<char> = input.chars().collect();
-            let char_pos = self.cursor_position.saturating_sub(1);
-            if char_pos < chars.len() {
-                chars.remove(char_pos);
-                input = chars.into_iter().collect();
-                self.input = input.into();
-                self.cursor_position = char_pos;
-                self.sync_input_view(cx);
-
-                // Recalculate completions
-                self.recalculate_completions(cx);
-
-                if let Some(on_change) = &mut self.on_change {
-                    on_change(&self.input, cx);
-                }
-
-                cx.notify();
-            }
-        }
-    }
-
-    fn move_cursor(&mut self, delta: isize, cx: &mut Context<Self>) {
-        let input_len = self.input.chars().count();
-        if delta > 0 {
-            let delta_usize = usize::try_from(delta).unwrap_or(0);
-            self.cursor_position = (self.cursor_position + delta_usize).min(input_len);
-        } else {
-            let delta_usize = usize::try_from(-delta).unwrap_or(0);
-            self.cursor_position = self.cursor_position.saturating_sub(delta_usize);
-        }
-        self.sync_input_view(cx);
-        cx.notify();
-    }
-
     fn move_completion_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
         if self.completions.is_empty() {
             return;
@@ -446,7 +390,6 @@ impl PromptView {
             && let Some(completion) = self.completions.get(self.completion_selection)
         {
             self.input = completion.text.clone();
-            self.cursor_position = self.input.chars().count();
             self.show_completions = false;
             self.original_input = None; // Clear original input since completion is accepted
             self.sync_input_view(cx);
@@ -486,7 +429,6 @@ impl PromptView {
             if should_accept_completion {
                 info!(completion_text = %completion.text, "Replacing input with completion");
                 self.input = completion.text.clone();
-                self.cursor_position = self.input.chars().count();
                 self.sync_input_view(cx);
             } else {
                 info!(
@@ -519,7 +461,6 @@ impl PromptView {
                 if up {
                     self.history_position = Some(self.history.len() - 1);
                     self.input = self.history[self.history.len() - 1].clone();
-                    self.cursor_position = self.input.chars().count();
                     self.sync_input_view(cx);
                 }
             }
@@ -527,18 +468,15 @@ impl PromptView {
                 if up && pos > 0 {
                     self.history_position = Some(pos - 1);
                     self.input = self.history[pos - 1].clone();
-                    self.cursor_position = self.input.chars().count();
                     self.sync_input_view(cx);
                 } else if !up && pos < self.history.len() - 1 {
                     self.history_position = Some(pos + 1);
                     self.input = self.history[pos + 1].clone();
-                    self.cursor_position = self.input.chars().count();
                     self.sync_input_view(cx);
                 } else if !up {
                     // Going down from the last history item, clear input
                     self.history_position = None;
                     self.input = SharedString::default();
-                    self.cursor_position = 0;
                     self.sync_input_view(cx);
                 }
             }
@@ -558,7 +496,6 @@ impl PromptView {
             // Restore original input before hiding completions.
             if let Some(original) = self.original_input.clone() {
                 self.input = original.clone();
-                self.cursor_position = self.input.chars().count();
 
                 if let Some(on_change) = &mut self.on_change {
                     on_change(&self.input, cx);
@@ -620,45 +557,6 @@ impl PromptView {
         self.accept_completion(cx);
         cx.stop_propagation();
     }
-
-    fn move_cursor_left_action(
-        &mut self,
-        _: &MoveCursorLeft,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.move_cursor(-1, cx);
-        cx.stop_propagation();
-    }
-
-    fn move_cursor_right_action(
-        &mut self,
-        _: &MoveCursorRight,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.move_cursor(1, cx);
-        cx.stop_propagation();
-    }
-
-    fn move_to_start_action(&mut self, _: &MoveToStart, _: &mut Window, cx: &mut Context<Self>) {
-        self.cursor_position = 0;
-        self.sync_input_view(cx);
-        cx.notify();
-        cx.stop_propagation();
-    }
-
-    fn move_to_end_action(&mut self, _: &MoveToEnd, _: &mut Window, cx: &mut Context<Self>) {
-        self.cursor_position = self.input.chars().count();
-        self.sync_input_view(cx);
-        cx.notify();
-        cx.stop_propagation();
-    }
-
-    fn delete_char_action(&mut self, _: &DeleteChar, _: &mut Window, cx: &mut Context<Self>) {
-        self.delete_char(cx);
-        cx.stop_propagation();
-    }
 }
 
 impl Focusable for PromptView {
@@ -701,11 +599,6 @@ impl Render for PromptView {
             .on_action(cx.listener(Self::prev_completion_action))
             .on_action(cx.listener(Self::next_completion_action))
             .on_action(cx.listener(Self::accept_completion_action))
-            .on_action(cx.listener(Self::move_cursor_left_action))
-            .on_action(cx.listener(Self::move_cursor_right_action))
-            .on_action(cx.listener(Self::move_to_start_action))
-            .on_action(cx.listener(Self::move_to_end_action))
-            .on_action(cx.listener(Self::delete_char_action))
             .child(
                 // Input line
                 div()
@@ -868,23 +761,25 @@ mod tests {
     }
 
     #[gpui::test]
-    fn prompt_actions_edit_focused_input(cx: &mut TestAppContext) {
+    fn text_input_actions_edit_prompt_state(cx: &mut TestAppContext) {
+        use crate::actions::text_input::{Backspace, MoveLeft};
+
         init_prompt_test(cx);
         let (prompt, cx) = cx.add_window_view(|_, cx| PromptView::new(":", cx));
-        let focus = prompt.read_with(cx, |prompt, cx| prompt.focus_handle(cx));
+        let input = prompt.read_with(cx, |prompt, _| prompt.input_view.clone());
+        let focus = input.read_with(cx, |input, cx| input.focus_handle(cx));
 
         cx.update(|window, cx| {
             prompt.update(cx, |prompt, cx| {
                 prompt.set_text("abc", cx);
             });
             window.focus(&focus, cx);
-            focus.dispatch_action(&MoveCursorLeft, window, cx);
-            focus.dispatch_action(&DeleteChar, window, cx);
+            focus.dispatch_action(&MoveLeft, window, cx);
+            focus.dispatch_action(&Backspace, window, cx);
         });
 
         prompt.read_with(cx, |prompt, cx| {
             assert_eq!(prompt.input.as_ref(), "ac");
-            assert_eq!(prompt.cursor_position, 1);
             assert_eq!(prompt.input_view.read(cx).value().as_ref(), "ac");
             assert_eq!(prompt.input_view.read(cx).cursor_offset(), 1);
         });
@@ -914,7 +809,6 @@ mod tests {
 
         prompt.read_with(cx, |prompt, cx| {
             assert_eq!(prompt.input.as_ref(), "wr");
-            assert_eq!(prompt.cursor_position, 2);
             assert_eq!(prompt.input_view.read(cx).value().as_ref(), "wr");
             assert!(prompt.show_completions);
             assert_eq!(prompt.completions.len(), 1);
