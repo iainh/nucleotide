@@ -39,6 +39,7 @@ pub mod scrollbar;
 pub mod split;
 pub mod style_utils;
 pub mod styling;
+pub mod text_input;
 pub mod text_utils;
 pub mod theme_debug;
 pub mod theme_manager;
@@ -137,6 +138,7 @@ pub use styling::{
     VariantStyler, ViewportContext, compute_component_style, compute_contextual_style,
     compute_style_for_states, merge_styles, should_enable_animations,
 };
+pub use text_input::{TextInput, TextInputEvent};
 pub use theme_debug::ThemeDebugView;
 pub use tokens::{
     ChromeTokens, ColorContext, CompletionIconTokens, DesignTokens, EditorTokens, FileTreeTokens,
@@ -317,6 +319,7 @@ pub fn init(cx: &mut App, config: Option<UIConfig>) {
 
     providers::init_provider_system();
     menu::init(cx);
+    text_input::init(cx);
 
     let mut theme_provider = providers::ThemeProvider::new(config.default_theme.clone());
     theme_provider.initialize(cx);
@@ -350,6 +353,7 @@ pub fn init(cx: &mut App, config: Option<UIConfig>) {
     registry.register_component("FileIcon");
     registry.register_component("Picker");
     registry.register_component("Prompt");
+    registry.register_component("TextInput");
     registry.register_component("CompletionView");
     registry.register_component("CompletionRenderer");
     registry.register_component("SmartPopup");
