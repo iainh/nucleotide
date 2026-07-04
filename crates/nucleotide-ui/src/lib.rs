@@ -30,6 +30,7 @@ pub mod menu;
 pub mod modal_layer;
 pub mod navigable;
 pub mod notification;
+pub mod overlay_surface;
 pub mod picker;
 pub mod picker_view;
 pub mod prompt;
@@ -119,6 +120,7 @@ pub use markdown::{
 pub use menu::{MenuCheckSide, PopupMenu, PopupMenuItem};
 pub use modal_layer::{DismissDecision, ModalLayer, ModalOpenedEvent, ModalView};
 pub use navigable::{Navigable, NavigableEntry};
+pub use overlay_surface::OverlaySurface;
 pub use picker::Picker;
 pub use prompt::Prompt;
 pub use providers::{

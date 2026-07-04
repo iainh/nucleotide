@@ -6,6 +6,7 @@ use gpui::{
 };
 use helix_stdx::rope::RopeSliceExt;
 use nucleotide_core::EventBus;
+use nucleotide_ui::OverlaySurface;
 use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::completion_v2::CompletionView;
 use nucleotide_ui::picker::Picker;
@@ -1831,71 +1832,33 @@ impl Render for OverlayView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Check what type of overlay we should render
         if let Some(picker_view) = &self.native_picker_view {
-            // Render picker with design tokens and consistent overlay patterns
             let theme = cx.theme();
             let tokens = &theme.tokens;
 
-            return div()
+            return OverlaySurface::new()
                 .key_context("Overlay")
-                .absolute()
-                .size_full()
-                .bottom_0()
-                .left_0()
-                .occlude()
-                // Clicking outside the picker dismisses it and restores focus
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|this: &mut OverlayView, _e, window, cx| {
-                        window.disable_focus();
-                        this.dismiss_picker(cx);
-                    }),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .size_full()
-                        .justify_center()
-                        .items_start()
-                        .pt(tokens.sizes.space_8)
-                        // Consume clicks inside the picker so they don't dismiss
-                        .on_mouse_down(MouseButton::Left, |_, _, _| {})
-                        .child(picker_view.clone()),
-                )
+                .top(tokens.sizes.space_8)
+                .on_light_dismiss(cx.listener(|this: &mut OverlayView, _e, window, cx| {
+                    window.disable_focus();
+                    this.dismiss_picker(cx);
+                }))
+                .child(picker_view.clone())
                 .into_any_element();
         }
 
         if let Some(prompt_view) = &self.native_prompt_view {
             nucleotide_logging::trace!("DIAG: Render overlay branch: prompt");
-            // Render prompt with design tokens and consistent overlay patterns
             let theme = cx.theme();
             let tokens = &theme.tokens;
 
-            return div()
+            return OverlaySurface::new()
                 .key_context("Overlay")
-                .absolute()
-                .size_full()
-                .bottom_0()
-                .left_0()
-                .occlude()
-                // Clicking outside the prompt dismisses it and restores focus
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|this: &mut OverlayView, _e, window, cx| {
-                        window.disable_focus();
-                        this.dismiss_prompt(cx);
-                    }),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .size_full()
-                        .justify_center()
-                        .items_start()
-                        .pt(tokens.sizes.space_8)
-                        // Consume clicks inside the prompt so they don't dismiss
-                        .on_mouse_down(MouseButton::Left, |_, _, _| {})
-                        .child(prompt_view.clone()),
-                )
+                .top(tokens.sizes.space_8)
+                .on_light_dismiss(cx.listener(|this: &mut OverlayView, _e, window, cx| {
+                    window.disable_focus();
+                    this.dismiss_prompt(cx);
+                }))
+                .child(prompt_view.clone())
                 .into_any_element();
         }
 
@@ -1904,30 +1867,14 @@ impl Render for OverlayView {
             let theme = cx.theme();
             let tokens = &theme.tokens;
 
-            return div()
+            return OverlaySurface::new()
                 .key_context("Overlay")
-                .absolute()
-                .size_full()
-                .bottom_0()
-                .left_0()
-                .occlude()
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|this: &mut OverlayView, _e, window, cx| {
-                        window.disable_focus();
-                        this.dismiss_remote_connection_manager(cx);
-                    }),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .size_full()
-                        .justify_center()
-                        .items_start()
-                        .pt(tokens.sizes.space_8)
-                        .on_any_mouse_down(|_, _, cx| cx.stop_propagation())
-                        .child(remote_manager.clone()),
-                )
+                .top(tokens.sizes.space_8)
+                .on_light_dismiss(cx.listener(|this: &mut OverlayView, _e, window, cx| {
+                    window.disable_focus();
+                    this.dismiss_remote_connection_manager(cx);
+                }))
+                .child(remote_manager.clone())
                 .into_any_element();
         }
 
