@@ -51,8 +51,8 @@ use nucleotide_ui::notification::{StatusBarNotification, StatusBarNotificationSe
 use nucleotide_ui::scrollbar::{Scrollbar, ScrollbarState};
 use nucleotide_ui::{
     AboutWindow, Button, ButtonSize, ButtonVariant, ConfirmDialog, ConfirmDialogEvent,
-    ConfirmDialogView, ContextMenuController, MarkdownStyle, ModalLayer, PopupMenu, Tooltipped,
-    completion_menu_action_for_key, markdown_extended,
+    ConfirmDialogView, ContextMenuController, EditorPaneGrid, MarkdownStyle, ModalLayer, PopupMenu,
+    Tooltipped, completion_menu_action_for_key, markdown_extended,
 };
 
 use crate::input_coordinator::{FocusGroup, InputContext, InputCoordinator};
@@ -14047,20 +14047,10 @@ impl Render for Workspace {
             self.last_editor_size = Some(desired_size);
         }
 
-        // Create document root container using design tokens
-        let mut docs_root = div()
-            .id("docs-root")
-            .flex()
-            .relative()
-            .w_full()
-            .h_full()
-            .overflow_hidden()
-            // Background color inherited // Use semantic background color
-            .when(self.debug_colors_enabled, |d| {
-                // Editor docs area border (green)
-                d.border_1()
-                    .border_color(cx.theme().tokens.chrome.border_strong)
-            }); // No gap needed for documents
+        let mut docs_root = EditorPaneGrid::new("docs-root").debug_border(
+            self.debug_colors_enabled,
+            cx.theme().tokens.chrome.border_strong,
+        );
 
         let active_image_tab = self
             .active_image_tab_id

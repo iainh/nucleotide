@@ -7,8 +7,8 @@ use gpui::{
 };
 
 use crate::{
-    AppShell, BottomPanel, Button, ButtonSize, ButtonVariant, Panel, PanelVariant, StatusBar,
-    TextInput, Toolbar,
+    AppShell, BottomPanel, Button, ButtonSize, ButtonVariant, EditorPaneGrid, Panel, PanelVariant,
+    StatusBar, TextInput, Toolbar,
 };
 
 pub struct ComponentGallery {
@@ -134,9 +134,24 @@ impl Render for ComponentGallery {
                             .border(false)
                             .child(section_title("Layout", tokens))
                             .child(section_note(
-                                "AppShell, Toolbar, Panel, BottomPanel, and StatusBar wrappers.",
+                                "AppShell, EditorPaneGrid, Panel, BottomPanel, and StatusBar wrappers.",
                                 tokens,
                             ))
+                            .child(
+                                div().mt(tokens.sizes.space_3).h(px(64.0)).child(
+                                    EditorPaneGrid::new("component-gallery-editor-pane-grid").child(
+                                        div()
+                                            .absolute()
+                                            .inset_0()
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .text_size(tokens.sizes.text_sm)
+                                            .text_color(tokens.chrome.text_chrome_secondary)
+                                            .child("Editor pane grid"),
+                                    ),
+                                ),
+                            )
                             .child(
                                 BottomPanel::new("component-gallery-bottom-panel")
                                     .height(px(44.0))
