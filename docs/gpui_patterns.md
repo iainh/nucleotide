@@ -77,6 +77,11 @@ and handle those actions with `window.focus_next(cx)` and `window.focus_prev(cx)
 Do not add new Tab handling to `InputCoordinator`; Helix, terminals, and focused
 components own their own Tab semantics.
 
+Buttons that need to participate in traversal should use
+`Button::focus_handle(...)`. The shared button owns focus-visible styling and
+keyboard activation for focused buttons, so dialogs and forms should not add
+local Space/Enter handlers for ordinary button clicks.
+
 `FocusCoordinator` should be used as a role registry for major surfaces such as
 the editor, terminal, picker, prompt, diagnostics, and file tree. It should not
 become a second per-widget navigation system.

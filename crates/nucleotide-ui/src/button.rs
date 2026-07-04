@@ -14,6 +14,7 @@ use gpui::{
     IntoElement, MouseButton, ParentElement, Pixels, Render, RenderOnce, SharedString,
     StatefulInteractiveElement, Styled, Window, div, relative, svg,
 };
+use std::sync::Arc;
 use std::time::Duration;
 
 fn button_shadow_stack(
@@ -211,7 +212,7 @@ pub enum ButtonSlot {
 }
 
 // Type alias for button click handler
-type ButtonClickHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
+type ButtonClickHandler = Arc<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 
 struct ButtonTooltip {
     text: SharedString,
@@ -343,7 +344,7 @@ impl Button {
         mut self,
         handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     ) -> Self {
-        self.on_click = Some(Box::new(handler));
+        self.on_click = Some(Arc::new(handler));
         self
     }
 
@@ -663,7 +664,7 @@ impl Interactive for Button {
     type ClickHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 
     fn on_click(mut self, handler: Self::ClickHandler) -> Self {
-        self.on_click = Some(handler);
+        self.on_click = Some(handler.into());
         self
     }
 
@@ -871,11 +872,19 @@ impl RenderOnce for Button {
 
             if let Some(on_click) = self.on_click {
                 if activate_on_mouse_down {
+                    let keyboard_on_click = on_click.clone();
                     button = button.on_mouse_down(MouseButton::Left, move |ev, window, cx| {
                         let click_event = crate::click_event_from_mouse_down(ev);
                         window.prevent_default();
                         cx.stop_propagation();
                         on_click(&click_event, window, cx);
+                    });
+                    button = button.on_click(move |ev, window, cx| {
+                        if !matches!(ev, ClickEvent::Keyboard(_)) {
+                            return;
+                        }
+                        cx.stop_propagation();
+                        keyboard_on_click(ev, window, cx);
                     });
                 } else {
                     button = button
