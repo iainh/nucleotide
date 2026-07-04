@@ -45,8 +45,8 @@ use nucleotide_ui::notification::{StatusBarNotification, StatusBarNotificationSe
 use nucleotide_ui::scrollbar::{Scrollbar, ScrollbarState};
 use nucleotide_ui::{
     AboutWindow, Button, ButtonSize, ButtonVariant, ConfirmDialog, ConfirmDialogEvent,
-    ConfirmDialogView, ContextMenuCallbacks, ContextMenuEntry, ContextMenuState, MarkdownStyle,
-    ModalLayer, ResizeDragController, Tooltipped, completion_menu_action_for_key,
+    ConfirmDialogView, ContextMenuCallbacks, ContextMenuController, ContextMenuEntry,
+    MarkdownStyle, ModalLayer, ResizeDragController, Tooltipped, completion_menu_action_for_key,
     markdown_extended, render_context_menu,
 };
 
@@ -1407,28 +1407,20 @@ pub struct Workspace {
     active_image_tab_id: Option<u64>,
     next_image_tab_index: u64,
     // File tree context menu state
-    context_menu_open: bool,
-    context_menu_pos: (f32, f32),
+    file_tree_context_menu: ContextMenuController,
     context_menu_path: Option<std::path::PathBuf>,
     context_menu_is_directory: bool,
-    context_menu_index: usize,
     // Tab context menu state
-    tab_context_menu_open: bool,
-    tab_context_menu_pos: (f32, f32),
+    tab_context_menu: ContextMenuController,
     tab_context_menu_doc_id: Option<TabId>,
-    tab_context_menu_index: usize,
     pinned_documents: HashSet<TabId>,
     // Tab bar split menu state
-    tab_bar_split_menu_open: bool,
-    tab_bar_split_menu_pos: (f32, f32),
+    tab_bar_split_menu: ContextMenuController,
     tab_bar_split_button_bounds: Option<Bounds<Pixels>>,
-    tab_bar_split_menu_index: usize,
     split_pane_resize: Option<SplitPaneResizeState>,
     restore_standard_cursor_after_resize: bool,
     // Tab bar new item menu state
-    tab_bar_new_menu_open: bool,
-    tab_bar_new_menu_pos: (f32, f32),
-    tab_bar_new_menu_index: usize,
+    tab_bar_new_menu: ContextMenuController,
     // LSP server list popup state
     lsp_menu_open: bool,
     lsp_menu_pos: (f32, f32),
@@ -4088,7 +4080,9 @@ impl Workspace {
         intent: TabBarSplitMenuIntent,
         cx: &mut Context<Self>,
     ) {
-        self.tab_bar_split_menu_open = false;
+        if self.tab_bar_split_menu.close() {
+            cx.notify();
+        }
         let handler = Self::tab_bar_split_menu_handler(intent);
         handler(self, cx);
     }
@@ -5345,25 +5339,17 @@ impl Workspace {
             image_tabs: Vec::new(),
             active_image_tab_id: None,
             next_image_tab_index: 1,
-            context_menu_open: false,
-            context_menu_pos: (0.0, 0.0),
+            file_tree_context_menu: ContextMenuController::new(),
             context_menu_path: None,
             context_menu_is_directory: false,
-            context_menu_index: 0,
-            tab_context_menu_open: false,
-            tab_context_menu_pos: (0.0, 0.0),
+            tab_context_menu: ContextMenuController::new(),
             tab_context_menu_doc_id: None,
-            tab_context_menu_index: 0,
             pinned_documents: HashSet::new(),
-            tab_bar_split_menu_open: false,
-            tab_bar_split_menu_pos: (0.0, 0.0),
+            tab_bar_split_menu: ContextMenuController::new(),
             tab_bar_split_button_bounds: None,
-            tab_bar_split_menu_index: 0,
             split_pane_resize: None,
             restore_standard_cursor_after_resize: false,
-            tab_bar_new_menu_open: false,
-            tab_bar_new_menu_pos: (0.0, 0.0),
-            tab_bar_new_menu_index: 0,
+            tab_bar_new_menu: ContextMenuController::new(),
             lsp_menu_open: false,
             lsp_menu_pos: (0.0, 0.0),
             document_order: Vec::new(),
@@ -5820,8 +5806,8 @@ impl Workspace {
             .collect::<Vec<_>>();
 
         render_context_menu(
-            ContextMenuState::new(self.context_menu_pos, &entries)
-                .selected_index(self.context_menu_index)
+            self.file_tree_context_menu
+                .state(&entries)
                 .offset(8.0, 8.0)
                 .min_width(px(200.0))
                 .focus_handle(self.context_menu_focus.clone()),
@@ -5831,8 +5817,7 @@ impl Workspace {
                                  index: usize,
                                  _window: &mut Window,
                                  cx: &mut Context<Workspace>| {
-                    if workspace.context_menu_index != index {
-                        workspace.context_menu_index = index;
+                    if workspace.file_tree_context_menu.select(index) {
                         cx.notify();
                     }
                 },
@@ -5841,7 +5826,9 @@ impl Workspace {
                                    window: &mut Window,
                                    cx: &mut Context<Workspace>| {
                     window.prevent_default();
-                    workspace.context_menu_open = false;
+                    if workspace.file_tree_context_menu.close() {
+                        cx.notify();
+                    }
                     let handler_fn = Workspace::context_menu_handler(intent);
                     handler_fn(workspace, cx);
                     cx.stop_propagation();
@@ -5908,8 +5895,8 @@ impl Workspace {
         .collect();
 
         render_context_menu(
-            ContextMenuState::new(self.tab_context_menu_pos, &entries)
-                .selected_index(self.tab_context_menu_index)
+            self.tab_context_menu
+                .state(&entries)
                 .min_width(px(220.0))
                 .focus_handle(self.context_menu_focus.clone())
                 .restore_focus_handle(self.focus_handle.clone()),
@@ -5919,8 +5906,7 @@ impl Workspace {
                                  index: usize,
                                  _window: &mut Window,
                                  cx: &mut Context<Workspace>| {
-                    if workspace.tab_context_menu_index != index {
-                        workspace.tab_context_menu_index = index;
+                    if workspace.tab_context_menu.select(index) {
                         cx.notify();
                     }
                 },
@@ -5929,22 +5915,24 @@ impl Workspace {
                                    _window: &mut Window,
                                    cx: &mut Context<Workspace>| {
                     if let Some(doc_id) = workspace.tab_context_menu_doc_id {
-                        workspace.tab_context_menu_open = false;
-                        workspace.tab_context_menu_doc_id = None;
+                        if workspace.close_tab_context_menu() {
+                            cx.notify();
+                        }
                         let handler = Workspace::tab_context_menu_handler(intent);
                         handler(workspace, doc_id, cx);
                     } else {
-                        workspace.tab_context_menu_open = false;
-                        cx.notify();
+                        if workspace.close_tab_context_menu() {
+                            cx.notify();
+                        }
                     }
                     cx.stop_propagation();
                 },
                 on_dismiss: |workspace: &mut Workspace,
                              _window: &mut Window,
                              cx: &mut Context<Workspace>| {
-                    workspace.tab_context_menu_open = false;
-                    workspace.tab_context_menu_doc_id = None;
-                    cx.notify();
+                    if workspace.close_tab_context_menu() {
+                        cx.notify();
+                    }
                     cx.stop_propagation();
                 },
             },
@@ -5965,9 +5953,9 @@ impl Workspace {
             .collect::<Vec<_>>();
 
         render_context_menu(
-            ContextMenuState::new(self.tab_bar_split_menu_pos, &entries)
+            self.tab_bar_split_menu
+                .state(&entries)
                 .anchor(Anchor::TopRight)
-                .selected_index(self.tab_bar_split_menu_index)
                 .min_width(px(180.0))
                 .focus_handle(self.context_menu_focus.clone())
                 .restore_focus_handle(self.focus_handle.clone()),
@@ -5977,8 +5965,7 @@ impl Workspace {
                                  index: usize,
                                  _window: &mut Window,
                                  cx: &mut Context<Workspace>| {
-                    if workspace.tab_bar_split_menu_index != index {
-                        workspace.tab_bar_split_menu_index = index;
+                    if workspace.tab_bar_split_menu.select(index) {
                         cx.notify();
                     }
                 },
@@ -5992,7 +5979,7 @@ impl Workspace {
                 on_dismiss: |workspace: &mut Workspace,
                              _window: &mut Window,
                              cx: &mut Context<Workspace>| {
-                    workspace.tab_bar_split_menu_open = false;
+                    workspace.tab_bar_split_menu.close();
                     cx.notify();
                     cx.stop_propagation();
                 },
@@ -6019,8 +6006,8 @@ impl Workspace {
             .collect();
 
         render_context_menu(
-            ContextMenuState::new(self.tab_bar_new_menu_pos, &entries)
-                .selected_index(self.tab_bar_new_menu_index)
+            self.tab_bar_new_menu
+                .state(&entries)
                 .offset(8.0, 8.0)
                 .min_width(px(200.0))
                 .focus_handle(self.context_menu_focus.clone())
@@ -6031,8 +6018,7 @@ impl Workspace {
                                  index: usize,
                                  _window: &mut Window,
                                  cx: &mut Context<Workspace>| {
-                    if workspace.tab_bar_new_menu_index != index {
-                        workspace.tab_bar_new_menu_index = index;
+                    if workspace.tab_bar_new_menu.select(index) {
                         cx.notify();
                     }
                 },
@@ -6040,7 +6026,9 @@ impl Workspace {
                                    intent: TabBarNewMenuIntent,
                                    _window: &mut Window,
                                    cx: &mut Context<Workspace>| {
-                    workspace.tab_bar_new_menu_open = false;
+                    if workspace.tab_bar_new_menu.close() {
+                        cx.notify();
+                    }
                     let handler = Workspace::tab_bar_new_menu_handler(intent);
                     handler(workspace, cx);
                     cx.stop_propagation();
@@ -6048,7 +6036,7 @@ impl Workspace {
                 on_dismiss: |workspace: &mut Workspace,
                              _window: &mut Window,
                              cx: &mut Context<Workspace>| {
-                    workspace.tab_bar_new_menu_open = false;
+                    workspace.tab_bar_new_menu.close();
                     cx.notify();
                     cx.stop_propagation();
                 },
@@ -6058,8 +6046,27 @@ impl Workspace {
 
     // --- Context menu action handlers (stubs that close the menu and log) ---
     fn close_context_menu(&mut self, cx: &mut Context<Self>) {
-        self.context_menu_open = false;
+        self.file_tree_context_menu.close();
         cx.notify();
+    }
+
+    fn any_tab_bar_menu_open(&self) -> bool {
+        self.tab_context_menu.is_open()
+            || self.tab_bar_split_menu.is_open()
+            || self.tab_bar_new_menu.is_open()
+    }
+
+    fn close_tab_context_menu(&mut self) -> bool {
+        let closed = self.tab_context_menu.close();
+        let had_target = self.tab_context_menu_doc_id.take().is_some();
+        closed || had_target
+    }
+
+    fn close_tab_bar_menus(&mut self) -> bool {
+        let mut closed = self.close_tab_context_menu();
+        closed |= self.tab_bar_split_menu.close();
+        closed |= self.tab_bar_new_menu.close();
+        closed
     }
 
     fn context_menu_target_parent(&self) -> Option<PathBuf> {
@@ -6069,11 +6076,10 @@ impl Workspace {
     }
 
     fn dismiss_file_tree_context_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.context_menu_open {
+        if !self.file_tree_context_menu.close() {
             return;
         }
 
-        self.context_menu_open = false;
         if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>().cloned() {
             let _ = coord.focus_first(
                 window,
@@ -10585,9 +10591,7 @@ impl Workspace {
             .focused_view_id()
             .and_then(|view_id| self.view_manager.get_document_view(&view_id))
             .is_some_and(|doc_view| doc_view.focus_handle(cx).contains_focused(window, cx));
-        let tab_bar_menu_focused = self.tab_context_menu_open
-            || self.tab_bar_split_menu_open
-            || self.tab_bar_new_menu_open;
+        let tab_bar_menu_focused = self.any_tab_bar_menu_open();
         let workspace_focused = self.focus_handle.contains_focused(window, cx);
         let terminal_pane_focused = self.terminal_focus.is_focused(window)
             || self.terminal_focus_pending
@@ -10864,8 +10868,7 @@ impl Workspace {
 
                         // Update document views to reflect the change
                         workspace.active_image_tab_id = None;
-                        workspace.tab_context_menu_open = false;
-                        workspace.tab_context_menu_doc_id = None;
+                        workspace.close_tab_context_menu();
                         workspace.allow_tab_bar_auto_scroll();
                         workspace.update_document_views(cx);
                     });
@@ -10876,8 +10879,7 @@ impl Workspace {
                 let activation_documents = activation_documents.clone();
                 move |doc_id, _window, cx| {
                     workspace.update(cx, |workspace, cx| {
-                        workspace.tab_context_menu_open = false;
-                        workspace.tab_context_menu_doc_id = None;
+                        workspace.close_tab_context_menu();
                         let activation_target = tab_activation_target_after_close(
                             &activation_documents,
                             doc_id,
@@ -10966,10 +10968,7 @@ impl Workspace {
                             let workspace = cx.entity().clone();
                             move |_event, _window, cx| {
                                 workspace.update(cx, |workspace, cx| {
-                                    workspace.tab_context_menu_open = false;
-                                    workspace.tab_context_menu_doc_id = None;
-                                    workspace.tab_bar_split_menu_open = false;
-                                    workspace.tab_bar_new_menu_open = false;
+                                    workspace.close_tab_bar_menus();
                                     workspace.tab_bar_action_new_file(cx);
                                 });
                                 cx.stop_propagation();
@@ -10990,11 +10989,8 @@ impl Workspace {
                                     let workspace = cx.entity().clone();
                                     move |event, window, cx| {
                                         workspace.update(cx, |workspace, cx| {
-                                            if workspace.tab_bar_split_menu_open {
-                                                workspace.tab_bar_split_menu_open = false;
-                                                workspace.tab_context_menu_open = false;
-                                                workspace.tab_context_menu_doc_id = None;
-                                                workspace.tab_bar_new_menu_open = false;
+                                            if workspace.tab_bar_split_menu.is_open() {
+                                                workspace.close_tab_bar_menus();
                                                 cx.notify();
                                                 return;
                                             }
@@ -11004,15 +11000,12 @@ impl Workspace {
                                                 .tab_bar_split_button_bounds
                                                 .map(|bounds| bounds.bottom_right())
                                                 .unwrap_or(fallback_position);
-                                            workspace.tab_context_menu_open = false;
-                                            workspace.tab_context_menu_doc_id = None;
-                                            workspace.tab_bar_new_menu_open = false;
-                                            workspace.tab_bar_split_menu_open = true;
-                                            workspace.tab_bar_split_menu_pos = (
+                                            workspace.close_tab_context_menu();
+                                            workspace.tab_bar_new_menu.close();
+                                            workspace.tab_bar_split_menu.open_at((
                                                 f32::from(menu_position.x),
                                                 f32::from(menu_position.y),
-                                            );
-                                            workspace.tab_bar_split_menu_index = 0;
+                                            ));
                                             window.focus(&workspace.focus_handle, cx);
                                             cx.notify();
                                         });
@@ -11041,10 +11034,7 @@ impl Workspace {
             let workspace = cx.entity().clone();
             move |doc_id, _window, cx| {
                 workspace.update(cx, |workspace, cx| {
-                    workspace.tab_context_menu_open = false;
-                    workspace.tab_context_menu_doc_id = None;
-                    workspace.tab_bar_split_menu_open = false;
-                    workspace.tab_bar_new_menu_open = false;
+                    workspace.close_tab_bar_menus();
                     workspace.tab_cm_action_toggle_pin(doc_id, cx);
                 });
             }
@@ -11053,10 +11043,7 @@ impl Workspace {
             let workspace = cx.entity().clone();
             move |doc_id, _window, cx| {
                 workspace.update(cx, |workspace, cx| {
-                    workspace.tab_context_menu_open = false;
-                    workspace.tab_context_menu_doc_id = None;
-                    workspace.tab_bar_split_menu_open = false;
-                    workspace.tab_bar_new_menu_open = false;
+                    workspace.close_tab_bar_menus();
                     workspace.tab_cm_action_toggle_readonly(doc_id, cx);
                 });
             }
@@ -11065,10 +11052,7 @@ impl Workspace {
             let workspace = cx.entity().clone();
             move |_event, _window, cx| {
                 workspace.update(cx, |workspace, cx| {
-                    workspace.tab_context_menu_open = false;
-                    workspace.tab_context_menu_doc_id = None;
-                    workspace.tab_bar_split_menu_open = false;
-                    workspace.tab_bar_new_menu_open = false;
+                    workspace.close_tab_bar_menus();
                     workspace.tab_bar_action_new_file(cx);
                 });
             }
@@ -11077,10 +11061,7 @@ impl Workspace {
             let workspace = cx.entity().clone();
             move |doc_id, _window, cx| {
                 workspace.update(cx, |workspace, cx| {
-                    workspace.tab_context_menu_open = false;
-                    workspace.tab_context_menu_doc_id = None;
-                    workspace.tab_bar_split_menu_open = false;
-                    workspace.tab_bar_new_menu_open = false;
+                    workspace.close_tab_bar_menus();
                     workspace.tab_action_double_click(doc_id, cx);
                 });
             }
@@ -11089,13 +11070,12 @@ impl Workspace {
             let workspace = cx.entity().clone();
             move |doc_id, event, window, cx| {
                 workspace.update(cx, |workspace, cx| {
-                    workspace.tab_bar_split_menu_open = false;
-                    workspace.tab_bar_new_menu_open = false;
-                    workspace.tab_context_menu_open = true;
-                    workspace.tab_context_menu_pos =
-                        (f32::from(event.position.x), f32::from(event.position.y));
+                    workspace.tab_bar_split_menu.close();
+                    workspace.tab_bar_new_menu.close();
+                    workspace
+                        .tab_context_menu
+                        .open_at((f32::from(event.position.x), f32::from(event.position.y)));
                     workspace.tab_context_menu_doc_id = Some(doc_id);
-                    workspace.tab_context_menu_index = 0;
                     window.focus(&workspace.focus_handle, cx);
                     cx.notify();
                 });
@@ -11519,11 +11499,9 @@ impl Workspace {
                     "FileTreeEvent::ContextMenuRequested at ({}, {}): {:?}",
                     x, y, path
                 );
-                self.context_menu_open = true;
-                self.context_menu_pos = (*x, *y);
+                self.file_tree_context_menu.open_at((*x, *y));
                 self.context_menu_path = Some(path.clone());
                 self.context_menu_is_directory = *is_directory;
-                self.context_menu_index = 0;
                 cx.notify();
             }
             FileTreeEvent::FileSystemChanged { path, kind } => {
@@ -14855,19 +14833,19 @@ impl Render for Workspace {
                         |this| this.child(self.info.clone()),
                     )
                     .child(self.key_hints.clone())
-                    .when(self.tab_context_menu_open, |this| {
+                    .when(self.tab_context_menu.is_open(), |this| {
                         this.child(
                             gpui::deferred(self.render_tab_context_menu(window, cx))
                                 .with_priority(100),
                         )
                     })
-                    .when(self.tab_bar_split_menu_open, |this| {
+                    .when(self.tab_bar_split_menu.is_open(), |this| {
                         this.child(
                             gpui::deferred(self.render_tab_bar_split_menu(window, cx))
                                 .with_priority(100),
                         )
                     })
-                    .when(self.tab_bar_new_menu_open, |this| {
+                    .when(self.tab_bar_new_menu.is_open(), |this| {
                         this.child(
                             gpui::deferred(self.render_tab_bar_new_menu(window, cx))
                                 .with_priority(100),
@@ -15037,19 +15015,7 @@ impl Render for Workspace {
         workspace_div = workspace_div.on_mouse_down(
             MouseButton::Left,
             cx.listener(|workspace, _event: &MouseDownEvent, _window, cx| {
-                if workspace.tab_context_menu_open {
-                    workspace.tab_context_menu_open = false;
-                    workspace.tab_context_menu_doc_id = None;
-                    cx.notify();
-                }
-
-                if workspace.tab_bar_split_menu_open {
-                    workspace.tab_bar_split_menu_open = false;
-                    cx.notify();
-                }
-
-                if workspace.tab_bar_new_menu_open {
-                    workspace.tab_bar_new_menu_open = false;
+                if workspace.close_tab_bar_menus() {
                     cx.notify();
                 }
 
@@ -15924,7 +15890,7 @@ impl Render for Workspace {
                     ),
                 );
 
-                if self.context_menu_open {
+                if self.file_tree_context_menu.is_open() {
                     container = container.child(
                         gpui::deferred(self.render_file_tree_context_menu(window, cx))
                             .with_priority(100),
@@ -15941,7 +15907,7 @@ impl Render for Workspace {
                     .min_h(px(0.0))
                     .child(right);
 
-                if self.context_menu_open {
+                if self.file_tree_context_menu.is_open() {
                     container = container.child(
                         gpui::deferred(self.render_file_tree_context_menu(window, cx))
                             .with_priority(100),

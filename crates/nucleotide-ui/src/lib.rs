@@ -104,7 +104,8 @@ pub use confirm_dialog::{
     render_confirm_dialog,
 };
 pub use context_menu::{
-    ContextMenu, ContextMenuCallbacks, ContextMenuEntry, ContextMenuState, render_context_menu,
+    ContextMenu, ContextMenuCallbacks, ContextMenuController, ContextMenuEntry, ContextMenuState,
+    render_context_menu,
 };
 pub use file_icon::FileIcon;
 pub use focus::{FocusCoordinator, FocusRole, FocusTraversal};
