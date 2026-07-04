@@ -122,10 +122,32 @@ impl ResizeDragController {
         self.dragging.get()
     }
 
+    pub fn any_dragging<'a>(controllers: impl IntoIterator<Item = &'a Self>) -> bool {
+        controllers
+            .into_iter()
+            .any(ResizeDragController::is_dragging)
+    }
+
     pub fn finish(&self) -> bool {
         let was_dragging = self.dragging.get();
         self.dragging.set(false);
         was_dragging
+    }
+
+    pub fn finish_all<'a>(controllers: impl IntoIterator<Item = &'a Self>) -> bool {
+        let mut finished_any = false;
+        for controller in controllers {
+            finished_any = controller.finish() || finished_any;
+        }
+        finished_any
+    }
+
+    pub fn finish_with_refresh(&self, window: &mut Window) -> bool {
+        let finished = self.finish();
+        if finished {
+            window.refresh();
+        }
+        finished
     }
 
     pub fn horizontal_value(&self, mouse_x: f32, min_px: f32, max_px: f32) -> Option<f32> {
@@ -224,17 +246,13 @@ pub fn sidebar_split<L: IntoElement, R: IntoElement>(
         .on_mouse_up(MouseButton::Left, {
             let drag = drag.clone();
             move |_ev: &MouseUpEvent, window: &mut Window, _cx: &mut App| {
-                if drag.finish() {
-                    window.refresh();
-                }
+                drag.finish_with_refresh(window);
             }
         })
         .on_mouse_up_out(MouseButton::Left, {
             let drag = drag.clone();
             move |_ev: &MouseUpEvent, window: &mut Window, _cx: &mut App| {
-                if drag.finish() {
-                    window.refresh();
-                }
+                drag.finish_with_refresh(window);
             }
         });
 
@@ -340,17 +358,13 @@ pub fn bottom_panel_split<C: IntoElement>(
         .on_mouse_up(MouseButton::Left, {
             let drag = drag.clone();
             move |_ev: &MouseUpEvent, window: &mut Window, _cx: &mut App| {
-                if drag.finish() {
-                    window.refresh();
-                }
+                drag.finish_with_refresh(window);
             }
         })
         .on_mouse_up_out(MouseButton::Left, {
             let drag = drag.clone();
             move |_ev: &MouseUpEvent, window: &mut Window, _cx: &mut App| {
-                if drag.finish() {
-                    window.refresh();
-                }
+                drag.finish_with_refresh(window);
             }
         });
 
@@ -423,18 +437,14 @@ pub fn two_pane_split<A: IntoElement, B: IntoElement>(
     root = root.on_mouse_up(MouseButton::Left, {
         let drag = drag.clone();
         move |_ev: &MouseUpEvent, window: &mut Window, _cx: &mut App| {
-            if drag.finish() {
-                window.refresh();
-            }
+            drag.finish_with_refresh(window);
         }
     });
 
     root = root.on_mouse_up_out(MouseButton::Left, {
         let drag = drag.clone();
         move |_ev: &MouseUpEvent, window: &mut Window, _cx: &mut App| {
-            if drag.finish() {
-                window.refresh();
-            }
+            drag.finish_with_refresh(window);
         }
     });
 
@@ -568,5 +578,26 @@ mod tests {
         assert!(drag.finish());
         assert!(!drag.is_dragging());
         assert!(!drag.finish());
+    }
+
+    #[test]
+    fn resize_drag_controller_finish_all_clears_every_active_drag() {
+        let first = ResizeDragController::new();
+        let second = ResizeDragController::new();
+        let third = ResizeDragController::new();
+
+        first.begin(10.0, 0.0, 100.0);
+        third.begin(40.0, 0.0, 300.0);
+
+        assert!(ResizeDragController::any_dragging([
+            &first, &second, &third,
+        ]));
+        assert!(ResizeDragController::finish_all([&first, &second, &third]));
+        assert!(!first.is_dragging());
+        assert!(!second.is_dragging());
+        assert!(!third.is_dragging());
+        assert!(!ResizeDragController::finish_all(
+            [&first, &second, &third,]
+        ));
     }
 }

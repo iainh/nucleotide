@@ -6147,19 +6147,11 @@ impl Workspace {
     }
 
     fn finish_active_resize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let mut finished = false;
-
-        if self.file_tree_resize.finish() {
-            finished = true;
-        }
-
-        if self.doc_sidebar_resize.finish() {
-            finished = true;
-        }
-
-        if self.basic_term_resize.finish() {
-            finished = true;
-        }
+        let mut finished = ResizeDragController::finish_all([
+            &self.file_tree_resize,
+            &self.doc_sidebar_resize,
+            &self.basic_term_resize,
+        ]);
 
         if self.split_pane_resize.take().is_some() {
             if self.view_manager.focused_view_id().is_some() {
@@ -14968,10 +14960,11 @@ impl Render for Workspace {
             }));
 
         // Add resize cursor and listeners only while resizing to reduce event overhead
-        if self.file_tree_resize.is_dragging()
-            || self.doc_sidebar_resize.is_dragging()
-            || self.split_pane_resize.is_some()
-            || self.basic_term_resize.is_dragging()
+        if ResizeDragController::any_dragging([
+            &self.file_tree_resize,
+            &self.doc_sidebar_resize,
+            &self.basic_term_resize,
+        ]) || self.split_pane_resize.is_some()
         {
             workspace_div = workspace_div.capture_any_mouse_up(cx.listener(
                 |workspace, event: &MouseUpEvent, window, cx| {
