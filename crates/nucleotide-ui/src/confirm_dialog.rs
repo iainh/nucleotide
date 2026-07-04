@@ -9,7 +9,7 @@ use gpui::{
 };
 
 use crate::actions::dialog::{Cancel as CancelDialogAction, Confirm as ConfirmDialogAction};
-use crate::modal_layer::ModalView;
+use crate::modal_layer::{DismissDecision, ModalView};
 use crate::{Button, ButtonSize, ButtonVariant, ThemedContext};
 
 type OverlayHandler = Box<dyn Fn(&MouseDownEvent, &mut Window, &mut App) + 'static>;
@@ -402,6 +402,7 @@ pub enum ConfirmDialogEvent {
 pub struct ConfirmDialogView {
     dialog: ConfirmDialog,
     focus_handle: FocusHandle,
+    dismissed_by_action: bool,
 }
 
 impl ConfirmDialogView {
@@ -409,17 +410,25 @@ impl ConfirmDialogView {
         Self {
             dialog,
             focus_handle: cx.focus_handle().tab_stop(true),
+            dismissed_by_action: false,
         }
     }
 
     fn emit_cancelled(&mut self, cx: &mut Context<Self>) {
+        self.dismissed_by_action = true;
         cx.emit(ConfirmDialogEvent::Cancelled);
         cx.emit(DismissEvent);
     }
 
     fn emit_confirmed(&mut self, cx: &mut Context<Self>) {
+        self.dismissed_by_action = true;
         cx.emit(ConfirmDialogEvent::Confirmed);
         cx.emit(DismissEvent);
+    }
+
+    fn emit_cancelled_without_dismiss(&mut self, cx: &mut Context<Self>) {
+        self.dismissed_by_action = true;
+        cx.emit(ConfirmDialogEvent::Cancelled);
     }
 
     fn cancel(&mut self, _: &CancelDialogAction, _: &mut Window, cx: &mut Context<Self>) {
@@ -443,7 +452,18 @@ impl EventEmitter<ConfirmDialogEvent> for ConfirmDialogView {}
 
 impl EventEmitter<DismissEvent> for ConfirmDialogView {}
 
-impl ModalView for ConfirmDialogView {}
+impl ModalView for ConfirmDialogView {
+    fn on_before_dismiss(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> DismissDecision {
+        if !self.dismissed_by_action {
+            self.emit_cancelled_without_dismiss(cx);
+        }
+        DismissDecision::Dismiss(true)
+    }
+}
 
 impl Render for ConfirmDialogView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -637,6 +657,47 @@ mod tests {
             assert_eq!(
                 harness.events.borrow().as_slice(),
                 &[ConfirmDialogEvent::Cancelled]
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn confirm_dialog_view_treats_modal_dismiss_as_cancel(cx: &mut TestAppContext) {
+        init_confirm_dialog_test(cx);
+        let (harness, cx) = cx.add_window_view(ConfirmDialogHarness::new);
+        let dialog = harness.read_with(cx, |harness, _| harness.dialog.clone());
+
+        cx.update(|window, cx| {
+            let decision = dialog.update(cx, |dialog, cx| dialog.on_before_dismiss(window, cx));
+            assert_eq!(decision, DismissDecision::Dismiss(true));
+        });
+
+        harness.read_with(cx, |harness, _| {
+            assert_eq!(
+                harness.events.borrow().as_slice(),
+                &[ConfirmDialogEvent::Cancelled]
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn confirm_dialog_view_does_not_cancel_after_action_dismiss(cx: &mut TestAppContext) {
+        init_confirm_dialog_test(cx);
+        let (harness, cx) = cx.add_window_view(ConfirmDialogHarness::new);
+        let dialog = harness.read_with(cx, |harness, _| harness.dialog.clone());
+        let focus = dialog.read_with(cx, |dialog, cx| dialog.focus_handle(cx));
+
+        cx.update(|window, cx| {
+            window.focus(&focus, cx);
+            focus.dispatch_action(&ConfirmDialogAction, window, cx);
+            let decision = dialog.update(cx, |dialog, cx| dialog.on_before_dismiss(window, cx));
+            assert_eq!(decision, DismissDecision::Dismiss(true));
+        });
+
+        harness.read_with(cx, |harness, _| {
+            assert_eq!(
+                harness.events.borrow().as_slice(),
+                &[ConfirmDialogEvent::Confirmed]
             );
         });
     }
