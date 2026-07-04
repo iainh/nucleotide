@@ -50,6 +50,14 @@ Do not add new workspace-level `match ev.keystroke.key.as_str()` blocks for
 menus, pickers, prompts, modals, or list navigation. Move those behaviours into
 the component that owns the focused surface.
 
+`InputCoordinator` is the app/Helix bridge for workspace-level contexts such as
+the editor, file tree, and overlays. It should not grow per-widget navigation
+rules that belong in a focused component's actions.
+
+`nucleotide_ui::global_input::GlobalInputDispatcher` is legacy scaffolding and
+is not wired into the app. Do not register new shortcuts, dismiss handlers, or
+focus groups there.
+
 ## Focus
 
 Focusable components should expose or own a `FocusHandle` and render it with
