@@ -44,9 +44,9 @@ use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::notification::{StatusBarNotification, StatusBarNotificationSeverity};
 use nucleotide_ui::scrollbar::{Scrollbar, ScrollbarState};
 use nucleotide_ui::{
-    AboutWindow, Button, ButtonSize, ButtonVariant, ConfirmDialog, ConfirmDialogCallbacks,
-    ContextMenuCallbacks, ContextMenuEntry, ContextMenuState, MarkdownStyle, ResizeDragController,
-    Tooltipped, markdown_extended, render_confirm_dialog, render_context_menu,
+    AboutWindow, Button, ButtonSize, ButtonVariant, ConfirmDialog, ConfirmDialogEvent,
+    ConfirmDialogView, ContextMenuCallbacks, ContextMenuEntry, ContextMenuState, MarkdownStyle,
+    ModalLayer, ResizeDragController, Tooltipped, markdown_extended, render_context_menu,
 };
 
 use crate::input_coordinator::{FocusGroup, InputContext, InputCoordinator};
@@ -1374,6 +1374,7 @@ pub struct Workspace {
     view_manager: ViewManager,
     handle: tokio::runtime::Handle,
     overlay: Entity<OverlayView>,
+    modal_layer: Entity<ModalLayer>,
     info: Entity<InfoBoxView>,
     info_hidden: bool,
     key_hints: Entity<KeyHintView>,
@@ -5327,6 +5328,7 @@ impl Workspace {
             view_manager: ViewManager::new(),
             handle,
             overlay,
+            modal_layer: cx.new(|_| ModalLayer::new()),
             info,
             info_hidden: true,
             key_hints,
@@ -5476,24 +5478,14 @@ impl Workspace {
         }
     }
 
-    fn cancel_delete_confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn cancel_delete_confirm(&mut self, cx: &mut Context<Self>) {
         self.delete_confirm_open = false;
         self.delete_confirm_path = None;
         self.delete_confirm_was_directory = false;
-        if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>().cloned() {
-            let _ = coord.focus_first(
-                window,
-                cx,
-                &[
-                    nucleotide_ui::FocusRole::Editor,
-                    nucleotide_ui::FocusRole::FileTree,
-                ],
-            );
-        }
         cx.notify();
     }
 
-    fn confirm_delete_from_dialog(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    fn confirm_delete_from_dialog(&mut self, cx: &mut Context<Self>) {
         self.perform_delete_confirm(cx);
     }
 
@@ -5503,11 +5495,11 @@ impl Workspace {
         cx.notify();
     }
 
-    fn cancel_unsaved_close_confirm(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    fn cancel_unsaved_close_confirm(&mut self, cx: &mut Context<Self>) {
         self.clear_unsaved_close_confirm(cx);
     }
 
-    fn confirm_unsaved_close_from_dialog(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    fn confirm_unsaved_close_from_dialog(&mut self, cx: &mut Context<Self>) {
         self.perform_pending_unsaved_close(cx);
     }
 
@@ -5558,12 +5550,7 @@ impl Workspace {
         }
     }
 
-    /// Render a delete confirmation modal overlay with two actions
-    fn render_delete_confirm_modal(
-        &self,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
+    fn delete_confirm_dialog(&self, cx: &mut Context<Self>) -> ConfirmDialog {
         let delete_mode = {
             let core = self.core.read(cx);
             effective_delete_mode(
@@ -5574,41 +5561,83 @@ impl Workspace {
         let message = delete_confirmation_message(self.delete_confirm_path.as_deref(), delete_mode);
         let confirm_label = delete_confirmation_label(delete_mode);
 
-        render_confirm_dialog(
-            ConfirmDialog::new("Confirm Delete", message, confirm_label)
-                .confirm_variant(ButtonVariant::Danger),
-            cx,
-            ConfirmDialogCallbacks {
-                on_cancel: Workspace::cancel_delete_confirm,
-                on_confirm: Workspace::confirm_delete_from_dialog,
-            },
-        )
+        ConfirmDialog::new("Confirm Delete", message, confirm_label)
+            .confirm_variant(ButtonVariant::Danger)
     }
 
-    fn render_unsaved_close_confirm_modal(
-        &self,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
+    fn unsaved_close_confirm_dialog(&self) -> ConfirmDialog {
         let names = self
             .close_confirm
             .as_ref()
             .map(|pending| pending.names.as_slice())
             .unwrap_or(&[]);
 
-        render_confirm_dialog(
-            ConfirmDialog::new(
-                unsaved_close_confirmation_title(names.len()),
-                unsaved_close_confirmation_message(names),
-                "Close Without Saving",
-            )
-            .confirm_variant(ButtonVariant::Danger),
-            cx,
-            ConfirmDialogCallbacks {
-                on_cancel: Workspace::cancel_unsaved_close_confirm,
-                on_confirm: Workspace::confirm_unsaved_close_from_dialog,
-            },
+        ConfirmDialog::new(
+            unsaved_close_confirmation_title(names.len()),
+            unsaved_close_confirmation_message(names),
+            "Close Without Saving",
         )
+        .confirm_variant(ButtonVariant::Danger)
+    }
+
+    fn show_confirmation_dialog(
+        &mut self,
+        dialog: ConfirmDialog,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        on_event: fn(&mut Workspace, ConfirmDialogEvent, &mut Context<Workspace>),
+    ) {
+        let view = cx.new(|cx| ConfirmDialogView::new(dialog, cx));
+        cx.subscribe(&view, move |workspace, _view, event, cx| {
+            on_event(workspace, *event, cx);
+        })
+        .detach();
+
+        self.modal_layer.update(cx, |layer, cx| {
+            layer.show_modal(view, window, cx);
+        });
+    }
+
+    fn handle_delete_confirm_event(&mut self, event: ConfirmDialogEvent, cx: &mut Context<Self>) {
+        match event {
+            ConfirmDialogEvent::Cancelled => self.cancel_delete_confirm(cx),
+            ConfirmDialogEvent::Confirmed => self.confirm_delete_from_dialog(cx),
+        }
+    }
+
+    fn handle_unsaved_close_confirm_event(
+        &mut self,
+        event: ConfirmDialogEvent,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            ConfirmDialogEvent::Cancelled => self.cancel_unsaved_close_confirm(cx),
+            ConfirmDialogEvent::Confirmed => self.confirm_unsaved_close_from_dialog(cx),
+        }
+    }
+
+    fn sync_confirmation_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.modal_layer.read(cx).has_active_modal() {
+            return;
+        }
+
+        if self.delete_confirm_open {
+            let dialog = self.delete_confirm_dialog(cx);
+            self.show_confirmation_dialog(
+                dialog,
+                window,
+                cx,
+                Workspace::handle_delete_confirm_event,
+            );
+        } else if self.close_confirm_open {
+            let dialog = self.unsaved_close_confirm_dialog();
+            self.show_confirmation_dialog(
+                dialog,
+                window,
+                cx,
+                Workspace::handle_unsaved_close_confirm_event,
+            );
+        }
     }
 
     fn render_documentation_sidebar(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
@@ -6785,39 +6814,6 @@ impl Workspace {
             modifiers = ?ev.keystroke.modifiers,
             "Workspace received key event"
         );
-
-        // Delete modal keyboard handling
-        if self.delete_confirm_open {
-            match ev.keystroke.key.as_str() {
-                "enter" => {
-                    self.perform_delete_confirm(cx);
-                    return;
-                }
-                "escape" => {
-                    self.delete_confirm_open = false;
-                    self.delete_confirm_path = None;
-                    self.delete_confirm_was_directory = false;
-                    cx.notify();
-                    return;
-                }
-                _ => {}
-            }
-        }
-
-        // Unsaved-close modal keyboard handling
-        if self.close_confirm_open {
-            match ev.keystroke.key.as_str() {
-                "enter" => {
-                    self.perform_pending_unsaved_close(cx);
-                    return;
-                }
-                "escape" => {
-                    self.clear_unsaved_close_confirm(cx);
-                    return;
-                }
-                _ => {}
-            }
-        }
 
         // Tab context menu keyboard handling
         if self.tab_context_menu_open {
@@ -15101,12 +15097,13 @@ impl Render for Workspace {
         }
 
         self.sync_file_tree_width_for_viewport(f32::from(window.viewport_size().width));
+        self.sync_confirmation_modal(window, cx);
 
         // Failsafe: If the overlay is gone and no known element has focus, force-refocus.
         // We see cases in logs where overlay_empty=true and both workspace and doc view
         // report not focused, leaving the app with no key receiver. This block ensures
         // that after overlay teardown, we always regain a valid focus target without a click.
-        if self.overlay.read(cx).is_empty() {
+        if self.overlay.read(cx).is_empty() && !self.modal_layer.read(cx).has_active_modal() {
             let ws_focused = self.focus_handle.is_focused(window);
             let overlay_focused = self.overlay.focus_handle(cx).is_focused(window);
 
@@ -15530,13 +15527,6 @@ impl Render for Workspace {
                                 .with_priority(100),
                         )
                     })
-                    .when(self.delete_confirm_open, |this| {
-                        // Render delete confirmation modal overlay
-                        this.child(self.render_delete_confirm_modal(window, cx))
-                    })
-                    .when(self.close_confirm_open, |this| {
-                        this.child(self.render_unsaved_close_confirm_modal(window, cx))
-                    })
                     // Debug overlay tint on top of editor content; render via deferred to ensure top draw order
                     .when(self.debug_colors_enabled, |this| {
                         this.child(
@@ -15700,14 +15690,6 @@ impl Render for Workspace {
         workspace_div = workspace_div.on_mouse_down(
             MouseButton::Left,
             cx.listener(|workspace, _event: &MouseDownEvent, _window, cx| {
-                // Clicking outside the delete confirm modal closes it
-                if workspace.delete_confirm_open {
-                    workspace.delete_confirm_open = false;
-                    workspace.delete_confirm_path = None;
-                    workspace.delete_confirm_was_directory = false;
-                    cx.notify();
-                }
-
                 if workspace.tab_context_menu_open {
                     workspace.tab_context_menu_open = false;
                     workspace.tab_context_menu_doc_id = None;
@@ -16972,6 +16954,7 @@ impl Render for Workspace {
                         ),
                 )
             })
+            .child(self.modal_layer.clone())
     }
 }
 
