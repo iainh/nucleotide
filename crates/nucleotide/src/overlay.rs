@@ -16,6 +16,10 @@ use nucleotide_ui::theme_manager::HelixThemedContext; // bring dispatch_* trait 
 use nucleotide_ui::{CompletionMenuAction, OverlaySurface};
 use std::sync::{Arc, Mutex};
 
+pub fn init(cx: &mut App) {
+    crate::remote_connection_manager::init(cx);
+}
+
 pub struct OverlayView {
     native_picker_view: Option<Entity<PickerView>>,
     native_prompt_view: Option<Entity<PromptView>>,

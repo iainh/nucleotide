@@ -10,8 +10,9 @@ use anyhow::{Context as _, Result, anyhow};
 use gpui::prelude::FluentBuilder;
 use gpui::{
     Anchor, App, AppContext as _, Context, DismissEvent, Entity, EventEmitter, FocusHandle,
-    Focusable, InteractiveElement, IntoElement, MouseButton, ParentElement, Render, ScrollHandle,
-    StatefulInteractiveElement, Styled, Subscription, Window, anchored, deferred, div, point, px,
+    Focusable, InteractiveElement, IntoElement, KeyBinding, MouseButton, ParentElement, Render,
+    ScrollHandle, StatefulInteractiveElement, Styled, Subscription, Window, anchored, deferred,
+    div, point, px,
 };
 use nucleotide_core::{EditorStatus, Severity};
 use nucleotide_types::scrollbar::SCROLLBAR_THICKNESS;
@@ -33,6 +34,38 @@ use nucleotide_workspace::{
 use crate::application::workspace_backend_for_project_directory_with_progress;
 use crate::file_tree::icons::chevron_icon;
 use crate::remote_connections::{RemoteConnectionStore, target_to_string, valid_connection_name};
+
+const REMOTE_CONNECTION_MANAGER_CONTEXT: &str = "RemoteConnectionManager";
+
+pub(crate) fn init(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new(
+            "enter",
+            AcceptRemoteConnection,
+            Some(REMOTE_CONNECTION_MANAGER_CONTEXT),
+        ),
+        KeyBinding::new(
+            "escape",
+            CancelRemoteConnection,
+            Some(REMOTE_CONNECTION_MANAGER_CONTEXT),
+        ),
+        KeyBinding::new(
+            "tab",
+            ToggleRemoteProtocol,
+            Some(REMOTE_CONNECTION_MANAGER_CONTEXT),
+        ),
+        KeyBinding::new(
+            "up",
+            SelectPreviousRemoteItem,
+            Some(REMOTE_CONNECTION_MANAGER_CONTEXT),
+        ),
+        KeyBinding::new(
+            "down",
+            SelectNextRemoteItem,
+            Some(REMOTE_CONNECTION_MANAGER_CONTEXT),
+        ),
+    ]);
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RemoteConnectionProtocol {
@@ -1279,7 +1312,7 @@ impl Render for RemoteConnectionManagerView {
         }
 
         div()
-            .key_context("RemoteConnectionManager")
+            .key_context(REMOTE_CONNECTION_MANAGER_CONTEXT)
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::accept_action))
             .on_action(cx.listener(Self::cancel_action))

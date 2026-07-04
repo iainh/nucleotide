@@ -844,11 +844,6 @@ use nucleotide::actions::{
         ReloadConfiguration, RevertCurrentChange, Save, SaveAs, Undo,
     },
     help::{About, OpenTutorial, ThemeDebug},
-    remote_connection_manager::{
-        Accept as RemoteManagerAccept, Cancel as RemoteManagerCancel,
-        SelectNext as RemoteManagerSelectNext, SelectPrevious as RemoteManagerSelectPrevious,
-        ToggleProtocol as RemoteManagerToggleProtocol,
-    },
     test::{TestCompletion, TestPrompt},
     window::{Minimize, Zoom},
     workspace::{
@@ -1102,6 +1097,7 @@ fn gui_main(
 
             // Initialize nucleotide-ui first (sets up UIConfig and component registry)
             nucleotide_ui::init(cx, None);
+            overlay::init(cx);
 
             // Initialize Linux platform detection if on Linux
             #[cfg(target_os = "linux")]
@@ -1488,35 +1484,6 @@ fn gui_main(
                         "delete",
                         nucleotide::actions::file_tree::Delete,
                         Some("FileTree"),
-                    ),
-                ]);
-
-                // Remote connection manager keybindings
-                cx.bind_keys([
-                    gpui::KeyBinding::new(
-                        "enter",
-                        RemoteManagerAccept,
-                        Some("RemoteConnectionManager"),
-                    ),
-                    gpui::KeyBinding::new(
-                        "escape",
-                        RemoteManagerCancel,
-                        Some("RemoteConnectionManager"),
-                    ),
-                    gpui::KeyBinding::new(
-                        "tab",
-                        RemoteManagerToggleProtocol,
-                        Some("RemoteConnectionManager"),
-                    ),
-                    gpui::KeyBinding::new(
-                        "up",
-                        RemoteManagerSelectPrevious,
-                        Some("RemoteConnectionManager"),
-                    ),
-                    gpui::KeyBinding::new(
-                        "down",
-                        RemoteManagerSelectNext,
-                        Some("RemoteConnectionManager"),
                     ),
                 ]);
 
