@@ -177,6 +177,78 @@ impl<'a, T> ContextMenuState<'a, T> {
         self.restore_focus_handle = Some(focus_handle);
         self
     }
+
+    pub fn next_enabled_action_index(&self) -> Option<usize> {
+        let mut first = None;
+        let mut next = None;
+        let mut action_index = 0;
+
+        for entry in self.entries {
+            if entry.is_action() {
+                if entry.is_enabled_action() {
+                    first.get_or_insert(action_index);
+                    if action_index > self.selected_index && next.is_none() {
+                        next = Some(action_index);
+                    }
+                }
+                action_index += 1;
+            }
+        }
+
+        next.or(first)
+    }
+
+    pub fn previous_enabled_action_index(&self) -> Option<usize> {
+        let mut previous = None;
+        let mut last = None;
+        let mut action_index = 0;
+
+        for entry in self.entries {
+            if entry.is_action() {
+                if entry.is_enabled_action() {
+                    last = Some(action_index);
+                    if action_index < self.selected_index {
+                        previous = Some(action_index);
+                    }
+                }
+                action_index += 1;
+            }
+        }
+
+        previous.or(last)
+    }
+}
+
+impl<T: Copy> ContextMenuState<'_, T> {
+    pub fn normalized_selected_index(&self) -> usize {
+        let Some(first_enabled) = self.next_enabled_action_index() else {
+            return self.selected_index;
+        };
+
+        if self.selected_enabled_action_value().is_some() {
+            self.selected_index
+        } else {
+            first_enabled
+        }
+    }
+
+    pub fn selected_enabled_action_value(&self) -> Option<T> {
+        let mut action_index = 0;
+
+        for entry in self.entries {
+            match entry {
+                ContextMenuEntry::Action {
+                    value,
+                    disabled: false,
+                    ..
+                } if action_index == self.selected_index => return Some(*value),
+                ContextMenuEntry::Action { .. } => action_index += 1,
+                ContextMenuEntry::Separator => {}
+            }
+        }
+
+        None
+    }
 }
 
 pub struct ContextMenuCallbacks<Select, Activate, Dismiss> {
@@ -217,10 +289,12 @@ where
     let inner_radius = tokens.sizes.radius_md - px(0.5);
     let (x, y) = state.position;
     let (offset_x, offset_y) = state.offset;
-    let selected_index = normalized_selected_index(state.entries, state.selected_index);
-    let next_index = next_enabled_action_index(state.entries, selected_index);
-    let previous_index = previous_enabled_action_index(state.entries, selected_index);
-    let selected_value = enabled_action_value(state.entries, selected_index);
+    let mut state = state;
+    let selected_index = state.normalized_selected_index();
+    state.selected_index = selected_index;
+    let next_index = state.next_enabled_action_index();
+    let previous_index = state.previous_enabled_action_index();
+    let selected_value = state.selected_enabled_action_value();
 
     let popup = div()
         .id("context-menu")
@@ -387,88 +461,6 @@ where
         .into_any_element()
 }
 
-fn normalized_selected_index<T: Copy>(
-    entries: &[ContextMenuEntry<T>],
-    selected_index: usize,
-) -> usize {
-    let Some(first_enabled) = next_enabled_action_index(entries, selected_index) else {
-        return selected_index;
-    };
-
-    if enabled_action_value(entries, selected_index).is_some() {
-        selected_index
-    } else {
-        first_enabled
-    }
-}
-
-fn next_enabled_action_index<T>(
-    entries: &[ContextMenuEntry<T>],
-    selected_index: usize,
-) -> Option<usize> {
-    let mut first = None;
-    let mut next = None;
-    let mut action_index = 0;
-
-    for entry in entries {
-        if entry.is_action() {
-            if entry.is_enabled_action() {
-                first.get_or_insert(action_index);
-                if action_index > selected_index && next.is_none() {
-                    next = Some(action_index);
-                }
-            }
-            action_index += 1;
-        }
-    }
-
-    next.or(first)
-}
-
-fn previous_enabled_action_index<T>(
-    entries: &[ContextMenuEntry<T>],
-    selected_index: usize,
-) -> Option<usize> {
-    let mut previous = None;
-    let mut last = None;
-    let mut action_index = 0;
-
-    for entry in entries {
-        if entry.is_action() {
-            if entry.is_enabled_action() {
-                last = Some(action_index);
-                if action_index < selected_index {
-                    previous = Some(action_index);
-                }
-            }
-            action_index += 1;
-        }
-    }
-
-    previous.or(last)
-}
-
-fn enabled_action_value<T: Copy>(
-    entries: &[ContextMenuEntry<T>],
-    selected_index: usize,
-) -> Option<T> {
-    let mut action_index = 0;
-
-    for entry in entries {
-        match entry {
-            ContextMenuEntry::Action {
-                value,
-                disabled: false,
-                ..
-            } if action_index == selected_index => return Some(*value),
-            ContextMenuEntry::Action { .. } => action_index += 1,
-            ContextMenuEntry::Separator => {}
-        }
-    }
-
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use gpui::{Context, IntoElement, ParentElement as _, Render, TestAppContext, Window, div};
@@ -524,6 +516,44 @@ mod tests {
         assert_eq!(state.position, (5.0, 6.0));
         assert_eq!(state.selected_index, 1);
         assert_eq!(state.entries, entries.as_slice());
+    }
+
+    #[test]
+    fn state_navigation_skips_disabled_actions_and_separators() {
+        let entries = vec![
+            ContextMenuEntry::disabled_action(1, "Open"),
+            ContextMenuEntry::separator(),
+            ContextMenuEntry::action(2, "Rename"),
+            ContextMenuEntry::action(3, "Delete"),
+            ContextMenuEntry::disabled_action(4, "Duplicate"),
+        ];
+
+        let state = ContextMenuState::new((0.0, 0.0), &entries).selected_index(0);
+        assert_eq!(state.normalized_selected_index(), 1);
+        assert_eq!(state.next_enabled_action_index(), Some(1));
+        assert_eq!(state.previous_enabled_action_index(), Some(2));
+        assert_eq!(state.selected_enabled_action_value(), None);
+
+        let selected_state = state.selected_index(1);
+        assert_eq!(selected_state.normalized_selected_index(), 1);
+        assert_eq!(selected_state.selected_enabled_action_value(), Some(2));
+        assert_eq!(selected_state.next_enabled_action_index(), Some(2));
+        assert_eq!(selected_state.previous_enabled_action_index(), Some(2));
+    }
+
+    #[test]
+    fn state_navigation_preserves_selection_when_no_enabled_actions_exist() {
+        let entries = vec![
+            ContextMenuEntry::disabled_action(1, "Open"),
+            ContextMenuEntry::separator(),
+        ];
+
+        let state = ContextMenuState::new((0.0, 0.0), &entries).selected_index(3);
+
+        assert_eq!(state.normalized_selected_index(), 3);
+        assert_eq!(state.next_enabled_action_index(), None);
+        assert_eq!(state.previous_enabled_action_index(), None);
+        assert_eq!(state.selected_enabled_action_value(), None);
     }
 
     struct ContextMenuHarness {
@@ -660,12 +690,18 @@ mod tests {
             ContextMenuEntry::separator(),
             ContextMenuEntry::action(2, "Open"),
         ];
+        let state = ContextMenuState::new((0.0, 0.0), &entries).selected_index(0);
 
-        assert_eq!(next_enabled_action_index(&entries, 0), Some(1));
-        assert_eq!(previous_enabled_action_index(&entries, 0), Some(1));
-        assert_eq!(enabled_action_value(&entries, 0), None);
-        assert_eq!(enabled_action_value(&entries, 1), Some(2));
-        assert_eq!(normalized_selected_index(&entries, 0), 1);
+        assert_eq!(state.next_enabled_action_index(), Some(1));
+        assert_eq!(state.previous_enabled_action_index(), Some(1));
+        assert_eq!(state.selected_enabled_action_value(), None);
+        assert_eq!(
+            ContextMenuState::new((0.0, 0.0), &entries)
+                .selected_index(1)
+                .selected_enabled_action_value(),
+            Some(2)
+        );
+        assert_eq!(state.normalized_selected_index(), 1);
     }
 
     #[gpui::test]
