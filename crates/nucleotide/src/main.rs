@@ -1098,6 +1098,7 @@ fn gui_main(
             // Initialize nucleotide-ui first (sets up UIConfig and component registry)
             nucleotide_ui::init(cx, None);
             overlay::init(cx);
+            nucleotide::file_tree::init(cx);
 
             // Initialize Linux platform detection if on Linux
             #[cfg(target_os = "linux")]
@@ -1406,85 +1407,6 @@ fn gui_main(
                     gpui::KeyBinding::new("end", CompletionSelectLast, Some("Completion")),
                     gpui::KeyBinding::new("pageup", CompletionPageUp, Some("Completion")),
                     gpui::KeyBinding::new("pagedown", CompletionPageDown, Some("Completion")),
-                ]);
-
-                // FileTree-specific keybindings
-                cx.bind_keys([
-                    gpui::KeyBinding::new(
-                        "up",
-                        nucleotide::actions::file_tree::SelectPrev,
-                        Some("FileTree"),
-                    ),
-                    gpui::KeyBinding::new(
-                        "down",
-                        nucleotide::actions::file_tree::SelectNext,
-                        Some("FileTree"),
-                    ),
-                    gpui::KeyBinding::new(
-                        "k",
-                        nucleotide::actions::file_tree::SelectPrev,
-                        Some("FileTree"),
-                    ),
-                    gpui::KeyBinding::new(
-                        "j",
-                        nucleotide::actions::file_tree::SelectNext,
-                        Some("FileTree"),
-                    ),
-                    gpui::KeyBinding::new(
-                        "/",
-                        nucleotide::actions::file_tree::StartSearch,
-                        Some("FileTree"),
-                    ),
-                    gpui::KeyBinding::new(
-                        "escape",
-                        nucleotide::actions::file_tree::ClearSearch,
-                        Some("FileTree"),
-                    ),
-                    gpui::KeyBinding::new(
-                        "n",
-                        nucleotide::actions::file_tree::SelectNextSearchMatch,
-                        Some("FileTree"),
-                    ),
-                    gpui::KeyBinding::new(
-                        "shift-n",
-                        nucleotide::actions::file_tree::SelectPrevSearchMatch,
-                        Some("FileTree"),
-                    ),
-                    gpui::KeyBinding::new(
-                        "left",
-                        nucleotide::actions::file_tree::ToggleExpanded,
-                        Some("FileTree"),
-                    ),
-                    gpui::KeyBinding::new(
-                        "right",
-                        nucleotide::actions::file_tree::ToggleExpanded,
-                        Some("FileTree"),
-                    ),
-                    gpui::KeyBinding::new(
-                        "h",
-                        nucleotide::actions::file_tree::ToggleExpanded,
-                        Some("FileTree"),
-                    ),
-                    gpui::KeyBinding::new(
-                        "l",
-                        nucleotide::actions::file_tree::ToggleExpanded,
-                        Some("FileTree"),
-                    ),
-                    gpui::KeyBinding::new(
-                        "space",
-                        nucleotide::actions::file_tree::ToggleExpanded,
-                        Some("FileTree"),
-                    ),
-                    gpui::KeyBinding::new(
-                        "enter",
-                        nucleotide::actions::file_tree::OpenFile,
-                        Some("FileTree"),
-                    ),
-                    gpui::KeyBinding::new(
-                        "delete",
-                        nucleotide::actions::file_tree::Delete,
-                        Some("FileTree"),
-                    ),
                 ]);
 
                 #[cfg(any(target_os = "macos", target_os = "windows"))]

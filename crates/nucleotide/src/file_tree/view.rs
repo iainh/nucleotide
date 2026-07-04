@@ -3,7 +3,7 @@
 
 use crate::file_tree::watcher::FileTreeWatcher;
 use crate::file_tree::{
-    FileSystemEventKind, FileTree, FileTreeCollisionStrategy, FileTreeConfig,
+    FILE_TREE_CONTEXT, FileSystemEventKind, FileTree, FileTreeCollisionStrategy, FileTreeConfig,
     FileTreeDisplayDensity, FileTreeEntry, FileTreeEvent,
     sidebar::{
         ProjectTreeContextMenuIntent, ProjectTreeDraggedEntry, ProjectTreeRow,
@@ -3260,7 +3260,7 @@ impl Render for FileTreeView {
         // Create semantic file tree container with nucleotide-ui design tokens
         div()
             .id("file-tree")
-            .key_context("FileTree")
+            .key_context(FILE_TREE_CONTEXT)
             .w_full()
             .h_full()
             .min_h(px(0.0))
