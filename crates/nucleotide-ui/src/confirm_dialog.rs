@@ -1,11 +1,11 @@
-// ABOUTME: Shared native dialog primitives and confirmation dialog wrapper
+// ABOUTME: Confirmation dialog wrapper for modal-layer presentation
 // ABOUTME: Adapted from longbridge/gpui-component dialog components (Apache-2.0)
 // Copyright 2024-2025 Longbridge. Locally adapted for Nucleotide.
 
 use gpui::{
     AnyElement, App, Context, DismissEvent, EventEmitter, FocusHandle, Focusable, FontWeight,
-    InteractiveElement, IntoElement, KeyBinding, MouseButton, MouseDownEvent, ParentElement,
-    Pixels, Render, RenderOnce, SharedString, Styled, Window, div, px,
+    InteractiveElement, IntoElement, KeyBinding, ParentElement, Pixels, Render, RenderOnce,
+    SharedString, Styled, Window, div, px,
 };
 
 use crate::actions::dialog::{Cancel as CancelDialogAction, Confirm as ConfirmDialogAction};
@@ -13,10 +13,6 @@ use crate::actions::focus::{FocusNext, FocusPrevious};
 use crate::modal_layer::{DismissDecision, ModalView};
 use crate::{Button, ButtonSize, ButtonVariant, FocusTraversal, ThemedContext};
 
-type OverlayHandler = Box<dyn Fn(&MouseDownEvent, &mut Window, &mut App) + 'static>;
-
-const DIALOG_OVERLAY_ALPHA_LIGHT: f32 = 0.70;
-const DIALOG_OVERLAY_ALPHA_DARK: f32 = 0.45;
 pub(crate) const CONFIRM_DIALOG_CONTEXT: &str = "ConfirmDialog";
 
 pub(crate) fn init(cx: &mut App) {
@@ -26,175 +22,6 @@ pub(crate) fn init(cx: &mut App) {
         KeyBinding::new("tab", FocusNext, Some(CONFIRM_DIALOG_CONTEXT)),
         KeyBinding::new("shift-tab", FocusPrevious, Some(CONFIRM_DIALOG_CONTEXT)),
     ]);
-}
-
-/// A modal dialog container with a backdrop and centred panel.
-#[derive(IntoElement)]
-pub struct Dialog {
-    children: Vec<AnyElement>,
-    footer: Option<AnyElement>,
-    width: Pixels,
-    top: Pixels,
-    overlay_closable: bool,
-    on_overlay_mouse_down: Option<OverlayHandler>,
-}
-
-impl Dialog {
-    pub fn new() -> Self {
-        Self {
-            children: Vec::new(),
-            footer: None,
-            width: px(448.0),
-            top: px(120.0),
-            overlay_closable: true,
-            on_overlay_mouse_down: None,
-        }
-    }
-
-    pub fn width(mut self, width: impl Into<Pixels>) -> Self {
-        self.width = width.into();
-        self
-    }
-
-    pub fn top(mut self, top: impl Into<Pixels>) -> Self {
-        self.top = top.into();
-        self
-    }
-
-    pub fn overlay_closable(mut self, overlay_closable: bool) -> Self {
-        self.overlay_closable = overlay_closable;
-        self
-    }
-
-    pub fn on_overlay_mouse_down(
-        mut self,
-        handler: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
-    ) -> Self {
-        self.on_overlay_mouse_down = Some(Box::new(handler));
-        self
-    }
-
-    pub fn footer(mut self, footer: impl IntoElement) -> Self {
-        self.footer = Some(footer.into_any_element());
-        self
-    }
-}
-
-impl Default for Dialog {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ParentElement for Dialog {
-    fn extend(&mut self, elements: impl IntoIterator<Item = AnyElement>) {
-        self.children.extend(elements);
-    }
-}
-
-impl RenderOnce for Dialog {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let tokens = &cx.theme().tokens;
-        let overlay_alpha = if cx.is_dark_theme() {
-            DIALOG_OVERLAY_ALPHA_DARK
-        } else {
-            DIALOG_OVERLAY_ALPHA_LIGHT
-        };
-
-        let mut backdrop = div()
-            .absolute()
-            .top_0()
-            .left_0()
-            .size_full()
-            .occlude()
-            .bg(tokens.chrome.surface_overlay.alpha(overlay_alpha));
-
-        if self.overlay_closable
-            && let Some(on_overlay_mouse_down) = self.on_overlay_mouse_down
-        {
-            backdrop = backdrop.on_mouse_down(MouseButton::Left, move |event, window, cx| {
-                on_overlay_mouse_down(event, window, cx);
-                cx.stop_propagation();
-            });
-        }
-
-        let mut panel = div()
-            .occlude()
-            .bg(tokens.chrome.surface)
-            .border_1()
-            .border_color(tokens.chrome.border_default)
-            .rounded(tokens.sizes.radius_lg)
-            .shadow(vec![
-                tokens.chrome.shadow_lg.to_box_shadow(false),
-                tokens.chrome.inset_highlight.to_box_shadow(true),
-            ])
-            .w(self.width)
-            .p(tokens.sizes.space_4)
-            .flex()
-            .flex_col()
-            .gap(tokens.sizes.space_3)
-            .on_any_mouse_down(|_, _, cx| cx.stop_propagation())
-            .children(self.children);
-
-        if let Some(footer) = self.footer {
-            panel = panel.child(footer);
-        }
-
-        let dialog_panel = div()
-            .absolute()
-            .top(self.top)
-            .left_0()
-            .w_full()
-            .flex()
-            .justify_center()
-            .child(panel);
-
-        div()
-            .absolute()
-            .top_0()
-            .left_0()
-            .size_full()
-            .occlude()
-            .child(backdrop)
-            .child(dialog_panel)
-    }
-}
-
-/// Content container for dialog body content.
-#[derive(IntoElement)]
-pub struct DialogContent {
-    children: Vec<AnyElement>,
-}
-
-impl DialogContent {
-    pub fn new() -> Self {
-        Self {
-            children: Vec::new(),
-        }
-    }
-}
-
-impl Default for DialogContent {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ParentElement for DialogContent {
-    fn extend(&mut self, elements: impl IntoIterator<Item = AnyElement>) {
-        self.children.extend(elements);
-    }
-}
-
-impl RenderOnce for DialogContent {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        div()
-            .w_full()
-            .flex()
-            .flex_col()
-            .gap(cx.theme().tokens.sizes.space_3)
-            .children(self.children)
-    }
 }
 
 /// Header section of a dialog, typically containing title and description.
