@@ -5,6 +5,23 @@ goal is to make common UI behaviour predictable: contributors should describe a
 menu, modal, list, input, panel, or resize handle without rebuilding focus and
 event plumbing at each call site.
 
+## Just Works Contract
+
+The `nucleotide-ui` layer is the compatibility boundary that makes GPUI feel
+like an application toolkit. A component should "just work" when a caller uses
+the wrapper and calls `nucleotide_ui::init(...)` during app startup:
+
+- standard key bindings are installed with the component's key context
+- focus handles, tab stops, and focus restoration are owned by the wrapper
+- common mouse lifecycles such as light-dismiss and drag cleanup are handled
+- text fields provide cursor movement, selection, clipboard, and IME hooks
+- layout-affecting interaction state is reset consistently after actions
+- GPUI tests cover the wrapper contract before app features depend on it
+
+Call sites should supply domain data and callbacks. They should not need to
+remember the GPUI event recipe for ordinary prompts, pickers, menus, modals,
+text fields, or resize handles.
+
 ## Default Rule
 
 Use `nucleotide-ui` wrappers for common application UI. Reach for raw GPUI
@@ -85,23 +102,22 @@ Modal and overlay implementations should own:
 - focus restoration
 - pre-dismiss checks for unsaved-change flows
 
-Until a shared modal/overlay layer is available, keep any new modal behaviour
-small and isolated so it can migrate later.
+Use `nucleotide_ui::ModalLayer` for modal surfaces that need dismissal policy,
+background occlusion, and focus restoration.
 
 ## Text Input
 
-Non-editor text fields should eventually use a GPUI-native `TextInput` wrapper
-from `nucleotide-ui`. That wrapper should own editing state, cursor movement,
-selection, clipboard actions, marked text / IME, submit/cancel events, and token
-styling.
+Non-editor text fields should use `nucleotide_ui::TextInput`. It owns editing
+state, cursor movement, selection, clipboard actions, marked text / IME,
+submit/cancel events, and token styling.
 
 The Helix-backed editor remains on the Helix input path. The terminal remains on
 the terminal byte path.
 
 ## Resize And Drag
 
-New resizing behaviour should go through a shared resize/drag component once it
-exists. A resize component should own:
+New resizing behaviour should use `nucleotide_ui::ResizeDragController` or a
+wrapper built on it. Resize code should keep ownership of:
 
 - drag start state
 - axis and cursor
