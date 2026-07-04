@@ -21,6 +21,7 @@ pub mod confirm_dialog;
 pub mod context_menu;
 pub mod debouncer;
 pub mod file_icon;
+pub mod focus;
 pub mod global_input;
 pub mod info_box;
 pub mod input;
@@ -105,7 +106,7 @@ pub use context_menu::{
     ContextMenu, ContextMenuCallbacks, ContextMenuEntry, ContextMenuState, render_context_menu,
 };
 pub use file_icon::FileIcon;
-pub use global_input::{FocusCoordinator, FocusRole};
+pub use focus::{FocusCoordinator, FocusRole};
 pub use input::{Input, InputSize, InputVariant};
 pub use layout::{Panel, PanelVariant, StatusBar, Toolbar, WorkspaceChrome};
 pub use list_item::{
