@@ -1,10 +1,7 @@
 // ABOUTME: Common UI components and patterns to reduce duplication
 // ABOUTME: Provides reusable building blocks for picker, prompt, and other views
 
-#![allow(dead_code)]
-
-use gpui::prelude::FluentBuilder;
-use gpui::{App, FocusHandle, Hsla, IntoElement, ParentElement, Styled, Window, div, px};
+use gpui::{App, FocusHandle, Hsla, Window};
 
 /// Common modal styling configuration
 #[derive(Clone)]
@@ -94,58 +91,6 @@ impl ModalStyle {
             selected_text: dd.item_text_selected,
             prompt_text: tokens.chrome.text_chrome_secondary,
         }
-    }
-}
-
-/// Common search/filter input component
-pub struct SearchInput;
-
-impl SearchInput {
-    /// Create a search input with cursor rendering
-    pub fn render(
-        query: &str,
-        cursor_position: usize,
-        cursor_color: Hsla,
-        text_color: Hsla,
-        is_focused: bool,
-    ) -> impl IntoElement {
-        let chars: Vec<char> = query.chars().collect();
-
-        // Calculate byte position from character position
-        let mut byte_pos = 0;
-        for (i, ch) in chars.iter().enumerate() {
-            if i >= cursor_position {
-                break;
-            }
-            byte_pos += ch.len_utf8();
-        }
-
-        let before_cursor = query[..byte_pos].to_string();
-        let after_cursor = query[byte_pos..].to_string();
-
-        div()
-            .flex()
-            .items_center()
-            .child(
-                // Text before cursor
-                div().when(!before_cursor.is_empty(), |this| {
-                    this.child(before_cursor).text_color(text_color)
-                }),
-            )
-            .child(
-                // Cursor
-                div()
-                    .w(px(2.0))
-                    .h(px(16.0))
-                    .bg(cursor_color)
-                    .when(!is_focused, |this| this.opacity(0.5)),
-            )
-            .child(
-                // Text after cursor
-                div().when(!after_cursor.is_empty(), |this| {
-                    this.child(after_cursor).text_color(text_color)
-                }),
-            )
     }
 }
 
