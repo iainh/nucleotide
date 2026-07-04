@@ -45,9 +45,8 @@ use nucleotide_ui::notification::{StatusBarNotification, StatusBarNotificationSe
 use nucleotide_ui::scrollbar::{Scrollbar, ScrollbarState};
 use nucleotide_ui::{
     AboutWindow, Button, ButtonSize, ButtonVariant, ConfirmDialog, ConfirmDialogEvent,
-    ConfirmDialogView, ContextMenuCallbacks, ContextMenuController, ContextMenuEntry,
-    MarkdownStyle, ModalLayer, PopupMenu, ResizeDragController, Tooltipped,
-    completion_menu_action_for_key, markdown_extended, render_context_menu,
+    ConfirmDialogView, ContextMenuController, MarkdownStyle, ModalLayer, PopupMenu,
+    ResizeDragController, Tooltipped, completion_menu_action_for_key, markdown_extended,
 };
 
 use crate::input_coordinator::{FocusGroup, InputContext, InputCoordinator};
@@ -751,7 +750,7 @@ fn windows_jump_list_menu_items() -> Vec<MenuItem> {
 fn add_recent_project(_path: &Path, _cx: &mut App) {}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TabContextMenuIntent {
+pub(crate) enum TabContextMenuIntent {
     Close,
     CloseOthers,
     CloseLeft,
@@ -1311,7 +1310,7 @@ fn document_view_layout_bounds(layouts: &[DocumentViewLayout]) -> Option<HelixRe
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TabBarSplitMenuIntent {
+pub(crate) enum TabBarSplitMenuIntent {
     Right,
     Left,
     Up,
@@ -1339,7 +1338,7 @@ impl TabBarSplitMenuIntent {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TabBarNewMenuIntent {
+pub(crate) enum TabBarNewMenuIntent {
     NewFile,
     OpenFile,
     SearchProject,
@@ -1380,7 +1379,6 @@ pub struct Workspace {
     notifications: Entity<NotificationView>,
     last_notified_editor_status: Option<EditorStatus>,
     focus_handle: FocusHandle,
-    context_menu_focus: FocusHandle,
     file_tree: Option<Entity<FileTreeView>>,
     show_file_tree: bool,
     file_tree_width: f32,
@@ -1412,15 +1410,21 @@ pub struct Workspace {
     context_menu_is_directory: bool,
     // Tab context menu state
     tab_context_menu: ContextMenuController,
+    tab_context_popup_menu: Option<Entity<PopupMenu>>,
+    tab_context_popup_menu_subscription: Option<Subscription>,
     tab_context_menu_doc_id: Option<TabId>,
     pinned_documents: HashSet<TabId>,
     // Tab bar split menu state
     tab_bar_split_menu: ContextMenuController,
+    tab_bar_split_popup_menu: Option<Entity<PopupMenu>>,
+    tab_bar_split_popup_menu_subscription: Option<Subscription>,
     tab_bar_split_button_bounds: Option<Bounds<Pixels>>,
     split_pane_resize: Option<SplitPaneResizeState>,
     restore_standard_cursor_after_resize: bool,
     // Tab bar new item menu state
     tab_bar_new_menu: ContextMenuController,
+    tab_bar_new_popup_menu: Option<Entity<PopupMenu>>,
+    tab_bar_new_popup_menu_subscription: Option<Subscription>,
     // LSP server list popup state
     lsp_menu_open: bool,
     lsp_menu_pos: (f32, f32),
@@ -4065,7 +4069,7 @@ impl Workspace {
         intent: TabBarSplitMenuIntent,
         cx: &mut Context<Self>,
     ) {
-        if self.tab_bar_split_menu.close() {
+        if self.close_tab_bar_split_menu() {
             cx.notify();
         }
         let handler = Self::tab_bar_split_menu_handler(intent);
@@ -5300,7 +5304,6 @@ impl Workspace {
             notifications,
             last_notified_editor_status: None,
             focus_handle,
-            context_menu_focus: cx.focus_handle(),
             file_tree,
             show_file_tree: true,
             file_tree_width: FILE_TREE_DEFAULT_WIDTH,
@@ -5330,13 +5333,19 @@ impl Workspace {
             context_menu_path: None,
             context_menu_is_directory: false,
             tab_context_menu: ContextMenuController::new(),
+            tab_context_popup_menu: None,
+            tab_context_popup_menu_subscription: None,
             tab_context_menu_doc_id: None,
             pinned_documents: HashSet::new(),
             tab_bar_split_menu: ContextMenuController::new(),
+            tab_bar_split_popup_menu: None,
+            tab_bar_split_popup_menu_subscription: None,
             tab_bar_split_button_bounds: None,
             split_pane_resize: None,
             restore_standard_cursor_after_resize: false,
             tab_bar_new_menu: ContextMenuController::new(),
+            tab_bar_new_popup_menu: None,
+            tab_bar_new_popup_menu_subscription: None,
             lsp_menu_open: false,
             lsp_menu_pos: (0.0, 0.0),
             document_order: Vec::new(),
@@ -5854,12 +5863,57 @@ impl Workspace {
             .into_any_element()
     }
 
-    fn render_tab_context_menu(
-        &self,
+    fn render_popup_menu_backdrop(
+        menu: Entity<PopupMenu>,
+        position: (f32, f32),
+        anchor: Anchor,
+        offset: (f32, f32),
+        cx: &mut Context<Self>,
+        dismiss: fn(&mut Workspace, &mut Window, &mut Context<Workspace>),
+    ) -> gpui::AnyElement {
+        let (x, y) = position;
+        let (offset_x, offset_y) = offset;
+
+        div()
+            .absolute()
+            .size_full()
+            .top_0()
+            .left_0()
+            .occlude()
+            .on_mouse_move(|_, _, cx| cx.stop_propagation())
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |workspace, _event, window, cx| {
+                    dismiss(workspace, window, cx);
+                    cx.stop_propagation();
+                }),
+            )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |workspace, _event, window, cx| {
+                    dismiss(workspace, window, cx);
+                    cx.stop_propagation();
+                }),
+            )
+            .child(
+                anchored()
+                    .position(point(px(x), px(y)))
+                    .anchor(anchor)
+                    .offset(point(px(offset_x), px(offset_y)))
+                    .snap_to_window_with_margin(px(8.0))
+                    .child(div().occlude().child(menu)),
+            )
+            .into_any_element()
+    }
+
+    fn build_tab_context_popup_menu(
+        &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        window.focus(&self.context_menu_focus, cx);
+    ) -> Entity<PopupMenu> {
+        if let Some(menu) = self.tab_context_popup_menu.clone() {
+            return menu;
+        }
 
         let visible_doc_ids = self.visible_tab_document_ids(cx);
         let target_doc_id = self.tab_context_menu_doc_id;
@@ -5880,178 +5934,185 @@ impl Workspace {
         let target_is_pinned = self
             .tab_context_menu_doc_id
             .is_some_and(|doc_id| self.pinned_documents.contains(&doc_id));
-        let entries: Vec<ContextMenuEntry<TabContextMenuIntent>> = Self::tab_context_menu_entries(
+        let entries = Self::tab_context_menu_entries(
             menu_capabilities.has_file_path,
             menu_capabilities.has_project_panel_path,
             menu_capabilities.has_terminal_directory,
-        )
-        .into_iter()
-        .map(|entry| match entry {
-            TabContextMenuEntry::Action(intent) => {
-                let is_disabled = Self::tab_context_menu_intent_disabled(
-                    intent,
-                    target_index,
-                    visible_doc_ids.len(),
-                    has_clean_items,
-                );
-                let label = intent.label(target_is_pinned, menu_capabilities.is_readonly);
-                if is_disabled {
-                    ContextMenuEntry::disabled_action(intent, label)
-                } else {
-                    ContextMenuEntry::action(intent, label)
+        );
+        let visible_doc_count = visible_doc_ids.len();
+        let action_context = self.focus_handle.clone();
+
+        let menu = PopupMenu::build(window, cx, move |mut menu, _window, _cx| {
+            menu = menu.action_context(action_context).min_w(px(220.0));
+            for entry in entries {
+                match entry {
+                    TabContextMenuEntry::Action(intent) => {
+                        let disabled = Self::tab_context_menu_intent_disabled(
+                            intent,
+                            target_index,
+                            visible_doc_count,
+                            has_clean_items,
+                        );
+                        menu = menu.menu_with_check_and_disabled(
+                            intent.label(target_is_pinned, menu_capabilities.is_readonly),
+                            false,
+                            Box::new(crate::actions::tab_menus::ContextOperation { intent }),
+                            disabled,
+                        );
+                    }
+                    TabContextMenuEntry::Separator => {
+                        menu = menu.separator();
+                    }
                 }
             }
-            TabContextMenuEntry::Separator => ContextMenuEntry::separator(),
-        })
-        .collect();
+            menu
+        });
 
-        render_context_menu(
-            self.tab_context_menu
-                .state(&entries)
-                .min_width(px(220.0))
-                .focus_handle(self.context_menu_focus.clone())
-                .restore_focus_handle(self.focus_handle.clone()),
-            cx,
-            ContextMenuCallbacks {
-                on_item_select: |workspace: &mut Workspace,
-                                 index: usize,
-                                 _window: &mut Window,
-                                 cx: &mut Context<Workspace>| {
-                    if workspace.tab_context_menu.select(index) {
-                        cx.notify();
-                    }
-                },
-                on_item_activate: |workspace: &mut Workspace,
-                                   intent: TabContextMenuIntent,
-                                   _window: &mut Window,
-                                   cx: &mut Context<Workspace>| {
-                    if let Some(doc_id) = workspace.tab_context_menu_doc_id {
-                        if workspace.close_tab_context_menu() {
-                            cx.notify();
-                        }
-                        let handler = Workspace::tab_context_menu_handler(intent);
-                        handler(workspace, doc_id, cx);
-                    } else {
-                        if workspace.close_tab_context_menu() {
-                            cx.notify();
-                        }
-                    }
-                    cx.stop_propagation();
-                },
-                on_dismiss: |workspace: &mut Workspace,
-                             _window: &mut Window,
-                             cx: &mut Context<Workspace>| {
-                    if workspace.close_tab_context_menu() {
-                        cx.notify();
-                    }
-                    cx.stop_propagation();
-                },
+        self.tab_context_popup_menu_subscription = Some(cx.subscribe(
+            &menu,
+            |workspace, _menu, _event: &DismissEvent, cx| {
+                if workspace.close_tab_context_menu() {
+                    cx.notify();
+                }
             },
+        ));
+        self.tab_context_popup_menu = Some(menu.clone());
+        menu
+    }
+
+    fn render_tab_context_menu(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let menu = self.build_tab_context_popup_menu(window, cx);
+        let menu_focus = menu.read(cx).focus_handle(cx);
+        if !menu_focus.contains_focused(window, cx) {
+            menu_focus.focus(window, cx);
+        }
+
+        Self::render_popup_menu_backdrop(
+            menu,
+            self.tab_context_menu.position(),
+            Anchor::TopLeft,
+            (0.0, 0.0),
+            cx,
+            Workspace::dismiss_tab_bar_menus,
         )
+    }
+
+    fn build_tab_bar_split_popup_menu(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<PopupMenu> {
+        if let Some(menu) = self.tab_bar_split_popup_menu.clone() {
+            return menu;
+        }
+
+        let action_context = self.focus_handle.clone();
+        let menu = PopupMenu::build(window, cx, move |mut menu, _window, _cx| {
+            menu = menu.action_context(action_context).min_w(px(180.0));
+            for intent in Self::tab_bar_split_menu_intents().iter().copied() {
+                menu = menu.menu(
+                    intent.label(),
+                    Box::new(crate::actions::tab_menus::SplitOperation { intent }),
+                );
+            }
+            menu
+        });
+
+        self.tab_bar_split_popup_menu_subscription = Some(cx.subscribe(
+            &menu,
+            |workspace, _menu, _event: &DismissEvent, cx| {
+                if workspace.close_tab_bar_split_menu() {
+                    cx.notify();
+                }
+            },
+        ));
+        self.tab_bar_split_popup_menu = Some(menu.clone());
+        menu
     }
 
     fn render_tab_bar_split_menu(
-        &self,
+        &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        window.focus(&self.context_menu_focus, cx);
+        let menu = self.build_tab_bar_split_popup_menu(window, cx);
+        let menu_focus = menu.read(cx).focus_handle(cx);
+        if !menu_focus.contains_focused(window, cx) {
+            menu_focus.focus(window, cx);
+        }
 
-        let entries = Self::tab_bar_split_menu_intents()
-            .iter()
-            .copied()
-            .map(|intent| ContextMenuEntry::action(intent, intent.label()))
-            .collect::<Vec<_>>();
-
-        render_context_menu(
-            self.tab_bar_split_menu
-                .state(&entries)
-                .anchor(Anchor::TopRight)
-                .min_width(px(180.0))
-                .focus_handle(self.context_menu_focus.clone())
-                .restore_focus_handle(self.focus_handle.clone()),
+        Self::render_popup_menu_backdrop(
+            menu,
+            self.tab_bar_split_menu.position(),
+            Anchor::TopRight,
+            (0.0, 0.0),
             cx,
-            ContextMenuCallbacks {
-                on_item_select: |workspace: &mut Workspace,
-                                 index: usize,
-                                 _window: &mut Window,
-                                 cx: &mut Context<Workspace>| {
-                    if workspace.tab_bar_split_menu.select(index) {
-                        cx.notify();
-                    }
-                },
-                on_item_activate: |workspace: &mut Workspace,
-                                   intent: TabBarSplitMenuIntent,
-                                   _window: &mut Window,
-                                   cx: &mut Context<Workspace>| {
-                    workspace.activate_tab_bar_split_menu_intent(intent, cx);
-                    cx.stop_propagation();
-                },
-                on_dismiss: |workspace: &mut Workspace,
-                             _window: &mut Window,
-                             cx: &mut Context<Workspace>| {
-                    workspace.tab_bar_split_menu.close();
-                    cx.notify();
-                    cx.stop_propagation();
-                },
-            },
+            Workspace::dismiss_tab_bar_menus,
         )
     }
 
+    fn build_tab_bar_new_popup_menu(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<PopupMenu> {
+        if let Some(menu) = self.tab_bar_new_popup_menu.clone() {
+            return menu;
+        }
+
+        let action_context = self.focus_handle.clone();
+        let menu = PopupMenu::build(window, cx, move |mut menu, _window, _cx| {
+            menu = menu.action_context(action_context).min_w(px(200.0));
+            for entry in Self::tab_bar_new_menu_entries().iter().copied() {
+                match entry {
+                    TabBarNewMenuEntry::Action(intent) => {
+                        menu = menu.menu(
+                            intent.label(),
+                            Box::new(crate::actions::tab_menus::NewOperation { intent }),
+                        );
+                    }
+                    TabBarNewMenuEntry::Separator => {
+                        menu = menu.separator();
+                    }
+                }
+            }
+            menu
+        });
+
+        self.tab_bar_new_popup_menu_subscription = Some(cx.subscribe(
+            &menu,
+            |workspace, _menu, _event: &DismissEvent, cx| {
+                if workspace.close_tab_bar_new_menu() {
+                    cx.notify();
+                }
+            },
+        ));
+        self.tab_bar_new_popup_menu = Some(menu.clone());
+        menu
+    }
+
     fn render_tab_bar_new_menu(
-        &self,
+        &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        window.focus(&self.context_menu_focus, cx);
+        let menu = self.build_tab_bar_new_popup_menu(window, cx);
+        let menu_focus = menu.read(cx).focus_handle(cx);
+        if !menu_focus.contains_focused(window, cx) {
+            menu_focus.focus(window, cx);
+        }
 
-        let entries: Vec<ContextMenuEntry<TabBarNewMenuIntent>> = Self::tab_bar_new_menu_entries()
-            .iter()
-            .copied()
-            .map(|entry| match entry {
-                TabBarNewMenuEntry::Action(intent) => {
-                    ContextMenuEntry::action(intent, intent.label())
-                }
-                TabBarNewMenuEntry::Separator => ContextMenuEntry::separator(),
-            })
-            .collect();
-
-        render_context_menu(
-            self.tab_bar_new_menu
-                .state(&entries)
-                .offset(8.0, 8.0)
-                .min_width(px(200.0))
-                .focus_handle(self.context_menu_focus.clone())
-                .restore_focus_handle(self.focus_handle.clone()),
+        Self::render_popup_menu_backdrop(
+            menu,
+            self.tab_bar_new_menu.position(),
+            Anchor::TopLeft,
+            (8.0, 8.0),
             cx,
-            ContextMenuCallbacks {
-                on_item_select: |workspace: &mut Workspace,
-                                 index: usize,
-                                 _window: &mut Window,
-                                 cx: &mut Context<Workspace>| {
-                    if workspace.tab_bar_new_menu.select(index) {
-                        cx.notify();
-                    }
-                },
-                on_item_activate: |workspace: &mut Workspace,
-                                   intent: TabBarNewMenuIntent,
-                                   _window: &mut Window,
-                                   cx: &mut Context<Workspace>| {
-                    if workspace.tab_bar_new_menu.close() {
-                        cx.notify();
-                    }
-                    let handler = Workspace::tab_bar_new_menu_handler(intent);
-                    handler(workspace, cx);
-                    cx.stop_propagation();
-                },
-                on_dismiss: |workspace: &mut Workspace,
-                             _window: &mut Window,
-                             cx: &mut Context<Workspace>| {
-                    workspace.tab_bar_new_menu.close();
-                    cx.notify();
-                    cx.stop_propagation();
-                },
-            },
+            Workspace::dismiss_tab_bar_menus,
         )
     }
 
@@ -6064,15 +6125,38 @@ impl Workspace {
 
     fn close_tab_context_menu(&mut self) -> bool {
         let closed = self.tab_context_menu.close();
+        let had_menu = self.tab_context_popup_menu.take().is_some();
+        let had_subscription = self.tab_context_popup_menu_subscription.take().is_some();
         let had_target = self.tab_context_menu_doc_id.take().is_some();
-        closed || had_target
+        closed || had_menu || had_subscription || had_target
+    }
+
+    fn close_tab_bar_split_menu(&mut self) -> bool {
+        let closed = self.tab_bar_split_menu.close();
+        let had_menu = self.tab_bar_split_popup_menu.take().is_some();
+        let had_subscription = self.tab_bar_split_popup_menu_subscription.take().is_some();
+        closed || had_menu || had_subscription
+    }
+
+    fn close_tab_bar_new_menu(&mut self) -> bool {
+        let closed = self.tab_bar_new_menu.close();
+        let had_menu = self.tab_bar_new_popup_menu.take().is_some();
+        let had_subscription = self.tab_bar_new_popup_menu_subscription.take().is_some();
+        closed || had_menu || had_subscription
     }
 
     fn close_tab_bar_menus(&mut self) -> bool {
         let mut closed = self.close_tab_context_menu();
-        closed |= self.tab_bar_split_menu.close();
-        closed |= self.tab_bar_new_menu.close();
+        closed |= self.close_tab_bar_split_menu();
+        closed |= self.close_tab_bar_new_menu();
         closed
+    }
+
+    fn dismiss_tab_bar_menus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.close_tab_bar_menus() {
+            window.focus(&self.focus_handle, cx);
+            cx.notify();
+        }
     }
 
     fn close_file_tree_context_menu(&mut self, cx: &mut Context<Self>) -> bool {
@@ -10918,11 +11002,13 @@ impl Workspace {
                                                 .map(|bounds| bounds.bottom_right())
                                                 .unwrap_or(fallback_position);
                                             workspace.close_tab_context_menu();
-                                            workspace.tab_bar_new_menu.close();
+                                            workspace.close_tab_bar_new_menu();
                                             workspace.tab_bar_split_menu.open_at((
                                                 f32::from(menu_position.x),
                                                 f32::from(menu_position.y),
                                             ));
+                                            workspace.tab_bar_split_popup_menu = None;
+                                            workspace.tab_bar_split_popup_menu_subscription = None;
                                             window.focus(&workspace.focus_handle, cx);
                                             cx.notify();
                                         });
@@ -10987,11 +11073,13 @@ impl Workspace {
             let workspace = cx.entity().clone();
             move |doc_id, event, window, cx| {
                 workspace.update(cx, |workspace, cx| {
-                    workspace.tab_bar_split_menu.close();
-                    workspace.tab_bar_new_menu.close();
+                    workspace.close_tab_bar_split_menu();
+                    workspace.close_tab_bar_new_menu();
                     workspace
                         .tab_context_menu
                         .open_at((f32::from(event.position.x), f32::from(event.position.y)));
+                    workspace.tab_context_popup_menu = None;
+                    workspace.tab_context_popup_menu_subscription = None;
                     workspace.tab_context_menu_doc_id = Some(doc_id);
                     window.focus(&workspace.focus_handle, cx);
                     cx.notify();
@@ -14367,7 +14455,6 @@ impl Render for Workspace {
                 .as_ref()
                 .map(|ft| ft.focus_handle(cx).is_focused(window))
                 .unwrap_or(false);
-            let context_menu_focused = self.context_menu_focus.is_focused(window);
 
             // Consider embedded terminal focus as a valid target
             let terminal_focused = self.terminal_focus.is_focused(window);
@@ -14376,7 +14463,6 @@ impl Render for Workspace {
                 && !overlay_focused
                 && !doc_focused
                 && !file_tree_focused
-                && !context_menu_focused
                 && !terminal_focused
             {
                 // First, nudge caret into the document view if we have one.
@@ -15260,6 +15346,41 @@ impl Render for Workspace {
                         cx,
                     );
                 }
+                cx.stop_propagation();
+            },
+        ));
+
+        workspace_div = workspace_div.on_action(cx.listener(
+            move |workspace, action: &crate::actions::tab_menus::ContextOperation, window, cx| {
+                window.prevent_default();
+                let target_doc_id = workspace.tab_context_menu_doc_id;
+                if workspace.close_tab_context_menu() {
+                    cx.notify();
+                }
+                if let Some(doc_id) = target_doc_id {
+                    let handler = Workspace::tab_context_menu_handler(action.intent);
+                    handler(workspace, doc_id, cx);
+                }
+                cx.stop_propagation();
+            },
+        ));
+
+        workspace_div = workspace_div.on_action(cx.listener(
+            move |workspace, action: &crate::actions::tab_menus::SplitOperation, window, cx| {
+                window.prevent_default();
+                workspace.activate_tab_bar_split_menu_intent(action.intent, cx);
+                cx.stop_propagation();
+            },
+        ));
+
+        workspace_div = workspace_div.on_action(cx.listener(
+            move |workspace, action: &crate::actions::tab_menus::NewOperation, window, cx| {
+                window.prevent_default();
+                if workspace.close_tab_bar_new_menu() {
+                    cx.notify();
+                }
+                let handler = Workspace::tab_bar_new_menu_handler(action.intent);
+                handler(workspace, cx);
                 cx.stop_propagation();
             },
         ));
