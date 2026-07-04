@@ -157,8 +157,9 @@ the terminal byte path.
 
 ## Resize And Drag
 
-New resizing behaviour should use `nucleotide_ui::ResizeDragController` or a
-wrapper built on it. Resize code should keep ownership of:
+New resizing behaviour should use `nucleotide_ui::ResizeDragController`,
+`nucleotide_ui::resize_handle`, or a wrapper built on them. Resize code should
+keep ownership of:
 
 - drag start state
 - axis and cursor
@@ -169,6 +170,11 @@ wrapper built on it. Resize code should keep ownership of:
 
 Call sites should provide domain constraints and update callbacks, not rebuild
 the GPUI drag lifecycle.
+
+Use `resize_handle` for transparent split hitboxes when domain geometry already
+exists, such as editor pane dividers. Use higher-level wrappers like
+`sidebar_split`, `right_sidebar_split`, and `bottom_panel_split` when the
+component can own both layout and resize mechanics.
 
 ## Layout
 

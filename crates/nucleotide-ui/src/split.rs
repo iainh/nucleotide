@@ -98,6 +98,36 @@ pub fn splitter(id: impl Into<ElementId>, axis: SplitterAxis, handle_px: f32) ->
     }
 }
 
+/// Transparent resize hitbox that owns the standard pointer lifecycle hooks.
+pub fn resize_handle(
+    id: impl Into<ElementId>,
+    axis: SplitterAxis,
+    handle_px: f32,
+    on_start: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
+    on_finish: impl Fn(&MouseUpEvent, &mut Window, &mut App) + 'static,
+    on_finish_out: impl Fn(&MouseUpEvent, &mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
+    let hitbox_px = resize_handle_hitbox_px(handle_px).unwrap_or(RESIZE_HANDLE_MIN_HITBOX_PX);
+    let base = div()
+        .id(id)
+        .relative()
+        .occlude()
+        .when(axis == SplitterAxis::Vertical, |d| {
+            d.w(px(hitbox_px))
+                .h_full()
+                .cursor(gpui::CursorStyle::ResizeLeftRight)
+        })
+        .when(axis == SplitterAxis::Horizontal, |d| {
+            d.w_full()
+                .h(px(hitbox_px))
+                .cursor(gpui::CursorStyle::ResizeRow)
+        });
+
+    base.on_mouse_down(MouseButton::Left, on_start)
+        .on_mouse_up(MouseButton::Left, on_finish)
+        .on_mouse_up_out(MouseButton::Left, on_finish_out)
+}
+
 #[derive(Clone)]
 pub struct ResizeDragController {
     dragging: Rc<Cell<bool>>,
@@ -631,11 +661,35 @@ pub fn two_pane_split<A: IntoElement, B: IntoElement>(
 
 #[cfg(test)]
 mod tests {
+    use gpui::{
+        Context, IntoElement, ParentElement as _, Render, Styled as _, TestAppContext, Window, div,
+    };
+
     use super::{
         RESIZE_HANDLE_MAX_HITBOX_PX, RESIZE_HANDLE_MIN_HITBOX_PX, ResizeDragController,
-        clamp_primary, clamp_primary_vertical, resize_handle_hitbox_px,
-        resize_handle_visual_offset,
+        SplitterAxis, clamp_primary, clamp_primary_vertical, resize_handle,
+        resize_handle_hitbox_px, resize_handle_visual_offset,
     };
+
+    struct ResizeHandleHarness;
+
+    impl Render for ResizeHandleHarness {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().child(resize_handle(
+                "test-resize-handle",
+                SplitterAxis::Vertical,
+                4.0,
+                |_, _, _| {},
+                |_, _, _| {},
+                |_, _, _| {},
+            ))
+        }
+    }
+
+    #[gpui::test]
+    fn resize_handle_renders_in_test_harness(cx: &mut TestAppContext) {
+        let (_harness, _cx) = cx.add_window_view(|_, _| ResizeHandleHarness);
+    }
 
     #[test]
     fn test_clamp_primary_horizontal() {
