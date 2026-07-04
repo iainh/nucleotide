@@ -598,8 +598,8 @@ mod tests {
     use std::rc::Rc;
 
     use gpui::{
-        AppContext as _, Context, Focusable, IntoElement, ParentElement as _, Render, Styled as _,
-        TestAppContext, Window, div,
+        AppContext as _, Context, Focusable, InputEvent as _, IntoElement, KeyUpEvent, Keystroke,
+        ParentElement as _, Render, Styled as _, TestAppContext, Window, div,
     };
 
     use super::*;
@@ -705,6 +705,28 @@ mod tests {
 
             confirm_focus.dispatch_action(&FocusPrevious, window, cx);
             assert!(cancel_focus.is_focused(window));
+        });
+    }
+
+    #[gpui::test]
+    fn focused_confirm_dialog_button_activates_with_space(cx: &mut TestAppContext) {
+        init_confirm_dialog_test(cx);
+        let (harness, cx) = cx.add_window_view(ConfirmDialogHarness::new);
+        let dialog = harness.read_with(cx, |harness, _| harness.dialog.clone());
+        let confirm_focus = dialog.read_with(cx, |dialog, _| dialog.confirm_focus_handle.clone());
+
+        cx.update(|window, cx| {
+            window.focus(&confirm_focus, cx);
+            let keystroke = Keystroke::parse("space").unwrap();
+            window.dispatch_keystroke(keystroke.clone(), cx);
+            window.dispatch_event(KeyUpEvent { keystroke }.to_platform_input(), cx);
+        });
+
+        harness.read_with(cx, |harness, _| {
+            assert_eq!(
+                harness.events.borrow().as_slice(),
+                &[ConfirmDialogEvent::Confirmed]
+            );
         });
     }
 
