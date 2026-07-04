@@ -54,6 +54,7 @@ pub mod prompt {
             MoveCursorRight,
             NextCompletion,
             PrevCompletion,
+            AcceptCompletion,
         ]
     );
 }
