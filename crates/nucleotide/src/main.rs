@@ -843,6 +843,13 @@ use nucleotide::actions::{
         ReloadConfiguration, RevertCurrentChange, Save, SaveAs, Undo,
     },
     help::{About, OpenTutorial, ThemeDebug},
+    remote_connection_manager::{
+        Accept as RemoteManagerAccept, Cancel as RemoteManagerCancel,
+        DeleteChar as RemoteManagerDeleteChar, MoveCursorLeft as RemoteManagerMoveCursorLeft,
+        MoveCursorRight as RemoteManagerMoveCursorRight, SelectNext as RemoteManagerSelectNext,
+        SelectPrevious as RemoteManagerSelectPrevious,
+        ToggleProtocol as RemoteManagerToggleProtocol,
+    },
     test::{TestCompletion, TestPrompt},
     window::{Minimize, Zoom},
     workspace::{
@@ -1475,6 +1482,50 @@ fn gui_main(
                         "enter",
                         nucleotide::actions::file_tree::OpenFile,
                         Some("FileTree"),
+                    ),
+                ]);
+
+                // Remote connection manager keybindings
+                cx.bind_keys([
+                    gpui::KeyBinding::new(
+                        "enter",
+                        RemoteManagerAccept,
+                        Some("RemoteConnectionManager"),
+                    ),
+                    gpui::KeyBinding::new(
+                        "escape",
+                        RemoteManagerCancel,
+                        Some("RemoteConnectionManager"),
+                    ),
+                    gpui::KeyBinding::new(
+                        "tab",
+                        RemoteManagerToggleProtocol,
+                        Some("RemoteConnectionManager"),
+                    ),
+                    gpui::KeyBinding::new(
+                        "up",
+                        RemoteManagerSelectPrevious,
+                        Some("RemoteConnectionManager"),
+                    ),
+                    gpui::KeyBinding::new(
+                        "down",
+                        RemoteManagerSelectNext,
+                        Some("RemoteConnectionManager"),
+                    ),
+                    gpui::KeyBinding::new(
+                        "left",
+                        RemoteManagerMoveCursorLeft,
+                        Some("RemoteConnectionManager"),
+                    ),
+                    gpui::KeyBinding::new(
+                        "right",
+                        RemoteManagerMoveCursorRight,
+                        Some("RemoteConnectionManager"),
+                    ),
+                    gpui::KeyBinding::new(
+                        "backspace",
+                        RemoteManagerDeleteChar,
+                        Some("RemoteConnectionManager"),
                     ),
                 ]);
 

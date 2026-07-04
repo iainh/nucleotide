@@ -16,6 +16,12 @@ use gpui::{
 };
 use nucleotide_core::{EditorStatus, Severity};
 use nucleotide_types::scrollbar::SCROLLBAR_THICKNESS;
+use nucleotide_ui::actions::remote_connection_manager::{
+    Accept as AcceptRemoteConnection, Cancel as CancelRemoteConnection,
+    DeleteChar as DeleteRemoteConnectionChar, MoveCursorLeft as MoveRemoteCursorLeft,
+    MoveCursorRight as MoveRemoteCursorRight, SelectNext as SelectNextRemoteItem,
+    SelectPrevious as SelectPreviousRemoteItem, ToggleProtocol as ToggleRemoteProtocol,
+};
 use nucleotide_ui::scrollbar::{Scrollbar, ScrollbarState};
 use nucleotide_ui::{
     Button, ButtonSize, ButtonVariant, FileIcon, IconPosition, ListItem, ListItemSpacing,
@@ -719,34 +725,97 @@ impl RemoteConnectionManagerView {
         self.connect(cx);
     }
 
-    fn handle_key_down(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
-        match event.keystroke.key.as_str() {
-            "enter" => self.accept_or_connect(cx),
-            "escape" => {
-                if self.protocol_menu_open {
-                    self.close_protocol_menu(cx);
-                } else {
-                    self.cancel(cx);
-                }
-            }
-            "tab" => self.set_protocol(self.protocol.toggled(), cx),
-            "up" => self.move_selection(-1, cx),
-            "down" => self.move_selection(1, cx),
-            "left" => self.move_cursor(-1, cx),
-            "right" => self.move_cursor(1, cx),
-            "backspace" => self.delete_char(cx),
-            "space" => self.insert_char(' ', cx),
-            key if key.len() == 1 => {
-                if let Some(ch) = key.chars().next()
-                    && (ch.is_alphanumeric()
-                        || ch.is_ascii_punctuation()
-                        || matches!(ch, '_' | '-' | '.' | '@' | ':' | '/' | '\\'))
-                {
-                    self.insert_char(ch, cx);
-                }
-            }
-            _ => {}
+    fn accept_action(
+        &mut self,
+        _: &AcceptRemoteConnection,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.accept_or_connect(cx);
+        cx.stop_propagation();
+    }
+
+    fn cancel_action(
+        &mut self,
+        _: &CancelRemoteConnection,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.protocol_menu_open {
+            self.close_protocol_menu(cx);
+        } else {
+            self.cancel(cx);
         }
+        cx.stop_propagation();
+    }
+
+    fn toggle_protocol_action(
+        &mut self,
+        _: &ToggleRemoteProtocol,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_protocol(self.protocol.toggled(), cx);
+        cx.stop_propagation();
+    }
+
+    fn select_previous_action(
+        &mut self,
+        _: &SelectPreviousRemoteItem,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.move_selection(-1, cx);
+        cx.stop_propagation();
+    }
+
+    fn select_next_action(
+        &mut self,
+        _: &SelectNextRemoteItem,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.move_selection(1, cx);
+        cx.stop_propagation();
+    }
+
+    fn move_cursor_left_action(
+        &mut self,
+        _: &MoveRemoteCursorLeft,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.move_cursor(-1, cx);
+        cx.stop_propagation();
+    }
+
+    fn move_cursor_right_action(
+        &mut self,
+        _: &MoveRemoteCursorRight,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.move_cursor(1, cx);
+        cx.stop_propagation();
+    }
+
+    fn delete_char_action(
+        &mut self,
+        _: &DeleteRemoteConnectionChar,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.delete_char(cx);
+        cx.stop_propagation();
+    }
+
+    fn handle_text_key_down(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) -> bool {
+        let Some(ch) = remote_manager_text_char(event.keystroke.key.as_str()) else {
+            return false;
+        };
+
+        self.insert_char(ch, cx);
+        true
     }
 
     fn render_protocol_dropdown(
@@ -1317,9 +1386,18 @@ impl Render for RemoteConnectionManagerView {
             .key_context("RemoteConnectionManager")
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
-                this.handle_key_down(event, cx);
-                cx.stop_propagation();
+                if this.handle_text_key_down(event, cx) {
+                    cx.stop_propagation();
+                }
             }))
+            .on_action(cx.listener(Self::accept_action))
+            .on_action(cx.listener(Self::cancel_action))
+            .on_action(cx.listener(Self::toggle_protocol_action))
+            .on_action(cx.listener(Self::select_previous_action))
+            .on_action(cx.listener(Self::select_next_action))
+            .on_action(cx.listener(Self::move_cursor_left_action))
+            .on_action(cx.listener(Self::move_cursor_right_action))
+            .on_action(cx.listener(Self::delete_char_action))
             .on_action(cx.listener(Self::select_remote_protocol))
             .flex()
             .flex_col()
@@ -1889,6 +1967,20 @@ fn byte_position_from_char_position(value: &str, char_position: usize) -> usize 
     value.chars().take(char_position).map(char::len_utf8).sum()
 }
 
+fn remote_manager_text_char(key: &str) -> Option<char> {
+    match key {
+        "space" => Some(' '),
+        key if key.chars().count() == 1 => {
+            let ch = key.chars().next()?;
+            (ch.is_alphanumeric()
+                || ch.is_ascii_punctuation()
+                || matches!(ch, '_' | '-' | '.' | '@' | ':' | '/' | '\\'))
+            .then_some(ch)
+        }
+        _ => None,
+    }
+}
+
 fn moved_index(current: usize, len: usize, delta: isize) -> usize {
     if len == 0 {
         return 0;
@@ -1993,6 +2085,16 @@ mod tests {
         assert_eq!(target.host, "example.com");
         assert_eq!(target.user.as_deref(), Some("me"));
         assert_eq!(target.port, Some(2222));
+    }
+
+    #[test]
+    fn remote_manager_text_char_accepts_printable_target_chars_only() {
+        assert_eq!(remote_manager_text_char("a"), Some('a'));
+        assert_eq!(remote_manager_text_char("@"), Some('@'));
+        assert_eq!(remote_manager_text_char("space"), Some(' '));
+        assert_eq!(remote_manager_text_char("enter"), None);
+        assert_eq!(remote_manager_text_char("backspace"), None);
+        assert_eq!(remote_manager_text_char("tab"), None);
     }
 
     #[test]
