@@ -82,9 +82,10 @@ Buttons that need to participate in traversal should use
 keyboard activation for focused buttons, so dialogs and forms should not add
 local Space/Enter handlers for ordinary button clicks.
 
-`FocusCoordinator` should be used as a role registry for major surfaces such as
-the editor, terminal, picker, prompt, diagnostics, and file tree. It should not
-become a second per-widget navigation system.
+`nucleotide_ui::FocusCoordinator` lives in the `focus` module and should be used
+as a role registry for major surfaces such as the editor, terminal, picker,
+prompt, diagnostics, and file tree. It should not become a second per-widget
+navigation system.
 
 ## Lists And Menus
 
