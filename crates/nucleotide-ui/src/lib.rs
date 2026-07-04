@@ -93,8 +93,9 @@ pub use completion_renderer::{
 };
 pub use completion_v2::{
     CompleteViaHelixEvent, CompletionEdit, CompletionItem, CompletionItemKind,
-    CompletionOffsetEncoding, CompletionPosition, CompletionRange, CompletionTextEdit,
-    CompletionView, CompletionWarningEvent, Position, StringMatch, StringMatchCandidate,
+    CompletionMenuAction, CompletionOffsetEncoding, CompletionPosition, CompletionRange,
+    CompletionTextEdit, CompletionView, CompletionWarningEvent, Position, StringMatch,
+    StringMatchCandidate, completion_menu_action_for_key,
 };
 pub use component_gallery::ComponentGallery;
 pub use confirm_dialog::{
