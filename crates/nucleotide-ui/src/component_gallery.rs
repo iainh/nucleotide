@@ -7,8 +7,8 @@ use gpui::{
 };
 
 use crate::{
-    Button, ButtonSize, ButtonVariant, Panel, PanelVariant, StatusBar, TextInput, Toolbar,
-    WorkspaceChrome,
+    AppShell, BottomPanel, Button, ButtonSize, ButtonVariant, Panel, PanelVariant, StatusBar,
+    TextInput, Toolbar,
 };
 
 pub struct ComponentGallery {
@@ -83,8 +83,8 @@ impl Render for ComponentGallery {
                     .on_click(|_, _, _| {}),
             );
 
-        WorkspaceChrome::new("component-gallery")
-            .child(
+        AppShell::new("component-gallery")
+            .header(
                 Toolbar::new("component-gallery-toolbar")
                     .label("Component Gallery")
                     .child(
@@ -134,12 +134,26 @@ impl Render for ComponentGallery {
                             .border(false)
                             .child(section_title("Layout", tokens))
                             .child(section_note(
-                                "WorkspaceChrome, Toolbar, Panel, and StatusBar wrappers.",
+                                "AppShell, Toolbar, Panel, BottomPanel, and StatusBar wrappers.",
                                 tokens,
-                            )),
+                            ))
+                            .child(
+                                BottomPanel::new("component-gallery-bottom-panel")
+                                    .height(px(44.0))
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .h_full()
+                                            .px(tokens.sizes.space_3)
+                                            .text_size(tokens.sizes.text_sm)
+                                            .text_color(tokens.chrome.text_chrome_secondary)
+                                            .child("Docked bottom panel chrome"),
+                                    ),
+                            ),
                     ),
             )
-            .child(StatusBar::new("component-gallery-status").child("Ready"))
+            .footer(StatusBar::new("component-gallery-status").child("Ready"))
     }
 }
 
