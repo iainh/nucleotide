@@ -97,19 +97,66 @@ pub fn splitter(id: impl Into<ElementId>, axis: SplitterAxis, handle_px: f32) ->
 }
 
 #[derive(Clone)]
-struct DragRuntimeState {
+pub struct ResizeDragController {
     dragging: Rc<Cell<bool>>,
     start_mouse: Rc<Cell<(f32, f32)>>,
-    start_primary: Rc<Cell<f32>>, // width for horizontal, height for vertical
+    start_primary: Rc<Cell<f32>>,
 }
 
-impl DragRuntimeState {
-    fn new() -> Self {
+impl ResizeDragController {
+    pub fn new() -> Self {
         Self {
             dragging: Rc::new(Cell::new(false)),
             start_mouse: Rc::new(Cell::new((0.0, 0.0))),
             start_primary: Rc::new(Cell::new(0.0)),
         }
+    }
+
+    pub fn begin(&self, mouse_x: f32, mouse_y: f32, start_primary: f32) {
+        self.dragging.set(true);
+        self.start_mouse.set((mouse_x, mouse_y));
+        self.start_primary.set(start_primary);
+    }
+
+    pub fn is_dragging(&self) -> bool {
+        self.dragging.get()
+    }
+
+    pub fn finish(&self) -> bool {
+        let was_dragging = self.dragging.get();
+        self.dragging.set(false);
+        was_dragging
+    }
+
+    pub fn horizontal_value(&self, mouse_x: f32, min_px: f32, max_px: f32) -> Option<f32> {
+        if !self.dragging.get() {
+            return None;
+        }
+
+        let start_x = self.start_mouse.get().0;
+        let dx = mouse_x - start_x;
+        Some(clamp_primary(self.start_primary.get(), dx, min_px, max_px))
+    }
+
+    pub fn top_edge_value(&self, mouse_y: f32, min_px: f32, max_px: f32) -> Option<f32> {
+        if !self.dragging.get() {
+            return None;
+        }
+
+        let start_y = self.start_mouse.get().1;
+        let dy = mouse_y - start_y;
+        Some(clamp_primary_vertical(
+            self.start_primary.get(),
+            dy,
+            min_px,
+            max_px,
+        ))
+    }
+}
+
+impl Default for ResizeDragController {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -130,7 +177,7 @@ pub fn sidebar_split<L: IntoElement, R: IntoElement>(
     left: L,
     right: R,
 ) -> impl IntoElement {
-    let drag = DragRuntimeState::new();
+    let drag = ResizeDragController::new();
     let min_px = min_px.max(0.0);
     let max_px = if max_px < min_px { min_px } else { max_px };
     let width_px = width_px.clamp(min_px, max_px);
@@ -149,24 +196,25 @@ pub fn sidebar_split<L: IntoElement, R: IntoElement>(
             let drag = drag.clone();
             let on_change = on_change.clone();
             move |ev: &MouseMoveEvent, window: &mut Window, cx: &mut App| {
-                if drag.dragging.get() && ev.dragging() {
-                    let start_x = drag.start_mouse.get().0;
-                    let dx = f32::from(ev.position.x) - start_x;
-                    let start_w = drag.start_primary.get();
+                if ev.dragging() {
                     // Ensure a minimum width for right pane (200px) so editor never collapses
                     let viewport_w = f32::from(window.viewport_size().width);
                     let max_allowed = (viewport_w - 200.0).max(min_px);
-                    let new_w = clamp_primary(start_w, dx, min_px, max_allowed.min(max_px));
-                    on_change(new_w, cx);
-                    window.refresh();
+                    if let Some(new_w) = drag.horizontal_value(
+                        f32::from(ev.position.x),
+                        min_px,
+                        max_allowed.min(max_px),
+                    ) {
+                        on_change(new_w, cx);
+                        window.refresh();
+                    }
                 }
             }
         })
         .on_mouse_up(MouseButton::Left, {
             let drag = drag.clone();
             move |_ev: &MouseUpEvent, window: &mut Window, _cx: &mut App| {
-                if drag.dragging.get() {
-                    drag.dragging.set(false);
+                if drag.finish() {
                     window.refresh();
                 }
             }
@@ -174,8 +222,7 @@ pub fn sidebar_split<L: IntoElement, R: IntoElement>(
         .on_mouse_up_out(MouseButton::Left, {
             let drag = drag.clone();
             move |_ev: &MouseUpEvent, window: &mut Window, _cx: &mut App| {
-                if drag.dragging.get() {
-                    drag.dragging.set(false);
+                if drag.finish() {
                     window.refresh();
                 }
             }
@@ -222,10 +269,7 @@ pub fn sidebar_split<L: IntoElement, R: IntoElement>(
                     cx.stop_propagation();
                     return;
                 }
-                drag.dragging.set(true);
-                drag.start_mouse
-                    .set((f32::from(ev.position.x), f32::from(ev.position.y)));
-                drag.start_primary.set(width_px);
+                drag.begin(f32::from(ev.position.x), f32::from(ev.position.y), width_px);
                 window.refresh();
                 cx.stop_propagation();
             }
@@ -261,7 +305,7 @@ pub fn bottom_panel_split<C: IntoElement>(
     on_change: impl Fn(f32, &mut App) + 'static,
     content: C,
 ) -> impl IntoElement {
-    let drag = DragRuntimeState::new();
+    let drag = ResizeDragController::new();
     let min_px = min_px.max(0.0);
     let max_px = if max_px < min_px { min_px } else { max_px };
     let height_px = height_px.clamp(min_px, max_px);
@@ -274,11 +318,10 @@ pub fn bottom_panel_split<C: IntoElement>(
             let drag = drag.clone();
             let on_change = on_change.clone();
             move |ev: &MouseMoveEvent, window: &mut Window, cx: &mut App| {
-                if drag.dragging.get() && ev.dragging() {
-                    let start_y = drag.start_mouse.get().1;
-                    let dy = f32::from(ev.position.y) - start_y;
-                    let start_h = drag.start_primary.get();
-                    let new_h = clamp_primary_vertical(start_h, dy, min_px, max_px);
+                if ev.dragging()
+                    && let Some(new_h) =
+                        drag.top_edge_value(f32::from(ev.position.y), min_px, max_px)
+                {
                     on_change(new_h, cx);
                     window.refresh();
                 }
@@ -287,8 +330,7 @@ pub fn bottom_panel_split<C: IntoElement>(
         .on_mouse_up(MouseButton::Left, {
             let drag = drag.clone();
             move |_ev: &MouseUpEvent, window: &mut Window, _cx: &mut App| {
-                if drag.dragging.get() {
-                    drag.dragging.set(false);
+                if drag.finish() {
                     window.refresh();
                 }
             }
@@ -296,8 +338,7 @@ pub fn bottom_panel_split<C: IntoElement>(
         .on_mouse_up_out(MouseButton::Left, {
             let drag = drag.clone();
             move |_ev: &MouseUpEvent, window: &mut Window, _cx: &mut App| {
-                if drag.dragging.get() {
-                    drag.dragging.set(false);
+                if drag.finish() {
                     window.refresh();
                 }
             }
@@ -333,10 +374,11 @@ pub fn bottom_panel_split<C: IntoElement>(
                         cx.stop_propagation();
                         return;
                     }
-                    drag.dragging.set(true);
-                    drag.start_mouse
-                        .set((f32::from(ev.position.x), f32::from(ev.position.y)));
-                    drag.start_primary.set(height_px);
+                    drag.begin(
+                        f32::from(ev.position.x),
+                        f32::from(ev.position.y),
+                        height_px,
+                    );
                     window.refresh();
                     cx.stop_propagation();
                 }
@@ -362,7 +404,7 @@ pub fn two_pane_split<A: IntoElement, B: IntoElement>(
     a: A,
     b: B,
 ) -> impl IntoElement {
-    let drag = DragRuntimeState::new();
+    let drag = ResizeDragController::new();
     let handle_px = handle_px.max(2.0);
     let fraction = fraction.clamp(0.0, 1.0);
 
@@ -371,8 +413,7 @@ pub fn two_pane_split<A: IntoElement, B: IntoElement>(
     root = root.on_mouse_up(MouseButton::Left, {
         let drag = drag.clone();
         move |_ev: &MouseUpEvent, window: &mut Window, _cx: &mut App| {
-            if drag.dragging.get() {
-                drag.dragging.set(false);
+            if drag.finish() {
                 window.refresh();
             }
         }
@@ -381,8 +422,7 @@ pub fn two_pane_split<A: IntoElement, B: IntoElement>(
     root = root.on_mouse_up_out(MouseButton::Left, {
         let drag = drag.clone();
         move |_ev: &MouseUpEvent, window: &mut Window, _cx: &mut App| {
-            if drag.dragging.get() {
-                drag.dragging.set(false);
+            if drag.finish() {
                 window.refresh();
             }
         }
@@ -415,18 +455,18 @@ pub fn two_pane_split<A: IntoElement, B: IntoElement>(
         .on_mouse_down(MouseButton::Left, {
             let drag = drag.clone();
             move |ev: &MouseDownEvent, window: &mut Window, _cx: &mut App| {
-                drag.dragging.set(true);
-                drag.start_mouse
-                    .set((f32::from(ev.position.x), f32::from(ev.position.y)));
+                drag.begin(f32::from(ev.position.x), f32::from(ev.position.y), fraction);
                 window.refresh();
             }
         })
         .on_mouse_move({
-            let _drag = drag.clone();
+            let drag = drag.clone();
             let on_change_fraction = Rc::new(on_change_fraction);
             move |_ev: &MouseMoveEvent, window: &mut Window, cx: &mut App| {
-                on_change_fraction(fraction, cx);
-                window.refresh();
+                if drag.is_dragging() {
+                    on_change_fraction(fraction, cx);
+                    window.refresh();
+                }
             }
         }),
     );
@@ -437,8 +477,9 @@ pub fn two_pane_split<A: IntoElement, B: IntoElement>(
 #[cfg(test)]
 mod tests {
     use super::{
-        RESIZE_HANDLE_MAX_HITBOX_PX, RESIZE_HANDLE_MIN_HITBOX_PX, clamp_primary,
-        clamp_primary_vertical, resize_handle_hitbox_px, resize_handle_visual_offset,
+        RESIZE_HANDLE_MAX_HITBOX_PX, RESIZE_HANDLE_MIN_HITBOX_PX, ResizeDragController,
+        clamp_primary, clamp_primary_vertical, resize_handle_hitbox_px,
+        resize_handle_visual_offset,
     };
 
     #[test]
@@ -471,5 +512,39 @@ mod tests {
             Some(RESIZE_HANDLE_MAX_HITBOX_PX)
         );
         assert_eq!(resize_handle_visual_offset(8.0), 3.5);
+    }
+
+    #[test]
+    fn resize_drag_controller_tracks_horizontal_drag() {
+        let drag = ResizeDragController::new();
+        assert_eq!(drag.horizontal_value(120.0, 100.0, 400.0), None);
+
+        drag.begin(100.0, 25.0, 200.0);
+
+        assert!(drag.is_dragging());
+        assert_eq!(drag.horizontal_value(150.0, 100.0, 400.0), Some(250.0));
+        assert_eq!(drag.horizontal_value(0.0, 150.0, 400.0), Some(150.0));
+        assert_eq!(drag.horizontal_value(500.0, 100.0, 300.0), Some(300.0));
+    }
+
+    #[test]
+    fn resize_drag_controller_tracks_top_edge_drag() {
+        let drag = ResizeDragController::new();
+        drag.begin(0.0, 100.0, 240.0);
+
+        assert_eq!(drag.top_edge_value(70.0, 120.0, 500.0), Some(270.0));
+        assert_eq!(drag.top_edge_value(400.0, 120.0, 500.0), Some(120.0));
+        assert_eq!(drag.top_edge_value(-300.0, 120.0, 500.0), Some(500.0));
+    }
+
+    #[test]
+    fn resize_drag_controller_finish_reports_active_state() {
+        let drag = ResizeDragController::new();
+
+        assert!(!drag.finish());
+        drag.begin(0.0, 0.0, 100.0);
+        assert!(drag.finish());
+        assert!(!drag.is_dragging());
+        assert!(!drag.finish());
     }
 }
