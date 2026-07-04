@@ -1388,7 +1388,6 @@ pub struct Workspace {
     doc_sidebar_loading: bool,
     doc_sidebar_entries: Vec<HoverDocEntry>,
     doc_sidebar_width: f32,
-    doc_sidebar_resize: ResizeDragController,
     doc_sidebar_scroll_handle: ScrollHandle,
     doc_sidebar_scrollbar_state: ScrollbarState,
     titlebar: Option<Entity<nucleotide_ui::titlebar::TitleBar>>,
@@ -5293,7 +5292,6 @@ impl Workspace {
             doc_sidebar_loading: false,
             doc_sidebar_entries: Vec::new(),
             doc_sidebar_width: DOC_SIDEBAR_DEFAULT_WIDTH,
-            doc_sidebar_resize: ResizeDragController::new(),
             doc_sidebar_scroll_handle,
             doc_sidebar_scrollbar_state,
             titlebar: None,
@@ -6211,8 +6209,7 @@ impl Workspace {
     }
 
     fn finish_active_resize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let mut finished =
-            ResizeDragController::finish_all([&self.file_tree_resize, &self.doc_sidebar_resize]);
+        let mut finished = self.file_tree_resize.finish();
 
         if self.split_pane_resize.take().is_some() {
             if self.view_manager.focused_view_id().is_some() {
@@ -6320,47 +6317,6 @@ impl Workspace {
             true
         } else {
             false
-        }
-    }
-
-    fn documentation_sidebar_resize_width_for_drag(
-        drag: &ResizeDragController,
-        mouse_x: f32,
-        available_width: f32,
-    ) -> Option<f32> {
-        drag.left_edge_value(
-            mouse_x,
-            DOC_SIDEBAR_MIN_WIDTH,
-            Self::max_documentation_sidebar_width(available_width),
-        )
-    }
-
-    fn update_documentation_sidebar_resize(
-        &mut self,
-        mouse_x: f32,
-        available_width: f32,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let Some(new_width) = Self::documentation_sidebar_resize_width_for_drag(
-            &self.doc_sidebar_resize,
-            mouse_x,
-            available_width,
-        ) else {
-            return false;
-        };
-
-        if (self.doc_sidebar_width - new_width).abs() > 0.5 {
-            self.doc_sidebar_width = new_width;
-            cx.notify();
-            true
-        } else {
-            false
-        }
-    }
-
-    fn finish_documentation_sidebar_resize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.doc_sidebar_resize.finish() {
-            self.request_standard_cursor_restore(window, cx);
         }
     }
 
@@ -14890,9 +14846,7 @@ impl Render for Workspace {
             }));
 
         // Add resize cursor and listeners only while resizing to reduce event overhead
-        if ResizeDragController::any_dragging([&self.file_tree_resize, &self.doc_sidebar_resize])
-            || self.split_pane_resize.is_some()
-        {
+        if self.file_tree_resize.is_dragging() || self.split_pane_resize.is_some() {
             workspace_div = workspace_div.capture_any_mouse_up(cx.listener(
                 |workspace, event: &MouseUpEvent, window, cx| {
                     if event.button == MouseButton::Left {
@@ -14928,36 +14882,6 @@ impl Render for Workspace {
                     MouseButton::Left,
                     cx.listener(|workspace, _event: &MouseUpEvent, window, cx| {
                         workspace.finish_file_tree_resize(window, cx);
-                    }),
-                );
-        }
-        if self.doc_sidebar_resize.is_dragging() {
-            let resize_available_w = right_content_w_px;
-            workspace_div = workspace_div
-                .cursor(gpui::CursorStyle::ResizeLeftRight)
-                .on_mouse_move(
-                    cx.listener(move |workspace, event: &MouseMoveEvent, window, cx| {
-                        if event.dragging()
-                            && workspace.update_documentation_sidebar_resize(
-                                f32::from(event.position.x),
-                                resize_available_w,
-                                cx,
-                            )
-                        {
-                            window.refresh();
-                        }
-                    }),
-                )
-                .on_mouse_up(
-                    MouseButton::Left,
-                    cx.listener(|workspace, _event: &MouseUpEvent, window, cx| {
-                        workspace.finish_documentation_sidebar_resize(window, cx);
-                    }),
-                )
-                .on_mouse_up_out(
-                    MouseButton::Left,
-                    cx.listener(|workspace, _event: &MouseUpEvent, window, cx| {
-                        workspace.finish_documentation_sidebar_resize(window, cx);
                     }),
                 );
         }
@@ -15563,80 +15487,35 @@ impl Render for Workspace {
                 let editor_stack = root;
 
                 if self.doc_sidebar_visible {
-                    let handle_hit_w = SPLIT_PANE_HANDLE_HITBOX_PX;
                     let resize_available_w = right_content_w_px;
+                    let max_width = Self::max_documentation_sidebar_width(resize_available_w);
+                    let on_change_width = {
+                        let entity = cx.entity().clone();
+                        move |new_width: f32, app_cx: &mut gpui::App| {
+                            entity.update(app_cx, |this: &mut Workspace, cx| {
+                                if (this.doc_sidebar_width - new_width).abs() > 0.5 {
+                                    this.doc_sidebar_width = new_width;
+                                    cx.notify();
+                                }
+                            });
+                        }
+                    };
 
                     div()
-                        .flex()
                         .relative()
                         .w_full()
                         .h(content_max_h)
                         .min_h(px(0.0))
-                        .child(
-                            div()
-                                .flex_1()
-                                .h_full()
-                                .min_h(px(0.0))
-                                .overflow_hidden()
-                                .child(editor_stack),
-                        )
-                        .child(self.render_documentation_sidebar(cx))
-                        .child(
-                            nucleotide_ui::splitter(
-                                "documentation-sidebar-resize-handle",
-                                nucleotide_ui::SplitterAxis::Vertical,
-                                handle_hit_w,
-                            )
-                            .absolute()
-                            .top_0()
-                            .bottom_0()
-                            .right(px(self.doc_sidebar_width - handle_hit_w * 0.5))
-                            .h_full()
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(
-                                    move |this: &mut Workspace, ev: &MouseDownEvent, window, cx| {
-                                        if ev.click_count >= 2 {
-                                            let width = Self::clamped_documentation_sidebar_width(
-                                                DOC_SIDEBAR_DEFAULT_WIDTH,
-                                                resize_available_w,
-                                            );
-                                            if (this.doc_sidebar_width - width).abs() > 0.5 {
-                                                this.doc_sidebar_width = width;
-                                                cx.notify();
-                                            }
-                                            window.refresh();
-                                            cx.stop_propagation();
-                                            return;
-                                        }
-
-                                        this.doc_sidebar_resize
-                                            .begin_from_mouse_down(ev, this.doc_sidebar_width);
-                                        cx.notify();
-                                        window.refresh();
-                                        cx.stop_propagation();
-                                    },
-                                ),
-                            )
-                            .on_mouse_up(
-                                MouseButton::Left,
-                                cx.listener(
-                                    |this: &mut Workspace, _ev: &MouseUpEvent, window, cx| {
-                                        this.finish_documentation_sidebar_resize(window, cx);
-                                        cx.stop_propagation();
-                                    },
-                                ),
-                            )
-                            .on_mouse_up_out(
-                                MouseButton::Left,
-                                cx.listener(
-                                    |this: &mut Workspace, _ev: &MouseUpEvent, window, cx| {
-                                        this.finish_documentation_sidebar_resize(window, cx);
-                                        cx.stop_propagation();
-                                    },
-                                ),
-                            ),
-                        )
+                        .child(nucleotide_ui::right_sidebar_split(
+                            self.doc_sidebar_width,
+                            DOC_SIDEBAR_MIN_WIDTH,
+                            max_width,
+                            SPLIT_PANE_HANDLE_HITBOX_PX,
+                            DOC_SIDEBAR_DEFAULT_WIDTH,
+                            on_change_width,
+                            editor_stack,
+                            self.render_documentation_sidebar(cx),
+                        ))
                         .into_any_element()
                 } else {
                     editor_stack.into_any_element()
@@ -19622,26 +19501,19 @@ mod tests {
     }
 
     #[test]
-    fn documentation_sidebar_resize_width_tracks_mouse_and_clamps_to_bounds() {
-        let drag = ResizeDragController::new();
+    fn documentation_sidebar_width_clamps_to_available_space() {
         assert_eq!(
-            Workspace::documentation_sidebar_resize_width_for_drag(&drag, 700.0, 1000.0),
-            None
+            Workspace::max_documentation_sidebar_width(1000.0),
+            DOC_SIDEBAR_MAX_WIDTH
         );
-
-        drag.begin(800.0, 0.0, 360.0);
-
+        assert_eq!(Workspace::max_documentation_sidebar_width(500.0), 260.0);
         assert_eq!(
-            Workspace::documentation_sidebar_resize_width_for_drag(&drag, 700.0, 1000.0),
-            Some(460.0)
+            Workspace::clamped_documentation_sidebar_width(100.0, 1000.0),
+            DOC_SIDEBAR_MIN_WIDTH
         );
         assert_eq!(
-            Workspace::documentation_sidebar_resize_width_for_drag(&drag, 1100.0, 1000.0),
-            Some(DOC_SIDEBAR_MIN_WIDTH)
-        );
-        assert_eq!(
-            Workspace::documentation_sidebar_resize_width_for_drag(&drag, 0.0, 1000.0),
-            Some(DOC_SIDEBAR_MAX_WIDTH)
+            Workspace::clamped_documentation_sidebar_width(700.0, 1000.0),
+            DOC_SIDEBAR_MAX_WIDTH
         );
         assert_eq!(
             Workspace::clamped_documentation_sidebar_width(360.0, 500.0),
