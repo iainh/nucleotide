@@ -21,11 +21,11 @@ use std::sync::{LazyLock, Mutex};
 use gpui::MenuItem;
 use gpui::prelude::{FluentBuilder, StyledImage};
 use gpui::{
-    Anchor, App, AppContext, BorrowAppContext, Bounds, Context, DismissEvent, DragMoveEvent, Empty,
-    Entity, EventEmitter, FocusHandle, Focusable, Hsla, InteractiveElement, IntoElement,
-    KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels,
-    Point, Render, ScrollHandle, Size, StatefulInteractiveElement, Styled, Subscription, TextStyle,
-    Window, WindowAppearance, anchored, canvas, div, img, point, px, relative, svg,
+    Anchor, App, AppContext, BorrowAppContext, Bounds, Context, DismissEvent, Entity, EventEmitter,
+    FocusHandle, Focusable, Hsla, InteractiveElement, IntoElement, KeyDownEvent, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Render,
+    ScrollHandle, Size, StatefulInteractiveElement, Styled, Subscription, TextStyle, Window,
+    WindowAppearance, anchored, canvas, div, img, point, px, relative, svg,
 };
 use gpui::{FontFeatures, FontWeight};
 use helix_core::syntax::config::LanguageServerFeature;
@@ -1842,15 +1842,6 @@ async fn wait_for_file_operation_notification(
     }
 
     false
-}
-
-#[derive(Clone)]
-struct DraggedSplitPaneResize;
-
-impl Render for DraggedSplitPaneResize {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        Empty
-    }
 }
 
 const GLOBAL_SEARCH_RESULT_LIMIT: usize = 5000;
@@ -13776,21 +13767,6 @@ impl Workspace {
                     cx.stop_propagation();
                 }),
             )
-            .on_drag(DraggedSplitPaneResize, |_, _, _, cx| {
-                cx.new(|_| DraggedSplitPaneResize)
-            })
-            .on_drag_move::<DraggedSplitPaneResize>(cx.listener(
-                |workspace, event: &DragMoveEvent<DraggedSplitPaneResize>, window, cx| {
-                    if workspace.split_pane_resize.is_some() {
-                        if event.event.dragging()
-                            && workspace.update_split_pane_resize(event.event.position, cx)
-                        {
-                            window.refresh();
-                        }
-                        cx.stop_propagation();
-                    }
-                },
-            ))
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|workspace, _event: &MouseUpEvent, window, cx| {
