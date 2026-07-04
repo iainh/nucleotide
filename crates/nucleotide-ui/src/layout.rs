@@ -3,8 +3,8 @@
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    AnyElement, App, ElementId, InteractiveElement, IntoElement, ParentElement, Pixels, RenderOnce,
-    SharedString, Styled, div, px,
+    AnyElement, App, ElementId, Hsla, InteractiveElement, IntoElement, ParentElement, Pixels,
+    RenderOnce, SharedString, Styled, div, px,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -77,6 +77,56 @@ fn finite_nonnegative_px(value: f32) -> f32 {
         value.max(0.0)
     } else {
         0.0
+    }
+}
+
+#[derive(IntoElement)]
+pub struct EditorPaneGrid {
+    id: ElementId,
+    debug_border: Option<Hsla>,
+    children: Vec<AnyElement>,
+}
+
+impl EditorPaneGrid {
+    pub fn new(id: impl Into<ElementId>) -> Self {
+        Self {
+            id: id.into(),
+            debug_border: None,
+            children: Vec::new(),
+        }
+    }
+
+    pub fn debug_border(mut self, enabled: bool, color: Hsla) -> Self {
+        if enabled {
+            self.debug_border = Some(color);
+        }
+        self
+    }
+}
+
+impl ParentElement for EditorPaneGrid {
+    fn extend(&mut self, elements: impl IntoIterator<Item = AnyElement>) {
+        self.children.extend(elements);
+    }
+}
+
+impl RenderOnce for EditorPaneGrid {
+    fn render(self, _window: &mut gpui::Window, cx: &mut App) -> impl IntoElement {
+        let tokens = &cx.global::<crate::Theme>().tokens;
+        div()
+            .id(self.id)
+            .flex()
+            .relative()
+            .size_full()
+            .min_w(px(0.0))
+            .min_h(px(0.0))
+            .overflow_hidden()
+            .bg(tokens.editor.background)
+            .text_color(tokens.chrome.text_on_chrome)
+            .when_some(self.debug_border, |this, color| {
+                this.border_1().border_color(color)
+            })
+            .children(self.children)
     }
 }
 
@@ -450,6 +500,7 @@ mod tests {
                         .variant(PanelVariant::Elevated)
                         .child(div().child("Body")),
                 )
+                .child(EditorPaneGrid::new("editor-pane-grid").child(div().child("Editor")))
                 .child(BottomPanel::new("bottom-panel").height(gpui::px(48.0)))
                 .footer(StatusBar::new("status-bar").child("Ready"))
         }
