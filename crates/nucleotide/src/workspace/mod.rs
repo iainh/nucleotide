@@ -810,26 +810,6 @@ struct TabContextMenuCapabilities {
 
 const SPLIT_PANE_HANDLE_HITBOX_PX: f32 = nucleotide_ui::SPLITTER_HITBOX_PX;
 
-fn split_pane_resize_hitbox(
-    id: impl Into<gpui::ElementId>,
-    axis: SplitPaneResizeAxis,
-    handle_px: f32,
-) -> gpui::Stateful<gpui::Div> {
-    let handle_px = handle_px.max(1.0);
-    let base = div().id(id).relative().occlude();
-
-    match axis {
-        SplitPaneResizeAxis::Vertical => base
-            .w(px(handle_px))
-            .h_full()
-            .cursor(gpui::CursorStyle::ResizeLeftRight),
-        SplitPaneResizeAxis::Horizontal => base
-            .w_full()
-            .h(px(handle_px))
-            .cursor(gpui::CursorStyle::ResizeRow),
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TabBarSplitMenuIntent {
     Right,
@@ -13196,6 +13176,36 @@ impl Workspace {
             divider.start,
             divider.span
         );
+        let handle_axis = match divider.axis {
+            SplitPaneResizeAxis::Vertical => nucleotide_ui::SplitterAxis::Vertical,
+            SplitPaneResizeAxis::Horizontal => nucleotide_ui::SplitterAxis::Horizontal,
+        };
+        let handle = nucleotide_ui::resize_handle(
+            handle_id,
+            handle_axis,
+            handle_hit,
+            cx.listener(move |workspace, event: &MouseDownEvent, window, cx| {
+                workspace.start_split_pane_resize(
+                    drag_divider.clone(),
+                    event.position,
+                    total_area,
+                    editor_width,
+                    editor_height,
+                    cx,
+                );
+                window.refresh();
+                cx.stop_propagation();
+            }),
+            cx.listener(|workspace, _event: &MouseUpEvent, window, cx| {
+                workspace.finish_split_pane_resize(window, cx);
+                cx.stop_propagation();
+            }),
+            cx.listener(|workspace, _event: &MouseUpEvent, window, cx| {
+                workspace.finish_split_pane_resize(window, cx);
+                cx.stop_propagation();
+            }),
+        );
+
         let handle = match divider.axis {
             SplitPaneResizeAxis::Vertical => {
                 let edge_px = f32::from(divider.edge.saturating_sub(total_area.x)) / total_width
@@ -13204,7 +13214,7 @@ impl Workspace {
                     * editor_height;
                 let span_px = (f32::from(divider.span) / total_height * editor_height).max(1.0);
 
-                split_pane_resize_hitbox(handle_id, SplitPaneResizeAxis::Vertical, handle_hit)
+                handle
                     .absolute()
                     .left(px(edge_px - handle_hit * 0.5))
                     .top(px(start_px))
@@ -13217,7 +13227,7 @@ impl Workspace {
                     * editor_width;
                 let span_px = (f32::from(divider.span) / total_width * editor_width).max(1.0);
 
-                split_pane_resize_hitbox(handle_id, SplitPaneResizeAxis::Horizontal, handle_hit)
+                handle
                     .absolute()
                     .left(px(start_px))
                     .top(px(edge_px - handle_hit * 0.5))
@@ -13225,37 +13235,7 @@ impl Workspace {
             }
         };
 
-        handle
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |workspace, event: &MouseDownEvent, window, cx| {
-                    workspace.start_split_pane_resize(
-                        drag_divider.clone(),
-                        event.position,
-                        total_area,
-                        editor_width,
-                        editor_height,
-                        cx,
-                    );
-                    window.refresh();
-                    cx.stop_propagation();
-                }),
-            )
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|workspace, _event: &MouseUpEvent, window, cx| {
-                    workspace.finish_split_pane_resize(window, cx);
-                    cx.stop_propagation();
-                }),
-            )
-            .on_mouse_up_out(
-                MouseButton::Left,
-                cx.listener(|workspace, _event: &MouseUpEvent, window, cx| {
-                    workspace.finish_split_pane_resize(window, cx);
-                    cx.stop_propagation();
-                }),
-            )
-            .into_any_element()
+        handle.into_any_element()
     }
 
     fn render_split_pane_divider_line(
