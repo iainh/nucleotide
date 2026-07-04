@@ -6002,6 +6002,8 @@ impl Workspace {
             InputContext::Picker
         } else if overlay_view.has_prompt() {
             InputContext::Prompt
+        } else if overlay_view.has_remote_connection_manager() {
+            InputContext::Modal
         } else if overlay_view.has_completion() {
             InputContext::Completion
         } else if let Some(file_tree) = &self.file_tree {
