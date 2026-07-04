@@ -3,12 +3,22 @@
 
 use std::sync::{Arc, RwLock};
 
+use gpui::prelude::FluentBuilder;
 use gpui::{
-    AnyElement, App, FocusHandle, InteractiveElement, IntoElement, ParentElement, RenderOnce,
-    Styled, Window, div,
+    AnyElement, App, FocusHandle, InteractiveElement, IntoElement, KeyBinding, ParentElement,
+    RenderOnce, Styled, Window, div,
 };
 
 use crate::actions::focus::{FocusNext, FocusPrevious};
+
+pub const FOCUS_TRAVERSAL_CONTEXT: &str = "FocusTraversal";
+
+pub(crate) fn init(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new("tab", FocusNext, Some(FOCUS_TRAVERSAL_CONTEXT)),
+        KeyBinding::new("shift-tab", FocusPrevious, Some(FOCUS_TRAVERSAL_CONTEXT)),
+    ]);
+}
 
 /// Focus role registry for common UI areas.
 ///
@@ -165,19 +175,34 @@ pub enum FocusRole {
 #[derive(IntoElement)]
 pub struct FocusTraversal {
     child: AnyElement,
+    key_context: Option<&'static str>,
 }
 
 impl FocusTraversal {
     pub fn new(child: impl IntoElement) -> Self {
         Self {
             child: child.into_any_element(),
+            key_context: Some(FOCUS_TRAVERSAL_CONTEXT),
         }
+    }
+
+    pub fn key_context(mut self, key_context: &'static str) -> Self {
+        self.key_context = Some(key_context);
+        self
+    }
+
+    pub fn without_key_context(mut self) -> Self {
+        self.key_context = None;
+        self
     }
 }
 
 impl RenderOnce for FocusTraversal {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         div()
+            .when_some(self.key_context, |this, key_context| {
+                this.key_context(key_context)
+            })
             .size_full()
             .on_action(|_: &FocusNext, window, cx| {
                 window.focus_next(cx);
@@ -243,6 +268,36 @@ mod tests {
                     ),
             )
         }
+    }
+
+    #[gpui::test]
+    fn focus_traversal_default_context_handles_tab(cx: &mut TestAppContext) {
+        cx.update(init);
+        let (harness, cx) = cx.add_window_view(|_, cx| FocusTraversalHarness::new(cx));
+        let (first, second) = harness.read_with(cx, |harness, _| {
+            (harness.first.clone(), harness.second.clone())
+        });
+
+        cx.update(|window, cx| {
+            window.focus(&first, cx);
+            window.dispatch_keystroke(gpui::Keystroke::parse("tab").unwrap(), cx);
+            assert!(second.is_focused(window));
+        });
+    }
+
+    #[gpui::test]
+    fn focus_traversal_default_context_handles_shift_tab(cx: &mut TestAppContext) {
+        cx.update(init);
+        let (harness, cx) = cx.add_window_view(|_, cx| FocusTraversalHarness::new(cx));
+        let (first, second) = harness.read_with(cx, |harness, _| {
+            (harness.first.clone(), harness.second.clone())
+        });
+
+        cx.update(|window, cx| {
+            window.focus(&second, cx);
+            window.dispatch_keystroke(gpui::Keystroke::parse("shift-tab").unwrap(), cx);
+            assert!(first.is_focused(window));
+        });
     }
 
     #[gpui::test]

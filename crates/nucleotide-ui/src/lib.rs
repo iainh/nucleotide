@@ -99,7 +99,7 @@ pub use confirm_dialog::{
 };
 pub use context_menu::ContextMenuController;
 pub use file_icon::FileIcon;
-pub use focus::{FocusCoordinator, FocusRole, FocusTraversal};
+pub use focus::{FOCUS_TRAVERSAL_CONTEXT, FocusCoordinator, FocusRole, FocusTraversal};
 pub use input::{InputSize, InputVariant};
 pub use layout::{
     AppShell, BottomPanel, EditorPaneGrid, Panel, PanelLayout, PanelVariant, StatusBar, Toolbar,
@@ -321,6 +321,7 @@ pub fn init(cx: &mut App, config: Option<UIConfig>) {
     providers::init_provider_system();
     completion_v2::init(cx);
     confirm_dialog::init(cx);
+    focus::init(cx);
     menu::init(cx);
     modal_layer::init(cx);
     navigable::init(cx);
@@ -356,6 +357,7 @@ pub fn init(cx: &mut App, config: Option<UIConfig>) {
 
     // Register built-in components
     registry.register_component("Button");
+    registry.register_component("FocusTraversal");
     registry.register_component("ListItem");
     registry.register_component("FileIcon");
     registry.register_component("Picker");
