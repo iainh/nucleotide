@@ -161,6 +161,11 @@ positioning. Use raw absolute coordinates only for anchored overlays, editor
 geometry, hitboxes, or cases where a reusable layout component cannot express
 the requirement yet.
 
+Use `WorkspaceChrome`, `Panel`, `Toolbar`, and `StatusBar` for common app
+surfaces before hand-building another token-styled shell from `div()`. These are
+thin wrappers; call sites should still own domain content and any geometry that
+is genuinely editor-specific.
+
 Complex layout calculations should be extracted into testable structs that
 produce constraints or rectangles independently from GPUI event handling.
 

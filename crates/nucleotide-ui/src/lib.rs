@@ -24,6 +24,7 @@ pub mod global_input;
 pub mod info_box;
 pub mod input;
 pub mod key_hint_view;
+pub mod layout;
 pub mod list_item;
 pub mod markdown;
 pub mod menu;
@@ -105,6 +106,7 @@ pub use context_menu::{
 pub use file_icon::FileIcon;
 pub use global_input::{FocusCoordinator, FocusRole};
 pub use input::{Input, InputSize, InputVariant};
+pub use layout::{Panel, PanelVariant, StatusBar, Toolbar, WorkspaceChrome};
 pub use list_item::{
     ListItem, ListItemSpacing, ListItemState, ListItemVariant, SelectionMode, SelectionState,
 };
@@ -359,6 +361,10 @@ pub fn init(cx: &mut App, config: Option<UIConfig>) {
     registry.register_component("CompletionRenderer");
     registry.register_component("SmartPopup");
     registry.register_component("DocumentationPanel");
+    registry.register_component("WorkspaceChrome");
+    registry.register_component("Panel");
+    registry.register_component("Toolbar");
+    registry.register_component("StatusBar");
 
     cx.set_global(registry);
 }
