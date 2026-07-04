@@ -71,6 +71,69 @@ pub struct ContextMenuState<'a, T> {
 
 pub type ContextMenu<'a, T> = ContextMenuState<'a, T>;
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ContextMenuController {
+    open: bool,
+    position: (f32, f32),
+    selected_index: usize,
+}
+
+impl ContextMenuController {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn is_open(&self) -> bool {
+        self.open
+    }
+
+    pub fn position(&self) -> (f32, f32) {
+        self.position
+    }
+
+    pub fn selected_index(&self) -> usize {
+        self.selected_index
+    }
+
+    pub fn open_at(&mut self, position: (f32, f32)) {
+        self.open = true;
+        self.position = position;
+        self.selected_index = 0;
+    }
+
+    pub fn close(&mut self) -> bool {
+        if !self.open {
+            return false;
+        }
+
+        self.open = false;
+        true
+    }
+
+    pub fn select(&mut self, selected_index: usize) -> bool {
+        if self.selected_index == selected_index {
+            return false;
+        }
+
+        self.selected_index = selected_index;
+        true
+    }
+
+    pub fn state<'a, T>(&self, entries: &'a [ContextMenuEntry<T>]) -> ContextMenuState<'a, T> {
+        ContextMenuState::new(self.position, entries).selected_index(self.selected_index)
+    }
+}
+
+impl Default for ContextMenuController {
+    fn default() -> Self {
+        Self {
+            open: false,
+            position: (0.0, 0.0),
+            selected_index: 0,
+        }
+    }
+}
+
 impl<'a, T> ContextMenuState<'a, T> {
     pub fn new(position: (f32, f32), entries: &'a [ContextMenuEntry<T>]) -> Self {
         Self {
@@ -420,6 +483,47 @@ mod tests {
         assert!(ContextMenuEntry::action(1, "Open").is_action());
         assert!(ContextMenuEntry::disabled_action(1, "Open").is_action());
         assert!(!ContextMenuEntry::<u8>::separator().is_action());
+    }
+
+    #[test]
+    fn controller_opens_at_position_and_resets_selection() {
+        let mut controller = ContextMenuController::new();
+
+        assert!(!controller.is_open());
+        controller.select(3);
+        controller.open_at((12.0, 24.0));
+
+        assert!(controller.is_open());
+        assert_eq!(controller.position(), (12.0, 24.0));
+        assert_eq!(controller.selected_index(), 0);
+    }
+
+    #[test]
+    fn controller_close_and_select_report_changes() {
+        let mut controller = ContextMenuController::new();
+
+        assert!(!controller.close());
+        assert!(controller.select(2));
+        assert!(!controller.select(2));
+
+        controller.open_at((1.0, 2.0));
+        assert!(controller.close());
+        assert!(!controller.is_open());
+        assert!(!controller.close());
+    }
+
+    #[test]
+    fn controller_builds_context_menu_state() {
+        let mut controller = ContextMenuController::new();
+        let entries = vec![ContextMenuEntry::action(1, "Open")];
+
+        controller.open_at((5.0, 6.0));
+        controller.select(1);
+
+        let state = controller.state(&entries);
+        assert_eq!(state.position, (5.0, 6.0));
+        assert_eq!(state.selected_index, 1);
+        assert_eq!(state.entries, entries.as_slice());
     }
 
     struct ContextMenuHarness {
