@@ -846,9 +846,7 @@ use nucleotide::actions::{
     help::{About, OpenTutorial, ThemeDebug},
     remote_connection_manager::{
         Accept as RemoteManagerAccept, Cancel as RemoteManagerCancel,
-        DeleteChar as RemoteManagerDeleteChar, MoveCursorLeft as RemoteManagerMoveCursorLeft,
-        MoveCursorRight as RemoteManagerMoveCursorRight, SelectNext as RemoteManagerSelectNext,
-        SelectPrevious as RemoteManagerSelectPrevious,
+        SelectNext as RemoteManagerSelectNext, SelectPrevious as RemoteManagerSelectPrevious,
         ToggleProtocol as RemoteManagerToggleProtocol,
     },
     test::{TestCompletion, TestPrompt},
@@ -1513,21 +1511,6 @@ fn gui_main(
                     gpui::KeyBinding::new(
                         "down",
                         RemoteManagerSelectNext,
-                        Some("RemoteConnectionManager"),
-                    ),
-                    gpui::KeyBinding::new(
-                        "left",
-                        RemoteManagerMoveCursorLeft,
-                        Some("RemoteConnectionManager"),
-                    ),
-                    gpui::KeyBinding::new(
-                        "right",
-                        RemoteManagerMoveCursorRight,
-                        Some("RemoteConnectionManager"),
-                    ),
-                    gpui::KeyBinding::new(
-                        "backspace",
-                        RemoteManagerDeleteChar,
                         Some("RemoteConnectionManager"),
                     ),
                 ]);
