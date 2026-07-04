@@ -31,7 +31,7 @@ use gpui::{
     FocusHandle, Focusable, Hsla, InteractiveElement, IntoElement, KeyDownEvent, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Render,
     ScrollHandle, Size, StatefulInteractiveElement, Styled, Subscription, TextStyle, Window,
-    WindowAppearance, anchored, canvas, div, img, point, px, relative, svg,
+    WindowAppearance, canvas, div, img, point, px, relative, svg,
 };
 use gpui::{FontFeatures, FontWeight};
 use helix_core::syntax::config::LanguageServerFeature;
@@ -52,7 +52,7 @@ use nucleotide_ui::scrollbar::{Scrollbar, ScrollbarState};
 use nucleotide_ui::{
     AboutWindow, Button, ButtonSize, ButtonVariant, ConfirmDialog, ConfirmDialogEvent,
     ConfirmDialogView, ContextMenuController, EditorPaneGrid, MarkdownStyle, ModalLayer, PopupMenu,
-    Tooltipped, completion_menu_action_for_key, markdown_extended,
+    PopupMenuSurface, Tooltipped, completion_menu_action_for_key, markdown_extended,
 };
 
 use crate::input_coordinator::{InputContext, InputCoordinator};
@@ -5296,34 +5296,13 @@ impl Workspace {
 
         let (x, y) = self.file_tree_context_menu.position();
 
-        div()
-            .absolute()
-            .size_full()
-            .top_0()
-            .left_0()
-            .occlude()
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|workspace, _event, window, cx| {
-                    workspace.dismiss_file_tree_context_menu(window, cx);
-                    cx.stop_propagation();
-                }),
-            )
-            .on_mouse_down(
-                MouseButton::Right,
-                cx.listener(|workspace, _event, window, cx| {
-                    workspace.dismiss_file_tree_context_menu(window, cx);
-                    cx.stop_propagation();
-                }),
-            )
-            .child(
-                anchored()
-                    .position(point(px(x), px(y)))
-                    .anchor(Anchor::TopLeft)
-                    .offset(point(px(8.0), px(8.0)))
-                    .snap_to_window_with_margin(px(8.0))
-                    .child(div().occlude().child(menu)),
-            )
+        PopupMenuSurface::new(menu)
+            .position(point(px(x), px(y)))
+            .anchor(Anchor::TopLeft)
+            .offset(point(px(8.0), px(8.0)))
+            .on_light_dismiss(cx.listener(|workspace, _event, window, cx| {
+                workspace.dismiss_file_tree_context_menu(window, cx);
+            }))
             .into_any_element()
     }
 
@@ -5338,35 +5317,13 @@ impl Workspace {
         let (x, y) = position;
         let (offset_x, offset_y) = offset;
 
-        div()
-            .absolute()
-            .size_full()
-            .top_0()
-            .left_0()
-            .occlude()
-            .on_mouse_move(|_, _, cx| cx.stop_propagation())
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |workspace, _event, window, cx| {
-                    dismiss(workspace, window, cx);
-                    cx.stop_propagation();
-                }),
-            )
-            .on_mouse_down(
-                MouseButton::Right,
-                cx.listener(move |workspace, _event, window, cx| {
-                    dismiss(workspace, window, cx);
-                    cx.stop_propagation();
-                }),
-            )
-            .child(
-                anchored()
-                    .position(point(px(x), px(y)))
-                    .anchor(anchor)
-                    .offset(point(px(offset_x), px(offset_y)))
-                    .snap_to_window_with_margin(px(8.0))
-                    .child(div().occlude().child(menu)),
-            )
+        PopupMenuSurface::new(menu)
+            .position(point(px(x), px(y)))
+            .anchor(anchor)
+            .offset(point(px(offset_x), px(offset_y)))
+            .on_light_dismiss(cx.listener(move |workspace, _event, window, cx| {
+                dismiss(workspace, window, cx);
+            }))
             .into_any_element()
     }
 
@@ -15154,7 +15111,7 @@ impl Render for Workspace {
                 root
             })
             .when(self.lsp_menu_open, |container| {
-                use gpui::{Anchor, anchored, point};
+                use gpui::{Anchor, point};
                 let ui_theme = cx.global::<nucleotide_ui::Theme>();
                 let dd_tokens = ui_theme.tokens.dropdown_tokens();
 
@@ -15306,7 +15263,7 @@ impl Render for Workspace {
                             }),
                         )
                         .child(
-                            anchored()
+                            gpui::anchored()
                                 .position(point(px(x), px(y)))
                                 .anchor(Anchor::BottomLeft)
                                 .offset(point(px(0.0), px(4.0)))
