@@ -320,7 +320,6 @@ impl Render for ConfirmDialogView {
 
         FocusTraversal::new(
             div()
-                .key_context(CONFIRM_DIALOG_CONTEXT)
                 .track_focus(&self.focus_handle)
                 .occlude()
                 .bg(tokens.chrome.surface)
@@ -350,6 +349,7 @@ impl Render for ConfirmDialogView {
                         .child(confirm_button),
                 ),
         )
+        .key_context(CONFIRM_DIALOG_CONTEXT)
     }
 }
 
