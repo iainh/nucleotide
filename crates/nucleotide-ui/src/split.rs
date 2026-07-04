@@ -257,6 +257,7 @@ pub fn sidebar_split<L: IntoElement, R: IntoElement>(
         .flex()
         .relative()
         .w_full()
+        .h_full()
         .flex_1()
         .min_h(px(0.0)) // allow vertical shrink inside column parents
         .on_mouse_move({
