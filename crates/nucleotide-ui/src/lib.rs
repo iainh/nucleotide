@@ -106,7 +106,7 @@ pub use context_menu::{
     ContextMenu, ContextMenuCallbacks, ContextMenuEntry, ContextMenuState, render_context_menu,
 };
 pub use file_icon::FileIcon;
-pub use focus::{FocusCoordinator, FocusRole};
+pub use focus::{FocusCoordinator, FocusRole, FocusTraversal};
 pub use input::{Input, InputSize, InputVariant};
 pub use layout::{Panel, PanelVariant, StatusBar, Toolbar, WorkspaceChrome};
 pub use list_item::{

@@ -11,7 +11,7 @@ use gpui::{
 use crate::actions::dialog::{Cancel as CancelDialogAction, Confirm as ConfirmDialogAction};
 use crate::actions::focus::{FocusNext, FocusPrevious};
 use crate::modal_layer::{DismissDecision, ModalView};
-use crate::{Button, ButtonSize, ButtonVariant, ThemedContext};
+use crate::{Button, ButtonSize, ButtonVariant, FocusTraversal, ThemedContext};
 
 type OverlayHandler = Box<dyn Fn(&MouseDownEvent, &mut Window, &mut App) + 'static>;
 
@@ -447,16 +447,6 @@ impl ConfirmDialogView {
         self.emit_confirmed(cx);
         cx.stop_propagation();
     }
-
-    fn focus_next(&mut self, _: &FocusNext, window: &mut Window, cx: &mut Context<Self>) {
-        window.focus_next(cx);
-        cx.stop_propagation();
-    }
-
-    fn focus_previous(&mut self, _: &FocusPrevious, window: &mut Window, cx: &mut Context<Self>) {
-        window.focus_prev(cx);
-        cx.stop_propagation();
-    }
 }
 
 impl Focusable for ConfirmDialogView {
@@ -506,38 +496,38 @@ impl Render for ConfirmDialogView {
                     cx.stop_propagation();
                 }));
 
-        div()
-            .key_context(CONFIRM_DIALOG_CONTEXT)
-            .track_focus(&self.focus_handle)
-            .occlude()
-            .bg(tokens.chrome.surface)
-            .border_1()
-            .border_color(tokens.chrome.border_default)
-            .rounded(tokens.sizes.radius_lg)
-            .shadow(vec![
-                tokens.chrome.shadow_lg.to_box_shadow(false),
-                tokens.chrome.inset_highlight.to_box_shadow(true),
-            ])
-            .w(self.dialog.width)
-            .p(tokens.sizes.space_4)
-            .flex()
-            .flex_col()
-            .gap(tokens.sizes.space_3)
-            .on_action(cx.listener(Self::confirm))
-            .on_action(cx.listener(Self::cancel))
-            .on_action(cx.listener(Self::focus_next))
-            .on_action(cx.listener(Self::focus_previous))
-            .on_any_mouse_down(|_, _, cx| cx.stop_propagation())
-            .child(
-                DialogHeader::new()
-                    .child(DialogTitle::new().child(self.dialog.title.clone()))
-                    .child(DialogDescription::new().child(self.dialog.message.clone())),
-            )
-            .child(
-                DialogFooter::new()
-                    .child(cancel_button)
-                    .child(confirm_button),
-            )
+        FocusTraversal::new(
+            div()
+                .key_context(CONFIRM_DIALOG_CONTEXT)
+                .track_focus(&self.focus_handle)
+                .occlude()
+                .bg(tokens.chrome.surface)
+                .border_1()
+                .border_color(tokens.chrome.border_default)
+                .rounded(tokens.sizes.radius_lg)
+                .shadow(vec![
+                    tokens.chrome.shadow_lg.to_box_shadow(false),
+                    tokens.chrome.inset_highlight.to_box_shadow(true),
+                ])
+                .w(self.dialog.width)
+                .p(tokens.sizes.space_4)
+                .flex()
+                .flex_col()
+                .gap(tokens.sizes.space_3)
+                .on_action(cx.listener(Self::confirm))
+                .on_action(cx.listener(Self::cancel))
+                .on_any_mouse_down(|_, _, cx| cx.stop_propagation())
+                .child(
+                    DialogHeader::new()
+                        .child(DialogTitle::new().child(self.dialog.title.clone()))
+                        .child(DialogDescription::new().child(self.dialog.message.clone())),
+                )
+                .child(
+                    DialogFooter::new()
+                        .child(cancel_button)
+                        .child(confirm_button),
+                ),
+        )
     }
 }
 

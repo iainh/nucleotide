@@ -3,7 +3,12 @@
 
 use std::sync::{Arc, RwLock};
 
-use gpui::{App, FocusHandle, Window};
+use gpui::{
+    AnyElement, App, FocusHandle, InteractiveElement, IntoElement, ParentElement, RenderOnce,
+    Styled, Window, div,
+};
+
+use crate::actions::focus::{FocusNext, FocusPrevious};
 
 /// Focus role registry for common UI areas.
 ///
@@ -156,8 +161,40 @@ pub enum FocusRole {
     FileTree,
 }
 
+/// Wraps a focus scope with standard Tab and Shift-Tab traversal actions.
+#[derive(IntoElement)]
+pub struct FocusTraversal {
+    child: AnyElement,
+}
+
+impl FocusTraversal {
+    pub fn new(child: impl IntoElement) -> Self {
+        Self {
+            child: child.into_any_element(),
+        }
+    }
+}
+
+impl RenderOnce for FocusTraversal {
+    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+        div()
+            .size_full()
+            .on_action(|_: &FocusNext, window, cx| {
+                window.focus_next(cx);
+                cx.stop_propagation();
+            })
+            .on_action(|_: &FocusPrevious, window, cx| {
+                window.focus_prev(cx);
+                cx.stop_propagation();
+            })
+            .child(self.child)
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use gpui::{Context, ParentElement as _, Render, TestAppContext, div, px};
+
     use super::*;
 
     #[test]
@@ -171,5 +208,56 @@ mod tests {
         assert!(coordinator.picker_focus().is_none());
         assert!(coordinator.prompt_focus().is_none());
         assert!(coordinator.completion_focus().is_none());
+    }
+
+    struct FocusTraversalHarness {
+        first: FocusHandle,
+        second: FocusHandle,
+    }
+
+    impl FocusTraversalHarness {
+        fn new(cx: &mut Context<Self>) -> Self {
+            Self {
+                first: cx.focus_handle().tab_index(1).tab_stop(true),
+                second: cx.focus_handle().tab_index(2).tab_stop(true),
+            }
+        }
+    }
+
+    impl Render for FocusTraversalHarness {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            FocusTraversal::new(
+                div()
+                    .size_full()
+                    .child(
+                        div()
+                            .id("focus-traversal-first")
+                            .track_focus(&self.first)
+                            .size(px(1.0)),
+                    )
+                    .child(
+                        div()
+                            .id("focus-traversal-second")
+                            .track_focus(&self.second)
+                            .size(px(1.0)),
+                    ),
+            )
+        }
+    }
+
+    #[gpui::test]
+    fn focus_traversal_handles_next_and_previous(cx: &mut TestAppContext) {
+        let (harness, cx) = cx.add_window_view(|_, cx| FocusTraversalHarness::new(cx));
+        let (first, second) = harness.read_with(cx, |harness, _| {
+            (harness.first.clone(), harness.second.clone())
+        });
+
+        cx.update(|window, cx| {
+            window.focus(&first, cx);
+            first.dispatch_action(&FocusNext, window, cx);
+            assert!(second.is_focused(window));
+            second.dispatch_action(&FocusPrevious, window, cx);
+            assert!(first.is_focused(window));
+        });
     }
 }
