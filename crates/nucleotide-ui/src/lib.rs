@@ -22,8 +22,8 @@ pub mod context_menu;
 pub mod debouncer;
 pub mod file_icon;
 pub mod focus;
-#[doc(hidden)]
-pub mod global_input;
+#[cfg(test)]
+mod global_input;
 pub mod info_box;
 pub mod input;
 pub mod key_hint_view;

@@ -1,6 +1,8 @@
 // ABOUTME: Focus role registry and legacy input-dispatch scaffolding.
 // ABOUTME: New app UI should prefer GPUI actions and component-owned key contexts.
 
+#![allow(dead_code)]
+
 use crate::providers::Provider;
 use crate::providers::event_provider::{
     EventHandlingProvider, EventPriority, EventResult, KeyboardEventListener,

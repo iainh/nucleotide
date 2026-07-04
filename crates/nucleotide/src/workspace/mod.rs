@@ -12919,9 +12919,6 @@ impl Workspace {
         cx.notify();
     }
 
-    // /// Handle keyboard shortcuts detected by the global input system (full processing)
-    // removed unused handle_global_input_shortcuts
-
     // === Action Handler Implementations ===
 
     /// Focus the main editor area
