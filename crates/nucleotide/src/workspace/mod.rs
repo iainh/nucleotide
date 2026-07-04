@@ -45,8 +45,8 @@ use nucleotide_ui::notification::{StatusBarNotification, StatusBarNotificationSe
 use nucleotide_ui::scrollbar::{Scrollbar, ScrollbarState};
 use nucleotide_ui::{
     AboutWindow, Button, ButtonSize, ButtonVariant, ConfirmDialog, ConfirmDialogEvent,
-    ConfirmDialogView, ContextMenuController, MarkdownStyle, ModalLayer, PopupMenu,
-    ResizeDragController, Tooltipped, completion_menu_action_for_key, markdown_extended,
+    ConfirmDialogView, ContextMenuController, MarkdownStyle, ModalLayer, PopupMenu, Tooltipped,
+    completion_menu_action_for_key, markdown_extended,
 };
 
 use crate::input_coordinator::{FocusGroup, InputContext, InputCoordinator};
@@ -1383,7 +1383,6 @@ pub struct Workspace {
     show_file_tree: bool,
     file_tree_width: f32,
     file_tree_width_override: Option<f32>,
-    file_tree_resize: ResizeDragController,
     doc_sidebar_visible: bool,
     doc_sidebar_loading: bool,
     doc_sidebar_entries: Vec<HoverDocEntry>,
@@ -5287,7 +5286,6 @@ impl Workspace {
             show_file_tree: true,
             file_tree_width: FILE_TREE_DEFAULT_WIDTH,
             file_tree_width_override: None,
-            file_tree_resize: ResizeDragController::new(),
             doc_sidebar_visible: false,
             doc_sidebar_loading: false,
             doc_sidebar_entries: Vec::new(),
@@ -6166,12 +6164,6 @@ impl Workspace {
         cx.notify();
     }
 
-    fn finish_file_tree_resize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.file_tree_resize.finish() {
-            self.request_standard_cursor_restore(window, cx);
-        }
-    }
-
     fn close_documentation_sidebar(&mut self, cx: &mut Context<Self>) {
         if self.doc_sidebar_visible || self.doc_sidebar_loading {
             self.doc_sidebar_visible = false;
@@ -6209,7 +6201,7 @@ impl Workspace {
     }
 
     fn finish_active_resize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let mut finished = self.file_tree_resize.finish();
+        let mut finished = false;
 
         if self.split_pane_resize.take().is_some() {
             if self.view_manager.focused_view_id().is_some() {
@@ -6283,40 +6275,6 @@ impl Workspace {
 
         if let Some(override_width) = &mut self.file_tree_width_override {
             *override_width = self.file_tree_width;
-        }
-    }
-
-    fn file_tree_resize_width_for_drag(
-        drag: &ResizeDragController,
-        mouse_x: f32,
-        viewport_width: f32,
-    ) -> Option<f32> {
-        drag.horizontal_value(
-            mouse_x,
-            FILE_TREE_MIN_WIDTH,
-            Self::max_file_tree_width(viewport_width),
-        )
-    }
-
-    fn update_file_tree_resize(
-        &mut self,
-        mouse_x: f32,
-        viewport_width: f32,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let Some(new_width) =
-            Self::file_tree_resize_width_for_drag(&self.file_tree_resize, mouse_x, viewport_width)
-        else {
-            return false;
-        };
-
-        if (self.file_tree_width - new_width).abs() > 0.5 {
-            self.file_tree_width = new_width;
-            self.file_tree_width_override = Some(new_width);
-            cx.notify();
-            true
-        } else {
-            false
         }
     }
 
@@ -14846,7 +14804,7 @@ impl Render for Workspace {
             }));
 
         // Add resize cursor and listeners only while resizing to reduce event overhead
-        if self.file_tree_resize.is_dragging() || self.split_pane_resize.is_some() {
+        if self.split_pane_resize.is_some() {
             workspace_div = workspace_div.capture_any_mouse_up(cx.listener(
                 |workspace, event: &MouseUpEvent, window, cx| {
                     if event.button == MouseButton::Left {
@@ -14855,35 +14813,6 @@ impl Render for Workspace {
                     }
                 },
             ));
-        }
-        if self.file_tree_resize.is_dragging() {
-            workspace_div = workspace_div
-                .cursor(gpui::CursorStyle::ResizeLeftRight)
-                .on_mouse_move(
-                    cx.listener(|workspace, event: &MouseMoveEvent, window, cx| {
-                        if event.dragging()
-                            && workspace.update_file_tree_resize(
-                                f32::from(event.position.x),
-                                f32::from(window.viewport_size().width),
-                                cx,
-                            )
-                        {
-                            window.refresh();
-                        }
-                    }),
-                )
-                .on_mouse_up(
-                    MouseButton::Left,
-                    cx.listener(|workspace, _event: &MouseUpEvent, window, cx| {
-                        workspace.finish_file_tree_resize(window, cx);
-                    }),
-                )
-                .on_mouse_up_out(
-                    MouseButton::Left,
-                    cx.listener(|workspace, _event: &MouseUpEvent, window, cx| {
-                        workspace.finish_file_tree_resize(window, cx);
-                    }),
-                );
         }
         if let Some(split_resize) = &self.split_pane_resize {
             let cursor = match split_resize.axis {
@@ -15523,43 +15452,29 @@ impl Render for Workspace {
             };
 
             if self.show_file_tree {
-                let handle_hit_w = SPLIT_PANE_HANDLE_HITBOX_PX;
                 let viewport_w = f32::from(window.viewport_size().width);
                 let max_left = Self::max_file_tree_width(viewport_w);
+                let default_width = Self::clamped_file_tree_default_width(viewport_w);
+                let on_change_file_tree_width = {
+                    let entity = cx.entity().clone();
+                    move |new_width: f32, app_cx: &mut gpui::App| {
+                        entity.update(app_cx, |this: &mut Workspace, cx| {
+                            let next_override =
+                                ((new_width - default_width).abs() > 0.5).then_some(new_width);
+                            let changed = (this.file_tree_width - new_width).abs() > 0.5
+                                || this.file_tree_width_override != next_override;
 
-                let overlay_bg_w = (self.file_tree_width).clamp(0.0, max_left);
+                            this.file_tree_width = new_width;
+                            this.file_tree_width_override = next_override;
 
-                // Root container handling drag to resize
-                let mut container = div()
-                    .relative()
-                    .w_full()
-                    .h(content_max_h)
-                    .min_h(px(0.0))
-                    .on_mouse_move(cx.listener(
-                        move |this: &mut Workspace, ev: &MouseMoveEvent, window, cx| {
-                            if ev.dragging()
-                                && this.update_file_tree_resize(
-                                    f32::from(ev.position.x),
-                                    f32::from(window.viewport_size().width),
-                                    cx,
-                                )
-                            {
-                                window.refresh();
+                            if changed {
+                                cx.notify();
                             }
-                        },
-                    ))
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(|this: &mut Workspace, _ev: &MouseUpEvent, window, cx| {
-                            this.finish_file_tree_resize(window, cx);
-                        }),
-                    )
-                    .on_mouse_up_out(
-                        MouseButton::Left,
-                        cx.listener(|this: &mut Workspace, _ev: &MouseUpEvent, window, cx| {
-                            this.finish_file_tree_resize(window, cx);
-                        }),
-                    );
+                        });
+                    }
+                };
+
+                let mut container = div().relative().w_full().h(content_max_h).min_h(px(0.0));
 
                 // Left file tree content
                 let file_tree_top_inset = file_tree_content_top_inset(native_sidebar_enabled);
@@ -15574,13 +15489,7 @@ impl Render for Workspace {
                 let file_tree_background = file_tree_tokens.background;
                 let file_tree_top_inset_background =
                     native_sidebar_enabled.then_some(file_tree_background);
-                let mut file_tree_container = div()
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .w(px(overlay_bg_w))
-                    .h(content_max_h)
-                    .min_h(px(0.0));
+                let mut file_tree_container = div().w_full().h_full().min_h(px(0.0));
                 if let Some(file_tree) = &self.file_tree {
                     file_tree_container = file_tree_container.child(
                         div()
@@ -15631,71 +15540,17 @@ impl Render for Workspace {
                             ),
                     );
                 }
-                container = container.child(file_tree_container);
 
-                // Right content area positioned after the file tree.
-                container = container.child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .left(px(self.file_tree_width))
-                        .right_0()
-                        .h(content_max_h)
-                        .min_h(px(0.0))
-                        .child(right),
-                );
-
-                // Vertical handle at the boundary. Render it after both panes
-                // so the symmetric hitbox is not covered by either side.
-                container = container.child(
-                    nucleotide_ui::splitter(
-                        "file-tree-resize-handle",
-                        nucleotide_ui::SplitterAxis::Vertical,
-                        handle_hit_w,
-                    )
-                    .absolute()
-                    .top_0()
-                    .left(px(self.file_tree_width - handle_hit_w * 0.5))
-                    .h(content_max_h)
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(
-                            move |this: &mut Workspace, ev: &MouseDownEvent, window, cx| {
-                                if ev.click_count >= 2 {
-                                    let viewport_w = f32::from(window.viewport_size().width);
-                                    let snap = Self::clamped_file_tree_default_width(viewport_w);
-                                    this.file_tree_width_override = None;
-                                    if (this.file_tree_width - snap).abs() > 0.5 {
-                                        this.file_tree_width = snap;
-                                        cx.notify();
-                                    }
-                                    window.refresh();
-                                    cx.stop_propagation();
-                                    return;
-                                }
-                                this.file_tree_resize
-                                    .begin_from_mouse_down(ev, this.file_tree_width);
-                                cx.notify();
-                                window.refresh();
-                                cx.stop_propagation();
-                            },
-                        ),
-                    )
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(|this: &mut Workspace, _ev: &MouseUpEvent, window, cx| {
-                            this.finish_file_tree_resize(window, cx);
-                            cx.stop_propagation();
-                        }),
-                    )
-                    .on_mouse_up_out(
-                        MouseButton::Left,
-                        cx.listener(|this: &mut Workspace, _ev: &MouseUpEvent, window, cx| {
-                            this.finish_file_tree_resize(window, cx);
-                            cx.stop_propagation();
-                        }),
-                    ),
-                );
+                container = container.child(nucleotide_ui::sidebar_split(
+                    self.file_tree_width,
+                    FILE_TREE_MIN_WIDTH,
+                    max_left,
+                    SPLIT_PANE_HANDLE_HITBOX_PX,
+                    FILE_TREE_DEFAULT_WIDTH,
+                    on_change_file_tree_width,
+                    file_tree_container,
+                    right,
+                ));
 
                 if self.file_tree_context_menu.is_open() {
                     container = container.child(
@@ -19477,26 +19332,19 @@ mod tests {
     }
 
     #[test]
-    fn file_tree_resize_width_tracks_mouse_and_clamps_to_bounds() {
-        let drag = ResizeDragController::new();
+    fn file_tree_width_clamps_to_available_space() {
         assert_eq!(
-            Workspace::file_tree_resize_width_for_drag(&drag, 360.0, 1000.0),
-            None
+            Workspace::max_file_tree_width(1000.0),
+            1000.0 - FILE_TREE_MIN_EDITOR_WIDTH
         );
-
-        drag.begin(300.0, 0.0, 250.0);
-
+        assert_eq!(Workspace::max_file_tree_width(200.0), FILE_TREE_MIN_WIDTH);
         assert_eq!(
-            Workspace::file_tree_resize_width_for_drag(&drag, 360.0, 1000.0),
-            Some(310.0)
+            Workspace::clamped_file_tree_sidebar_width(10.0, 1000.0),
+            FILE_TREE_MIN_WIDTH
         );
         assert_eq!(
-            Workspace::file_tree_resize_width_for_drag(&drag, 100.0, 1000.0),
-            Some(FILE_TREE_MIN_WIDTH)
-        );
-        assert_eq!(
-            Workspace::file_tree_resize_width_for_drag(&drag, 1200.0, 1000.0),
-            Some(800.0)
+            Workspace::clamped_file_tree_sidebar_width(1200.0, 1000.0),
+            1000.0 - FILE_TREE_MIN_EDITOR_WIDTH
         );
     }
 
