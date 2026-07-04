@@ -350,6 +350,110 @@ pub fn sidebar_split<L: IntoElement, R: IntoElement>(
     )
 }
 
+/// A right sidebar split with flexible main content and a fixed-width right pane.
+/// - `width_px`: current right pane width in pixels
+/// - `min_px`/`max_px`: constraints for the right pane
+/// - `handle_px`: drag handle hit target; the visible separator remains 1px
+/// - `on_change`: callback invoked with the new width during drag
+/// - `default_px`: width to snap to on double-click
+#[allow(clippy::too_many_arguments)]
+pub fn right_sidebar_split<L: IntoElement, R: IntoElement>(
+    width_px: f32,
+    min_px: f32,
+    max_px: f32,
+    handle_px: f32,
+    default_px: f32,
+    on_change: impl Fn(f32, &mut App) + 'static,
+    left: L,
+    right: R,
+) -> impl IntoElement {
+    let drag = ResizeDragController::new();
+    let min_px = min_px.max(0.0);
+    let max_px = if max_px < min_px { min_px } else { max_px };
+    let width_px = width_px.clamp(min_px, max_px);
+    let on_change = Rc::new(on_change);
+
+    let mut root = div()
+        .flex()
+        .relative()
+        .size_full()
+        .min_h(px(0.0))
+        .on_mouse_move({
+            let drag = drag.clone();
+            let on_change = on_change.clone();
+            move |ev: &MouseMoveEvent, window: &mut Window, cx: &mut App| {
+                if ev.dragging()
+                    && let Some(new_w) = drag.left_edge_value_from_mouse_move(ev, min_px, max_px)
+                {
+                    on_change(new_w, cx);
+                    window.refresh();
+                }
+            }
+        })
+        .on_mouse_up(MouseButton::Left, {
+            let drag = drag.clone();
+            move |_ev: &MouseUpEvent, window: &mut Window, _cx: &mut App| {
+                drag.finish_with_refresh(window);
+            }
+        })
+        .on_mouse_up_out(MouseButton::Left, {
+            let drag = drag.clone();
+            move |_ev: &MouseUpEvent, window: &mut Window, _cx: &mut App| {
+                drag.finish_with_refresh(window);
+            }
+        });
+
+    root = root.child(
+        div()
+            .flex_1()
+            .h_full()
+            .min_h(px(0.0))
+            .overflow_hidden()
+            .child(left),
+    );
+
+    root = root.child(
+        div()
+            .w(px(width_px))
+            .h_full()
+            .flex_shrink_0()
+            .min_h(px(0.0))
+            .child(right),
+    );
+
+    if let Some(handle_hit_w) = resize_handle_hitbox_px(handle_px) {
+        root = root.child(
+            splitter(
+                "right-sidebar-resize-handle",
+                SplitterAxis::Vertical,
+                handle_px,
+            )
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .right(px(width_px - handle_hit_w * 0.5))
+            .on_mouse_down(MouseButton::Left, {
+                let drag = drag.clone();
+                let on_change = on_change.clone();
+                move |ev: &MouseDownEvent, window: &mut Window, cx: &mut App| {
+                    if ev.click_count >= 2 {
+                        on_change(default_px.clamp(min_px, max_px), cx);
+                        window.refresh();
+                        cx.stop_propagation();
+                        return;
+                    }
+
+                    drag.begin_from_mouse_down(ev, width_px);
+                    window.refresh();
+                    cx.stop_propagation();
+                }
+            }),
+        );
+    }
+
+    root
+}
+
 /// A bottom-docked panel with a draggable top edge.
 /// - `height_px`: current panel height
 /// - `min_px`/`max_px`: constraints for the panel height
