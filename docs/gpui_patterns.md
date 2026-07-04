@@ -54,9 +54,9 @@ the component that owns the focused surface.
 the editor, file tree, and overlays. It should not grow per-widget navigation
 rules that belong in a focused component's actions.
 
-`nucleotide_ui::global_input::GlobalInputDispatcher` is legacy scaffolding and
-is not wired into the app. Do not register new shortcuts, dismiss handlers, or
-focus groups there.
+`nucleotide_ui::global_input` is hidden legacy scaffolding and is not wired into
+the app. Do not register new shortcuts, dismiss handlers, or focus groups there.
+Terminal byte translation uses `nucleotide_ui::terminal_keys` instead.
 
 ## Focus
 
