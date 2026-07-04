@@ -5928,7 +5928,8 @@ impl Workspace {
             ContextMenuState::new(self.tab_context_menu_pos, &entries)
                 .selected_index(self.tab_context_menu_index)
                 .min_width(px(220.0))
-                .focus_handle(self.context_menu_focus.clone()),
+                .focus_handle(self.context_menu_focus.clone())
+                .restore_focus_handle(self.focus_handle.clone()),
             cx,
             ContextMenuCallbacks {
                 on_item_select: |workspace: &mut Workspace,
@@ -5985,7 +5986,8 @@ impl Workspace {
                 .anchor(Anchor::TopRight)
                 .selected_index(self.tab_bar_split_menu_index)
                 .min_width(px(180.0))
-                .focus_handle(self.context_menu_focus.clone()),
+                .focus_handle(self.context_menu_focus.clone())
+                .restore_focus_handle(self.focus_handle.clone()),
             cx,
             ContextMenuCallbacks {
                 on_item_select: |workspace: &mut Workspace,
@@ -6038,7 +6040,8 @@ impl Workspace {
                 .selected_index(self.tab_bar_new_menu_index)
                 .offset(8.0, 8.0)
                 .min_width(px(200.0))
-                .focus_handle(self.context_menu_focus.clone()),
+                .focus_handle(self.context_menu_focus.clone())
+                .restore_focus_handle(self.focus_handle.clone()),
             cx,
             ContextMenuCallbacks {
                 on_item_select: |workspace: &mut Workspace,

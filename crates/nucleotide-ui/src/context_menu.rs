@@ -4,7 +4,8 @@
 use gpui::prelude::FluentBuilder;
 use gpui::{
     Anchor, Context, FocusHandle, InteractiveElement, IntoElement, MouseButton, ParentElement,
-    Pixels, SharedString, Styled, Window, anchored, div, point, px,
+    Pixels, SharedString, StatefulInteractiveElement, Styled, Window, accesskit::Role, anchored,
+    div, point, px,
 };
 
 use crate::ThemedContext;
@@ -64,6 +65,7 @@ pub struct ContextMenuState<'a, T> {
     pub min_width: Pixels,
     pub selected_index: usize,
     pub focus_handle: Option<FocusHandle>,
+    pub restore_focus_handle: Option<FocusHandle>,
     pub entries: &'a [ContextMenuEntry<T>],
 }
 
@@ -78,6 +80,7 @@ impl<'a, T> ContextMenuState<'a, T> {
             min_width: px(200.0),
             selected_index: 0,
             focus_handle: None,
+            restore_focus_handle: None,
             entries,
         }
     }
@@ -104,6 +107,11 @@ impl<'a, T> ContextMenuState<'a, T> {
 
     pub fn focus_handle(mut self, focus_handle: FocusHandle) -> Self {
         self.focus_handle = Some(focus_handle);
+        self
+    }
+
+    pub fn restore_focus_handle(mut self, focus_handle: FocusHandle) -> Self {
+        self.restore_focus_handle = Some(focus_handle);
         self
     }
 }
@@ -134,6 +142,10 @@ where
     let tokens = &cx.theme().tokens;
     let dropdown_tokens = tokens.dropdown_tokens();
     let focus_handle = state.focus_handle.clone();
+    let restore_focus_on_confirm = state.restore_focus_handle.clone();
+    let restore_focus_on_cancel = state.restore_focus_handle.clone();
+    let restore_focus_on_left_dismiss = state.restore_focus_handle.clone();
+    let restore_focus_on_right_dismiss = state.restore_focus_handle.clone();
     let item_count = state
         .entries
         .iter()
@@ -142,12 +154,15 @@ where
     let inner_radius = tokens.sizes.radius_md - px(0.5);
     let (x, y) = state.position;
     let (offset_x, offset_y) = state.offset;
-    let selected_index = state.selected_index;
+    let selected_index = normalized_selected_index(state.entries, state.selected_index);
     let next_index = next_enabled_action_index(state.entries, selected_index);
     let previous_index = previous_enabled_action_index(state.entries, selected_index);
     let selected_value = enabled_action_value(state.entries, selected_index);
 
     let popup = div()
+        .id("context-menu")
+        .role(Role::Menu)
+        .aria_label("Context menu")
         .bg(dropdown_tokens.container_background)
         .border_1()
         .border_color(dropdown_tokens.border)
@@ -184,12 +199,15 @@ where
             let value = *value;
             let label = label.clone();
             let disabled = *disabled;
-            let is_selected = state.selected_index == index;
+            let is_selected = selected_index == index;
             let is_first = index == 0;
             let is_last = index + 1 == item_count;
+            let restore_focus_on_item_activate = state.restore_focus_handle.clone();
 
             Some(
                 div()
+                    .id(("context-menu-item", index))
+                    .role(Role::MenuItem)
                     .w_full()
                     .when(is_selected && !disabled, |item| {
                         item.bg(dropdown_tokens.item_background_selected)
@@ -208,6 +226,10 @@ where
                             MouseButton::Left,
                             cx.listener(move |state, _event, window, cx| {
                                 window.prevent_default();
+                                if let Some(focus_handle) = restore_focus_on_item_activate.as_ref()
+                                {
+                                    focus_handle.focus(window, cx);
+                                }
                                 on_item_activate(state, value, window, cx);
                                 cx.stop_propagation();
                             }),
@@ -256,11 +278,17 @@ where
         }))
         .on_action(cx.listener(move |state, _: &Confirm, window, cx| {
             if let Some(value) = selected_value {
+                if let Some(focus_handle) = restore_focus_on_confirm.as_ref() {
+                    focus_handle.focus(window, cx);
+                }
                 on_item_activate(state, value, window, cx);
             }
             cx.stop_propagation();
         }))
         .on_action(cx.listener(move |state, _: &Cancel, window, cx| {
+            if let Some(focus_handle) = restore_focus_on_cancel.as_ref() {
+                focus_handle.focus(window, cx);
+            }
             on_dismiss(state, window, cx);
             cx.stop_propagation();
         }))
@@ -268,6 +296,9 @@ where
         .on_mouse_down(
             MouseButton::Left,
             cx.listener(move |state, _event, window, cx| {
+                if let Some(focus_handle) = restore_focus_on_left_dismiss.as_ref() {
+                    focus_handle.focus(window, cx);
+                }
                 on_dismiss(state, window, cx);
                 cx.stop_propagation();
             }),
@@ -275,6 +306,9 @@ where
         .on_mouse_down(
             MouseButton::Right,
             cx.listener(move |state, _event, window, cx| {
+                if let Some(focus_handle) = restore_focus_on_right_dismiss.as_ref() {
+                    focus_handle.focus(window, cx);
+                }
                 on_dismiss(state, window, cx);
                 cx.stop_propagation();
             }),
@@ -288,6 +322,21 @@ where
                 .child(popup),
         )
         .into_any_element()
+}
+
+fn normalized_selected_index<T: Copy>(
+    entries: &[ContextMenuEntry<T>],
+    selected_index: usize,
+) -> usize {
+    let Some(first_enabled) = next_enabled_action_index(entries, selected_index) else {
+        return selected_index;
+    };
+
+    if enabled_action_value(entries, selected_index).is_some() {
+        selected_index
+    } else {
+        first_enabled
+    }
 }
 
 fn next_enabled_action_index<T>(
@@ -375,6 +424,7 @@ mod tests {
 
     struct ContextMenuHarness {
         focus_handle: FocusHandle,
+        restore_focus_handle: FocusHandle,
         selected_index: usize,
         activated: Option<u8>,
         dismissed: bool,
@@ -385,6 +435,7 @@ mod tests {
         fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
             Self {
                 focus_handle: cx.focus_handle(),
+                restore_focus_handle: cx.focus_handle(),
                 selected_index: 0,
                 activated: None,
                 dismissed: false,
@@ -398,37 +449,46 @@ mod tests {
 
     impl Render for ContextMenuHarness {
         fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-            div().size_full().child(render_context_menu(
-                ContextMenuState::new((0.0, 0.0), &self.entries)
-                    .selected_index(self.selected_index)
-                    .focus_handle(self.focus_handle.clone()),
-                cx,
-                ContextMenuCallbacks {
-                    on_item_select:
-                        |harness: &mut ContextMenuHarness,
-                         index: usize,
-                         _window: &mut Window,
-                         cx: &mut Context<ContextMenuHarness>| {
-                            harness.selected_index = index;
-                            cx.notify();
-                        },
-                    on_item_activate:
-                        |harness: &mut ContextMenuHarness,
-                         value: u8,
-                         _window: &mut Window,
-                         cx: &mut Context<ContextMenuHarness>| {
-                            harness.activated = Some(value);
-                            cx.notify();
-                        },
-                    on_dismiss:
-                        |harness: &mut ContextMenuHarness,
-                         _window: &mut Window,
-                         cx: &mut Context<ContextMenuHarness>| {
-                            harness.dismissed = true;
-                            cx.notify();
-                        },
-                },
-            ))
+            div()
+                .size_full()
+                .child(
+                    div()
+                        .id("restore-focus")
+                        .track_focus(&self.restore_focus_handle)
+                        .size(px(1.0)),
+                )
+                .child(render_context_menu(
+                    ContextMenuState::new((0.0, 0.0), &self.entries)
+                        .selected_index(self.selected_index)
+                        .focus_handle(self.focus_handle.clone())
+                        .restore_focus_handle(self.restore_focus_handle.clone()),
+                    cx,
+                    ContextMenuCallbacks {
+                        on_item_select:
+                            |harness: &mut ContextMenuHarness,
+                             index: usize,
+                             _window: &mut Window,
+                             cx: &mut Context<ContextMenuHarness>| {
+                                harness.selected_index = index;
+                                cx.notify();
+                            },
+                        on_item_activate:
+                            |harness: &mut ContextMenuHarness,
+                             value: u8,
+                             _window: &mut Window,
+                             cx: &mut Context<ContextMenuHarness>| {
+                                harness.activated = Some(value);
+                                cx.notify();
+                            },
+                        on_dismiss:
+                            |harness: &mut ContextMenuHarness,
+                             _window: &mut Window,
+                             cx: &mut Context<ContextMenuHarness>| {
+                                harness.dismissed = true;
+                                cx.notify();
+                            },
+                    },
+                ))
         }
     }
 
@@ -443,7 +503,12 @@ mod tests {
     fn context_menu_handles_keyboard_actions(cx: &mut TestAppContext) {
         init_context_menu_test(cx);
         let (harness, cx) = cx.add_window_view(ContextMenuHarness::new);
-        let focus = harness.read_with(cx, |harness, _| harness.focus_handle.clone());
+        let (focus, restore_focus) = harness.read_with(cx, |harness, _| {
+            (
+                harness.focus_handle.clone(),
+                harness.restore_focus_handle.clone(),
+            )
+        });
 
         cx.update(|window, cx| {
             window.focus(&focus, cx);
@@ -462,6 +527,9 @@ mod tests {
             assert_eq!(harness.selected_index, 1);
             assert_eq!(harness.activated, Some(2));
             assert!(harness.dismissed);
+        });
+        cx.update(|window, _cx| {
+            assert!(restore_focus.is_focused(window));
         });
     }
 
@@ -493,5 +561,31 @@ mod tests {
         assert_eq!(previous_enabled_action_index(&entries, 0), Some(1));
         assert_eq!(enabled_action_value(&entries, 0), None);
         assert_eq!(enabled_action_value(&entries, 1), Some(2));
+        assert_eq!(normalized_selected_index(&entries, 0), 1);
+    }
+
+    #[gpui::test]
+    fn context_menu_confirms_first_enabled_action(cx: &mut TestAppContext) {
+        init_context_menu_test(cx);
+        let (harness, cx) = cx.add_window_view(ContextMenuHarness::new);
+        let focus = harness.read_with(cx, |harness, _| harness.focus_handle.clone());
+
+        harness.update(cx, |harness, cx| {
+            harness.entries = vec![
+                ContextMenuEntry::disabled_action(1, "Disabled"),
+                ContextMenuEntry::action(2, "Open"),
+            ];
+            harness.selected_index = 0;
+            cx.notify();
+        });
+
+        cx.update(|window, cx| {
+            window.focus(&focus, cx);
+            focus.dispatch_action(&Confirm, window, cx);
+        });
+
+        harness.read_with(cx, |harness, _| {
+            assert_eq!(harness.activated, Some(2));
+        });
     }
 }
