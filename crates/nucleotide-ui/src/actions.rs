@@ -201,6 +201,24 @@ pub mod dialog {
     actions!(dialog, [Confirm, Cancel,]);
 }
 
+pub mod remote_connection_manager {
+    use super::actions;
+
+    actions!(
+        remote_connection_manager,
+        [
+            Accept,
+            Cancel,
+            ToggleProtocol,
+            SelectPrevious,
+            SelectNext,
+            MoveCursorLeft,
+            MoveCursorRight,
+            DeleteChar,
+        ]
+    );
+}
+
 pub mod text_input {
     use super::actions;
 
