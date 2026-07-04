@@ -95,8 +95,6 @@ use nucleotide_vcs::{VcsEvent, VcsServiceHandle};
 #[cfg(target_os = "windows")]
 use smallvec::{SmallVec, smallvec};
 
-type FileTreeContextMenuHandler = fn(&mut Workspace, &mut Context<Workspace>);
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RemoteDocumentReloadDecision<D, V> {
     Reload { doc_id: D, view_id: V },
@@ -3913,21 +3911,6 @@ impl Workspace {
         ProjectTreeContextMenuIntent::common_file_operations()
     }
 
-    fn context_menu_handler(intent: ProjectTreeContextMenuIntent) -> FileTreeContextMenuHandler {
-        match intent {
-            ProjectTreeContextMenuIntent::NewFile => Workspace::cm_action_new_file,
-            ProjectTreeContextMenuIntent::NewFolder => Workspace::cm_action_new_folder,
-            ProjectTreeContextMenuIntent::Rename => Workspace::cm_action_rename,
-            ProjectTreeContextMenuIntent::Delete => Workspace::cm_action_delete,
-            ProjectTreeContextMenuIntent::Duplicate => Workspace::cm_action_duplicate,
-            ProjectTreeContextMenuIntent::CopyPath => Workspace::cm_action_copy_path,
-            ProjectTreeContextMenuIntent::CopyRelativePath => {
-                Workspace::cm_action_copy_relative_path
-            }
-            ProjectTreeContextMenuIntent::RevealInOs => Workspace::cm_action_reveal_in_os,
-        }
-    }
-
     #[cfg(test)]
     fn tab_context_menu_intents(
         has_file_path: bool,
@@ -5829,8 +5812,14 @@ impl Workspace {
                     if workspace.file_tree_context_menu.close() {
                         cx.notify();
                     }
-                    let handler_fn = Workspace::context_menu_handler(intent);
-                    handler_fn(workspace, cx);
+                    if let Some(path) = workspace.context_menu_path.clone() {
+                        workspace.handle_project_tree_operation(
+                            intent,
+                            path,
+                            workspace.context_menu_is_directory,
+                            cx,
+                        );
+                    }
                     cx.stop_propagation();
                 },
                 on_dismiss: |workspace: &mut Workspace,
@@ -6044,12 +6033,7 @@ impl Workspace {
         )
     }
 
-    // --- Context menu action handlers (stubs that close the menu and log) ---
-    fn close_context_menu(&mut self, cx: &mut Context<Self>) {
-        self.file_tree_context_menu.close();
-        cx.notify();
-    }
-
+    // --- Context menu helpers ---
     fn any_tab_bar_menu_open(&self) -> bool {
         self.tab_context_menu.is_open()
             || self.tab_bar_split_menu.is_open()
@@ -6067,12 +6051,6 @@ impl Workspace {
         closed |= self.tab_bar_split_menu.close();
         closed |= self.tab_bar_new_menu.close();
         closed
-    }
-
-    fn context_menu_target_parent(&self) -> Option<PathBuf> {
-        self.context_menu_path
-            .as_ref()
-            .map(|clicked| context_menu_target_parent_path(clicked, self.context_menu_is_directory))
     }
 
     fn dismiss_file_tree_context_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -6370,104 +6348,95 @@ impl Workspace {
         }
     }
 
-    fn cm_action_new_file(this: &mut Workspace, cx: &mut Context<Workspace>) {
-        if let Some(parent) = this.context_menu_target_parent() {
-            // Queue pending op and show prompt (overlay will emit CommandSubmitted)
-            this.pending_file_op = Some(PendingFileOp::NewFile { parent });
-            this.core.update(cx, |_core, cx| {
-                let prompt = crate::prompt::Prompt::native("New file name", "", |_input| {});
-                cx.emit(crate::Update::Prompt(prompt));
-            });
-        }
-        this.close_context_menu(cx);
-    }
-
-    fn cm_action_new_folder(this: &mut Workspace, cx: &mut Context<Workspace>) {
-        if let Some(parent) = this.context_menu_target_parent() {
-            this.pending_file_op = Some(PendingFileOp::NewFolder { parent });
-            this.core.update(cx, |_core, cx| {
-                let prompt = crate::prompt::Prompt::native("New folder name", "", |_input| {});
-                cx.emit(crate::Update::Prompt(prompt));
-            });
-        }
-        this.close_context_menu(cx);
-    }
-
-    fn cm_action_rename(this: &mut Workspace, cx: &mut Context<Workspace>) {
-        if let Some(path) = this.context_menu_path.clone() {
-            this.start_rename_file(path, this.context_menu_is_directory, cx);
-        }
-        this.close_context_menu(cx);
-    }
-
-    fn cm_action_delete(this: &mut Workspace, cx: &mut Context<Workspace>) {
-        if let Some(path) = this.context_menu_path.clone() {
-            this.request_delete_path(path, this.context_menu_is_directory, cx);
-        }
-        this.close_context_menu(cx);
-    }
-
-    fn cm_action_duplicate(this: &mut Workspace, cx: &mut Context<Workspace>) {
-        if let Some(path) = this.context_menu_path.clone() {
-            let base_name = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .map(|s| format!("{} copy", s))
-                .unwrap_or_else(|| "copy".to_string());
-            this.pending_file_op = Some(PendingFileOp::Duplicate {
-                path,
-                is_dir: this.context_menu_is_directory,
-            });
-            this.core.update(cx, move |_core, cx| {
-                let prompt = crate::prompt::Prompt::native("Duplicate as", base_name, |_input| {});
-                cx.emit(crate::Update::Prompt(prompt));
-            });
-        }
-        this.close_context_menu(cx);
-    }
-
-    fn cm_action_copy_path(this: &mut Workspace, cx: &mut Context<Workspace>) {
-        if let Some(path) = this.context_menu_path.clone() {
-            // Copy absolute path to clipboard
-            let text = path.display().to_string();
-            if !Self::copy_to_clipboard_impl(&text) {
-                nucleotide_logging::warn!(path=%text, "Failed to copy path to clipboard");
+    fn handle_project_tree_operation(
+        &mut self,
+        intent: ProjectTreeContextMenuIntent,
+        path: PathBuf,
+        is_directory: bool,
+        cx: &mut Context<Self>,
+    ) {
+        match intent {
+            ProjectTreeContextMenuIntent::NewFile => {
+                let parent = context_menu_target_parent_path(&path, is_directory);
+                self.pending_file_op = Some(PendingFileOp::NewFile { parent });
+                self.core.update(cx, |_core, cx| {
+                    let prompt = crate::prompt::Prompt::native("New file name", "", |_input| {});
+                    cx.emit(crate::Update::Prompt(prompt));
+                });
             }
-            // Optionally dispatch intent for telemetry/handlers
-            let event = nucleotide_events::v2::workspace::Event::FileOpRequested {
-                intent: nucleotide_events::v2::workspace::FileOpIntent::CopyPath {
+            ProjectTreeContextMenuIntent::NewFolder => {
+                let parent = context_menu_target_parent_path(&path, is_directory);
+                self.pending_file_op = Some(PendingFileOp::NewFolder { parent });
+                self.core.update(cx, |_core, cx| {
+                    let prompt = crate::prompt::Prompt::native("New folder name", "", |_input| {});
+                    cx.emit(crate::Update::Prompt(prompt));
+                });
+            }
+            ProjectTreeContextMenuIntent::Rename => {
+                self.start_rename_file(path, is_directory, cx);
+            }
+            ProjectTreeContextMenuIntent::Delete => {
+                self.request_delete_path(path, is_directory, cx);
+            }
+            ProjectTreeContextMenuIntent::Duplicate => {
+                let base_name = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|s| format!("{} copy", s))
+                    .unwrap_or_else(|| "copy".to_string());
+                self.pending_file_op = Some(PendingFileOp::Duplicate {
                     path,
-                    kind: nucleotide_events::v2::workspace::PathCopyKind::Absolute,
-                },
-            };
-            this.core.read(cx).dispatch_workspace_event(event);
-        }
-        this.close_context_menu(cx);
-    }
-
-    fn cm_action_copy_relative_path(this: &mut Workspace, cx: &mut Context<Workspace>) {
-        if let Some(path) = this.context_menu_path.clone() {
-            // Compute relative to current project root if available
-            let text = if let Some(root) = &this.current_project_root {
-                match path.strip_prefix(root) {
-                    Ok(rel) => rel.display().to_string(),
-                    Err(_) => path.display().to_string(),
+                    is_dir: is_directory,
+                });
+                self.core.update(cx, move |_core, cx| {
+                    let prompt =
+                        crate::prompt::Prompt::native("Duplicate as", base_name, |_input| {});
+                    cx.emit(crate::Update::Prompt(prompt));
+                });
+            }
+            ProjectTreeContextMenuIntent::CopyPath => {
+                let text = path.display().to_string();
+                if !Self::copy_to_clipboard_impl(&text) {
+                    nucleotide_logging::warn!(path=%text, "Failed to copy path to clipboard");
                 }
-            } else {
-                path.display().to_string()
-            };
-            if !Self::copy_to_clipboard_impl(&text) {
-                nucleotide_logging::warn!(path=%text, "Failed to copy relative path to clipboard");
+                let event = nucleotide_events::v2::workspace::Event::FileOpRequested {
+                    intent: nucleotide_events::v2::workspace::FileOpIntent::CopyPath {
+                        path,
+                        kind: nucleotide_events::v2::workspace::PathCopyKind::Absolute,
+                    },
+                };
+                self.core.read(cx).dispatch_workspace_event(event);
             }
-            let event = nucleotide_events::v2::workspace::Event::FileOpRequested {
-                intent: nucleotide_events::v2::workspace::FileOpIntent::CopyPath {
-                    path,
-                    kind: nucleotide_events::v2::workspace::PathCopyKind::RelativeToWorkspace,
-                },
-            };
-            this.core.read(cx).dispatch_workspace_event(event);
+            ProjectTreeContextMenuIntent::CopyRelativePath => {
+                let text = if let Some(root) = &self.current_project_root {
+                    match path.strip_prefix(root) {
+                        Ok(rel) => rel.display().to_string(),
+                        Err(_) => path.display().to_string(),
+                    }
+                } else {
+                    path.display().to_string()
+                };
+                if !Self::copy_to_clipboard_impl(&text) {
+                    nucleotide_logging::warn!(path=%text, "Failed to copy relative path to clipboard");
+                }
+                let event = nucleotide_events::v2::workspace::Event::FileOpRequested {
+                    intent: nucleotide_events::v2::workspace::FileOpIntent::CopyPath {
+                        path,
+                        kind: nucleotide_events::v2::workspace::PathCopyKind::RelativeToWorkspace,
+                    },
+                };
+                self.core.read(cx).dispatch_workspace_event(event);
+            }
+            ProjectTreeContextMenuIntent::RevealInOs => {
+                if self.warn_reveal_in_os_unavailable_for_remote(&path, cx) {
+                    return;
+                }
+                let event = nucleotide_events::v2::workspace::Event::FileOpRequested {
+                    intent: nucleotide_events::v2::workspace::FileOpIntent::RevealInOs { path },
+                };
+                self.core.read(cx).dispatch_workspace_event(event);
+            }
         }
-        this.close_context_menu(cx);
     }
 
     /// Best-effort clipboard copy using platform tools
@@ -6544,20 +6513,6 @@ impl Workspace {
             // Other platforms: not implemented
             false
         }
-    }
-
-    fn cm_action_reveal_in_os(this: &mut Workspace, cx: &mut Context<Workspace>) {
-        if let Some(path) = this.context_menu_path.clone() {
-            if this.warn_reveal_in_os_unavailable_for_remote(&path, cx) {
-                this.close_context_menu(cx);
-                return;
-            }
-            let event = nucleotide_events::v2::workspace::Event::FileOpRequested {
-                intent: nucleotide_events::v2::workspace::FileOpIntent::RevealInOs { path },
-            };
-            this.core.read(cx).dispatch_workspace_event(event);
-        }
-        this.close_context_menu(cx);
     }
 
     fn warn_reveal_in_os_unavailable_for_remote(
@@ -11485,8 +11440,12 @@ impl Workspace {
                 self.context_menu_is_directory = *is_directory;
                 cx.notify();
             }
-            FileTreeEvent::DeleteRequested { path, is_directory } => {
-                self.request_delete_path(path.clone(), *is_directory, cx);
+            FileTreeEvent::OperationRequested {
+                intent,
+                path,
+                is_directory,
+            } => {
+                self.handle_project_tree_operation(*intent, path.clone(), *is_directory, cx);
             }
             FileTreeEvent::FileSystemChanged { path, kind } => {
                 info!("File system change detected: {:?} - {:?}", path, kind);

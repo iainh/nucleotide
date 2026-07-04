@@ -12,6 +12,7 @@ pub mod watcher;
 pub use entry::{FileKind, FileTreeEntry};
 pub use icons::{get_file_icon, get_symlink_icon};
 // pub use project_header::{CompactProjectStatus, ProjectHeader, ProjectHeaderEvent};
+use sidebar::ProjectTreeContextMenuIntent;
 pub use tree::FileTree;
 pub use view::FileTreeView;
 pub use watcher::DebouncedFileTreeWatcher;
@@ -37,8 +38,12 @@ pub enum FileTreeEvent {
         x: f32,
         y: f32,
     },
-    /// Delete was requested for the selected file tree entry.
-    DeleteRequested { path: PathBuf, is_directory: bool },
+    /// A common project-tree file operation was requested for an entry.
+    OperationRequested {
+        intent: ProjectTreeContextMenuIntent,
+        path: PathBuf,
+        is_directory: bool,
+    },
     /// File system change detected
     FileSystemChanged {
         path: PathBuf,

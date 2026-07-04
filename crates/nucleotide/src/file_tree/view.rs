@@ -6,8 +6,9 @@ use crate::file_tree::{
     FileSystemEventKind, FileTree, FileTreeCollisionStrategy, FileTreeConfig,
     FileTreeDisplayDensity, FileTreeEntry, FileTreeEvent,
     sidebar::{
-        ProjectTreeDraggedEntry, ProjectTreeRow, ProjectTreeRowAction, ProjectTreeRowEvent,
-        ProjectTreeRowStyle, project_tree_entry_min_width, project_tree_entry_min_width_with_vcs,
+        ProjectTreeContextMenuIntent, ProjectTreeDraggedEntry, ProjectTreeRow,
+        ProjectTreeRowAction, ProjectTreeRowEvent, ProjectTreeRowStyle,
+        project_tree_entry_min_width, project_tree_entry_min_width_with_vcs,
         render_project_tree_row,
     },
 };
@@ -1277,8 +1278,12 @@ impl FileTreeView {
         }
     }
 
-    /// Request deletion for the selected entry. Workspace owns confirmation and execution.
-    pub fn request_delete_selected(&mut self, cx: &mut Context<Self>) {
+    /// Request a common project-tree operation for the selected entry.
+    pub fn request_selected_operation(
+        &mut self,
+        intent: ProjectTreeContextMenuIntent,
+        cx: &mut Context<Self>,
+    ) {
         let Some(path) = self.selected_path.clone() else {
             return;
         };
@@ -1287,10 +1292,16 @@ impl FileTreeView {
             return;
         };
 
-        cx.emit(FileTreeEvent::DeleteRequested {
+        cx.emit(FileTreeEvent::OperationRequested {
+            intent,
             path,
             is_directory: entry.is_directory(),
         });
+    }
+
+    /// Request deletion for the selected entry. Workspace owns confirmation and execution.
+    pub fn request_delete_selected(&mut self, cx: &mut Context<Self>) {
+        self.request_selected_operation(ProjectTreeContextMenuIntent::Delete, cx);
     }
 
     /// Select next entry
@@ -2543,7 +2554,7 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn delete_selected_emits_request_for_selected_file(cx: &mut TestAppContext) {
+    async fn delete_selected_emits_operation_request_for_selected_file(cx: &mut TestAppContext) {
         let temp_dir = tempfile::tempdir().unwrap();
         let root_path = temp_dir.path().to_path_buf();
         let file_path = root_path.join("main.rs");
@@ -2558,14 +2569,21 @@ mod tests {
         });
         cx.run_until_parked();
 
-        assert!(events.borrow().contains(&FileTreeEvent::DeleteRequested {
-            path: file_path,
-            is_directory: false,
-        }));
+        assert!(
+            events
+                .borrow()
+                .contains(&FileTreeEvent::OperationRequested {
+                    intent: ProjectTreeContextMenuIntent::Delete,
+                    path: file_path,
+                    is_directory: false,
+                })
+        );
     }
 
     #[gpui::test]
-    async fn delete_selected_emits_request_for_selected_directory(cx: &mut TestAppContext) {
+    async fn delete_selected_emits_operation_request_for_selected_directory(
+        cx: &mut TestAppContext,
+    ) {
         let temp_dir = tempfile::tempdir().unwrap();
         let root_path = temp_dir.path().to_path_buf();
         std::fs::create_dir(root_path.join("src")).unwrap();
@@ -2579,10 +2597,42 @@ mod tests {
         });
         cx.run_until_parked();
 
-        assert!(events.borrow().contains(&FileTreeEvent::DeleteRequested {
-            path: root_path,
-            is_directory: true,
-        }));
+        assert!(
+            events
+                .borrow()
+                .contains(&FileTreeEvent::OperationRequested {
+                    intent: ProjectTreeContextMenuIntent::Delete,
+                    path: root_path,
+                    is_directory: true,
+                })
+        );
+    }
+
+    #[gpui::test]
+    async fn selected_operation_emits_request_with_selected_entry(cx: &mut TestAppContext) {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root_path = temp_dir.path().to_path_buf();
+        let file_path = root_path.join("main.rs");
+        std::fs::write(&file_path, "fn main() {}\n").unwrap();
+
+        let view = cx.new(|cx| FileTreeView::new(root_path, test_config(), cx));
+        let events = subscribe_file_tree_events(cx, &view);
+
+        view.update(cx, |view, cx| {
+            view.select_path(Some(file_path.clone()), cx);
+            view.request_selected_operation(ProjectTreeContextMenuIntent::Rename, cx);
+        });
+        cx.run_until_parked();
+
+        assert!(
+            events
+                .borrow()
+                .contains(&FileTreeEvent::OperationRequested {
+                    intent: ProjectTreeContextMenuIntent::Rename,
+                    path: file_path,
+                    is_directory: false,
+                })
+        );
     }
 
     #[gpui::test]
@@ -3290,6 +3340,44 @@ impl Render for FileTreeView {
                     view.request_delete_selected(cx);
                 }),
             )
+            .on_action(
+                cx.listener(|view, _: &crate::actions::file_tree::Rename, _window, cx| {
+                    view.request_selected_operation(ProjectTreeContextMenuIntent::Rename, cx);
+                }),
+            )
+            .on_action(cx.listener(
+                |view, _: &crate::actions::file_tree::NewFile, _window, cx| {
+                    view.request_selected_operation(ProjectTreeContextMenuIntent::NewFile, cx);
+                },
+            ))
+            .on_action(cx.listener(
+                |view, _: &crate::actions::file_tree::NewFolder, _window, cx| {
+                    view.request_selected_operation(ProjectTreeContextMenuIntent::NewFolder, cx);
+                },
+            ))
+            .on_action(cx.listener(
+                |view, _: &crate::actions::file_tree::Duplicate, _window, cx| {
+                    view.request_selected_operation(ProjectTreeContextMenuIntent::Duplicate, cx);
+                },
+            ))
+            .on_action(cx.listener(
+                |view, _: &crate::actions::file_tree::CopyPath, _window, cx| {
+                    view.request_selected_operation(ProjectTreeContextMenuIntent::CopyPath, cx);
+                },
+            ))
+            .on_action(cx.listener(
+                |view, _: &crate::actions::file_tree::CopyRelativePath, _window, cx| {
+                    view.request_selected_operation(
+                        ProjectTreeContextMenuIntent::CopyRelativePath,
+                        cx,
+                    );
+                },
+            ))
+            .on_action(cx.listener(
+                |view, _: &crate::actions::file_tree::RevealInOs, _window, cx| {
+                    view.request_selected_operation(ProjectTreeContextMenuIntent::RevealInOs, cx);
+                },
+            ))
             .child(
                 // Zed-style: wrap the list row in a flex_1 container with min_h(0)
                 div()
