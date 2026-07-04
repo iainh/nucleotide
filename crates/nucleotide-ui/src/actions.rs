@@ -187,3 +187,27 @@ pub mod menu {
         ]
     );
 }
+
+pub mod text_input {
+    use super::actions;
+
+    actions!(
+        text_input,
+        [
+            Backspace,
+            Delete,
+            MoveLeft,
+            MoveRight,
+            SelectLeft,
+            SelectRight,
+            SelectAll,
+            MoveToStart,
+            MoveToEnd,
+            Paste,
+            Cut,
+            Copy,
+            Submit,
+            Cancel,
+        ]
+    );
+}
