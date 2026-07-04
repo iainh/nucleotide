@@ -4,8 +4,8 @@
 use gpui::prelude::FluentBuilder;
 use gpui::{
     App, Context, DismissEvent, EventEmitter, FocusHandle, Focusable, InteractiveElement,
-    IntoElement, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Task,
-    Window, div, px, relative,
+    IntoElement, KeyBinding, ParentElement, Render, SharedString, StatefulInteractiveElement,
+    Styled, Task, Window, div, px, relative,
 };
 use std::cmp::Ordering as CmpOrdering;
 use std::sync::Arc;
@@ -28,10 +28,28 @@ use crate::actions::completion::{
     CompletionSelectPrev,
 };
 
+pub(crate) const COMPLETION_CONTEXT: &str = "Completion";
 const COMPLETION_VISIBLE_ROWS: usize = 6;
 const COMPLETION_ROW_HEIGHT_PX: f32 = 32.0;
 const COMPLETION_LIST_MAX_HEIGHT_PX: f32 =
     COMPLETION_VISIBLE_ROWS as f32 * COMPLETION_ROW_HEIGHT_PX;
+
+pub(crate) fn init(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new("up", CompletionSelectPrev, Some(COMPLETION_CONTEXT)),
+        KeyBinding::new("down", CompletionSelectNext, Some(COMPLETION_CONTEXT)),
+        KeyBinding::new("ctrl-p", CompletionSelectPrev, Some(COMPLETION_CONTEXT)),
+        KeyBinding::new("ctrl-n", CompletionSelectNext, Some(COMPLETION_CONTEXT)),
+        KeyBinding::new("enter", CompletionConfirm, Some(COMPLETION_CONTEXT)),
+        KeyBinding::new("tab", CompletionConfirmAndStop, Some(COMPLETION_CONTEXT)),
+        KeyBinding::new("escape", CompletionDismiss, Some(COMPLETION_CONTEXT)),
+        KeyBinding::new("ctrl-g", CompletionDismiss, Some(COMPLETION_CONTEXT)),
+        KeyBinding::new("home", CompletionSelectFirst, Some(COMPLETION_CONTEXT)),
+        KeyBinding::new("end", CompletionSelectLast, Some(COMPLETION_CONTEXT)),
+        KeyBinding::new("pageup", CompletionPageUp, Some(COMPLETION_CONTEXT)),
+        KeyBinding::new("pagedown", CompletionPageDown, Some(COMPLETION_CONTEXT)),
+    ]);
+}
 
 /// Logical menu operations used by focused completion views and editor bridges.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2050,7 +2068,7 @@ impl Render for CompletionView {
         let container = div()
             .id("completion-popup-v2")
             .focusable()
-            .key_context("Completion")
+            .key_context(COMPLETION_CONTEXT)
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::dismiss_completion_action))
             .on_action(cx.listener(Self::confirm_completion_action))

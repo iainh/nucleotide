@@ -833,11 +833,7 @@ use nucleotide::actions::workspace::{
 };
 use nucleotide::actions::{
     common::{Cancel, Confirm, MoveDown, MoveLeft, MoveRight, MoveUp},
-    completion::{
-        CompletionConfirm, CompletionConfirmAndStop, CompletionDismiss, CompletionPageDown,
-        CompletionPageUp, CompletionSelectFirst, CompletionSelectLast, CompletionSelectNext,
-        CompletionSelectPrev, TriggerCompletion,
-    },
+    completion::TriggerCompletion,
     editor::{
         CancelRemoteConnection, CloseFile, Copy, DecreaseFontSize, IncreaseFontSize, OpenDirectory,
         OpenFile, OpenRemote, OpenSettings, Paste, Quit, ReconnectRemote, Redo,
@@ -1391,22 +1387,6 @@ fn gui_main(
                     gpui::KeyBinding::new("right", MoveRight, Some("Editor")),
                     gpui::KeyBinding::new("enter", Confirm, Some("Editor")),
                     gpui::KeyBinding::new("escape", Cancel, Some("Editor")),
-                ]);
-
-                // Completion-specific keybindings
-                cx.bind_keys([
-                    gpui::KeyBinding::new("up", CompletionSelectPrev, Some("Completion")),
-                    gpui::KeyBinding::new("down", CompletionSelectNext, Some("Completion")),
-                    gpui::KeyBinding::new("ctrl-p", CompletionSelectPrev, Some("Completion")),
-                    gpui::KeyBinding::new("ctrl-n", CompletionSelectNext, Some("Completion")),
-                    gpui::KeyBinding::new("enter", CompletionConfirm, Some("Completion")),
-                    gpui::KeyBinding::new("tab", CompletionConfirmAndStop, Some("Completion")),
-                    gpui::KeyBinding::new("escape", CompletionDismiss, Some("Completion")),
-                    gpui::KeyBinding::new("ctrl-g", CompletionDismiss, Some("Completion")),
-                    gpui::KeyBinding::new("home", CompletionSelectFirst, Some("Completion")),
-                    gpui::KeyBinding::new("end", CompletionSelectLast, Some("Completion")),
-                    gpui::KeyBinding::new("pageup", CompletionPageUp, Some("Completion")),
-                    gpui::KeyBinding::new("pagedown", CompletionPageDown, Some("Completion")),
                 ]);
 
                 #[cfg(any(target_os = "macos", target_os = "windows"))]
