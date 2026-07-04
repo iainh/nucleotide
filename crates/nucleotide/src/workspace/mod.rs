@@ -55,7 +55,7 @@ use nucleotide_ui::{
     Tooltipped, completion_menu_action_for_key, markdown_extended,
 };
 
-use crate::input_coordinator::{FocusGroup, InputContext, InputCoordinator};
+use crate::input_coordinator::{InputContext, InputCoordinator};
 use nucleotide_lsp::ServerStatus;
 
 use crate::application::{
@@ -4896,9 +4896,6 @@ impl Workspace {
 
         // Set initial focus restore state
         workspace.view_manager.set_needs_focus_restore(true);
-
-        // Register focus groups for main UI areas
-        workspace.register_focus_groups(cx);
 
         // Note: Completion handling is now done directly via event-driven approach
 
@@ -11666,50 +11663,6 @@ impl Workspace {
         self.info.update(cx, |info_box, info_cx| {
             info_box.handle_app_event(event, info_cx);
         });
-    }
-
-    /// Register focus groups for main UI areas with InputCoordinator
-    fn register_focus_groups(&mut self, cx: &mut Context<Self>) {
-        info!("Registering focus groups with InputCoordinator");
-
-        // Register editor focus group
-        self.input_coordinator.register_focus_group(
-            FocusGroup::Editor,
-            Some(self.focus_handle.clone()),
-            Some(Box::new(|| {
-                debug!("Editor focus group activated");
-            })),
-        );
-
-        // Register file tree focus group if available
-        if let Some(ref file_tree) = self.file_tree {
-            self.input_coordinator.register_focus_group(
-                FocusGroup::FileTree,
-                Some(file_tree.focus_handle(cx)),
-                Some(Box::new(|| {
-                    debug!("FileTree focus group activated");
-                })),
-            );
-        }
-
-        // Register overlay focus group
-        self.input_coordinator.register_focus_group(
-            FocusGroup::Overlays,
-            Some(self.overlay.focus_handle(cx)),
-            Some(Box::new(|| {
-                debug!("Overlays focus group activated");
-            })),
-        );
-
-        // Set editor and file tree as available if they exist
-        self.input_coordinator
-            .set_focus_group_available(FocusGroup::Editor, true);
-        if self.file_tree.is_some() && self.show_file_tree {
-            self.input_coordinator
-                .set_focus_group_available(FocusGroup::FileTree, true);
-        }
-
-        info!("Registered focus groups for main UI areas with InputCoordinator");
     }
 
     /// Manage completion input context based on completion state
