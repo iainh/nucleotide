@@ -1713,23 +1713,6 @@ impl OverlayView {
     }
 }
 
-// Translate a GPUI key event to terminal bytes suitable for PTY input.
-// Handles printable text, control keys, arrows/navigation and a subset of function keys.
-// For navigation keys, emit xterm-style modifier encodings (CSI 1;N <final> or CSI <num>;N ~)
-// where N = 1 + (Shift?1) + (Alt?2) + (Ctrl?4), avoiding an extra ESC prefix for Alt.
-#[cfg(not(feature = "terminal-emulator"))]
-pub(crate) fn translate_key_to_bytes(event: &gpui::KeyDownEvent) -> Vec<u8> {
-    crate::terminal_input::encode_key_event(event)
-}
-
-#[cfg(feature = "terminal-emulator")]
-pub(crate) fn translate_key_to_bytes_with_mode(
-    event: &gpui::KeyDownEvent,
-    mode: nucleotide_terminal::frame::TerminalInputMode,
-) -> Vec<u8> {
-    crate::terminal_input::encode_key_event_with_mode(event, mode)
-}
-
 /// Layout information for positioning UI elements relative to workspace
 #[derive(Debug, Clone, Copy, Default)]
 pub struct WorkspaceLayoutInfo {
@@ -2065,48 +2048,13 @@ impl Render for OverlayView {
                                 let maybe_id =
                                     this.terminal_panel.as_ref().map(|p| p.read(cx).active);
                                 if let Some(id) = maybe_id {
-                                    #[cfg(feature = "terminal-emulator")]
-                                    let bytes = {
-                                        let mode = nucleotide_terminal_view::get_view_model(id)
-                                            .and_then(|vm| {
-                                                vm.lock().ok().map(|guard| guard.input_mode())
-                                            })
-                                            .unwrap_or_default();
-                                        translate_key_to_bytes_with_mode(event, mode)
-                                    };
-                                    #[cfg(not(feature = "terminal-emulator"))]
-                                    let bytes = translate_key_to_bytes(event);
-                                    if !bytes.is_empty() {
-                                        // Snap scroll back to cursor when the user types
-                                        #[cfg(feature = "terminal-emulator")]
-                                        if let Some(vm) = nucleotide_terminal_view::get_view_model(id)
-                                            && let Ok(mut guard) = vm.lock()
-                                        {
-                                            guard.scroll_to_bottom();
-                                        }
-                                        // Fast path: send directly to PTY writer, bypassing event queue
-                                        #[cfg(feature = "terminal-emulator")]
-                                        let sent = core.read(cx).terminal_input_senders
-                                            .lock()
-                                            .ok()
-                                            .and_then(|senders| {
-                                                senders.get(&id).map(|tx| { let _ = tx.send(bytes.clone()); })
-                                            })
-                                            .is_some();
-                                        #[cfg(not(feature = "terminal-emulator"))]
-                                        let sent = false;
-                                        if !sent {
-                                            core.update(cx, |app, _| {
-                                                if let Some(bus) = &app.event_aggregator {
-                                                    bus.dispatch_terminal(
-                                                        nucleotide_events::v2::terminal::Event::Input {
-                                                            id,
-                                                            bytes,
-                                                        },
-                                                    );
-                                                }
-                                            });
-                                        }
+                                    let bytes =
+                                        crate::terminal_input::encode_key_event_for_terminal(
+                                            id, event,
+                                        );
+                                    if crate::terminal_input::send_terminal_input(
+                                        &core, id, bytes, cx,
+                                    ) {
                                         cx.stop_propagation();
                                     }
                                 }
