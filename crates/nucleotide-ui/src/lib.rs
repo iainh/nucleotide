@@ -11,7 +11,6 @@ pub mod completion_cache;
 pub mod completion_docs;
 pub mod completion_error;
 pub mod completion_icons;
-pub mod completion_keyboard;
 pub mod completion_perf;
 pub mod completion_popup;
 pub mod completion_renderer;
@@ -78,10 +77,6 @@ pub use completion_error::{
 pub use completion_icons::{
     CompletionIconConfig, create_completion_icon, create_themed_completion_icon,
     get_completion_icon_color, get_completion_icon_svg,
-};
-pub use completion_keyboard::{
-    CompletionAction, CompletionFocusManager, CompletionKeyboardHandler, KeyboardConfig,
-    KeyboardNavigationResult, TriggerDetector,
 };
 pub use completion_popup::{
     AvailableSpace, PopupConstraints, PopupPlacement, PopupPosition, PopupPositioner, SmartPopup,
