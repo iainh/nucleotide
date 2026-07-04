@@ -24,8 +24,8 @@ use gpui::{
     Anchor, App, AppContext, BorrowAppContext, Bounds, Context, DismissEvent, DragMoveEvent, Empty,
     Entity, EventEmitter, FocusHandle, Focusable, Hsla, InteractiveElement, IntoElement,
     KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels,
-    Point, Render, ScrollHandle, Size, StatefulInteractiveElement, Styled, TextStyle, Window,
-    WindowAppearance, canvas, div, img, px, relative, svg,
+    Point, Render, ScrollHandle, Size, StatefulInteractiveElement, Styled, Subscription, TextStyle,
+    Window, WindowAppearance, anchored, canvas, div, img, point, px, relative, svg,
 };
 use gpui::{FontFeatures, FontWeight};
 use helix_core::syntax::config::LanguageServerFeature;
@@ -46,8 +46,8 @@ use nucleotide_ui::scrollbar::{Scrollbar, ScrollbarState};
 use nucleotide_ui::{
     AboutWindow, Button, ButtonSize, ButtonVariant, ConfirmDialog, ConfirmDialogEvent,
     ConfirmDialogView, ContextMenuCallbacks, ContextMenuController, ContextMenuEntry,
-    MarkdownStyle, ModalLayer, ResizeDragController, Tooltipped, completion_menu_action_for_key,
-    markdown_extended, render_context_menu,
+    MarkdownStyle, ModalLayer, PopupMenu, ResizeDragController, Tooltipped,
+    completion_menu_action_for_key, markdown_extended, render_context_menu,
 };
 
 use crate::input_coordinator::{FocusGroup, InputContext, InputCoordinator};
@@ -1406,6 +1406,8 @@ pub struct Workspace {
     next_image_tab_index: u64,
     // File tree context menu state
     file_tree_context_menu: ContextMenuController,
+    file_tree_popup_menu: Option<Entity<PopupMenu>>,
+    file_tree_popup_menu_subscription: Option<Subscription>,
     context_menu_path: Option<std::path::PathBuf>,
     context_menu_is_directory: bool,
     // Tab context menu state
@@ -5323,6 +5325,8 @@ impl Workspace {
             active_image_tab_id: None,
             next_image_tab_index: 1,
             file_tree_context_menu: ContextMenuController::new(),
+            file_tree_popup_menu: None,
+            file_tree_popup_menu_subscription: None,
             context_menu_path: None,
             context_menu_is_directory: false,
             tab_context_menu: ContextMenuController::new(),
@@ -5774,62 +5778,80 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Render the file tree context menu anchored at the last click position
+    fn build_file_tree_popup_menu(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<PopupMenu> {
+        if let Some(menu) = self.file_tree_popup_menu.clone() {
+            return menu;
+        }
+
+        let action_context = self.focus_handle.clone();
+        let menu = PopupMenu::build(window, cx, move |mut menu, _window, _cx| {
+            menu = menu.action_context(action_context).min_w(px(200.0));
+            for intent in Workspace::context_menu_intents().iter().copied() {
+                menu = menu.menu(
+                    intent.label(),
+                    Box::new(crate::actions::project_tree::Operation { intent }),
+                );
+            }
+            menu
+        });
+
+        self.file_tree_popup_menu_subscription = Some(cx.subscribe(
+            &menu,
+            |workspace, _menu, _event: &DismissEvent, cx| {
+                workspace.close_file_tree_context_menu(cx);
+            },
+        ));
+        self.file_tree_popup_menu = Some(menu.clone());
+        menu
+    }
+
+    /// Render the file tree context menu anchored at the last click position.
     fn render_file_tree_context_menu(
-        &self,
+        &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        window.focus(&self.context_menu_focus, cx);
+        let menu = self.build_file_tree_popup_menu(window, cx);
+        let menu_focus = menu.read(cx).focus_handle(cx);
+        if !menu_focus.contains_focused(window, cx) {
+            menu_focus.focus(window, cx);
+        }
 
-        let entries = Self::context_menu_intents()
-            .iter()
-            .copied()
-            .map(|intent| ContextMenuEntry::action(intent, intent.label()))
-            .collect::<Vec<_>>();
+        let (x, y) = self.file_tree_context_menu.position();
 
-        render_context_menu(
-            self.file_tree_context_menu
-                .state(&entries)
-                .offset(8.0, 8.0)
-                .min_width(px(200.0))
-                .focus_handle(self.context_menu_focus.clone()),
-            cx,
-            ContextMenuCallbacks {
-                on_item_select: |workspace: &mut Workspace,
-                                 index: usize,
-                                 _window: &mut Window,
-                                 cx: &mut Context<Workspace>| {
-                    if workspace.file_tree_context_menu.select(index) {
-                        cx.notify();
-                    }
-                },
-                on_item_activate: |workspace: &mut Workspace,
-                                   intent: ProjectTreeContextMenuIntent,
-                                   window: &mut Window,
-                                   cx: &mut Context<Workspace>| {
-                    window.prevent_default();
-                    if workspace.file_tree_context_menu.close() {
-                        cx.notify();
-                    }
-                    if let Some(path) = workspace.context_menu_path.clone() {
-                        workspace.handle_project_tree_operation(
-                            intent,
-                            path,
-                            workspace.context_menu_is_directory,
-                            cx,
-                        );
-                    }
-                    cx.stop_propagation();
-                },
-                on_dismiss: |workspace: &mut Workspace,
-                             window: &mut Window,
-                             cx: &mut Context<Workspace>| {
+        div()
+            .absolute()
+            .size_full()
+            .top_0()
+            .left_0()
+            .occlude()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|workspace, _event, window, cx| {
                     workspace.dismiss_file_tree_context_menu(window, cx);
                     cx.stop_propagation();
-                },
-            },
-        )
+                }),
+            )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|workspace, _event, window, cx| {
+                    workspace.dismiss_file_tree_context_menu(window, cx);
+                    cx.stop_propagation();
+                }),
+            )
+            .child(
+                anchored()
+                    .position(point(px(x), px(y)))
+                    .anchor(Anchor::TopLeft)
+                    .offset(point(px(8.0), px(8.0)))
+                    .snap_to_window_with_margin(px(8.0))
+                    .child(div().occlude().child(menu)),
+            )
+            .into_any_element()
     }
 
     fn render_tab_context_menu(
@@ -6053,8 +6075,20 @@ impl Workspace {
         closed
     }
 
+    fn close_file_tree_context_menu(&mut self, cx: &mut Context<Self>) -> bool {
+        let closed = self.file_tree_context_menu.close();
+        let had_menu = self.file_tree_popup_menu.take().is_some();
+        let had_subscription = self.file_tree_popup_menu_subscription.take().is_some();
+        if closed || had_menu || had_subscription {
+            cx.notify();
+            true
+        } else {
+            false
+        }
+    }
+
     fn dismiss_file_tree_context_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.file_tree_context_menu.close() {
+        if !self.close_file_tree_context_menu(cx) {
             return;
         }
 
@@ -11383,6 +11417,8 @@ impl Workspace {
                     x, y, path
                 );
                 self.file_tree_context_menu.open_at((*x, *y));
+                self.file_tree_popup_menu = None;
+                self.file_tree_popup_menu_subscription = None;
                 self.context_menu_path = Some(path.clone());
                 self.context_menu_is_directory = *is_directory;
                 cx.notify();
@@ -15209,6 +15245,22 @@ impl Render for Workspace {
         workspace_div = workspace_div.on_action(cx.listener(
             move |workspace, _: &crate::actions::workspace::TogglePreviewTab, _window, cx| {
                 workspace.toggle_active_preview_tab(cx);
+            },
+        ));
+
+        workspace_div = workspace_div.on_action(cx.listener(
+            move |workspace, action: &crate::actions::project_tree::Operation, window, cx| {
+                window.prevent_default();
+                workspace.close_file_tree_context_menu(cx);
+                if let Some(path) = workspace.context_menu_path.clone() {
+                    workspace.handle_project_tree_operation(
+                        action.intent,
+                        path,
+                        workspace.context_menu_is_directory,
+                        cx,
+                    );
+                }
+                cx.stop_propagation();
             },
         ));
 
