@@ -99,9 +99,8 @@ pub use completion_v2::{
 };
 pub use component_gallery::ComponentGallery;
 pub use confirm_dialog::{
-    ConfirmDialog, ConfirmDialogCallbacks, ConfirmDialogEvent, ConfirmDialogView, Dialog,
-    DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
-    render_confirm_dialog,
+    ConfirmDialog, ConfirmDialogEvent, ConfirmDialogView, Dialog, DialogContent, DialogDescription,
+    DialogFooter, DialogHeader, DialogTitle,
 };
 pub use context_menu::ContextMenuController;
 pub use file_icon::FileIcon;

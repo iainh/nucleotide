@@ -391,11 +391,6 @@ impl ConfirmDialog {
     }
 }
 
-pub struct ConfirmDialogCallbacks<Cancel, Confirm> {
-    pub on_cancel: Cancel,
-    pub on_confirm: Confirm,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfirmDialogEvent {
     Cancelled,
@@ -529,57 +524,6 @@ impl Render for ConfirmDialogView {
                 ),
         )
     }
-}
-
-pub fn render_confirm_dialog<T, Cancel, Confirm>(
-    dialog: ConfirmDialog,
-    cx: &mut Context<T>,
-    callbacks: ConfirmDialogCallbacks<Cancel, Confirm>,
-) -> gpui::AnyElement
-where
-    T: 'static,
-    Cancel: Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
-    Confirm: Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
-{
-    let ConfirmDialogCallbacks {
-        on_cancel,
-        on_confirm,
-    } = callbacks;
-
-    let cancel_button = Button::new("confirm-dialog-cancel", dialog.cancel_label)
-        .variant(ButtonVariant::Secondary)
-        .size(ButtonSize::Small)
-        .activate_on_mouse_down()
-        .on_click(cx.listener(move |state, _event, window, cx| {
-            on_cancel(state, window, cx);
-        }));
-
-    let confirm_button = Button::new("confirm-dialog-confirm", dialog.confirm_label)
-        .variant(dialog.confirm_variant)
-        .size(ButtonSize::Small)
-        .activate_on_mouse_down()
-        .on_click(cx.listener(move |state, _event, window, cx| {
-            on_confirm(state, window, cx);
-        }));
-
-    Dialog::new()
-        .width(dialog.width)
-        .top(dialog.top)
-        .overlay_closable(true)
-        .on_overlay_mouse_down(cx.listener(move |state, _event, window, cx| {
-            on_cancel(state, window, cx);
-        }))
-        .child(
-            DialogHeader::new()
-                .child(DialogTitle::new().child(dialog.title))
-                .child(DialogDescription::new().child(dialog.message)),
-        )
-        .footer(
-            DialogFooter::new()
-                .child(cancel_button)
-                .child(confirm_button),
-        )
-        .into_any_element()
 }
 
 #[cfg(test)]
