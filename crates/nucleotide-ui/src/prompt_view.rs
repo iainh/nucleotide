@@ -1,13 +1,33 @@
 // ABOUTME: GPUI-native prompt component for text input with completion support
 // ABOUTME: Replaces the terminal prompt widget with a proper GPUI implementation
 
+use crate::actions::prompt::{
+    Cancel, Confirm, DeleteChar, MoveCursorLeft, MoveCursorRight, MoveToEnd, MoveToStart,
+    NextCompletion, PrevCompletion,
+};
 use crate::common::ModalStyle;
 use gpui::prelude::FluentBuilder;
 use gpui::{
     App, Context, DismissEvent, EventEmitter, FocusHandle, Focusable, Hsla, InteractiveElement,
-    IntoElement, KeyDownEvent, ParentElement, Render, SharedString, Styled, Task, Window, div, px,
-    svg,
+    IntoElement, KeyBinding, KeyDownEvent, ParentElement, Render, SharedString, Styled, Task,
+    Window, div, px, svg,
 };
+
+pub(crate) const PROMPT_CONTEXT: &str = "PromptView";
+
+pub(crate) fn init(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new("enter", Confirm, Some(PROMPT_CONTEXT)),
+        KeyBinding::new("escape", Cancel, Some(PROMPT_CONTEXT)),
+        KeyBinding::new("up", PrevCompletion, Some(PROMPT_CONTEXT)),
+        KeyBinding::new("down", NextCompletion, Some(PROMPT_CONTEXT)),
+        KeyBinding::new("left", MoveCursorLeft, Some(PROMPT_CONTEXT)),
+        KeyBinding::new("right", MoveCursorRight, Some(PROMPT_CONTEXT)),
+        KeyBinding::new("home", MoveToStart, Some(PROMPT_CONTEXT)),
+        KeyBinding::new("end", MoveToEnd, Some(PROMPT_CONTEXT)),
+        KeyBinding::new("backspace", DeleteChar, Some(PROMPT_CONTEXT)),
+    ]);
+}
 
 #[derive(Clone, Debug)]
 pub struct CompletionItem {
@@ -468,6 +488,99 @@ impl PromptView {
             on_cancel(cx);
         }
     }
+
+    fn dismiss_completions_or_cancel(&mut self, cx: &mut Context<Self>) {
+        if self.show_completions {
+            // Restore original input before hiding completions.
+            if let Some(original) = &self.original_input {
+                self.input = original.clone();
+
+                if let Some(on_change) = &mut self.on_change {
+                    on_change(&self.input, cx);
+                }
+            }
+            self.show_completions = false;
+            self.original_input = None;
+            cx.notify();
+        } else {
+            self.cancel(cx);
+        }
+    }
+
+    fn confirm_action(&mut self, _: &Confirm, _: &mut Window, cx: &mut Context<Self>) {
+        self.submit(cx);
+        cx.stop_propagation();
+    }
+
+    fn cancel_action(&mut self, _: &Cancel, _: &mut Window, cx: &mut Context<Self>) {
+        self.dismiss_completions_or_cancel(cx);
+        cx.stop_propagation();
+    }
+
+    fn prev_completion_action(
+        &mut self,
+        _: &PrevCompletion,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.show_completions {
+            self.move_completion_selection(-1, cx);
+        } else {
+            self.navigate_history(true, cx);
+        }
+        cx.stop_propagation();
+    }
+
+    fn next_completion_action(
+        &mut self,
+        _: &NextCompletion,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.show_completions {
+            self.move_completion_selection(1, cx);
+        } else {
+            self.navigate_history(false, cx);
+        }
+        cx.stop_propagation();
+    }
+
+    fn move_cursor_left_action(
+        &mut self,
+        _: &MoveCursorLeft,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.move_cursor(-1, cx);
+        cx.stop_propagation();
+    }
+
+    fn move_cursor_right_action(
+        &mut self,
+        _: &MoveCursorRight,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.move_cursor(1, cx);
+        cx.stop_propagation();
+    }
+
+    fn move_to_start_action(&mut self, _: &MoveToStart, _: &mut Window, cx: &mut Context<Self>) {
+        self.cursor_position = 0;
+        cx.notify();
+        cx.stop_propagation();
+    }
+
+    fn move_to_end_action(&mut self, _: &MoveToEnd, _: &mut Window, cx: &mut Context<Self>) {
+        self.cursor_position = self.input.chars().count();
+        cx.notify();
+        cx.stop_propagation();
+    }
+
+    fn delete_char_action(&mut self, _: &DeleteChar, _: &mut Window, cx: &mut Context<Self>) {
+        self.delete_char(cx);
+        cx.stop_propagation();
+    }
 }
 
 impl Focusable for PromptView {
@@ -508,7 +621,7 @@ impl Render for PromptView {
         let ui_theme = cx.global::<crate::Theme>();
 
         div()
-            .key_context("PromptView")
+            .key_context(PROMPT_CONTEXT)
             .flex()
             .flex_col()
             .w(px(500.))
@@ -523,58 +636,21 @@ impl Render for PromptView {
             .font(font.clone())
             .text_size(px(ui_font_size))
             .track_focus(&self.focus_handle)
+            .on_action(cx.listener(Self::confirm_action))
+            .on_action(cx.listener(Self::cancel_action))
+            .on_action(cx.listener(Self::prev_completion_action))
+            .on_action(cx.listener(Self::next_completion_action))
+            .on_action(cx.listener(Self::move_cursor_left_action))
+            .on_action(cx.listener(Self::move_cursor_right_action))
+            .on_action(cx.listener(Self::move_to_start_action))
+            .on_action(cx.listener(Self::move_to_end_action))
+            .on_action(cx.listener(Self::delete_char_action))
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
                 match event.keystroke.key.as_str() {
-                    "enter" => {
-                        this.submit(cx);
-                    }
-                    "escape" => {
-                        if this.show_completions {
-                            // Restore original input before hiding completions
-                            if let Some(original) = &this.original_input {
-                                this.input = original.clone();
-                                // Keep cursor at its original position (where user was typing)
-                                // cursor_position is already at the right place
-
-                                // Trigger onChange callback for the restoration
-                                if let Some(on_change) = &mut this.on_change {
-                                    on_change(&this.input, cx);
-                                }
-                            }
-                            this.show_completions = false;
-                            this.original_input = None;
-                            cx.notify();
-                        } else {
-                            this.cancel(cx);
-                        }
-                    }
                     "tab" => {
                         if this.show_completions && !this.completions.is_empty() {
                             this.accept_completion(cx);
                         }
-                    }
-                    "up" => {
-                        if this.show_completions {
-                            this.move_completion_selection(-1, cx);
-                        } else {
-                            this.navigate_history(true, cx);
-                        }
-                    }
-                    "down" => {
-                        if this.show_completions {
-                            this.move_completion_selection(1, cx);
-                        } else {
-                            this.navigate_history(false, cx);
-                        }
-                    }
-                    "left" => {
-                        this.move_cursor(-1, cx);
-                    }
-                    "right" => {
-                        this.move_cursor(1, cx);
-                    }
-                    "backspace" => {
-                        this.delete_char(cx);
                     }
                     "space" => {
                         this.insert_char(' ', cx);
@@ -751,6 +827,19 @@ impl Render for PromptView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui::TestAppContext;
+
+    fn init_prompt_test(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            crate::prompt_view::init(cx);
+            cx.set_global(crate::Theme::from_tokens(crate::DesignTokens::dark()));
+            cx.set_global(nucleotide_types::UiFontConfig {
+                family: "Test UI Font".to_string(),
+                size: 13.0,
+                weight: nucleotide_types::FontWeight::Normal,
+            });
+        });
+    }
 
     #[test]
     fn prompt_font_comes_from_ui_font_config() {
@@ -773,5 +862,26 @@ mod tests {
             ASYNC_COMPLETION_TASK_DEBOUNCE,
             std::time::Duration::from_millis(100)
         );
+    }
+
+    #[gpui::test]
+    fn prompt_actions_edit_focused_input(cx: &mut TestAppContext) {
+        init_prompt_test(cx);
+        let (prompt, cx) = cx.add_window_view(|_, cx| PromptView::new(":", cx));
+        let focus = prompt.read_with(cx, |prompt, cx| prompt.focus_handle(cx));
+
+        cx.update(|window, cx| {
+            prompt.update(cx, |prompt, cx| {
+                prompt.set_text("abc", cx);
+            });
+            window.focus(&focus, cx);
+            focus.dispatch_action(&MoveCursorLeft, window, cx);
+            focus.dispatch_action(&DeleteChar, window, cx);
+        });
+
+        prompt.read_with(cx, |prompt, _| {
+            assert_eq!(prompt.input.as_ref(), "ac");
+            assert_eq!(prompt.cursor_position, 1);
+        });
     }
 }

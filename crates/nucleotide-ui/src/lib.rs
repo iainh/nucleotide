@@ -320,6 +320,7 @@ pub fn init(cx: &mut App, config: Option<UIConfig>) {
     providers::init_provider_system();
     menu::init(cx);
     picker_view::init(cx);
+    prompt_view::init(cx);
     text_input::init(cx);
 
     let mut theme_provider = providers::ThemeProvider::new(config.default_theme.clone());
