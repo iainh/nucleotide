@@ -919,7 +919,6 @@ pub struct Workspace {
     tab_bar_split_popup_menu_subscription: Option<Subscription>,
     tab_bar_split_button_bounds: Option<Bounds<Pixels>>,
     split_pane_resize: Option<SplitPaneResizeState>,
-    restore_standard_cursor_after_resize: bool,
     // Tab bar new item menu state
     tab_bar_new_menu: ContextMenuController,
     tab_bar_new_popup_menu: Option<Entity<PopupMenu>>,
@@ -4810,7 +4809,6 @@ impl Workspace {
             tab_bar_split_popup_menu_subscription: None,
             tab_bar_split_button_bounds: None,
             split_pane_resize: None,
-            restore_standard_cursor_after_resize: false,
             tab_bar_new_menu: ContextMenuController::new(),
             tab_bar_new_popup_menu: None,
             tab_bar_new_popup_menu_subscription: None,
@@ -5647,24 +5645,17 @@ impl Workspace {
     }
 
     fn finish_active_resize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let mut finished = false;
+        let stopped_drag = cx.stop_active_drag(window);
+        let finished_resize = self.split_pane_resize.take().is_some();
 
-        if self.split_pane_resize.take().is_some() {
-            if self.view_manager.focused_view_id().is_some() {
-                self.view_manager.set_needs_focus_restore(true);
-            }
-            finished = true;
+        if finished_resize && self.view_manager.focused_view_id().is_some() {
+            self.view_manager.set_needs_focus_restore(true);
         }
 
-        if finished {
-            self.request_standard_cursor_restore(window, cx);
+        if finished_resize || stopped_drag {
+            cx.notify();
+            window.refresh();
         }
-    }
-
-    fn request_standard_cursor_restore(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.restore_standard_cursor_after_resize = true;
-        cx.notify();
-        window.refresh();
     }
 
     fn max_file_tree_width(viewport_width: f32) -> f32 {
@@ -5794,12 +5785,7 @@ impl Workspace {
     }
 
     fn finish_split_pane_resize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.split_pane_resize.take().is_some() {
-            if self.view_manager.focused_view_id().is_some() {
-                self.view_manager.set_needs_focus_restore(true);
-            }
-            self.request_standard_cursor_restore(window, cx);
-        }
+        self.finish_active_resize(window, cx);
     }
 
     fn handle_project_tree_operation(
@@ -13997,8 +13983,8 @@ impl Render for Workspace {
                         }
                     }
 
-                    for divider in editor_pane_layout.resize_handles().iter().cloned() {
-                        docs_root = docs_root.child(self.render_split_pane_resize_handle(
+                    for divider in editor_pane_layout.divider_lines() {
+                        docs_root = docs_root.child(self.render_split_pane_divider_line(
                             divider,
                             total_area,
                             editor_content_w_px,
@@ -14007,8 +13993,8 @@ impl Render for Workspace {
                         ));
                     }
 
-                    for divider in editor_pane_layout.divider_lines() {
-                        docs_root = docs_root.child(self.render_split_pane_divider_line(
+                    for divider in editor_pane_layout.resize_handles().iter().cloned() {
+                        docs_root = docs_root.child(self.render_split_pane_resize_handle(
                             divider,
                             total_area,
                             editor_content_w_px,
@@ -14952,8 +14938,6 @@ impl Render for Workspace {
             window.focus(&self.terminal_focus, cx);
             self.terminal_focus_pending = false;
         }
-        let restore_standard_cursor =
-            std::mem::take(&mut self.restore_standard_cursor_after_resize);
 
         // Build final workspace with unified bottom status bar
         workspace_div
@@ -14977,18 +14961,6 @@ impl Render for Workspace {
                     )
                     .child(self.render_unified_status_bar(cx)), // Unified bottom status bar pinned at bottom
             )
-            .when(restore_standard_cursor, |root| {
-                root.child(
-                    canvas(
-                        |_bounds, _window, _cx| {},
-                        |_bounds, (), window, _cx| {
-                            window.set_window_cursor_style(gpui::CursorStyle::Arrow);
-                        },
-                    )
-                    .absolute()
-                    .size_full(),
-                )
-            })
             // Add Linux client-side resize hitboxes so the window can be resized
             .map(|root| {
                 #[cfg(target_os = "linux")]

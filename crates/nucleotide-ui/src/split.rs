@@ -6,8 +6,9 @@ use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    App, Div, ElementId, InteractiveElement, IntoElement, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ParentElement, Stateful, Styled, Window, div, px, relative,
+    App, AppContext as _, Context, Div, ElementId, InteractiveElement, IntoElement, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Render, Stateful,
+    StatefulInteractiveElement, Styled, Window, div, px, relative,
 };
 
 use crate::layout::PanelLayout;
@@ -18,6 +19,16 @@ pub const SPLITTER_LINE_PX: f32 = 1.0;
 const RESIZE_HANDLE_MIN_HITBOX_PX: f32 = 8.0;
 const RESIZE_HANDLE_MAX_HITBOX_PX: f32 = 12.0;
 const RESIZE_HANDLE_VISUAL_PX: f32 = SPLITTER_LINE_PX;
+
+struct ResizeDragToken;
+
+struct ResizeDragPreview;
+
+impl Render for ResizeDragPreview {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div().size(px(0.0))
+    }
+}
 
 #[inline]
 fn clamp_primary(start: f32, delta: f32, min_px: f32, max_px: f32) -> f32 {
@@ -126,9 +137,12 @@ pub fn resize_handle(
                 .cursor(gpui::CursorStyle::ResizeRow)
         });
 
-    base.on_mouse_down(MouseButton::Left, on_start)
-        .on_mouse_up(MouseButton::Left, on_finish)
-        .on_mouse_up_out(MouseButton::Left, on_finish_out)
+    base.on_drag(ResizeDragToken, |_drag, _offset, _window, cx| {
+        cx.new(|_| ResizeDragPreview)
+    })
+    .on_mouse_down(MouseButton::Left, on_start)
+    .on_mouse_up(MouseButton::Left, on_finish)
+    .on_mouse_up_out(MouseButton::Left, on_finish_out)
 }
 
 /// Applies active resize capture behaviour to a surface while a drag is active.
@@ -139,9 +153,19 @@ pub fn resize_capture_area(
     on_finish: impl Fn(&MouseUpEvent, &mut Window, &mut App) + 'static,
     on_finish_out: impl Fn(&MouseUpEvent, &mut Window, &mut App) + 'static,
 ) -> Stateful<Div> {
+    let on_move = Rc::new(on_move);
+
     surface
         .cursor(cursor_for_axis(axis))
-        .on_mouse_move(on_move)
+        .on_drag_move::<ResizeDragToken>({
+            let on_move = on_move.clone();
+            move |event, window, cx| {
+                on_move(&event.event, window, cx);
+            }
+        })
+        .on_mouse_move(move |event, window, cx| {
+            on_move(event, window, cx);
+        })
         .on_mouse_up(MouseButton::Left, on_finish)
         .on_mouse_up_out(MouseButton::Left, on_finish_out)
 }
