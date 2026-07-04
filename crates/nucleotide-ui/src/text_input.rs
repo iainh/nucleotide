@@ -54,6 +54,7 @@ pub struct TextInput {
     focus_handle: FocusHandle,
     content: SharedString,
     placeholder: SharedString,
+    ghost_suffix: SharedString,
     selected_range: Range<usize>,
     selection_reversed: bool,
     marked_range: Option<Range<usize>>,
@@ -73,6 +74,7 @@ impl TextInput {
             focus_handle: cx.focus_handle().tab_stop(true),
             content: SharedString::default(),
             placeholder: SharedString::default(),
+            ghost_suffix: SharedString::default(),
             selected_range: 0..0,
             selection_reversed: false,
             marked_range: None,
@@ -143,6 +145,21 @@ impl TextInput {
     pub fn placeholder(mut self, placeholder: impl Into<SharedString>) -> Self {
         self.placeholder = placeholder.into();
         self
+    }
+
+    pub fn ghost_suffix(mut self, ghost_suffix: impl Into<SharedString>) -> Self {
+        self.ghost_suffix = ghost_suffix.into();
+        self
+    }
+
+    pub fn set_ghost_suffix(
+        &mut self,
+        ghost_suffix: impl Into<SharedString>,
+        cx: &mut Context<Self>,
+    ) {
+        self.ghost_suffix = ghost_suffix.into();
+        self.reset_layout_cache();
+        cx.notify();
     }
 
     pub fn error(mut self, error: impl Into<SharedString>) -> Self {
@@ -331,7 +348,7 @@ impl TextInput {
         if position.y > bounds.bottom() {
             return self.content.len();
         }
-        line.closest_index_for_x(position.x - bounds.left())
+        self.clamp_to_boundary(line.closest_index_for_x(position.x - bounds.left()))
     }
 
     fn clamp_to_boundary(&self, offset: usize) -> usize {
@@ -546,6 +563,7 @@ struct TextInputElement {
     input: Entity<TextInput>,
     text_color: gpui::Hsla,
     placeholder_color: gpui::Hsla,
+    ghost_color: gpui::Hsla,
     selection_color: gpui::Hsla,
     cursor_color: gpui::Hsla,
 }
@@ -604,8 +622,10 @@ impl Element for TextInputElement {
         let cursor_offset = input.cursor_offset();
         let display_text = if content.is_empty() {
             input.placeholder.clone()
-        } else {
+        } else if input.ghost_suffix.is_empty() {
             content.clone()
+        } else {
+            format!("{}{}", content, input.ghost_suffix).into()
         };
         let text_color = if content.is_empty() {
             self.placeholder_color
@@ -613,39 +633,55 @@ impl Element for TextInputElement {
             self.text_color
         };
 
-        let run = TextRun {
-            len: display_text.len(),
+        let base_run = TextRun {
+            len: content.len(),
             font: window.text_style().font(),
             color: text_color,
             background_color: None,
             underline: None,
             strikethrough: None,
         };
-        let runs = if let Some(marked_range) = input.marked_range.as_ref() {
+        let ghost_run = || TextRun {
+            len: input.ghost_suffix.len(),
+            font: window.text_style().font(),
+            color: self.ghost_color,
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        let runs = if content.is_empty() {
+            vec![TextRun {
+                len: display_text.len(),
+                ..base_run
+            }]
+        } else if let Some(marked_range) = input.marked_range.as_ref() {
             vec![
                 TextRun {
                     len: marked_range.start,
-                    ..run.clone()
+                    ..base_run.clone()
                 },
                 TextRun {
                     len: marked_range.end - marked_range.start,
                     underline: Some(UnderlineStyle {
-                        color: Some(run.color),
+                        color: Some(base_run.color),
                         thickness: px(1.0),
                         wavy: false,
                     }),
-                    ..run.clone()
+                    ..base_run.clone()
                 },
                 TextRun {
-                    len: display_text.len().saturating_sub(marked_range.end),
-                    ..run
+                    len: content.len().saturating_sub(marked_range.end),
+                    ..base_run
                 },
+                ghost_run(),
             ]
             .into_iter()
             .filter(|run| run.len > 0)
             .collect()
+        } else if input.ghost_suffix.is_empty() {
+            vec![base_run]
         } else {
-            vec![run]
+            vec![base_run, ghost_run()]
         };
 
         let font_size = window.text_style().font_size.to_pixels(window.rem_size());
@@ -857,6 +893,7 @@ impl Render for TextInput {
                         input: cx.entity().clone(),
                         text_color: input_tokens.text,
                         placeholder_color: input_tokens.placeholder,
+                        ghost_color: input_tokens.placeholder,
                         selection_color: input_tokens.focus_ring.alpha(0.35),
                         cursor_color: input_tokens.text,
                     }),
@@ -897,8 +934,8 @@ fn offset_to_utf16(text: &str, offset: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use gpui::{
-        AppContext as _, Context, Entity, Focusable, IntoElement, ParentElement as _, Render,
-        Styled as _, TestAppContext, Window, div, px,
+        AppContext as _, Bounds, Context, Entity, Focusable, IntoElement, ParentElement as _,
+        Render, Styled as _, TestAppContext, TextRun, Window, div, point, px, size,
     };
 
     use super::*;
@@ -977,6 +1014,69 @@ mod tests {
         input.read_with(cx, |input, _| {
             assert_eq!(input.value().as_ref(), "internal");
             assert_eq!(input.cursor_offset(), "internal".len());
+        });
+    }
+
+    #[gpui::test]
+    fn ghost_suffix_is_display_only(cx: &mut TestAppContext) {
+        init_theme(cx);
+        let (harness, cx) = cx.add_window_view(|_, cx| TextInputHarness::new(cx));
+        let input = harness.read_with(cx, |harness, _| harness.input.clone());
+
+        cx.update(|_, cx| {
+            input.update(cx, |input, cx| {
+                input.set_value_silent("git", cx);
+                input.set_ghost_suffix(" status", cx);
+            });
+        });
+
+        harness.read_with(cx, |harness, _| {
+            assert!(harness.events.is_empty());
+        });
+        input.read_with(cx, |input, _| {
+            assert_eq!(input.value().as_ref(), "git");
+            assert_eq!(input.cursor_offset(), "git".len());
+        });
+    }
+
+    #[gpui::test]
+    fn mouse_hit_testing_ignores_ghost_suffix(cx: &mut TestAppContext) {
+        init_theme(cx);
+        let (harness, cx) = cx.add_window_view(|_, cx| TextInputHarness::new(cx));
+        let input = harness.read_with(cx, |harness, _| harness.input.clone());
+
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                input.set_value_silent("abc", cx);
+                input.set_ghost_suffix("def", cx);
+
+                let display_text: SharedString = "abcdef".into();
+                let input_tokens = cx.global::<crate::Theme>().tokens.input_tokens();
+                let run = TextRun {
+                    len: display_text.len(),
+                    font: window.text_style().font(),
+                    color: input_tokens.text,
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                };
+                let font_size = window.text_style().font_size.to_pixels(window.rem_size());
+                input.last_layout = Some(window.text_system().shape_line(
+                    display_text,
+                    font_size,
+                    &[run],
+                    None,
+                ));
+                input.last_bounds = Some(Bounds::new(
+                    point(px(0.0), px(0.0)),
+                    size(px(1000.0), window.line_height()),
+                ));
+
+                assert_eq!(
+                    input.index_for_mouse_position(point(px(999.0), px(1.0))),
+                    "abc".len()
+                );
+            });
         });
     }
 
