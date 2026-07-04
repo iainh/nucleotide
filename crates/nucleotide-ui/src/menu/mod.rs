@@ -6,8 +6,10 @@ use gpui::{App, KeyBinding};
 use crate::actions::menu::{Cancel, Confirm, SelectDown, SelectLeft, SelectRight, SelectUp};
 
 mod popup_menu;
+mod popup_menu_surface;
 
 pub use popup_menu::{MenuCheckSide, PopupMenu, PopupMenuItem};
+pub use popup_menu_surface::PopupMenuSurface;
 
 pub(crate) const POPUP_MENU_CONTEXT: &str = "PopupMenu";
 pub(crate) const APP_MENU_BAR_CONTEXT: &str = "ApplicationMenu";

@@ -124,6 +124,11 @@ Enter, or Escape branches. Menus should own:
 The workspace should build menu data and domain handlers. It should not know how
 to move menu selection.
 
+Use `nucleotide_ui::PopupMenuSurface` when a popup menu needs full-window
+occlusion, light-dismiss, anchored positioning, and window-edge snapping. The
+menu owns keyboard selection and command dispatch; the surface owns the backdrop
+recipe.
+
 ## Modals And Overlays
 
 Modal and overlay implementations should own:

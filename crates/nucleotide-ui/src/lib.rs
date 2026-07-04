@@ -111,7 +111,7 @@ pub use list_item::{
 pub use markdown::{
     MarkdownElement, MarkdownParseMode, MarkdownStyle, markdown, markdown_extended,
 };
-pub use menu::{MenuCheckSide, PopupMenu, PopupMenuItem};
+pub use menu::{MenuCheckSide, PopupMenu, PopupMenuItem, PopupMenuSurface};
 pub use modal_layer::{DismissDecision, ModalLayer, ModalOpenedEvent, ModalView};
 pub use navigable::{NAVIGABLE_CONTEXT, Navigable, NavigableEntry};
 pub use overlay_surface::{OVERLAY_SURFACE_CONTEXT, OverlaySurface};
