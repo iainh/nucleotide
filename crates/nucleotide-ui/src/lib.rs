@@ -284,6 +284,38 @@ impl ComponentRegistry {
 
 impl gpui::Global for ComponentRegistry {}
 
+pub(crate) const BUILT_IN_COMPONENTS: &[&str] = &[
+    "AboutWindow",
+    "AppShell",
+    "BottomPanel",
+    "Button",
+    "ComponentGallery",
+    "CompletionRenderer",
+    "CompletionView",
+    "ConfirmDialog",
+    "ConfirmDialogView",
+    "DocumentationPanel",
+    "EditorPaneGrid",
+    "FileIcon",
+    "FocusTraversal",
+    "ListItem",
+    "ModalLayer",
+    "Navigable",
+    "OverlaySurface",
+    "Panel",
+    "Picker",
+    "PopupMenu",
+    "PopupMenuSurface",
+    "Prompt",
+    "ResizeDragController",
+    "SmartPopup",
+    "StatusBar",
+    "TextInput",
+    "ThemeDebugView",
+    "Toolbar",
+    "WorkspaceChrome",
+];
+
 /// Initialize the nucleotide-ui component system
 ///
 /// This function should be called once during application startup to:
@@ -358,26 +390,9 @@ pub fn init(cx: &mut App, config: Option<UIConfig>) {
     let mut registry = ComponentRegistry::default();
 
     // Register built-in components
-    registry.register_component("Button");
-    registry.register_component("FocusTraversal");
-    registry.register_component("ListItem");
-    registry.register_component("FileIcon");
-    registry.register_component("Picker");
-    registry.register_component("Navigable");
-    registry.register_component("Prompt");
-    registry.register_component("TextInput");
-    registry.register_component("CompletionView");
-    registry.register_component("CompletionRenderer");
-    registry.register_component("SmartPopup");
-    registry.register_component("DocumentationPanel");
-    registry.register_component("AppShell");
-    registry.register_component("WorkspaceChrome");
-    registry.register_component("EditorPaneGrid");
-    registry.register_component("BottomPanel");
-    registry.register_component("Panel");
-    registry.register_component("Toolbar");
-    registry.register_component("StatusBar");
-    registry.register_component("ComponentGallery");
+    for component in BUILT_IN_COMPONENTS {
+        registry.register_component(component);
+    }
 
     cx.set_global(registry);
 }

@@ -4,7 +4,8 @@
 #[cfg(test)]
 mod tests {
     use crate::{
-        ComponentRegistry, Theme, UIConfig, UIFeatures, configuration_provider_from_ui_config,
+        BUILT_IN_COMPONENTS, ComponentRegistry, Theme, UIConfig, UIFeatures,
+        configuration_provider_from_ui_config,
     };
 
     #[test]
@@ -114,22 +115,18 @@ mod tests {
         let mut registry = ComponentRegistry::default();
 
         // Simulate registering built-in components (like init() does)
-        registry.register_component("Button");
-        registry.register_component("ListItem");
-        registry.register_component("FileIcon");
-        registry.register_component("Picker");
-        registry.register_component("Prompt");
+        for component in BUILT_IN_COMPONENTS {
+            registry.register_component(component);
+        }
 
         // Test that all built-in components are registered
-        assert!(registry.is_registered("Button"));
-        assert!(registry.is_registered("ListItem"));
-        assert!(registry.is_registered("FileIcon"));
-        assert!(registry.is_registered("Picker"));
-        assert!(registry.is_registered("Prompt"));
+        for component in BUILT_IN_COMPONENTS {
+            assert!(registry.is_registered(component));
+        }
 
         // Test component count
         let components: Vec<_> = registry.registered_components().collect();
-        assert_eq!(components.len(), 5);
+        assert_eq!(components.len(), BUILT_IN_COMPONENTS.len());
     }
 
     #[test]

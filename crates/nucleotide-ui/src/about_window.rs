@@ -1,11 +1,13 @@
 // ABOUTME: About window component for displaying app information
 // ABOUTME: Shows app icon, name, author, version, and commit hash
 
-use crate::{Button, ButtonVariant, Theme};
+use crate::modal_layer::ModalView;
+use crate::{Button, ButtonSize, ButtonVariant, FocusTraversal, Theme};
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    Context, DismissEvent, EventEmitter, FontWeight, InteractiveElement, IntoElement,
-    ParentElement, Render, SharedString, Styled, Window, div, img, px,
+    App, Context, DismissEvent, EventEmitter, FocusHandle, Focusable, FontWeight,
+    InteractiveElement, IntoElement, ParentElement, Render, SharedString, Styled, Window, div, img,
+    px,
 };
 
 #[derive(Debug)]
@@ -14,11 +16,12 @@ pub struct AboutWindow {
     version: SharedString,
     author: SharedString,
     commit_hash: Option<SharedString>,
-    visible: bool,
+    focus_handle: FocusHandle,
+    ok_focus_handle: FocusHandle,
 }
 
 impl AboutWindow {
-    pub fn new() -> Self {
+    pub fn new(cx: &mut Context<Self>) -> Self {
         let app_name = "Nucleotide".into();
         let version = env!("CARGO_PKG_VERSION").into();
         let author = "The Nucleotide Contributors".into();
@@ -31,23 +34,13 @@ impl AboutWindow {
             version,
             author,
             commit_hash,
-            visible: false,
+            focus_handle: cx.focus_handle().tab_stop(false),
+            ok_focus_handle: cx.focus_handle().tab_index(1).tab_stop(true),
         }
     }
 
-    pub fn show(&mut self, cx: &mut Context<Self>) {
-        self.visible = true;
-        cx.notify();
-    }
-
-    pub fn hide(&mut self, cx: &mut Context<Self>) {
-        self.visible = false;
-        cx.notify();
+    fn dismiss(&mut self, cx: &mut Context<Self>) {
         cx.emit(DismissEvent);
-    }
-
-    pub fn is_visible(&self) -> bool {
-        self.visible
     }
 
     fn get_git_commit_hash() -> Option<SharedString> {
@@ -65,146 +58,120 @@ impl AboutWindow {
         }
         None
     }
-
-    fn handle_click(&mut self, cx: &mut Context<Self>) {
-        self.hide(cx);
-    }
-}
-
-impl Default for AboutWindow {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 impl EventEmitter<DismissEvent> for AboutWindow {}
 
+impl Focusable for AboutWindow {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+impl ModalView for AboutWindow {}
+
 impl Render for AboutWindow {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if !self.visible {
-            return div(); // Return empty div when not visible
-        }
-
         let theme = cx.global::<Theme>();
         let tokens = &theme.tokens;
 
-        // Create backdrop overlay
-        div()
-            .absolute()
-            .inset_0()
-            .bg(tokens.chrome.surface_overlay) // Themed semi-transparent backdrop
-            .flex()
-            .items_center()
-            .justify_center()
-            .on_mouse_down(
-                gpui::MouseButton::Left,
-                cx.listener(|this, _event, _window, cx| {
-                    this.handle_click(cx);
-                }),
-            )
-            .child(
-                // About dialog box
-                div()
-                    .bg(tokens.chrome.surface_elevated)
-                    .border_1()
-                    .border_color(tokens.chrome.border_strong)
-                    .rounded_lg()
-                    .shadow(vec![
-                        tokens.chrome.shadow_lg.to_box_shadow(false),
-                        tokens.chrome.inset_highlight.to_box_shadow(true),
-                    ])
-                    .p_6()
-                    .w(px(400.0))
-                    .flex()
-                    .flex_col()
-                    .gap_4()
-                    .on_mouse_down(gpui::MouseButton::Left, |_event, _window, _cx| {
-                        // Prevent event from bubbling up to backdrop
-                    })
-                    // App icon using PNG logo
-                    .child(
-                        div()
-                            .mx_auto()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(
-                                img("nucleotide.iconset/icon_128x128.png")
-                                    .size(px(80.0)) // Increased from 56px to 80px
-                                    .flex_shrink_0(),
-                            ),
-                    )
-                    // App name
-                    .child(
-                        div()
-                            .mx_auto()
-                            .text_size(tokens.sizes.text_xl)
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(tokens.chrome.text_on_chrome)
-                            .child(self.app_name.clone()),
-                    )
-                    // Version
-                    .child(
-                        div()
-                            .mx_auto()
-                            .text_size(tokens.sizes.text_md)
-                            .text_color(tokens.chrome.text_chrome_secondary)
-                            .child(format!("Version {}", self.version)),
-                    )
-                    // Commit hash if available
-                    .when_some(self.commit_hash.as_ref(), |this, commit| {
-                        this.child(
-                            div()
-                                .mx_auto()
-                                .text_size(tokens.sizes.text_sm)
-                                .text_color(tokens.chrome.text_chrome_secondary)
-                                .child(format!("Commit {}", commit)),
-                        )
-                    })
-                    // Author
-                    .child(
-                        div()
-                            .mx_auto()
-                            .text_size(tokens.sizes.text_md)
-                            .text_color(tokens.chrome.text_chrome_secondary)
-                            .child(self.author.clone()),
-                    )
-                    // Separator
-                    .child(
-                        div()
-                            .w_full()
-                            .h(px(1.0))
-                            .bg(tokens.chrome.separator_color)
-                            .my_2(),
-                    )
-                    // Description
-                    .child(
+        FocusTraversal::new(
+            div()
+                .track_focus(&self.focus_handle)
+                .occlude()
+                .bg(tokens.chrome.surface_elevated)
+                .border_1()
+                .border_color(tokens.chrome.border_strong)
+                .rounded_lg()
+                .shadow(vec![
+                    tokens.chrome.shadow_lg.to_box_shadow(false),
+                    tokens.chrome.inset_highlight.to_box_shadow(true),
+                ])
+                .p_6()
+                .w(px(400.0))
+                .flex()
+                .flex_col()
+                .gap_4()
+                .on_any_mouse_down(|_, _, cx| cx.stop_propagation())
+                .child(
+                    div()
+                        .mx_auto()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            img("nucleotide.iconset/icon_128x128.png")
+                                .size(px(80.0))
+                                .flex_shrink_0(),
+                        ),
+                )
+                .child(
+                    div()
+                        .mx_auto()
+                        .text_size(tokens.sizes.text_xl)
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(tokens.chrome.text_on_chrome)
+                        .child(self.app_name.clone()),
+                )
+                .child(
+                    div()
+                        .mx_auto()
+                        .text_size(tokens.sizes.text_md)
+                        .text_color(tokens.chrome.text_chrome_secondary)
+                        .child(format!("Version {}", self.version)),
+                )
+                .when_some(self.commit_hash.as_ref(), |this, commit| {
+                    this.child(
                         div()
                             .mx_auto()
                             .text_size(tokens.sizes.text_sm)
                             .text_color(tokens.chrome.text_chrome_secondary)
-                            .text_center()
-                            .child("A native GUI implementation of the Helix modal text editor"),
+                            .child(format!("Commit {}", commit)),
                     )
-                    // Built with info
-                    .child(
-                        div()
-                            .mx_auto()
-                            .text_size(tokens.sizes.text_xs)
-                            .text_color(tokens.chrome.text_chrome_secondary)
-                            .text_center()
-                            .child("Built with GPUI and Rust"),
-                    )
-                    // Close button
-                    .child(
-                        div().mx_auto().mt_4().child(
-                            Button::new("about-ok", "OK")
-                                .variant(ButtonVariant::Secondary)
-                                .on_click(cx.listener(|this, _event, _window, cx| {
-                                    this.handle_click(cx);
-                                })),
-                        ),
+                })
+                .child(
+                    div()
+                        .mx_auto()
+                        .text_size(tokens.sizes.text_md)
+                        .text_color(tokens.chrome.text_chrome_secondary)
+                        .child(self.author.clone()),
+                )
+                .child(
+                    div()
+                        .w_full()
+                        .h(px(1.0))
+                        .bg(tokens.chrome.separator_color)
+                        .my_2(),
+                )
+                .child(
+                    div()
+                        .mx_auto()
+                        .text_size(tokens.sizes.text_sm)
+                        .text_color(tokens.chrome.text_chrome_secondary)
+                        .text_center()
+                        .child("A native GUI implementation of the Helix modal text editor"),
+                )
+                .child(
+                    div()
+                        .mx_auto()
+                        .text_size(tokens.sizes.text_xs)
+                        .text_color(tokens.chrome.text_chrome_secondary)
+                        .text_center()
+                        .child("Built with GPUI and Rust"),
+                )
+                .child(
+                    div().mx_auto().mt_4().child(
+                        Button::new("about-ok", "OK")
+                            .variant(ButtonVariant::Secondary)
+                            .size(ButtonSize::Small)
+                            .focus_handle(self.ok_focus_handle.clone())
+                            .activate_on_mouse_down()
+                            .on_click(cx.listener(|this, _event, _window, cx| {
+                                this.dismiss(cx);
+                                cx.stop_propagation();
+                            })),
                     ),
-            )
+                ),
+        )
     }
 }
