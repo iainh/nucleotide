@@ -73,8 +73,9 @@ Use GPUI tab primitives for ordinary traversal:
 
 Components that own a focus scope should bind
 `nucleotide_ui::actions::focus::{FocusNext, FocusPrevious}` in their key context
-and handle those actions with `window.focus_next(cx)` and `window.focus_prev(cx)`.
-Do not add new Tab handling to `InputCoordinator`; Helix, terminals, and focused
+and wrap their content in `nucleotide_ui::FocusTraversal` so the component gets
+standard `window.focus_next(cx)` and `window.focus_prev(cx)` behaviour. Do not
+add new Tab handling to `InputCoordinator`; Helix, terminals, and focused
 components own their own Tab semantics.
 
 Buttons that need to participate in traversal should use
