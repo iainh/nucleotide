@@ -3,12 +3,15 @@
 
 #![allow(clippy::type_complexity)]
 use crate::VcsIcon;
+use crate::actions::picker::{
+    ConfirmSelection, DismissPicker, SelectFirst, SelectLast, SelectNext, SelectPrev, TogglePreview,
+};
 use crate::common::{FocusableModal, ModalStyle, SearchInput};
 use gpui::prelude::FluentBuilder;
 use gpui::{
     App, DismissEvent, EventEmitter, FocusHandle, Focusable, Hsla, InteractiveElement, IntoElement,
-    KeyDownEvent, ParentElement, Pixels, Render, Result, SharedString, Size, Styled, Task,
-    UniformListScrollHandle, div, px, svg, uniform_list,
+    KeyBinding, KeyDownEvent, ParentElement, Pixels, Render, Result, SharedString, Size, Styled,
+    Task, UniformListScrollHandle, div, px, svg, uniform_list,
 };
 use gpui::{Context, ScrollStrategy, Window};
 use helix_view::DocumentId;
@@ -16,6 +19,22 @@ use nucleo::Nucleo;
 use nucleotide_logging::warn;
 use nucleotide_types::VcsStatus;
 use std::{ops::Range, path::PathBuf, sync::Arc};
+
+pub(crate) const PICKER_CONTEXT: &str = "Picker";
+
+pub(crate) fn init(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new("up", SelectPrev, Some(PICKER_CONTEXT)),
+        KeyBinding::new("down", SelectNext, Some(PICKER_CONTEXT)),
+        KeyBinding::new("ctrl-p", SelectPrev, Some(PICKER_CONTEXT)),
+        KeyBinding::new("ctrl-n", SelectNext, Some(PICKER_CONTEXT)),
+        KeyBinding::new("enter", ConfirmSelection, Some(PICKER_CONTEXT)),
+        KeyBinding::new("escape", DismissPicker, Some(PICKER_CONTEXT)),
+        KeyBinding::new("cmd-p", TogglePreview, Some(PICKER_CONTEXT)),
+        KeyBinding::new("home", SelectFirst, Some(PICKER_CONTEXT)),
+        KeyBinding::new("end", SelectLast, Some(PICKER_CONTEXT)),
+    ]);
+}
 
 type PreviewText = (String, Option<PathBuf>);
 type PreviewTextTask = Task<Option<PreviewText>>;
@@ -711,6 +730,22 @@ impl PickerView {
         }
     }
 
+    fn toggle_preview(&mut self, cx: &mut Context<Self>) {
+        self.show_preview = !self.show_preview;
+        self.cached_dimensions = None;
+
+        if self.show_preview {
+            self.load_preview_for_selected_item(cx);
+        } else {
+            self.cleanup_preview_document(cx);
+            self.preview_content = None;
+            self.preview_content_path = None;
+            self.preview_loading = false;
+        }
+
+        cx.notify();
+    }
+
     fn insert_char(&mut self, ch: char, cx: &mut Context<Self>) {
         let mut query = self.query.to_string();
         let chars: Vec<char> = query.chars().collect();
@@ -1175,7 +1210,7 @@ impl PickerView {
         div()
             .flex()
             .flex_col()
-            .key_context("Picker") // Set proper key context for picker
+            .key_context(PICKER_CONTEXT)
             .w(total_width)
             .h(max_height) // Use fixed height instead of max_h to prevent size changes
             .bg(self.style.modal_style.background)
@@ -1287,6 +1322,11 @@ impl PickerView {
             .on_action(cx.listener(
                 |this, _: &crate::actions::picker::DismissPicker, _window, cx| {
                     this.cancel(cx);
+                },
+            ))
+            .on_action(cx.listener(
+                |this, _: &crate::actions::picker::TogglePreview, _window, cx| {
+                    this.toggle_preview(cx);
                 },
             ))
             .child(
@@ -1755,6 +1795,7 @@ impl Render for PickerView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui::{AppContext as _, TestAppContext, size};
     use std::sync::Arc;
 
     #[test]
@@ -1842,5 +1883,37 @@ mod tests {
     fn no_preview_rows_do_not_force_text_truncation() {
         assert!(!PickerView::should_truncate_row_text(false));
         assert!(PickerView::should_truncate_row_text(true));
+    }
+
+    #[gpui::test]
+    fn toggle_preview_updates_visibility_and_layout_cache(cx: &mut TestAppContext) {
+        let picker = cx.new(PickerView::new);
+
+        picker.update(cx, |picker, cx| {
+            picker.cached_dimensions = Some(CachedDimensions {
+                window_size: size(px(800.0), px(600.0)),
+                total_width: px(800.0),
+                max_height: px(400.0),
+                list_width: px(400.0),
+                preview_width: px(400.0),
+                show_preview: true,
+            });
+            picker.preview_content = Some("stale preview".to_string());
+            picker.preview_content_path = Some(PathBuf::from("stale.txt"));
+            picker.preview_loading = true;
+
+            picker.toggle_preview(cx);
+
+            assert!(!picker.show_preview);
+            assert!(picker.cached_dimensions.is_none());
+            assert!(picker.preview_content.is_none());
+            assert!(picker.preview_content_path.is_none());
+            assert!(!picker.preview_loading);
+
+            picker.toggle_preview(cx);
+
+            assert!(picker.show_preview);
+            assert!(picker.cached_dimensions.is_none());
+        });
     }
 }
