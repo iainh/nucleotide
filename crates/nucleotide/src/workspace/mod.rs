@@ -6661,61 +6661,8 @@ impl Workspace {
         if self.terminal_panel_visible && self.terminal_focus.is_focused(window) {
             if let Some(panel) = &self.embedded_terminal_panel {
                 let id = panel.read(cx).active;
-                #[cfg(feature = "terminal-emulator")]
-                let bytes = {
-                    let mode = nucleotide_terminal_view::get_view_model(id)
-                        .and_then(|vm| vm.lock().ok().map(|guard| guard.input_mode()))
-                        .unwrap_or_default();
-                    crate::overlay::translate_key_to_bytes_with_mode(ev, mode)
-                };
-                #[cfg(not(feature = "terminal-emulator"))]
-                let bytes = crate::overlay::translate_key_to_bytes(ev);
-                if !bytes.is_empty() {
-                    // Snap scroll back to cursor when the user types
-                    #[cfg(feature = "terminal-emulator")]
-                    if let Some(vm) = nucleotide_terminal_view::get_view_model(id)
-                        && let Ok(mut guard) = vm.lock()
-                    {
-                        guard.scroll_to_bottom();
-                    }
-                    // Fast path: send directly to the PTY writer thread,
-                    // bypassing the event queue (which defers until next render).
-                    #[cfg(feature = "terminal-emulator")]
-                    {
-                        let sent = self
-                            .core
-                            .read(cx)
-                            .terminal_input_senders
-                            .lock()
-                            .ok()
-                            .and_then(|senders| {
-                                senders.get(&id).map(|tx| {
-                                    let _ = tx.send(bytes.clone());
-                                })
-                            })
-                            .is_some();
-                        if !sent {
-                            // Fallback: dispatch through event bus if sender not yet registered
-                            self.core.update(cx, |app, _| {
-                                if let Some(bus) = &app.event_aggregator {
-                                    bus.dispatch_terminal(
-                                        nucleotide_events::v2::terminal::Event::Input { id, bytes },
-                                    );
-                                }
-                            });
-                        }
-                    }
-                    #[cfg(not(feature = "terminal-emulator"))]
-                    {
-                        self.core.update(cx, |app, _| {
-                            if let Some(bus) = &app.event_aggregator {
-                                bus.dispatch_terminal(
-                                    nucleotide_events::v2::terminal::Event::Input { id, bytes },
-                                );
-                            }
-                        });
-                    }
-                }
+                let bytes = crate::terminal_input::encode_key_event_for_terminal(id, ev);
+                crate::terminal_input::send_terminal_input(&self.core, id, bytes, cx);
             }
             // Prevent further handling by editor/others
             cx.stop_propagation();
