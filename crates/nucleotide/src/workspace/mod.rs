@@ -4753,8 +4753,8 @@ impl Workspace {
         }
 
         // Create about window and theme debug overlay
-        let about_window = cx.new(|_cx| AboutWindow::new());
-        let theme_debug = cx.new(|_cx| nucleotide_ui::ThemeDebugView::new());
+        let about_window = cx.new(AboutWindow::new);
+        let theme_debug = cx.new(nucleotide_ui::ThemeDebugView::new);
 
         let doc_sidebar_scroll_handle = ScrollHandle::new();
         let doc_sidebar_scrollbar_state = ScrollbarState::new(doc_sidebar_scroll_handle.clone());
@@ -14094,8 +14094,6 @@ impl Render for Workspace {
                             this.child(view.clone())
                         }
                     })
-                    .child(self.about_window.clone())
-                    .child(self.theme_debug.clone())
                     .when(
                         !self.info_hidden && !self.info.read(cx).is_empty(),
                         |this| this.child(self.info.clone()),
@@ -14236,17 +14234,21 @@ impl Render for Workspace {
         ));
 
         workspace_div = workspace_div.on_action(cx.listener(
-            move |workspace, _: &crate::actions::help::About, _window, cx| {
-                workspace.about_window.update(cx, |about_window, cx| {
-                    about_window.show(cx);
+            move |workspace, _: &crate::actions::help::About, window, cx| {
+                let about_window = workspace.about_window.clone();
+                workspace.modal_layer.update(cx, |layer, cx| {
+                    layer.show_modal(about_window, window, cx);
                 });
             },
         ));
 
         // Theme Debug action opens the overlay
         workspace_div = workspace_div.on_action(cx.listener(
-            move |workspace, _: &crate::actions::help::ThemeDebug, _window, cx| {
-                workspace.theme_debug.update(cx, |view, cx| view.show(cx));
+            move |workspace, _: &crate::actions::help::ThemeDebug, window, cx| {
+                let theme_debug = workspace.theme_debug.clone();
+                workspace.modal_layer.update(cx, |layer, cx| {
+                    layer.show_modal(theme_debug, window, cx);
+                });
             },
         ));
 

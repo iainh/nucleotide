@@ -1,44 +1,30 @@
 // ABOUTME: Theme Debug view for inspecting theme tokens and derived colors
 // ABOUTME: Opens as an overlay modal from a menu action and shows grouped tokens
 
+use crate::modal_layer::ModalView;
 use crate::theme_manager::{HelixThemedContext, SurfaceColorSource, ThemeManager};
 use crate::{DesignTokens, Theme};
 use gpui::Element;
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    Context, FontWeight, InteractiveElement, IntoElement, ParentElement, Render, SharedString,
-    Styled, UniformListScrollHandle, Window, div, px,
+    App, Context, DismissEvent, EventEmitter, FocusHandle, Focusable, FontWeight,
+    InteractiveElement, IntoElement, ParentElement, Render, SharedString, Styled,
+    UniformListScrollHandle, Window, div, px,
 }; // For into_any on elements
 use nucleotide_types::scrollbar::SCROLLBAR_THICKNESS;
 
 #[derive(Debug)]
 pub struct ThemeDebugView {
-    visible: bool,
+    focus_handle: FocusHandle,
     scroll: UniformListScrollHandle,
 }
 
-impl Default for ThemeDebugView {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl ThemeDebugView {
-    pub fn new() -> Self {
+    pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
-            visible: false,
+            focus_handle: cx.focus_handle().tab_stop(false),
             scroll: UniformListScrollHandle::new(),
         }
-    }
-
-    pub fn show(&mut self, cx: &mut Context<Self>) {
-        self.visible = true;
-        cx.notify();
-    }
-
-    pub fn hide(&mut self, cx: &mut Context<Self>) {
-        self.visible = false;
-        cx.notify();
     }
 }
 
@@ -117,10 +103,6 @@ enum DebugItem {
 
 impl Render for ThemeDebugView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if !self.visible {
-            return div();
-        }
-
         let theme = cx.global::<Theme>();
         let tokens = theme.tokens;
 
@@ -587,71 +569,67 @@ impl Render for ThemeDebugView {
         .track_scroll(&self.scroll)
         .h_full();
 
-        // Overlay and dialog container
         div()
-            .absolute()
-            .inset_0()
-            .bg(tokens.chrome.surface_overlay)
+            .track_focus(&self.focus_handle)
+            .occlude()
+            .bg(tokens.chrome.surface_elevated)
+            .border_1()
+            .border_color(tokens.chrome.border_strong)
+            .rounded_lg()
+            .shadow(vec![
+                tokens.chrome.shadow_lg.to_box_shadow(false),
+                tokens.chrome.inset_highlight.to_box_shadow(true),
+            ])
+            .p_4()
+            .w(px(860.0))
+            .max_h(px(600.0))
             .flex()
-            .items_center()
-            .justify_center()
-            .on_mouse_down(
-                gpui::MouseButton::Left,
-                cx.listener(|this, _event, _window, cx| this.hide(cx)),
+            .flex_col()
+            .gap_2()
+            .on_any_mouse_down(|_, _, cx| cx.stop_propagation())
+            .child(
+                div()
+                    .px_1()
+                    .py_1()
+                    .text_size(tokens.sizes.text_lg)
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(tokens.chrome.text_on_chrome)
+                    .child("Theme Debug"),
             )
             .child(
                 div()
-                    .bg(tokens.chrome.surface_elevated)
-                    .border_1()
-                    .border_color(tokens.chrome.border_strong)
-                    .rounded_lg()
-                    .shadow(vec![
-                        tokens.chrome.shadow_lg.to_box_shadow(false),
-                        tokens.chrome.inset_highlight.to_box_shadow(true),
-                    ])
-                    .p_4()
-                    .w(px(860.0))
-                    .max_h(px(600.0))
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    // Title bar
-                    .child(
-                        div()
-                            .px_1()
-                            .py_1()
-                            .text_size(tokens.sizes.text_lg)
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(tokens.chrome.text_on_chrome)
-                            .child("Theme Debug"),
-                    )
-                    // Content area (list + scrollbar)
-                    .child(
-                        div()
-                            .relative()
-                            .w_full()
-                            .h_full()
-                            .min_h(px(0.0))
-                            .overflow_hidden()
-                            .child(div().size_full().min_h(px(0.0)).child(list))
-                            .when_some(
-                                crate::scrollbar::Scrollbar::vertical(
-                                    crate::scrollbar::ScrollbarState::new(self.scroll.clone()),
-                                ),
-                                |container, scrollbar| {
-                                    container.child(
-                                        div()
-                                            .absolute()
-                                            .top_0()
-                                            .right_0()
-                                            .bottom_0()
-                                            .w(SCROLLBAR_THICKNESS)
-                                            .child(scrollbar),
-                                    )
-                                },
-                            ),
-                    )
-                    .on_mouse_down(gpui::MouseButton::Left, |_event, _window, _cx| {}),
+                    .relative()
+                    .w_full()
+                    .h_full()
+                    .min_h(px(0.0))
+                    .overflow_hidden()
+                    .child(div().size_full().min_h(px(0.0)).child(list))
+                    .when_some(
+                        crate::scrollbar::Scrollbar::vertical(
+                            crate::scrollbar::ScrollbarState::new(self.scroll.clone()),
+                        ),
+                        |container, scrollbar| {
+                            container.child(
+                                div()
+                                    .absolute()
+                                    .top_0()
+                                    .right_0()
+                                    .bottom_0()
+                                    .w(SCROLLBAR_THICKNESS)
+                                    .child(scrollbar),
+                            )
+                        },
+                    ),
             )
     }
 }
+
+impl EventEmitter<DismissEvent> for ThemeDebugView {}
+
+impl Focusable for ThemeDebugView {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+impl ModalView for ThemeDebugView {}
