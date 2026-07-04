@@ -13,6 +13,82 @@ pub(super) struct DocumentViewLayout {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct EditorPane {
+    pub(super) view_id: ViewId,
+    pub(super) area: HelixRect,
+    pub(super) visual_area: HelixRect,
+    pub(super) is_focused: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct EditorPaneLayout {
+    total_area: Option<HelixRect>,
+    panes: Vec<EditorPane>,
+    resize_handles: Vec<SplitPaneDivider>,
+    divider_lines: Vec<SplitPaneDivider>,
+    dim_inactive_panes: bool,
+}
+
+impl EditorPaneLayout {
+    pub(super) fn new(layouts: Vec<DocumentViewLayout>) -> Self {
+        let total_area = document_view_layout_bounds(&layouts);
+        let resize_handles = if layouts.len() > 1 {
+            split_pane_dividers(&layouts)
+        } else {
+            Vec::new()
+        };
+        let divider_lines = resize_handles
+            .iter()
+            .cloned()
+            .map(|divider| split_pane_divider_visual_line(divider, &resize_handles))
+            .collect();
+        let dim_inactive_panes =
+            layouts.len() > 1 && layouts.iter().any(|layout| layout.is_focused);
+        let panes = layouts
+            .into_iter()
+            .map(|layout| EditorPane {
+                view_id: layout.view_id,
+                area: layout.area,
+                visual_area: document_view_visual_area(layout, &resize_handles),
+                is_focused: layout.is_focused,
+            })
+            .collect();
+
+        Self {
+            total_area,
+            panes,
+            resize_handles,
+            divider_lines,
+            dim_inactive_panes,
+        }
+    }
+
+    pub(super) fn is_empty(&self) -> bool {
+        self.panes.is_empty()
+    }
+
+    pub(super) fn total_area(&self) -> Option<HelixRect> {
+        self.total_area
+    }
+
+    pub(super) fn panes(&self) -> &[EditorPane] {
+        &self.panes
+    }
+
+    pub(super) fn resize_handles(&self) -> &[SplitPaneDivider] {
+        &self.resize_handles
+    }
+
+    pub(super) fn divider_lines(&self) -> &[SplitPaneDivider] {
+        &self.divider_lines
+    }
+
+    pub(super) fn dim_inactive_panes(&self) -> bool {
+        self.dim_inactive_panes
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum SplitPaneResizeAxis {
     Vertical,
     Horizontal,
@@ -551,6 +627,98 @@ mod tests {
             Some(HelixRect::new(0, 0, 60, 25))
         );
         assert_eq!(document_view_layout_bounds(&[]), None);
+    }
+
+    #[test]
+    fn editor_pane_layout_handles_empty_documents() {
+        let layout = EditorPaneLayout::new(Vec::new());
+
+        assert!(layout.is_empty());
+        assert_eq!(layout.total_area(), None);
+        assert!(layout.panes().is_empty());
+        assert!(layout.resize_handles().is_empty());
+        assert!(layout.divider_lines().is_empty());
+        assert!(!layout.dim_inactive_panes());
+    }
+
+    #[test]
+    fn editor_pane_layout_keeps_single_document_simple() {
+        let view_id = test_view_id(1);
+        let layout = EditorPaneLayout::new(vec![DocumentViewLayout {
+            view_id,
+            area: HelixRect::new(0, 0, 80, 24),
+            is_focused: true,
+        }]);
+
+        assert!(!layout.is_empty());
+        assert_eq!(layout.total_area(), Some(HelixRect::new(0, 0, 80, 24)));
+        assert_eq!(
+            layout.panes(),
+            &[EditorPane {
+                view_id,
+                area: HelixRect::new(0, 0, 80, 24),
+                visual_area: HelixRect::new(0, 0, 80, 24),
+                is_focused: true,
+            }]
+        );
+        assert!(layout.resize_handles().is_empty());
+        assert!(layout.divider_lines().is_empty());
+        assert!(!layout.dim_inactive_panes());
+    }
+
+    #[test]
+    fn editor_pane_layout_groups_panes_handles_and_lines() {
+        let top_id = test_view_id(1);
+        let bottom_left_id = test_view_id(2);
+        let bottom_right_id = test_view_id(3);
+        let layout = EditorPaneLayout::new(vec![
+            DocumentViewLayout {
+                view_id: top_id,
+                area: HelixRect::new(0, 0, 81, 10),
+                is_focused: true,
+            },
+            DocumentViewLayout {
+                view_id: bottom_left_id,
+                area: HelixRect::new(0, 11, 40, 10),
+                is_focused: false,
+            },
+            DocumentViewLayout {
+                view_id: bottom_right_id,
+                area: HelixRect::new(41, 11, 40, 10),
+                is_focused: false,
+            },
+        ]);
+
+        assert_eq!(layout.total_area(), Some(HelixRect::new(0, 0, 81, 21)));
+        assert!(layout.dim_inactive_panes());
+        assert_eq!(layout.resize_handles().len(), 2);
+        assert_eq!(layout.divider_lines().len(), 2);
+        assert_eq!(layout.panes().len(), 3);
+
+        let bottom_left = layout
+            .panes()
+            .iter()
+            .find(|pane| pane.view_id == bottom_left_id)
+            .unwrap();
+        let bottom_right = layout
+            .panes()
+            .iter()
+            .find(|pane| pane.view_id == bottom_right_id)
+            .unwrap();
+
+        assert_eq!(bottom_left.area, HelixRect::new(0, 11, 40, 10));
+        assert_eq!(bottom_left.visual_area, HelixRect::new(0, 10, 40, 11));
+        assert_eq!(bottom_right.area, HelixRect::new(41, 11, 40, 10));
+        assert_eq!(bottom_right.visual_area, HelixRect::new(40, 10, 41, 11));
+
+        let horizontal_line = layout
+            .divider_lines()
+            .iter()
+            .find(|divider| divider.axis == SplitPaneResizeAxis::Horizontal)
+            .unwrap();
+        assert_eq!(horizontal_line.edge, 10);
+        assert_eq!(horizontal_line.start, 0);
+        assert_eq!(horizontal_line.span, 81);
     }
 
     #[test]

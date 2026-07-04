@@ -7,9 +7,8 @@ pub mod view_manager;
 
 use prefix_extraction::PrefixExtractor;
 use split_resize::{
-    DocumentViewLayout, SplitPaneDivider, SplitPaneResizeAxis, SplitPaneResizeState,
-    document_view_layout_bounds, document_view_visual_area, helix_rect_to_scaled_pixel_bounds,
-    split_pane_divider_visual_line, split_pane_dividers, split_pane_resize_view_states,
+    DocumentViewLayout, EditorPaneLayout, SplitPaneDivider, SplitPaneResizeAxis,
+    SplitPaneResizeState, helix_rect_to_scaled_pixel_bounds, split_pane_resize_view_states,
     split_pane_resized_areas,
 };
 pub use view_manager::ViewManager;
@@ -14077,17 +14076,9 @@ impl Render for Workspace {
                     .child(self.render_image_viewer(image_tab, cx)),
             );
         } else {
-            let layouts = self.document_view_layouts(cx);
-            let layout_bounds = document_view_layout_bounds(&layouts);
-            let dim_inactive_panes =
-                layouts.len() > 1 && layouts.iter().any(|layout| layout.is_focused);
-            let dividers = if layouts.len() > 1 {
-                split_pane_dividers(&layouts)
-            } else {
-                Vec::new()
-            };
+            let editor_pane_layout = EditorPaneLayout::new(self.document_view_layouts(cx));
 
-            if layouts.is_empty() {
+            if editor_pane_layout.is_empty() {
                 if let Some(doc_view) = self.view_manager.document_views().values().next().cloned()
                 {
                     docs_root = docs_root.child(
@@ -14105,25 +14096,26 @@ impl Render for Workspace {
                     );
                 }
             } else {
-                if let Some(total_area) = layout_bounds {
-                    for layout in layouts.iter().copied() {
+                if let Some(total_area) = editor_pane_layout.total_area() {
+                    for pane in editor_pane_layout.panes() {
                         let layout = DocumentViewLayout {
-                            area: document_view_visual_area(layout, &dividers),
-                            ..layout
+                            view_id: pane.view_id,
+                            area: pane.visual_area,
+                            is_focused: pane.is_focused,
                         };
                         if let Some(doc_element) = self.render_document_view_layout(
                             layout,
                             total_area,
                             editor_content_w_px,
                             editor_content_h_px,
-                            dim_inactive_panes,
+                            editor_pane_layout.dim_inactive_panes(),
                             cx,
                         ) {
                             docs_root = docs_root.child(doc_element);
                         }
                     }
 
-                    for divider in dividers.iter().cloned() {
+                    for divider in editor_pane_layout.resize_handles().iter().cloned() {
                         docs_root = docs_root.child(self.render_split_pane_resize_handle(
                             divider,
                             total_area,
@@ -14133,10 +14125,9 @@ impl Render for Workspace {
                         ));
                     }
 
-                    for divider in &dividers {
-                        let divider = split_pane_divider_visual_line(divider.clone(), &dividers);
+                    for divider in editor_pane_layout.divider_lines() {
                         docs_root = docs_root.child(self.render_split_pane_divider_line(
-                            &divider,
+                            divider,
                             total_area,
                             editor_content_w_px,
                             editor_content_h_px,
