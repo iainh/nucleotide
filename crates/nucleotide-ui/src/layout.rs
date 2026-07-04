@@ -16,6 +16,74 @@ pub enum PanelVariant {
 }
 
 #[derive(IntoElement)]
+pub struct AppShell {
+    id: ElementId,
+    header: Option<AnyElement>,
+    footer: Option<AnyElement>,
+    children: Vec<AnyElement>,
+}
+
+impl AppShell {
+    pub fn new(id: impl Into<ElementId>) -> Self {
+        Self {
+            id: id.into(),
+            header: None,
+            footer: None,
+            children: Vec::new(),
+        }
+    }
+
+    pub fn header(mut self, header: impl IntoElement) -> Self {
+        self.header = Some(header.into_any_element());
+        self
+    }
+
+    pub fn footer(mut self, footer: impl IntoElement) -> Self {
+        self.footer = Some(footer.into_any_element());
+        self
+    }
+}
+
+impl ParentElement for AppShell {
+    fn extend(&mut self, elements: impl IntoIterator<Item = AnyElement>) {
+        self.children.extend(elements);
+    }
+}
+
+impl RenderOnce for AppShell {
+    fn render(self, _window: &mut gpui::Window, cx: &mut App) -> impl IntoElement {
+        let tokens = &cx.global::<crate::Theme>().tokens;
+        let mut shell = div()
+            .id(self.id)
+            .flex()
+            .flex_col()
+            .size_full()
+            .min_w(px(0.0))
+            .min_h(px(0.0))
+            .bg(tokens.editor.background)
+            .text_color(tokens.chrome.text_on_chrome);
+
+        if let Some(header) = self.header {
+            shell = shell.child(header);
+        }
+
+        shell = shell.child(
+            div()
+                .flex_1()
+                .min_w(px(0.0))
+                .min_h(px(0.0))
+                .children(self.children),
+        );
+
+        if let Some(footer) = self.footer {
+            shell = shell.child(footer);
+        }
+
+        shell
+    }
+}
+
+#[derive(IntoElement)]
 pub struct WorkspaceChrome {
     id: ElementId,
     children: Vec<AnyElement>,
@@ -119,6 +187,52 @@ impl RenderOnce for Panel {
                 this.shadow(vec![tokens.chrome.shadow_md.to_box_shadow(false)])
             })
             .p(self.padding.unwrap_or(tokens.sizes.space_3))
+            .children(self.children)
+    }
+}
+
+#[derive(IntoElement)]
+pub struct BottomPanel {
+    id: ElementId,
+    height: Option<Pixels>,
+    children: Vec<AnyElement>,
+}
+
+impl BottomPanel {
+    pub fn new(id: impl Into<ElementId>) -> Self {
+        Self {
+            id: id.into(),
+            height: None,
+            children: Vec::new(),
+        }
+    }
+
+    pub fn height(mut self, height: impl Into<Pixels>) -> Self {
+        self.height = Some(height.into());
+        self
+    }
+}
+
+impl ParentElement for BottomPanel {
+    fn extend(&mut self, elements: impl IntoIterator<Item = AnyElement>) {
+        self.children.extend(elements);
+    }
+}
+
+impl RenderOnce for BottomPanel {
+    fn render(self, _window: &mut gpui::Window, cx: &mut App) -> impl IntoElement {
+        let tokens = &cx.global::<crate::Theme>().tokens;
+        div()
+            .id(self.id)
+            .flex()
+            .flex_col()
+            .min_w(px(0.0))
+            .min_h(px(0.0))
+            .when_some(self.height, |this, height| this.h(height))
+            .bg(tokens.chrome.surface)
+            .border_t_1()
+            .border_color(tokens.chrome.separator_color)
+            .text_color(tokens.chrome.text_on_chrome)
             .children(self.children)
     }
 }
@@ -264,14 +378,15 @@ mod tests {
             _window: &mut gpui::Window,
             _cx: &mut Context<Self>,
         ) -> impl IntoElement {
-            WorkspaceChrome::new("workspace-chrome")
-                .child(Toolbar::new("toolbar").label("Project"))
+            AppShell::new("app-shell")
+                .header(Toolbar::new("toolbar").label("Project"))
                 .child(
                     Panel::new("panel")
                         .variant(PanelVariant::Elevated)
                         .child(div().child("Body")),
                 )
-                .child(StatusBar::new("status-bar").child("Ready"))
+                .child(BottomPanel::new("bottom-panel").height(gpui::px(48.0)))
+                .footer(StatusBar::new("status-bar").child("Ready"))
         }
     }
 

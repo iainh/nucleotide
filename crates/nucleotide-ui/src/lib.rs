@@ -101,7 +101,7 @@ pub use context_menu::ContextMenuController;
 pub use file_icon::FileIcon;
 pub use focus::{FocusCoordinator, FocusRole, FocusTraversal};
 pub use input::{InputSize, InputVariant};
-pub use layout::{Panel, PanelVariant, StatusBar, Toolbar, WorkspaceChrome};
+pub use layout::{AppShell, BottomPanel, Panel, PanelVariant, StatusBar, Toolbar, WorkspaceChrome};
 pub use list_item::{
     ListItem, ListItemSpacing, ListItemState, ListItemVariant, SelectionMode, SelectionState,
 };
@@ -361,7 +361,9 @@ pub fn init(cx: &mut App, config: Option<UIConfig>) {
     registry.register_component("CompletionRenderer");
     registry.register_component("SmartPopup");
     registry.register_component("DocumentationPanel");
+    registry.register_component("AppShell");
     registry.register_component("WorkspaceChrome");
+    registry.register_component("BottomPanel");
     registry.register_component("Panel");
     registry.register_component("Toolbar");
     registry.register_component("StatusBar");
