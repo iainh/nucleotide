@@ -138,6 +138,16 @@ impl ResizeDragController {
         Some(clamp_primary(self.start_primary.get(), dx, min_px, max_px))
     }
 
+    pub fn left_edge_value(&self, mouse_x: f32, min_px: f32, max_px: f32) -> Option<f32> {
+        if !self.dragging.get() {
+            return None;
+        }
+
+        let start_x = self.start_mouse.get().0;
+        let dx = mouse_x - start_x;
+        Some(clamp_primary(self.start_primary.get(), -dx, min_px, max_px))
+    }
+
     pub fn top_edge_value(&self, mouse_y: f32, min_px: f32, max_px: f32) -> Option<f32> {
         if !self.dragging.get() {
             return None;
@@ -525,6 +535,18 @@ mod tests {
         assert_eq!(drag.horizontal_value(150.0, 100.0, 400.0), Some(250.0));
         assert_eq!(drag.horizontal_value(0.0, 150.0, 400.0), Some(150.0));
         assert_eq!(drag.horizontal_value(500.0, 100.0, 300.0), Some(300.0));
+    }
+
+    #[test]
+    fn resize_drag_controller_tracks_left_edge_drag() {
+        let drag = ResizeDragController::new();
+        assert_eq!(drag.left_edge_value(120.0, 100.0, 400.0), None);
+
+        drag.begin(300.0, 25.0, 200.0);
+
+        assert_eq!(drag.left_edge_value(250.0, 100.0, 400.0), Some(250.0));
+        assert_eq!(drag.left_edge_value(500.0, 150.0, 400.0), Some(150.0));
+        assert_eq!(drag.left_edge_value(-100.0, 100.0, 300.0), Some(300.0));
     }
 
     #[test]

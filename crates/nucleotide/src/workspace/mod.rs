@@ -45,8 +45,8 @@ use nucleotide_ui::notification::{StatusBarNotification, StatusBarNotificationSe
 use nucleotide_ui::scrollbar::{Scrollbar, ScrollbarState};
 use nucleotide_ui::{
     AboutWindow, Button, ButtonSize, ButtonVariant, ConfirmDialog, ConfirmDialogCallbacks,
-    ContextMenuCallbacks, ContextMenuEntry, ContextMenuState, MarkdownStyle, Tooltipped,
-    markdown_extended, render_confirm_dialog, render_context_menu,
+    ContextMenuCallbacks, ContextMenuEntry, ContextMenuState, MarkdownStyle, ResizeDragController,
+    Tooltipped, markdown_extended, render_confirm_dialog, render_context_menu,
 };
 
 use crate::input_coordinator::{FocusGroup, InputContext, InputCoordinator};
@@ -1384,16 +1384,12 @@ pub struct Workspace {
     show_file_tree: bool,
     file_tree_width: f32,
     file_tree_width_override: Option<f32>,
-    is_resizing_file_tree: bool,
-    resize_start_x: f32,
-    resize_start_width: f32,
+    file_tree_resize: ResizeDragController,
     doc_sidebar_visible: bool,
     doc_sidebar_loading: bool,
     doc_sidebar_entries: Vec<HoverDocEntry>,
     doc_sidebar_width: f32,
-    doc_sidebar_resizing: bool,
-    doc_sidebar_resize_start_x: f32,
-    doc_sidebar_resize_start_width: f32,
+    doc_sidebar_resize: ResizeDragController,
     doc_sidebar_scroll_handle: ScrollHandle,
     doc_sidebar_scrollbar_state: ScrollbarState,
     titlebar: Option<Entity<nucleotide_ui::titlebar::TitleBar>>,
@@ -1466,9 +1462,7 @@ pub struct Workspace {
     // Height of the bottom (terminal) pane in basic layout mode
     basic_terminal_height: f32,
     // Drag state for basic layout terminal resizer
-    basic_term_resizing: bool,
-    basic_term_start_mouse_y: f32,
-    basic_term_start_height: f32,
+    basic_term_resize: ResizeDragController,
     // Embedded terminal panel entity for basic layout
     embedded_terminal_panel: Option<gpui::Entity<nucleotide_terminal_panel::TerminalPanel>>,
     // Cwd used to spawn the active terminal session.
@@ -5343,16 +5337,12 @@ impl Workspace {
             show_file_tree: true,
             file_tree_width: FILE_TREE_DEFAULT_WIDTH,
             file_tree_width_override: None,
-            is_resizing_file_tree: false,
-            resize_start_x: 0.0,
-            resize_start_width: 0.0,
+            file_tree_resize: ResizeDragController::new(),
             doc_sidebar_visible: false,
             doc_sidebar_loading: false,
             doc_sidebar_entries: Vec::new(),
             doc_sidebar_width: DOC_SIDEBAR_DEFAULT_WIDTH,
-            doc_sidebar_resizing: false,
-            doc_sidebar_resize_start_x: 0.0,
-            doc_sidebar_resize_start_width: DOC_SIDEBAR_DEFAULT_WIDTH,
+            doc_sidebar_resize: ResizeDragController::new(),
             doc_sidebar_scroll_handle,
             doc_sidebar_scrollbar_state,
             titlebar: None,
@@ -5418,9 +5408,7 @@ impl Workspace {
             ),
             // Basic layout is now the default
             basic_terminal_height: 220.0,
-            basic_term_resizing: false,
-            basic_term_start_mouse_y: 0.0,
-            basic_term_start_height: 0.0,
+            basic_term_resize: ResizeDragController::new(),
             embedded_terminal_panel: None,
             terminal_cwd: None,
             terminal_focus: cx.focus_handle(),
@@ -6096,8 +6084,7 @@ impl Workspace {
     }
 
     fn finish_file_tree_resize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.is_resizing_file_tree {
-            self.is_resizing_file_tree = false;
+        if self.file_tree_resize.finish() {
             self.request_standard_cursor_restore(window, cx);
         }
     }
@@ -6141,18 +6128,15 @@ impl Workspace {
     fn finish_active_resize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let mut finished = false;
 
-        if self.is_resizing_file_tree {
-            self.is_resizing_file_tree = false;
+        if self.file_tree_resize.finish() {
             finished = true;
         }
 
-        if self.doc_sidebar_resizing {
-            self.doc_sidebar_resizing = false;
+        if self.doc_sidebar_resize.finish() {
             finished = true;
         }
 
-        if self.basic_term_resizing {
-            self.basic_term_resizing = false;
+        if self.basic_term_resize.finish() {
             finished = true;
         }
 
@@ -6231,14 +6215,13 @@ impl Workspace {
         }
     }
 
-    fn clamped_file_tree_resize_width(
-        resize_start_width: f32,
-        resize_start_x: f32,
+    fn file_tree_resize_width_for_drag(
+        drag: &ResizeDragController,
         mouse_x: f32,
         viewport_width: f32,
-    ) -> f32 {
-        let dx = mouse_x - resize_start_x;
-        (resize_start_width + dx).clamp(
+    ) -> Option<f32> {
+        drag.horizontal_value(
+            mouse_x,
             FILE_TREE_MIN_WIDTH,
             Self::max_file_tree_width(viewport_width),
         )
@@ -6250,12 +6233,11 @@ impl Workspace {
         viewport_width: f32,
         cx: &mut Context<Self>,
     ) -> bool {
-        let new_width = Self::clamped_file_tree_resize_width(
-            self.resize_start_width,
-            self.resize_start_x,
-            mouse_x,
-            viewport_width,
-        );
+        let Some(new_width) =
+            Self::file_tree_resize_width_for_drag(&self.file_tree_resize, mouse_x, viewport_width)
+        else {
+            return false;
+        };
 
         if (self.file_tree_width - new_width).abs() > 0.5 {
             self.file_tree_width = new_width;
@@ -6267,14 +6249,16 @@ impl Workspace {
         }
     }
 
-    fn clamped_documentation_sidebar_resize_width(
-        resize_start_width: f32,
-        resize_start_x: f32,
+    fn documentation_sidebar_resize_width_for_drag(
+        drag: &ResizeDragController,
         mouse_x: f32,
         available_width: f32,
-    ) -> f32 {
-        let dx = resize_start_x - mouse_x;
-        Self::clamped_documentation_sidebar_width(resize_start_width + dx, available_width)
+    ) -> Option<f32> {
+        drag.left_edge_value(
+            mouse_x,
+            DOC_SIDEBAR_MIN_WIDTH,
+            Self::max_documentation_sidebar_width(available_width),
+        )
     }
 
     fn update_documentation_sidebar_resize(
@@ -6283,12 +6267,13 @@ impl Workspace {
         available_width: f32,
         cx: &mut Context<Self>,
     ) -> bool {
-        let new_width = Self::clamped_documentation_sidebar_resize_width(
-            self.doc_sidebar_resize_start_width,
-            self.doc_sidebar_resize_start_x,
+        let Some(new_width) = Self::documentation_sidebar_resize_width_for_drag(
+            &self.doc_sidebar_resize,
             mouse_x,
             available_width,
-        );
+        ) else {
+            return false;
+        };
 
         if (self.doc_sidebar_width - new_width).abs() > 0.5 {
             self.doc_sidebar_width = new_width;
@@ -6300,8 +6285,7 @@ impl Workspace {
     }
 
     fn finish_documentation_sidebar_resize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.doc_sidebar_resizing {
-            self.doc_sidebar_resizing = false;
+        if self.doc_sidebar_resize.finish() {
             self.request_standard_cursor_restore(window, cx);
         }
     }
@@ -15607,10 +15591,10 @@ impl Render for Workspace {
             }));
 
         // Add resize cursor and listeners only while resizing to reduce event overhead
-        if self.is_resizing_file_tree
-            || self.doc_sidebar_resizing
+        if self.file_tree_resize.is_dragging()
+            || self.doc_sidebar_resize.is_dragging()
             || self.split_pane_resize.is_some()
-            || self.basic_term_resizing
+            || self.basic_term_resize.is_dragging()
         {
             workspace_div = workspace_div.capture_any_mouse_up(cx.listener(
                 |workspace, event: &MouseUpEvent, window, cx| {
@@ -15621,7 +15605,7 @@ impl Render for Workspace {
                 },
             ));
         }
-        if self.is_resizing_file_tree {
+        if self.file_tree_resize.is_dragging() {
             workspace_div = workspace_div
                 .cursor(gpui::CursorStyle::ResizeLeftRight)
                 .on_mouse_move(
@@ -15650,7 +15634,7 @@ impl Render for Workspace {
                     }),
                 );
         }
-        if self.doc_sidebar_resizing {
+        if self.doc_sidebar_resize.is_dragging() {
             let resize_available_w = right_content_w_px;
             workspace_div = workspace_div
                 .cursor(gpui::CursorStyle::ResizeLeftRight)
@@ -16214,30 +16198,27 @@ impl Render for Workspace {
                             // Track resize drags at the wrapper level for reliability
                             .on_mouse_move(cx.listener(
                                 move |this: &mut Workspace, ev: &MouseMoveEvent, window, cx| {
-                                    if this.basic_term_resizing && ev.dragging() {
-                                        let dy = f32::from(ev.position.y)
-                                            - this.basic_term_start_mouse_y;
-                                        let min_h = 80.0f32;
-                                        let max_h = max_term;
-                                        let new_h =
-                                            (this.basic_term_start_height - dy).clamp(min_h, max_h);
-                                        if (this.basic_terminal_height - new_h).abs() > 0.5 {
-                                            this.basic_terminal_height = new_h;
-                                            cx.notify();
-                                            window.refresh();
-                                        }
+                                    let min_h = 80.0f32;
+                                    let max_h = max_term;
+                                    if ev.dragging()
+                                        && let Some(new_h) = this
+                                            .basic_term_resize
+                                            .top_edge_value(f32::from(ev.position.y), min_h, max_h)
+                                        && (this.basic_terminal_height - new_h).abs() > 0.5
+                                    {
+                                        this.basic_terminal_height = new_h;
+                                        cx.notify();
+                                        window.refresh();
                                     }
                                 },
                             ))
                             .on_mouse_up(MouseButton::Left, cx.listener(|this: &mut Workspace, _ev: &MouseUpEvent, window, cx| {
-                                if this.basic_term_resizing {
-                                    this.basic_term_resizing = false;
+                                if this.basic_term_resize.finish() {
                                     this.request_standard_cursor_restore(window, cx);
                                 }
                             }))
                             .on_mouse_up_out(MouseButton::Left, cx.listener(|this: &mut Workspace, _ev: &MouseUpEvent, window, cx| {
-                                if this.basic_term_resizing {
-                                    this.basic_term_resizing = false;
+                                if this.basic_term_resize.finish() {
                                     this.request_standard_cursor_restore(window, cx);
                                 }
                             }))
@@ -16297,10 +16278,11 @@ impl Render for Workspace {
                                             cx.stop_propagation();
                                             return;
                                         }
-                                        this.basic_term_resizing = true;
-                                        this.basic_term_start_mouse_y =
-                                            f32::from(ev.position.y);
-                                        this.basic_term_start_height = this.basic_terminal_height;
+                                        this.basic_term_resize.begin(
+                                            f32::from(ev.position.x),
+                                            f32::from(ev.position.y),
+                                            this.basic_terminal_height,
+                                        );
                                         this.terminal_active = true;
                                         window.refresh();
                                         cx.stop_propagation();
@@ -16359,10 +16341,11 @@ impl Render for Workspace {
                                             return;
                                         }
 
-                                        this.doc_sidebar_resizing = true;
-                                        this.doc_sidebar_resize_start_x = f32::from(ev.position.x);
-                                        this.doc_sidebar_resize_start_width =
-                                            this.doc_sidebar_width;
+                                        this.doc_sidebar_resize.begin(
+                                            f32::from(ev.position.x),
+                                            f32::from(ev.position.y),
+                                            this.doc_sidebar_width,
+                                        );
                                         cx.notify();
                                         window.refresh();
                                         cx.stop_propagation();
@@ -16377,8 +16360,7 @@ impl Render for Workspace {
                                       event: &DragMoveEvent<DraggedDocumentationSidebarResize>,
                                       window,
                                       cx| {
-                                    if this.doc_sidebar_resizing
-                                        && event.event.dragging()
+                                    if event.event.dragging()
                                         && this.update_documentation_sidebar_resize(
                                             f32::from(event.event.position.x),
                                             resize_available_w,
@@ -16430,8 +16412,7 @@ impl Render for Workspace {
                     .min_h(px(0.0))
                     .on_mouse_move(cx.listener(
                         move |this: &mut Workspace, ev: &MouseMoveEvent, window, cx| {
-                            if this.is_resizing_file_tree
-                                && ev.dragging()
+                            if ev.dragging()
                                 && this.update_file_tree_resize(
                                     f32::from(ev.position.x),
                                     f32::from(window.viewport_size().width),
@@ -16567,9 +16548,11 @@ impl Render for Workspace {
                                     cx.stop_propagation();
                                     return;
                                 }
-                                this.is_resizing_file_tree = true;
-                                this.resize_start_x = f32::from(ev.position.x);
-                                this.resize_start_width = this.file_tree_width;
+                                this.file_tree_resize.begin(
+                                    f32::from(ev.position.x),
+                                    f32::from(ev.position.y),
+                                    this.file_tree_width,
+                                );
                                 cx.notify();
                                 window.refresh();
                                 cx.stop_propagation();
@@ -16584,8 +16567,7 @@ impl Render for Workspace {
                          event: &DragMoveEvent<DraggedFileTreeResize>,
                          window,
                          cx| {
-                            if this.is_resizing_file_tree
-                                && event.event.dragging()
+                            if event.event.dragging()
                                 && this.update_file_tree_resize(
                                     f32::from(event.event.position.x),
                                     f32::from(window.viewport_size().width),
@@ -20433,33 +20415,49 @@ mod tests {
 
     #[test]
     fn file_tree_resize_width_tracks_mouse_and_clamps_to_bounds() {
+        let drag = ResizeDragController::new();
         assert_eq!(
-            Workspace::clamped_file_tree_resize_width(250.0, 300.0, 360.0, 1000.0),
-            310.0
+            Workspace::file_tree_resize_width_for_drag(&drag, 360.0, 1000.0),
+            None
+        );
+
+        drag.begin(300.0, 0.0, 250.0);
+
+        assert_eq!(
+            Workspace::file_tree_resize_width_for_drag(&drag, 360.0, 1000.0),
+            Some(310.0)
         );
         assert_eq!(
-            Workspace::clamped_file_tree_resize_width(250.0, 300.0, 100.0, 1000.0),
-            FILE_TREE_MIN_WIDTH
+            Workspace::file_tree_resize_width_for_drag(&drag, 100.0, 1000.0),
+            Some(FILE_TREE_MIN_WIDTH)
         );
         assert_eq!(
-            Workspace::clamped_file_tree_resize_width(250.0, 300.0, 1200.0, 1000.0),
-            800.0
+            Workspace::file_tree_resize_width_for_drag(&drag, 1200.0, 1000.0),
+            Some(800.0)
         );
     }
 
     #[test]
     fn documentation_sidebar_resize_width_tracks_mouse_and_clamps_to_bounds() {
+        let drag = ResizeDragController::new();
         assert_eq!(
-            Workspace::clamped_documentation_sidebar_resize_width(360.0, 800.0, 700.0, 1000.0),
-            460.0
+            Workspace::documentation_sidebar_resize_width_for_drag(&drag, 700.0, 1000.0),
+            None
+        );
+
+        drag.begin(800.0, 0.0, 360.0);
+
+        assert_eq!(
+            Workspace::documentation_sidebar_resize_width_for_drag(&drag, 700.0, 1000.0),
+            Some(460.0)
         );
         assert_eq!(
-            Workspace::clamped_documentation_sidebar_resize_width(360.0, 800.0, 1100.0, 1000.0),
-            DOC_SIDEBAR_MIN_WIDTH
+            Workspace::documentation_sidebar_resize_width_for_drag(&drag, 1100.0, 1000.0),
+            Some(DOC_SIDEBAR_MIN_WIDTH)
         );
         assert_eq!(
-            Workspace::clamped_documentation_sidebar_resize_width(360.0, 800.0, 0.0, 1000.0),
-            DOC_SIDEBAR_MAX_WIDTH
+            Workspace::documentation_sidebar_resize_width_for_drag(&drag, 0.0, 1000.0),
+            Some(DOC_SIDEBAR_MAX_WIDTH)
         );
         assert_eq!(
             Workspace::clamped_documentation_sidebar_width(360.0, 500.0),
