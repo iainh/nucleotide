@@ -4,8 +4,8 @@
 use gpui::prelude::FluentBuilder;
 use gpui::{
     App, Context, DismissEvent, EventEmitter, FocusHandle, Focusable, InteractiveElement,
-    IntoElement, KeyDownEvent, ParentElement, Render, SharedString, StatefulInteractiveElement,
-    Styled, Task, Window, div, px, relative,
+    IntoElement, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Task,
+    Window, div, px, relative,
 };
 use std::cmp::Ordering as CmpOrdering;
 use std::sync::Arc;
@@ -22,6 +22,11 @@ use crate::completion_perf::{PerformanceMonitor, PerformanceTimer};
 use crate::completion_renderer::{CompletionItemElement, CompletionListState};
 use crate::debouncer::{CompletionDebouncer, create_completion_debouncer};
 // use crate::fuzzy::{FuzzyConfig, match_strings}; // Unused in synchronous filtering
+use crate::actions::completion::{
+    CompletionConfirm, CompletionConfirmAndStop, CompletionDismiss, CompletionPageDown,
+    CompletionPageUp, CompletionSelectFirst, CompletionSelectLast, CompletionSelectNext,
+    CompletionSelectPrev,
+};
 
 const COMPLETION_VISIBLE_ROWS: usize = 6;
 const COMPLETION_ROW_HEIGHT_PX: f32 = 32.0;
@@ -1521,6 +1526,113 @@ impl CompletionView {
         }
     }
 
+    fn confirm_selected_completion(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(selected_index) = self.selected_index() else {
+            nucleotide_logging::warn!("Completion confirm requested but no item is selected");
+            return false;
+        };
+
+        nucleotide_logging::debug!(
+            selected_index = selected_index,
+            "Accepting selected completion via Helix"
+        );
+        cx.emit(CompleteViaHelixEvent {
+            item_index: selected_index,
+        });
+        cx.emit(DismissEvent);
+        true
+    }
+
+    fn confirm_completion_action(
+        &mut self,
+        _: &CompletionConfirm,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.confirm_selected_completion(cx);
+    }
+
+    fn confirm_completion_and_stop_action(
+        &mut self,
+        _: &CompletionConfirmAndStop,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.confirm_selected_completion(cx) {
+            cx.stop_propagation();
+        }
+    }
+
+    fn dismiss_completion_action(
+        &mut self,
+        _: &CompletionDismiss,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        cx.emit(DismissEvent);
+        cx.stop_propagation();
+    }
+
+    fn select_previous_action(
+        &mut self,
+        _: &CompletionSelectPrev,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select_prev(cx);
+        cx.stop_propagation();
+    }
+
+    fn select_next_action(
+        &mut self,
+        _: &CompletionSelectNext,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select_next(cx);
+        cx.stop_propagation();
+    }
+
+    fn select_page_up_action(
+        &mut self,
+        _: &CompletionPageUp,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select_page_up(cx);
+        cx.stop_propagation();
+    }
+
+    fn select_page_down_action(
+        &mut self,
+        _: &CompletionPageDown,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select_page_down(cx);
+        cx.stop_propagation();
+    }
+
+    fn select_first_action(
+        &mut self,
+        _: &CompletionSelectFirst,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select_first(cx);
+        cx.stop_propagation();
+    }
+
+    fn select_last_action(
+        &mut self,
+        _: &CompletionSelectLast,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select_last(cx);
+        cx.stop_propagation();
+    }
+
     /// Get the list state for rendering
     pub fn list_state(&self) -> &CompletionListState {
         &self.list_state
@@ -1911,87 +2023,17 @@ impl Render for CompletionView {
         let container = div()
             .id("completion-popup-v2")
             .focusable()
+            .key_context("Completion")
             .track_focus(&self.focus_handle)
-            .on_key_down(cx.listener(|view, ev: &KeyDownEvent, _window, cx| {
-                match ev.keystroke.key.as_str() {
-                    "escape" => {
-                        // Emit dismiss event to close the completion popup
-                        cx.emit(DismissEvent);
-                        // Stop propagation so Escape doesn't affect the editor
-                        cx.stop_propagation();
-                    }
-                    "tab" => {
-                        // Tab: Accept the currently selected completion item
-                        if let Some(selected_index) = view.selected_index() {
-                            nucleotide_logging::debug!(
-                                selected_index = selected_index,
-                                "Tab pressed - accepting selected completion via Helix"
-                            );
-                            // Signal to Helix that it should accept the completion
-                            // This uses Helix's Transaction system for proper text insertion
-                            cx.emit(CompleteViaHelixEvent {
-                                item_index: selected_index,
-                            });
-                            // Dismiss the completion popup
-                            cx.emit(DismissEvent);
-                            // Stop propagation so Tab doesn't insert text in the editor after completion
-                            cx.stop_propagation();
-                        } else {
-                            nucleotide_logging::warn!(
-                                "Tab pressed but no completion item selected"
-                            );
-                        }
-                    }
-                    "up" => {
-                        nucleotide_logging::trace!("Up arrow key pressed in completion popup");
-                        // Up arrow: Move to previous completion item
-                        view.select_prev(cx);
-                        // Stop propagation so arrow keys don't move cursor in editor
-                        cx.stop_propagation();
-                    }
-                    "down" => {
-                        nucleotide_logging::trace!("Down arrow key pressed in completion popup");
-                        // Down arrow: Move to next completion item
-                        view.select_next(cx);
-                        // Stop propagation so arrow keys don't move cursor in editor
-                        cx.stop_propagation();
-                    }
-                    "pagedown" => {
-                        nucleotide_logging::trace!("Page Down pressed in completion popup");
-                        view.select_page_down(cx);
-                        cx.stop_propagation();
-                    }
-                    "pageup" => {
-                        nucleotide_logging::trace!("Page Up pressed in completion popup");
-                        view.select_page_up(cx);
-                        cx.stop_propagation();
-                    }
-                    "home" => {
-                        nucleotide_logging::trace!("Home key pressed in completion popup");
-                        view.select_first(cx);
-                        cx.stop_propagation();
-                    }
-                    "end" => {
-                        nucleotide_logging::trace!("End key pressed in completion popup");
-                        view.select_last(cx);
-                        cx.stop_propagation();
-                    }
-                    "enter" => {
-                        // Accept the currently selected completion item via Helix's system
-                        if let Some(selected_index) = view.selected_index() {
-                            // Signal to Helix that it should accept the completion
-                            // This uses Helix's Transaction system for proper text insertion
-                            cx.emit(CompleteViaHelixEvent {
-                                item_index: selected_index,
-                            });
-                            // Dismiss the completion popup
-                            cx.emit(DismissEvent);
-                            // DO NOT stop propagation - let Enter key reach Helix for Transaction processing
-                        }
-                    }
-                    _ => {}
-                }
-            }));
+            .on_action(cx.listener(Self::dismiss_completion_action))
+            .on_action(cx.listener(Self::confirm_completion_action))
+            .on_action(cx.listener(Self::confirm_completion_and_stop_action))
+            .on_action(cx.listener(Self::select_previous_action))
+            .on_action(cx.listener(Self::select_next_action))
+            .on_action(cx.listener(Self::select_page_up_action))
+            .on_action(cx.listener(Self::select_page_down_action))
+            .on_action(cx.listener(Self::select_first_action))
+            .on_action(cx.listener(Self::select_last_action));
 
         // Do NOT steal focus from the editor - completion should be a non-modal overlay
         // The editor needs to maintain focus for proper keyboard event handling
@@ -2915,6 +2957,43 @@ mod tests {
 
                 view.select_prev(_cx);
                 assert_eq!(view.selected_index, 0, "Should move back to first item");
+            });
+        }
+
+        #[gpui::test]
+        async fn test_completion_view_handles_navigation_actions(cx: &mut TestAppContext) {
+            cx.update(|cx| {
+                cx.set_global(crate::Theme::from_tokens(crate::DesignTokens::dark()));
+            });
+
+            let completion_items = vec![
+                CompletionItem::new("first").with_kind(CompletionItemKind::Function),
+                CompletionItem::new("second").with_kind(CompletionItemKind::Function),
+                CompletionItem::new("third").with_kind(CompletionItemKind::Function),
+            ];
+
+            let (completion_view, cx) = cx.add_window_view(|_window, cx| {
+                let mut view = CompletionView::new(cx);
+                view.set_items_with_filter(completion_items.clone(), None, cx);
+                view
+            });
+            let focus = completion_view.read_with(cx, |view, _| view.focus_handle.clone());
+
+            cx.update(|window, cx| {
+                window.focus(&focus, cx);
+                focus.dispatch_action(&CompletionSelectNext, window, cx);
+            });
+
+            completion_view.read_with(cx, |view, _| {
+                assert_eq!(view.selected_index, 1);
+            });
+
+            cx.update(|window, cx| {
+                focus.dispatch_action(&CompletionSelectPrev, window, cx);
+            });
+
+            completion_view.read_with(cx, |view, _| {
+                assert_eq!(view.selected_index, 0);
             });
         }
     }

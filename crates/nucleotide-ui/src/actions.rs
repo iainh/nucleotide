@@ -32,8 +32,11 @@ pub mod completion {
             CompletionSelectFirst,
             CompletionSelectLast,
             CompletionConfirm,
+            CompletionConfirmAndStop,
             CompletionCancel,
             CompletionDismiss,
+            CompletionPageUp,
+            CompletionPageDown,
         ]
     );
 }
