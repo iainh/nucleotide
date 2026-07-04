@@ -108,7 +108,7 @@ pub use confirm_dialog::{
 pub use context_menu::ContextMenuController;
 pub use file_icon::FileIcon;
 pub use focus::{FocusCoordinator, FocusRole, FocusTraversal};
-pub use input::{Input, InputSize, InputVariant};
+pub use input::{InputSize, InputVariant};
 pub use layout::{Panel, PanelVariant, StatusBar, Toolbar, WorkspaceChrome};
 pub use list_item::{
     ListItem, ListItemSpacing, ListItemState, ListItemVariant, SelectionMode, SelectionState,
