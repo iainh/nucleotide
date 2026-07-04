@@ -9,23 +9,21 @@ use std::process::Command;
 use anyhow::{Context as _, Result, anyhow};
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    Anchor, App, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement, IntoElement, KeyDownEvent, MouseButton, ParentElement, Render,
-    ScrollHandle, StatefulInteractiveElement, Styled, Subscription, Window, anchored, deferred,
-    div, point, px,
+    Anchor, App, AppContext as _, Context, DismissEvent, Entity, EventEmitter, FocusHandle,
+    Focusable, InteractiveElement, IntoElement, MouseButton, ParentElement, Render, ScrollHandle,
+    StatefulInteractiveElement, Styled, Subscription, Window, anchored, deferred, div, point, px,
 };
 use nucleotide_core::{EditorStatus, Severity};
 use nucleotide_types::scrollbar::SCROLLBAR_THICKNESS;
 use nucleotide_ui::actions::remote_connection_manager::{
     Accept as AcceptRemoteConnection, Cancel as CancelRemoteConnection,
-    DeleteChar as DeleteRemoteConnectionChar, MoveCursorLeft as MoveRemoteCursorLeft,
-    MoveCursorRight as MoveRemoteCursorRight, SelectNext as SelectNextRemoteItem,
-    SelectPrevious as SelectPreviousRemoteItem, ToggleProtocol as ToggleRemoteProtocol,
+    SelectNext as SelectNextRemoteItem, SelectPrevious as SelectPreviousRemoteItem,
+    ToggleProtocol as ToggleRemoteProtocol,
 };
 use nucleotide_ui::scrollbar::{Scrollbar, ScrollbarState};
 use nucleotide_ui::{
     Button, ButtonSize, ButtonVariant, FileIcon, IconPosition, ListItem, ListItemSpacing,
-    ListItemVariant, MenuCheckSide, PopupMenu, ThemedContext,
+    ListItemVariant, MenuCheckSide, PopupMenu, TextInput, TextInputEvent, ThemedContext,
 };
 use nucleotide_workspace::{
     DirectoryListing, FileKind, SshWorkspaceTarget, WorkspaceBackendHandle,
@@ -151,8 +149,8 @@ pub struct RemoteConnectionManagerView {
     protocol_menu_open: bool,
     protocol_menu: Option<Entity<PopupMenu>>,
     protocol_menu_subscription: Option<Subscription>,
+    server_input_view: Entity<TextInput>,
     server_input: String,
-    cursor_position: usize,
     suggestions: Vec<RemoteServerSuggestion>,
     suggestion_selection: usize,
     suggestions_scroll_handle: ScrollHandle,
@@ -171,26 +169,39 @@ pub struct RemoteConnectionManagerView {
 }
 
 impl RemoteConnectionManagerView {
+    fn new_server_input(cx: &mut Context<Self>) -> Entity<TextInput> {
+        let input = cx.new(|cx| {
+            TextInput::new("remote-server-input", cx)
+                .size(nucleotide_ui::InputSize::Medium)
+                .placeholder("Host, distro, alias or saved connection")
+        });
+        cx.subscribe(&input, Self::handle_server_input_event)
+            .detach();
+        input
+    }
+
     pub fn new(
         core: gpui::WeakEntity<crate::Core>,
         handle: tokio::runtime::Handle,
         cx: &mut Context<Self>,
     ) -> Self {
+        let server_input_view = Self::new_server_input(cx);
+        let focus_handle = server_input_view.read(cx).focus_handle(cx);
         let suggestions_scroll_handle = ScrollHandle::new();
         let suggestions_scrollbar_state = ScrollbarState::new(suggestions_scroll_handle.clone());
         let directory_scroll_handle = ScrollHandle::new();
         let directory_scrollbar_state = ScrollbarState::new(directory_scroll_handle.clone());
 
         Self {
-            focus_handle: cx.focus_handle(),
+            focus_handle,
             core,
             handle,
             protocol: RemoteConnectionProtocol::Ssh,
             protocol_menu_open: false,
             protocol_menu: None,
             protocol_menu_subscription: None,
+            server_input_view,
             server_input: String::new(),
-            cursor_position: 0,
             suggestions: load_remote_server_suggestions(),
             suggestion_selection: 0,
             suggestions_scroll_handle,
@@ -262,12 +273,46 @@ impl RemoteConnectionManagerView {
                     .iter()
                     .any(|suggestion| suggestion.insert_text == self.server_input)
             {
-                self.server_input.clear();
-                self.cursor_position = 0;
+                self.set_server_input("", cx);
             }
         }
 
         cx.notify();
+    }
+
+    fn handle_server_input_event(
+        &mut self,
+        _input: Entity<TextInput>,
+        event: &TextInputEvent,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            TextInputEvent::Changed(value) => {
+                self.server_input = value.to_string();
+                self.suggestion_selection = 0;
+                self.accepted_suggestion = false;
+                self.browse_session = None;
+                self.pending_selected_path = None;
+                self.status = None;
+                cx.notify();
+            }
+            TextInputEvent::Submitted(_) => self.accept_or_connect(cx),
+            TextInputEvent::Cancelled => {
+                if self.protocol_menu_open {
+                    self.close_protocol_menu(cx);
+                } else {
+                    self.cancel(cx);
+                }
+            }
+        }
+    }
+
+    fn set_server_input(&mut self, value: impl Into<String>, cx: &mut Context<Self>) {
+        let value = value.into();
+        self.server_input = value.clone();
+        self.server_input_view.update(cx, |input, cx| {
+            input.set_value_silent(value, cx);
+        });
     }
 
     fn close_protocol_menu(&mut self, cx: &mut Context<Self>) {
@@ -346,8 +391,7 @@ impl RemoteConnectionManagerView {
 
     fn apply_suggestion(&mut self, suggestion: RemoteServerSuggestion, cx: &mut Context<Self>) {
         self.protocol = suggestion.protocol;
-        self.server_input = suggestion.insert_text;
-        self.cursor_position = self.server_input.chars().count();
+        self.set_server_input(suggestion.insert_text, cx);
         self.suggestion_selection = 0;
         self.accepted_suggestion = true;
         self.close_protocol_menu(cx);
@@ -649,49 +693,6 @@ impl RemoteConnectionManagerView {
         cx.emit(DismissEvent);
     }
 
-    fn insert_char(&mut self, ch: char, cx: &mut Context<Self>) {
-        let byte_pos = byte_position_from_char_position(&self.server_input, self.cursor_position);
-        self.server_input.insert(byte_pos, ch);
-        self.cursor_position += 1;
-        self.suggestion_selection = 0;
-        self.accepted_suggestion = false;
-        self.browse_session = None;
-        self.status = None;
-        cx.notify();
-    }
-
-    fn delete_char(&mut self, cx: &mut Context<Self>) {
-        if self.cursor_position == 0 {
-            return;
-        }
-
-        let mut chars = self.server_input.chars().collect::<Vec<_>>();
-        let char_pos = self.cursor_position.saturating_sub(1);
-        if char_pos < chars.len() {
-            chars.remove(char_pos);
-            self.server_input = chars.into_iter().collect();
-            self.cursor_position = char_pos;
-            self.suggestion_selection = 0;
-            self.accepted_suggestion = false;
-            self.browse_session = None;
-            self.status = None;
-            cx.notify();
-        }
-    }
-
-    fn move_cursor(&mut self, delta: isize, cx: &mut Context<Self>) {
-        let len = self.server_input.chars().count();
-        if delta < 0 {
-            self.cursor_position = self
-                .cursor_position
-                .saturating_sub(usize::try_from(-delta).unwrap_or(0));
-        } else {
-            self.cursor_position =
-                (self.cursor_position + usize::try_from(delta).unwrap_or(0)).min(len);
-        }
-        cx.notify();
-    }
-
     fn move_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
         if self.browse_session.is_some() {
             let len = self
@@ -779,45 +780,6 @@ impl RemoteConnectionManagerView {
         cx.stop_propagation();
     }
 
-    fn move_cursor_left_action(
-        &mut self,
-        _: &MoveRemoteCursorLeft,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.move_cursor(-1, cx);
-        cx.stop_propagation();
-    }
-
-    fn move_cursor_right_action(
-        &mut self,
-        _: &MoveRemoteCursorRight,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.move_cursor(1, cx);
-        cx.stop_propagation();
-    }
-
-    fn delete_char_action(
-        &mut self,
-        _: &DeleteRemoteConnectionChar,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.delete_char(cx);
-        cx.stop_propagation();
-    }
-
-    fn handle_text_key_down(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) -> bool {
-        let Some(ch) = remote_manager_text_char(event.keystroke.key.as_str()) else {
-            return false;
-        };
-
-        self.insert_char(ch, cx);
-        true
-    }
-
     fn render_protocol_dropdown(
         &mut self,
         window: &mut Window,
@@ -858,77 +820,11 @@ impl RemoteConnectionManagerView {
             })
     }
 
-    fn render_input_field(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
-        let tokens = &theme.tokens;
-        let input_tokens = tokens.input_tokens();
-        let is_focused = self.focus_handle.is_focused(window);
-        let display = self.server_input.clone();
-        let before_cursor = display
-            .chars()
-            .take(self.cursor_position)
-            .collect::<String>();
-        let after_cursor = display
-            .chars()
-            .skip(self.cursor_position)
-            .collect::<String>();
-
+    fn render_input_field(&self) -> impl IntoElement {
         div()
-            .id("remote-server-input")
-            .track_focus(&self.focus_handle)
-            .flex()
-            .items_center()
             .flex_1()
             .min_w(px(0.0))
-            .px_3()
-            .py_2()
-            .rounded_md()
-            .border_1()
-            .border_color(if is_focused {
-                input_tokens.border_focus
-            } else {
-                input_tokens.border
-            })
-            .bg(if is_focused {
-                input_tokens.background_focus
-            } else {
-                input_tokens.background
-            })
-            .text_color(input_tokens.text)
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _event, window, cx| {
-                    this.focus_handle.focus(window, cx);
-                }),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .min_w(px(0.0))
-                    .child(if display.is_empty() {
-                        div()
-                            .text_color(input_tokens.placeholder)
-                            .child(match self.protocol {
-                                RemoteConnectionProtocol::Ssh => "Host, alias or saved connection",
-                                RemoteConnectionProtocol::Wsl => "Distribution or saved connection",
-                            })
-                    } else {
-                        div()
-                            .flex()
-                            .items_center()
-                            .min_w(px(0.0))
-                            .child(before_cursor)
-                            .child(
-                                div()
-                                    .w(px(2.0))
-                                    .h(px(18.0))
-                                    .bg(input_tokens.text)
-                                    .when(!is_focused, |this| this.opacity(0.45)),
-                            )
-                            .child(after_cursor)
-                    }),
-            )
+            .child(self.server_input_view.clone())
     }
 
     fn render_suggestions(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1385,19 +1281,11 @@ impl Render for RemoteConnectionManagerView {
         div()
             .key_context("RemoteConnectionManager")
             .track_focus(&self.focus_handle)
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
-                if this.handle_text_key_down(event, cx) {
-                    cx.stop_propagation();
-                }
-            }))
             .on_action(cx.listener(Self::accept_action))
             .on_action(cx.listener(Self::cancel_action))
             .on_action(cx.listener(Self::toggle_protocol_action))
             .on_action(cx.listener(Self::select_previous_action))
             .on_action(cx.listener(Self::select_next_action))
-            .on_action(cx.listener(Self::move_cursor_left_action))
-            .on_action(cx.listener(Self::move_cursor_right_action))
-            .on_action(cx.listener(Self::delete_char_action))
             .on_action(cx.listener(Self::select_remote_protocol))
             .flex()
             .flex_col()
@@ -1451,7 +1339,7 @@ impl Render for RemoteConnectionManagerView {
                     .items_center()
                     .gap_2()
                     .child(self.render_protocol_dropdown(window, cx))
-                    .child(self.render_input_field(window, cx))
+                    .child(self.render_input_field())
                     .child(self.render_text_button("Connect", true, cx, |this, cx| {
                         this.connect(cx);
                     })),
@@ -1963,24 +1851,6 @@ fn short_display_path(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
-fn byte_position_from_char_position(value: &str, char_position: usize) -> usize {
-    value.chars().take(char_position).map(char::len_utf8).sum()
-}
-
-fn remote_manager_text_char(key: &str) -> Option<char> {
-    match key {
-        "space" => Some(' '),
-        key if key.chars().count() == 1 => {
-            let ch = key.chars().next()?;
-            (ch.is_alphanumeric()
-                || ch.is_ascii_punctuation()
-                || matches!(ch, '_' | '-' | '.' | '@' | ':' | '/' | '\\'))
-            .then_some(ch)
-        }
-        _ => None,
-    }
-}
-
 fn moved_index(current: usize, len: usize, delta: isize) -> usize {
     if len == 0 {
         return 0;
@@ -2085,16 +1955,6 @@ mod tests {
         assert_eq!(target.host, "example.com");
         assert_eq!(target.user.as_deref(), Some("me"));
         assert_eq!(target.port, Some(2222));
-    }
-
-    #[test]
-    fn remote_manager_text_char_accepts_printable_target_chars_only() {
-        assert_eq!(remote_manager_text_char("a"), Some('a'));
-        assert_eq!(remote_manager_text_char("@"), Some('@'));
-        assert_eq!(remote_manager_text_char("space"), Some(' '));
-        assert_eq!(remote_manager_text_char("enter"), None);
-        assert_eq!(remote_manager_text_char("backspace"), None);
-        assert_eq!(remote_manager_text_char("tab"), None);
     }
 
     #[test]
