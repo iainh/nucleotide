@@ -103,15 +103,41 @@ impl TextInput {
     }
 
     pub fn set_value(&mut self, value: impl Into<SharedString>, cx: &mut Context<Self>) {
-        self.content = value.into();
+        self.set_value_internal(value.into(), cx, true);
+    }
+
+    pub fn set_value_silent(&mut self, value: impl Into<SharedString>, cx: &mut Context<Self>) {
+        self.set_value_internal(value.into(), cx, false);
+    }
+
+    fn set_value_internal(&mut self, value: SharedString, cx: &mut Context<Self>, emit: bool) {
+        self.content = value;
         let cursor = self.content.len();
         self.selected_range = cursor..cursor;
         self.selection_reversed = false;
         self.marked_range = None;
         self.last_layout = None;
         self.last_bounds = None;
-        cx.emit(TextInputEvent::Changed(self.content.clone()));
+        if emit {
+            cx.emit(TextInputEvent::Changed(self.content.clone()));
+        }
         cx.notify();
+    }
+
+    pub fn cursor_offset(&self) -> usize {
+        if self.selection_reversed {
+            self.selected_range.start
+        } else {
+            self.selected_range.end
+        }
+    }
+
+    pub fn selected_range(&self) -> Range<usize> {
+        self.selected_range.clone()
+    }
+
+    pub fn move_cursor_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+        self.move_to(offset, cx);
     }
 
     pub fn placeholder(mut self, placeholder: impl Into<SharedString>) -> Self {
@@ -273,14 +299,6 @@ impl TextInput {
         self.selected_range = offset..offset;
         self.selection_reversed = false;
         cx.notify();
-    }
-
-    fn cursor_offset(&self) -> usize {
-        if self.selection_reversed {
-            self.selected_range.start
-        } else {
-            self.selected_range.end
-        }
     }
 
     fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
@@ -730,6 +748,7 @@ impl Render for TextInput {
 
         let is_focused = self.focus_handle.is_focused(window);
         let has_error = self.error.is_some();
+        let is_ghost = self.variant == InputVariant::Ghost;
         let text_size = match self.size {
             InputSize::Small => theme.tokens.sizes.text_sm,
             InputSize::Medium => theme.tokens.sizes.text_md,
@@ -765,11 +784,14 @@ impl Render for TextInput {
             .w_full()
             .min_w(px(0.0))
             .bg(background)
-            .border_1()
-            .border_color(border)
-            .rounded_md()
-            .px_2()
-            .py_1()
+            .when(!is_ghost, |this| {
+                this.border_1()
+                    .border_color(border)
+                    .rounded_md()
+                    .px_2()
+                    .py_1()
+            })
+            .when(is_ghost, |this| this.p(px(0.0)))
             .text_size(text_size)
             .text_color(if self.disabled {
                 input_tokens.text_disabled
@@ -777,13 +799,13 @@ impl Render for TextInput {
                 input_tokens.text
             })
             .cursor(CursorStyle::IBeam)
-            .when(!is_focused && !has_error, |this| {
+            .when(!is_ghost && !is_focused && !has_error, |this| {
                 this.shadow(vec![
                     inset_shadow.to_box_shadow(true),
                     inset_highlight.to_box_shadow(true),
                 ])
             })
-            .when(is_focused && !has_error, |this| {
+            .when(!is_ghost && is_focused && !has_error, |this| {
                 this.shadow(vec![
                     gpui::BoxShadow {
                         color: input_tokens.focus_ring,
@@ -795,7 +817,7 @@ impl Render for TextInput {
                     inset_highlight.to_box_shadow(true),
                 ])
             })
-            .when(has_error, |this| {
+            .when(!is_ghost && has_error, |this| {
                 this.shadow(vec![
                     gpui::BoxShadow {
                         color: input_tokens.border_error,
@@ -883,12 +905,23 @@ mod tests {
 
     struct TextInputHarness {
         input: Entity<TextInput>,
+        events: Vec<TextInputEvent>,
     }
 
     impl TextInputHarness {
         fn new(cx: &mut Context<Self>) -> Self {
             let input = cx.new(|cx| TextInput::new("test-input", cx).placeholder("Type here"));
-            Self { input }
+            cx.subscribe(
+                &input,
+                |harness: &mut TextInputHarness, _input, event, _cx| {
+                    harness.events.push(event.clone());
+                },
+            )
+            .detach();
+            Self {
+                input,
+                events: Vec::new(),
+            }
         }
     }
 
@@ -921,7 +954,29 @@ mod tests {
 
         input.read_with(cx, |input, _| {
             assert_eq!(input.value().as_ref(), "hello");
-            assert_eq!(input.selected_range, 5..5);
+            assert_eq!(input.cursor_offset(), 5);
+            assert_eq!(input.selected_range(), 5..5);
+        });
+    }
+
+    #[gpui::test]
+    fn silent_value_update_does_not_emit_change(cx: &mut TestAppContext) {
+        init_theme(cx);
+        let (harness, cx) = cx.add_window_view(|_, cx| TextInputHarness::new(cx));
+        let input = harness.read_with(cx, |harness, _| harness.input.clone());
+
+        cx.update(|_, cx| {
+            input.update(cx, |input, cx| {
+                input.set_value_silent("internal", cx);
+            });
+        });
+
+        harness.read_with(cx, |harness, _| {
+            assert!(harness.events.is_empty());
+        });
+        input.read_with(cx, |input, _| {
+            assert_eq!(input.value().as_ref(), "internal");
+            assert_eq!(input.cursor_offset(), "internal".len());
         });
     }
 
@@ -943,7 +998,7 @@ mod tests {
 
         input.read_with(cx, |input, _| {
             assert_eq!(input.value().as_ref(), "ac");
-            assert_eq!(input.selected_range, 1..1);
+            assert_eq!(input.selected_range(), 1..1);
         });
     }
 
@@ -965,7 +1020,7 @@ mod tests {
 
         input.read_with(cx, |input, _| {
             assert_eq!(input.value().as_ref(), "");
-            assert_eq!(input.selected_range, 0..0);
+            assert_eq!(input.selected_range(), 0..0);
         });
         assert_eq!(
             cx.read_from_clipboard().and_then(|item| item.text()),
