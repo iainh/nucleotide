@@ -37,6 +37,8 @@ pub enum FileTreeEvent {
         x: f32,
         y: f32,
     },
+    /// Delete was requested for the selected file tree entry.
+    DeleteRequested { path: PathBuf, is_directory: bool },
     /// File system change detected
     FileSystemChanged {
         path: PathBuf,

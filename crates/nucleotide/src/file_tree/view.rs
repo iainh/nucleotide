@@ -1277,6 +1277,22 @@ impl FileTreeView {
         }
     }
 
+    /// Request deletion for the selected entry. Workspace owns confirmation and execution.
+    pub fn request_delete_selected(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = self.selected_path.clone() else {
+            return;
+        };
+
+        let Some(entry) = self.tree.entry_by_path(&path) else {
+            return;
+        };
+
+        cx.emit(FileTreeEvent::DeleteRequested {
+            path,
+            is_directory: entry.is_directory(),
+        });
+    }
+
     /// Select next entry
     pub fn select_next(&mut self, cx: &mut Context<Self>) {
         let entries = self.tree.visible_entries();
@@ -2527,6 +2543,49 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn delete_selected_emits_request_for_selected_file(cx: &mut TestAppContext) {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root_path = temp_dir.path().to_path_buf();
+        let file_path = root_path.join("main.rs");
+        std::fs::write(&file_path, "fn main() {}\n").unwrap();
+
+        let view = cx.new(|cx| FileTreeView::new(root_path, test_config(), cx));
+        let events = subscribe_file_tree_events(cx, &view);
+
+        view.update(cx, |view, cx| {
+            view.select_path(Some(file_path.clone()), cx);
+            view.request_delete_selected(cx);
+        });
+        cx.run_until_parked();
+
+        assert!(events.borrow().contains(&FileTreeEvent::DeleteRequested {
+            path: file_path,
+            is_directory: false,
+        }));
+    }
+
+    #[gpui::test]
+    async fn delete_selected_emits_request_for_selected_directory(cx: &mut TestAppContext) {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root_path = temp_dir.path().to_path_buf();
+        std::fs::create_dir(root_path.join("src")).unwrap();
+
+        let view = cx.new(|cx| FileTreeView::new(root_path.clone(), test_config(), cx));
+        let events = subscribe_file_tree_events(cx, &view);
+
+        view.update(cx, |view, cx| {
+            assert_eq!(view.selected_path(), Some(&root_path));
+            view.request_delete_selected(cx);
+        });
+        cx.run_until_parked();
+
+        assert!(events.borrow().contains(&FileTreeEvent::DeleteRequested {
+            path: root_path,
+            is_directory: true,
+        }));
+    }
+
+    #[gpui::test]
     async fn selection_set_supports_add_toggle_deselect_and_range(cx: &mut TestAppContext) {
         let temp_dir = tempfile::tempdir().unwrap();
         let root_path = temp_dir.path().to_path_buf();
@@ -3226,6 +3285,11 @@ impl Render for FileTreeView {
                     view.open_selected(cx);
                 },
             ))
+            .on_action(
+                cx.listener(|view, _: &crate::actions::file_tree::Delete, _window, cx| {
+                    view.request_delete_selected(cx);
+                }),
+            )
             .child(
                 // Zed-style: wrap the list row in a flex_1 container with min_h(0)
                 div()
