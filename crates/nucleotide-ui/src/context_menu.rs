@@ -3,11 +3,13 @@
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    Anchor, Context, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
-    ParentElement, Pixels, SharedString, Styled, Window, anchored, div, point, px,
+    Anchor, Context, FocusHandle, InteractiveElement, IntoElement, MouseButton, MouseDownEvent,
+    MouseMoveEvent, ParentElement, Pixels, SharedString, Styled, Window, anchored, div, point, px,
 };
 
 use crate::ThemedContext;
+use crate::actions::menu::{Cancel, Confirm, SelectDown, SelectUp};
+use crate::menu::POPUP_MENU_CONTEXT;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ContextMenuEntry<T> {
@@ -51,6 +53,7 @@ pub struct ContextMenuState<'a, T> {
     pub offset: (f32, f32),
     pub min_width: Pixels,
     pub selected_index: usize,
+    pub focus_handle: Option<FocusHandle>,
     pub entries: &'a [ContextMenuEntry<T>],
 }
 
@@ -64,6 +67,7 @@ impl<'a, T> ContextMenuState<'a, T> {
             offset: (0.0, 0.0),
             min_width: px(200.0),
             selected_index: 0,
+            focus_handle: None,
             entries,
         }
     }
@@ -87,18 +91,32 @@ impl<'a, T> ContextMenuState<'a, T> {
         self.selected_index = selected_index;
         self
     }
+
+    pub fn focus_handle(mut self, focus_handle: FocusHandle) -> Self {
+        self.focus_handle = Some(focus_handle);
+        self
+    }
 }
 
-pub struct ContextMenuCallbacks<Hover, Activate, Dismiss> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContextMenuKeyboardAction {
+    SelectNext,
+    SelectPrevious,
+    Confirm,
+    Cancel,
+}
+
+pub struct ContextMenuCallbacks<Hover, Activate, Dismiss, Keyboard> {
     pub on_item_hover: Hover,
     pub on_item_activate: Activate,
     pub on_dismiss: Dismiss,
+    pub on_keyboard_action: Keyboard,
 }
 
-pub fn render_context_menu<T, I, Hover, Activate, Dismiss>(
+pub fn render_context_menu<T, I, Hover, Activate, Dismiss, Keyboard>(
     state: ContextMenuState<'_, I>,
     cx: &mut Context<T>,
-    callbacks: ContextMenuCallbacks<Hover, Activate, Dismiss>,
+    callbacks: ContextMenuCallbacks<Hover, Activate, Dismiss, Keyboard>,
 ) -> gpui::AnyElement
 where
     T: 'static,
@@ -106,14 +124,17 @@ where
     Hover: Fn(&mut T, usize, &MouseMoveEvent, &mut Window, &mut Context<T>) + Copy + 'static,
     Activate: Fn(&mut T, I, &MouseDownEvent, &mut Window, &mut Context<T>) + Copy + 'static,
     Dismiss: Fn(&mut T, &MouseDownEvent, &mut Window, &mut Context<T>) + Copy + 'static,
+    Keyboard: Fn(&mut T, ContextMenuKeyboardAction, &mut Window, &mut Context<T>) + Copy + 'static,
 {
     let ContextMenuCallbacks {
         on_item_hover,
         on_item_activate,
         on_dismiss,
+        on_keyboard_action,
     } = callbacks;
     let tokens = &cx.theme().tokens;
     let dropdown_tokens = tokens.dropdown_tokens();
+    let focus_handle = state.focus_handle.clone();
     let item_count = state
         .entries
         .iter()
@@ -213,6 +234,26 @@ where
         .top_0()
         .left_0()
         .occlude()
+        .when_some(focus_handle, |menu, focus_handle| {
+            menu.key_context(POPUP_MENU_CONTEXT)
+                .track_focus(&focus_handle)
+        })
+        .on_action(cx.listener(move |state, _: &SelectDown, window, cx| {
+            on_keyboard_action(state, ContextMenuKeyboardAction::SelectNext, window, cx);
+            cx.stop_propagation();
+        }))
+        .on_action(cx.listener(move |state, _: &SelectUp, window, cx| {
+            on_keyboard_action(state, ContextMenuKeyboardAction::SelectPrevious, window, cx);
+            cx.stop_propagation();
+        }))
+        .on_action(cx.listener(move |state, _: &Confirm, window, cx| {
+            on_keyboard_action(state, ContextMenuKeyboardAction::Confirm, window, cx);
+            cx.stop_propagation();
+        }))
+        .on_action(cx.listener(move |state, _: &Cancel, window, cx| {
+            on_keyboard_action(state, ContextMenuKeyboardAction::Cancel, window, cx);
+            cx.stop_propagation();
+        }))
         .on_mouse_move(|_, _, cx| cx.stop_propagation())
         .on_mouse_down(MouseButton::Left, cx.listener(on_dismiss))
         .on_mouse_down(MouseButton::Right, cx.listener(on_dismiss))
@@ -229,6 +270,11 @@ where
 
 #[cfg(test)]
 mod tests {
+    use gpui::{Context, IntoElement, ParentElement as _, Render, TestAppContext, Window, div};
+
+    use crate::actions::menu::{Cancel, Confirm, SelectDown, SelectUp};
+    use crate::{DesignTokens, Theme};
+
     use super::*;
 
     #[test]
@@ -236,5 +282,138 @@ mod tests {
         assert!(ContextMenuEntry::action(1, "Open").is_action());
         assert!(ContextMenuEntry::disabled_action(1, "Open").is_action());
         assert!(!ContextMenuEntry::<u8>::separator().is_action());
+    }
+
+    struct ContextMenuHarness {
+        focus_handle: FocusHandle,
+        selected_index: usize,
+        activated: Option<u8>,
+        dismissed: bool,
+        entries: Vec<ContextMenuEntry<u8>>,
+    }
+
+    impl ContextMenuHarness {
+        fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
+            Self {
+                focus_handle: cx.focus_handle(),
+                selected_index: 0,
+                activated: None,
+                dismissed: false,
+                entries: vec![
+                    ContextMenuEntry::action(1, "Open"),
+                    ContextMenuEntry::action(2, "Rename"),
+                ],
+            }
+        }
+    }
+
+    impl Render for ContextMenuHarness {
+        fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().child(render_context_menu(
+                ContextMenuState::new((0.0, 0.0), &self.entries)
+                    .selected_index(self.selected_index)
+                    .focus_handle(self.focus_handle.clone()),
+                cx,
+                ContextMenuCallbacks {
+                    on_item_hover:
+                        |harness: &mut ContextMenuHarness,
+                         index: usize,
+                         _event: &MouseMoveEvent,
+                         _window: &mut Window,
+                         cx: &mut Context<ContextMenuHarness>| {
+                            harness.selected_index = index;
+                            cx.notify();
+                        },
+                    on_item_activate:
+                        |harness: &mut ContextMenuHarness,
+                         value: u8,
+                         _event: &MouseDownEvent,
+                         _window: &mut Window,
+                         cx: &mut Context<ContextMenuHarness>| {
+                            harness.activated = Some(value);
+                            cx.notify();
+                        },
+                    on_dismiss:
+                        |harness: &mut ContextMenuHarness,
+                         _event: &MouseDownEvent,
+                         _window: &mut Window,
+                         cx: &mut Context<ContextMenuHarness>| {
+                            harness.dismissed = true;
+                            cx.notify();
+                        },
+                    on_keyboard_action:
+                        |harness: &mut ContextMenuHarness,
+                         action: ContextMenuKeyboardAction,
+                         _window: &mut Window,
+                         cx: &mut Context<ContextMenuHarness>| {
+                            match action {
+                                ContextMenuKeyboardAction::SelectNext => {
+                                    harness.selected_index =
+                                        (harness.selected_index + 1) % harness.entries.len();
+                                }
+                                ContextMenuKeyboardAction::SelectPrevious => {
+                                    harness.selected_index =
+                                        (harness.selected_index + harness.entries.len() - 1)
+                                            % harness.entries.len();
+                                }
+                                ContextMenuKeyboardAction::Confirm => {
+                                    harness.activated =
+                                        Some(match harness.entries.get(harness.selected_index) {
+                                            Some(ContextMenuEntry::Action { value, .. }) => *value,
+                                            Some(ContextMenuEntry::Separator) | None => 0,
+                                        });
+                                }
+                                ContextMenuKeyboardAction::Cancel => {
+                                    harness.dismissed = true;
+                                }
+                            }
+                            cx.notify();
+                        },
+                },
+            ))
+        }
+    }
+
+    fn init_context_menu_test(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            crate::menu::init(cx);
+            cx.set_global(Theme::from_tokens(DesignTokens::dark()));
+        });
+    }
+
+    #[gpui::test]
+    fn context_menu_handles_keyboard_actions(cx: &mut TestAppContext) {
+        init_context_menu_test(cx);
+        let (harness, cx) = cx.add_window_view(ContextMenuHarness::new);
+        let focus = harness.read_with(cx, |harness, _| harness.focus_handle.clone());
+
+        cx.update(|window, cx| {
+            window.focus(&focus, cx);
+            focus.dispatch_action(&SelectDown, window, cx);
+            focus.dispatch_action(&Confirm, window, cx);
+            focus.dispatch_action(&Cancel, window, cx);
+        });
+
+        harness.read_with(cx, |harness, _| {
+            assert_eq!(harness.selected_index, 1);
+            assert_eq!(harness.activated, Some(2));
+            assert!(harness.dismissed);
+        });
+    }
+
+    #[gpui::test]
+    fn context_menu_wraps_keyboard_selection(cx: &mut TestAppContext) {
+        init_context_menu_test(cx);
+        let (harness, cx) = cx.add_window_view(ContextMenuHarness::new);
+        let focus = harness.read_with(cx, |harness, _| harness.focus_handle.clone());
+
+        cx.update(|window, cx| {
+            window.focus(&focus, cx);
+            focus.dispatch_action(&SelectUp, window, cx);
+        });
+
+        harness.read_with(cx, |harness, _| {
+            assert_eq!(harness.selected_index, 1);
+        });
     }
 }
