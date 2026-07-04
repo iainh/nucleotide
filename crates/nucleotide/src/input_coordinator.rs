@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use gpui::{FocusHandle, KeyDownEvent, Window, actions};
-use nucleotide_logging::{debug, info, instrument, warn};
+use nucleotide_logging::{debug, info, instrument};
 
 // Import for Helix integration
 use crate::utils;
@@ -289,10 +289,6 @@ impl InputCoordinator {
             return result;
         }
 
-        if let Some(result) = self.handle_focus_group_navigation(event) {
-            return result;
-        }
-
         // Delegate to context-specific handling
         match current_context {
             InputContext::Normal => self.handle_normal_context(event, window),
@@ -322,21 +318,6 @@ impl InputCoordinator {
                     return Some(InputResult::Handled);
                 }
             }
-        }
-        None
-    }
-
-    /// Handle focus group navigation (Tab/Shift+Tab)
-    fn handle_focus_group_navigation(&self, event: &KeyDownEvent) -> Option<InputResult> {
-        if event.keystroke.key.as_str() == "tab" {
-            if event.keystroke.modifiers.shift {
-                debug!("Shift+Tab pressed, navigating to previous focus group");
-                self.navigate_focus_group(false);
-            } else {
-                debug!("Tab pressed, navigating to next focus group");
-                self.navigate_focus_group(true);
-            }
-            return Some(InputResult::Handled);
         }
         None
     }
@@ -391,17 +372,6 @@ impl InputCoordinator {
 
         // Prompt should handle its own input, so don't send to Helix
         InputResult::NotHandled
-    }
-
-    /// Navigate between focus groups
-    fn navigate_focus_group(&self, forward: bool) {
-        let mut focus_manager = self.focus_groups.write().unwrap();
-        focus_manager.navigate(forward);
-
-        if let Some(new_group) = focus_manager.active_group {
-            *self.active_focus_group.write().unwrap() = Some(new_group);
-            debug!(group = ?new_group, forward = forward, "Navigated to focus group");
-        }
     }
 
     /// Register a focus group with the coordinator

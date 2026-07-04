@@ -71,6 +71,12 @@ Use GPUI tab primitives for ordinary traversal:
 - `window.focus_next(cx)` and `window.focus_prev(cx)` for Tab and Shift-Tab
   actions.
 
+Components that own a focus scope should bind
+`nucleotide_ui::actions::focus::{FocusNext, FocusPrevious}` in their key context
+and handle those actions with `window.focus_next(cx)` and `window.focus_prev(cx)`.
+Do not add new Tab handling to `InputCoordinator`; Helix, terminals, and focused
+components own their own Tab semantics.
+
 `FocusCoordinator` should be used as a role registry for major surfaces such as
 the editor, terminal, picker, prompt, diagnostics, and file tree. It should not
 become a second per-widget navigation system.

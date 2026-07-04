@@ -157,6 +157,12 @@ pub mod window {
     actions!(window, [Hide, HideOthers, ShowAll, Minimize, Zoom,]);
 }
 
+pub mod focus {
+    use super::actions;
+
+    actions!(focus, [FocusNext, FocusPrevious,]);
+}
+
 pub mod test {
     use super::actions;
 
