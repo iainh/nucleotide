@@ -1842,9 +1842,7 @@ fn decode_wsl_stdout(stdout: &[u8]) -> String {
         }
     }
 
-    String::from_utf8_lossy(stdout)
-        .replace('\0', "")
-        .replace('\r', "")
+    String::from_utf8_lossy(stdout).replace(['\0', '\r'], "")
 }
 
 fn directory_rows_from_listing(listing: &DirectoryListing) -> Vec<RemoteDirectoryRow> {
@@ -1979,6 +1977,13 @@ mod tests {
         let distros = parse_wsl_distribution_list(&output);
 
         assert_eq!(distros, vec!["Debian", "Ubuntu-24.04"]);
+    }
+
+    #[test]
+    fn wsl_stdout_decoder_strips_nul_and_carriage_return_from_utf8() {
+        let decoded = decode_wsl_stdout(b"Ubuntu\0\r\nDebian\r\n");
+
+        assert_eq!(decoded, "Ubuntu\nDebian\n");
     }
 
     #[test]
