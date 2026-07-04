@@ -17,8 +17,36 @@ pub use tree::FileTree;
 pub use view::FileTreeView;
 pub use watcher::DebouncedFileTreeWatcher;
 
+use gpui::{App, KeyBinding};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+
+pub const FILE_TREE_CONTEXT: &str = "FileTree";
+
+pub fn init(cx: &mut App) {
+    use crate::actions::file_tree::{
+        ClearSearch, Delete, OpenFile, SelectNext, SelectNextSearchMatch, SelectPrev,
+        SelectPrevSearchMatch, StartSearch, ToggleExpanded,
+    };
+
+    cx.bind_keys([
+        KeyBinding::new("up", SelectPrev, Some(FILE_TREE_CONTEXT)),
+        KeyBinding::new("down", SelectNext, Some(FILE_TREE_CONTEXT)),
+        KeyBinding::new("k", SelectPrev, Some(FILE_TREE_CONTEXT)),
+        KeyBinding::new("j", SelectNext, Some(FILE_TREE_CONTEXT)),
+        KeyBinding::new("/", StartSearch, Some(FILE_TREE_CONTEXT)),
+        KeyBinding::new("escape", ClearSearch, Some(FILE_TREE_CONTEXT)),
+        KeyBinding::new("n", SelectNextSearchMatch, Some(FILE_TREE_CONTEXT)),
+        KeyBinding::new("shift-n", SelectPrevSearchMatch, Some(FILE_TREE_CONTEXT)),
+        KeyBinding::new("left", ToggleExpanded, Some(FILE_TREE_CONTEXT)),
+        KeyBinding::new("right", ToggleExpanded, Some(FILE_TREE_CONTEXT)),
+        KeyBinding::new("h", ToggleExpanded, Some(FILE_TREE_CONTEXT)),
+        KeyBinding::new("l", ToggleExpanded, Some(FILE_TREE_CONTEXT)),
+        KeyBinding::new("space", ToggleExpanded, Some(FILE_TREE_CONTEXT)),
+        KeyBinding::new("enter", OpenFile, Some(FILE_TREE_CONTEXT)),
+        KeyBinding::new("delete", Delete, Some(FILE_TREE_CONTEXT)),
+    ]);
+}
 
 /// Events emitted by the file tree
 #[derive(Debug, Clone, PartialEq)]
