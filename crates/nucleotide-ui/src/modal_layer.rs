@@ -3,12 +3,23 @@
 
 use gpui::{
     AnyView, App, AppContext as _, Context, DismissEvent, Entity, EventEmitter, FocusHandle,
-    Focusable as _, InteractiveElement, IntoElement, ManagedView, MouseButton, ParentElement,
-    Render, Styled, Subscription, Window, div, px,
+    Focusable as _, InteractiveElement, IntoElement, KeyBinding, ManagedView, MouseButton,
+    ParentElement, Render, Styled, Subscription, Window, div, px,
 };
+
+use crate::actions::dialog::Cancel as CancelDialogAction;
 
 const MODAL_BACKDROP_ALPHA_LIGHT: f32 = 0.70;
 const MODAL_BACKDROP_ALPHA_DARK: f32 = 0.45;
+pub(crate) const MODAL_LAYER_CONTEXT: &str = "ModalLayer";
+
+pub(crate) fn init(cx: &mut App) {
+    cx.bind_keys([KeyBinding::new(
+        "escape",
+        CancelDialogAction,
+        Some(MODAL_LAYER_CONTEXT),
+    )]);
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DismissDecision {
@@ -178,6 +189,11 @@ impl ModalLayer {
     pub fn has_active_modal(&self) -> bool {
         self.active_modal.is_some()
     }
+
+    fn dismiss(&mut self, _: &CancelDialogAction, window: &mut Window, cx: &mut Context<Self>) {
+        self.hide_modal(window, cx);
+        cx.stop_propagation();
+    }
 }
 
 impl Default for ModalLayer {
@@ -231,7 +247,9 @@ impl Render for ModalLayer {
                     .w_full()
                     .flex()
                     .justify_center()
+                    .key_context(MODAL_LAYER_CONTEXT)
                     .track_focus(&active_modal.focus_handle)
+                    .on_action(cx.listener(Self::dismiss))
                     .child(
                         div()
                             .occlude()
@@ -259,6 +277,7 @@ mod tests {
 
     fn init_theme(cx: &mut TestAppContext) {
         cx.update(|cx| {
+            init(cx);
             cx.set_global(crate::Theme::from_tokens(crate::DesignTokens::dark()));
         });
     }
@@ -394,6 +413,62 @@ mod tests {
         cx.update(|_window, cx| {
             assert!(!layer.read(cx).has_active_modal());
         });
+    }
+
+    #[gpui::test]
+    fn escape_hides_active_modal(cx: &mut TestAppContext) {
+        init_theme(cx);
+        let (harness, cx) = cx.add_window_view(ModalLayerHarness::new);
+        let (layer, previous_focus) = harness.read_with(cx, |harness, _| {
+            (harness.layer.clone(), harness.previous_focus.clone())
+        });
+        let before_dismiss_count = Rc::new(Cell::new(0));
+        let modal = new_test_modal(
+            cx,
+            Rc::new(Cell::new(true)),
+            Rc::clone(&before_dismiss_count),
+        );
+
+        cx.update(|window, cx| {
+            layer.update(cx, |layer, cx| {
+                layer.show_modal(modal.clone(), window, cx);
+            });
+        });
+        cx.run_until_parked();
+
+        cx.update(|window, cx| {
+            window.dispatch_keystroke(gpui::Keystroke::parse("escape").unwrap(), cx);
+            assert!(!layer.read(cx).has_active_modal());
+            assert!(previous_focus.is_focused(window));
+        });
+        assert_eq!(before_dismiss_count.get(), 1);
+    }
+
+    #[gpui::test]
+    fn escape_respects_before_dismiss(cx: &mut TestAppContext) {
+        init_theme(cx);
+        let (harness, cx) = cx.add_window_view(ModalLayerHarness::new);
+        let layer = harness.read_with(cx, |harness, _| harness.layer.clone());
+        let before_dismiss_count = Rc::new(Cell::new(0));
+        let modal = new_test_modal(
+            cx,
+            Rc::new(Cell::new(false)),
+            Rc::clone(&before_dismiss_count),
+        );
+
+        cx.update(|window, cx| {
+            layer.update(cx, |layer, cx| {
+                layer.show_modal(modal.clone(), window, cx);
+            });
+        });
+        cx.run_until_parked();
+
+        cx.update(|window, cx| {
+            window.dispatch_keystroke(gpui::Keystroke::parse("escape").unwrap(), cx);
+            assert!(layer.read(cx).has_active_modal());
+            assert!(modal.read(cx).focus_handle.is_focused(window));
+        });
+        assert_eq!(before_dismiss_count.get(), 1);
     }
 
     #[gpui::test]
