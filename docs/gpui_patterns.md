@@ -8,8 +8,9 @@ event plumbing at each call site.
 ## Just Works Contract
 
 The `nucleotide-ui` layer is the compatibility boundary that makes GPUI feel
-like an application toolkit. A component should "just work" when a caller uses
-the wrapper and calls `nucleotide_ui::init(...)` during app startup:
+like an application toolkit. A `nucleotide-ui` component should "just work"
+when a caller uses the wrapper and calls `nucleotide_ui::init(...)` during app
+startup:
 
 - standard key bindings are installed with the component's key context
 - focus handles, tab stops, and focus restoration are owned by the wrapper
@@ -18,9 +19,11 @@ the wrapper and calls `nucleotide_ui::init(...)` during app startup:
 - layout-affecting interaction state is reset consistently after actions
 - GPUI tests cover the wrapper contract before app features depend on it
 
-Call sites should supply domain data and callbacks. They should not need to
-remember the GPUI event recipe for ordinary prompts, pickers, menus, modals,
-text fields, or resize handles.
+App-owned components outside `nucleotide-ui` should follow the same shape with
+a local `init(cx)` function, a single exported key-context constant where useful,
+and startup wiring near the component owner. Call sites should supply domain data
+and callbacks. They should not need to remember the GPUI event recipe for
+ordinary prompts, pickers, menus, modals, text fields, or resize handles.
 
 ## Default Rule
 
@@ -37,6 +40,9 @@ Prefer GPUI actions over raw key matching:
   to a focused surface.
 - Put `.key_context(...)` on the component that owns the interaction.
 - Handle commands with `.on_action(...)`.
+- Keep the focused surface's standard key map beside the component, usually in
+  that component's `init(cx)` function. Reserve `main.rs` for global shortcuts
+  and the editor/Helix bridge.
 
 Raw `.on_key_down(...)` is reserved for:
 
