@@ -14227,36 +14227,30 @@ impl Render for Workspace {
             ));
         }
         if let Some(split_resize) = &self.split_pane_resize {
-            let cursor = match split_resize.axis {
-                SplitPaneResizeAxis::Vertical => gpui::CursorStyle::ResizeLeftRight,
-                SplitPaneResizeAxis::Horizontal => gpui::CursorStyle::ResizeRow,
+            let axis = match split_resize.axis {
+                SplitPaneResizeAxis::Vertical => nucleotide_ui::SplitterAxis::Vertical,
+                SplitPaneResizeAxis::Horizontal => nucleotide_ui::SplitterAxis::Horizontal,
             };
-            workspace_div = workspace_div
-                .cursor(cursor)
-                .on_mouse_move(
-                    cx.listener(|workspace, event: &MouseMoveEvent, window, cx| {
-                        if workspace.split_pane_resize.is_some() {
-                            if event.dragging()
-                                && workspace.update_split_pane_resize(event.position, cx)
-                            {
-                                window.refresh();
-                            }
-                            cx.stop_propagation();
+            workspace_div = nucleotide_ui::resize_capture_area(
+                workspace_div,
+                axis,
+                cx.listener(|workspace, event: &MouseMoveEvent, window, cx| {
+                    if workspace.split_pane_resize.is_some() {
+                        if event.dragging()
+                            && workspace.update_split_pane_resize(event.position, cx)
+                        {
+                            window.refresh();
                         }
-                    }),
-                )
-                .on_mouse_up(
-                    MouseButton::Left,
-                    cx.listener(|workspace, _event: &MouseUpEvent, window, cx| {
-                        workspace.finish_split_pane_resize(window, cx);
-                    }),
-                )
-                .on_mouse_up_out(
-                    MouseButton::Left,
-                    cx.listener(|workspace, _event: &MouseUpEvent, window, cx| {
-                        workspace.finish_split_pane_resize(window, cx);
-                    }),
-                );
+                        cx.stop_propagation();
+                    }
+                }),
+                cx.listener(|workspace, _event: &MouseUpEvent, window, cx| {
+                    workspace.finish_split_pane_resize(window, cx);
+                }),
+                cx.listener(|workspace, _event: &MouseUpEvent, window, cx| {
+                    workspace.finish_split_pane_resize(window, cx);
+                }),
+            );
         }
         // Add mouse down handler for global UI interactions
         workspace_div = workspace_div.on_mouse_down(
