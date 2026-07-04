@@ -224,6 +224,10 @@ impl OverlayView {
         self.native_prompt_view.is_some()
     }
 
+    pub fn has_remote_connection_manager(&self) -> bool {
+        self.remote_connection_manager_view.is_some()
+    }
+
     pub fn dismiss_completion(&mut self, cx: &mut Context<Self>) {
         if self.clear_completion(cx) {
             cx.emit(DismissEvent);
