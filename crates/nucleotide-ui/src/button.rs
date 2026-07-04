@@ -10,8 +10,8 @@ use crate::{
 use gpui::prelude::FluentBuilder;
 use gpui::px;
 use gpui::{
-    App, AppContext, ClickEvent, Context, ElementId, FontWeight, InteractiveElement, IntoElement,
-    MouseButton, ParentElement, Pixels, Render, RenderOnce, SharedString,
+    App, AppContext, ClickEvent, Context, ElementId, FocusHandle, FontWeight, InteractiveElement,
+    IntoElement, MouseButton, ParentElement, Pixels, Render, RenderOnce, SharedString,
     StatefulInteractiveElement, Styled, Window, div, relative, svg,
 };
 use std::time::Duration;
@@ -252,6 +252,7 @@ pub struct Button {
     on_click: Option<ButtonClickHandler>,
     tooltip: Option<SharedString>,
     activate_on_mouse_down: bool,
+    focus_handle: Option<FocusHandle>,
     slots: Vec<ButtonSlot>,
     class_names: Vec<SharedString>,
 }
@@ -280,6 +281,7 @@ impl Button {
             on_click: None,
             tooltip: None,
             activate_on_mouse_down: false,
+            focus_handle: None,
             slots: Vec::new(),
             class_names: Vec::new(),
         }
@@ -300,6 +302,7 @@ impl Button {
             on_click: None,
             tooltip: None,
             activate_on_mouse_down: false,
+            focus_handle: None,
             slots: Vec::new(),
             class_names: Vec::new(),
         }
@@ -373,6 +376,12 @@ impl Button {
 
     pub fn activate_on_mouse_down(mut self) -> Self {
         self.activate_on_mouse_down = true;
+        self
+    }
+
+    /// Include this button in GPUI focus traversal with a caller-owned handle.
+    pub fn focus_handle(mut self, focus_handle: FocusHandle) -> Self {
+        self.focus_handle = Some(focus_handle);
         self
     }
 
@@ -742,6 +751,7 @@ impl RenderOnce for Button {
         let inset_highlight = theme.tokens.chrome.inset_highlight;
         let inset_shadow = theme.tokens.chrome.inset_shadow;
         let activate_on_mouse_down = self.activate_on_mouse_down;
+        let focus_handle = self.focus_handle.clone();
         // Mouse-down actions commonly repaint before mouse-up; GPUI's active
         // pseudo-state can otherwise read as latched after the action runs.
         let apply_active_style = !activate_on_mouse_down;
@@ -791,6 +801,13 @@ impl RenderOnce for Button {
                 ))
             })
             .opacity(computed_style.opacity);
+
+        if let Some(focus_handle) = focus_handle.as_ref() {
+            button = button
+                .track_focus(focus_handle)
+                .tab_stop(!self.disabled && !self.loading)
+                .focus_visible(|style| style.border_color(theme.tokens.chrome.border_focus));
+        }
 
         // Match gpui-component's interactive treatment: hover lifts the button,
         // active swaps to the pressed inset shadow.

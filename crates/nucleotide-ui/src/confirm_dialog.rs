@@ -9,6 +9,7 @@ use gpui::{
 };
 
 use crate::actions::dialog::{Cancel as CancelDialogAction, Confirm as ConfirmDialogAction};
+use crate::actions::focus::{FocusNext, FocusPrevious};
 use crate::modal_layer::{DismissDecision, ModalView};
 use crate::{Button, ButtonSize, ButtonVariant, ThemedContext};
 
@@ -22,6 +23,8 @@ pub(crate) fn init(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("enter", ConfirmDialogAction, Some(CONFIRM_DIALOG_CONTEXT)),
         KeyBinding::new("escape", CancelDialogAction, Some(CONFIRM_DIALOG_CONTEXT)),
+        KeyBinding::new("tab", FocusNext, Some(CONFIRM_DIALOG_CONTEXT)),
+        KeyBinding::new("shift-tab", FocusPrevious, Some(CONFIRM_DIALOG_CONTEXT)),
     ]);
 }
 
@@ -402,6 +405,8 @@ pub enum ConfirmDialogEvent {
 pub struct ConfirmDialogView {
     dialog: ConfirmDialog,
     focus_handle: FocusHandle,
+    cancel_focus_handle: FocusHandle,
+    confirm_focus_handle: FocusHandle,
     dismissed_by_action: bool,
 }
 
@@ -409,7 +414,9 @@ impl ConfirmDialogView {
     pub fn new(dialog: ConfirmDialog, cx: &mut Context<Self>) -> Self {
         Self {
             dialog,
-            focus_handle: cx.focus_handle().tab_stop(true),
+            focus_handle: cx.focus_handle().tab_stop(false),
+            cancel_focus_handle: cx.focus_handle().tab_index(1).tab_stop(true),
+            confirm_focus_handle: cx.focus_handle().tab_index(2).tab_stop(true),
             dismissed_by_action: false,
         }
     }
@@ -438,6 +445,16 @@ impl ConfirmDialogView {
 
     fn confirm(&mut self, _: &ConfirmDialogAction, _: &mut Window, cx: &mut Context<Self>) {
         self.emit_confirmed(cx);
+        cx.stop_propagation();
+    }
+
+    fn focus_next(&mut self, _: &FocusNext, window: &mut Window, cx: &mut Context<Self>) {
+        window.focus_next(cx);
+        cx.stop_propagation();
+    }
+
+    fn focus_previous(&mut self, _: &FocusPrevious, window: &mut Window, cx: &mut Context<Self>) {
+        window.focus_prev(cx);
         cx.stop_propagation();
     }
 }
@@ -471,6 +488,7 @@ impl Render for ConfirmDialogView {
         let cancel_button = Button::new("confirm-dialog-cancel", self.dialog.cancel_label.clone())
             .variant(ButtonVariant::Secondary)
             .size(ButtonSize::Small)
+            .focus_handle(self.cancel_focus_handle.clone())
             .activate_on_mouse_down()
             .on_click(cx.listener(|view, _event, _window, cx| {
                 view.emit_cancelled(cx);
@@ -481,6 +499,7 @@ impl Render for ConfirmDialogView {
             Button::new("confirm-dialog-confirm", self.dialog.confirm_label.clone())
                 .variant(self.dialog.confirm_variant)
                 .size(ButtonSize::Small)
+                .focus_handle(self.confirm_focus_handle.clone())
                 .activate_on_mouse_down()
                 .on_click(cx.listener(|view, _event, _window, cx| {
                     view.emit_confirmed(cx);
@@ -506,6 +525,8 @@ impl Render for ConfirmDialogView {
             .gap(tokens.sizes.space_3)
             .on_action(cx.listener(Self::confirm))
             .on_action(cx.listener(Self::cancel))
+            .on_action(cx.listener(Self::focus_next))
+            .on_action(cx.listener(Self::focus_previous))
             .on_any_mouse_down(|_, _, cx| cx.stop_propagation())
             .child(
                 DialogHeader::new()
@@ -658,6 +679,32 @@ mod tests {
                 harness.events.borrow().as_slice(),
                 &[ConfirmDialogEvent::Cancelled]
             );
+        });
+    }
+
+    #[gpui::test]
+    fn confirm_dialog_view_uses_gpui_focus_traversal(cx: &mut TestAppContext) {
+        init_confirm_dialog_test(cx);
+        let (harness, cx) = cx.add_window_view(ConfirmDialogHarness::new);
+        let dialog = harness.read_with(cx, |harness, _| harness.dialog.clone());
+        let (dialog_focus, cancel_focus, confirm_focus) = dialog.read_with(cx, |dialog, cx| {
+            (
+                dialog.focus_handle(cx),
+                dialog.cancel_focus_handle.clone(),
+                dialog.confirm_focus_handle.clone(),
+            )
+        });
+
+        cx.update(|window, cx| {
+            window.focus(&dialog_focus, cx);
+            dialog_focus.dispatch_action(&FocusNext, window, cx);
+            assert!(cancel_focus.is_focused(window));
+
+            cancel_focus.dispatch_action(&FocusNext, window, cx);
+            assert!(confirm_focus.is_focused(window));
+
+            confirm_focus.dispatch_action(&FocusPrevious, window, cx);
+            assert!(cancel_focus.is_focused(window));
         });
     }
 
