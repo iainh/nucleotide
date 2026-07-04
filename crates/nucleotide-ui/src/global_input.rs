@@ -1,5 +1,5 @@
-// ABOUTME: Global input system for centralized keyboard navigation and event routing
-// ABOUTME: Manages focus groups, event prioritization, and cross-component communication
+// ABOUTME: Focus role registry and legacy input-dispatch scaffolding.
+// ABOUTME: New app UI should prefer GPUI actions and component-owned key contexts.
 
 use crate::providers::Provider;
 use crate::providers::event_provider::{
@@ -9,7 +9,12 @@ use gpui::{App, FocusHandle, KeyDownEvent};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-/// Global input dispatcher for centralized event management
+/// Legacy input dispatcher for centralized event management.
+///
+/// This dispatcher is not wired into the main application. New UI should use
+/// GPUI actions, component key contexts, and `InputCoordinator` for app/Helix
+/// bridging. Keep this type behind the `global_input` module unless a migration
+/// explicitly revives part of it.
 #[derive(Clone)]
 pub struct GlobalInputDispatcher {
     /// Core event provider
@@ -30,8 +35,11 @@ pub struct GlobalInputDispatcher {
     pub focus_indicator_config: Arc<RwLock<FocusIndicatorConfig>>,
 }
 
-/// Centralized focus coordinator for common UI areas (editor, completion, prompt, terminal).
-/// Components can register and retrieve FocusHandles without ad‑hoc storage.
+/// Focus role registry for common UI areas.
+///
+/// Components can register and retrieve major FocusHandles without ad-hoc
+/// storage. This is intentionally not a per-widget navigation system; ordinary
+/// traversal should use GPUI tab stops or component-owned actions.
 #[derive(Clone, Default)]
 pub struct FocusCoordinator {
     editor: Arc<RwLock<Option<FocusHandle>>>,
