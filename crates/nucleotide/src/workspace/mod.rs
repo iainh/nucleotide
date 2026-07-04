@@ -1460,8 +1460,6 @@ pub struct Workspace {
     debug_colors_enabled: bool,
     // Height of the bottom (terminal) pane in basic layout mode
     basic_terminal_height: f32,
-    // Drag state for basic layout terminal resizer
-    basic_term_resize: ResizeDragController,
     // Embedded terminal panel entity for basic layout
     embedded_terminal_panel: Option<gpui::Entity<nucleotide_terminal_panel::TerminalPanel>>,
     // Cwd used to spawn the active terminal session.
@@ -5379,7 +5377,6 @@ impl Workspace {
             ),
             // Basic layout is now the default
             basic_terminal_height: 220.0,
-            basic_term_resize: ResizeDragController::new(),
             embedded_terminal_panel: None,
             terminal_cwd: None,
             terminal_focus: cx.focus_handle(),
@@ -6232,11 +6229,8 @@ impl Workspace {
     }
 
     fn finish_active_resize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let mut finished = ResizeDragController::finish_all([
-            &self.file_tree_resize,
-            &self.doc_sidebar_resize,
-            &self.basic_term_resize,
-        ]);
+        let mut finished =
+            ResizeDragController::finish_all([&self.file_tree_resize, &self.doc_sidebar_resize]);
 
         if self.split_pane_resize.take().is_some() {
             if self.view_manager.focused_view_id().is_some() {
@@ -14914,11 +14908,8 @@ impl Render for Workspace {
             }));
 
         // Add resize cursor and listeners only while resizing to reduce event overhead
-        if ResizeDragController::any_dragging([
-            &self.file_tree_resize,
-            &self.doc_sidebar_resize,
-            &self.basic_term_resize,
-        ]) || self.split_pane_resize.is_some()
+        if ResizeDragController::any_dragging([&self.file_tree_resize, &self.doc_sidebar_resize])
+            || self.split_pane_resize.is_some()
         {
             workspace_div = workspace_div.capture_any_mouse_up(cx.listener(
                 |workspace, event: &MouseUpEvent, window, cx| {
@@ -15550,38 +15541,11 @@ impl Render for Workspace {
                             .left_0()
                             .right_0()
                             .bottom_0()
-                            // Track resize drags at the wrapper level for reliability
-                            .on_mouse_move(cx.listener(
-                                move |this: &mut Workspace, ev: &MouseMoveEvent, window, cx| {
-                                    let min_h = 80.0f32;
-                                    let max_h = max_term;
-                                    if ev.dragging()
-                                        && let Some(new_h) = this
-                                            .basic_term_resize
-                                            .top_edge_value_from_mouse_move(ev, min_h, max_h)
-                                        && (this.basic_terminal_height - new_h).abs() > 0.5
-                                    {
-                                        this.basic_terminal_height = new_h;
-                                        cx.notify();
-                                        window.refresh();
-                                    }
-                                },
-                            ))
-                            .on_mouse_up(MouseButton::Left, cx.listener(|this: &mut Workspace, _ev: &MouseUpEvent, window, cx| {
-                                if this.basic_term_resize.finish() {
-                                    this.request_standard_cursor_restore(window, cx);
-                                }
-                            }))
-                            .on_mouse_up_out(MouseButton::Left, cx.listener(|this: &mut Workspace, _ev: &MouseUpEvent, window, cx| {
-                                if this.basic_term_resize.finish() {
-                                    this.request_standard_cursor_restore(window, cx);
-                                }
-                            }))
                             .child(nucleotide_ui::bottom_panel_split(
                                 self.basic_terminal_height,
                                 80.0,
                                 panel_max,
-                                0.0, // disable internal handle; we'll overlay our own
+                                SPLIT_PANE_HANDLE_HITBOX_PX,
                                 220.0,
                                 on_change_height,
                                 {
@@ -15610,38 +15574,7 @@ impl Render for Workspace {
                                     }
                                     c
                                 },
-                            ))
-                            // Overlay our own centered handle at the top of the panel.
-                            .child({
-                                let handle_h = SPLIT_PANE_HANDLE_HITBOX_PX;
-                                nucleotide_ui::splitter(
-                                    "terminal-panel-resize-handle",
-                                    nucleotide_ui::SplitterAxis::Horizontal,
-                                    handle_h,
-                                )
-                                    .absolute()
-                                    .left_0()
-                                    .right_0()
-                                    .bottom(px(self.basic_terminal_height - handle_h * 0.5))
-                                    .on_mouse_down(MouseButton::Left, cx.listener(move |this: &mut Workspace, ev: &MouseDownEvent, window, cx| {
-                                        if ev.click_count >= 2 {
-                                            let min_h = 80.0f32;
-                                            let max_h = max_term;
-                                            this.basic_terminal_height = 220.0f32.clamp(min_h, max_h);
-                                            cx.notify();
-                                            window.refresh();
-                                            cx.stop_propagation();
-                                            return;
-                                        }
-                                        this.basic_term_resize.begin_from_mouse_down(
-                                            ev,
-                                            this.basic_terminal_height,
-                                        );
-                                        this.terminal_active = true;
-                                        window.refresh();
-                                        cx.stop_propagation();
-                                    }))
-                            }),
+                            )),
                     );
                 }
 
