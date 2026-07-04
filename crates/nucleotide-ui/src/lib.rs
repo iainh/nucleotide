@@ -321,6 +321,7 @@ pub fn init(cx: &mut App, config: Option<UIConfig>) {
     let config = config.unwrap_or_default();
 
     providers::init_provider_system();
+    completion_v2::init(cx);
     confirm_dialog::init(cx);
     menu::init(cx);
     modal_layer::init(cx);
