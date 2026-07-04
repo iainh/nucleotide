@@ -22,6 +22,7 @@ pub mod context_menu;
 pub mod debouncer;
 pub mod file_icon;
 pub mod focus;
+#[doc(hidden)]
 pub mod global_input;
 pub mod info_box;
 pub mod input;
@@ -43,6 +44,7 @@ pub mod scrollbar;
 pub mod split;
 pub mod style_utils;
 pub mod styling;
+pub mod terminal_keys;
 pub mod text_input;
 pub mod text_utils;
 pub mod theme_debug;
@@ -141,6 +143,9 @@ pub use styling::{
     StyleVariant, TimingFunction, Transition, TransitionProperty, VariantColors, VariantStyle,
     VariantStyler, ViewportContext, compute_component_style, compute_contextual_style,
     compute_style_for_states, merge_styles, should_enable_animations,
+};
+pub use terminal_keys::{
+    TerminalKeyEncodingMode, encode_terminal_key_event, encode_terminal_key_event_with_mode,
 };
 pub use text_input::{TextInput, TextInputEvent};
 pub use theme_debug::ThemeDebugView;
