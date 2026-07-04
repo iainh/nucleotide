@@ -1,12 +1,24 @@
 // ABOUTME: Shared keyboard navigation wrapper for focusable list-like UI
 // ABOUTME: Packages GPUI action-driven focus traversal for menus, panels, and pickers
 
+use gpui::prelude::FluentBuilder;
 use gpui::{
-    AnyElement, App, FocusHandle, InteractiveElement, IntoElement, ParentElement, RenderOnce,
-    ScrollAnchor, ScrollHandle, Styled, Window, div,
+    AnyElement, App, FocusHandle, InteractiveElement, IntoElement, KeyBinding, ParentElement,
+    RenderOnce, ScrollAnchor, ScrollHandle, Styled, Window, div,
 };
 
 use crate::actions::menu::{SelectDown, SelectUp};
+
+pub const NAVIGABLE_CONTEXT: &str = "Navigable";
+
+pub(crate) fn init(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new("up", SelectUp, Some(NAVIGABLE_CONTEXT)),
+        KeyBinding::new("down", SelectDown, Some(NAVIGABLE_CONTEXT)),
+        KeyBinding::new("ctrl-p", SelectUp, Some(NAVIGABLE_CONTEXT)),
+        KeyBinding::new("ctrl-n", SelectDown, Some(NAVIGABLE_CONTEXT)),
+    ]);
+}
 
 #[derive(Clone)]
 pub struct NavigableEntry {
@@ -54,6 +66,7 @@ pub struct Navigable {
     child: AnyElement,
     entries: Vec<NavigableEntry>,
     wrap: bool,
+    key_context: Option<&'static str>,
 }
 
 impl Navigable {
@@ -62,6 +75,7 @@ impl Navigable {
             child: child.into_any_element(),
             entries: Vec::new(),
             wrap: true,
+            key_context: Some(NAVIGABLE_CONTEXT),
         }
     }
 
@@ -77,6 +91,16 @@ impl Navigable {
 
     pub fn wrap(mut self, wrap: bool) -> Self {
         self.wrap = wrap;
+        self
+    }
+
+    pub fn key_context(mut self, key_context: &'static str) -> Self {
+        self.key_context = Some(key_context);
+        self
+    }
+
+    pub fn without_key_context(mut self) -> Self {
+        self.key_context = None;
         self
     }
 
@@ -119,6 +143,9 @@ impl RenderOnce for Navigable {
         let wrap_up = self.wrap;
 
         div()
+            .when_some(self.key_context, |this, key_context| {
+                this.key_context(key_context)
+            })
             .on_action(move |_: &SelectDown, window, cx| {
                 let Some(index) = Self::next_index(
                     Self::focused_index(&entries_for_down, window, cx),
@@ -191,6 +218,38 @@ mod tests {
             )
             .entries(self.entries.clone())
         }
+    }
+
+    #[gpui::test]
+    fn default_key_context_maps_down_to_next_entry(cx: &mut TestAppContext) {
+        cx.update(init);
+        let (host, cx) = cx.add_window_view(|_, cx| NavigableHost::new(cx));
+        let entries = host.read_with(cx, |host, _| host.entries.clone());
+
+        cx.update(|window, cx| {
+            entries[0].focus_handle.focus(window, cx);
+            window.dispatch_keystroke(gpui::Keystroke::parse("down").unwrap(), cx);
+        });
+
+        cx.update(|window, _cx| {
+            assert!(entries[1].focus_handle.is_focused(window));
+        });
+    }
+
+    #[gpui::test]
+    fn default_key_context_maps_ctrl_p_to_previous_entry(cx: &mut TestAppContext) {
+        cx.update(init);
+        let (host, cx) = cx.add_window_view(|_, cx| NavigableHost::new(cx));
+        let entries = host.read_with(cx, |host, _| host.entries.clone());
+
+        cx.update(|window, cx| {
+            entries[1].focus_handle.focus(window, cx);
+            window.dispatch_keystroke(gpui::Keystroke::parse("ctrl-p").unwrap(), cx);
+        });
+
+        cx.update(|window, _cx| {
+            assert!(entries[0].focus_handle.is_focused(window));
+        });
     }
 
     #[gpui::test]

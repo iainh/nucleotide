@@ -97,9 +97,13 @@ navigation system.
 ## Lists And Menus
 
 Use `nucleotide_ui::Navigable` for action-driven focus traversal in list-like
-surfaces. It handles `menu::SelectDown` and `menu::SelectUp` actions, moves
+surfaces. It installs a default `Navigable` key context for Up/Down and
+Ctrl-P/Ctrl-N, handles `menu::SelectDown` and `menu::SelectUp` actions, moves
 focus to the next or previous `NavigableEntry`, and scrolls to an optional
-`ScrollAnchor`.
+`ScrollAnchor`. Use `Navigable::key_context(...)` only when embedding it in a
+surface that already owns compatible key bindings, or
+`Navigable::without_key_context()` when a parent component must own all key
+routing.
 
 Use `PopupMenu` for menu-like controls instead of adding local arrow-key,
 Enter, or Escape branches. Menus should own:
