@@ -3,16 +3,27 @@
 // Copyright 2024-2025 Longbridge. Locally adapted for Nucleotide.
 
 use gpui::{
-    AnyElement, App, Context, FontWeight, InteractiveElement, IntoElement, MouseButton,
-    MouseDownEvent, ParentElement, Pixels, RenderOnce, SharedString, Styled, Window, div, px,
+    AnyElement, App, Context, DismissEvent, EventEmitter, FocusHandle, Focusable, FontWeight,
+    InteractiveElement, IntoElement, KeyBinding, MouseButton, MouseDownEvent, ParentElement,
+    Pixels, Render, RenderOnce, SharedString, Styled, Window, div, px,
 };
 
+use crate::actions::dialog::{Cancel as CancelDialogAction, Confirm as ConfirmDialogAction};
+use crate::modal_layer::ModalView;
 use crate::{Button, ButtonSize, ButtonVariant, ThemedContext};
 
 type OverlayHandler = Box<dyn Fn(&MouseDownEvent, &mut Window, &mut App) + 'static>;
 
 const DIALOG_OVERLAY_ALPHA_LIGHT: f32 = 0.70;
 const DIALOG_OVERLAY_ALPHA_DARK: f32 = 0.45;
+pub(crate) const CONFIRM_DIALOG_CONTEXT: &str = "ConfirmDialog";
+
+pub(crate) fn init(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new("enter", ConfirmDialogAction, Some(CONFIRM_DIALOG_CONTEXT)),
+        KeyBinding::new("escape", CancelDialogAction, Some(CONFIRM_DIALOG_CONTEXT)),
+    ]);
+}
 
 /// A modal dialog container with a backdrop and centred panel.
 #[derive(IntoElement)]
@@ -382,6 +393,113 @@ pub struct ConfirmDialogCallbacks<Cancel, Confirm> {
     pub on_confirm: Confirm,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfirmDialogEvent {
+    Cancelled,
+    Confirmed,
+}
+
+pub struct ConfirmDialogView {
+    dialog: ConfirmDialog,
+    focus_handle: FocusHandle,
+}
+
+impl ConfirmDialogView {
+    pub fn new(dialog: ConfirmDialog, cx: &mut Context<Self>) -> Self {
+        Self {
+            dialog,
+            focus_handle: cx.focus_handle().tab_stop(true),
+        }
+    }
+
+    fn emit_cancelled(&mut self, cx: &mut Context<Self>) {
+        cx.emit(ConfirmDialogEvent::Cancelled);
+        cx.emit(DismissEvent);
+    }
+
+    fn emit_confirmed(&mut self, cx: &mut Context<Self>) {
+        cx.emit(ConfirmDialogEvent::Confirmed);
+        cx.emit(DismissEvent);
+    }
+
+    fn cancel(&mut self, _: &CancelDialogAction, _: &mut Window, cx: &mut Context<Self>) {
+        self.emit_cancelled(cx);
+        cx.stop_propagation();
+    }
+
+    fn confirm(&mut self, _: &ConfirmDialogAction, _: &mut Window, cx: &mut Context<Self>) {
+        self.emit_confirmed(cx);
+        cx.stop_propagation();
+    }
+}
+
+impl Focusable for ConfirmDialogView {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+impl EventEmitter<ConfirmDialogEvent> for ConfirmDialogView {}
+
+impl EventEmitter<DismissEvent> for ConfirmDialogView {}
+
+impl ModalView for ConfirmDialogView {}
+
+impl Render for ConfirmDialogView {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let tokens = &cx.theme().tokens;
+        let cancel_button = Button::new("confirm-dialog-cancel", self.dialog.cancel_label.clone())
+            .variant(ButtonVariant::Secondary)
+            .size(ButtonSize::Small)
+            .activate_on_mouse_down()
+            .on_click(cx.listener(|view, _event, _window, cx| {
+                view.emit_cancelled(cx);
+                cx.stop_propagation();
+            }));
+
+        let confirm_button =
+            Button::new("confirm-dialog-confirm", self.dialog.confirm_label.clone())
+                .variant(self.dialog.confirm_variant)
+                .size(ButtonSize::Small)
+                .activate_on_mouse_down()
+                .on_click(cx.listener(|view, _event, _window, cx| {
+                    view.emit_confirmed(cx);
+                    cx.stop_propagation();
+                }));
+
+        div()
+            .key_context(CONFIRM_DIALOG_CONTEXT)
+            .track_focus(&self.focus_handle)
+            .occlude()
+            .bg(tokens.chrome.surface)
+            .border_1()
+            .border_color(tokens.chrome.border_default)
+            .rounded(tokens.sizes.radius_lg)
+            .shadow(vec![
+                tokens.chrome.shadow_lg.to_box_shadow(false),
+                tokens.chrome.inset_highlight.to_box_shadow(true),
+            ])
+            .w(self.dialog.width)
+            .p(tokens.sizes.space_4)
+            .flex()
+            .flex_col()
+            .gap(tokens.sizes.space_3)
+            .on_action(cx.listener(Self::confirm))
+            .on_action(cx.listener(Self::cancel))
+            .on_any_mouse_down(|_, _, cx| cx.stop_propagation())
+            .child(
+                DialogHeader::new()
+                    .child(DialogTitle::new().child(self.dialog.title.clone()))
+                    .child(DialogDescription::new().child(self.dialog.message.clone())),
+            )
+            .child(
+                DialogFooter::new()
+                    .child(cancel_button)
+                    .child(confirm_button),
+            )
+    }
+}
+
 pub fn render_confirm_dialog<T, Cancel, Confirm>(
     dialog: ConfirmDialog,
     cx: &mut Context<T>,
@@ -431,4 +549,95 @@ where
                 .child(confirm_button),
         )
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use gpui::{
+        AppContext as _, Context, Focusable, IntoElement, ParentElement as _, Render, Styled as _,
+        TestAppContext, Window, div,
+    };
+
+    use super::*;
+
+    struct ConfirmDialogHarness {
+        dialog: gpui::Entity<ConfirmDialogView>,
+        events: Rc<RefCell<Vec<ConfirmDialogEvent>>>,
+    }
+
+    impl ConfirmDialogHarness {
+        fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
+            let dialog = cx.new(|cx| {
+                ConfirmDialogView::new(
+                    ConfirmDialog::new("Delete File", "This cannot be undone.", "Delete")
+                        .confirm_variant(ButtonVariant::Danger),
+                    cx,
+                )
+            });
+            let events = Rc::new(RefCell::new(Vec::new()));
+            let events_for_subscription = Rc::clone(&events);
+            cx.subscribe(&dialog, move |_harness: &mut Self, _dialog, event, _cx| {
+                events_for_subscription.borrow_mut().push(*event);
+            })
+            .detach();
+
+            Self { dialog, events }
+        }
+    }
+
+    impl Render for ConfirmDialogHarness {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().child(self.dialog.clone())
+        }
+    }
+
+    fn init_confirm_dialog_test(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            init(cx);
+            cx.set_global(crate::Theme::from_tokens(crate::DesignTokens::dark()));
+        });
+    }
+
+    #[gpui::test]
+    fn confirm_dialog_view_emits_confirm_action(cx: &mut TestAppContext) {
+        init_confirm_dialog_test(cx);
+        let (harness, cx) = cx.add_window_view(ConfirmDialogHarness::new);
+        let dialog = harness.read_with(cx, |harness, _| harness.dialog.clone());
+        let focus = dialog.read_with(cx, |dialog, cx| dialog.focus_handle(cx));
+
+        cx.update(|window, cx| {
+            window.focus(&focus, cx);
+            focus.dispatch_action(&ConfirmDialogAction, window, cx);
+        });
+
+        harness.read_with(cx, |harness, _| {
+            assert_eq!(
+                harness.events.borrow().as_slice(),
+                &[ConfirmDialogEvent::Confirmed]
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn confirm_dialog_view_emits_cancel_action(cx: &mut TestAppContext) {
+        init_confirm_dialog_test(cx);
+        let (harness, cx) = cx.add_window_view(ConfirmDialogHarness::new);
+        let dialog = harness.read_with(cx, |harness, _| harness.dialog.clone());
+        let focus = dialog.read_with(cx, |dialog, cx| dialog.focus_handle(cx));
+
+        cx.update(|window, cx| {
+            window.focus(&focus, cx);
+            focus.dispatch_action(&CancelDialogAction, window, cx);
+        });
+
+        harness.read_with(cx, |harness, _| {
+            assert_eq!(
+                harness.events.borrow().as_slice(),
+                &[ConfirmDialogEvent::Cancelled]
+            );
+        });
+    }
 }

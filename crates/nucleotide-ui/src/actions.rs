@@ -189,6 +189,12 @@ pub mod menu {
     );
 }
 
+pub mod dialog {
+    use super::actions;
+
+    actions!(dialog, [Confirm, Cancel,]);
+}
+
 pub mod text_input {
     use super::actions;
 

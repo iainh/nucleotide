@@ -93,8 +93,9 @@ pub use completion_v2::{
     CompletionView, CompletionWarningEvent, Position, StringMatch, StringMatchCandidate,
 };
 pub use confirm_dialog::{
-    ConfirmDialog, ConfirmDialogCallbacks, Dialog, DialogContent, DialogDescription, DialogFooter,
-    DialogHeader, DialogTitle, render_confirm_dialog,
+    ConfirmDialog, ConfirmDialogCallbacks, ConfirmDialogEvent, ConfirmDialogView, Dialog,
+    DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
+    render_confirm_dialog,
 };
 pub use context_menu::{
     ContextMenu, ContextMenuCallbacks, ContextMenuEntry, ContextMenuState, render_context_menu,
@@ -318,6 +319,7 @@ pub fn init(cx: &mut App, config: Option<UIConfig>) {
     let config = config.unwrap_or_default();
 
     providers::init_provider_system();
+    confirm_dialog::init(cx);
     menu::init(cx);
     picker_view::init(cx);
     prompt_view::init(cx);
