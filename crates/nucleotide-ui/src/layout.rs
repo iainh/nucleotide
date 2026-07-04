@@ -15,6 +15,71 @@ pub enum PanelVariant {
     Transparent,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PanelLayout {
+    current_px: f32,
+    min_px: f32,
+    max_px: f32,
+    default_px: f32,
+}
+
+impl PanelLayout {
+    pub fn new(current_px: f32, min_px: f32, max_px: f32, default_px: f32) -> Self {
+        let min_px = finite_nonnegative_px(min_px);
+        let max_px = finite_nonnegative_px(max_px).max(min_px);
+        let current_px = finite_nonnegative_px(current_px).clamp(min_px, max_px);
+        let default_px = finite_nonnegative_px(default_px).clamp(min_px, max_px);
+
+        Self {
+            current_px,
+            min_px,
+            max_px,
+            default_px,
+        }
+    }
+
+    pub fn current_px(&self) -> f32 {
+        self.current_px
+    }
+
+    pub fn min_px(&self) -> f32 {
+        self.min_px
+    }
+
+    pub fn max_px(&self) -> f32 {
+        self.max_px
+    }
+
+    pub fn default_px(&self) -> f32 {
+        self.default_px
+    }
+
+    pub fn clamp(&self, value_px: f32) -> f32 {
+        finite_nonnegative_px(value_px).clamp(self.min_px, self.max_px)
+    }
+
+    pub fn reset_px(&self) -> f32 {
+        self.default_px
+    }
+
+    pub fn with_reserved_trailing_space(&self, available_px: f32, reserved_px: f32) -> Self {
+        let available_px = finite_nonnegative_px(available_px);
+        let reserved_px = finite_nonnegative_px(reserved_px);
+        let max_px = (available_px - reserved_px)
+            .max(self.min_px)
+            .min(self.max_px);
+        Self::new(self.current_px, self.min_px, max_px, self.default_px)
+    }
+}
+
+fn finite_nonnegative_px(value: f32) -> f32 {
+    if value.is_finite() {
+        value.max(0.0)
+    } else {
+        0.0
+    }
+}
+
 #[derive(IntoElement)]
 pub struct AppShell {
     id: ElementId,
@@ -394,6 +459,40 @@ mod tests {
         cx.update(|cx| {
             cx.set_global(crate::Theme::from_tokens(crate::DesignTokens::dark()));
         });
+    }
+
+    #[test]
+    fn panel_layout_clamps_current_default_and_bounds() {
+        let layout = PanelLayout::new(720.0, 160.0, 640.0, 800.0);
+
+        assert_eq!(layout.current_px(), 640.0);
+        assert_eq!(layout.min_px(), 160.0);
+        assert_eq!(layout.max_px(), 640.0);
+        assert_eq!(layout.default_px(), 640.0);
+        assert_eq!(layout.clamp(80.0), 160.0);
+        assert_eq!(layout.clamp(320.0), 320.0);
+        assert_eq!(layout.reset_px(), 640.0);
+    }
+
+    #[test]
+    fn panel_layout_keeps_max_at_least_min() {
+        let layout = PanelLayout::new(20.0, 120.0, 40.0, 60.0);
+
+        assert_eq!(layout.current_px(), 120.0);
+        assert_eq!(layout.min_px(), 120.0);
+        assert_eq!(layout.max_px(), 120.0);
+        assert_eq!(layout.reset_px(), 120.0);
+    }
+
+    #[test]
+    fn panel_layout_reserves_trailing_space() {
+        let layout =
+            PanelLayout::new(500.0, 120.0, 700.0, 320.0).with_reserved_trailing_space(640.0, 240.0);
+
+        assert_eq!(layout.current_px(), 400.0);
+        assert_eq!(layout.min_px(), 120.0);
+        assert_eq!(layout.max_px(), 400.0);
+        assert_eq!(layout.reset_px(), 320.0);
     }
 
     #[gpui::test]

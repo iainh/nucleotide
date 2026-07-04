@@ -10,6 +10,8 @@ use gpui::{
     MouseMoveEvent, MouseUpEvent, ParentElement, Stateful, Styled, Window, div, px, relative,
 };
 
+use crate::layout::PanelLayout;
+
 pub const SPLITTER_HITBOX_PX: f32 = 10.0;
 pub const SPLITTER_LINE_PX: f32 = 1.0;
 
@@ -245,9 +247,8 @@ pub fn sidebar_split<L: IntoElement, R: IntoElement>(
     right: R,
 ) -> impl IntoElement {
     let drag = ResizeDragController::new();
-    let min_px = min_px.max(0.0);
-    let max_px = if max_px < min_px { min_px } else { max_px };
-    let width_px = width_px.clamp(min_px, max_px);
+    let layout = PanelLayout::new(width_px, min_px, max_px, default_px);
+    let width_px = layout.current_px();
     let on_change = Rc::new(on_change);
 
     // debug logging removed
@@ -265,12 +266,13 @@ pub fn sidebar_split<L: IntoElement, R: IntoElement>(
             let on_change = on_change.clone();
             move |ev: &MouseMoveEvent, window: &mut Window, cx: &mut App| {
                 if ev.dragging() {
-                    // Ensure a minimum width for right pane (200px) so editor never collapses
                     let viewport_w = f32::from(window.viewport_size().width);
-                    let max_allowed = (viewport_w - 200.0).max(min_px);
-                    if let Some(new_w) =
-                        drag.horizontal_value_from_mouse_move(ev, min_px, max_allowed.min(max_px))
-                    {
+                    let constrained = layout.with_reserved_trailing_space(viewport_w, 200.0);
+                    if let Some(new_w) = drag.horizontal_value_from_mouse_move(
+                        ev,
+                        constrained.min_px(),
+                        constrained.max_px(),
+                    ) {
                         on_change(new_w, cx);
                         window.refresh();
                     }
@@ -325,8 +327,8 @@ pub fn sidebar_split<L: IntoElement, R: IntoElement>(
             move |ev: &MouseDownEvent, window: &mut Window, cx: &mut App| {
                 if ev.click_count >= 2 {
                     let viewport_w = f32::from(window.viewport_size().width);
-                    let max_allowed = (viewport_w - 200.0).max(min_px);
-                    on_change(default_px.clamp(min_px, max_allowed.min(max_px)), cx);
+                    let constrained = layout.with_reserved_trailing_space(viewport_w, 200.0);
+                    on_change(constrained.reset_px(), cx);
                     window.refresh();
                     cx.stop_propagation();
                     return;
@@ -369,9 +371,8 @@ pub fn right_sidebar_split<L: IntoElement, R: IntoElement>(
     right: R,
 ) -> impl IntoElement {
     let drag = ResizeDragController::new();
-    let min_px = min_px.max(0.0);
-    let max_px = if max_px < min_px { min_px } else { max_px };
-    let width_px = width_px.clamp(min_px, max_px);
+    let layout = PanelLayout::new(width_px, min_px, max_px, default_px);
+    let width_px = layout.current_px();
     let on_change = Rc::new(on_change);
 
     let mut root = div()
@@ -384,7 +385,8 @@ pub fn right_sidebar_split<L: IntoElement, R: IntoElement>(
             let on_change = on_change.clone();
             move |ev: &MouseMoveEvent, window: &mut Window, cx: &mut App| {
                 if ev.dragging()
-                    && let Some(new_w) = drag.left_edge_value_from_mouse_move(ev, min_px, max_px)
+                    && let Some(new_w) =
+                        drag.left_edge_value_from_mouse_move(ev, layout.min_px(), layout.max_px())
                 {
                     on_change(new_w, cx);
                     window.refresh();
@@ -438,7 +440,7 @@ pub fn right_sidebar_split<L: IntoElement, R: IntoElement>(
                 let on_change = on_change.clone();
                 move |ev: &MouseDownEvent, window: &mut Window, cx: &mut App| {
                     if ev.click_count >= 2 {
-                        on_change(default_px.clamp(min_px, max_px), cx);
+                        on_change(layout.reset_px(), cx);
                         window.refresh();
                         cx.stop_propagation();
                         return;
@@ -472,9 +474,8 @@ pub fn bottom_panel_split<C: IntoElement>(
     content: C,
 ) -> impl IntoElement {
     let drag = ResizeDragController::new();
-    let min_px = min_px.max(0.0);
-    let max_px = if max_px < min_px { min_px } else { max_px };
-    let height_px = height_px.clamp(min_px, max_px);
+    let layout = PanelLayout::new(height_px, min_px, max_px, default_px);
+    let height_px = layout.current_px();
     let on_change = Rc::new(on_change);
 
     let mut root = div()
@@ -485,7 +486,8 @@ pub fn bottom_panel_split<C: IntoElement>(
             let on_change = on_change.clone();
             move |ev: &MouseMoveEvent, window: &mut Window, cx: &mut App| {
                 if ev.dragging()
-                    && let Some(new_h) = drag.top_edge_value_from_mouse_move(ev, min_px, max_px)
+                    && let Some(new_h) =
+                        drag.top_edge_value_from_mouse_move(ev, layout.min_px(), layout.max_px())
                 {
                     on_change(new_h, cx);
                     window.refresh();
@@ -530,7 +532,7 @@ pub fn bottom_panel_split<C: IntoElement>(
                 let on_change = on_change.clone();
                 move |ev: &MouseDownEvent, window: &mut Window, cx: &mut App| {
                     if ev.click_count >= 2 {
-                        on_change(default_px.clamp(min_px, max_px), cx);
+                        on_change(layout.reset_px(), cx);
                         window.refresh();
                         cx.stop_propagation();
                         return;
