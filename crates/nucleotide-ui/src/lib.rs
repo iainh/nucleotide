@@ -125,7 +125,8 @@ pub use providers::{
 };
 pub use split::{
     ResizeDragController, SPLITTER_HITBOX_PX, SPLITTER_LINE_PX, SplitterAxis, bottom_panel_split,
-    resize_handle, right_sidebar_split, sidebar_split, splitter, two_pane_split,
+    resize_capture_area, resize_handle, right_sidebar_split, sidebar_split, splitter,
+    two_pane_split,
 };
 pub use styling::{
     AnimationConfig, AnimationDuration, AnimationPreset, AnimationProperty, AnimationType,

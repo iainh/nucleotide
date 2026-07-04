@@ -44,6 +44,13 @@ fn resize_handle_visual_offset(hitbox_px: f32) -> f32 {
     ((hitbox_px - RESIZE_HANDLE_VISUAL_PX) * 0.5).max(0.0)
 }
 
+fn cursor_for_axis(axis: SplitterAxis) -> gpui::CursorStyle {
+    match axis {
+        SplitterAxis::Vertical => gpui::CursorStyle::ResizeLeftRight,
+        SplitterAxis::Horizontal => gpui::CursorStyle::ResizeRow,
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SplitterAxis {
     Vertical,
@@ -64,14 +71,10 @@ pub fn splitter(id: impl Into<ElementId>, axis: SplitterAxis, handle_px: f32) ->
         .relative()
         .occlude()
         .when(axis == SplitterAxis::Vertical, |d| {
-            d.w(px(hitbox_px))
-                .h_full()
-                .cursor(gpui::CursorStyle::ResizeLeftRight)
+            d.w(px(hitbox_px)).h_full().cursor(cursor_for_axis(axis))
         })
         .when(axis == SplitterAxis::Horizontal, |d| {
-            d.w_full()
-                .h(px(hitbox_px))
-                .cursor(gpui::CursorStyle::ResizeRow)
+            d.w_full().h(px(hitbox_px)).cursor(cursor_for_axis(axis))
         });
 
     match axis {
@@ -124,6 +127,21 @@ pub fn resize_handle(
         });
 
     base.on_mouse_down(MouseButton::Left, on_start)
+        .on_mouse_up(MouseButton::Left, on_finish)
+        .on_mouse_up_out(MouseButton::Left, on_finish_out)
+}
+
+/// Applies active resize capture behaviour to a surface while a drag is active.
+pub fn resize_capture_area(
+    surface: Stateful<Div>,
+    axis: SplitterAxis,
+    on_move: impl Fn(&MouseMoveEvent, &mut Window, &mut App) + 'static,
+    on_finish: impl Fn(&MouseUpEvent, &mut Window, &mut App) + 'static,
+    on_finish_out: impl Fn(&MouseUpEvent, &mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
+    surface
+        .cursor(cursor_for_axis(axis))
+        .on_mouse_move(on_move)
         .on_mouse_up(MouseButton::Left, on_finish)
         .on_mouse_up_out(MouseButton::Left, on_finish_out)
 }
@@ -662,12 +680,13 @@ pub fn two_pane_split<A: IntoElement, B: IntoElement>(
 #[cfg(test)]
 mod tests {
     use gpui::{
-        Context, IntoElement, ParentElement as _, Render, Styled as _, TestAppContext, Window, div,
+        Context, InteractiveElement as _, IntoElement, ParentElement as _, Render, Styled as _,
+        TestAppContext, Window, div,
     };
 
     use super::{
         RESIZE_HANDLE_MAX_HITBOX_PX, RESIZE_HANDLE_MIN_HITBOX_PX, ResizeDragController,
-        SplitterAxis, clamp_primary, clamp_primary_vertical, resize_handle,
+        SplitterAxis, clamp_primary, clamp_primary_vertical, resize_capture_area, resize_handle,
         resize_handle_hitbox_px, resize_handle_visual_offset,
     };
 
@@ -689,6 +708,25 @@ mod tests {
     #[gpui::test]
     fn resize_handle_renders_in_test_harness(cx: &mut TestAppContext) {
         let (_harness, _cx) = cx.add_window_view(|_, _| ResizeHandleHarness);
+    }
+
+    struct ResizeCaptureHarness;
+
+    impl Render for ResizeCaptureHarness {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            resize_capture_area(
+                div().id("test-resize-capture").size_full(),
+                SplitterAxis::Horizontal,
+                |_, _, _| {},
+                |_, _, _| {},
+                |_, _, _| {},
+            )
+        }
+    }
+
+    #[gpui::test]
+    fn resize_capture_area_renders_in_test_harness(cx: &mut TestAppContext) {
+        let (_harness, _cx) = cx.add_window_view(|_, _| ResizeCaptureHarness);
     }
 
     #[test]
