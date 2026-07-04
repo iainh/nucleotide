@@ -1484,6 +1484,11 @@ fn gui_main(
                         nucleotide::actions::file_tree::OpenFile,
                         Some("FileTree"),
                     ),
+                    gpui::KeyBinding::new(
+                        "delete",
+                        nucleotide::actions::file_tree::Delete,
+                        Some("FileTree"),
+                    ),
                 ]);
 
                 // Remote connection manager keybindings

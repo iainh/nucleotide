@@ -6826,25 +6826,6 @@ impl Workspace {
                 self.handle_workspace_action(&action, cx);
             }
         }
-
-        // Trigger delete confirmation from keyboard when file tree has focus
-        if ev.keystroke.key.as_str() == "delete"
-            && let Some(ref file_tree) = self.file_tree
-        {
-            let is_tree_focused = file_tree.focus_handle(cx).is_focused(window);
-            if is_tree_focused {
-                let (selected, was_directory) = {
-                    let tree = file_tree.read(cx);
-                    (
-                        tree.selected_path().cloned(),
-                        tree.selected_path_is_directory(),
-                    )
-                };
-                if let Some(path) = selected {
-                    self.request_delete_path(path, was_directory, cx);
-                }
-            }
-        }
     }
 
     pub fn new(
@@ -11503,6 +11484,9 @@ impl Workspace {
                 self.context_menu_path = Some(path.clone());
                 self.context_menu_is_directory = *is_directory;
                 cx.notify();
+            }
+            FileTreeEvent::DeleteRequested { path, is_directory } => {
+                self.request_delete_path(path.clone(), *is_directory, cx);
             }
             FileTreeEvent::FileSystemChanged { path, kind } => {
                 info!("File system change detected: {:?} - {:?}", path, kind);
