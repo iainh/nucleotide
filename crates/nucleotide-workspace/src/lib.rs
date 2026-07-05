@@ -368,7 +368,7 @@ fn relative_path_to_separated_string(relative_path: &Path, separator: char) -> S
 
 fn ssh_display_path_for_native_path(target: &SshWorkspaceTarget, native_path: &Path) -> PathBuf {
     let authority = ssh_authority(target);
-    let path = percent_encode_posix_path(&native_path.to_string_lossy());
+    let path = percent_encode_posix_path(&posix_path_string(native_path));
     PathBuf::from(format!("ssh://{authority}{path}"))
 }
 
@@ -405,7 +405,7 @@ fn wsl_display_path_for_native_path(
     native_path: &Path,
 ) -> PathBuf {
     let original_text = original_path.to_string_lossy();
-    let native_text = native_path.to_string_lossy();
+    let native_text = posix_path_string(native_path);
     if original_text.contains('\\') {
         let relative_text = native_text.trim_start_matches('/').replace('/', "\\");
         if relative_text.is_empty() {
@@ -429,6 +429,10 @@ pub fn wsl_display_path(distro: &str, native_path: impl AsRef<Path>) -> PathBuf 
         distro,
         native_path.as_ref(),
     )
+}
+
+fn posix_path_string(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
 }
 
 fn percent_encode_posix_path(path: &str) -> String {
@@ -520,21 +524,27 @@ fn strip_prefix_ignore_ascii_case<'a>(value: &'a str, prefix: &str) -> Option<&'
 }
 
 fn path_from_posix_segments<'a>(segments: impl IntoIterator<Item = &'a str>) -> PathBuf {
-    let mut path = PathBuf::from("/");
+    let mut path = String::from("/");
     for segment in segments {
         if !segment.is_empty() {
-            path.push(segment);
+            if !path.ends_with('/') {
+                path.push('/');
+            }
+            path.push_str(segment);
         }
     }
-    path
+    PathBuf::from(path)
 }
 
 fn path_from_percent_encoded_posix_path(value: &str) -> PathBuf {
-    let mut path = PathBuf::from("/");
+    let mut path = String::from("/");
     for segment in value.split('/').filter(|segment| !segment.is_empty()) {
-        path.push(percent_decode_uri_component(segment));
+        if !path.ends_with('/') {
+            path.push('/');
+        }
+        path.push_str(&percent_decode_uri_component(segment));
     }
-    path
+    PathBuf::from(path)
 }
 
 fn percent_decode_uri_component(value: &str) -> String {
@@ -2913,6 +2923,17 @@ mod tests {
     }
 
     #[test]
+    fn workspace_location_normalizes_mixed_ssh_native_separators_for_display_path() {
+        let path = PathBuf::from("ssh://me@example.com:2222/home/me/project");
+        let location = classify_workspace_location(&path);
+
+        assert_eq!(
+            location.display_path_for_native_path(Path::new(r"/home\me/project\src/lib.rs")),
+            PathBuf::from("ssh://me@example.com:2222/home/me/project/src/lib.rs")
+        );
+    }
+
+    #[test]
     fn ssh_display_path_encodes_native_path_for_target() {
         let target = SshWorkspaceTarget {
             host: "example.com".to_string(),
@@ -2927,6 +2948,20 @@ mod tests {
     }
 
     #[test]
+    fn ssh_display_path_normalizes_mixed_native_separators() {
+        let target = SshWorkspaceTarget {
+            host: "example.com".to_string(),
+            user: Some("me".to_string()),
+            port: Some(2222),
+        };
+
+        assert_eq!(
+            ssh_display_path(&target, Path::new(r"/home\me/Project One\src/lib.rs")),
+            PathBuf::from("ssh://me@example.com:2222/home/me/Project%20One/src/lib.rs")
+        );
+    }
+
+    #[test]
     fn workspace_location_maps_external_wsl_native_path_to_same_distro_display_path() {
         let path = PathBuf::from(r"\\wsl.localhost\Ubuntu-24.04\home\me\project");
         let location = classify_workspace_location(&path);
@@ -2934,6 +2969,14 @@ mod tests {
         assert_eq!(
             location.display_path_for_native_path(Path::new("/nix/store/rust/lib.rs")),
             PathBuf::from(r"\\wsl.localhost\Ubuntu-24.04\nix\store\rust\lib.rs")
+        );
+    }
+
+    #[test]
+    fn wsl_display_path_normalizes_mixed_linux_separators() {
+        assert_eq!(
+            wsl_display_path("Ubuntu-24.04", Path::new(r"/home\me/project\src")),
+            PathBuf::from("//wsl.localhost/Ubuntu-24.04/home/me/project/src")
         );
     }
 
