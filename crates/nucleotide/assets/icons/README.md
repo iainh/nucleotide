@@ -21,6 +21,8 @@ Current Lucide-sourced additions:
 - `play.svg`
 - `plus.svg`
 - `rotate-ccw.svg`
+- `square.svg`
+- `square-check-big.svg`
 - `square-scissors.svg`
 - `triangle-alert.svg`
 - `zoom-in.svg`

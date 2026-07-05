@@ -5,6 +5,7 @@ pub mod about_window;
 pub mod actions;
 pub mod assets;
 pub mod button;
+pub mod checkbox;
 pub mod common;
 // Old completion module removed - now using completion_v2
 pub mod completion_cache;
@@ -65,6 +66,7 @@ mod styling_tests;
 pub use about_window::AboutWindow;
 pub use assets::Assets;
 pub use button::{Button, ButtonSize, ButtonVariant, IconPosition};
+pub use checkbox::{Checkbox, CheckboxSize};
 pub use completion_docs::{
     DocumentationCache, DocumentationCacheConfig, DocumentationContent, DocumentationLoader,
     DocumentationPanel, DocumentationSource, DocumentationState,
@@ -143,8 +145,8 @@ pub use terminal_keys::{
 pub use text_input::{TextInput, TextInputEvent, TextInputFocusStyle};
 pub use theme_debug::ThemeDebugView;
 pub use tokens::{
-    ChromeTokens, ColorContext, CompletionIconTokens, DesignTokens, EditorTokens, FileTreeTokens,
-    ShadowToken, SizeTokens, StatusBarTokens, TabBarTokens, TitleBarTokens,
+    CheckboxTokens, ChromeTokens, ColorContext, CompletionIconTokens, DesignTokens, EditorTokens,
+    FileTreeTokens, ShadowToken, SizeTokens, StatusBarTokens, TabBarTokens, TitleBarTokens,
 };
 pub use traits::{
     Component, ComponentBuilder, ComponentFactory, ComponentState, ComponentStyles, Composable,
@@ -289,6 +291,7 @@ pub(crate) const BUILT_IN_COMPONENTS: &[&str] = &[
     "AppShell",
     "BottomPanel",
     "Button",
+    "Checkbox",
     "ComponentGallery",
     "CompletionRenderer",
     "CompletionView",
