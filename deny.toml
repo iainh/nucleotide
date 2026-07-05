@@ -70,6 +70,13 @@ ignore = [
     "RUSTSEC-2025-0140",
     # proc-macro-error2 is pulled transitively through GPUI's stacksafe macros.
     "RUSTSEC-2026-0173",
+    # ttf-parser is pulled transitively through GPUI/fontdb/rustybuzz; no safe
+    # upgrade exists yet, so update with GPUI/font stack.
+    "RUSTSEC-2026-0192",
+    # quick-xml 0.39 is pinned by Linux transitive crates wayland-scanner and
+    # zbus_xml; update once those crates allow quick-xml >= 0.41.
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
 ]
 
 # This section is considered when running `cargo deny check licenses`

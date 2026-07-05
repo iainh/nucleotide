@@ -208,6 +208,8 @@ pub fn workspace_path_is_absolute(path: impl AsRef<Path>) -> bool {
 pub fn absolutize_workspace_path(root: &Path, path: &Path) -> PathBuf {
     if path.starts_with(root) || workspace_path_is_absolute(path) {
         path.to_path_buf()
+    } else if classify_workspace_location(root).is_remote() {
+        join_path_with_separator(root, path, display_separator_for_root(root))
     } else {
         root.join(path)
     }
@@ -316,8 +318,52 @@ fn join_display_root(display_root: &Path, relative_path: &Path) -> PathBuf {
     if relative_path.as_os_str().is_empty() {
         display_root.to_path_buf()
     } else {
-        display_root.join(relative_path)
+        join_path_with_separator(
+            display_root,
+            relative_path,
+            display_separator_for_root(display_root),
+        )
     }
+}
+
+fn display_separator_for_root(root: &Path) -> char {
+    let root_text = root.to_string_lossy();
+    if strip_prefix_ignore_ascii_case(&root_text, "ssh://").is_some() {
+        '/'
+    } else if root_text.contains('\\') {
+        '\\'
+    } else {
+        '/'
+    }
+}
+
+fn join_path_with_separator(root: &Path, relative_path: &Path, separator: char) -> PathBuf {
+    let relative_text = relative_path_to_separated_string(relative_path, separator);
+    if relative_text.is_empty() {
+        return root.to_path_buf();
+    }
+
+    let root_text = root.to_string_lossy();
+    let trimmed_root = root_text.trim_end_matches(['/', '\\']);
+    if trimmed_root.is_empty() {
+        PathBuf::from(format!("{separator}{relative_text}"))
+    } else {
+        PathBuf::from(format!("{trimmed_root}{separator}{relative_text}"))
+    }
+}
+
+fn relative_path_to_separated_string(relative_path: &Path, separator: char) -> String {
+    let separator = separator.to_string();
+    relative_path
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::CurDir => None,
+            std::path::Component::ParentDir => Some("..".to_string()),
+            std::path::Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
+            std::path::Component::RootDir | std::path::Component::Prefix(_) => None,
+        })
+        .collect::<Vec<_>>()
+        .join(&separator)
 }
 
 fn ssh_display_path_for_native_path(target: &SshWorkspaceTarget, native_path: &Path) -> PathBuf {
@@ -1149,11 +1195,53 @@ impl WorkspaceBackend for PathMappedWorkspaceBackend {
 }
 
 fn rebase_workspace_path(path: &Path, from_root: &Path, to_root: &Path) -> PathBuf {
+    if classify_workspace_location(from_root).is_remote()
+        && let Some(relative_path) = strip_remote_workspace_prefix(path, from_root)
+    {
+        return join_rebased_workspace_path(from_root, to_root, &relative_path);
+    }
+
     match path.strip_prefix(from_root) {
         Ok(relative_path) if relative_path.as_os_str().is_empty() => to_root.to_path_buf(),
-        Ok(relative_path) => to_root.join(relative_path),
+        Ok(relative_path) => join_rebased_workspace_path(from_root, to_root, relative_path),
         Err(_) => path.to_path_buf(),
     }
+}
+
+fn join_rebased_workspace_path(from_root: &Path, to_root: &Path, relative_path: &Path) -> PathBuf {
+    if relative_path.as_os_str().is_empty() {
+        return to_root.to_path_buf();
+    }
+
+    if classify_workspace_location(to_root).is_remote() {
+        join_path_with_separator(to_root, relative_path, display_separator_for_root(to_root))
+    } else if classify_workspace_location(from_root).is_remote() {
+        join_path_with_separator(to_root, relative_path, '/')
+    } else {
+        to_root.join(relative_path)
+    }
+}
+
+fn strip_remote_workspace_prefix(path: &Path, root: &Path) -> Option<PathBuf> {
+    let path_text = path.to_string_lossy();
+    let root_text = root.to_string_lossy();
+    let trimmed_root = root_text.trim_end_matches(['/', '\\']);
+
+    if path_text == trimmed_root {
+        return Some(PathBuf::new());
+    }
+
+    let rest = path_text.strip_prefix(trimmed_root)?;
+    let rest = rest.strip_prefix('/').or_else(|| rest.strip_prefix('\\'))?;
+
+    Some(path_from_mixed_separators(rest))
+}
+
+fn path_from_mixed_separators(value: &str) -> PathBuf {
+    value
+        .split(['/', '\\'])
+        .filter(|segment| !segment.is_empty())
+        .collect()
 }
 
 #[async_trait]
@@ -2871,6 +2959,43 @@ mod tests {
                 "ssh://me@example.com/home/me/.cargo/git/checkout/lib.rs"
             )),
             PathBuf::from("/home/me/.cargo/git/checkout/lib.rs")
+        );
+    }
+
+    #[test]
+    fn workspace_mapping_maps_windows_joined_ssh_display_path_to_native_path() {
+        let mapping =
+            WorkspacePathMapping::new("ssh://me@example.com/home/me/project", "/home/me/project");
+
+        assert_eq!(
+            mapping.to_native_path(Path::new(
+                r"ssh://me@example.com/home/me/project\src\main.rs"
+            )),
+            PathBuf::from("/home/me/project/src/main.rs")
+        );
+    }
+
+    #[test]
+    fn workspace_mapping_preserves_ssh_display_separator_style() {
+        let mapping =
+            WorkspacePathMapping::new("ssh://me@example.com/home/me/project", "/home/me/project");
+
+        assert_eq!(
+            mapping.to_display_path(Path::new("/home/me/project/src/main.rs")),
+            PathBuf::from("ssh://me@example.com/home/me/project/src/main.rs")
+        );
+    }
+
+    #[test]
+    fn workspace_mapping_preserves_wsl_unc_display_separator_style() {
+        let mapping = WorkspacePathMapping::new(
+            r"\\wsl.localhost\Ubuntu\home\me\project",
+            "/home/me/project",
+        );
+
+        assert_eq!(
+            mapping.to_display_path(Path::new("/home/me/project/src/main.rs")),
+            PathBuf::from(r"\\wsl.localhost\Ubuntu\home\me\project\src\main.rs")
         );
     }
 
