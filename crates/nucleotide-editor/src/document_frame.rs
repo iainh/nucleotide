@@ -284,7 +284,7 @@ pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDoc
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, sync::Arc};
+    use std::sync::Arc;
 
     use arc_swap::{ArcSwap, access::Map};
     use gpui::{Bounds, black, font, point, px, size, white};
@@ -645,7 +645,6 @@ mod tests {
             scroll_line_offset: px(0.0),
             horizontal_offset: 0,
             visible_lines: &visible_lines[..render_snapshot.last_row.min(visible_lines.len())],
-            inline_diagnostic_virtual_rows: &BTreeMap::new(),
             is_focused: true,
         });
 

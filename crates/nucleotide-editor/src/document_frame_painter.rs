@@ -773,14 +773,12 @@ fn native_editor_frame_gutter_line_plans(
     }
 
     if let Some(unwrapped_plan) = frame.unwrapped_render_plan.as_ref() {
-        let inline_diagnostic_virtual_rows = frame.inline_diagnostic_plan.virtual_rows_by_line();
         return build_unwrapped_gutter_line_plans(UnwrappedGutterLinePlanParams {
             layout: params.layout,
             bounds: params.bounds,
             scroll_line_offset: params.frame_state.scroll_line_offset,
             horizontal_offset: view_position.horizontal_offset,
             visible_lines: &unwrapped_plan.visible_lines,
-            inline_diagnostic_virtual_rows: &inline_diagnostic_virtual_rows,
             editor: params.editor,
             document: params.document,
             view: params.view,
@@ -1459,14 +1457,7 @@ mod tests {
 
     use arc_swap::{ArcSwap, access::Map};
     use gpui::{TextStyle, black, point, px, size, white};
-    use helix_core::{
-        Selection, Transaction,
-        diagnostic::{
-            Diagnostic, DiagnosticProvider, LanguageServerId, NumberOrString,
-            Range as DiagnosticRange, Severity,
-        },
-        syntax,
-    };
+    use helix_core::{Transaction, syntax};
     use helix_view::{
         DocumentId, Editor, ViewId,
         document::Mode,
@@ -1694,32 +1685,6 @@ mod tests {
         }
     }
 
-    fn diagnostic(
-        line: usize,
-        start: usize,
-        end: usize,
-        severity: Severity,
-        message: &str,
-    ) -> Diagnostic {
-        Diagnostic {
-            range: DiagnosticRange { start, end },
-            ends_at_word: false,
-            starts_at_word: false,
-            zero_width: start == end,
-            line,
-            message: message.to_string(),
-            severity: Some(severity),
-            code: Some(NumberOrString::String("E000".to_string())),
-            provider: DiagnosticProvider::Lsp {
-                server_id: LanguageServerId::default(),
-                identifier: None,
-            },
-            tags: Vec::new(),
-            source: None,
-            data: None,
-        }
-    }
-
     #[tokio::test(flavor = "current_thread")]
     async fn native_frame_paint_plan_owns_frame_and_text() {
         let mut state = EditorViewState::new(px(20.0), px(8.0));
@@ -1785,143 +1750,6 @@ mod tests {
         assert!(!plan.frame.gutter_line_plans.is_empty());
         assert_eq!(plan.bounds, bounds);
         assert_eq!(plan.font_size, px(16.0));
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn native_frame_paint_plan_keeps_unwrapped_inline_diagnostic_rows_virtual() {
-        let mut state = EditorViewState::new(px(20.0), px(8.0));
-        let (mut editor, doc_id, view_id) =
-            test_editor_with_text("line one\nline two\nslide\nnext line\nlast line\n");
-        let diagnostic_line = 2;
-        let diagnostic_start = {
-            let document = editor.document(doc_id).unwrap();
-            document.text().line_to_char(diagnostic_line)
-        };
-
-        {
-            let document = editor.document_mut(doc_id).unwrap();
-            document.set_selection(
-                view_id,
-                Selection::single(diagnostic_start, diagnostic_start),
-            );
-            document.replace_diagnostics(
-                vec![diagnostic(
-                    diagnostic_line,
-                    diagnostic_start,
-                    diagnostic_start + 1,
-                    Severity::Error,
-                    "expected expression\nexpected semicolon",
-                )],
-                &[],
-                None,
-            );
-        }
-        {
-            let document = editor.document(doc_id).unwrap();
-            let view = editor.tree.try_get(view_id).unwrap();
-            view.diagnostics_handler
-                .immediately_show_diagnostic(document, view_id);
-        }
-
-        let theme = theme::Loader::new(&[]).default_theme(true);
-        let bounds = gpui::Bounds::new(point(px(0.0), px(0.0)), size(px(800.0), px(180.0)));
-        let scrolloff = editor.config().scrolloff;
-        let frame_state = state
-            .sync_frame_layout(
-                &mut editor,
-                doc_id,
-                view_id,
-                EditorViewportSurfaceLayout::for_editor(
-                    Some(&theme),
-                    bounds,
-                    px(8.0),
-                    px(20.0),
-                    scrolloff,
-                    None,
-                ),
-            )
-            .unwrap();
-        let document = editor.document(doc_id).unwrap();
-        let view = editor.tree.try_get(view_id).unwrap();
-        let syntax_loader = editor.syn_loader.load();
-        let editor_config = editor.config();
-        let editor_mode = editor.mode();
-        let (_, cursor_kind) = editor.cursor();
-        let text_style = TextStyle::default();
-        let layout = crate::EditorLayout {
-            rows: 9,
-            columns: 100,
-            line_height: px(20.0),
-            font_size: px(16.0),
-            cell_width: px(8.0),
-        };
-
-        let plan = native_editor_frame_paint_plan(NativeEditorFramePlanParams {
-            editor: &editor,
-            document,
-            view,
-            view_id,
-            theme: &theme,
-            syntax_loader: &syntax_loader,
-            frame_state: &frame_state,
-            bounds,
-            layout: &layout,
-            text_style: &text_style,
-            font_size: px(16.0),
-            is_focused: true,
-            soft_wrap_minimum_columns: EDITOR_MINIMUM_VIEWPORT_COLUMNS,
-            editor_mode,
-            cursor_kind,
-            cursor_shape: editor_config.cursor_shape.clone(),
-            editor_rulers: editor_config.rulers.clone(),
-            cursorline_enabled: editor_config.cursorline,
-            style: paint_style(),
-        });
-
-        assert_eq!(
-            plan.frame
-                .inline_diagnostic_plan
-                .virtual_rows_by_line()
-                .get(&diagnostic_line),
-            Some(&2)
-        );
-        assert!(
-            plan.frame.gutter_line_plans.iter().any(|line| {
-                line.doc_line == diagnostic_line
-                    && line.visual_line == 2
-                    && line.first_visual_line
-                    && line.text.trim() == "3"
-            }),
-            "source diagnostic line number should be rendered once"
-        );
-        assert_eq!(
-            plan.frame
-                .gutter_line_plans
-                .iter()
-                .filter(|line| line.doc_line == diagnostic_line && line.text.trim() == "3")
-                .count(),
-            1
-        );
-        for visual_line in [3, 4] {
-            assert!(
-                plan.frame.gutter_line_plans.iter().any(|line| {
-                    line.doc_line == diagnostic_line
-                        && line.visual_line == visual_line
-                        && !line.first_visual_line
-                        && line.text.trim().is_empty()
-                }),
-                "inline diagnostic row {visual_line} should have a blank virtual gutter row"
-            );
-        }
-        assert!(
-            plan.frame.gutter_line_plans.iter().any(|line| {
-                line.doc_line == diagnostic_line + 1
-                    && line.visual_line == 5
-                    && line.first_visual_line
-                    && line.text.trim() == "4"
-            }),
-            "following source line should keep its own line number"
-        );
     }
 
     #[tokio::test(flavor = "current_thread")]

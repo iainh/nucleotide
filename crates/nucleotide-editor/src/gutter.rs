@@ -81,7 +81,6 @@ pub struct UnwrappedGutterLinePlanParams<'a> {
     pub scroll_line_offset: Pixels,
     pub horizontal_offset: usize,
     pub visible_lines: &'a [VisibleLinePlan],
-    pub inline_diagnostic_virtual_rows: &'a BTreeMap<usize, usize>,
     pub editor: &'a Editor,
     pub document: &'a Document,
     pub view: &'a View,
@@ -167,7 +166,6 @@ pub fn build_unwrapped_gutter_line_plans(
         params.visible_lines,
         params.layout.line_height,
         params.scroll_line_offset,
-        params.inline_diagnostic_virtual_rows,
     );
 
     build_gutter_line_plans(GutterLinePlanParams {
@@ -334,8 +332,9 @@ impl<'a> GutterPlan<'a> {
                     (true, false) => gutter_selected_style_virtual,
                 };
 
-                let decoration = gutter(pos.doc_line, selected, pos.first_visual_line, &mut text);
-                if let Some(decoration) = decoration {
+                if let Some(decoration) =
+                    gutter(pos.doc_line, selected, pos.first_visual_line, &mut text)
+                {
                     renderer.render(
                         pos,
                         x,
@@ -344,10 +343,8 @@ impl<'a> GutterPlan<'a> {
                         decoration.kind,
                         Some(&text),
                     );
-                } else if text.is_empty() {
-                    renderer.render(pos, x, y, gutter_style, GutterLineKind::Text, None);
                 } else {
-                    renderer.render(pos, x, y, gutter_style, GutterLineKind::Text, Some(&text));
+                    renderer.render(pos, x, y, gutter_style, GutterLineKind::Text, None);
                 }
                 text.clear();
             };
@@ -538,42 +535,15 @@ pub fn unwrapped_gutter_line_positions_from_plans(
     visible_lines: &[VisibleLinePlan],
     line_height: Pixels,
     scroll_line_offset: Pixels,
-    inline_diagnostic_virtual_rows: &BTreeMap<usize, usize>,
 ) -> Vec<GutterLinePosition> {
-    let mut previous_doc_line = None;
-    let mut positions = Vec::new();
-
-    for (index, line) in visible_lines.iter().enumerate() {
-        let first_visual_line = previous_doc_line != Some(line.line_idx);
-        previous_doc_line = Some(line.line_idx);
-        let visual_line = visual_row_for_y_offset(line.y_offset, line_height, scroll_line_offset);
-
-        positions.push(GutterLinePosition {
-            first_visual_line,
+    visible_lines
+        .iter()
+        .map(|line| GutterLinePosition {
+            first_visual_line: true,
             doc_line: line.line_idx,
-            visual_line,
-        });
-
-        let is_last_visible_for_doc_line = visible_lines
-            .get(index + 1)
-            .is_none_or(|next| next.line_idx != line.line_idx);
-        if is_last_visible_for_doc_line {
-            for row_offset in 1..=inline_diagnostic_virtual_rows
-                .get(&line.line_idx)
-                .copied()
-                .unwrap_or(0)
-            {
-                positions.push(GutterLinePosition {
-                    first_visual_line: false,
-                    doc_line: line.line_idx,
-                    visual_line: visual_line
-                        .saturating_add(u16::try_from(row_offset).unwrap_or(u16::MAX)),
-                });
-            }
-        }
-    }
-
-    positions
+            visual_line: visual_row_for_y_offset(line.y_offset, line_height, scroll_line_offset),
+        })
+        .collect()
 }
 
 pub fn soft_wrap_gutter_line_positions(
@@ -703,12 +673,8 @@ mod tests {
             },
         ];
 
-        let positions = unwrapped_gutter_line_positions_from_plans(
-            &visible_lines,
-            px(20.0),
-            px(0.0),
-            &BTreeMap::new(),
-        );
+        let positions =
+            unwrapped_gutter_line_positions_from_plans(&visible_lines, px(20.0), px(0.0));
 
         assert_eq!(
             positions,
@@ -722,122 +688,6 @@ mod tests {
                     first_visual_line: true,
                     doc_line: 41,
                     visual_line: 2,
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn unwrapped_positions_mark_duplicate_document_rows_as_virtual() {
-        let visible_lines = vec![
-            VisibleLinePlan {
-                line_idx: 40,
-                line_start: 0,
-                line_end: 8,
-                y_offset: px(0.0),
-            },
-            VisibleLinePlan {
-                line_idx: 40,
-                line_start: 0,
-                line_end: 8,
-                y_offset: px(20.0),
-            },
-            VisibleLinePlan {
-                line_idx: 40,
-                line_start: 0,
-                line_end: 8,
-                y_offset: px(40.0),
-            },
-            VisibleLinePlan {
-                line_idx: 41,
-                line_start: 9,
-                line_end: 10,
-                y_offset: px(60.0),
-            },
-        ];
-
-        let positions = unwrapped_gutter_line_positions_from_plans(
-            &visible_lines,
-            px(20.0),
-            px(0.0),
-            &BTreeMap::new(),
-        );
-
-        assert_eq!(
-            positions,
-            vec![
-                GutterLinePosition {
-                    first_visual_line: true,
-                    doc_line: 40,
-                    visual_line: 0,
-                },
-                GutterLinePosition {
-                    first_visual_line: false,
-                    doc_line: 40,
-                    visual_line: 1,
-                },
-                GutterLinePosition {
-                    first_visual_line: false,
-                    doc_line: 40,
-                    visual_line: 2,
-                },
-                GutterLinePosition {
-                    first_visual_line: true,
-                    doc_line: 41,
-                    visual_line: 3,
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn unwrapped_positions_include_inline_diagnostic_virtual_rows() {
-        let visible_lines = vec![
-            VisibleLinePlan {
-                line_idx: 40,
-                line_start: 0,
-                line_end: 8,
-                y_offset: px(0.0),
-            },
-            VisibleLinePlan {
-                line_idx: 41,
-                line_start: 9,
-                line_end: 10,
-                y_offset: px(60.0),
-            },
-        ];
-        let mut virtual_rows = BTreeMap::new();
-        virtual_rows.insert(40, 2);
-
-        let positions = unwrapped_gutter_line_positions_from_plans(
-            &visible_lines,
-            px(20.0),
-            px(0.0),
-            &virtual_rows,
-        );
-
-        assert_eq!(
-            positions,
-            vec![
-                GutterLinePosition {
-                    first_visual_line: true,
-                    doc_line: 40,
-                    visual_line: 0,
-                },
-                GutterLinePosition {
-                    first_visual_line: false,
-                    doc_line: 40,
-                    visual_line: 1,
-                },
-                GutterLinePosition {
-                    first_visual_line: false,
-                    doc_line: 40,
-                    visual_line: 2,
-                },
-                GutterLinePosition {
-                    first_visual_line: true,
-                    doc_line: 41,
-                    visual_line: 3,
                 },
             ]
         );
