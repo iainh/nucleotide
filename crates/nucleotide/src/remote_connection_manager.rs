@@ -23,9 +23,9 @@ use nucleotide_ui::actions::remote_connection_manager::{
 };
 use nucleotide_ui::scrollbar::{Scrollbar, ScrollbarState};
 use nucleotide_ui::{
-    Button, ButtonSize, ButtonVariant, FileIcon, IconPosition, ListItem, ListItemSpacing,
-    ListItemVariant, MenuCheckSide, PopupMenu, TextInput, TextInputEvent, TextInputFocusStyle,
-    ThemedContext,
+    Button, ButtonSize, ButtonVariant, Checkbox, CheckboxSize, FileIcon, IconPosition, ListItem,
+    ListItemSpacing, ListItemVariant, MenuCheckSide, PopupMenu, TextInput, TextInputEvent,
+    TextInputFocusStyle, ThemedContext,
 };
 use nucleotide_workspace::{
     DirectoryListing, FileKind, SshWorkspaceTarget, WorkspaceBackendHandle,
@@ -176,6 +176,7 @@ enum RemoteManagerTaskEvent {
 
 pub struct RemoteConnectionManagerView {
     focus_handle: FocusHandle,
+    save_connection_focus_handle: FocusHandle,
     core: gpui::WeakEntity<crate::Core>,
     handle: tokio::runtime::Handle,
 
@@ -222,6 +223,7 @@ impl RemoteConnectionManagerView {
     ) -> Self {
         let server_input_view = Self::new_server_input(cx);
         let focus_handle = server_input_view.read(cx).focus_handle(cx);
+        let save_connection_focus_handle = cx.focus_handle().tab_index(20).tab_stop(true);
         let suggestions_scroll_handle = ScrollHandle::new();
         let suggestions_scrollbar_state = ScrollbarState::new(suggestions_scroll_handle.clone());
         let directory_scroll_handle = ScrollHandle::new();
@@ -229,6 +231,7 @@ impl RemoteConnectionManagerView {
 
         Self {
             focus_handle,
+            save_connection_focus_handle,
             core,
             handle,
             protocol: RemoteConnectionProtocol::Ssh,
@@ -1213,21 +1216,16 @@ impl RemoteConnectionManagerView {
             })
     }
 
-    fn render_save_connection_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_save_connection_checkbox(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let manager = cx.entity().clone();
-        let label = if self.save_on_open {
-            "Save this connection: on"
-        } else {
-            "Save this connection: off"
-        };
 
-        Button::new("remote-save-connection", label)
-            .variant(ButtonVariant::Secondary)
-            .size(ButtonSize::Medium)
-            .activate_on_mouse_down()
-            .on_click(move |_event, _window, cx| {
+        Checkbox::new("remote-save-connection", "Save this connection")
+            .checked(self.save_on_open)
+            .size(CheckboxSize::Medium)
+            .focus_handle(self.save_connection_focus_handle.clone())
+            .on_change(move |checked, _window, cx| {
                 manager.update(cx, |this, cx| {
-                    this.save_on_open = !this.save_on_open;
+                    this.save_on_open = checked;
                     cx.notify();
                 });
             })
@@ -1420,7 +1418,7 @@ impl Render for RemoteConnectionManagerView {
                     .flex_shrink_0()
                     .items_center()
                     .justify_between()
-                    .child(self.render_save_connection_button(cx))
+                    .child(self.render_save_connection_checkbox(cx))
                     .child(
                         div()
                             .flex()

@@ -1385,6 +1385,38 @@ pub struct ButtonTokens {
     pub shadow_blur_radius: f32,
 }
 
+/// Checkbox component tokens using the shared chrome/editor token layers.
+#[derive(Debug, Clone)]
+pub struct CheckboxTokens {
+    pub background: Hsla,
+    pub background_hover: Hsla,
+    pub checked_background: Hsla,
+    pub text: Hsla,
+    pub text_secondary: Hsla,
+    pub disabled_background: Hsla,
+    pub disabled_text: Hsla,
+    pub focus_background: Hsla,
+}
+
+impl CheckboxTokens {
+    pub fn from_tokens(chrome: &ChromeTokens, _editor: &EditorTokens) -> Self {
+        use crate::styling::color_theory::ColorTheory;
+
+        let checked_background = chrome.primary;
+
+        Self {
+            background: ColorTheory::transparent(),
+            background_hover: utils::with_alpha_at_most(chrome.surface_hover, 0.35),
+            checked_background,
+            text: chrome.text_on_chrome,
+            text_secondary: chrome.text_chrome_secondary,
+            disabled_background: ColorTheory::transparent(),
+            disabled_text: ColorTheory::with_alpha(chrome.text_on_chrome, 0.5),
+            focus_background: utils::with_alpha_at_most(chrome.surface_hover, 0.45),
+        }
+    }
+}
+
 impl ButtonTokens {
     /// Create button tokens using hybrid color approach
     pub fn from_tokens(chrome: &ChromeTokens, editor: &EditorTokens) -> Self {
@@ -1723,6 +1755,11 @@ impl ChromeTokens {
         ButtonTokens::from_tokens(self, editor)
     }
 
+    /// Generate checkbox tokens using hybrid color approach
+    pub fn checkbox_tokens(&self, editor: &EditorTokens) -> CheckboxTokens {
+        CheckboxTokens::from_tokens(self, editor)
+    }
+
     /// Generate picker tokens using hybrid color approach
     pub fn picker_tokens(&self, editor: &EditorTokens) -> PickerTokens {
         PickerTokens::from_tokens(self, editor)
@@ -1759,6 +1796,11 @@ impl DesignTokens {
     /// Generate button tokens using the hybrid system
     pub fn button_tokens(&self) -> ButtonTokens {
         self.chrome.button_tokens(&self.editor)
+    }
+
+    /// Generate checkbox tokens using the hybrid system
+    pub fn checkbox_tokens(&self) -> CheckboxTokens {
+        self.chrome.checkbox_tokens(&self.editor)
     }
 
     /// Generate picker tokens using the hybrid system
