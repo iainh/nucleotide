@@ -64,10 +64,18 @@
 - Popups & Layout: Use `completion_popup` and sizing utilities for anchored overlays; avoid manual positioning where helpers exist.
 - Theming: `theme_manager` provides runtime switching and the Helix→GPUI bridge; favor token‑first APIs (`tokens`) for styling. The previous `advanced_theming` module has been removed.
 
+## Standardized UI Components
+- Strongly prefer standardized components from `nucleotide-ui` over hand-rolled GPUI `div()` structures for common controls and chrome.
+- Use `Button`, `TextInput`, `ListItem`, `Picker`, `Prompt`, `ConfirmDialog`, `PopupMenu`, `PopupMenuSurface`, `ModalLayer`, `OverlaySurface`, `FileIcon`, and `VcsIcon` for matching interaction and styling.
+- Use layout/chrome components such as `AppShell`, `WorkspaceChrome`, `EditorPaneGrid`, `Panel`, `BottomPanel`, `Toolbar`, `StatusBar`, and split helpers (`sidebar_split`, `right_sidebar_split`, `bottom_panel_split`, `two_pane_split`, `resize_handle`) before building custom containers.
+- Use `SmartPopup`, `PopupPositioner`, `completion_popup`, and overlay sizing utilities for anchored floating UI instead of manual absolute positioning.
+- Standard components already map design tokens, focus behaviour, disabled/loading states, hover/active styling, spacing, borders, and elevation. If a standardized component is close but incomplete, extend it in `nucleotide-ui` rather than duplicating a one-off variant in an application crate.
+- Hand-rolled GPUI elements are appropriate for highly specialized rendering surfaces, native editor painting, or temporary glue, but they should still use semantic tokens and existing styling traits where possible.
+
 ## Where To Add Things
 - New domain events: `crates/nucleotide-events/src/v2/<domain>/` plus handler wiring in `crates/nucleotide/src/application/*`.
 - New component tokens: extend `crates/nucleotide-ui/src/tokens/mod.rs` and add tests in `tokens/tests.rs`.
-- New UI components: `crates/nucleotide-ui/src/` with local tests (e.g., `*_tests.rs`).
+- New UI components: add them to `crates/nucleotide-ui/src/` with local tests (e.g., `*_tests.rs`) when existing standardized components cannot cover the use case.
 - Logging/metrics: use `nucleotide-logging` macros and layers (`crates/nucleotide-logging`).
 
 ## References
