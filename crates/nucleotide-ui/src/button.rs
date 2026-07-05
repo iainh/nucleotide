@@ -10,34 +10,205 @@ use crate::{
 use gpui::prelude::FluentBuilder;
 use gpui::px;
 use gpui::{
-    App, AppContext, ClickEvent, Context, ElementId, FocusHandle, FontWeight, InteractiveElement,
-    IntoElement, MouseButton, ParentElement, Pixels, Render, RenderOnce, SharedString,
-    StatefulInteractiveElement, Styled, Window, div, relative, svg,
+    App, AppContext, Background, ClickEvent, Context, ElementId, FocusHandle, FontWeight, Hsla,
+    InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, Render, RenderOnce,
+    SharedString, StatefulInteractiveElement, Styled, Window, div, linear_color_stop,
+    linear_gradient, relative, svg,
 };
 use std::sync::Arc;
 use std::time::Duration;
 
 fn button_shadow_stack(
     shadow: &crate::styling::BoxShadow,
+    background: Hsla,
+    variant: ButtonVariant,
     inset_highlight: crate::tokens::ShadowToken,
     inset_shadow: crate::tokens::ShadowToken,
     pressed: bool,
 ) -> Vec<gpui::BoxShadow> {
-    let mut shadows = vec![gpui::BoxShadow {
-        color: shadow.color,
+    let mut shadows = Vec::with_capacity(if pressed { 3 } else { 4 });
+
+    if pressed {
+        shadows.push(gpui::BoxShadow {
+            color: alpha_multiply(shadow.color, 0.24),
+            offset: gpui::point(px(0.0), px(1.0)),
+            blur_radius: px(1.0),
+            spread_radius: px(0.0),
+            inset: false,
+        });
+
+        if let Some(edge_highlight) =
+            button_inner_edge_highlight_shadow(background, variant, StyleState::Active)
+        {
+            shadows.push(edge_highlight);
+        }
+
+        shadows.push(inset_shadow_with_alpha(
+            inset_shadow,
+            button_lower_shadow_alpha(variant, true),
+        ));
+        return shadows;
+    }
+
+    shadows.push(gpui::BoxShadow {
+        color: alpha_multiply(shadow.color, button_outer_shadow_alpha(variant)),
         offset: gpui::point(shadow.offset_x, shadow.offset_y),
         blur_radius: shadow.blur_radius,
         spread_radius: shadow.spread_radius,
         inset: false,
-    }];
-
-    shadows.push(if pressed {
-        inset_shadow.to_box_shadow(true)
-    } else {
-        inset_highlight.to_box_shadow(true)
     });
 
+    if let Some(edge_highlight) =
+        button_inner_edge_highlight_shadow(background, variant, StyleState::Default)
+    {
+        shadows.push(edge_highlight);
+    }
+
+    shadows.push(inset_shadow_with_alpha(
+        inset_highlight,
+        button_top_highlight_alpha(variant),
+    ));
+    shadows.push(inset_shadow_with_alpha(
+        inset_shadow,
+        button_lower_shadow_alpha(variant, false),
+    ));
+
     shadows
+}
+
+fn inset_shadow_with_alpha(
+    token: crate::tokens::ShadowToken,
+    alpha_multiplier: f32,
+) -> gpui::BoxShadow {
+    let mut shadow = token.to_box_shadow(true);
+    shadow.color = alpha_multiply(shadow.color, alpha_multiplier);
+    shadow
+}
+
+fn alpha_multiply(mut color: Hsla, multiplier: f32) -> Hsla {
+    color.a = (color.a * multiplier).clamp(0.0, 1.0);
+    color
+}
+
+fn button_face_gradient_colors(
+    background: Hsla,
+    variant: ButtonVariant,
+    pressed: bool,
+) -> Option<(Hsla, Hsla)> {
+    if matches!(variant, ButtonVariant::Ghost) || background.a <= 0.0 {
+        return None;
+    }
+
+    let lift = match variant {
+        ButtonVariant::Primary | ButtonVariant::Danger => 0.055,
+        ButtonVariant::Success | ButtonVariant::Warning | ButtonVariant::Info => 0.05,
+        ButtonVariant::Secondary => 0.045,
+        ButtonVariant::Ghost => 0.0,
+    };
+    let falloff = match variant {
+        ButtonVariant::Secondary => 0.035,
+        _ => 0.04,
+    };
+
+    let (top, bottom) = if pressed {
+        (
+            crate::tokens::utils::darken(background, falloff),
+            crate::tokens::utils::lighten(background, lift * 0.45),
+        )
+    } else {
+        (
+            crate::tokens::utils::lighten(background, lift),
+            crate::tokens::utils::darken(background, falloff),
+        )
+    };
+
+    Some((top, bottom))
+}
+
+fn button_face_background(background: Hsla, variant: ButtonVariant, pressed: bool) -> Background {
+    if let Some((top, bottom)) = button_face_gradient_colors(background, variant, pressed) {
+        linear_gradient(
+            180.0,
+            linear_color_stop(top, 0.0),
+            linear_color_stop(bottom, 1.0),
+        )
+    } else {
+        gpui::solid_background(background)
+    }
+}
+
+fn button_inner_edge_highlight_color(
+    background: Hsla,
+    variant: ButtonVariant,
+    state: StyleState,
+) -> Option<Hsla> {
+    if matches!(variant, ButtonVariant::Ghost)
+        || matches!(state, StyleState::Disabled | StyleState::Loading)
+        || background.a <= 0.0
+    {
+        return None;
+    }
+
+    let lift = match variant {
+        ButtonVariant::Secondary => 0.16,
+        ButtonVariant::Warning | ButtonVariant::Info => 0.14,
+        ButtonVariant::Primary
+        | ButtonVariant::Danger
+        | ButtonVariant::Success
+        | ButtonVariant::Ghost => 0.16,
+    };
+    let alpha = match (variant, state) {
+        (_, StyleState::Active) => 0.24,
+        (ButtonVariant::Secondary, _) => 0.42,
+        _ => 0.32,
+    };
+
+    Some(alpha_multiply(
+        crate::tokens::utils::lighten(background, lift),
+        alpha,
+    ))
+}
+
+fn button_inner_edge_highlight_shadow(
+    background: Hsla,
+    variant: ButtonVariant,
+    state: StyleState,
+) -> Option<gpui::BoxShadow> {
+    Some(gpui::BoxShadow {
+        color: button_inner_edge_highlight_color(background, variant, state)?,
+        offset: gpui::point(px(0.0), px(0.0)),
+        blur_radius: px(0.0),
+        spread_radius: px(1.0),
+        inset: true,
+    })
+}
+
+fn button_outer_shadow_alpha(variant: ButtonVariant) -> f32 {
+    match variant {
+        ButtonVariant::Secondary => 0.50,
+        ButtonVariant::Ghost => 0.0,
+        _ => 0.58,
+    }
+}
+
+fn button_top_highlight_alpha(variant: ButtonVariant) -> f32 {
+    match variant {
+        ButtonVariant::Secondary => 0.38,
+        ButtonVariant::Ghost => 0.0,
+        _ => 0.30,
+    }
+}
+
+fn button_lower_shadow_alpha(variant: ButtonVariant, pressed: bool) -> f32 {
+    if pressed {
+        return 0.62;
+    }
+
+    match variant {
+        ButtonVariant::Secondary => 0.30,
+        ButtonVariant::Ghost => 0.0,
+        _ => 0.28,
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -751,6 +922,7 @@ impl RenderOnce for Button {
         let icon_only = self.label.is_empty() && self.slots.is_empty() && self.icon_path.is_some();
         let inset_highlight = theme.tokens.chrome.inset_highlight;
         let inset_shadow = theme.tokens.chrome.inset_shadow;
+        let variant = self.variant;
         let activate_on_mouse_down = self.activate_on_mouse_down;
         let focus_handle = self.focus_handle.clone();
         // Mouse-down actions commonly repaint before mouse-up; GPUI's active
@@ -786,7 +958,11 @@ impl RenderOnce for Button {
                 700 => FontWeight::BOLD,
                 _ => FontWeight::MEDIUM,
             })
-            .bg(computed_style.background)
+            .bg(button_face_background(
+                computed_style.background,
+                variant,
+                false,
+            ))
             .text_color(computed_style.foreground)
             .border_color(computed_style.border_color)
             .when(f32::from(computed_style.border_width) > 0.0, |el| {
@@ -796,6 +972,8 @@ impl RenderOnce for Button {
                 let shadow = computed_style.shadow.as_ref().unwrap();
                 el.shadow(button_shadow_stack(
                     shadow,
+                    computed_style.background,
+                    variant,
                     inset_highlight,
                     inset_shadow,
                     false,
@@ -815,7 +993,11 @@ impl RenderOnce for Button {
         if current_state.is_interactive() {
             button = button.hover(|this| {
                 let mut hovered = this
-                    .bg(hover_style.background)
+                    .bg(button_face_background(
+                        hover_style.background,
+                        variant,
+                        false,
+                    ))
                     .text_color(hover_style.foreground)
                     .border_color(hover_style.border_color)
                     .text_size(computed_style.font_size)
@@ -828,6 +1010,8 @@ impl RenderOnce for Button {
                 if let Some(shadow) = &hover_style.shadow {
                     hovered = hovered.shadow(button_shadow_stack(
                         shadow,
+                        hover_style.background,
+                        variant,
                         inset_highlight,
                         inset_shadow,
                         false,
@@ -840,7 +1024,11 @@ impl RenderOnce for Button {
             if apply_active_style {
                 button = button.active(|this| {
                     let mut active = this
-                        .bg(active_style.background)
+                        .bg(button_face_background(
+                            active_style.background,
+                            variant,
+                            true,
+                        ))
                         .text_color(active_style.foreground)
                         .border_color(active_style.border_color)
                         .text_size(computed_style.font_size)
@@ -853,6 +1041,8 @@ impl RenderOnce for Button {
                     if let Some(shadow) = &active_style.shadow {
                         active = active.shadow(button_shadow_stack(
                             shadow,
+                            active_style.background,
+                            variant,
                             inset_highlight,
                             inset_shadow,
                             true,
@@ -964,8 +1154,9 @@ impl RenderOnce for Button {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tokens::ShadowToken;
     use crate::{StyleSize, StyleState, StyleVariant, Theme};
-    use gpui::px;
+    use gpui::{hsla, px};
 
     #[test]
     fn test_button_creation() {
@@ -1100,6 +1291,120 @@ mod tests {
         assert_eq!(lg.icon_size, tokens.sizes.text_xl);
         assert!(sm.padding_x > xs.padding_x);
         assert!(md.padding_x > sm.padding_x);
+    }
+
+    #[test]
+    fn button_face_background_gives_raised_buttons_convex_depth() {
+        let base = hsla(220.0 / 360.0, 0.35, 0.45, 1.0);
+
+        let raised = button_face_background(base, ButtonVariant::Secondary, false);
+        assert!(raised.as_solid().is_none());
+
+        let (top, bottom) =
+            button_face_gradient_colors(base, ButtonVariant::Secondary, false).unwrap();
+        assert!(top.l > bottom.l);
+        assert!(top.l - bottom.l < 0.1);
+
+        let (pressed_top, pressed_bottom) =
+            button_face_gradient_colors(base, ButtonVariant::Secondary, true).unwrap();
+        assert!(pressed_top.l < pressed_bottom.l);
+    }
+
+    #[test]
+    fn button_face_background_keeps_ghost_buttons_flat() {
+        let base = hsla(220.0 / 360.0, 0.35, 0.45, 0.18);
+
+        let ghost = button_face_background(base, ButtonVariant::Ghost, false);
+        assert_eq!(ghost.as_solid(), Some(base));
+        assert!(button_face_gradient_colors(base, ButtonVariant::Ghost, false).is_none());
+    }
+
+    #[test]
+    fn button_inner_edge_highlight_wraps_raised_buttons() {
+        let base = hsla(220.0 / 360.0, 0.35, 0.45, 1.0);
+
+        let highlight =
+            button_inner_edge_highlight_color(base, ButtonVariant::Secondary, StyleState::Default)
+                .unwrap();
+        let highlight_shadow =
+            button_inner_edge_highlight_shadow(base, ButtonVariant::Secondary, StyleState::Default)
+                .unwrap();
+
+        assert!(highlight.l > base.l);
+        assert!(highlight.a > 0.0);
+        assert!(highlight_shadow.inset);
+        assert_eq!(highlight_shadow.offset.x, px(0.0));
+        assert_eq!(highlight_shadow.offset.y, px(0.0));
+        assert_eq!(highlight_shadow.spread_radius, px(1.0));
+        assert!(
+            button_inner_edge_highlight_color(base, ButtonVariant::Ghost, StyleState::Default)
+                .is_none()
+        );
+        assert!(
+            button_inner_edge_highlight_color(base, ButtonVariant::Secondary, StyleState::Disabled)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn button_shadow_stack_adds_edge_highlight_and_depth() {
+        let outer_shadow = crate::styling::BoxShadow {
+            offset_x: px(0.0),
+            offset_y: px(2.0),
+            blur_radius: px(4.0),
+            spread_radius: px(0.0),
+            color: hsla(0.0, 0.0, 0.0, 0.4),
+        };
+        let inset_highlight = ShadowToken {
+            offset_x: px(0.0),
+            offset_y: px(1.0),
+            blur_radius: px(0.0),
+            spread_radius: px(0.0),
+            color: hsla(0.0, 0.0, 1.0, 0.35),
+        };
+        let inset_shadow = ShadowToken {
+            offset_x: px(0.0),
+            offset_y: px(-1.0),
+            blur_radius: px(0.0),
+            spread_radius: px(0.0),
+            color: hsla(0.0, 0.0, 0.0, 0.35),
+        };
+
+        let raised = button_shadow_stack(
+            &outer_shadow,
+            hsla(0.0, 0.0, 0.82, 1.0),
+            ButtonVariant::Secondary,
+            inset_highlight,
+            inset_shadow,
+            false,
+        );
+        assert_eq!(raised.len(), 4);
+        assert!(!raised[0].inset);
+        assert!(raised[1].inset);
+        assert!(raised[2].inset);
+        assert!(raised[3].inset);
+        assert!(raised[0].color.a < outer_shadow.color.a);
+        assert_eq!(raised[1].offset.x, px(0.0));
+        assert_eq!(raised[1].offset.y, px(0.0));
+        assert_eq!(raised[1].spread_radius, px(1.0));
+        assert!(raised[1].color.l > raised[3].color.l);
+        assert!(raised[3].color.a < inset_shadow.color.a);
+
+        let pressed = button_shadow_stack(
+            &outer_shadow,
+            hsla(0.0, 0.0, 0.82, 1.0),
+            ButtonVariant::Secondary,
+            inset_highlight,
+            inset_shadow,
+            true,
+        );
+        assert_eq!(pressed.len(), 3);
+        assert!(!pressed[0].inset);
+        assert!(pressed[1].inset);
+        assert!(pressed[2].inset);
+        assert!(pressed[0].color.a < outer_shadow.color.a);
+        assert!(pressed[0].color.a < raised[0].color.a);
+        assert!(pressed[2].color.a < inset_shadow.color.a);
     }
 
     #[test]
