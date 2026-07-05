@@ -140,7 +140,7 @@ pub use styling::{
 pub use terminal_keys::{
     TerminalKeyEncodingMode, encode_terminal_key_event, encode_terminal_key_event_with_mode,
 };
-pub use text_input::{TextInput, TextInputEvent};
+pub use text_input::{TextInput, TextInputEvent, TextInputFocusStyle};
 pub use theme_debug::ThemeDebugView;
 pub use tokens::{
     ChromeTokens, ColorContext, CompletionIconTokens, DesignTokens, EditorTokens, FileTreeTokens,
