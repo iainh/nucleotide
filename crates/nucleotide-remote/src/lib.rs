@@ -5185,6 +5185,7 @@ mod tests {
         atomic::{AtomicBool, Ordering},
     };
 
+    #[cfg(unix)]
     fn executable_tempdir() -> tempfile::TempDir {
         let base = std::env::current_dir()
             .unwrap()
@@ -5197,6 +5198,7 @@ mod tests {
             .unwrap()
     }
 
+    #[cfg(unix)]
     fn generated_executable_is_allowed(executable: &Path) -> bool {
         match std::process::Command::new(executable)
             .arg("--probe")
