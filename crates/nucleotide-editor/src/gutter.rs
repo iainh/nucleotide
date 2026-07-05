@@ -536,12 +536,23 @@ pub fn unwrapped_gutter_line_positions_from_plans(
     line_height: Pixels,
     scroll_line_offset: Pixels,
 ) -> Vec<GutterLinePosition> {
+    let mut previous_doc_line = None;
+
     visible_lines
         .iter()
-        .map(|line| GutterLinePosition {
-            first_visual_line: true,
-            doc_line: line.line_idx,
-            visual_line: visual_row_for_y_offset(line.y_offset, line_height, scroll_line_offset),
+        .map(|line| {
+            let first_visual_line = previous_doc_line != Some(line.line_idx);
+            previous_doc_line = Some(line.line_idx);
+
+            GutterLinePosition {
+                first_visual_line,
+                doc_line: line.line_idx,
+                visual_line: visual_row_for_y_offset(
+                    line.y_offset,
+                    line_height,
+                    scroll_line_offset,
+                ),
+            }
         })
         .collect()
 }
@@ -688,6 +699,65 @@ mod tests {
                     first_visual_line: true,
                     doc_line: 41,
                     visual_line: 2,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn unwrapped_positions_mark_duplicate_document_rows_as_virtual() {
+        let visible_lines = vec![
+            VisibleLinePlan {
+                line_idx: 40,
+                line_start: 0,
+                line_end: 8,
+                y_offset: px(0.0),
+            },
+            VisibleLinePlan {
+                line_idx: 40,
+                line_start: 0,
+                line_end: 8,
+                y_offset: px(20.0),
+            },
+            VisibleLinePlan {
+                line_idx: 40,
+                line_start: 0,
+                line_end: 8,
+                y_offset: px(40.0),
+            },
+            VisibleLinePlan {
+                line_idx: 41,
+                line_start: 9,
+                line_end: 10,
+                y_offset: px(60.0),
+            },
+        ];
+
+        let positions =
+            unwrapped_gutter_line_positions_from_plans(&visible_lines, px(20.0), px(0.0));
+
+        assert_eq!(
+            positions,
+            vec![
+                GutterLinePosition {
+                    first_visual_line: true,
+                    doc_line: 40,
+                    visual_line: 0,
+                },
+                GutterLinePosition {
+                    first_visual_line: false,
+                    doc_line: 40,
+                    visual_line: 1,
+                },
+                GutterLinePosition {
+                    first_visual_line: false,
+                    doc_line: 40,
+                    visual_line: 2,
+                },
+                GutterLinePosition {
+                    first_visual_line: true,
+                    doc_line: 41,
+                    visual_line: 3,
                 },
             ]
         );
