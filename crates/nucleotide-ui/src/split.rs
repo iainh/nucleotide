@@ -6,8 +6,8 @@ use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    App, AppContext as _, Context, Div, ElementId, InteractiveElement, IntoElement, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Render, Stateful,
+    App, AppContext as _, Context, Div, DragMoveEvent, ElementId, InteractiveElement, IntoElement,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Render, Stateful,
     StatefulInteractiveElement, Styled, Window, div, px, relative,
 };
 
@@ -20,7 +20,42 @@ const RESIZE_HANDLE_MIN_HITBOX_PX: f32 = 8.0;
 const RESIZE_HANDLE_MAX_HITBOX_PX: f32 = 12.0;
 const RESIZE_HANDLE_VISUAL_PX: f32 = SPLITTER_LINE_PX;
 
-struct ResizeDragToken;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ResizeDragScope {
+    Global,
+    LeftSidebar,
+    RightSidebar,
+    BottomPanel,
+}
+
+#[derive(Clone)]
+struct ResizeDragToken {
+    scope: ResizeDragScope,
+    click_offset: Rc<Cell<(f32, f32)>>,
+    handle_hitbox_px: f32,
+}
+
+impl ResizeDragToken {
+    fn new(scope: ResizeDragScope, handle_hitbox_px: f32) -> Self {
+        Self {
+            scope,
+            click_offset: Rc::new(Cell::new((0.0, 0.0))),
+            handle_hitbox_px,
+        }
+    }
+
+    fn set_click_offset(&self, x: f32, y: f32) {
+        self.click_offset.set((x, y));
+    }
+
+    fn click_offset(&self) -> (f32, f32) {
+        self.click_offset.get()
+    }
+
+    fn handle_center_offset(&self) -> f32 {
+        self.handle_hitbox_px * 0.5
+    }
+}
 
 struct ResizeDragPreview;
 
@@ -60,6 +95,47 @@ fn cursor_for_axis(axis: SplitterAxis) -> gpui::CursorStyle {
         SplitterAxis::Vertical => gpui::CursorStyle::ResizeLeftRight,
         SplitterAxis::Horizontal => gpui::CursorStyle::ResizeRow,
     }
+}
+
+fn resize_drag_source(handle: Stateful<Div>, token: ResizeDragToken) -> Stateful<Div> {
+    handle.on_drag(token, |drag, offset, _window, cx| {
+        drag.set_click_offset(f32::from(offset.x), f32::from(offset.y));
+        cx.new(|_| ResizeDragPreview)
+    })
+}
+
+fn resize_drag_surface(
+    surface: Stateful<Div>,
+    on_move: impl Fn(&MouseMoveEvent, &mut Window, &mut App) + 'static,
+    on_finish: impl Fn(&MouseUpEvent, &mut Window, &mut App) + 'static,
+    on_finish_out: impl Fn(&MouseUpEvent, &mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
+    let on_move = Rc::new(on_move);
+
+    surface
+        .on_drag_move::<ResizeDragToken>({
+            let on_move = on_move.clone();
+            move |event, window, cx| {
+                on_move(&event.event, window, cx);
+            }
+        })
+        .on_mouse_move(move |event, window, cx| {
+            on_move(event, window, cx);
+        })
+        .on_mouse_up(MouseButton::Left, on_finish)
+        .on_mouse_up_out(MouseButton::Left, on_finish_out)
+}
+
+fn resize_scoped_drag_surface(
+    surface: Stateful<Div>,
+    scope: ResizeDragScope,
+    on_move: impl Fn(&DragMoveEvent<ResizeDragToken>, &mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
+    surface.on_drag_move::<ResizeDragToken>(move |event, window, cx| {
+        if event.drag(cx).scope == scope {
+            on_move(event, window, cx);
+        }
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -121,7 +197,28 @@ pub fn resize_handle(
     on_finish: impl Fn(&MouseUpEvent, &mut Window, &mut App) + 'static,
     on_finish_out: impl Fn(&MouseUpEvent, &mut Window, &mut App) + 'static,
 ) -> Stateful<Div> {
+    resize_handle_with_scope(
+        id,
+        axis,
+        handle_px,
+        ResizeDragScope::Global,
+        on_start,
+        on_finish,
+        on_finish_out,
+    )
+}
+
+fn resize_handle_with_scope(
+    id: impl Into<ElementId>,
+    axis: SplitterAxis,
+    handle_px: f32,
+    scope: ResizeDragScope,
+    on_start: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
+    on_finish: impl Fn(&MouseUpEvent, &mut Window, &mut App) + 'static,
+    on_finish_out: impl Fn(&MouseUpEvent, &mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
     let hitbox_px = resize_handle_hitbox_px(handle_px).unwrap_or(RESIZE_HANDLE_MIN_HITBOX_PX);
+    let token = ResizeDragToken::new(scope, hitbox_px);
     let base = div()
         .id(id)
         .relative()
@@ -137,12 +234,10 @@ pub fn resize_handle(
                 .cursor(gpui::CursorStyle::ResizeRow)
         });
 
-    base.on_drag(ResizeDragToken, |_drag, _offset, _window, cx| {
-        cx.new(|_| ResizeDragPreview)
-    })
-    .on_mouse_down(MouseButton::Left, on_start)
-    .on_mouse_up(MouseButton::Left, on_finish)
-    .on_mouse_up_out(MouseButton::Left, on_finish_out)
+    resize_drag_source(base, token)
+        .on_mouse_down(MouseButton::Left, on_start)
+        .on_mouse_up(MouseButton::Left, on_finish)
+        .on_mouse_up_out(MouseButton::Left, on_finish_out)
 }
 
 /// Applies active resize capture behaviour to a surface while a drag is active.
@@ -153,21 +248,12 @@ pub fn resize_capture_area(
     on_finish: impl Fn(&MouseUpEvent, &mut Window, &mut App) + 'static,
     on_finish_out: impl Fn(&MouseUpEvent, &mut Window, &mut App) + 'static,
 ) -> Stateful<Div> {
-    let on_move = Rc::new(on_move);
-
-    surface
-        .cursor(cursor_for_axis(axis))
-        .on_drag_move::<ResizeDragToken>({
-            let on_move = on_move.clone();
-            move |event, window, cx| {
-                on_move(&event.event, window, cx);
-            }
-        })
-        .on_mouse_move(move |event, window, cx| {
-            on_move(event, window, cx);
-        })
-        .on_mouse_up(MouseButton::Left, on_finish)
-        .on_mouse_up_out(MouseButton::Left, on_finish_out)
+    resize_drag_surface(
+        surface.cursor(cursor_for_axis(axis)),
+        on_move,
+        on_finish,
+        on_finish_out,
+    )
 }
 
 #[derive(Clone)]
@@ -304,7 +390,7 @@ impl Default for ResizeDragController {
 /// A sidebar split with a fixed-width left pane and flexible right pane.
 /// - `width_px`: current left pane width in pixels
 /// - `min_px`/`max_px`: constraints for the left pane
-/// - `handle_px`: drag handle hit target; the visible separator remains 1px
+/// - `handle_px`: drag handle hit target
 /// - `on_change`: callback invoked with the new width during drag
 /// - `default_px`: width to snap to on double-click
 #[allow(clippy::too_many_arguments)]
@@ -318,7 +404,6 @@ pub fn sidebar_split<L: IntoElement, R: IntoElement>(
     left: L,
     right: R,
 ) -> impl IntoElement {
-    let drag = ResizeDragController::new();
     let layout = PanelLayout::new(width_px, min_px, max_px, default_px);
     let width_px = layout.current_px();
     let on_change = Rc::new(on_change);
@@ -326,43 +411,33 @@ pub fn sidebar_split<L: IntoElement, R: IntoElement>(
     // debug logging removed
 
     // The container captures move/up to provide robust dragging beyond the handle bounds
-    let mut root = div()
+    let root = div()
+        .id("sidebar-split")
         .flex()
         .relative()
         .w_full()
         .h_full()
         .flex_1()
-        .min_h(px(0.0)) // allow vertical shrink inside column parents
-        .on_mouse_move({
-            let drag = drag.clone();
-            let on_change = on_change.clone();
-            move |ev: &MouseMoveEvent, window: &mut Window, cx: &mut App| {
-                if ev.dragging() {
-                    let viewport_w = f32::from(window.viewport_size().width);
-                    let constrained = layout.with_reserved_trailing_space(viewport_w, 200.0);
-                    if let Some(new_w) = drag.horizontal_value_from_mouse_move(
-                        ev,
-                        constrained.min_px(),
-                        constrained.max_px(),
-                    ) {
-                        on_change(new_w, cx);
-                        window.refresh();
-                    }
-                }
+        .min_h(px(0.0)); // allow vertical shrink inside column parents
+    let mut root = resize_scoped_drag_surface(root, ResizeDragScope::LeftSidebar, {
+        let on_change = on_change.clone();
+        move |ev: &DragMoveEvent<ResizeDragToken>, window: &mut Window, cx: &mut App| {
+            if ev.event.dragging() {
+                let drag = ev.drag(cx);
+                let (offset_x, _) = drag.click_offset();
+                let root_left = f32::from(ev.bounds.left());
+                let boundary_x = f32::from(ev.event.position.x) - root_left - offset_x
+                    + drag.handle_center_offset();
+                let viewport_w = f32::from(window.viewport_size().width);
+                let constrained = layout.with_reserved_trailing_space(viewport_w, 200.0);
+                on_change(
+                    boundary_x.clamp(constrained.min_px(), constrained.max_px()),
+                    cx,
+                );
+                window.refresh();
             }
-        })
-        .on_mouse_up(MouseButton::Left, {
-            let drag = drag.clone();
-            move |_ev: &MouseUpEvent, window: &mut Window, _cx: &mut App| {
-                drag.finish_with_refresh(window);
-            }
-        })
-        .on_mouse_up_out(MouseButton::Left, {
-            let drag = drag.clone();
-            move |_ev: &MouseUpEvent, window: &mut Window, _cx: &mut App| {
-                drag.finish_with_refresh(window);
-            }
-        });
+        }
+    });
 
     // Left pane: fixed width, vertically scrollable if content exceeds available height
     root = root.child(
@@ -382,36 +457,48 @@ pub fn sidebar_split<L: IntoElement, R: IntoElement>(
             ),
     );
 
-    // Handle: transparent hitbox centered over the pane boundary, with a
-    // single visible separator line centered inside.
+    // Handle: transparent hitbox centered over the pane boundary.
     let handle_hit_w = resize_handle_hitbox_px(handle_px).unwrap_or(RESIZE_HANDLE_MIN_HITBOX_PX);
 
     root = root.child({
-        let mut handle = splitter("sidebar-resize-handle", SplitterAxis::Vertical, handle_px)
-            .absolute()
-            .top_0()
-            .bottom_0()
-            .left(px(width_px - handle_hit_w * 0.5));
-
-        handle = handle.on_mouse_down(MouseButton::Left, {
-            let drag = drag.clone();
-            let on_change = on_change.clone();
-            move |ev: &MouseDownEvent, window: &mut Window, cx: &mut App| {
-                if ev.click_count >= 2 {
-                    let viewport_w = f32::from(window.viewport_size().width);
-                    let constrained = layout.with_reserved_trailing_space(viewport_w, 200.0);
-                    on_change(constrained.reset_px(), cx);
-                    window.refresh();
+        resize_handle_with_scope(
+            "sidebar-resize-handle",
+            SplitterAxis::Vertical,
+            handle_px,
+            ResizeDragScope::LeftSidebar,
+            {
+                let on_change = on_change.clone();
+                move |ev: &MouseDownEvent, window: &mut Window, cx: &mut App| {
+                    if ev.click_count >= 2 {
+                        let viewport_w = f32::from(window.viewport_size().width);
+                        let constrained = layout.with_reserved_trailing_space(viewport_w, 200.0);
+                        on_change(constrained.reset_px(), cx);
+                        window.refresh();
+                        cx.stop_propagation();
+                        return;
+                    }
                     cx.stop_propagation();
-                    return;
                 }
-                drag.begin_from_mouse_down(ev, width_px);
-                window.refresh();
-                cx.stop_propagation();
-            }
-        });
-
-        handle
+            },
+            {
+                move |_ev: &MouseUpEvent, window: &mut Window, cx: &mut App| {
+                    if cx.stop_active_drag(window) {
+                        window.refresh();
+                    }
+                }
+            },
+            {
+                move |_ev: &MouseUpEvent, window: &mut Window, cx: &mut App| {
+                    if cx.stop_active_drag(window) {
+                        window.refresh();
+                    }
+                }
+            },
+        )
+        .absolute()
+        .top_0()
+        .bottom_0()
+        .left(px(width_px - handle_hit_w * 0.5))
     });
 
     // Right pane fills remaining space; do not allow it to overflow its box
@@ -428,7 +515,7 @@ pub fn sidebar_split<L: IntoElement, R: IntoElement>(
 /// A right sidebar split with flexible main content and a fixed-width right pane.
 /// - `width_px`: current right pane width in pixels
 /// - `min_px`/`max_px`: constraints for the right pane
-/// - `handle_px`: drag handle hit target; the visible separator remains 1px
+/// - `handle_px`: drag handle hit target
 /// - `on_change`: callback invoked with the new width during drag
 /// - `default_px`: width to snap to on double-click
 #[allow(clippy::too_many_arguments)]
@@ -442,41 +529,30 @@ pub fn right_sidebar_split<L: IntoElement, R: IntoElement>(
     left: L,
     right: R,
 ) -> impl IntoElement {
-    let drag = ResizeDragController::new();
     let layout = PanelLayout::new(width_px, min_px, max_px, default_px);
     let width_px = layout.current_px();
     let on_change = Rc::new(on_change);
 
-    let mut root = div()
+    let root = div()
+        .id("right-sidebar-split")
         .flex()
         .relative()
         .size_full()
-        .min_h(px(0.0))
-        .on_mouse_move({
-            let drag = drag.clone();
-            let on_change = on_change.clone();
-            move |ev: &MouseMoveEvent, window: &mut Window, cx: &mut App| {
-                if ev.dragging()
-                    && let Some(new_w) =
-                        drag.left_edge_value_from_mouse_move(ev, layout.min_px(), layout.max_px())
-                {
-                    on_change(new_w, cx);
-                    window.refresh();
-                }
+        .min_h(px(0.0));
+    let mut root = resize_scoped_drag_surface(root, ResizeDragScope::RightSidebar, {
+        let on_change = on_change.clone();
+        move |ev: &DragMoveEvent<ResizeDragToken>, window: &mut Window, cx: &mut App| {
+            if ev.event.dragging() {
+                let drag = ev.drag(cx);
+                let (offset_x, _) = drag.click_offset();
+                let boundary_x =
+                    f32::from(ev.event.position.x) - offset_x + drag.handle_center_offset();
+                let new_w = f32::from(ev.bounds.right()) - boundary_x;
+                on_change(new_w.clamp(layout.min_px(), layout.max_px()), cx);
+                window.refresh();
             }
-        })
-        .on_mouse_up(MouseButton::Left, {
-            let drag = drag.clone();
-            move |_ev: &MouseUpEvent, window: &mut Window, _cx: &mut App| {
-                drag.finish_with_refresh(window);
-            }
-        })
-        .on_mouse_up_out(MouseButton::Left, {
-            let drag = drag.clone();
-            move |_ev: &MouseUpEvent, window: &mut Window, _cx: &mut App| {
-                drag.finish_with_refresh(window);
-            }
-        });
+        }
+    });
 
     root = root.child(
         div()
@@ -498,31 +574,43 @@ pub fn right_sidebar_split<L: IntoElement, R: IntoElement>(
 
     if let Some(handle_hit_w) = resize_handle_hitbox_px(handle_px) {
         root = root.child(
-            splitter(
+            resize_handle_with_scope(
                 "right-sidebar-resize-handle",
                 SplitterAxis::Vertical,
                 handle_px,
+                ResizeDragScope::RightSidebar,
+                {
+                    let on_change = on_change.clone();
+                    move |ev: &MouseDownEvent, window: &mut Window, cx: &mut App| {
+                        if ev.click_count >= 2 {
+                            on_change(layout.reset_px(), cx);
+                            window.refresh();
+                            cx.stop_propagation();
+                            return;
+                        }
+
+                        cx.stop_propagation();
+                    }
+                },
+                {
+                    move |_ev: &MouseUpEvent, window: &mut Window, cx: &mut App| {
+                        if cx.stop_active_drag(window) {
+                            window.refresh();
+                        }
+                    }
+                },
+                {
+                    move |_ev: &MouseUpEvent, window: &mut Window, cx: &mut App| {
+                        if cx.stop_active_drag(window) {
+                            window.refresh();
+                        }
+                    }
+                },
             )
             .absolute()
             .top_0()
             .bottom_0()
-            .right(px(width_px - handle_hit_w * 0.5))
-            .on_mouse_down(MouseButton::Left, {
-                let drag = drag.clone();
-                let on_change = on_change.clone();
-                move |ev: &MouseDownEvent, window: &mut Window, cx: &mut App| {
-                    if ev.click_count >= 2 {
-                        on_change(layout.reset_px(), cx);
-                        window.refresh();
-                        cx.stop_propagation();
-                        return;
-                    }
-
-                    drag.begin_from_mouse_down(ev, width_px);
-                    window.refresh();
-                    cx.stop_propagation();
-                }
-            }),
+            .right(px(width_px - handle_hit_w * 0.5)),
         );
     }
 
@@ -532,7 +620,7 @@ pub fn right_sidebar_split<L: IntoElement, R: IntoElement>(
 /// A bottom-docked panel with a draggable top edge.
 /// - `height_px`: current panel height
 /// - `min_px`/`max_px`: constraints for the panel height
-/// - `handle_px`: drag handle hit target at the top; the visible separator remains 1px.
+/// - `handle_px`: drag handle hit target at the top.
 ///   Use `0.0` to suppress the built-in handle.
 /// - `on_change`: callback invoked with new height during drag
 /// - `default_px`: height to snap to on double-click
@@ -545,39 +633,25 @@ pub fn bottom_panel_split<C: IntoElement>(
     on_change: impl Fn(f32, &mut App) + 'static,
     content: C,
 ) -> impl IntoElement {
-    let drag = ResizeDragController::new();
     let layout = PanelLayout::new(height_px, min_px, max_px, default_px);
     let height_px = layout.current_px();
     let on_change = Rc::new(on_change);
 
-    let mut root = div()
-        .relative()
-        .size_full()
-        .on_mouse_move({
-            let drag = drag.clone();
-            let on_change = on_change.clone();
-            move |ev: &MouseMoveEvent, window: &mut Window, cx: &mut App| {
-                if ev.dragging()
-                    && let Some(new_h) =
-                        drag.top_edge_value_from_mouse_move(ev, layout.min_px(), layout.max_px())
-                {
-                    on_change(new_h, cx);
-                    window.refresh();
-                }
+    let root = div().id("bottom-panel-split").relative().size_full();
+    let mut root = resize_scoped_drag_surface(root, ResizeDragScope::BottomPanel, {
+        let on_change = on_change.clone();
+        move |ev: &DragMoveEvent<ResizeDragToken>, window: &mut Window, cx: &mut App| {
+            if ev.event.dragging() {
+                let drag = ev.drag(cx);
+                let (_, offset_y) = drag.click_offset();
+                let boundary_y =
+                    f32::from(ev.event.position.y) - offset_y + drag.handle_center_offset();
+                let new_h = f32::from(ev.bounds.bottom()) - boundary_y;
+                on_change(new_h.clamp(layout.min_px(), layout.max_px()), cx);
+                window.refresh();
             }
-        })
-        .on_mouse_up(MouseButton::Left, {
-            let drag = drag.clone();
-            move |_ev: &MouseUpEvent, window: &mut Window, _cx: &mut App| {
-                drag.finish_with_refresh(window);
-            }
-        })
-        .on_mouse_up_out(MouseButton::Left, {
-            let drag = drag.clone();
-            move |_ev: &MouseUpEvent, window: &mut Window, _cx: &mut App| {
-                drag.finish_with_refresh(window);
-            }
-        });
+        }
+    });
 
     // Panel shell at bottom
     let mut panel = div()
@@ -590,30 +664,42 @@ pub fn bottom_panel_split<C: IntoElement>(
 
     if let Some(handle_hit_h) = resize_handle_hitbox_px(handle_px) {
         panel = panel.child({
-            splitter(
+            resize_handle_with_scope(
                 "bottom-panel-resize-handle",
                 SplitterAxis::Horizontal,
                 handle_px,
+                ResizeDragScope::BottomPanel,
+                {
+                    let on_change = on_change.clone();
+                    move |ev: &MouseDownEvent, window: &mut Window, cx: &mut App| {
+                        if ev.click_count >= 2 {
+                            on_change(layout.reset_px(), cx);
+                            window.refresh();
+                            cx.stop_propagation();
+                            return;
+                        }
+                        cx.stop_propagation();
+                    }
+                },
+                {
+                    move |_ev: &MouseUpEvent, window: &mut Window, cx: &mut App| {
+                        if cx.stop_active_drag(window) {
+                            window.refresh();
+                        }
+                    }
+                },
+                {
+                    move |_ev: &MouseUpEvent, window: &mut Window, cx: &mut App| {
+                        if cx.stop_active_drag(window) {
+                            window.refresh();
+                        }
+                    }
+                },
             )
             .absolute()
             .left_0()
             .right_0()
             .top(px(-handle_hit_h * 0.5))
-            .on_mouse_down(MouseButton::Left, {
-                let drag = drag.clone();
-                let on_change = on_change.clone();
-                move |ev: &MouseDownEvent, window: &mut Window, cx: &mut App| {
-                    if ev.click_count >= 2 {
-                        on_change(layout.reset_px(), cx);
-                        window.refresh();
-                        cx.stop_propagation();
-                        return;
-                    }
-                    drag.begin_from_mouse_down(ev, height_px);
-                    window.refresh();
-                    cx.stop_propagation();
-                }
-            })
         });
     }
 
@@ -703,15 +789,19 @@ pub fn two_pane_split<A: IntoElement, B: IntoElement>(
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
     use gpui::{
-        Context, InteractiveElement as _, IntoElement, ParentElement as _, Render, Styled as _,
-        TestAppContext, Window, div,
+        Context, InteractiveElement as _, IntoElement, Modifiers, MouseButton, ParentElement as _,
+        Render, Styled as _, TestAppContext, Window, div, point, px,
     };
 
     use super::{
         RESIZE_HANDLE_MAX_HITBOX_PX, RESIZE_HANDLE_MIN_HITBOX_PX, ResizeDragController,
-        SplitterAxis, clamp_primary, clamp_primary_vertical, resize_capture_area, resize_handle,
-        resize_handle_hitbox_px, resize_handle_visual_offset,
+        SplitterAxis, bottom_panel_split, clamp_primary, clamp_primary_vertical,
+        resize_capture_area, resize_handle, resize_handle_hitbox_px, resize_handle_visual_offset,
+        right_sidebar_split, sidebar_split,
     };
 
     struct ResizeHandleHarness;
@@ -751,6 +841,135 @@ mod tests {
     #[gpui::test]
     fn resize_capture_area_renders_in_test_harness(cx: &mut TestAppContext) {
         let (_harness, _cx) = cx.add_window_view(|_, _| ResizeCaptureHarness);
+    }
+
+    struct PanelSplitHarness;
+
+    impl Render for PanelSplitHarness {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            let editor = div().id("test-editor").size_full().child("Editor");
+            let docs = div().id("test-docs").size_full().child("Docs");
+            let file_tree = div().id("test-file-tree").size_full().child("Files");
+
+            let editor_with_docs =
+                right_sidebar_split(240.0, 120.0, 420.0, 10.0, 240.0, |_, _| {}, editor, docs);
+
+            let editor_with_bottom =
+                bottom_panel_split(160.0, 80.0, 360.0, 10.0, 160.0, |_, _| {}, editor_with_docs);
+
+            div().size_full().child(sidebar_split(
+                220.0,
+                120.0,
+                420.0,
+                10.0,
+                220.0,
+                |_, _| {},
+                file_tree,
+                editor_with_bottom,
+            ))
+        }
+    }
+
+    #[gpui::test]
+    fn panel_split_wrappers_render_in_test_harness(cx: &mut TestAppContext) {
+        let (_harness, _cx) = cx.add_window_view(|_, _| PanelSplitHarness);
+    }
+
+    struct PanelSplitDragHarness {
+        left_width: Rc<Cell<f32>>,
+        right_width: Rc<Cell<f32>>,
+        bottom_height: Rc<Cell<f32>>,
+    }
+
+    impl Render for PanelSplitDragHarness {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div().w(px(800.0)).h(px(300.0)).child(sidebar_split(
+                200.0,
+                100.0,
+                500.0,
+                10.0,
+                200.0,
+                {
+                    let left_width = Rc::clone(&self.left_width);
+                    move |width, _| left_width.set(width)
+                },
+                div().size_full(),
+                right_sidebar_split(
+                    200.0,
+                    100.0,
+                    500.0,
+                    10.0,
+                    200.0,
+                    {
+                        let right_width = Rc::clone(&self.right_width);
+                        move |width, _| right_width.set(width)
+                    },
+                    div().size_full(),
+                    bottom_panel_split(
+                        120.0,
+                        80.0,
+                        240.0,
+                        10.0,
+                        120.0,
+                        {
+                            let bottom_height = Rc::clone(&self.bottom_height);
+                            move |height, _| bottom_height.set(height)
+                        },
+                        div().size_full(),
+                    ),
+                ),
+            ))
+        }
+    }
+
+    #[gpui::test]
+    fn panel_split_wrappers_emit_changes_during_drag(cx: &mut TestAppContext) {
+        let left_width = Rc::new(Cell::new(200.0));
+        let right_width = Rc::new(Cell::new(200.0));
+        let bottom_height = Rc::new(Cell::new(120.0));
+
+        let (_harness, window) = cx.add_window_view({
+            let left_width = Rc::clone(&left_width);
+            let right_width = Rc::clone(&right_width);
+            let bottom_height = Rc::clone(&bottom_height);
+            move |_, _| PanelSplitDragHarness {
+                left_width,
+                right_width,
+                bottom_height,
+            }
+        });
+
+        let modifiers = Modifiers::none();
+
+        window.simulate_mouse_down(point(px(200.0), px(30.0)), MouseButton::Left, modifiers);
+        window.simulate_mouse_move(point(px(206.0), px(30.0)), MouseButton::Left, modifiers);
+        window.simulate_mouse_move(point(px(250.0), px(30.0)), MouseButton::Left, modifiers);
+        window.simulate_mouse_up(point(px(250.0), px(30.0)), MouseButton::Left, modifiers);
+        assert!(
+            left_width.get() > 200.0,
+            "left sidebar did not resize: {}",
+            left_width.get()
+        );
+
+        window.simulate_mouse_down(point(px(600.0), px(30.0)), MouseButton::Left, modifiers);
+        window.simulate_mouse_move(point(px(594.0), px(30.0)), MouseButton::Left, modifiers);
+        window.simulate_mouse_move(point(px(550.0), px(30.0)), MouseButton::Left, modifiers);
+        window.simulate_mouse_up(point(px(550.0), px(30.0)), MouseButton::Left, modifiers);
+        assert!(
+            right_width.get() > 200.0,
+            "right sidebar did not resize: {}",
+            right_width.get()
+        );
+
+        window.simulate_mouse_down(point(px(700.0), px(180.0)), MouseButton::Left, modifiers);
+        window.simulate_mouse_move(point(px(700.0), px(174.0)), MouseButton::Left, modifiers);
+        window.simulate_mouse_move(point(px(700.0), px(140.0)), MouseButton::Left, modifiers);
+        window.simulate_mouse_up(point(px(700.0), px(140.0)), MouseButton::Left, modifiers);
+        assert!(
+            bottom_height.get() > 120.0,
+            "bottom panel did not resize: {}",
+            bottom_height.get()
+        );
     }
 
     #[test]
