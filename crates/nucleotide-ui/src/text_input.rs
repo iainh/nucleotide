@@ -5,7 +5,7 @@ use std::ops::Range;
 
 use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, Element, ElementId, ElementInputHandler,
-    Entity, EntityInputHandler, EventEmitter, FocusHandle, Focusable, GlobalElementId,
+    Entity, EntityInputHandler, EventEmitter, FocusHandle, Focusable, GlobalElementId, Hsla,
     InteractiveElement, IntoElement, KeyBinding, LayoutId, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, PaintQuad, ParentElement, Pixels, Point, Render, ShapedLine,
     SharedString, Style, Styled, TextRun, UTF16Selection, UnderlineStyle, Window, div, fill, point,
@@ -46,10 +46,44 @@ pub enum TextInputEvent {
     Cancelled,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TextInputFocusStyle {
+    #[default]
+    Accent,
+    Chrome,
+}
+
+#[derive(Clone, Copy)]
+struct TextInputFocusColors {
+    border: Hsla,
+    ring: Hsla,
+    selection: Hsla,
+}
+
+fn text_input_focus_colors(
+    tokens: &crate::tokens::DesignTokens,
+    input_tokens: &crate::tokens::InputTokens,
+    focus_style: TextInputFocusStyle,
+) -> TextInputFocusColors {
+    match focus_style {
+        TextInputFocusStyle::Accent => TextInputFocusColors {
+            border: input_tokens.border_focus,
+            ring: input_tokens.focus_ring,
+            selection: input_tokens.focus_ring.alpha(0.35),
+        },
+        TextInputFocusStyle::Chrome => TextInputFocusColors {
+            border: tokens.chrome.border_strong,
+            ring: tokens.chrome.border_shadow,
+            selection: tokens.chrome.surface_active,
+        },
+    }
+}
+
 pub struct TextInput {
     id: ElementId,
     variant: InputVariant,
     size: InputSize,
+    focus_style: TextInputFocusStyle,
     disabled: bool,
     focus_handle: FocusHandle,
     content: SharedString,
@@ -70,6 +104,7 @@ impl TextInput {
             id: id.into(),
             variant: InputVariant::Default,
             size: InputSize::Medium,
+            focus_style: TextInputFocusStyle::Accent,
             disabled: false,
             focus_handle: cx.focus_handle().tab_stop(true),
             content: SharedString::default(),
@@ -92,6 +127,11 @@ impl TextInput {
 
     pub fn size(mut self, size: InputSize) -> Self {
         self.size = size;
+        self
+    }
+
+    pub fn focus_style(mut self, focus_style: TextInputFocusStyle) -> Self {
+        self.focus_style = focus_style;
         self
     }
 
@@ -781,6 +821,7 @@ impl Render for TextInput {
         let input_tokens = theme.tokens.input_tokens();
         let inset_highlight = theme.tokens.chrome.inset_highlight;
         let inset_shadow = theme.tokens.chrome.inset_shadow;
+        let focus_colors = text_input_focus_colors(&theme.tokens, &input_tokens, self.focus_style);
 
         let is_focused = self.focus_handle.is_focused(window);
         let has_error = self.error.is_some();
@@ -804,7 +845,7 @@ impl Render for TextInput {
         } else if has_error {
             input_tokens.border_error
         } else if is_focused {
-            input_tokens.border_focus
+            focus_colors.border
         } else {
             input_tokens.border
         };
@@ -844,7 +885,7 @@ impl Render for TextInput {
             .when(!is_ghost && is_focused && !has_error, |this| {
                 this.shadow(vec![
                     gpui::BoxShadow {
-                        color: input_tokens.focus_ring,
+                        color: focus_colors.ring,
                         offset: point(px(0.0), px(0.0)),
                         blur_radius: px(0.0),
                         spread_radius: px(2.0),
@@ -894,7 +935,7 @@ impl Render for TextInput {
                         text_color: input_tokens.text,
                         placeholder_color: input_tokens.placeholder,
                         ghost_color: input_tokens.placeholder,
-                        selection_color: input_tokens.focus_ring.alpha(0.35),
+                        selection_color: focus_colors.selection,
                         cursor_color: input_tokens.text,
                     }),
             )
@@ -975,6 +1016,22 @@ mod tests {
             cx.set_global(crate::Theme::from_tokens(crate::DesignTokens::dark()));
             init(cx);
         });
+    }
+
+    #[test]
+    fn chrome_focus_style_uses_neutral_focus_tokens() {
+        let tokens = crate::DesignTokens::light();
+        let input_tokens = tokens.input_tokens();
+
+        let accent = text_input_focus_colors(&tokens, &input_tokens, TextInputFocusStyle::Accent);
+        assert_eq!(accent.border, input_tokens.border_focus);
+        assert_eq!(accent.ring, input_tokens.focus_ring);
+
+        let chrome = text_input_focus_colors(&tokens, &input_tokens, TextInputFocusStyle::Chrome);
+        assert_eq!(chrome.border, tokens.chrome.border_strong);
+        assert_eq!(chrome.ring, tokens.chrome.border_shadow);
+        assert_eq!(chrome.selection, tokens.chrome.surface_active);
+        assert_ne!(chrome.ring, input_tokens.focus_ring);
     }
 
     #[gpui::test]

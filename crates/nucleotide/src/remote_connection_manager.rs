@@ -24,7 +24,8 @@ use nucleotide_ui::actions::remote_connection_manager::{
 use nucleotide_ui::scrollbar::{Scrollbar, ScrollbarState};
 use nucleotide_ui::{
     Button, ButtonSize, ButtonVariant, FileIcon, IconPosition, ListItem, ListItemSpacing,
-    ListItemVariant, MenuCheckSide, PopupMenu, TextInput, TextInputEvent, ThemedContext,
+    ListItemVariant, MenuCheckSide, PopupMenu, TextInput, TextInputEvent, TextInputFocusStyle,
+    ThemedContext,
 };
 use nucleotide_workspace::{
     DirectoryListing, FileKind, SshWorkspaceTarget, WorkspaceBackendHandle,
@@ -206,6 +207,7 @@ impl RemoteConnectionManagerView {
         let input = cx.new(|cx| {
             TextInput::new("remote-server-input", cx)
                 .size(nucleotide_ui::InputSize::Medium)
+                .focus_style(TextInputFocusStyle::Chrome)
                 .placeholder("Host, distro, alias or saved connection")
         });
         cx.subscribe(&input, Self::handle_server_input_event)
@@ -861,7 +863,7 @@ impl RemoteConnectionManagerView {
     }
 
     fn render_suggestions(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let dropdown_border = cx.theme().tokens.dropdown_tokens().border;
+        let list_border = cx.theme().tokens.picker_tokens().border;
         let suggestions = self.filtered_suggestions();
         let rows = suggestions
             .into_iter()
@@ -878,7 +880,7 @@ impl RemoteConnectionManagerView {
             .flex_1()
             .min_h(px(0.0))
             .border_1()
-            .border_color(dropdown_border)
+            .border_color(list_border)
             .rounded_md()
             .overflow_hidden()
             .child(
@@ -915,18 +917,23 @@ impl RemoteConnectionManagerView {
     ) -> impl IntoElement {
         let theme = cx.theme();
         let tokens = &theme.tokens;
-        let dropdown_tokens = tokens.dropdown_tokens();
+        let picker_tokens = tokens.picker_tokens();
         let background = if selected {
-            dropdown_tokens.item_background_selected
+            tokens.chrome.surface_active
         } else {
-            dropdown_tokens.item_background
+            picker_tokens.item_background
         };
+        let hover_background = picker_tokens.item_background_hover;
         let text_color = if selected {
-            dropdown_tokens.item_text_selected
+            tokens.chrome.text_on_chrome
         } else {
-            dropdown_tokens.item_text
+            picker_tokens.item_text
         };
-        let secondary_text = tokens.chrome.text_chrome_secondary;
+        let secondary_text = if selected {
+            tokens.chrome.text_chrome_secondary
+        } else {
+            picker_tokens.item_text_secondary
+        };
         let text_sm = tokens.sizes.text_sm;
         let suggestion_for_click = suggestion.clone();
         let click_listener = cx.listener(move |this, _event, _window, cx| {
@@ -936,12 +943,14 @@ impl RemoteConnectionManagerView {
         ListItem::new(("remote-suggestion", index))
             .variant(ListItemVariant::Ghost)
             .spacing(ListItemSpacing::Default)
-            .selected(selected)
             .focusable(false)
             .with_listener(move |item| {
                 item.cursor_pointer()
                     .bg(background)
                     .text_color(text_color)
+                    .when(!selected, |item| {
+                        item.hover(move |item| item.bg(hover_background))
+                    })
                     .on_mouse_down(MouseButton::Left, click_listener)
             })
             .child(
@@ -966,13 +975,13 @@ impl RemoteConnectionManagerView {
     }
 
     fn render_browse_session(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let (text_sm, chrome_secondary_text, dropdown_border, input_border, input_background) = {
+        let (text_sm, chrome_secondary_text, list_border, input_border, input_background) = {
             let theme = cx.theme();
             let tokens = &theme.tokens;
             (
                 tokens.sizes.text_sm,
                 tokens.chrome.text_chrome_secondary,
-                tokens.dropdown_tokens().border,
+                tokens.picker_tokens().border,
                 tokens.input_tokens().border,
                 tokens.input_tokens().background,
             )
@@ -1010,7 +1019,7 @@ impl RemoteConnectionManagerView {
                     .flex_1()
                     .min_h(px(0.0))
                     .border_1()
-                    .border_color(dropdown_border)
+                    .border_color(list_border)
                     .rounded_md()
                     .overflow_hidden()
                     .child(
@@ -1093,30 +1102,30 @@ impl RemoteConnectionManagerView {
     ) -> impl IntoElement {
         let theme = cx.theme();
         let tokens = &theme.tokens;
-        let file_tree_tokens = tokens.file_tree_tokens();
+        let picker_tokens = tokens.picker_tokens();
         let row_path = row.path.clone();
         let row_name = row.name.clone();
         let icon_color = if selected {
-            file_tree_tokens.icon_color_selected
+            tokens.chrome.text_on_chrome
         } else {
-            file_tree_tokens.icon_color
+            tokens.chrome.text_chrome_secondary
         };
         let chevron_color = if selected {
-            file_tree_tokens.icon_color_selected
+            tokens.chrome.text_on_chrome
         } else {
-            file_tree_tokens.icon_color_secondary
+            tokens.chrome.text_chrome_disabled
         };
         let text_color = if selected {
-            file_tree_tokens.item_text_selected
+            tokens.chrome.text_on_chrome
         } else {
-            file_tree_tokens.item_text
+            picker_tokens.item_text
         };
         let background = if selected {
-            file_tree_tokens.item_background_selected
+            tokens.chrome.surface_active
         } else {
-            file_tree_tokens.background
+            picker_tokens.item_background
         };
-        let hover_background = file_tree_tokens.item_background_hover;
+        let hover_background = picker_tokens.item_background_hover;
         let click_listener = cx.listener(move |this, _event, _window, cx| {
             this.directory_selection = index;
             this.load_directory(row_path.clone(), cx);
@@ -1125,7 +1134,6 @@ impl RemoteConnectionManagerView {
         ListItem::new(("remote-directory", index))
             .variant(ListItemVariant::Ghost)
             .spacing(ListItemSpacing::Default)
-            .selected(selected)
             .focusable(false)
             .with_listener(move |item| {
                 item.cursor_pointer()
@@ -1187,7 +1195,6 @@ impl RemoteConnectionManagerView {
     fn render_text_button<F>(
         &self,
         label: &'static str,
-        primary: bool,
         cx: &mut Context<Self>,
         listener: F,
     ) -> impl IntoElement
@@ -1196,11 +1203,7 @@ impl RemoteConnectionManagerView {
     {
         let manager = cx.entity().clone();
         Button::new(label, label)
-            .variant(if primary {
-                ButtonVariant::Primary
-            } else {
-                ButtonVariant::Secondary
-            })
+            .variant(ButtonVariant::Secondary)
             .size(ButtonSize::Medium)
             .activate_on_mouse_down()
             .on_click(move |_event, _window, cx| {
@@ -1219,11 +1222,7 @@ impl RemoteConnectionManagerView {
         };
 
         Button::new("remote-save-connection", label)
-            .variant(if self.save_on_open {
-                ButtonVariant::Info
-            } else {
-                ButtonVariant::Secondary
-            })
+            .variant(ButtonVariant::Secondary)
             .size(ButtonSize::Medium)
             .activate_on_mouse_down()
             .on_click(move |_event, _window, cx| {
@@ -1361,7 +1360,7 @@ impl Render for RemoteConnectionManagerView {
                                     ),
                             ),
                     )
-                    .child(self.render_text_button("Cancel", false, cx, |this, cx| {
+                    .child(self.render_text_button("Cancel", cx, |this, cx| {
                         this.cancel(cx);
                     })),
             )
@@ -1373,7 +1372,7 @@ impl Render for RemoteConnectionManagerView {
                     .gap_2()
                     .child(self.render_protocol_dropdown(window, cx))
                     .child(self.render_input_field())
-                    .child(self.render_text_button("Connect", true, cx, |this, cx| {
+                    .child(self.render_text_button("Connect", cx, |this, cx| {
                         this.connect(cx);
                     })),
             )
@@ -1427,15 +1426,12 @@ impl Render for RemoteConnectionManagerView {
                             .flex()
                             .items_center()
                             .gap_2()
-                            .child(self.render_text_button(
-                                "Use current folder",
-                                false,
-                                cx,
-                                |this, cx| {
+                            .child(
+                                self.render_text_button("Use current folder", cx, |this, cx| {
                                     this.select_current_folder(cx);
-                                },
-                            ))
-                            .child(self.render_text_button("Open", true, cx, |this, cx| {
+                                }),
+                            )
+                            .child(self.render_text_button("Open", cx, |this, cx| {
                                 this.open_selected_workspace(cx);
                             })),
                     ),
