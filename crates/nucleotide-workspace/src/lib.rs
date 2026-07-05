@@ -202,7 +202,7 @@ pub fn classify_workspace_location(path: impl AsRef<Path>) -> WorkspaceLocation 
 
 pub fn workspace_path_is_absolute(path: impl AsRef<Path>) -> bool {
     let path = path.as_ref();
-    path.is_absolute() || classify_workspace_location(path).is_remote()
+    path.has_root() || classify_workspace_location(path).is_remote()
 }
 
 pub fn absolutize_workspace_path(root: &Path, path: &Path) -> PathBuf {
@@ -898,7 +898,7 @@ impl WorkspacePathMapping {
         }
 
         let display_location = classify_workspace_location(&self.display_root);
-        if display_location.is_remote() && path.is_absolute() {
+        if display_location.is_remote() && path.has_root() {
             display_location.display_path_for_native_path(path)
         } else {
             path.to_path_buf()
@@ -1360,29 +1360,94 @@ fn rename_target_is_source(from: &Path, to: &Path) -> Result<bool> {
         source,
     })?;
 
-    Ok(same_file_metadata(&from_metadata, &to_metadata))
+    same_file_metadata(from, to, &from_metadata, &to_metadata)
 }
 
 #[cfg(unix)]
-fn same_file_metadata(left: &fs::Metadata, right: &fs::Metadata) -> bool {
+fn same_file_metadata(
+    _left_path: &Path,
+    _right_path: &Path,
+    left: &fs::Metadata,
+    right: &fs::Metadata,
+) -> Result<bool> {
     use std::os::unix::fs::MetadataExt;
 
-    left.dev() == right.dev() && left.ino() == right.ino()
+    Ok(left.dev() == right.dev() && left.ino() == right.ino())
 }
 
 #[cfg(windows)]
-fn same_file_metadata(left: &fs::Metadata, right: &fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
+fn same_file_metadata(
+    left_path: &Path,
+    right_path: &Path,
+    _left: &fs::Metadata,
+    _right: &fs::Metadata,
+) -> Result<bool> {
+    let left = windows_file_id(left_path).map_err(|source| WorkspaceError::Io {
+        operation: "identify rename source",
+        path: left_path.to_path_buf(),
+        source,
+    })?;
+    let right = windows_file_id(right_path).map_err(|source| WorkspaceError::Io {
+        operation: "identify rename target",
+        path: right_path.to_path_buf(),
+        source,
+    })?;
 
-    left.volume_serial_number().is_some()
-        && left.volume_serial_number() == right.volume_serial_number()
-        && left.file_index().is_some()
-        && left.file_index() == right.file_index()
+    Ok(left.has_file_index() && left == right)
+}
+
+#[cfg(windows)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct WindowsFileId {
+    volume_serial_number: u32,
+    file_index_high: u32,
+    file_index_low: u32,
+}
+
+#[cfg(windows)]
+impl WindowsFileId {
+    fn has_file_index(self) -> bool {
+        self.file_index_high != 0 || self.file_index_low != 0
+    }
+}
+
+#[cfg(windows)]
+fn windows_file_id(path: &Path) -> std::io::Result<WindowsFileId> {
+    use std::mem::MaybeUninit;
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, GetFileInformationByHandle,
+    };
+
+    let file = fs::OpenOptions::new()
+        .access_mode(0)
+        .share_mode(FILE_SHARE_DELETE | FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)?;
+
+    let mut info = MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), info.as_mut_ptr()) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+
+    let info = unsafe { info.assume_init() };
+    Ok(WindowsFileId {
+        volume_serial_number: info.dwVolumeSerialNumber,
+        file_index_high: info.nFileIndexHigh,
+        file_index_low: info.nFileIndexLow,
+    })
 }
 
 #[cfg(not(any(unix, windows)))]
-fn same_file_metadata(_left: &fs::Metadata, _right: &fs::Metadata) -> bool {
-    false
+fn same_file_metadata(
+    _left_path: &Path,
+    _right_path: &Path,
+    _left: &fs::Metadata,
+    _right: &fs::Metadata,
+) -> Result<bool> {
+    Ok(false)
 }
 
 fn lexical_absolute(path: &Path) -> Result<PathBuf> {
