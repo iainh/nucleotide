@@ -431,7 +431,8 @@ pub fn wsl_display_path(distro: &str, native_path: impl AsRef<Path>) -> PathBuf 
     )
 }
 
-fn posix_path_string(path: &Path) -> String {
+pub fn posix_path_string(path: impl AsRef<Path>) -> String {
+    let path = path.as_ref();
     path.to_string_lossy().replace('\\', "/")
 }
 
@@ -2406,6 +2407,14 @@ fn local_git_status(root: &Path, options: GitStatusOptions) -> Result<GitStatusR
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if git_error_is_not_repository(&stderr) {
+            return Ok(GitStatusResult {
+                root: root.to_path_buf(),
+                entries: Vec::new(),
+                truncated: false,
+            });
+        }
+
         let message = if stderr.is_empty() {
             format!("git exited with status {}", output.status)
         } else {
@@ -2419,6 +2428,10 @@ fn local_git_status(root: &Path, options: GitStatusOptions) -> Result<GitStatusR
     }
 
     Ok(parse_git_status_output(root, &output.stdout, options.limit))
+}
+
+fn git_error_is_not_repository(message: &str) -> bool {
+    message.contains("not a git repository")
 }
 
 fn parse_git_status_output(root: &Path, output: &[u8], limit: usize) -> GitStatusResult {
@@ -3730,6 +3743,19 @@ mod tests {
             .unwrap();
         assert_eq!(untracked.index_status, GitStatusKind::Untracked);
         assert_eq!(untracked.working_tree_status, GitStatusKind::Untracked);
+        assert!(!status.truncated);
+    }
+
+    #[test]
+    fn local_backend_git_status_returns_empty_outside_repository() {
+        let temp = tempfile::tempdir().unwrap();
+        let backend = LocalWorkspaceBackend;
+
+        let status =
+            block_on(backend.git_status(temp.path(), GitStatusOptions::default())).unwrap();
+
+        assert_eq!(status.root, temp.path());
+        assert!(status.entries.is_empty());
         assert!(!status.truncated);
     }
 

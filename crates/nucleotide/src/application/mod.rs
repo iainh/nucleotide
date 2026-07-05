@@ -60,9 +60,10 @@ use nucleotide_lsp::{
     HelixLspBridge, LspLaunchProxy, LspLaunchProxyProvider, ProjectLspManager, ServerStatus,
 };
 use nucleotide_workspace::{
-    DirectoryListing, FileKind, FileRead, ProcessSpec, ReadOptions, WorkspaceBackendHandle,
-    WorkspaceIdentity, WorkspaceLocation, WriteOptions, classify_workspace_location,
-    local_workspace_backend, remote_startup_workspace_root,
+    DirectoryListing, FileKind, FileRead, FileStat, ProcessSpec, ReadOptions,
+    WorkspaceBackendHandle, WorkspaceError, WorkspaceIdentity, WorkspaceLocation, WriteOptions,
+    classify_workspace_location, local_workspace_backend, posix_path_string,
+    remote_startup_workspace_root,
 };
 use slotmap::Key;
 
@@ -398,11 +399,34 @@ fn write_lsp_proxy_shim(
 
 #[cfg(windows)]
 fn windows_command_invocation(command: &nucleotide_remote::RemoteServiceCommand) -> String {
-    std::iter::once(command.program.as_os_str())
+    let program = resolve_windows_command_program(&command.program);
+
+    std::iter::once(program.as_os_str())
         .chain(command.args.iter().map(std::ffi::OsString::as_os_str))
         .map(quote_windows_command_arg)
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+#[cfg(windows)]
+fn resolve_windows_command_program(program: &std::ffi::OsStr) -> std::ffi::OsString {
+    if let Ok(path) = helix_stdx::env::which(program) {
+        return path.into_os_string();
+    }
+
+    if program.to_string_lossy().eq_ignore_ascii_case("ssh") {
+        if let Some(windir) = std::env::var_os("WINDIR") {
+            let ssh_path = PathBuf::from(windir)
+                .join("System32")
+                .join("OpenSSH")
+                .join("ssh.exe");
+            if ssh_path.is_file() {
+                return ssh_path.into_os_string();
+            }
+        }
+    }
+
+    program.to_os_string()
 }
 
 #[cfg(windows)]
@@ -766,8 +790,456 @@ fn remote_lsp_root_uri_matches_document_workspace(
     }
 
     let native_root = location.native_root();
-    root_path == native_root
-        && root_uri.and_then(|uri| uri.to_file_path().ok()).as_deref() == Some(native_root)
+    posix_path_string(root_path) == posix_path_string(native_root)
+        && root_uri
+            .map(|uri| uri.as_str())
+            .zip(remote_native_file_uri(native_root).map(|uri| uri.to_string()))
+            .is_some_and(|(actual, expected)| actual == expected)
+}
+
+fn remote_native_file_uri(path: &Path) -> Option<lsp::Url> {
+    let path = posix_path_string(path);
+    let path = if path.starts_with('/') {
+        path
+    } else {
+        format!("/{path}")
+    };
+    lsp::Url::parse(&format!("file://{}", percent_encode_file_path(&path))).ok()
+}
+
+fn lsp_diagnostic_document_uri(
+    uri: lsp::Url,
+    project_directory: Option<&Path>,
+    workspace_identity: &WorkspaceIdentity,
+) -> Result<Uri, String> {
+    if matches!(workspace_identity, WorkspaceIdentity::Remote(_))
+        && let Some(native_path) = remote_lsp_file_url_path(&uri)
+    {
+        let display_path =
+            navigation_display_path(&native_path, project_directory, workspace_identity);
+        return Ok(Uri::from(display_path));
+    }
+
+    Uri::try_from(uri).map_err(|error| error.to_string())
+}
+
+fn remote_lsp_file_url_path(uri: &lsp::Url) -> Option<PathBuf> {
+    if uri.scheme() != "file" {
+        return None;
+    }
+    if let Some(host) = uri.host_str()
+        && !host.is_empty()
+        && !host.eq_ignore_ascii_case("localhost")
+    {
+        return None;
+    }
+
+    percent_decode_uri_path(uri.path()).map(PathBuf::from)
+}
+
+type ApplyEditError = helix_view::handlers::lsp::ApplyEditError;
+type ApplyEditErrorKind = helix_view::handlers::lsp::ApplyEditErrorKind;
+
+fn apply_edit_io_error(message: impl Into<String>) -> ApplyEditErrorKind {
+    ApplyEditErrorKind::IoError(std::io::Error::other(message.into()))
+}
+
+fn workspace_error_to_apply_edit(error: WorkspaceError) -> ApplyEditErrorKind {
+    apply_edit_io_error(error.to_string())
+}
+
+fn workspace_error_has_io_kind(error: &WorkspaceError, kind: std::io::ErrorKind) -> bool {
+    match error {
+        WorkspaceError::Io { source, .. } => source.kind() == kind,
+        WorkspaceError::Remote { message, .. } => match kind {
+            std::io::ErrorKind::NotFound => {
+                let message = message.to_ascii_lowercase();
+                message.contains("not found") || message.contains("no such file")
+            }
+            std::io::ErrorKind::AlreadyExists => {
+                let message = message.to_ascii_lowercase();
+                message.contains("already exists") || message.contains("file exists")
+            }
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+fn workspace_edit_path_from_url(
+    uri: &lsp::Url,
+    project_directory: Option<&Path>,
+    workspace_identity: &WorkspaceIdentity,
+) -> Result<PathBuf, ApplyEditErrorKind> {
+    if matches!(workspace_identity, WorkspaceIdentity::Remote(_))
+        && let Some(native_path) = remote_lsp_file_url_path(uri)
+    {
+        return Ok(navigation_display_path(
+            &native_path,
+            project_directory,
+            workspace_identity,
+        ));
+    }
+
+    let uri = Uri::try_from(uri.clone())?;
+    let path = uri
+        .as_path()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| apply_edit_io_error(format!("URI does not contain a file path: {uri}")))?;
+
+    Ok(navigation_display_path(
+        &path,
+        project_directory,
+        workspace_identity,
+    ))
+}
+
+fn apply_workspace_text_edits_with_backend(
+    editor: &mut Editor,
+    workspace_backend: &WorkspaceBackendHandle,
+    project_directory: Option<&Path>,
+    uri: &lsp::Url,
+    version: Option<i32>,
+    text_edits: Vec<lsp::TextEdit>,
+    offset_encoding: OffsetEncoding,
+) -> Result<(), ApplyEditErrorKind> {
+    let workspace_identity = workspace_backend.identity();
+    let path = workspace_edit_path_from_url(uri, project_directory, &workspace_identity)?;
+    let action = if editor.tree.views().count() == 0 {
+        helix_view::editor::Action::VerticalSplit
+    } else {
+        helix_view::editor::Action::Load
+    };
+    let doc_id = match open_workspace_document(editor, workspace_backend, &path, action) {
+        Ok(doc_id) => doc_id,
+        Err(err) => {
+            let error = format!("failed to open document: {}: {err}", path.display());
+            error!("{error}");
+            editor.set_error(error);
+            return Err(ApplyEditErrorKind::FileNotFound);
+        }
+    };
+
+    if let Some(version) = version {
+        let doc = editor
+            .document(doc_id)
+            .ok_or_else(|| apply_edit_io_error(format!("document {doc_id:?} is not open")))?;
+        if version != doc.version() {
+            let error = format!("outdated workspace edit for {path:?}");
+            error!("{error}, expected {} but got {version}", doc.version());
+            editor.set_error(error);
+            return Err(ApplyEditErrorKind::DocumentChanged);
+        }
+    }
+
+    let view_id = editor.get_synced_view_id(doc_id);
+    let tree = &mut editor.tree;
+    let documents = &mut editor.documents;
+    let view = tree.get_mut(view_id);
+    let doc = documents
+        .get_mut(&doc_id)
+        .ok_or_else(|| apply_edit_io_error(format!("document {doc_id:?} is not open")))?;
+    let transaction =
+        helix_lsp::util::generate_transaction_from_edits(doc.text(), text_edits, offset_encoding);
+    doc.apply(&transaction, view.id);
+    doc.append_changes_to_history(view);
+    Ok(())
+}
+
+fn update_open_document_after_workspace_rename(
+    editor: &mut Editor,
+    old_path: &Path,
+    new_stat: &FileStat,
+) {
+    let Some(doc_id) = editor.document_by_path(old_path).map(|doc| doc.id()) else {
+        return;
+    };
+    let Some(doc) = editor.document_mut(doc_id) else {
+        return;
+    };
+
+    doc.set_path_with_metadata(
+        Some(&new_stat.path),
+        Some(new_stat.readonly),
+        new_stat.modified,
+    );
+    set_remote_document_lsp_url(doc, &new_stat.path);
+}
+
+fn create_workspace_edit_file(
+    workspace_backend: &WorkspaceBackendHandle,
+    path: &Path,
+    options: Option<&lsp::CreateFileOptions>,
+) -> Result<(), ApplyEditErrorKind> {
+    let overwrite = options
+        .and_then(|options| options.overwrite)
+        .unwrap_or(false);
+    let ignore_if_exists = options
+        .and_then(|options| options.ignore_if_exists)
+        .unwrap_or(false);
+
+    if overwrite {
+        futures_executor::block_on(workspace_backend.write_file(
+            path,
+            &[],
+            WriteOptions {
+                create_parent_dirs: true,
+                expected_modified: None,
+            },
+        ))
+        .map_err(workspace_error_to_apply_edit)?;
+        return Ok(());
+    }
+
+    match futures_executor::block_on(workspace_backend.create_file(path)) {
+        Ok(_) => Ok(()),
+        Err(error)
+            if ignore_if_exists
+                && workspace_error_has_io_kind(&error, std::io::ErrorKind::AlreadyExists) =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(workspace_error_to_apply_edit(error)),
+    }
+}
+
+fn delete_workspace_edit_path(
+    workspace_backend: &WorkspaceBackendHandle,
+    path: &Path,
+    options: Option<&lsp::DeleteFileOptions>,
+) -> Result<(), ApplyEditErrorKind> {
+    let ignore_if_not_exists = options
+        .and_then(|options| options.ignore_if_not_exists)
+        .unwrap_or(false);
+
+    match futures_executor::block_on(workspace_backend.delete_path(path)) {
+        Ok(_) => Ok(()),
+        Err(error)
+            if ignore_if_not_exists
+                && workspace_error_has_io_kind(&error, std::io::ErrorKind::NotFound) =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(workspace_error_to_apply_edit(error)),
+    }
+}
+
+fn rename_workspace_edit_path(
+    editor: &mut Editor,
+    workspace_backend: &WorkspaceBackendHandle,
+    old_path: &Path,
+    new_path: &Path,
+    options: Option<&lsp::RenameFileOptions>,
+) -> Result<(), ApplyEditErrorKind> {
+    let overwrite = options
+        .and_then(|options| options.overwrite)
+        .unwrap_or(false);
+    let ignore_if_exists = options
+        .and_then(|options| options.ignore_if_exists)
+        .unwrap_or(false);
+
+    if overwrite {
+        let _ = futures_executor::block_on(workspace_backend.delete_path(new_path));
+    }
+
+    match futures_executor::block_on(workspace_backend.rename_path(old_path, new_path)) {
+        Ok(stat) => {
+            update_open_document_after_workspace_rename(editor, old_path, &stat);
+            Ok(())
+        }
+        Err(error)
+            if ignore_if_exists
+                && workspace_error_has_io_kind(&error, std::io::ErrorKind::AlreadyExists) =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(workspace_error_to_apply_edit(error)),
+    }
+}
+
+fn apply_workspace_resource_op_with_backend(
+    editor: &mut Editor,
+    workspace_backend: &WorkspaceBackendHandle,
+    project_directory: Option<&Path>,
+    op: &lsp::ResourceOp,
+) -> Result<(), ApplyEditErrorKind> {
+    let workspace_identity = workspace_backend.identity();
+    match op {
+        lsp::ResourceOp::Create(op) => {
+            let path =
+                workspace_edit_path_from_url(&op.uri, project_directory, &workspace_identity)?;
+            create_workspace_edit_file(workspace_backend, &path, op.options.as_ref())
+        }
+        lsp::ResourceOp::Delete(op) => {
+            let path =
+                workspace_edit_path_from_url(&op.uri, project_directory, &workspace_identity)?;
+            delete_workspace_edit_path(workspace_backend, &path, op.options.as_ref())
+        }
+        lsp::ResourceOp::Rename(op) => {
+            let old_path =
+                workspace_edit_path_from_url(&op.old_uri, project_directory, &workspace_identity)?;
+            let new_path =
+                workspace_edit_path_from_url(&op.new_uri, project_directory, &workspace_identity)?;
+            rename_workspace_edit_path(
+                editor,
+                workspace_backend,
+                &old_path,
+                &new_path,
+                op.options.as_ref(),
+            )
+        }
+    }
+}
+
+fn apply_workspace_edit_with_backend(
+    editor: &mut Editor,
+    workspace_backend: &WorkspaceBackendHandle,
+    project_directory: Option<&Path>,
+    offset_encoding: OffsetEncoding,
+    workspace_edit: &lsp::WorkspaceEdit,
+) -> Result<(), ApplyEditError> {
+    if matches!(workspace_backend.identity(), WorkspaceIdentity::Local) {
+        return editor.apply_workspace_edit(offset_encoding, workspace_edit);
+    }
+
+    if let Some(ref document_changes) = workspace_edit.document_changes {
+        match document_changes {
+            lsp::DocumentChanges::Edits(document_edits) => {
+                for (i, document_edit) in document_edits.iter().enumerate() {
+                    let edits = document_edit
+                        .edits
+                        .iter()
+                        .map(|edit| match edit {
+                            lsp::OneOf::Left(text_edit) => text_edit,
+                            lsp::OneOf::Right(annotated_text_edit) => {
+                                &annotated_text_edit.text_edit
+                            }
+                        })
+                        .cloned()
+                        .collect();
+                    apply_workspace_text_edits_with_backend(
+                        editor,
+                        workspace_backend,
+                        project_directory,
+                        &document_edit.text_document.uri,
+                        document_edit.text_document.version,
+                        edits,
+                        offset_encoding,
+                    )
+                    .map_err(|kind| ApplyEditError {
+                        kind,
+                        failed_change_idx: i,
+                    })?;
+                }
+            }
+            lsp::DocumentChanges::Operations(operations) => {
+                for (i, operation) in operations.iter().enumerate() {
+                    match operation {
+                        lsp::DocumentChangeOperation::Op(op) => {
+                            apply_workspace_resource_op_with_backend(
+                                editor,
+                                workspace_backend,
+                                project_directory,
+                                op,
+                            )
+                            .map_err(|kind| ApplyEditError {
+                                kind,
+                                failed_change_idx: i,
+                            })?;
+                        }
+                        lsp::DocumentChangeOperation::Edit(document_edit) => {
+                            let edits = document_edit
+                                .edits
+                                .iter()
+                                .map(|edit| match edit {
+                                    lsp::OneOf::Left(text_edit) => text_edit,
+                                    lsp::OneOf::Right(annotated_text_edit) => {
+                                        &annotated_text_edit.text_edit
+                                    }
+                                })
+                                .cloned()
+                                .collect();
+                            apply_workspace_text_edits_with_backend(
+                                editor,
+                                workspace_backend,
+                                project_directory,
+                                &document_edit.text_document.uri,
+                                document_edit.text_document.version,
+                                edits,
+                                offset_encoding,
+                            )
+                            .map_err(|kind| ApplyEditError {
+                                kind,
+                                failed_change_idx: i,
+                            })?;
+                        }
+                    }
+                }
+            }
+        }
+
+        return Ok(());
+    }
+
+    if let Some(ref changes) = workspace_edit.changes {
+        for (i, (uri, text_edits)) in changes.iter().enumerate() {
+            apply_workspace_text_edits_with_backend(
+                editor,
+                workspace_backend,
+                project_directory,
+                uri,
+                None,
+                text_edits.to_vec(),
+                offset_encoding,
+            )
+            .map_err(|kind| ApplyEditError {
+                kind,
+                failed_change_idx: i,
+            })?;
+        }
+    }
+
+    Ok(())
+}
+
+fn percent_decode_uri_path(path: &str) -> Option<String> {
+    let bytes = path.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let high = bytes.get(index + 1).copied().and_then(hex_value)?;
+            let low = bytes.get(index + 2).copied().and_then(hex_value)?;
+            decoded.push((high << 4) | low);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(decoded).ok()
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn percent_encode_file_path(path: &str) -> String {
+    let mut encoded = String::new();
+    for byte in path.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'/') {
+            encoded.push(char::from(byte));
+        } else {
+            encoded.push('%');
+            encoded.push_str(&format!("{byte:02X}"));
+        }
+    }
+    encoded
 }
 
 fn file_picker_current_directory(
@@ -1030,6 +1502,20 @@ impl Application {
         if let Some(wake) = &self.maintenance_wake {
             wake.notify();
         }
+    }
+
+    pub(crate) fn apply_lsp_workspace_edit(
+        &mut self,
+        offset_encoding: OffsetEncoding,
+        workspace_edit: &lsp::WorkspaceEdit,
+    ) -> Result<(), ApplyEditError> {
+        apply_workspace_edit_with_backend(
+            &mut self.editor,
+            &self.workspace_backend,
+            self.project_directory.as_deref(),
+            offset_encoding,
+            workspace_edit,
+        )
     }
 
     pub(crate) fn set_workspace_backend(&mut self, workspace_backend: WorkspaceBackendHandle) {
@@ -2023,7 +2509,17 @@ impl Application {
                         debug!(server_id = ?server_id, "LSP server initialized");
                     }
                     Notification::PublishDiagnostics(params) => {
-                        let uri = match helix_core::Uri::try_from(params.uri) {
+                        let lsp::PublishDiagnosticsParams {
+                            uri: diagnostic_uri,
+                            diagnostics,
+                            version,
+                        } = params;
+                        let workspace_identity = self.workspace_backend.identity();
+                        let uri = match lsp_diagnostic_document_uri(
+                            diagnostic_uri,
+                            self.project_directory.as_deref(),
+                            &workspace_identity,
+                        ) {
                             Ok(uri) => uri,
                             Err(err) => {
                                 error!(error = %err, "Invalid URI in diagnostics");
@@ -2041,12 +2537,12 @@ impl Application {
                         }
 
                         // DIAG: Summarize incoming diagnostics by severity
-                        let total = params.diagnostics.len();
+                        let total = diagnostics.len();
                         let mut errors = 0usize;
                         let mut warnings = 0usize;
                         let mut infos = 0usize;
                         let mut hints = 0usize;
-                        for d in &params.diagnostics {
+                        for d in &diagnostics {
                             match d.severity {
                                 Some(helix_lsp::lsp::DiagnosticSeverity::ERROR) => errors += 1,
                                 Some(helix_lsp::lsp::DiagnosticSeverity::WARNING) => warnings += 1,
@@ -2060,7 +2556,7 @@ impl Application {
                             server_id = ?server_id,
                             server_name = %language_server.name(),
                             uri = %uri.to_string(),
-                            version = ?params.version,
+                            version = ?version,
                             total = total,
                             errors = errors,
                             warnings = warnings,
@@ -2075,12 +2571,8 @@ impl Application {
                             identifier: None,
                         };
 
-                        self.editor.handle_lsp_diagnostics(
-                            &provider,
-                            uri,
-                            params.version,
-                            params.diagnostics,
-                        );
+                        self.editor
+                            .handle_lsp_diagnostics(&provider, uri, version, diagnostics);
                         trace!("DIAG: Forwarded diagnostics to Helix editor for application");
                     }
                     Notification::ProgressMessage(params) => {
@@ -2273,9 +2765,7 @@ impl Application {
                         };
 
                         if is_initialized {
-                            let res = self
-                                .editor
-                                .apply_workspace_edit(offset_encoding, &params.edit);
+                            let res = self.apply_lsp_workspace_edit(offset_encoding, &params.edit);
                             Ok(serde_json::json!({
                                 "applied": res.is_ok(),
                                 "failureReason": if res.is_err() {
@@ -4679,20 +5169,29 @@ fn lsp_location_from_location(
     location: lsp::Location,
     offset_encoding: OffsetEncoding,
 ) -> Option<crate::types::LspLocation> {
-    let uri: Uri = match location.uri.try_into() {
-        Ok(uri) => uri,
+    let path = match lsp_location_path_from_url(location.uri) {
+        Ok(path) => path,
         Err(err) => {
             warn!(error = %err, "Discarding LSP location with unsupported URI");
             return None;
         }
     };
-    let path = uri.as_path()?.to_path_buf();
 
     Some(crate::types::LspLocation {
         path,
         range: location.range,
         offset_encoding,
     })
+}
+
+fn lsp_location_path_from_url(uri: lsp::Url) -> Result<PathBuf, String> {
+    match Uri::try_from(uri.clone()) {
+        Ok(uri) => uri
+            .as_path()
+            .map(Path::to_path_buf)
+            .ok_or_else(|| format!("URI does not contain a file path: {uri}")),
+        Err(error) => remote_lsp_file_url_path(&uri).ok_or_else(|| error.to_string()),
+    }
 }
 
 fn lsp_locations_picker(
@@ -6391,8 +6890,14 @@ impl Application {
 
         let mut results = Vec::new();
 
-        // Update the Editor's working directory so Helix LSP initialization uses the correct workspace root
-        if let Err(e) = self.editor.set_cwd(new_workspace_root) {
+        // Update the Editor's working directory so local Helix LSP initialization uses
+        // the correct workspace root. Remote display roots are not valid host paths.
+        if classify_workspace_location(new_workspace_root).is_remote() {
+            debug!(
+                workspace_root = %new_workspace_root.display(),
+                "Skipping host Editor working directory update for remote workspace root"
+            );
+        } else if let Err(e) = self.editor.set_cwd(new_workspace_root) {
             warn!(
                 error = %e,
                 workspace_root = %new_workspace_root.display(),
@@ -8427,9 +8932,9 @@ fn set_remote_document_lsp_url(doc: &mut Document, display_path: &Path) {
         return;
     }
 
-    match lsp::Url::from_file_path(location.native_root()) {
-        Ok(url) => doc.set_lsp_url(Some(url)),
-        Err(()) => warn!(
+    match remote_native_file_uri(location.native_root()) {
+        Some(url) => doc.set_lsp_url(Some(url)),
+        None => warn!(
             path = %display_path.display(),
             native_path = %location.native_root().display(),
             "Remote document path cannot be represented as an LSP file URL"
@@ -9216,9 +9721,14 @@ fn local_path_completion_context(
     }
 
     let path = if matched_path.starts_with("file://") {
-        url::Url::parse(matched_path)
-            .ok()
-            .and_then(|url| url.to_file_path().ok())?
+        let url = url::Url::parse(matched_path).ok()?;
+        if is_local_workspace {
+            url.to_file_path().ok()?
+        } else {
+            url.to_file_path()
+                .ok()
+                .or_else(|| remote_lsp_file_url_path(&url))?
+        }
     } else {
         PathBuf::from(matched_path)
     };
@@ -9679,15 +10189,16 @@ mod tests {
         local_path_completion_context, lsp_completion_insert_text,
         lsp_completion_insert_text_format, lsp_completion_items_from_response,
         lsp_completion_items_from_response_for_server, lsp_completion_resolve_supported,
-        lsp_completion_response_is_incomplete, lsp_symbol_picker, native_open_file_with_backend,
-        native_symbol_item_from_lsp, navigation_display_path, open_workspace_document,
-        path_completion_items, path_completion_items_from_listing, project_health_status,
-        project_server_language_id, remote_lsp_project_root_for_document,
-        remote_lsp_root_uri_matches_document_workspace, should_launch_lsp_on_local_host,
-        should_stat_picker_root_with_backend, should_use_workspace_syntax_symbol_fallback,
-        startup_path_should_open_as_file, str_prefix_at_byte_limit,
-        suppress_shadowed_buffer_word_completion_items, syntax_symbol_kind_from_capture_name,
-        workspace_diagnostic_refresh_reply,
+        lsp_completion_response_is_incomplete, lsp_diagnostic_document_uri,
+        lsp_location_from_location, lsp_location_path_from_url, lsp_symbol_picker,
+        native_open_file_with_backend, native_symbol_item_from_lsp, navigation_display_path,
+        open_workspace_document, path_completion_items, path_completion_items_from_listing,
+        project_health_status, project_server_language_id, remote_lsp_project_root_for_document,
+        remote_lsp_root_uri_matches_document_workspace, remote_native_file_uri,
+        should_launch_lsp_on_local_host, should_stat_picker_root_with_backend,
+        should_use_workspace_syntax_symbol_fallback, startup_path_should_open_as_file,
+        str_prefix_at_byte_limit, suppress_shadowed_buffer_word_completion_items,
+        syntax_symbol_kind_from_capture_name, workspace_diagnostic_refresh_reply,
     };
     use crate::test_utils::test_support::{
         TestUpdate, create_counting_channel, create_test_diagnostic_events,
@@ -9876,6 +10387,10 @@ mod tests {
         assert!(script.contains("nucleotide-remote"));
         assert!(script.contains("lsp-proxy"));
         assert!(script.contains("rust-analyzer"));
+        #[cfg(windows)]
+        if let Ok(ssh) = helix_stdx::env::which("ssh") {
+            assert!(script.contains(&ssh.to_string_lossy().into_owned()));
+        }
         assert_eq!(provider.helper_path_cache.lock().unwrap().len(), 1);
 
         for path in proxy.cleanup_paths {
@@ -10186,8 +10701,13 @@ mod tests {
             Some(display_path.as_path())
         );
         assert_eq!(
-            doc.url().and_then(|url| url.to_file_path().ok()),
-            Some(PathBuf::from("/home/me/project/src/main.rs"))
+            doc.url().map(|url| url.to_string()),
+            Some("file:///home/me/project/src/main.rs".to_string())
+        );
+        assert_eq!(
+            doc.uri()
+                .and_then(|uri| uri.as_path().map(Path::to_path_buf)),
+            Some(display_path.clone())
         );
         assert_eq!(editor.language_servers.iter_clients().count(), 0);
         assert_eq!(doc.text(), "fn remote() {}\n");
@@ -10302,6 +10822,132 @@ mod tests {
             }
             NativeOpenFileOutcome::Document(_) => panic!("expected directory outcome"),
         }
+    }
+
+    #[gpui::test]
+    async fn remote_workspace_edit_applies_text_changes_through_backend(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let temp = tempdir().unwrap();
+        fs::create_dir_all(temp.path().join("src")).unwrap();
+        let native_path = temp.path().join("src").join("main.rs");
+        fs::write(&native_path, "fn remote() {}\n").unwrap();
+
+        let display_root = PathBuf::from("ssh://me@example.com/home/me/project");
+        let display_path = display_root.join("src").join("main.rs");
+        let backend = path_mapped_workspace_backend(
+            Arc::new(RemoteIdentityLocalBackend),
+            WorkspacePathMapping::new(&display_root, temp.path()),
+        );
+        let app = new_test_application(cx);
+
+        app.update(cx, |app, _cx| {
+            app.project_directory = Some(display_root.clone());
+            app.set_workspace_backend(backend.clone());
+
+            let edit = lsp::WorkspaceEdit::new(HashMap::from([(
+                lsp::Url::parse("file:///home/me/project/src/main.rs").unwrap(),
+                vec![lsp::TextEdit::new(
+                    lsp::Range::new(lsp::Position::new(0, 3), lsp::Position::new(0, 9)),
+                    "edited".to_string(),
+                )],
+            )]));
+
+            app.apply_lsp_workspace_edit(OffsetEncoding::Utf8, &edit)
+                .unwrap();
+
+            let doc = app
+                .editor
+                .document_by_path(&display_path)
+                .expect("workspace edit opens display-backed document");
+            assert_eq!(doc.text(), "fn edited() {}\n");
+            assert_eq!(
+                doc.url().as_ref().map(|url| url.as_str()),
+                Some("file:///home/me/project/src/main.rs")
+            );
+            assert!(!display_path.exists());
+        });
+
+        assert_eq!(
+            fs::read_to_string(native_path).unwrap(),
+            "fn remote() {}\n",
+            "workspace edits update the buffer but do not implicitly save"
+        );
+    }
+
+    #[gpui::test]
+    async fn remote_workspace_edit_applies_resource_ops_through_backend(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let temp = tempdir().unwrap();
+        fs::create_dir_all(temp.path().join("src")).unwrap();
+        let native_old = temp.path().join("src").join("old.rs");
+        let native_new = temp.path().join("src").join("renamed.rs");
+        let native_created = temp.path().join("src").join("created.rs");
+        fs::write(&native_old, "pub fn old() {}\n").unwrap();
+
+        let display_root = PathBuf::from("ssh://me@example.com/home/me/project");
+        let display_old = display_root.join("src").join("old.rs");
+        let display_new = display_root.join("src").join("renamed.rs");
+        let backend = path_mapped_workspace_backend(
+            Arc::new(RemoteIdentityLocalBackend),
+            WorkspacePathMapping::new(&display_root, temp.path()),
+        );
+        let app = new_test_application(cx);
+
+        app.update(cx, |app, _cx| {
+            app.project_directory = Some(display_root.clone());
+            app.set_workspace_backend(backend.clone());
+            let doc_id = open_workspace_document(
+                &mut app.editor,
+                &backend,
+                &display_old,
+                helix_view::editor::Action::VerticalSplit,
+            )
+            .unwrap();
+
+            let edit = lsp::WorkspaceEdit {
+                changes: None,
+                document_changes: Some(lsp::DocumentChanges::Operations(vec![
+                    lsp::DocumentChangeOperation::Op(lsp::ResourceOp::Create(lsp::CreateFile {
+                        uri: lsp::Url::parse("file:///home/me/project/src/created.rs").unwrap(),
+                        options: None,
+                        annotation_id: None,
+                    })),
+                    lsp::DocumentChangeOperation::Op(lsp::ResourceOp::Rename(lsp::RenameFile {
+                        old_uri: lsp::Url::parse("file:///home/me/project/src/old.rs").unwrap(),
+                        new_uri: lsp::Url::parse("file:///home/me/project/src/renamed.rs").unwrap(),
+                        options: None,
+                        annotation_id: None,
+                    })),
+                    lsp::DocumentChangeOperation::Op(lsp::ResourceOp::Delete(lsp::DeleteFile {
+                        uri: lsp::Url::parse("file:///home/me/project/src/created.rs").unwrap(),
+                        options: None,
+                    })),
+                ])),
+                change_annotations: None,
+            };
+
+            app.apply_lsp_workspace_edit(OffsetEncoding::Utf8, &edit)
+                .unwrap();
+
+            let doc = app.editor.document(doc_id).expect("open renamed document");
+            assert_eq!(
+                doc.path().map(PathBuf::as_path),
+                Some(display_new.as_path())
+            );
+            assert_eq!(
+                doc.url().as_ref().map(|url| url.as_str()),
+                Some("file:///home/me/project/src/renamed.rs")
+            );
+            assert_eq!(doc.text(), "pub fn old() {}\n");
+            assert!(!display_new.exists());
+        });
+
+        assert!(!native_old.exists());
+        assert!(native_new.exists());
+        assert!(!native_created.exists());
+        assert_eq!(fs::read_to_string(native_new).unwrap(), "pub fn old() {}\n");
     }
 
     #[test]
@@ -11065,7 +11711,7 @@ mod tests {
         });
         let project_directory = Path::new("ssh://devbox/home/me/project");
         let document_path = Path::new("ssh://devbox/home/me/project/src/main.rs");
-        let native_uri = lsp::Url::from_file_path("/home/me/project").unwrap();
+        let native_uri = lsp::Url::parse("file:///home/me/project").unwrap();
 
         assert!(remote_lsp_root_uri_matches_document_workspace(
             &identity,
@@ -11084,7 +11730,7 @@ mod tests {
         });
         let project_directory = Path::new("ssh://devbox/home/me/project");
         let document_path = Path::new("ssh://devbox/home/me/project/src/main.rs");
-        let native_uri = lsp::Url::from_file_path("/home/me/project").unwrap();
+        let native_uri = lsp::Url::parse("file:///home/me/project").unwrap();
         let display_uri = lsp::Url::parse("file:///ssh%3A/devbox/home/me/project").unwrap();
 
         assert!(!remote_lsp_root_uri_matches_document_workspace(
@@ -11108,6 +11754,112 @@ mod tests {
             Path::new("ssh://devbox/home/me/project"),
             Some(&native_uri),
         ));
+    }
+
+    #[test]
+    fn remote_lsp_root_uri_matches_encoded_native_remote_workspace() {
+        let identity = WorkspaceIdentity::Remote(RemoteWorkspaceIdentity {
+            kind: RemoteWorkspaceKind::Ssh,
+            name: "devbox".to_string(),
+        });
+        let project_directory = Path::new("ssh://devbox/home/me/Project%20One");
+        let document_path = Path::new("ssh://devbox/home/me/Project%20One/src/main.rs");
+        let native_uri = lsp::Url::parse("file:///home/me/Project%20One").unwrap();
+
+        assert!(remote_lsp_root_uri_matches_document_workspace(
+            &identity,
+            Some(project_directory),
+            Some(document_path),
+            Path::new("/home/me/Project One"),
+            Some(&native_uri),
+        ));
+    }
+
+    #[test]
+    fn remote_native_file_uri_uses_posix_file_urls_for_remote_paths() {
+        let uri = remote_native_file_uri(Path::new(r"\home\me\Project One\src\main.rs")).unwrap();
+
+        assert_eq!(uri.as_str(), "file:///home/me/Project%20One/src/main.rs");
+    }
+
+    #[test]
+    fn lsp_diagnostic_uri_maps_remote_file_url_to_display_document_uri() {
+        let identity = WorkspaceIdentity::Remote(RemoteWorkspaceIdentity {
+            kind: RemoteWorkspaceKind::Ssh,
+            name: "example.com".to_string(),
+        });
+        let project_directory = Path::new("ssh://me@example.com/home/me/Project One");
+        let diagnostic_uri =
+            lsp::Url::parse("file:///home/me/Project%20One/src/cursor.rs").unwrap();
+
+        let document_uri =
+            lsp_diagnostic_document_uri(diagnostic_uri, Some(project_directory), &identity)
+                .unwrap();
+
+        assert_eq!(
+            document_uri.as_path(),
+            Some(Path::new(
+                "ssh://me@example.com/home/me/Project One/src/cursor.rs"
+            ))
+        );
+    }
+
+    #[test]
+    fn lsp_diagnostic_uri_keeps_local_file_urls_host_native() {
+        let local_path = std::env::current_dir()
+            .unwrap()
+            .join("crates")
+            .join("nucleotide")
+            .join("Cargo.toml");
+        let diagnostic_uri = lsp::Url::from_file_path(&local_path).unwrap();
+
+        let document_uri =
+            lsp_diagnostic_document_uri(diagnostic_uri, None, &WorkspaceIdentity::Local).unwrap();
+
+        assert_eq!(document_uri.as_path(), Some(local_path.as_path()));
+    }
+
+    #[test]
+    fn lsp_location_path_accepts_remote_posix_file_urls_on_windows() {
+        let url =
+            lsp::Url::parse("file:///home/me/.cargo/git/checkouts/helix/helix-view/src/view.rs")
+                .unwrap();
+
+        let path = lsp_location_path_from_url(url).unwrap();
+
+        assert_eq!(
+            path,
+            PathBuf::from("/home/me/.cargo/git/checkouts/helix/helix-view/src/view.rs")
+        );
+    }
+
+    #[test]
+    fn lsp_location_from_location_accepts_remote_posix_file_urls() {
+        let range = lsp::Range::new(lsp::Position::new(7, 3), lsp::Position::new(7, 9));
+        let location = lsp::Location::new(
+            lsp::Url::parse("file:///home/me/project/src/lib.rs").unwrap(),
+            range,
+        );
+
+        let location = lsp_location_from_location(location, OffsetEncoding::Utf8).unwrap();
+
+        assert_eq!(location.path, PathBuf::from("/home/me/project/src/lib.rs"));
+        assert_eq!(location.range, range);
+        assert_eq!(location.offset_encoding, OffsetEncoding::Utf8);
+    }
+
+    #[test]
+    fn lsp_location_path_keeps_local_file_urls_host_native() {
+        let local_path = std::env::current_dir()
+            .unwrap()
+            .join("crates")
+            .join("nucleotide")
+            .join("Cargo.toml");
+        let url = lsp::Url::from_file_path(&local_path).unwrap();
+
+        let path = lsp_location_path_from_url(url).unwrap();
+
+        assert_eq!(path, local_path);
     }
 
     #[test]
@@ -11726,6 +12478,22 @@ mod tests {
             context.dir_path,
             PathBuf::from("ssh://devbox/home/me/project/src")
         );
+        assert_eq!(context.typed_file_name.as_deref(), Some("ma"));
+    }
+
+    #[test]
+    fn local_path_completion_context_accepts_remote_posix_file_urls() {
+        let context = local_path_completion_context(
+            "file:///home/me/Project%20One/src/ma",
+            Some(Path::new("ssh://devbox/home/me/Project One/lib.rs")),
+            WorkspaceIdentity::Remote(RemoteWorkspaceIdentity {
+                kind: RemoteWorkspaceKind::Ssh,
+                name: "devbox".to_string(),
+            }),
+        )
+        .expect("remote file URL path context");
+
+        assert_eq!(context.dir_path, PathBuf::from("/home/me/Project One/src"));
         assert_eq!(context.typed_file_name.as_deref(), Some("ma"));
     }
 

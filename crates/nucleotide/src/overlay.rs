@@ -86,29 +86,31 @@ fn changed_documents_since(
 }
 
 fn apply_code_action_or_command(
-    editor: &mut helix_view::Editor,
+    core: &mut crate::Core,
     action: &helix_lsp::lsp::CodeActionOrCommand,
     language_server_id: helix_core::diagnostic::LanguageServerId,
 ) -> Vec<helix_view::DocumentId> {
     let mut changed_documents = Vec::new();
 
-    let Some(offset_encoding) = editor
+    let Some(offset_encoding) = core
+        .editor
         .language_server_by_id(language_server_id)
         .map(|language_server| language_server.offset_encoding())
     else {
-        editor.set_error("Language Server disappeared");
+        core.editor.set_error("Language Server disappeared");
         return changed_documents;
     };
 
     match action {
         helix_lsp::lsp::CodeActionOrCommand::Command(command) => {
-            editor.execute_lsp_command(command.clone(), language_server_id);
+            core.editor
+                .execute_lsp_command(command.clone(), language_server_id);
         }
         helix_lsp::lsp::CodeActionOrCommand::CodeAction(code_action) => {
             let resolved_code_action = if code_action.edit.is_none()
                 || code_action.command.is_none()
             {
-                editor
+                core.editor
                     .language_server_by_id(language_server_id)
                     .and_then(|language_server| language_server.resolve_code_action(code_action))
                     .and_then(|future| helix_lsp::block_on(future).ok())
@@ -119,13 +121,13 @@ fn apply_code_action_or_command(
             let resolved_or_original = resolved_code_action.as_ref().unwrap_or(code_action);
 
             if let Some(edit) = &resolved_or_original.edit {
-                let before_revisions = document_revisions(editor);
-                match editor.apply_workspace_edit(offset_encoding, edit) {
+                let before_revisions = document_revisions(&mut core.editor);
+                match core.apply_lsp_workspace_edit(offset_encoding, edit) {
                     Ok(()) => {
                         changed_documents
-                            .extend(changed_documents_since(editor, &before_revisions));
+                            .extend(changed_documents_since(&mut core.editor, &before_revisions));
                     }
-                    Err(err) => editor.set_error(format!("{err:?}")),
+                    Err(err) => core.editor.set_error(format!("{err:?}")),
                 }
             }
 
@@ -134,7 +136,8 @@ fn apply_code_action_or_command(
                 .as_ref()
                 .or(code_action.command.as_ref())
             {
-                editor.execute_lsp_command(command.clone(), language_server_id);
+                core.editor
+                    .execute_lsp_command(command.clone(), language_server_id);
             }
         }
     }
@@ -1277,7 +1280,7 @@ impl OverlayView {
                                     && let Some(core) = core_for_on_select.upgrade() {
                                         core.update(picker_cx, |core, core_cx| {
                                             let changed_documents = apply_code_action_or_command(
-                                                &mut core.editor,
+                                                core,
                                                 action,
                                                 *ls_id,
                                             );

@@ -667,14 +667,7 @@ fn push_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
     }
 }
 
-const NIX_DIRENV_RESTORED_VARS: &[&str] = &[
-    "NIX_BUILD_TOP",
-    "TMP",
-    "TMPDIR",
-    "TEMP",
-    "TEMPDIR",
-    "terminfo",
-];
+const NIX_DIRENV_RESTORED_VARS: &[&str] = &["TMP", "TMPDIR", "TEMP", "TEMPDIR", "terminfo"];
 
 const CALLER_OWNED_ENV_VARS: &[&str] = &[
     "HOME",
@@ -1747,7 +1740,7 @@ mod tests {
     }
 
     #[test]
-    fn test_native_flake_environment_restores_nix_direnv_session_vars() {
+    fn test_native_flake_environment_restores_temp_vars_but_keeps_nix_build_top() {
         let baseline = HashMap::from([
             ("PATH".to_string(), "/usr/bin".to_string()),
             ("TMPDIR".to_string(), "/var/folders/user/tmp".to_string()),
@@ -1779,7 +1772,10 @@ mod tests {
             Some("/usr/share/terminfo")
         );
         assert!(!env.contains_key("TEMP"));
-        assert!(!env.contains_key("NIX_BUILD_TOP"));
+        assert_eq!(
+            env.get("NIX_BUILD_TOP").map(String::as_str),
+            Some("/tmp/nix-shell.abc123")
+        );
     }
 
     #[test]

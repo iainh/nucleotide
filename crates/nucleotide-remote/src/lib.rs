@@ -13,7 +13,7 @@ use nucleotide_workspace::{
     ProjectEnvironmentSnapshot, ReadOptions, RemoteWorkspaceIdentity, RemoteWorkspaceKind,
     SshWorkspaceTarget, TextSearchMatch, TextSearchQuery, TextSearchResult, WorkspaceBackend,
     WorkspaceBackendHandle, WorkspaceError, WorkspaceIdentity, WorkspaceLocation, WriteOptions,
-    WriteResult, local_workspace_backend, path_mapped_workspace_backend,
+    WriteResult, local_workspace_backend, path_mapped_workspace_backend, posix_path_string,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::{BTreeMap, HashMap};
@@ -292,7 +292,8 @@ pub struct RemoteServiceCommand {
 
 impl RemoteServiceCommand {
     pub fn command(&self) -> Command {
-        let mut command = Command::new(&self.program);
+        let program = resolve_service_program(&self.program);
+        let mut command = Command::new(&program);
         command.args(&self.args);
         if let Some(current_dir) = &self.current_dir {
             command.current_dir(current_dir);
@@ -322,6 +323,74 @@ impl RemoteServiceCommand {
     pub fn spawn(&self) -> io::Result<ChildProcessTransport> {
         ChildProcessTransport::spawn(self)
     }
+}
+
+fn resolve_service_program(program: &OsStr) -> OsString {
+    #[cfg(windows)]
+    {
+        if let Some(path) = resolve_windows_program(program) {
+            return path.into_os_string();
+        }
+    }
+
+    program.to_os_string()
+}
+
+#[cfg(windows)]
+fn resolve_windows_program(program: &OsStr) -> Option<PathBuf> {
+    let program_text = program.to_string_lossy();
+    let program_path = Path::new(program);
+    if program_path.components().count() > 1 {
+        return program_path.is_file().then(|| program_path.to_path_buf());
+    }
+
+    resolve_windows_program_from_path(&program_text).or_else(|| {
+        let windir = std::env::var_os("WINDIR")?;
+        let system32 = PathBuf::from(windir).join("System32");
+        if program_text.eq_ignore_ascii_case("ssh") || program_text.eq_ignore_ascii_case("ssh.exe")
+        {
+            let ssh = system32.join("OpenSSH").join("ssh.exe");
+            return ssh.is_file().then_some(ssh);
+        }
+        if program_text.eq_ignore_ascii_case("wsl") || program_text.eq_ignore_ascii_case("wsl.exe")
+        {
+            let wsl = system32.join("wsl.exe");
+            return wsl.is_file().then_some(wsl);
+        }
+        None
+    })
+}
+
+#[cfg(windows)]
+fn resolve_windows_program_from_path(program: &str) -> Option<PathBuf> {
+    let path_exts = std::env::var_os("PATHEXT")
+        .map(|value| {
+            value
+                .to_string_lossy()
+                .split(';')
+                .filter(|ext| !ext.is_empty())
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_else(|| vec![".COM".into(), ".EXE".into(), ".BAT".into(), ".CMD".into()]);
+    let candidates = if Path::new(program).extension().is_some() {
+        vec![program.to_string()]
+    } else {
+        path_exts
+            .iter()
+            .map(|ext| format!("{program}{ext}"))
+            .chain(std::iter::once(program.to_string()))
+            .collect()
+    };
+
+    std::env::var_os("PATH").and_then(|path| {
+        std::env::split_paths(&path).find_map(|directory| {
+            candidates
+                .iter()
+                .map(|candidate| directory.join(candidate))
+                .find(|candidate| candidate.is_file())
+        })
+    })
 }
 
 pub fn local_service_command(
@@ -428,8 +497,8 @@ pub fn ssh_service_command(
     remote_root: impl AsRef<Path>,
     helper_path: impl AsRef<Path>,
 ) -> RemoteServiceCommand {
-    let remote_root = remote_root.as_ref().to_string_lossy();
-    let helper_path = helper_path.as_ref().to_string_lossy();
+    let remote_root = posix_path_string(remote_root);
+    let helper_path = posix_path_string(helper_path);
     let remote_command = format!(
         "exec {} serve --workspace {}",
         quote_posix_shell(&helper_path),
@@ -459,8 +528,8 @@ pub fn ssh_lsp_proxy_command(
     helper_path: impl AsRef<Path>,
     server: impl AsRef<OsStr>,
 ) -> RemoteServiceCommand {
-    let remote_root = remote_root.as_ref().to_string_lossy();
-    let helper_path = helper_path.as_ref().to_string_lossy();
+    let remote_root = posix_path_string(remote_root);
+    let helper_path = posix_path_string(helper_path);
     let server = server.as_ref().to_string_lossy();
     let remote_command = format!(
         "exec {} lsp-proxy --workspace {} --server {} --",
@@ -550,6 +619,15 @@ pub fn ssh_terminal_proxy_command(
 }
 
 fn append_ssh_connection_args(args: &mut Vec<OsString>, target: &SshTarget) {
+    args.push(OsString::from("-o"));
+    args.push(OsString::from("BatchMode=yes"));
+    args.push(OsString::from("-o"));
+    args.push(OsString::from("NumberOfPasswordPrompts=0"));
+    args.push(OsString::from("-o"));
+    args.push(OsString::from("ConnectionAttempts=1"));
+    args.push(OsString::from("-o"));
+    args.push(OsString::from("StrictHostKeyChecking=accept-new"));
+
     if let Some(timeout_secs) = target.connect_timeout_secs {
         args.push(OsString::from("-o"));
         args.push(OsString::from(format!("ConnectTimeout={timeout_secs}")));
@@ -607,12 +685,14 @@ fn terminal_proxy_shell_command(
     command: Option<(&str, &[String])>,
     env: &[(String, String)],
 ) -> String {
+    let helper_path = posix_path_string(helper_path);
+    let remote_root = posix_path_string(remote_root);
     let mut parts = vec![
         "exec".to_string(),
-        quote_posix_shell(&helper_path.to_string_lossy()),
+        quote_posix_shell(&helper_path),
         "terminal-proxy".to_string(),
         "--workspace".to_string(),
-        quote_posix_shell(&remote_root.to_string_lossy()),
+        quote_posix_shell(&remote_root),
     ];
     if let Some(shell) = shell.filter(|shell| !shell.is_empty()) {
         parts.push("--shell".to_string());
@@ -1387,7 +1467,7 @@ impl<'a> RemoteHelperManager<'a> {
         target: &SshTarget,
         helper_path: &Path,
     ) -> Result<HelperVersionInfo> {
-        let helper_path = helper_path.to_string_lossy();
+        let helper_path = posix_path_string(helper_path);
         let remote_command = format!("exec {} version --json", quote_posix_shell(&helper_path));
         let output =
             self.run_ssh_command_output(target, "checking nucleotide-remote", &remote_command)?;
@@ -1448,7 +1528,7 @@ impl<'a> RemoteHelperManager<'a> {
         local_helper: &Path,
         helper_path: &Path,
     ) -> Result<()> {
-        let helper_path = helper_path.to_string_lossy();
+        let helper_path = posix_path_string(helper_path);
         let helper_dir = posix_parent(&helper_path);
         let tmp_path = format!(
             "{helper_path}.tmp-{}-{}",
@@ -1511,7 +1591,7 @@ impl<'a> RemoteHelperManager<'a> {
         checksums_url: &str,
         asset_name: &str,
     ) -> Result<()> {
-        let helper_path = helper_path.to_string_lossy();
+        let helper_path = posix_path_string(helper_path);
         let helper_dir = posix_parent(&helper_path);
         let tmp_path = format!(
             "{helper_path}.tmp-{}-{}",
@@ -5176,6 +5256,36 @@ fn print_help<W: Write>(writer: &mut W) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn arg_index(args: &[OsString], needle: &str) -> usize {
+        args.iter()
+            .position(|arg| arg.as_os_str() == OsStr::new(needle))
+            .unwrap_or_else(|| panic!("missing argument {needle:?} in {args:?}"))
+    }
+
+    fn has_arg_pair(args: &[OsString], key: &str, value: &str) -> bool {
+        args.windows(2).any(|window| {
+            window[0].as_os_str() == OsStr::new(key) && window[1].as_os_str() == OsStr::new(value)
+        })
+    }
+
+    fn assert_arg_pair(args: &[OsString], key: &str, value: &str) {
+        assert!(
+            has_arg_pair(args, key, value),
+            "missing argument pair {key:?} {value:?} in {args:?}"
+        );
+    }
+
+    fn assert_ssh_non_interactive_defaults(args: &[OsString]) {
+        assert_arg_pair(args, "-o", "BatchMode=yes");
+        assert_arg_pair(args, "-o", "NumberOfPasswordPrompts=0");
+        assert_arg_pair(args, "-o", "ConnectionAttempts=1");
+        assert_arg_pair(args, "-o", "StrictHostKeyChecking=accept-new");
+    }
+
+    fn ssh_target_separator_index(args: &[OsString]) -> usize {
+        arg_index(args, "--")
+    }
     use futures::FutureExt;
     use nucleotide_workspace::RemoteWorkspaceKind;
     use std::collections::VecDeque;
@@ -5918,14 +6028,69 @@ mod tests {
 
         assert_eq!(spec.program, OsString::from("ssh"));
         assert_eq!(spec.args[0], OsString::from("-T"));
-        assert_eq!(spec.args[1], OsString::from("-p"));
-        assert_eq!(spec.args[2], OsString::from("2222"));
-        assert_eq!(spec.args[3], OsString::from("--"));
-        assert_eq!(spec.args[4], OsString::from("me@devbox"));
-        let command = spec.args[5].to_string_lossy();
+        assert_ssh_non_interactive_defaults(&spec.args);
+        assert_arg_pair(&spec.args, "-p", "2222");
+        let separator = ssh_target_separator_index(&spec.args);
+        assert_eq!(spec.args[separator + 1], OsString::from("me@devbox"));
+        let command = spec.args[separator + 2].to_string_lossy();
         assert!(command.starts_with("exec "));
         assert!(command.contains("'/home/me/.cache/nucleotide remote/bin'"));
         assert!(command.contains("'/home/me/project with spaces/it'\"'\"'s'"));
+    }
+
+    #[test]
+    fn ssh_commands_normalize_remote_paths_to_posix() {
+        let spec = ssh_service_command(
+            SshTarget::new("devbox"),
+            r"\home\me\project",
+            r"\home\me\.cache\nucl\remote",
+        );
+        let separator = ssh_target_separator_index(&spec.args);
+        let command = spec.args[separator + 2].to_string_lossy();
+
+        assert!(command.contains("'/home/me/.cache/nucl/remote'"));
+        assert!(command.contains("'/home/me/project'"));
+
+        let spec = ssh_terminal_proxy_command(
+            SshTarget::new("devbox"),
+            r"\home\me\project",
+            r"\home\me\.cache\nucl\remote",
+            None,
+            None,
+            &[],
+        );
+        let separator = ssh_target_separator_index(&spec.args);
+        let command = spec.args[separator + 2].to_string_lossy();
+
+        assert!(command.contains("'/home/me/.cache/nucl/remote'"));
+        assert!(command.contains("'/home/me/project'"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn ssh_service_command_resolves_system_openssh_on_windows() {
+        let Some(windir) = std::env::var_os("WINDIR") else {
+            return;
+        };
+        let system_ssh = PathBuf::from(windir)
+            .join("System32")
+            .join("OpenSSH")
+            .join("ssh.exe");
+        if !system_ssh.is_file() {
+            return;
+        }
+
+        let spec = ssh_service_command(
+            SshTarget::new("devbox"),
+            "/home/me/project",
+            "/home/me/.cache/nucl/remote",
+        );
+        let command = spec.command();
+
+        assert_eq!(
+            command.get_program().to_string_lossy().to_ascii_lowercase(),
+            system_ssh.to_string_lossy().to_ascii_lowercase()
+        );
     }
 
     #[test]
@@ -5943,11 +6108,11 @@ mod tests {
 
         assert_eq!(spec.program, OsString::from("ssh"));
         assert_eq!(spec.args[0], OsString::from("-T"));
-        assert_eq!(spec.args[1], OsString::from("-p"));
-        assert_eq!(spec.args[2], OsString::from("2222"));
-        assert_eq!(spec.args[3], OsString::from("--"));
-        assert_eq!(spec.args[4], OsString::from("me@devbox"));
-        let command = spec.args[5].to_string_lossy();
+        assert_ssh_non_interactive_defaults(&spec.args);
+        assert_arg_pair(&spec.args, "-p", "2222");
+        let separator = ssh_target_separator_index(&spec.args);
+        assert_eq!(spec.args[separator + 1], OsString::from("me@devbox"));
+        let command = spec.args[separator + 2].to_string_lossy();
         assert!(command.starts_with("exec "));
         assert!(command.contains("'/home/me/.cache/nucleotide remote/bin'"));
         assert!(command.contains(" lsp-proxy "));
@@ -5973,12 +6138,13 @@ mod tests {
         );
 
         assert_eq!(spec.program, OsString::from("ssh"));
-        assert_eq!(spec.args[0], OsString::from("-p"));
-        assert_eq!(spec.args[1], OsString::from("2222"));
-        assert_eq!(spec.args[2], OsString::from("-tt"));
-        assert_eq!(spec.args[3], OsString::from("--"));
-        assert_eq!(spec.args[4], OsString::from("me@devbox"));
-        let command = spec.args[5].to_string_lossy();
+        assert_ssh_non_interactive_defaults(&spec.args);
+        assert_arg_pair(&spec.args, "-p", "2222");
+        let tty = arg_index(&spec.args, "-tt");
+        let separator = ssh_target_separator_index(&spec.args);
+        assert!(tty < separator);
+        assert_eq!(spec.args[separator + 1], OsString::from("me@devbox"));
+        let command = spec.args[separator + 2].to_string_lossy();
         assert!(command.starts_with("exec "));
         assert!(command.contains("'/home/me/.cache/nucleotide remote/bin'"));
         assert!(command.contains(" terminal-proxy "));
@@ -6002,26 +6168,20 @@ mod tests {
 
         let spec = ssh_service_command(target, "/home/me/project", "/remote/bin/nucleotide-remote");
 
-        assert_eq!(
-            spec.args[..13],
-            [
-                OsString::from("-T"),
-                OsString::from("-o"),
-                OsString::from("ConnectTimeout=12"),
-                OsString::from("-o"),
-                OsString::from("ControlMaster=auto"),
-                OsString::from("-o"),
-                OsString::from("ControlPersist=10m"),
-                OsString::from("-o"),
-                OsString::from("ControlPath=/tmp/nucl-ssh/%C"),
-                OsString::from("-J"),
-                OsString::from("bastion"),
-                OsString::from("-F"),
-                OsString::from("/tmp/ssh config"),
-            ]
-        );
-        assert_eq!(spec.args[13], OsString::from("--"));
-        assert_eq!(spec.args[14], OsString::from("devbox"));
+        let separator = ssh_target_separator_index(&spec.args);
+        assert_eq!(spec.args[0], OsString::from("-T"));
+        assert_ssh_non_interactive_defaults(&spec.args);
+        assert_arg_pair(&spec.args, "-o", "ConnectTimeout=12");
+        assert_arg_pair(&spec.args, "-o", "ControlMaster=auto");
+        assert_arg_pair(&spec.args, "-o", "ControlPersist=10m");
+        assert_arg_pair(&spec.args, "-o", "ControlPath=/tmp/nucl-ssh/%C");
+        assert_arg_pair(&spec.args, "-J", "bastion");
+        assert_arg_pair(&spec.args, "-F", "/tmp/ssh config");
+        assert!(arg_index(&spec.args, "ConnectTimeout=12") < separator);
+        assert!(arg_index(&spec.args, "ControlPath=/tmp/nucl-ssh/%C") < separator);
+        assert!(arg_index(&spec.args, "bastion") < separator);
+        assert!(arg_index(&spec.args, "/tmp/ssh config") < separator);
+        assert_eq!(spec.args[separator + 1], OsString::from("devbox"));
     }
 
     #[test]
@@ -6144,11 +6304,11 @@ mod tests {
 
         assert_eq!(spec.program, OsString::from("ssh"));
         assert_eq!(spec.args[0], OsString::from("-T"));
-        assert_eq!(spec.args[1], OsString::from("-p"));
-        assert_eq!(spec.args[2], OsString::from("2222"));
-        assert_eq!(spec.args[3], OsString::from("--"));
-        assert_eq!(spec.args[4], OsString::from("me@example.com"));
-        let command = spec.args[5].to_string_lossy();
+        assert_ssh_non_interactive_defaults(&spec.args);
+        assert_arg_pair(&spec.args, "-p", "2222");
+        let separator = ssh_target_separator_index(&spec.args);
+        assert_eq!(spec.args[separator + 1], OsString::from("me@example.com"));
+        let command = spec.args[separator + 2].to_string_lossy();
         assert!(command.contains("/remote/bin/nucleotide-remote"));
         assert!(command.contains("/home/me/project"));
     }
@@ -6176,18 +6336,14 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(
-            spec.args[..5],
-            [
-                OsString::from("-T"),
-                OsString::from("-o"),
-                OsString::from("ConnectTimeout=4"),
-                OsString::from("-J"),
-                OsString::from("bastion"),
-            ]
-        );
-        assert_eq!(spec.args[5], OsString::from("--"));
-        assert_eq!(spec.args[6], OsString::from("me@example.com"));
+        let separator = ssh_target_separator_index(&spec.args);
+        assert_eq!(spec.args[0], OsString::from("-T"));
+        assert_ssh_non_interactive_defaults(&spec.args);
+        assert_arg_pair(&spec.args, "-o", "ConnectTimeout=4");
+        assert_arg_pair(&spec.args, "-J", "bastion");
+        assert!(arg_index(&spec.args, "ConnectTimeout=4") < separator);
+        assert!(arg_index(&spec.args, "bastion") < separator);
+        assert_eq!(spec.args[separator + 1], OsString::from("me@example.com"));
     }
 
     #[test]
@@ -6211,11 +6367,11 @@ mod tests {
 
         assert_eq!(spec.program, OsString::from("ssh"));
         assert_eq!(spec.args[0], OsString::from("-T"));
-        assert_eq!(spec.args[1], OsString::from("-p"));
-        assert_eq!(spec.args[2], OsString::from("2222"));
-        assert_eq!(spec.args[3], OsString::from("--"));
-        assert_eq!(spec.args[4], OsString::from("me@example.com"));
-        let command = spec.args[5].to_string_lossy();
+        assert_ssh_non_interactive_defaults(&spec.args);
+        assert_arg_pair(&spec.args, "-p", "2222");
+        let separator = ssh_target_separator_index(&spec.args);
+        assert_eq!(spec.args[separator + 1], OsString::from("me@example.com"));
+        let command = spec.args[separator + 2].to_string_lossy();
         assert!(command.contains("/remote/bin/nucleotide-remote"));
         assert!(command.contains("lsp-proxy"));
         assert!(command.contains("/home/me/project"));
