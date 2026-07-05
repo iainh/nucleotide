@@ -1025,7 +1025,36 @@ fn root_uri_for_startup(
     workspace_context: Option<&LspWorkspaceContext>,
 ) -> Option<lsp::Url> {
     root.or_else(|| workspace_context.map(|_| root_path))
-        .and_then(|root| lsp::Url::from_file_path(root).ok())
+        .and_then(|root| file_uri_from_path(root))
+}
+
+pub(crate) fn file_uri_from_path(path: &Path) -> Option<lsp::Url> {
+    lsp::Url::from_file_path(path)
+        .ok()
+        .or_else(|| lsp::Url::parse(&manual_file_uri_from_path(path)).ok())
+}
+
+fn manual_file_uri_from_path(path: &Path) -> String {
+    let path = path.to_string_lossy().replace('\\', "/");
+    let path = if path.starts_with('/') {
+        path
+    } else {
+        format!("/{path}")
+    };
+    format!("file://{}", percent_encode_file_path(&path))
+}
+
+fn percent_encode_file_path(path: &str) -> String {
+    let mut encoded = String::new();
+    for byte in path.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'/') {
+            encoded.push(char::from(byte));
+        } else {
+            encoded.push('%');
+            encoded.push_str(&format!("{byte:02X}"));
+        }
+    }
+    encoded
 }
 
 /// Find an LSP workspace of a file using the following mechanism:

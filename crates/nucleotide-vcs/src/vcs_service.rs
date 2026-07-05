@@ -14,11 +14,11 @@ use nucleotide_events::{
 use nucleotide_logging::{debug, error, info, warn};
 use nucleotide_types::{DiffChangeType, DiffHunkInfo, VcsStatus};
 use nucleotide_workspace::{
-    FileKind, GitStatusEntry, GitStatusKind, GitStatusOptions, ReadOptions, WorkspaceBackendHandle,
-    absolutize_workspace_path,
+    FileKind, GitStatusEntry, GitStatusKind, GitStatusOptions, ProcessSpec, ReadOptions,
+    WorkspaceBackendHandle, WorkspaceIdentity, absolutize_workspace_path,
 };
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -280,6 +280,7 @@ pub struct VcsService {
 
 const DIFF_CACHE_CAPACITY: usize = 128;
 const DIFF_METADATA_READ_LIMIT_BYTES: u64 = 4 * 1024 * 1024;
+const DIFF_METADATA_COMMAND_TIMEOUT_MS: u64 = 10_000;
 
 impl VcsService {
     /// Create a new VCS service
@@ -437,42 +438,18 @@ impl VcsService {
             return;
         };
 
+        if self
+            .workspace_backend
+            .as_ref()
+            .is_some_and(|backend| matches!(backend.identity(), WorkspaceIdentity::Remote(_)))
+        {
+            self.update_remote_file_diff(abs_path, file_content, cx);
+            return;
+        }
+
         // Get the diff base from VCS
         if let Some(diff_base_bytes) = self.diff_provider.get_diff_base(&abs_path) {
-            // Convert bytes to Rope
-            let diff_base_string = String::from_utf8_lossy(&diff_base_bytes);
-            let diff_base = Rope::from_str(&diff_base_string);
-
-            // Create or update diff handle
-            let diff_handle = DiffHandle::new(diff_base, file_content);
-
-            // Load the diff and cache hunks
-            let hunks: Vec<DiffHunkInfo> = {
-                let diff = diff_handle.load();
-                (0..diff.len())
-                    .map(|i| diff.nth_hunk(i))
-                    .map(|hunk| hunk_to_diff_info(&hunk))
-                    .collect()
-            };
-
-            // Cache the hunks and emit event
-            self.insert_file_diff(abs_path.clone(), diff_handle, hunks.clone());
-
-            debug!(
-                file_path = %abs_path.display(),
-                hunk_count = hunks.len(),
-                "Updated diff hunks for file"
-            );
-
-            // Emit diff hunks updated event
-            self.emit_vcs_event(
-                VcsEvent::DiffHunksUpdated {
-                    file_path: abs_path,
-                    hunks,
-                    diff_base_revision: self.repository_head.clone(),
-                },
-                cx,
-            );
+            self.update_file_diff_from_base(abs_path, diff_base_bytes, file_content, cx);
         } else {
             debug!(
                 file_path = %abs_path.display(),
@@ -493,6 +470,106 @@ impl VcsService {
                 );
             }
         }
+    }
+
+    fn update_remote_file_diff(
+        &mut self,
+        abs_path: PathBuf,
+        file_content: Rope,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(workspace_backend) = self.workspace_backend.clone() else {
+            self.clear_file_diff(&abs_path, cx);
+            return;
+        };
+
+        cx.spawn(async move |this, cx| {
+            let path = abs_path.clone();
+            let diff_base_result =
+                cx.background_executor()
+                    .spawn(async move {
+                        read_git_diff_base_from_workspace(workspace_backend, &path).await
+                    })
+                    .await;
+
+            if let Some(this) = this.upgrade() {
+                this.update(cx, |service, cx| {
+                    let still_monitored = service
+                        .root_path
+                        .as_ref()
+                        .is_some_and(|root_path| abs_path.starts_with(root_path))
+                        && service.is_monitoring;
+
+                    if !still_monitored {
+                        debug!(
+                            file_path = %abs_path.display(),
+                            "VCS: Ignoring stale remote diff update"
+                        );
+                        return;
+                    }
+
+                    match diff_base_result {
+                        Ok(Some(diff_base_bytes)) => {
+                            service.update_file_diff_from_base(
+                                abs_path,
+                                diff_base_bytes,
+                                file_content,
+                                cx,
+                            );
+                        }
+                        Ok(None) => {
+                            service.clear_file_diff(&abs_path, cx);
+                        }
+                        Err(error) => {
+                            debug!(
+                                file_path = %abs_path.display(),
+                                error = %error,
+                                "VCS: Could not load remote diff base"
+                            );
+                            service.clear_file_diff(&abs_path, cx);
+                        }
+                    }
+                });
+            }
+        })
+        .detach();
+    }
+
+    fn update_file_diff_from_base(
+        &mut self,
+        abs_path: PathBuf,
+        diff_base_bytes: Vec<u8>,
+        file_content: Rope,
+        cx: &mut Context<Self>,
+    ) {
+        let diff_base_string = String::from_utf8_lossy(&diff_base_bytes);
+        let diff_base = Rope::from_str(&diff_base_string);
+        let diff_handle = DiffHandle::new(diff_base, file_content);
+
+        let hunks: Vec<DiffHunkInfo> = {
+            let diff = diff_handle.load();
+            (0..diff.len())
+                .map(|i| diff.nth_hunk(i))
+                .map(|hunk| hunk_to_diff_info(&hunk))
+                .collect()
+        };
+
+        self.insert_file_diff(abs_path.clone(), diff_handle, hunks.clone());
+
+        debug!(
+            file_path = %abs_path.display(),
+            hunk_count = hunks.len(),
+            "Updated diff hunks for file"
+        );
+
+        self.emit_vcs_event(
+            VcsEvent::DiffHunksUpdated {
+                file_path: abs_path,
+                hunks,
+                diff_base_revision: self.repository_head.clone(),
+            },
+            cx,
+        );
     }
 
     /// Refresh VCS state after debounced filesystem watcher events.
@@ -1066,6 +1143,73 @@ async fn read_diff_text_from_workspace(
         .map_err(|error| format!("Workspace file is not valid UTF-8: {error}"))
 }
 
+async fn read_git_diff_base_from_workspace(
+    backend: WorkspaceBackendHandle,
+    path: &Path,
+) -> Result<Option<Vec<u8>>, String> {
+    let Some(parent) = path.parent() else {
+        return Ok(None);
+    };
+    let Some(file_name) = path.file_name() else {
+        return Ok(None);
+    };
+
+    let ls_files = backend
+        .run_process(ProcessSpec {
+            program: "git".to_string(),
+            args: vec![
+                "ls-files".to_string(),
+                "-z".to_string(),
+                "--full-name".to_string(),
+                "--".to_string(),
+                file_name.to_string_lossy().into_owned(),
+            ],
+            cwd: parent.to_path_buf(),
+            env: BTreeMap::new(),
+            clear_env: false,
+            inherit_project_environment: false,
+            stdin: Vec::new(),
+            max_output_bytes: Some(DIFF_METADATA_READ_LIMIT_BYTES as usize),
+            timeout_ms: Some(DIFF_METADATA_COMMAND_TIMEOUT_MS),
+        })
+        .await
+        .map_err(|error| format!("Workspace git ls-files failed: {error}"))?;
+
+    if !ls_files.success || ls_files.timed_out || ls_files.stdout_truncated {
+        return Ok(None);
+    }
+
+    let relative_path = ls_files
+        .stdout
+        .split(|byte| *byte == 0)
+        .find(|entry| !entry.is_empty());
+    let Some(relative_path) = relative_path else {
+        return Ok(None);
+    };
+    let relative_path = String::from_utf8_lossy(relative_path);
+
+    let show = backend
+        .run_process(ProcessSpec {
+            program: "git".to_string(),
+            args: vec!["show".to_string(), format!("HEAD:{relative_path}")],
+            cwd: parent.to_path_buf(),
+            env: BTreeMap::new(),
+            clear_env: false,
+            inherit_project_environment: false,
+            stdin: Vec::new(),
+            max_output_bytes: Some(DIFF_METADATA_READ_LIMIT_BYTES as usize),
+            timeout_ms: Some(DIFF_METADATA_COMMAND_TIMEOUT_MS),
+        })
+        .await
+        .map_err(|error| format!("Workspace git show failed: {error}"))?;
+
+    if show.success && !show.timed_out && !show.stdout_truncated {
+        Ok(Some(show.stdout))
+    } else {
+        Ok(None)
+    }
+}
+
 fn read_local_diff_text(path: &Path) -> Result<Option<String>, String> {
     let metadata =
         std::fs::metadata(path).map_err(|error| format!("Local file metadata failed: {error}"))?;
@@ -1113,10 +1257,20 @@ async fn run_git_status_with_backend(
         return run_git_status(root_path, max_files);
     };
 
-    let status = backend
+    let status = match backend
         .git_status(root_path, GitStatusOptions::with_limit(max_files))
         .await
-        .map_err(|error| format!("Workspace git status failed: {error}"))?;
+    {
+        Ok(status) => status,
+        Err(error) if git_error_is_not_repository(&error.to_string()) => {
+            debug!(
+                root_path = %root_path.display(),
+                "VCS: Monitored workspace root is not inside a git repository"
+            );
+            return Ok(HashMap::new());
+        }
+        Err(error) => return Err(format!("Workspace git status failed: {error}")),
+    };
 
     Ok(status
         .entries
@@ -1189,6 +1343,13 @@ fn run_git_status(
         .map_err(|e| format!("Failed to execute git: {}", e))?;
 
     if !output.status.success() {
+        if git_error_is_not_repository(&String::from_utf8_lossy(&output.stderr)) {
+            debug!(
+                root_path = %root_path.display(),
+                "VCS: Monitored root is not inside a git repository"
+            );
+            return Ok(HashMap::new());
+        }
         return Err(format!("Git command failed with status: {}", output.status));
     }
 
@@ -1210,6 +1371,10 @@ fn run_git_status(
 
     debug!(file_count, "VCS: Processed git status results");
     Ok(status_map)
+}
+
+fn git_error_is_not_repository(message: &str) -> bool {
+    message.contains("not a git repository")
 }
 
 impl EventEmitter<VcsEvent> for VcsService {}
@@ -1411,6 +1576,22 @@ mod tests {
     #[test]
     fn parse_git_status_line_ignores_unicode_without_panicking() {
         assert_eq!(parse_git_status_line("↪ src/lib.rs"), None);
+    }
+
+    #[test]
+    fn git_error_recognizes_not_repository_message() {
+        assert!(git_error_is_not_repository(
+            "fatal: not a git repository (or any of the parent directories): .git"
+        ));
+    }
+
+    #[test]
+    fn local_git_status_returns_empty_outside_repository() {
+        let temp = tempfile::tempdir().unwrap();
+
+        let status = run_git_status(temp.path(), 10).unwrap();
+
+        assert!(status.is_empty());
     }
 
     #[tokio::test]

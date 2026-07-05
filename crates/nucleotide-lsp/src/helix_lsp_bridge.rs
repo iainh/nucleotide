@@ -11,7 +11,7 @@ use helix_lsp::{LanguageServerId, LspWorkspaceContext};
 use helix_view::Editor;
 use nucleotide_events::{ProjectLspEvent, ServerStartupResult};
 use nucleotide_logging::{debug, error, info, instrument, warn};
-use nucleotide_workspace::{WorkspacePathMapping, classify_workspace_location};
+use nucleotide_workspace::{WorkspacePathMapping, classify_workspace_location, posix_path_string};
 use serde_json::Value as JsonValue;
 use tokio::sync::broadcast;
 
@@ -447,7 +447,7 @@ impl HelixLspBridge {
         let remote_path_mapping = remote_lsp_path_mapping(workspace_root, launch_proxy_enabled);
         let lsp_workspace_root = remote_path_mapping
             .as_ref()
-            .map(|mapping| mapping.native_root().to_path_buf())
+            .map(|mapping| PathBuf::from(posix_path_string(mapping.native_root())))
             .unwrap_or_else(|| workspace_root.to_path_buf());
 
         // Create root directories for server startup. For remote launch proxies
@@ -745,12 +745,19 @@ fn remote_lsp_path_mapping(
     location.is_remote().then(|| location.path_mapping())
 }
 
+fn remote_lsp_native_root(workspace_root: &std::path::Path) -> Option<PathBuf> {
+    let location = classify_workspace_location(workspace_root);
+    location
+        .is_remote()
+        .then(|| PathBuf::from(posix_path_string(location.native_root())))
+}
+
 fn lsp_document_path_for_launch(
     path: PathBuf,
     remote_path_mapping: Option<&WorkspacePathMapping>,
 ) -> PathBuf {
     remote_path_mapping
-        .map(|mapping| mapping.to_native_path(&path))
+        .map(|mapping| PathBuf::from(posix_path_string(mapping.to_native_path(&path))))
         .unwrap_or(path)
 }
 
@@ -759,15 +766,34 @@ fn host_process_cwd() -> PathBuf {
 }
 
 fn remote_lsp_expected_native_root(workspace_root: &std::path::Path) -> Option<PathBuf> {
-    let location = classify_workspace_location(workspace_root);
-    location
-        .is_remote()
-        .then(|| location.native_root().to_path_buf())
+    remote_lsp_native_root(workspace_root)
 }
 
 fn remote_lsp_expected_native_root_uri(workspace_root: &std::path::Path) -> Option<helix_lsp::Url> {
-    remote_lsp_expected_native_root(workspace_root)
-        .and_then(|root| helix_lsp::Url::from_file_path(root).ok())
+    remote_lsp_expected_native_root(workspace_root).and_then(|root| remote_native_file_uri(&root))
+}
+
+fn remote_native_file_uri(path: &Path) -> Option<helix_lsp::Url> {
+    let path = posix_path_string(path);
+    let path = if path.starts_with('/') {
+        path
+    } else {
+        format!("/{path}")
+    };
+    helix_lsp::Url::parse(&format!("file://{}", percent_encode_file_path(&path))).ok()
+}
+
+fn percent_encode_file_path(path: &str) -> String {
+    let mut encoded = String::new();
+    for byte in path.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'/') {
+            encoded.push(char::from(byte));
+        } else {
+            encoded.push('%');
+            encoded.push_str(&format!("{byte:02X}"));
+        }
+    }
+    encoded
 }
 
 fn cached_lsp_client_matches_workspace(
@@ -778,14 +804,14 @@ fn cached_lsp_client_matches_workspace(
     let Some(expected_root) = remote_lsp_expected_native_root(workspace_root) else {
         return true;
     };
-    if client_root != expected_root {
+    if posix_path_string(client_root) != posix_path_string(&expected_root) {
         return false;
     }
 
     client_root_uri
-        .and_then(|uri| uri.to_file_path().ok())
-        .as_deref()
-        == Some(expected_root.as_path())
+        .map(|uri| uri.as_str())
+        .zip(remote_lsp_expected_native_root_uri(workspace_root).map(|uri| uri.to_string()))
+        .is_some_and(|(client_uri, expected_uri)| client_uri == expected_uri)
 }
 
 /// Helper trait for integrating ProjectLspManager with Editor
@@ -1213,7 +1239,7 @@ mod tests {
     #[test]
     fn cached_lsp_root_matches_remote_native_root_only() {
         let display_root = PathBuf::from("ssh://me@example.com/home/me/project");
-        let native_uri = helix_lsp::Url::from_file_path("/home/me/project").unwrap();
+        let native_uri = helix_lsp::Url::parse("file:///home/me/project").unwrap();
         let display_uri =
             helix_lsp::Url::parse("file:///ssh%3A/me@example.com/home/me/project").unwrap();
 
@@ -1242,6 +1268,15 @@ mod tests {
             Path::new("/Users/me/projects/nucleotide"),
             Some(&native_uri)
         ));
+    }
+
+    #[test]
+    fn remote_lsp_expected_root_uri_uses_posix_file_uri() {
+        let display_root = PathBuf::from("ssh://me@example.com/home/me/Project One");
+
+        let uri = remote_lsp_expected_native_root_uri(&display_root).unwrap();
+
+        assert_eq!(uri.as_str(), "file:///home/me/Project%20One");
     }
 
     #[test]

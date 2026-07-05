@@ -1,6 +1,6 @@
 use crate::{
     file_operations::FileOperationsInterest,
-    find_lsp_workspace, jsonrpc,
+    file_uri_from_path, find_lsp_workspace, jsonrpc,
     transport::{Payload, Transport},
     workspace_for_context, Call, Error, LanguageServerId, LspWorkspaceContext, OffsetEncoding,
     Result,
@@ -48,6 +48,9 @@ fn workspace_for_uri(uri: lsp::Url) -> WorkspaceFolder {
 
 fn root_uri_file_path_matches(root_uri: Option<&lsp::Url>, root_path: &Path) -> bool {
     root_uri.and_then(|uri| uri.to_file_path().ok()).as_deref() == Some(root_path)
+        || root_uri
+            .zip(file_uri_from_path(root_path))
+            .is_some_and(|(actual, expected)| actual.as_str() == expected.as_str())
 }
 
 fn file_operation_uri(path: &Path, is_dir: bool) -> Option<String> {
@@ -220,9 +223,7 @@ impl Client {
             &workspace,
             workspace_is_cwd,
         );
-        let root_uri = root
-            .as_ref()
-            .and_then(|root| lsp::Url::from_file_path(root).ok());
+        let root_uri = root.as_ref().and_then(|root| file_uri_from_path(root));
 
         let candidate_root = root.unwrap_or(workspace);
         if workspace_context.is_some()

@@ -542,12 +542,57 @@ fn sorted_env(environment: HashMap<String, String>) -> Vec<(String, String)> {
 }
 
 fn source_from_location_link(location: &lsp::LocationLink) -> Option<SourceLocation> {
-    let path = location.target_uri.to_file_path().ok()?;
+    let path = file_url_path(&location.target_uri)?;
     Some(SourceLocation {
         path,
         line: location.target_range.start.line as usize,
         column: location.target_range.start.character as usize,
     })
+}
+
+fn file_url_path(uri: &lsp::Url) -> Option<PathBuf> {
+    uri.to_file_path().ok().or_else(|| posix_file_url_path(uri))
+}
+
+fn posix_file_url_path(uri: &lsp::Url) -> Option<PathBuf> {
+    if uri.scheme() != "file" {
+        return None;
+    }
+    if let Some(host) = uri.host_str()
+        && !host.is_empty()
+        && !host.eq_ignore_ascii_case("localhost")
+    {
+        return None;
+    }
+
+    percent_decode_uri_path(uri.path()).map(PathBuf::from)
+}
+
+fn percent_decode_uri_path(path: &str) -> Option<String> {
+    let bytes = path.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let high = bytes.get(index + 1).copied().and_then(hex_value)?;
+            let low = bytes.get(index + 2).copied().and_then(hex_value)?;
+            decoded.push((high << 4) | low);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(decoded).ok()
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 fn run_kind_from_label(label: &str) -> RunKind {
@@ -731,6 +776,44 @@ fn second() {}
             task.command.env,
             vec![("RUST_BACKTRACE".into(), "1".into())]
         );
+    }
+
+    #[test]
+    fn rust_analyzer_runnable_source_accepts_remote_posix_file_uri() {
+        let raw = r#"
+        {
+          "label": "test tests::remote",
+          "location": {
+            "targetUri": "file:///home/me/Project%20One/src/lib.rs",
+            "targetRange": {
+              "start": {"line": 12, "character": 4},
+              "end": {"line": 12, "character": 18}
+            },
+            "targetSelectionRange": {
+              "start": {"line": 12, "character": 4},
+              "end": {"line": 12, "character": 18}
+            }
+          },
+          "kind": "cargo",
+          "args": {
+            "environment": {},
+            "cwd": "/home/me/Project One",
+            "cargoArgs": ["test", "tests::remote"],
+            "executableArgs": []
+          }
+        }
+        "#;
+
+        let runnable: RaRunnable = serde_json::from_str(raw).unwrap();
+        let task = runnable_to_task_template(runnable);
+        let source = task.source().unwrap();
+
+        assert_eq!(
+            source.path,
+            PathBuf::from("/home/me/Project One/src/lib.rs")
+        );
+        assert_eq!(source.line, 12);
+        assert_eq!(source.column, 4);
     }
 
     #[test]

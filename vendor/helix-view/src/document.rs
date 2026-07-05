@@ -2089,10 +2089,6 @@ impl Document {
     }
 
     pub fn uri(&self) -> Option<helix_core::Uri> {
-        if let Some(url) = &self.lsp_url {
-            return helix_core::Uri::try_from(url).ok();
-        }
-
         Some(self.path()?.clone().into())
     }
 
@@ -2545,9 +2541,8 @@ mod test {
     }
 
     #[test]
-    fn lsp_url_override_makes_remote_document_file_backed() {
+    fn lsp_url_override_keeps_document_uri_display_backed() {
         let display_path = Path::new("ssh://example.test/home/me/main.rs");
-        let native_path = Path::new("/home/me/main.rs");
         let mut bytes = b"fn main() {}\n".as_slice();
 
         let mut doc = Document::open_from_reader(
@@ -2563,7 +2558,7 @@ mod test {
 
         assert!(doc.url().is_none());
 
-        let lsp_url = Url::from_file_path(native_path).unwrap();
+        let lsp_url = Url::parse("file:///home/me/main.rs").unwrap();
         doc.set_lsp_url(Some(lsp_url.clone()));
 
         assert_eq!(doc.path().map(PathBuf::as_path), Some(display_path));
@@ -2571,7 +2566,7 @@ mod test {
         assert_eq!(
             doc.uri()
                 .and_then(|uri| uri.as_path().map(Path::to_path_buf)),
-            Some(native_path.to_path_buf())
+            Some(display_path.to_path_buf())
         );
     }
 
