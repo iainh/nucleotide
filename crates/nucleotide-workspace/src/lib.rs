@@ -9,7 +9,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant, SystemTime};
 use thiserror::Error;
 
@@ -833,6 +833,108 @@ pub struct ProcessOutput {
     pub timed_out: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceWatchRequest {
+    pub roots: Vec<PathBuf>,
+    pub debounce_ms: u32,
+    pub max_events_per_batch: u32,
+}
+
+impl WorkspaceWatchRequest {
+    pub fn expanded_dirs(roots: impl IntoIterator<Item = impl Into<PathBuf>>) -> Self {
+        Self {
+            roots: roots.into_iter().map(Into::into).collect(),
+            debounce_ms: 200,
+            max_events_per_batch: 500,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceWatchUpdate {
+    pub watch_id: u64,
+    pub accepted_roots: Vec<PathBuf>,
+    pub degraded_roots: Vec<PathBuf>,
+    pub unsupported_roots: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceWatchDirectoryGeneration {
+    pub path: PathBuf,
+    pub generation: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspaceWatchChangeKind {
+    Created,
+    Modified,
+    Deleted,
+    Renamed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceWatchChange {
+    pub kind: WorkspaceWatchChangeKind,
+    pub path: PathBuf,
+    pub old_path: Option<PathBuf>,
+    pub is_dir: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceWatchBatch {
+    pub watch_id: u64,
+    pub sequence: u64,
+    pub directory_generations: Vec<WorkspaceWatchDirectoryGeneration>,
+    pub events: Vec<WorkspaceWatchChange>,
+    pub overflow: bool,
+    pub resync_required: bool,
+}
+
+#[derive(Clone)]
+pub struct WorkspaceWatch {
+    pub watch_id: u64,
+    pub event_stream_id: u64,
+    receiver: Arc<Mutex<mpsc::Receiver<WorkspaceWatchBatch>>>,
+}
+
+impl WorkspaceWatch {
+    pub fn new(
+        watch_id: u64,
+        event_stream_id: u64,
+        receiver: mpsc::Receiver<WorkspaceWatchBatch>,
+    ) -> Self {
+        Self {
+            watch_id,
+            event_stream_id,
+            receiver: Arc::new(Mutex::new(receiver)),
+        }
+    }
+
+    pub fn recv(&self) -> std::result::Result<WorkspaceWatchBatch, mpsc::RecvError> {
+        match self.receiver.lock() {
+            Ok(receiver) => receiver.recv(),
+            Err(_) => Err(mpsc::RecvError),
+        }
+    }
+
+    pub fn recv_timeout(
+        &self,
+        timeout: Duration,
+    ) -> std::result::Result<WorkspaceWatchBatch, mpsc::RecvTimeoutError> {
+        match self.receiver.lock() {
+            Ok(receiver) => receiver.recv_timeout(timeout),
+            Err(_) => Err(mpsc::RecvTimeoutError::Disconnected),
+        }
+    }
+
+    pub fn try_recv(&self) -> std::result::Result<WorkspaceWatchBatch, mpsc::TryRecvError> {
+        match self.receiver.lock() {
+            Ok(receiver) => receiver.try_recv(),
+            Err(_) => Err(mpsc::TryRecvError::Disconnected),
+        }
+    }
+}
+
 impl Default for GitStatusOptions {
     fn default() -> Self {
         Self {
@@ -896,6 +998,23 @@ pub trait WorkspaceBackend: Send + Sync {
     async fn git_status(&self, root: &Path, options: GitStatusOptions) -> Result<GitStatusResult>;
 
     async fn run_process(&self, spec: ProcessSpec) -> Result<ProcessOutput>;
+
+    async fn start_watch(&self, _request: WorkspaceWatchRequest) -> Result<Option<WorkspaceWatch>> {
+        Ok(None)
+    }
+
+    async fn update_watch(
+        &self,
+        _watch_id: u64,
+        _add_roots: Vec<PathBuf>,
+        _remove_roots: Vec<PathBuf>,
+    ) -> Result<Option<WorkspaceWatchUpdate>> {
+        Ok(None)
+    }
+
+    async fn stop_watch(&self, _watch_id: u64) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -1053,6 +1172,86 @@ impl PathMappedWorkspaceBackend {
         spec.cwd = self.mapping.to_native_path(&spec.cwd);
         spec
     }
+
+    fn map_watch_request_to_native(
+        &self,
+        mut request: WorkspaceWatchRequest,
+    ) -> WorkspaceWatchRequest {
+        request.roots = request
+            .roots
+            .into_iter()
+            .map(|root| self.mapping.to_native_path(&root))
+            .collect();
+        request
+    }
+
+    fn map_watch_update_to_display(
+        &self,
+        mut update: WorkspaceWatchUpdate,
+    ) -> WorkspaceWatchUpdate {
+        update.accepted_roots = update
+            .accepted_roots
+            .into_iter()
+            .map(|root| self.mapping.to_display_path(&root))
+            .collect();
+        update.degraded_roots = update
+            .degraded_roots
+            .into_iter()
+            .map(|root| self.mapping.to_display_path(&root))
+            .collect();
+        update.unsupported_roots = update
+            .unsupported_roots
+            .into_iter()
+            .map(|root| self.mapping.to_display_path(&root))
+            .collect();
+        update
+    }
+
+    fn map_watch_batch_with_mapping(
+        mapping: &WorkspacePathMapping,
+        batch: &mut WorkspaceWatchBatch,
+    ) {
+        batch.directory_generations = batch
+            .directory_generations
+            .drain(..)
+            .map(|generation| WorkspaceWatchDirectoryGeneration {
+                path: mapping.to_display_path(&generation.path),
+                generation: generation.generation,
+            })
+            .collect();
+        batch.events = batch
+            .events
+            .drain(..)
+            .map(|event| WorkspaceWatchChange {
+                kind: event.kind,
+                path: mapping.to_display_path(&event.path),
+                old_path: event
+                    .old_path
+                    .map(|old_path| mapping.to_display_path(&old_path)),
+                is_dir: event.is_dir,
+            })
+            .collect();
+    }
+
+    fn map_watch_to_display(&self, watch: WorkspaceWatch) -> WorkspaceWatch {
+        let mapping = self.mapping.clone();
+        let (sender, receiver) = mpsc::channel();
+        let watch_id = watch.watch_id;
+        let event_stream_id = watch.event_stream_id;
+        std::thread::Builder::new()
+            .name("nucleotide-workspace-watch-map".to_string())
+            .spawn(move || {
+                while let Ok(mut batch) = watch.recv() {
+                    PathMappedWorkspaceBackend::map_watch_batch_with_mapping(&mapping, &mut batch);
+                    let mapped = batch;
+                    if sender.send(mapped).is_err() {
+                        break;
+                    }
+                }
+            })
+            .ok();
+        WorkspaceWatch::new(watch_id, event_stream_id, receiver)
+    }
 }
 
 pub fn path_mapped_workspace_backend(
@@ -1202,6 +1401,39 @@ impl WorkspaceBackend for PathMappedWorkspaceBackend {
         self.inner
             .run_process(self.map_process_spec_to_native(spec))
             .await
+    }
+
+    async fn start_watch(&self, request: WorkspaceWatchRequest) -> Result<Option<WorkspaceWatch>> {
+        let watch = self
+            .inner
+            .start_watch(self.map_watch_request_to_native(request))
+            .await?;
+        Ok(watch.map(|watch| self.map_watch_to_display(watch)))
+    }
+
+    async fn update_watch(
+        &self,
+        watch_id: u64,
+        add_roots: Vec<PathBuf>,
+        remove_roots: Vec<PathBuf>,
+    ) -> Result<Option<WorkspaceWatchUpdate>> {
+        let add_roots = add_roots
+            .into_iter()
+            .map(|root| self.mapping.to_native_path(&root))
+            .collect();
+        let remove_roots = remove_roots
+            .into_iter()
+            .map(|root| self.mapping.to_native_path(&root))
+            .collect();
+        Ok(self
+            .inner
+            .update_watch(watch_id, add_roots, remove_roots)
+            .await?
+            .map(|update| self.map_watch_update_to_display(update)))
+    }
+
+    async fn stop_watch(&self, watch_id: u64) -> Result<()> {
+        self.inner.stop_watch(watch_id).await
     }
 }
 
