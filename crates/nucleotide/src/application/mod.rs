@@ -171,6 +171,11 @@ fn workspace_document_save_target(
     doc: &Document,
     requested_path: Option<PathBuf>,
 ) -> Option<PathBuf> {
+    let doc_path = doc.path().map(PathBuf::as_path);
+    if should_use_native_save_for_settings_file(doc_path, requested_path.as_deref()) {
+        return None;
+    }
+
     match requested_path {
         Some(path) if should_use_workspace_backend_for_document_io(backend_identity, &path) => {
             Some(path)
@@ -186,6 +191,22 @@ fn workspace_document_save_target(
             .path()
             .filter(|path| should_use_workspace_backend_for_document_io(backend_identity, path))
             .cloned(),
+    }
+}
+
+fn should_use_native_save_for_settings_file(
+    doc_path: Option<&Path>,
+    requested_path: Option<&Path>,
+) -> bool {
+    let local_settings_path = helix_loader::config_dir().join("nucleotide.toml");
+
+    match requested_path {
+        Some(path) if path == local_settings_path => true,
+        Some(path) if path.is_relative() => {
+            doc_path.is_some_and(|doc_path| doc_path == local_settings_path)
+        }
+        None => doc_path.is_some_and(|doc_path| doc_path == local_settings_path),
+        Some(_) => false,
     }
 }
 
@@ -10196,9 +10217,10 @@ mod tests {
         project_health_status, project_server_language_id, remote_lsp_project_root_for_document,
         remote_lsp_root_uri_matches_document_workspace, remote_native_file_uri,
         should_launch_lsp_on_local_host, should_stat_picker_root_with_backend,
-        should_use_workspace_syntax_symbol_fallback, startup_path_should_open_as_file,
-        str_prefix_at_byte_limit, suppress_shadowed_buffer_word_completion_items,
-        syntax_symbol_kind_from_capture_name, workspace_diagnostic_refresh_reply,
+        should_use_native_save_for_settings_file, should_use_workspace_syntax_symbol_fallback,
+        startup_path_should_open_as_file, str_prefix_at_byte_limit,
+        suppress_shadowed_buffer_word_completion_items, syntax_symbol_kind_from_capture_name,
+        workspace_diagnostic_refresh_reply,
     };
     use crate::test_utils::test_support::{
         TestUpdate, create_counting_channel, create_test_diagnostic_events,
@@ -11005,6 +11027,29 @@ mod tests {
             "updated\nfn service_backed() {}\n"
         );
         assert!(!display_path.exists());
+    }
+
+    #[test]
+    fn settings_file_save_uses_native_handler_even_in_remote_workspace() {
+        let settings_path = helix_loader::config_dir().join("nucleotide.toml");
+        let project_settings_path = Path::new("/remote/project/nucleotide.toml");
+
+        assert!(should_use_native_save_for_settings_file(
+            Some(&settings_path),
+            None
+        ));
+        assert!(should_use_native_save_for_settings_file(
+            Some(&settings_path),
+            Some(Path::new("nucleotide-copy.toml")),
+        ));
+        assert!(should_use_native_save_for_settings_file(
+            None,
+            Some(&settings_path)
+        ));
+        assert!(!should_use_native_save_for_settings_file(
+            Some(project_settings_path),
+            None
+        ));
     }
 
     #[test]

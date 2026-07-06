@@ -87,7 +87,6 @@ use nucleotide_env::EnvironmentOrigin;
 use nucleotide_events::v2::run::{Event as RunEvent, ResolvedTask, RunId, RunStatus};
 use nucleotide_events::v2::terminal::{Event as TerminalEvent, TerminalId};
 use nucleotide_terminal::TerminalBounds;
-#[cfg(test)]
 use nucleotide_workspace::local_workspace_backend;
 use nucleotide_workspace::{
     FileKind, FileSearchQuery, FileSearchResult, FileStat, ProjectEnvironmentOrigin,
@@ -113,6 +112,10 @@ enum RemoteDocumentReloadApply {
     Applied,
     Dirty,
     Skipped,
+}
+
+fn settings_file_open_backend() -> WorkspaceBackendHandle {
+    local_workspace_backend()
 }
 
 fn remote_document_reload_decision<'a, D, V>(
@@ -8972,8 +8975,16 @@ impl Workspace {
             info!("Created default nucleotide.toml configuration file");
         }
 
-        // Open the settings file
-        self.open_file_internal(&settings_path, true, false, None, cx);
+        // Settings are always local, even when the active workspace is remote.
+        self.finish_open_file_internal(
+            &settings_path,
+            true,
+            false,
+            None,
+            None,
+            settings_file_open_backend(),
+            cx,
+        );
     }
 
     fn apply_workspace_config(&mut self, config: &crate::config::Config, cx: &mut Context<Self>) {
@@ -9137,14 +9148,15 @@ impl Workspace {
         initial_position: Option<Position>,
         cx: &mut Context<Self>,
     ) {
-        let backend_identity = self.core.read(cx).workspace_backend.identity();
+        let workspace_backend = self.core.read(cx).workspace_backend.clone();
+        let backend_identity = workspace_backend.identity();
         if should_open_with_image_viewer(path, initial_position.is_some(), &backend_identity) {
             match backend_identity {
                 WorkspaceIdentity::Local => {
                     self.open_image_file_internal(path, should_focus, cx);
                 }
                 WorkspaceIdentity::Remote(_) => {
-                    let backend = self.core.read(cx).workspace_backend.clone();
+                    let backend = workspace_backend.clone();
                     let runtime_handle = self.handle.clone();
                     let source_path = path.to_path_buf();
                     self.set_run_status(
@@ -9212,6 +9224,7 @@ impl Workspace {
             preview_from_project_panel,
             initial_position,
             None,
+            workspace_backend,
             cx,
         );
     }
@@ -9225,6 +9238,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let workspace_backend = self.core.read(cx).workspace_backend.clone();
+        let open_backend = workspace_backend.clone();
         let runtime_handle = self.handle.clone();
         self.set_run_status(
             format!("Loading remote file: {}", path.display()),
@@ -9254,6 +9268,7 @@ impl Workspace {
                             preview_from_project_panel,
                             initial_position,
                             Some(document_read),
+                            open_backend,
                             cx,
                         );
                     }
@@ -9282,6 +9297,7 @@ impl Workspace {
         preview_from_project_panel: bool,
         initial_position: Option<Position>,
         document_read: Option<crate::application::WorkspaceDocumentRead>,
+        workspace_backend: WorkspaceBackendHandle,
         cx: &mut Context<Self>,
     ) {
         // Open the specified file in the editor
@@ -9312,7 +9328,6 @@ impl Workspace {
                 "About to open file from picker: {path:?} with action: {:?}",
                 action
             );
-            let workspace_backend = core.workspace_backend.clone();
             let open_result = match document_read.take() {
                 Some(document_read) => crate::application::open_workspace_document_from_read(
                     &mut core.editor,
@@ -16857,6 +16872,14 @@ mod tests {
                 name: "devbox".to_string(),
             }
         )));
+    }
+
+    #[test]
+    fn settings_file_open_backend_is_local() {
+        assert!(matches!(
+            settings_file_open_backend().identity(),
+            WorkspaceIdentity::Local
+        ));
     }
 
     #[test]
