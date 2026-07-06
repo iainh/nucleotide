@@ -10356,6 +10356,7 @@ mod tests {
     fn remote_lsp_launch_proxy_provider_creates_remote_helper_shim() {
         let provider = RemoteLspLaunchProxyProvider {
             options: nucleotide_remote::RemoteWorkspaceBackendOptions {
+                protocol: nucleotide_remote::RemoteWorkspaceProtocol::V4,
                 remote_helper_path: PathBuf::from("/remote/bin/nucleotide-remote"),
                 remote_helper_path_is_override: true,
                 local_helper_path: None,

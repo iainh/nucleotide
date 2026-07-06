@@ -4,6 +4,8 @@ This document tracks the remaining differences between local and remote workspac
 
 Remote workspaces currently mean SSH targets and WSL paths routed through `nucleotide-remote`. Local workspaces use `LocalWorkspaceBackend` directly on the host filesystem.
 
+The protocol redesign for the first two priority gaps is documented in [Nucleotide remote protocol v5 design](remote_protocol_v5_design.md).
+
 ## Current baseline
 
 - Remote projects can be opened from the command line with remote paths and from the File > Open Remote prompt.

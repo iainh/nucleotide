@@ -19,10 +19,12 @@ dirs.workspace = true
 ignore.workspace = true
 nucleotide-env.workspace = true
 nucleotide-workspace.workspace = true
+notify.workspace = true
+prost.workspace = true
+regex.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+tempfile.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-
-[dev-dependencies]
-tempfile.workspace = true
+zstd.workspace = true

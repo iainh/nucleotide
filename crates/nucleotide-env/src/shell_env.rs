@@ -6,11 +6,15 @@ use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::Arc;
+use std::process::{Command, Output};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::SystemTime;
+use tokio::io::AsyncReadExt;
 use tokio::sync::{RwLock, Semaphore};
-use tokio::time::{Duration, timeout};
+use tokio::time::{Duration, Instant, timeout};
 
 const DIRECTORY_SHELL_CAPTURE_TIMEOUT_SECONDS: u64 = 10;
 const PROCESS_SHELL_CAPTURE_TIMEOUT_SECONDS: u64 = 10;
@@ -23,6 +27,9 @@ pub enum ShellEnvironmentError {
 
     #[error("Shell command timed out after {0} seconds")]
     Timeout(u64),
+
+    #[error("Shell command cancelled")]
+    Cancelled,
 
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
@@ -102,7 +109,24 @@ impl ProjectEnvironment {
         &self,
         directory: &Path,
     ) -> Result<HashMap<String, String>, ShellEnvironmentError> {
-        let baseline_env = self.baseline_environment().await;
+        self.get_environment_for_directory_with_cancellation(directory, None)
+            .await
+    }
+
+    /// Get environment for directory, cancelling shell child processes when requested.
+    #[instrument(skip(self, cancellation), fields(directory = %directory.display()))]
+    pub async fn get_environment_for_directory_with_cancellation(
+        &self,
+        directory: &Path,
+        cancellation: Option<&AtomicBool>,
+    ) -> Result<HashMap<String, String>, ShellEnvironmentError> {
+        if shell_environment_cancelled(cancellation) {
+            return Err(ShellEnvironmentError::Cancelled);
+        }
+
+        let baseline_env = self
+            .baseline_environment_with_cancellation(cancellation)
+            .await;
 
         // Priority 1: Directory-specific environment (cached)
         if let Some(cached) = {
@@ -149,7 +173,7 @@ impl ProjectEnvironment {
 
         // Priority 2: Native `.envrc` subset for `use flake`.
         match self
-            .load_native_flake_environment(&canonical_dir, &baseline_env)
+            .load_native_flake_environment(&canonical_dir, &baseline_env, cancellation)
             .await
         {
             Ok(Some(native_env)) => {
@@ -210,7 +234,7 @@ impl ProjectEnvironment {
         // Priority 3: Directory shell environment.
         debug!("Loading directory-specific shell environment");
         let env = self
-            .load_directory_environment(&canonical_dir, baseline_env)
+            .load_directory_environment(&canonical_dir, baseline_env, cancellation)
             .await?;
 
         if directory != canonical_dir {
@@ -236,6 +260,13 @@ impl ProjectEnvironment {
     }
 
     async fn baseline_environment(&self) -> HashMap<String, String> {
+        self.baseline_environment_with_cancellation(None).await
+    }
+
+    async fn baseline_environment_with_cancellation(
+        &self,
+        cancellation: Option<&AtomicBool>,
+    ) -> HashMap<String, String> {
         let mut combined_env: HashMap<String, String> = std::env::vars().collect();
 
         if let Some(cli_env) = &self.cli_environment {
@@ -250,7 +281,9 @@ impl ProjectEnvironment {
                     home = %combined_env.get("HOME").map(String::as_str).unwrap_or("<unset>"),
                     "CLI environment has unusable HOME; repairing with login shell baseline"
                 );
-                let mut repaired_env = self.login_shell_process_environment(combined_env).await;
+                let mut repaired_env = self
+                    .login_shell_process_environment_with_cancellation(combined_env, cancellation)
+                    .await;
                 repaired_env.insert("ZED_ENVIRONMENT".to_string(), "cli".to_string());
                 return repaired_env;
             }
@@ -259,15 +292,18 @@ impl ProjectEnvironment {
         }
 
         if login_shell_process_environment_supported() {
-            return self.login_shell_process_environment(combined_env).await;
+            return self
+                .login_shell_process_environment_with_cancellation(combined_env, cancellation)
+                .await;
         }
 
         combined_env
     }
 
-    async fn login_shell_process_environment(
+    async fn login_shell_process_environment_with_cancellation(
         &self,
         process_env: HashMap<String, String>,
+        cancellation: Option<&AtomicBool>,
     ) -> HashMap<String, String> {
         if let Some(cached) = self.process_shell_environment.read().await.clone() {
             return cached;
@@ -305,6 +341,7 @@ impl ProjectEnvironment {
             &home_dir,
             PROCESS_SHELL_CAPTURE_TIMEOUT_SECONDS,
             Some(&baseline),
+            cancellation,
         )
         .await
         {
@@ -351,6 +388,7 @@ impl ProjectEnvironment {
         &self,
         directory: &PathBuf,
         baseline_env: HashMap<String, String>,
+        cancellation: Option<&AtomicBool>,
     ) -> Result<HashMap<String, String>, ShellEnvironmentError> {
         // Acquire semaphore to limit concurrent shell executions
         let _permit = self
@@ -372,6 +410,7 @@ impl ProjectEnvironment {
             directory,
             DIRECTORY_SHELL_CAPTURE_TIMEOUT_SECONDS,
             Some(&baseline_env),
+            cancellation,
         )
         .await
         {
@@ -440,6 +479,7 @@ impl ProjectEnvironment {
         &self,
         directory: &Path,
         baseline_env: &HashMap<String, String>,
+        cancellation: Option<&AtomicBool>,
     ) -> Result<Option<NativeFlakeEnvironment>, ShellEnvironmentError> {
         let envrc_path = directory.join(".envrc");
         if !envrc_path.is_file() {
@@ -458,7 +498,7 @@ impl ProjectEnvironment {
             return Ok(None);
         };
 
-        let exported = run_nix_print_dev_env(directory, &plan, baseline_env).await?;
+        let exported = run_nix_print_dev_env(directory, &plan, baseline_env, cancellation).await?;
         let mut environment = merge_native_flake_environment(baseline_env, exported);
         environment.insert("ZED_ENVIRONMENT".to_string(), "native-flake".to_string());
 
@@ -916,10 +956,12 @@ async fn run_nix_print_dev_env(
     directory: &Path,
     plan: &NativeFlakePlan,
     baseline_env: &HashMap<String, String>,
+    cancellation: Option<&AtomicBool>,
 ) -> Result<HashMap<String, String>, ShellEnvironmentError> {
     let nix_binary =
         resolve_program_from_env_path("nix", baseline_env).unwrap_or_else(|| PathBuf::from("nix"));
-    run_nix_print_dev_env_with_binary(directory, plan, baseline_env, &nix_binary).await
+    run_nix_print_dev_env_with_binary(directory, plan, baseline_env, &nix_binary, cancellation)
+        .await
 }
 
 fn resolve_program_from_env_path(
@@ -937,6 +979,7 @@ async fn run_nix_print_dev_env_with_binary(
     plan: &NativeFlakePlan,
     baseline_env: &HashMap<String, String>,
     nix_binary: &Path,
+    cancellation: Option<&AtomicBool>,
 ) -> Result<HashMap<String, String>, ShellEnvironmentError> {
     let profile = native_flake_profile_path(directory, baseline_env);
     if let Some(parent) = profile.parent() {
@@ -959,12 +1002,7 @@ async fn run_nix_print_dev_env_with_binary(
         command.arg(arg);
     }
 
-    let result = timeout(Duration::from_secs(30), command.output()).await;
-    let output = match result {
-        Ok(Ok(output)) => output,
-        Ok(Err(error)) => return Err(ShellEnvironmentError::IoError(error)),
-        Err(_) => return Err(ShellEnvironmentError::Timeout(30)),
-    };
+    let output = cancellable_command_output(command, 30, cancellation).await?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1087,6 +1125,7 @@ async fn capture_shell_environment_with_timeout(
     directory: &Path,
     timeout_seconds: u64,
     baseline_env: Option<&HashMap<String, String>>,
+    cancellation: Option<&AtomicBool>,
 ) -> Result<HashMap<String, String>, ShellEnvironmentError> {
     let command = shell_command_builder::build_environment_capture_command(shell, directory)?;
 
@@ -1108,17 +1147,136 @@ async fn capture_shell_environment_with_timeout(
         tokio_command.current_dir(dir);
     }
 
-    let result = timeout(Duration::from_secs(timeout_seconds), tokio_command.output()).await;
+    let output = cancellable_command_output(tokio_command, timeout_seconds, cancellation).await;
 
-    match result {
-        Ok(Ok(output)) if output.status.success() => parse_shell_environment(&output.stdout),
-        Ok(Ok(output)) => {
+    match output {
+        Ok(output) if output.status.success() => parse_shell_environment(&output.stdout),
+        Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
             Err(ShellEnvironmentError::ShellExecutionFailed(stderr))
         }
-        Ok(Err(io_error)) => Err(ShellEnvironmentError::IoError(io_error)),
-        Err(_) => Err(ShellEnvironmentError::Timeout(timeout_seconds)),
+        Err(error) => Err(error),
     }
+}
+
+async fn cancellable_command_output(
+    mut command: tokio::process::Command,
+    timeout_seconds: u64,
+    cancellation: Option<&AtomicBool>,
+) -> Result<Output, ShellEnvironmentError> {
+    if shell_environment_cancelled(cancellation) {
+        return Err(ShellEnvironmentError::Cancelled);
+    }
+
+    command.stdout(std::process::Stdio::piped());
+    command.stderr(std::process::Stdio::piped());
+    configure_environment_child_process(&mut command);
+
+    let mut child = command.spawn().map_err(ShellEnvironmentError::IoError)?;
+    let process_id = child.id();
+    let mut stdout = child.stdout.take().ok_or_else(|| {
+        ShellEnvironmentError::ShellExecutionFailed(
+            "child process stdout was not piped".to_string(),
+        )
+    })?;
+    let mut stderr = child.stderr.take().ok_or_else(|| {
+        ShellEnvironmentError::ShellExecutionFailed(
+            "child process stderr was not piped".to_string(),
+        )
+    })?;
+
+    let mut stdout_task = Some(tokio::spawn(async move {
+        let mut bytes = Vec::new();
+        stdout.read_to_end(&mut bytes).await.map(|_| bytes)
+    }));
+    let mut stderr_task = Some(tokio::spawn(async move {
+        let mut bytes = Vec::new();
+        stderr.read_to_end(&mut bytes).await.map(|_| bytes)
+    }));
+
+    let started = Instant::now();
+    let timeout_duration = Duration::from_secs(timeout_seconds);
+    let status = loop {
+        if let Some(status) = child.try_wait().map_err(ShellEnvironmentError::IoError)? {
+            break status;
+        }
+
+        if shell_environment_cancelled(cancellation) {
+            terminate_environment_child_process(&mut child, process_id).await?;
+            let _ = join_environment_pipe(stdout_task.take().unwrap()).await;
+            let _ = join_environment_pipe(stderr_task.take().unwrap()).await;
+            return Err(ShellEnvironmentError::Cancelled);
+        }
+
+        if started.elapsed() >= timeout_duration {
+            terminate_environment_child_process(&mut child, process_id).await?;
+            let _ = join_environment_pipe(stdout_task.take().unwrap()).await;
+            let _ = join_environment_pipe(stderr_task.take().unwrap()).await;
+            return Err(ShellEnvironmentError::Timeout(timeout_seconds));
+        }
+
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
+
+    let stdout = join_environment_pipe(stdout_task.take().unwrap()).await?;
+    let stderr = join_environment_pipe(stderr_task.take().unwrap()).await?;
+
+    Ok(Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+async fn join_environment_pipe(
+    task: tokio::task::JoinHandle<std::io::Result<Vec<u8>>>,
+) -> Result<Vec<u8>, ShellEnvironmentError> {
+    task.await
+        .map_err(|error| ShellEnvironmentError::ShellExecutionFailed(error.to_string()))?
+        .map_err(ShellEnvironmentError::IoError)
+}
+
+#[cfg(unix)]
+fn configure_environment_child_process(command: &mut tokio::process::Command) {
+    command.process_group(0);
+}
+
+#[cfg(not(unix))]
+fn configure_environment_child_process(_command: &mut tokio::process::Command) {}
+
+async fn terminate_environment_child_process(
+    child: &mut tokio::process::Child,
+    process_id: Option<u32>,
+) -> Result<(), ShellEnvironmentError> {
+    #[cfg(unix)]
+    if let Some(process_id) = process_id
+        && kill_environment_process_group(process_id).is_ok()
+    {
+        let _ = child.wait().await;
+        return Ok(());
+    }
+
+    child.kill().await.map_err(ShellEnvironmentError::IoError)
+}
+
+#[cfg(unix)]
+fn kill_environment_process_group(process_id: u32) -> std::io::Result<()> {
+    let status = Command::new("kill")
+        .arg("-KILL")
+        .arg(format!("-{process_id}"))
+        .status()?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!(
+            "kill process group exited with {status}"
+        )))
+    }
+}
+
+fn shell_environment_cancelled(cancellation: Option<&AtomicBool>) -> bool {
+    cancellation.is_some_and(|cancellation| cancellation.load(Ordering::Relaxed))
 }
 
 fn apply_environment_to_process(environment: &HashMap<String, String>) {
@@ -1529,6 +1687,7 @@ pub async fn capture_shell_environment(
             Err(ShellEnvError::CommandFailed(msg))
         }
         Err(ShellEnvironmentError::Timeout(_)) => Err(ShellEnvError::Timeout),
+        Err(ShellEnvironmentError::Cancelled) => Err(ShellEnvError::Timeout),
         Err(ShellEnvironmentError::IoError(e)) => Err(ShellEnvError::IoError(e)),
         Err(ShellEnvironmentError::ParseError(msg)) => Err(ShellEnvError::ParseError(msg)),
         Err(ShellEnvironmentError::EnvrcUnsupported(msg)) => Err(ShellEnvError::ParseError(msg)),
@@ -1588,6 +1747,7 @@ impl ShellEnvironmentCache {
                 Err(ShellEnvError::CommandFailed(msg))
             }
             Err(ShellEnvironmentError::Timeout(_)) => Err(ShellEnvError::Timeout),
+            Err(ShellEnvironmentError::Cancelled) => Err(ShellEnvError::Timeout),
             Err(ShellEnvironmentError::IoError(e)) => Err(ShellEnvError::IoError(e)),
             Err(ShellEnvironmentError::ParseError(msg)) => Err(ShellEnvError::ParseError(msg)),
             Err(ShellEnvironmentError::EnvrcUnsupported(msg)) => {
@@ -1643,6 +1803,41 @@ mod tests {
                 executable.display()
             ),
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancellable_command_output_kills_process_group() {
+        let temp = tempfile::tempdir().unwrap();
+        let started_file = temp.path().join("env-started");
+        let mut command = nucleotide_process::tokio_command("/bin/sh");
+        command
+            .args(["-c", "printf started > \"$STARTED_FILE\"; sleep 3"])
+            .env("STARTED_FILE", &started_file);
+        let cancellation = Arc::new(AtomicBool::new(false));
+        let worker_cancellation = Arc::clone(&cancellation);
+        let worker = tokio::spawn(async move {
+            cancellable_command_output(command, 10, Some(worker_cancellation.as_ref())).await
+        });
+
+        let started = Instant::now();
+        while !started_file.exists() {
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "timed out waiting for fake environment process to start"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        let cancelled_at = Instant::now();
+        cancellation.store(true, Ordering::Relaxed);
+        let error = worker.await.unwrap().unwrap_err();
+
+        assert!(matches!(error, ShellEnvironmentError::Cancelled));
+        assert!(
+            cancelled_at.elapsed() < Duration::from_secs(2),
+            "environment capture waited for the child sleep instead of killing its process group"
+        );
     }
 
     #[tokio::test]
@@ -2135,10 +2330,15 @@ esac
             ),
         ]);
 
-        let env =
-            run_nix_print_dev_env_with_binary(project_dir.path(), &plan, &baseline, &fake_nix)
-                .await
-                .unwrap();
+        let env = run_nix_print_dev_env_with_binary(
+            project_dir.path(),
+            &plan,
+            &baseline,
+            &fake_nix,
+            None,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(env.get("PATH"), Some(&"/fake/bin".to_string()));
         assert_eq!(env.get("HOME"), Some(&"/Users/test".to_string()));
