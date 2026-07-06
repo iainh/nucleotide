@@ -42,12 +42,9 @@ use std::sync::{
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncWriteExt;
 
-pub const PROTOCOL_VERSION: u32 = 4;
-pub const FRAME_VERSION: u16 = 1;
-pub const FRAME_MAGIC: [u8; 4] = *b"NUCL";
-pub const FRAME_HEADER_LEN: usize = 36;
-pub const MAX_FRAME_HEADER_LEN: u32 = 1024 * 1024;
-pub const MAX_FRAME_BODY_LEN: u64 = 128 * 1024 * 1024;
+pub const PROTOCOL_VERSION: u32 = protocol_v5::PROTOCOL_MAJOR;
+pub const FRAME_VERSION: u16 = protocol_v5::FRAME_HEADER_VERSION;
+pub const MAX_FRAME_BODY_LEN: u64 = protocol_v5::MAX_NEGOTIATED_FRAME_BODY_LEN as u64;
 pub const DEFAULT_SSH_CONNECT_TIMEOUT_SECS: u64 = 30;
 const REMOTE_REQUEST_SLOW_LOG_MS: u64 = 500;
 const REMOTE_TRANSPORT_WAIT_SLOW_LOG_MS: u64 = 100;
@@ -131,181 +128,6 @@ impl RemoteDeploymentProgress {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u16)]
-pub enum FrameKind {
-    Request = 1,
-    Response = 2,
-    Error = 3,
-    Data = 4,
-    Progress = 5,
-    Cancel = 6,
-    Shutdown = 7,
-}
-
-impl TryFrom<u16> for FrameKind {
-    type Error = io::Error;
-
-    fn try_from(value: u16) -> std::result::Result<Self, <Self as TryFrom<u16>>::Error> {
-        match value {
-            1 => Ok(Self::Request),
-            2 => Ok(Self::Response),
-            3 => Ok(Self::Error),
-            4 => Ok(Self::Data),
-            5 => Ok(Self::Progress),
-            6 => Ok(Self::Cancel),
-            7 => Ok(Self::Shutdown),
-            _ => Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("unknown frame kind: {value}"),
-            )),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Frame {
-    pub kind: FrameKind,
-    pub flags: u16,
-    pub request_id: u64,
-    pub stream_id: u32,
-    pub header: Vec<u8>,
-    pub body: Vec<u8>,
-}
-
-impl Frame {
-    pub fn from_json_header<T: Serialize>(
-        kind: FrameKind,
-        request_id: u64,
-        stream_id: u32,
-        header: &T,
-        body: Vec<u8>,
-    ) -> serde_json::Result<Self> {
-        Ok(Self {
-            kind,
-            flags: 0,
-            request_id,
-            stream_id,
-            header: serde_json::to_vec(header)?,
-            body,
-        })
-    }
-
-    pub fn decode_json_header<T: DeserializeOwned>(&self) -> serde_json::Result<T> {
-        serde_json::from_slice(&self.header)
-    }
-}
-
-pub fn write_frame<W: Write>(writer: &mut W, frame: &Frame) -> io::Result<()> {
-    if frame.header.len() > MAX_FRAME_HEADER_LEN as usize {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "frame header is too large",
-        ));
-    }
-    if frame.body.len() as u64 > MAX_FRAME_BODY_LEN {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "frame body is too large",
-        ));
-    }
-
-    let mut header = [0_u8; FRAME_HEADER_LEN];
-    header[0..4].copy_from_slice(&FRAME_MAGIC);
-    header[4..6].copy_from_slice(&FRAME_VERSION.to_le_bytes());
-    header[6..8].copy_from_slice(&(frame.kind as u16).to_le_bytes());
-    header[8..10].copy_from_slice(&frame.flags.to_le_bytes());
-    header[10..12].copy_from_slice(&0_u16.to_le_bytes());
-    header[12..20].copy_from_slice(&frame.request_id.to_le_bytes());
-    header[20..24].copy_from_slice(&frame.stream_id.to_le_bytes());
-    header[24..28].copy_from_slice(&(frame.header.len() as u32).to_le_bytes());
-    header[28..36].copy_from_slice(&(frame.body.len() as u64).to_le_bytes());
-
-    writer.write_all(&header)?;
-    writer.write_all(&frame.header)?;
-    writer.write_all(&frame.body)?;
-    writer.flush()
-}
-
-pub fn read_frame<R: Read>(reader: &mut R) -> io::Result<Option<Frame>> {
-    let mut fixed = [0_u8; FRAME_HEADER_LEN];
-    match reader.read(&mut fixed[..1])? {
-        0 => return Ok(None),
-        1 => reader.read_exact(&mut fixed[1..])?,
-        _ => unreachable!("read buffer length is one byte"),
-    }
-
-    if fixed[0..4] != FRAME_MAGIC {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "invalid frame magic",
-        ));
-    }
-
-    let version = u16::from_le_bytes([fixed[4], fixed[5]]);
-    if version != FRAME_VERSION {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("unsupported frame version: {version}"),
-        ));
-    }
-
-    let kind = FrameKind::try_from(u16::from_le_bytes([fixed[6], fixed[7]]))?;
-    let flags = u16::from_le_bytes([fixed[8], fixed[9]]);
-    let request_id = u64::from_le_bytes([
-        fixed[12], fixed[13], fixed[14], fixed[15], fixed[16], fixed[17], fixed[18], fixed[19],
-    ]);
-    let stream_id = u32::from_le_bytes([fixed[20], fixed[21], fixed[22], fixed[23]]);
-    let header_len = u32::from_le_bytes([fixed[24], fixed[25], fixed[26], fixed[27]]);
-    let body_len = u64::from_le_bytes([
-        fixed[28], fixed[29], fixed[30], fixed[31], fixed[32], fixed[33], fixed[34], fixed[35],
-    ]);
-
-    if header_len > MAX_FRAME_HEADER_LEN {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "frame header exceeds maximum length",
-        ));
-    }
-    if body_len > MAX_FRAME_BODY_LEN {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "frame body exceeds maximum length",
-        ));
-    }
-
-    let mut header = vec![0_u8; header_len as usize];
-    reader.read_exact(&mut header)?;
-    let mut body = vec![0_u8; body_len as usize];
-    reader.read_exact(&mut body)?;
-
-    Ok(Some(Frame {
-        kind,
-        flags,
-        request_id,
-        stream_id,
-        header,
-        body,
-    }))
-}
-
-pub trait RemoteTransport: Send {
-    fn write_frame(&mut self, frame: &Frame) -> io::Result<()>;
-
-    fn read_frame(&mut self) -> io::Result<Option<Frame>>;
-}
-
-pub struct FramedTransport<R, W> {
-    reader: R,
-    writer: W,
-}
-
-impl<R, W> FramedTransport<R, W> {
-    pub fn new(reader: R, writer: W) -> Self {
-        Self { reader, writer }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteServiceCommand {
     pub program: OsString,
@@ -341,10 +163,6 @@ impl RemoteServiceCommand {
             ),
             None => self.display_invocation(),
         }
-    }
-
-    pub fn spawn(&self) -> io::Result<ChildProcessTransport> {
-        ChildProcessTransport::spawn(self)
     }
 }
 
@@ -420,25 +238,15 @@ pub fn local_service_command(
     helper_path: impl AsRef<Path>,
     workspace_root: impl AsRef<Path>,
 ) -> RemoteServiceCommand {
-    local_service_command_with_protocol(helper_path, workspace_root, RemoteWorkspaceProtocol::V4)
-}
-
-fn local_service_command_with_protocol(
-    helper_path: impl AsRef<Path>,
-    workspace_root: impl AsRef<Path>,
-    protocol: RemoteWorkspaceProtocol,
-) -> RemoteServiceCommand {
     let helper_path = helper_path.as_ref();
     let workspace_root = workspace_root.as_ref();
-    let mut args = vec![
+    let args = vec![
         OsString::from("serve"),
         OsString::from("--workspace"),
         workspace_root.as_os_str().to_os_string(),
+        OsString::from("--protocol"),
+        OsString::from("v5"),
     ];
-    if let Some(protocol) = protocol.serve_arg() {
-        args.push(OsString::from("--protocol"));
-        args.push(OsString::from(protocol));
-    }
     RemoteServiceCommand {
         program: helper_path.as_os_str().to_os_string(),
         args,
@@ -451,18 +259,9 @@ pub fn wsl_service_command(
     linux_root: impl AsRef<Path>,
     helper_path: impl AsRef<Path>,
 ) -> RemoteServiceCommand {
-    wsl_service_command_with_protocol(distro, linux_root, helper_path, RemoteWorkspaceProtocol::V4)
-}
-
-fn wsl_service_command_with_protocol(
-    distro: impl AsRef<OsStr>,
-    linux_root: impl AsRef<Path>,
-    helper_path: impl AsRef<Path>,
-    protocol: RemoteWorkspaceProtocol,
-) -> RemoteServiceCommand {
     let linux_root = linux_root.as_ref();
     let helper_path = helper_path.as_ref();
-    let mut args = vec![
+    let args = vec![
         OsString::from("--distribution"),
         distro.as_ref().to_os_string(),
         OsString::from("--cd"),
@@ -472,11 +271,9 @@ fn wsl_service_command_with_protocol(
         OsString::from("serve"),
         OsString::from("--workspace"),
         linux_root.as_os_str().to_os_string(),
+        OsString::from("--protocol"),
+        OsString::from("v5"),
     ];
-    if let Some(protocol) = protocol.serve_arg() {
-        args.push(OsString::from("--protocol"));
-        args.push(OsString::from(protocol));
-    }
     RemoteServiceCommand {
         program: OsString::from("wsl.exe"),
         args,
@@ -547,31 +344,13 @@ pub fn ssh_service_command(
     remote_root: impl AsRef<Path>,
     helper_path: impl AsRef<Path>,
 ) -> RemoteServiceCommand {
-    ssh_service_command_with_protocol(
-        target,
-        remote_root,
-        helper_path,
-        RemoteWorkspaceProtocol::V4,
-    )
-}
-
-fn ssh_service_command_with_protocol(
-    target: SshTarget,
-    remote_root: impl AsRef<Path>,
-    helper_path: impl AsRef<Path>,
-    protocol: RemoteWorkspaceProtocol,
-) -> RemoteServiceCommand {
     let remote_root = posix_path_string(remote_root);
     let helper_path = posix_path_string(helper_path);
-    let mut remote_command = format!(
-        "exec {} serve --workspace {}",
+    let remote_command = format!(
+        "exec {} serve --workspace {} --protocol v5",
         quote_posix_shell(&helper_path),
         quote_posix_shell(&remote_root)
     );
-    if let Some(protocol) = protocol.serve_arg() {
-        remote_command.push_str(" --protocol ");
-        remote_command.push_str(protocol);
-    }
     let mut args = Vec::new();
     args.push(OsString::from("-T"));
     append_ssh_connection_args(&mut args, &target);
@@ -784,41 +563,6 @@ fn terminal_env_entry_is_valid(key: &str, value: &str) -> bool {
     !key.is_empty() && !key.contains('=') && !key.contains('\0') && !value.contains('\0')
 }
 
-pub struct ChildProcessTransport {
-    child: Child,
-    reader: ChildStdout,
-    writer: ChildStdin,
-}
-
-impl ChildProcessTransport {
-    pub fn spawn(spec: &RemoteServiceCommand) -> io::Result<Self> {
-        let mut command = spec.command();
-        command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit());
-        let mut child = command.spawn()?;
-        let writer = child
-            .stdin
-            .take()
-            .ok_or_else(|| io::Error::other("remote service child did not expose stdin"))?;
-        let reader = child
-            .stdout
-            .take()
-            .ok_or_else(|| io::Error::other("remote service child did not expose stdout"))?;
-
-        Ok(Self {
-            child,
-            reader,
-            writer,
-        })
-    }
-
-    pub fn child_id(&self) -> u32 {
-        self.child.id()
-    }
-}
-
 pub struct ChildProcessV5Writer {
     child: Child,
     writer: ChildStdin,
@@ -873,39 +617,6 @@ fn spawn_child_process_v5_io(
     ))
 }
 
-impl RemoteTransport for ChildProcessTransport {
-    fn write_frame(&mut self, frame: &Frame) -> io::Result<()> {
-        write_frame(&mut self.writer, frame)
-    }
-
-    fn read_frame(&mut self) -> io::Result<Option<Frame>> {
-        read_frame(&mut self.reader)
-    }
-}
-
-impl Drop for ChildProcessTransport {
-    fn drop(&mut self) {
-        if matches!(self.child.try_wait(), Ok(None)) {
-            let _ = self.child.kill();
-            let _ = self.child.wait();
-        }
-    }
-}
-
-impl<R, W> RemoteTransport for FramedTransport<R, W>
-where
-    R: Read + Send,
-    W: Write + Send,
-{
-    fn write_frame(&mut self, frame: &Frame) -> io::Result<()> {
-        write_frame(&mut self.writer, frame)
-    }
-
-    fn read_frame(&mut self) -> io::Result<Option<Frame>> {
-        read_frame(&mut self.reader)
-    }
-}
-
 fn quote_posix_shell(value: &str) -> String {
     let mut quoted = String::with_capacity(value.len() + 2);
     quoted.push('\'');
@@ -937,24 +648,8 @@ fn quote_command_display_arg(value: &OsStr) -> String {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RequestEnvelope {
-    pub protocol_version: u32,
-    pub request: RemoteRequest,
-}
-
-impl RequestEnvelope {
-    pub fn new(request: RemoteRequest) -> Self {
-        Self {
-            protocol_version: PROTOCOL_VERSION,
-            request,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "method", rename_all = "snake_case")]
 pub enum RemoteRequest {
-    Hello,
     Stat {
         path: PathBuf,
     },
@@ -1015,24 +710,8 @@ pub enum RemoteRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ResponseEnvelope {
-    pub protocol_version: u32,
-    pub response: RemoteResponse,
-}
-
-impl ResponseEnvelope {
-    pub fn new(response: RemoteResponse) -> Self {
-        Self {
-            protocol_version: PROTOCOL_VERSION,
-            response,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "method", content = "result", rename_all = "snake_case")]
 pub enum RemoteResponse {
-    Hello(HelloResponse),
     Stat(FileStatResponse),
     ListDir(DirectoryListingResponse),
     ListDirs(ListDirsResponse),
@@ -1056,7 +735,6 @@ pub enum RemoteResponse {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum V5MethodError {
     UnsupportedMethod(String),
-    UnsupportedLegacyRequest(&'static str),
     InvalidPayload { method: String, error: String },
     Encode { method: String, error: String },
 }
@@ -1066,9 +744,6 @@ impl fmt::Display for V5MethodError {
         match self {
             Self::UnsupportedMethod(method) => {
                 write!(f, "unsupported v5 method: {method}")
-            }
-            Self::UnsupportedLegacyRequest(request) => {
-                write!(f, "legacy request {request} is not a v5 method")
             }
             Self::InvalidPayload { method, error } => {
                 write!(f, "invalid v5 payload for {method}: {error}")
@@ -1083,9 +758,8 @@ impl fmt::Display for V5MethodError {
 impl Error for V5MethodError {}
 
 impl RemoteRequest {
-    pub fn v5_method(&self) -> Option<&'static str> {
-        Some(match self {
-            Self::Hello => return None,
+    pub fn v5_method(&self) -> &'static str {
+        match self {
             Self::Stat { .. } => "fs.stat",
             Self::ListDir { .. } => "fs.list_dir",
             Self::ListDirs { .. } => "fs.list_dirs",
@@ -1104,7 +778,7 @@ impl RemoteRequest {
             Self::GitStatus { .. } => "git.status",
             Self::RunProcess(_) => "process.run",
             Self::Shutdown => "session.shutdown",
-        })
+        }
     }
 
     pub fn v5_request_options(&self) -> protocol_v5::RequestOptions {
@@ -1125,9 +799,7 @@ impl RemoteRequest {
             }
             Self::FileSearch(_) | Self::TextSearch(_) => {
                 options.priority = protocol_v5::Priority::ForegroundDocument;
-                options.cancellation_group = self
-                    .v5_method()
-                    .map_or_else(String::new, ToString::to_string);
+                options.cancellation_group = self.v5_method().to_string();
             }
             Self::ListDir { .. } | Self::ListDirs { .. } => {
                 options.priority = protocol_v5::Priority::VisibleFileTree;
@@ -1138,8 +810,7 @@ impl RemoteRequest {
             | Self::ProjectEnvironment { .. }
             | Self::GitHead { .. }
             | Self::GitStatus { .. }
-            | Self::Shutdown
-            | Self::Hello => {}
+            | Self::Shutdown => {}
         }
         options
     }
@@ -1164,17 +835,14 @@ impl RemoteRequest {
     }
 
     pub fn v5_retry_after_reconnect_allowed(&self) -> bool {
-        !matches!(self, Self::Hello | Self::Shutdown)
+        !matches!(self, Self::Shutdown)
             && self.v5_request_options().idempotency == protocol_v5::Idempotency::ReadOnly
     }
 
     pub fn to_v5_method_payload(
         &self,
     ) -> std::result::Result<(&'static str, Vec<u8>), V5MethodError> {
-        let Some(method) = self.v5_method() else {
-            return Err(V5MethodError::UnsupportedLegacyRequest("hello"));
-        };
-        encode_v5_payload(method, self.v5_payload_value())
+        encode_v5_payload(self.v5_method(), self.v5_payload_value())
     }
 
     pub fn from_v5_method_payload(
@@ -1275,7 +943,7 @@ impl RemoteRequest {
 
     fn v5_payload_value(&self) -> V5RequestPayloadRef<'_> {
         match self {
-            Self::Hello | Self::Shutdown => V5RequestPayloadRef::Empty {},
+            Self::Shutdown => V5RequestPayloadRef::Empty {},
             Self::Stat { path }
             | Self::ListDir { path }
             | Self::CreateFile { path }
@@ -1329,9 +997,8 @@ impl RemoteRequest {
 }
 
 impl RemoteResponse {
-    pub fn v5_method(&self) -> Option<&'static str> {
-        Some(match self {
-            Self::Hello(_) => return None,
+    pub fn v5_method(&self) -> &'static str {
+        match self {
             Self::Stat(_) => "fs.stat",
             Self::ListDir(_) => "fs.list_dir",
             Self::ListDirs(_) => "fs.list_dirs",
@@ -1350,13 +1017,11 @@ impl RemoteResponse {
             Self::GitStatus(_) => "git.status",
             Self::RunProcess(_) => "process.run",
             Self::Shutdown => "session.shutdown",
-        })
+        }
     }
 
     pub fn to_v5_payload(&self) -> std::result::Result<Vec<u8>, V5MethodError> {
-        let method = self
-            .v5_method()
-            .ok_or(V5MethodError::UnsupportedLegacyRequest("hello"))?;
+        let method = self.v5_method();
         serde_json::to_vec(self).map_err(|error| V5MethodError::Encode {
             method: method.to_string(),
             error: error.to_string(),
@@ -1372,7 +1037,7 @@ impl RemoteResponse {
                 method: method.to_string(),
                 error: error.to_string(),
             })?;
-        if response.v5_method() == Some(method) {
+        if response.v5_method() == method {
             Ok(response)
         } else {
             Err(V5MethodError::InvalidPayload {
@@ -1603,21 +1268,6 @@ fn validate_v5_watch_start(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ErrorEnvelope {
-    pub protocol_version: u32,
-    pub error: RemoteError,
-}
-
-impl ErrorEnvelope {
-    pub fn new(error: RemoteError) -> Self {
-        Self {
-            protocol_version: PROTOCOL_VERSION,
-            error,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteError {
     pub code: String,
     pub message: String,
@@ -1631,40 +1281,6 @@ pub struct HelloResponse {
     pub arch: String,
     pub workspace_root: PathBuf,
     pub capabilities: Vec<String>,
-}
-
-impl HelloResponse {
-    fn current(workspace_root: PathBuf) -> Self {
-        Self {
-            helper_version: env!("CARGO_PKG_VERSION").to_string(),
-            os: std::env::consts::OS.to_string(),
-            arch: std::env::consts::ARCH.to_string(),
-            workspace_root,
-            capabilities: vec![
-                "stat".to_string(),
-                "list_dir".to_string(),
-                "list_dirs".to_string(),
-                "find_ancestor_file".to_string(),
-                "create_file".to_string(),
-                "create_dir".to_string(),
-                "rename_path".to_string(),
-                "delete_path".to_string(),
-                "copy_path".to_string(),
-                "read_file".to_string(),
-                "write_file".to_string(),
-                "file_search".to_string(),
-                "text_search".to_string(),
-                "project_environment".to_string(),
-                "project_environment_process_spawn".to_string(),
-                "git_head".to_string(),
-                "git_status".to_string(),
-                "run_process".to_string(),
-                "binary_body_frames".to_string(),
-                "directory_entry_ignored".to_string(),
-                "external_read_only".to_string(),
-            ],
-        }
-    }
 }
 
 fn hello_response_from_v5_server_hello(hello: &protocol_v5::ServerHello) -> HelloResponse {
@@ -1699,7 +1315,6 @@ impl RemoteHelperInstallPolicy {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteWorkspaceBackendOptions {
-    pub protocol: RemoteWorkspaceProtocol,
     pub remote_helper_path: PathBuf,
     pub remote_helper_path_is_override: bool,
     pub local_helper_path: Option<PathBuf>,
@@ -1716,7 +1331,6 @@ pub struct RemoteWorkspaceBackendOptions {
 impl Default for RemoteWorkspaceBackendOptions {
     fn default() -> Self {
         Self {
-            protocol: RemoteWorkspaceProtocol::V5,
             remote_helper_path: PathBuf::from("nucleotide-remote"),
             remote_helper_path_is_override: false,
             local_helper_path: None,
@@ -1734,32 +1348,8 @@ impl Default for RemoteWorkspaceBackendOptions {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RemoteWorkspaceProtocol {
-    V4,
-    V5,
-}
-
-impl RemoteWorkspaceProtocol {
-    fn from_env_value(value: Option<String>, default: Self) -> Self {
-        match value.as_deref() {
-            Some("5") | Some("v5") | Some("V5") => Self::V5,
-            Some("4") | Some("v4") | Some("V4") => Self::V4,
-            _ => default,
-        }
-    }
-
-    fn serve_arg(self) -> Option<&'static str> {
-        match self {
-            Self::V4 => None,
-            Self::V5 => Some("v5"),
-        }
-    }
-}
-
 #[derive(Default)]
 struct RemoteWorkspaceBackendEnvironment {
-    protocol: Option<String>,
     remote_helper_path: Option<OsString>,
     local_helper_path: Option<OsString>,
     ssh_helper_upload_path: Option<OsString>,
@@ -1790,7 +1380,6 @@ impl RemoteWorkspaceBackendOptions {
                     "NUCLEOTIDE_REMOTE_HELPER_DOWNLOAD_BASE_URL",
                 )
                 .ok(),
-                protocol: std::env::var("NUCLEOTIDE_REMOTE_PROTOCOL").ok(),
                 ssh_helper_install_policy: std::env::var("NUCLEOTIDE_REMOTE_HELPER_INSTALL").ok(),
                 ssh_connect_timeout_secs: std::env::var("NUCLEOTIDE_SSH_CONNECT_TIMEOUT_SECS").ok(),
                 ssh_extra_args: std::env::var_os("NUCLEOTIDE_SSH_EXTRA_ARGS"),
@@ -1820,7 +1409,6 @@ impl RemoteWorkspaceBackendOptions {
         let env_ssh_helper_upload_path = values.ssh_helper_upload_path;
         let env_ssh_helper_artifact_dir = values.ssh_helper_artifact_dir;
         let env_ssh_helper_download_base_url = values.ssh_helper_download_base_url;
-        let env_protocol = values.protocol;
         let env_ssh_helper_install_policy = values.ssh_helper_install_policy;
         let env_ssh_connect_timeout_secs = values.ssh_connect_timeout_secs;
         let env_ssh_extra_args = values.ssh_extra_args;
@@ -1828,8 +1416,6 @@ impl RemoteWorkspaceBackendOptions {
         let env_ssh_control_path = values.ssh_control_path;
         let env_use_local_service = values.use_local_service;
         let current_exe = values.current_exe;
-        let base_protocol = options.protocol;
-
         let remote_helper_path_is_override =
             base_remote_helper_path_is_override || env_remote_helper_path.is_some();
         let bundled_helper = current_exe.as_deref().and_then(bundled_local_helper_path);
@@ -1843,7 +1429,6 @@ impl RemoteWorkspaceBackendOptions {
             .unwrap_or_else(|| base_control_path.is_some());
 
         options.remote_helper_path_is_override = remote_helper_path_is_override;
-        options.protocol = RemoteWorkspaceProtocol::from_env_value(env_protocol, base_protocol);
 
         if let Some(policy) = env_ssh_helper_install_policy {
             options.ssh_helper_install_policy =
@@ -2478,35 +2063,15 @@ fn remote_service_command_for_location_with_options(
     helper_path: impl AsRef<Path>,
     options: &RemoteWorkspaceBackendOptions,
 ) -> Option<RemoteServiceCommand> {
-    remote_service_command_for_location_with_protocol_options(
-        location,
-        helper_path,
-        options,
-        options.protocol,
-    )
-}
-
-fn remote_service_command_for_location_with_protocol_options(
-    location: &WorkspaceLocation,
-    helper_path: impl AsRef<Path>,
-    options: &RemoteWorkspaceBackendOptions,
-    protocol: RemoteWorkspaceProtocol,
-) -> Option<RemoteServiceCommand> {
     match location {
         WorkspaceLocation::Local { .. } => None,
         WorkspaceLocation::Wsl {
             distro, linux_path, ..
-        } => Some(wsl_service_command_with_protocol(
-            distro,
-            linux_path,
-            helper_path,
-            protocol,
-        )),
-        WorkspaceLocation::Ssh { target, path, .. } => Some(ssh_service_command_with_protocol(
+        } => Some(wsl_service_command(distro, linux_path, helper_path)),
+        WorkspaceLocation::Ssh { target, path, .. } => Some(ssh_service_command(
             ssh_target_from_workspace_target_with_options(target, options),
             path,
             helper_path,
-            protocol,
         )),
     }
 }
@@ -2649,55 +2214,21 @@ fn connect_workspace_backend_for_location_with_optional_progress(
                 .local_helper_path
                 .as_deref()
                 .unwrap_or(&options.remote_helper_path);
-            let command = local_service_command_with_protocol(helper_path, path, options.protocol);
-            let connection = spawn_child_process_workspace_backend_with_protocol(
+            let command = local_service_command(helper_path, path);
+            let (backend, hello) = spawn_child_process_workspace_backend(
                 RemoteWorkspaceIdentity {
                     kind: RemoteWorkspaceKind::Other("local-service".to_string()),
                     name: "local-service".to_string(),
                 },
                 &command,
-                options.protocol,
-            );
-            let (backend, hello) = match connection {
-                Ok(connection) => connection,
-                Err(error)
-                    if options.protocol == RemoteWorkspaceProtocol::V5
-                        && remote_startup_error_can_fallback_v5_to_v4(&error) =>
-                {
-                    tracing::warn!(
-                        error = %error,
-                        "Falling back to v4 local workspace service after v5 startup failure"
-                    );
-                    let fallback_command = local_service_command_with_protocol(
-                        helper_path,
-                        path,
-                        RemoteWorkspaceProtocol::V4,
-                    );
-                    spawn_child_process_workspace_backend_with_protocol(
-                        RemoteWorkspaceIdentity {
-                            kind: RemoteWorkspaceKind::Other("local-service".to_string()),
-                            name: "local-service".to_string(),
-                        },
-                        &fallback_command,
-                        RemoteWorkspaceProtocol::V4,
-                    )
-                    .with_context(|| {
-                        format!(
-                            "failed to initialize local workspace service for {} after v5 startup failed. Initial error: {error:#}",
-                            path.display()
-                        )
-                    })?
-                }
-                Err(error) => {
-                    return Err(error).with_context(|| {
-                        format!(
-                            "failed to initialize local workspace service for {}. {}",
-                            path.display(),
-                            local_helper_setup_hint(helper_path)
-                        )
-                    });
-                }
-            };
+            )
+            .with_context(|| {
+                format!(
+                    "failed to initialize local workspace service for {}. {}",
+                    path.display(),
+                    local_helper_setup_hint(helper_path)
+                )
+            })?;
 
             return Ok(WorkspaceBackendConnection {
                 backend,
@@ -2732,41 +2263,8 @@ fn connect_workspace_backend_for_location_with_optional_progress(
         &location,
         Some(display_root.display().to_string()),
     );
-    let (backend, hello) = match spawn_child_process_workspace_backend_with_protocol(
-        identity.clone(),
-        &command,
-        options.protocol,
-    ) {
+    let (backend, hello) = match spawn_child_process_workspace_backend(identity.clone(), &command) {
         Ok(connection) => connection,
-        Err(error)
-            if options.protocol == RemoteWorkspaceProtocol::V5
-                && remote_startup_error_can_fallback_v5_to_v4(&error) =>
-        {
-            tracing::warn!(
-                remote_kind = ?identity.kind,
-                remote_name = %identity.name,
-                error = %error,
-                "Falling back to v4 remote workspace service after v5 startup failure"
-            );
-            let fallback_command = remote_service_command_for_location_with_protocol_options(
-                &location,
-                &helper_path,
-                options,
-                RemoteWorkspaceProtocol::V4,
-            )
-            .context("remote workspace location is missing a fallback service command")?;
-            spawn_child_process_workspace_backend_with_protocol(
-                identity,
-                &fallback_command,
-                RemoteWorkspaceProtocol::V4,
-            )
-            .with_context(|| {
-                format!(
-                    "failed to initialize remote workspace service for {} after v5 startup failed. Initial error: {error:#}",
-                    display_root.display()
-                )
-            })?
-        }
         Err(error) if remote_startup_error_can_retry_helper_install(&location, &error) => {
             let retry_helper_path = match progress {
                 Some(progress) => RemoteHelperManager::with_progress(options, progress),
@@ -2791,11 +2289,7 @@ fn connect_workspace_backend_for_location_with_optional_progress(
                 &location,
                 Some(display_root.display().to_string()),
             );
-            spawn_child_process_workspace_backend_with_protocol(
-                identity,
-                &retry_command,
-                options.protocol,
-            )
+            spawn_child_process_workspace_backend(identity, &retry_command)
             .with_context(|| {
                 format!(
                     "failed to initialize remote workspace service for {} after reinstalling helper. Initial error: {error:#}",
@@ -2854,25 +2348,11 @@ fn remote_startup_error_can_retry_helper_install(
 
     error.chain().any(|cause| {
         let message = cause.to_string();
-        message.contains("protocol version")
-            || message.contains("frame version")
+        message.contains("protocol v5")
+            || message.contains("frame header version")
             || message.contains("invalid frame magic")
-            || message.contains("unexpected hello response")
             || message.contains("remote service disconnected")
-            || message.contains("verify the helper exists and speaks protocol version")
-    })
-}
-
-fn remote_startup_error_can_fallback_v5_to_v4(error: &anyhow::Error) -> bool {
-    error.chain().any(|cause| {
-        let message = cause.to_string();
-        message.contains("failed to connect to v5 remote workspace service")
             || message.contains("verify the helper speaks protocol v5")
-            || message.contains("unsupported serve protocol")
-            || message.contains("unknown serve argument")
-            || message.contains("unsupported frame header version")
-            || message.contains("invalid frame magic")
-            || message.contains("remote service disconnected")
     })
 }
 
@@ -3674,102 +3154,6 @@ impl From<io::Error> for RemoteClientError {
 impl From<serde_json::Error> for RemoteClientError {
     fn from(error: serde_json::Error) -> Self {
         Self::Json(error)
-    }
-}
-
-pub struct RemoteWorkspaceClient<T> {
-    transport: T,
-    next_request_id: u64,
-}
-
-impl<T> RemoteWorkspaceClient<T>
-where
-    T: RemoteTransport,
-{
-    pub fn new(transport: T) -> Self {
-        Self {
-            transport,
-            next_request_id: 1,
-        }
-    }
-
-    pub fn request(
-        &mut self,
-        request: RemoteRequest,
-        body: Vec<u8>,
-    ) -> std::result::Result<(RemoteResponse, Vec<u8>), RemoteClientError> {
-        let request_id = self.next_id();
-        let envelope = RequestEnvelope::new(request);
-        let frame = Frame::from_json_header(FrameKind::Request, request_id, 0, &envelope, body)?;
-        self.transport.write_frame(&frame)?;
-
-        loop {
-            let frame = self
-                .transport
-                .read_frame()?
-                .ok_or(RemoteClientError::Disconnected)?;
-            if frame.request_id != request_id {
-                return Err(RemoteClientError::Protocol(format!(
-                    "received frame for request {}, expected {}",
-                    frame.request_id, request_id
-                )));
-            }
-
-            match frame.kind {
-                FrameKind::Response => {
-                    let envelope = frame.decode_json_header::<ResponseEnvelope>()?;
-                    if envelope.protocol_version != PROTOCOL_VERSION {
-                        return Err(RemoteClientError::Protocol(format!(
-                            "unsupported response protocol version {}; expected {}",
-                            envelope.protocol_version, PROTOCOL_VERSION
-                        )));
-                    }
-                    return Ok((envelope.response, frame.body));
-                }
-                FrameKind::Error => {
-                    let envelope = frame.decode_json_header::<ErrorEnvelope>()?;
-                    if envelope.protocol_version != PROTOCOL_VERSION {
-                        return Err(RemoteClientError::Protocol(format!(
-                            "unsupported error protocol version {}; expected {}",
-                            envelope.protocol_version, PROTOCOL_VERSION
-                        )));
-                    }
-                    return Err(RemoteClientError::Remote(envelope.error));
-                }
-                FrameKind::Progress => continue,
-                other => {
-                    return Err(RemoteClientError::Protocol(format!(
-                        "unexpected response frame kind: {other:?}"
-                    )));
-                }
-            }
-        }
-    }
-
-    pub fn hello(&mut self) -> std::result::Result<HelloResponse, RemoteClientError> {
-        let (response, _) = self.request(RemoteRequest::Hello, Vec::new())?;
-        match response {
-            RemoteResponse::Hello(hello) => Ok(hello),
-            other => Err(RemoteClientError::Protocol(format!(
-                "unexpected hello response: {other:?}"
-            ))),
-        }
-    }
-
-    pub fn shutdown(&mut self) -> std::result::Result<(), RemoteClientError> {
-        let (response, _) = self.request(RemoteRequest::Shutdown, Vec::new())?;
-        match response {
-            RemoteResponse::Shutdown => Ok(()),
-            other => Err(RemoteClientError::Protocol(format!(
-                "unexpected shutdown response: {other:?}"
-            ))),
-        }
-    }
-
-    fn next_id(&mut self) -> u64 {
-        let id = self.next_request_id;
-        self.next_request_id = self.next_request_id.wrapping_add(1).max(1);
-        id
     }
 }
 
@@ -5250,44 +4634,6 @@ pub trait RemoteWorkspaceProtocolClient: Send + Sync {
     }
 }
 
-pub struct RemoteWorkspaceV4ClientHandle<T: RemoteTransport> {
-    client: Mutex<RemoteWorkspaceClient<T>>,
-}
-
-impl<T: RemoteTransport> RemoteWorkspaceV4ClientHandle<T> {
-    pub fn new(client: RemoteWorkspaceClient<T>) -> Self {
-        Self {
-            client: Mutex::new(client),
-        }
-    }
-
-    pub fn lock(
-        &self,
-    ) -> std::result::Result<std::sync::MutexGuard<'_, RemoteWorkspaceClient<T>>, RemoteClientError>
-    {
-        self.client
-            .lock()
-            .map_err(|_| RemoteClientError::Protocol("remote client lock is poisoned".to_string()))
-    }
-}
-
-impl<T> RemoteWorkspaceProtocolClient for RemoteWorkspaceV4ClientHandle<T>
-where
-    T: RemoteTransport,
-{
-    fn request(
-        &self,
-        request: RemoteRequest,
-        body: Vec<u8>,
-    ) -> std::result::Result<(RemoteResponse, Vec<u8>), RemoteClientError> {
-        self.lock()?.request(request, body)
-    }
-
-    fn shutdown(&self) -> std::result::Result<(), RemoteClientError> {
-        self.lock()?.shutdown()
-    }
-}
-
 type ReconnectFactory<C> =
     dyn Fn() -> std::result::Result<C, RemoteClientError> + Send + Sync + 'static;
 
@@ -5423,33 +4769,12 @@ pub struct RemoteWorkspaceBackendImpl<C: RemoteWorkspaceProtocolClient> {
     client: Arc<C>,
 }
 
-pub type RemoteWorkspaceBackend<T> = RemoteWorkspaceBackendImpl<RemoteWorkspaceV4ClientHandle<T>>;
 pub type RemoteWorkspaceV5Backend<R, W> =
     RemoteWorkspaceBackendImpl<RemoteWorkspaceV5MultiplexedClient<R, W>>;
 type RemoteWorkspaceV5ChildClient =
     RemoteWorkspaceV5MultiplexedClient<ChildStdout, ChildProcessV5Writer>;
 type RemoteWorkspaceV5ReconnectingClient =
     ReconnectingRemoteWorkspaceProtocolClient<RemoteWorkspaceV5ChildClient>;
-
-impl<T> RemoteWorkspaceBackendImpl<RemoteWorkspaceV4ClientHandle<T>>
-where
-    T: RemoteTransport,
-{
-    pub fn new(identity: RemoteWorkspaceIdentity, client: RemoteWorkspaceClient<T>) -> Self {
-        Self {
-            identity,
-            client: Arc::new(RemoteWorkspaceV4ClientHandle::new(client)),
-        }
-    }
-
-    pub fn connect(
-        identity: RemoteWorkspaceIdentity,
-        mut client: RemoteWorkspaceClient<T>,
-    ) -> std::result::Result<(Self, HelloResponse), RemoteClientError> {
-        let hello = client.hello()?;
-        Ok((Self::new(identity, client), hello))
-    }
-}
 
 impl<R, W> RemoteWorkspaceBackendImpl<RemoteWorkspaceV5MultiplexedClient<R, W>>
 where
@@ -5650,79 +4975,7 @@ pub fn spawn_child_process_workspace_backend(
     identity: RemoteWorkspaceIdentity,
     command: &RemoteServiceCommand,
 ) -> Result<(WorkspaceBackendHandle, HelloResponse)> {
-    spawn_child_process_workspace_backend_with_protocol(
-        identity,
-        command,
-        RemoteWorkspaceProtocol::V4,
-    )
-}
-
-fn spawn_child_process_workspace_backend_with_protocol(
-    identity: RemoteWorkspaceIdentity,
-    command: &RemoteServiceCommand,
-    protocol: RemoteWorkspaceProtocol,
-) -> Result<(WorkspaceBackendHandle, HelloResponse)> {
-    match protocol {
-        RemoteWorkspaceProtocol::V4 => spawn_child_process_workspace_v4_backend(identity, command),
-        RemoteWorkspaceProtocol::V5 => spawn_child_process_workspace_v5_backend(identity, command),
-    }
-}
-
-fn spawn_child_process_workspace_v4_backend(
-    identity: RemoteWorkspaceIdentity,
-    command: &RemoteServiceCommand,
-) -> Result<(WorkspaceBackendHandle, HelloResponse)> {
-    tracing::info!(
-        remote_kind = ?identity.kind,
-        remote_name = %identity.name,
-        command = %command.display_context(),
-        "Starting remote workspace service process"
-    );
-    let transport = command.spawn().with_context(|| {
-        format!(
-            "failed to start remote workspace service: {}",
-            command.display_context()
-        )
-    })?;
-    let client = RemoteWorkspaceClient::new(transport);
-    tracing::info!(
-        remote_kind = ?identity.kind,
-        remote_name = %identity.name,
-        protocol_version = PROTOCOL_VERSION,
-        "Remote workspace service process started; waiting for hello"
-    );
-    let (backend, hello) = match RemoteWorkspaceBackend::connect(identity.clone(), client) {
-        Ok(connection) => connection,
-        Err(error) => {
-            tracing::warn!(
-                remote_kind = ?identity.kind,
-                remote_name = %identity.name,
-                error = %error,
-                "Remote workspace service hello failed"
-            );
-            return Err(error).with_context(|| {
-                format!(
-                    concat!(
-                        "failed to connect to remote workspace service after starting {}; ",
-                        "verify the helper exists and speaks protocol version {}"
-                    ),
-                    command.display_context(),
-                    PROTOCOL_VERSION
-                )
-            });
-        }
-    };
-    tracing::info!(
-        remote_kind = ?identity.kind,
-        remote_name = %identity.name,
-        workspace_root = %hello.workspace_root.display(),
-        helper_version = %hello.helper_version,
-        helper_os = %hello.os,
-        helper_arch = %hello.arch,
-        "Remote workspace service hello completed"
-    );
-
-    Ok((Arc::new(backend), hello))
+    spawn_child_process_workspace_v5_backend(identity, command)
 }
 
 fn spawn_child_process_workspace_v5_backend(
@@ -6354,40 +5607,6 @@ where
             project_environment: ProjectEnvironment::new(Some(environment_baseline)),
             runtime,
         })
-    }
-
-    pub fn serve<R: Read, W: Write>(&self, reader: &mut R, writer: &mut W) -> Result<()> {
-        while let Some(frame) = read_frame(reader).context("failed to read protocol frame")? {
-            match frame.kind {
-                FrameKind::Request => {
-                    let should_continue = self.handle_request(frame, writer)?;
-                    if !should_continue {
-                        break;
-                    }
-                }
-                FrameKind::Cancel => {
-                    self.write_error(
-                        writer,
-                        frame.request_id,
-                        "unsupported_cancel",
-                        "cancellation is not available for this operation yet",
-                        None,
-                    )?;
-                }
-                FrameKind::Shutdown => break,
-                other => {
-                    self.write_error(
-                        writer,
-                        frame.request_id,
-                        "unexpected_frame",
-                        format!("unexpected frame kind from client: {other:?}"),
-                        None,
-                    )?;
-                }
-            }
-        }
-
-        Ok(())
     }
 
     pub fn serve_v5<R: Read, W: Write>(
@@ -7901,72 +7120,12 @@ where
         Ok(())
     }
 
-    fn handle_request<W: Write>(&self, frame: Frame, writer: &mut W) -> Result<bool> {
-        let request = match frame.decode_json_header::<RequestEnvelope>() {
-            Ok(request) => request,
-            Err(error) => {
-                self.write_error(
-                    writer,
-                    frame.request_id,
-                    "invalid_request",
-                    "request header is not valid JSON",
-                    Some(error.to_string()),
-                )?;
-                return Ok(true);
-            }
-        };
-
-        if request.protocol_version != PROTOCOL_VERSION {
-            self.write_error(
-                writer,
-                frame.request_id,
-                "protocol_mismatch",
-                format!(
-                    "unsupported protocol version {}; expected {}",
-                    request.protocol_version, PROTOCOL_VERSION
-                ),
-                None,
-            )?;
-            return Ok(true);
-        }
-
-        match self.execute(request.request, frame.body) {
-            Ok(ServiceOutcome::Continue { response, body }) => {
-                self.write_response(writer, frame.request_id, *response, body)?;
-                Ok(true)
-            }
-            Ok(ServiceOutcome::Shutdown) => {
-                self.write_response(
-                    writer,
-                    frame.request_id,
-                    RemoteResponse::Shutdown,
-                    Vec::new(),
-                )?;
-                Ok(false)
-            }
-            Err(error) => {
-                self.write_error(
-                    writer,
-                    frame.request_id,
-                    &error.code,
-                    error.message,
-                    error.diagnostic,
-                )?;
-                Ok(true)
-            }
-        }
-    }
-
     fn execute(
         &self,
         request: RemoteRequest,
         request_body: Vec<u8>,
     ) -> std::result::Result<ServiceOutcome, RemoteError> {
         match request {
-            RemoteRequest::Hello => Ok(ServiceOutcome::continue_response(
-                RemoteResponse::Hello(HelloResponse::current(self.workspace_root.clone())),
-                Vec::new(),
-            )),
             RemoteRequest::Stat { path } => {
                 let path = self.resolve_read_path(&path)?;
                 let stat =
@@ -8374,45 +7533,6 @@ where
             Some(posix_path_string(relative))
         }
     }
-
-    fn write_response<W: Write>(
-        &self,
-        writer: &mut W,
-        request_id: u64,
-        response: RemoteResponse,
-        body: Vec<u8>,
-    ) -> Result<()> {
-        let envelope = ResponseEnvelope::new(response);
-        let frame = Frame::from_json_header(FrameKind::Response, request_id, 0, &envelope, body)
-            .context("failed to encode response frame")?;
-        write_frame(writer, &frame).context("failed to write response frame")
-    }
-
-    fn write_error<W: Write>(
-        &self,
-        writer: &mut W,
-        request_id: u64,
-        code: impl Into<String>,
-        message: impl Into<String>,
-        diagnostic: Option<String>,
-    ) -> Result<()> {
-        let envelope = ErrorEnvelope::new(RemoteError {
-            code: code.into(),
-            message: message.into(),
-            diagnostic,
-        });
-        let frame = Frame::from_json_header(FrameKind::Error, request_id, 0, &envelope, Vec::new())
-            .context("failed to encode error frame")?;
-        write_frame(writer, &frame).context("failed to write error frame")
-    }
-}
-
-pub fn serve_local_workspace<R: Read, W: Write>(
-    workspace_root: PathBuf,
-    reader: &mut R,
-    writer: &mut W,
-) -> Result<()> {
-    WorkspaceService::new(LocalWorkspaceBackend, workspace_root)?.serve(reader, writer)
 }
 
 pub fn serve_local_workspace_v5<R: Read + Send + 'static, W: Write>(
@@ -11420,16 +10540,7 @@ where
             let options = parse_serve_options(args)?;
             let stdin = std::io::stdin();
             let stdout = std::io::stdout();
-            match options.protocol {
-                RemoteWorkspaceProtocol::V4 => serve_local_workspace(
-                    options.workspace_root,
-                    &mut stdin.lock(),
-                    &mut stdout.lock(),
-                ),
-                RemoteWorkspaceProtocol::V5 => {
-                    serve_local_workspace_v5(options.workspace_root, stdin, stdout)
-                }
-            }
+            serve_local_workspace_v5(options.workspace_root, stdin, stdout)
         }
         "lsp-proxy" => {
             let options = parse_lsp_proxy_options(args)?;
@@ -11493,7 +10604,6 @@ where
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ServeOptions {
     workspace_root: PathBuf,
-    protocol: RemoteWorkspaceProtocol,
 }
 
 fn parse_serve_options<I>(args: I) -> Result<ServeOptions>
@@ -11502,7 +10612,6 @@ where
 {
     let mut args = args.into_iter();
     let mut workspace_root = None;
-    let mut protocol = RemoteWorkspaceProtocol::V4;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--workspace" => {
@@ -11519,12 +10628,10 @@ where
                 });
             }
             "--protocol" => {
-                let value = args.next().context("--protocol requires v4 or v5")?;
-                protocol = match value.as_str() {
-                    "4" | "v4" | "V4" => RemoteWorkspaceProtocol::V4,
-                    "5" | "v5" | "V5" => RemoteWorkspaceProtocol::V5,
-                    other => bail!("unsupported serve protocol: {other}"),
-                };
+                let value = args.next().context("--protocol requires v5")?;
+                if !matches!(value.as_str(), "5" | "v5" | "V5") {
+                    bail!("unsupported serve protocol: {value}");
+                }
             }
             other => bail!("unknown serve argument: {other}"),
         }
@@ -11534,10 +10641,7 @@ where
         .map(Ok)
         .unwrap_or_else(std::env::current_dir)
         .context("failed to resolve workspace root")?;
-    Ok(ServeOptions {
-        workspace_root,
-        protocol,
-    })
+    Ok(ServeOptions { workspace_root })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -11928,7 +11032,6 @@ mod tests {
     fn ssh_target_separator_index(args: &[OsString]) -> usize {
         arg_index(args, "--")
     }
-    use futures::FutureExt;
     use nucleotide_workspace::RemoteWorkspaceKind;
     use std::collections::VecDeque;
     use std::io::Cursor;
@@ -11936,34 +11039,6 @@ mod tests {
         Arc, Condvar, Mutex as StdMutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     };
-
-    #[cfg(unix)]
-    fn executable_tempdir() -> tempfile::TempDir {
-        let base = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join("test-tmp");
-        std::fs::create_dir_all(&base).unwrap();
-        tempfile::Builder::new()
-            .prefix("nucleotide-remote-")
-            .tempdir_in(base)
-            .unwrap()
-    }
-
-    #[cfg(unix)]
-    fn generated_executable_is_allowed(executable: &Path) -> bool {
-        match std::process::Command::new(executable)
-            .arg("--probe")
-            .status()
-        {
-            Ok(_) => true,
-            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => false,
-            Err(error) => panic!(
-                "failed to probe generated executable {}: {error}",
-                executable.display()
-            ),
-        }
-    }
 
     fn v5_client_input(frames: Vec<protocol_v5::Frame>) -> Vec<u8> {
         v5_client_input_with_settings(frames, protocol_v5::ConnectionSettings::recommended())
@@ -13032,9 +12107,6 @@ mod tests {
 
     #[test]
     fn v5_method_payload_reports_unsupported_and_invalid_payloads() {
-        let error = RemoteRequest::Hello.to_v5_method_payload().unwrap_err();
-        assert_eq!(error, V5MethodError::UnsupportedLegacyRequest("hello"));
-
         let error = RemoteRequest::from_v5_method_payload("watch.start", b"{}").unwrap_err();
         assert_eq!(
             error,
@@ -13057,14 +12129,7 @@ mod tests {
 
     #[test]
     fn v5_response_method_matches_request_namespace() {
-        assert_eq!(
-            RemoteResponse::Hello(HelloResponse::current(PathBuf::from("."))).v5_method(),
-            None
-        );
-        assert_eq!(
-            RemoteResponse::Shutdown.v5_method(),
-            Some("session.shutdown")
-        );
+        assert_eq!(RemoteResponse::Shutdown.v5_method(), "session.shutdown");
         assert_eq!(
             RemoteResponse::ReadFile(FileReadResponse {
                 path: PathBuf::from("README.md"),
@@ -13075,7 +12140,7 @@ mod tests {
                 truncated: false,
             })
             .v5_method(),
-            Some("fs.read")
+            "fs.read"
         );
     }
 
@@ -15709,7 +14774,6 @@ mod tests {
         .unwrap();
 
         assert_eq!(options.workspace_root, temp.path());
-        assert_eq!(options.protocol, RemoteWorkspaceProtocol::V5);
     }
 
     #[test]
@@ -15830,117 +14894,6 @@ mod tests {
                 .join(".bin")
                 .join("typescript-language-server")
         );
-    }
-
-    struct LoopbackTransport {
-        root: PathBuf,
-        pending: VecDeque<Frame>,
-    }
-
-    impl LoopbackTransport {
-        fn new(root: &Path) -> Self {
-            Self {
-                root: root.to_path_buf(),
-                pending: VecDeque::new(),
-            }
-        }
-    }
-
-    impl RemoteTransport for LoopbackTransport {
-        fn write_frame(&mut self, frame: &Frame) -> io::Result<()> {
-            let mut input = Vec::new();
-            write_frame(&mut input, frame)?;
-            let root = self.root.clone();
-            let output = std::thread::spawn(move || {
-                let service = WorkspaceService::new(LocalWorkspaceBackend, root)?;
-                let mut output = Vec::new();
-                service
-                    .serve(&mut Cursor::new(input), &mut output)
-                    .map(|_| output)
-            })
-            .join()
-            .map_err(|_| io::Error::other("loopback service thread panicked"))?
-            .map_err(|error| io::Error::other(error.to_string()))?;
-
-            let mut cursor = Cursor::new(output);
-            while let Some(frame) = read_frame(&mut cursor)? {
-                self.pending.push_back(frame);
-            }
-            Ok(())
-        }
-
-        fn read_frame(&mut self) -> io::Result<Option<Frame>> {
-            Ok(self.pending.pop_front())
-        }
-    }
-
-    struct ShutdownRecordingTransport {
-        saw_shutdown: Arc<AtomicBool>,
-        pending: VecDeque<Frame>,
-    }
-
-    impl ShutdownRecordingTransport {
-        fn new(saw_shutdown: Arc<AtomicBool>) -> Self {
-            Self {
-                saw_shutdown,
-                pending: VecDeque::new(),
-            }
-        }
-    }
-
-    impl RemoteTransport for ShutdownRecordingTransport {
-        fn write_frame(&mut self, frame: &Frame) -> io::Result<()> {
-            let envelope = frame
-                .decode_json_header::<RequestEnvelope>()
-                .map_err(io::Error::other)?;
-            let response = match envelope.request {
-                RemoteRequest::Shutdown => {
-                    self.saw_shutdown.store(true, Ordering::SeqCst);
-                    RemoteResponse::Shutdown
-                }
-                other => {
-                    return Err(io::Error::other(format!("unexpected request: {other:?}")));
-                }
-            };
-
-            self.pending.push_back(
-                Frame::from_json_header(
-                    FrameKind::Response,
-                    frame.request_id,
-                    0,
-                    &ResponseEnvelope::new(response),
-                    Vec::new(),
-                )
-                .map_err(io::Error::other)?,
-            );
-            Ok(())
-        }
-
-        fn read_frame(&mut self) -> io::Result<Option<Frame>> {
-            Ok(self.pending.pop_front())
-        }
-    }
-
-    struct StaticResponseTransport {
-        pending: VecDeque<Frame>,
-    }
-
-    impl StaticResponseTransport {
-        fn new(response: Frame) -> Self {
-            Self {
-                pending: VecDeque::from([response]),
-            }
-        }
-    }
-
-    impl RemoteTransport for StaticResponseTransport {
-        fn write_frame(&mut self, _frame: &Frame) -> io::Result<()> {
-            Ok(())
-        }
-
-        fn read_frame(&mut self) -> io::Result<Option<Frame>> {
-            Ok(self.pending.pop_front())
-        }
     }
 
     #[derive(Clone)]
@@ -16363,203 +15316,6 @@ mod tests {
         }
     }
 
-    fn remote_backend(root: &Path) -> RemoteWorkspaceBackend<LoopbackTransport> {
-        RemoteWorkspaceBackend::new(
-            loopback_identity(),
-            RemoteWorkspaceClient::new(LoopbackTransport::new(root)),
-        )
-    }
-
-    fn static_response_backend(
-        response: RemoteResponse,
-        body: Vec<u8>,
-    ) -> RemoteWorkspaceBackend<StaticResponseTransport> {
-        let frame = Frame::from_json_header(
-            FrameKind::Response,
-            1,
-            0,
-            &ResponseEnvelope::new(response),
-            body,
-        )
-        .unwrap();
-
-        RemoteWorkspaceBackend::new(
-            loopback_identity(),
-            RemoteWorkspaceClient::new(StaticResponseTransport::new(frame)),
-        )
-    }
-
-    #[test]
-    fn remote_client_hello_returns_service_metadata() {
-        let temp = tempfile::tempdir().unwrap();
-        let mut client = RemoteWorkspaceClient::new(LoopbackTransport::new(temp.path()));
-
-        let hello = client.hello().unwrap();
-
-        assert_eq!(hello.workspace_root, temp.path());
-        assert_eq!(hello.helper_version, env!("CARGO_PKG_VERSION"));
-        assert!(hello.capabilities.contains(&"list_dir".to_string()));
-        assert!(hello.capabilities.contains(&"list_dirs".to_string()));
-        assert!(
-            hello
-                .capabilities
-                .contains(&"directory_entry_ignored".to_string())
-        );
-    }
-
-    #[test]
-    fn remote_backend_connect_performs_handshake() {
-        let temp = tempfile::tempdir().unwrap();
-        let client = RemoteWorkspaceClient::new(LoopbackTransport::new(temp.path()));
-
-        let (backend, hello) =
-            RemoteWorkspaceBackend::connect(loopback_identity(), client).unwrap();
-
-        assert_eq!(hello.workspace_root, temp.path());
-        assert_eq!(
-            backend.identity(),
-            WorkspaceIdentity::Remote(loopback_identity())
-        );
-    }
-
-    #[test]
-    fn remote_backend_drop_sends_shutdown() {
-        let saw_shutdown = Arc::new(AtomicBool::new(false));
-        let transport = ShutdownRecordingTransport::new(saw_shutdown.clone());
-        let backend =
-            RemoteWorkspaceBackend::new(loopback_identity(), RemoteWorkspaceClient::new(transport));
-
-        drop(backend);
-
-        assert!(saw_shutdown.load(Ordering::SeqCst));
-    }
-
-    #[test]
-    fn remote_backend_request_yields_when_client_lock_is_busy() {
-        let backend = static_response_backend(
-            RemoteResponse::ListDir(DirectoryListingResponse {
-                path: PathBuf::new(),
-                generation: Some(0),
-                fingerprint: Some(0),
-                complete: true,
-                not_modified: false,
-                delta: None,
-                entries: Vec::new(),
-            }),
-            Vec::new(),
-        );
-        let client = backend.client.clone();
-        let guard = client.lock().unwrap();
-
-        let future = backend.list_dir(Path::new(""));
-        futures::pin_mut!(future);
-
-        assert!(future.as_mut().now_or_never().is_none());
-        drop(guard);
-
-        let listing = block_on(future).unwrap();
-        assert!(listing.entries.is_empty());
-    }
-
-    #[test]
-    fn remote_backend_file_operations_round_trip() {
-        let temp = tempfile::tempdir().unwrap();
-        let backend = remote_backend(temp.path());
-        let dir = temp.path().join("src");
-        let file = dir.join("main.rs");
-        let renamed = dir.join("lib.rs");
-        let copied = dir.join("lib-copy.rs");
-
-        let dir_stat = block_on(backend.create_dir(&dir)).unwrap();
-        let file_stat = block_on(backend.create_file(&file)).unwrap();
-        std::fs::write(&file, "pub fn lib() {}\n").unwrap();
-        let renamed_stat = block_on(backend.rename_path(&file, &renamed)).unwrap();
-        let copied_stat = block_on(backend.copy_path(&renamed, &copied)).unwrap();
-        let deleted_stat = block_on(backend.delete_path(&renamed)).unwrap();
-
-        assert_eq!(dir_stat.path, dir);
-        assert_eq!(dir_stat.kind, FileKind::Directory);
-        assert_eq!(file_stat.path, file);
-        assert_eq!(file_stat.kind, FileKind::File);
-        assert_eq!(renamed_stat.path, renamed);
-        assert_eq!(copied_stat.path, copied);
-        assert_eq!(deleted_stat.path, renamed);
-        assert!(!renamed.exists());
-        assert_eq!(
-            std::fs::read_to_string(copied).unwrap(),
-            "pub fn lib() {}\n"
-        );
-    }
-
-    #[test]
-    fn remote_backend_find_ancestor_file_round_trip() {
-        let temp = tempfile::tempdir().unwrap();
-        let backend = remote_backend(temp.path());
-        let manifest = temp.path().join("Cargo.toml");
-        let file = temp.path().join("src").join("main.rs");
-        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-        std::fs::write(&manifest, "[package]\n").unwrap();
-        std::fs::write(&file, "fn main() {}\n").unwrap();
-
-        let found = block_on(backend.find_ancestor_file(&file, "Cargo.toml", 8)).unwrap();
-
-        assert_eq!(found, Some(manifest));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn remote_backend_run_process_round_trips_output() {
-        let temp = tempfile::tempdir().unwrap();
-        let backend = remote_backend(temp.path());
-
-        let output = block_on(backend.run_process(ProcessSpec {
-            program: "/bin/sh".to_string(),
-            args: vec![
-                "-c".to_string(),
-                "printf '%s:' \"$REMOTE_FLAG\"; cat; printf err >&2".to_string(),
-            ],
-            cwd: PathBuf::new(),
-            env: BTreeMap::from([("REMOTE_FLAG".to_string(), "remote".to_string())]),
-            clear_env: false,
-            inherit_project_environment: false,
-            stdin: b"stdin".to_vec(),
-            max_output_bytes: None,
-            timeout_ms: None,
-        }))
-        .unwrap();
-
-        assert!(output.success);
-        assert_eq!(output.status_code, Some(0));
-        assert_eq!(output.stdout, b"remote:stdin");
-        assert_eq!(output.stderr, b"err");
-        assert!(!output.stdout_truncated);
-        assert!(!output.stderr_truncated);
-        assert!(!output.timed_out);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn remote_backend_run_process_reports_timeout() {
-        let temp = tempfile::tempdir().unwrap();
-        let backend = remote_backend(temp.path());
-
-        let output = block_on(backend.run_process(ProcessSpec {
-            program: "tail".to_string(),
-            args: vec!["-f".to_string(), "/dev/null".to_string()],
-            cwd: PathBuf::new(),
-            env: BTreeMap::new(),
-            clear_env: false,
-            inherit_project_environment: false,
-            stdin: Vec::new(),
-            max_output_bytes: None,
-            timeout_ms: Some(20),
-        }))
-        .unwrap();
-
-        assert!(!output.success);
-        assert!(output.timed_out);
-    }
-
     #[test]
     fn process_output_response_defaults_missing_timeout_flag() {
         let response: ProcessOutputResponse = serde_json::from_value(serde_json::json!({
@@ -16576,63 +15332,6 @@ mod tests {
     }
 
     #[test]
-    fn remote_backend_rejects_malformed_run_process_body() {
-        let backend = static_response_backend(
-            RemoteResponse::RunProcess(ProcessOutputResponse {
-                status_code: Some(0),
-                success: true,
-                stdout_truncated: false,
-                stderr_truncated: false,
-                stdout_len: 3,
-                stderr_len: 3,
-                timed_out: false,
-            }),
-            b"abc".to_vec(),
-        );
-
-        let result = block_on(backend.run_process(ProcessSpec {
-            program: "ignored".to_string(),
-            args: Vec::new(),
-            cwd: PathBuf::new(),
-            env: BTreeMap::new(),
-            clear_env: false,
-            inherit_project_environment: false,
-            stdin: Vec::new(),
-            max_output_bytes: None,
-            timeout_ms: None,
-        }));
-
-        assert!(matches!(
-            result,
-            Err(WorkspaceError::Remote { message, .. })
-                if message.contains("malformed run_process body")
-        ));
-    }
-
-    #[test]
-    fn remote_backend_rejects_short_untruncated_read_body() {
-        let backend = static_response_backend(
-            RemoteResponse::ReadFile(FileReadResponse {
-                path: PathBuf::from("main.rs"),
-                size: 6,
-                modified_unix_millis: None,
-                modified_unix_nanos: None,
-                readonly: false,
-                truncated: false,
-            }),
-            b"abc".to_vec(),
-        );
-
-        let result = block_on(backend.read_file(Path::new("main.rs"), ReadOptions::default()));
-
-        assert!(matches!(
-            result,
-            Err(WorkspaceError::Remote { message, .. })
-                if message.contains("malformed read_file body")
-        ));
-    }
-
-    #[test]
     fn remote_time_conversion_preserves_sub_millisecond_precision() {
         let time = UNIX_EPOCH + Duration::new(42, 123_456_789);
         let millis = system_time_unix_millis(time);
@@ -16645,88 +15344,6 @@ mod tests {
         assert_ne!(millis.and_then(system_time_from_unix_millis), Some(time));
     }
 
-    fn request_frame(id: u64, request: RemoteRequest, body: Vec<u8>) -> Frame {
-        Frame::from_json_header(
-            FrameKind::Request,
-            id,
-            0,
-            &RequestEnvelope::new(request),
-            body,
-        )
-        .unwrap()
-    }
-
-    fn single_request_output(root: &Path, request: RemoteRequest, body: Vec<u8>) -> Vec<u8> {
-        let mut input = Vec::new();
-        write_frame(&mut input, &request_frame(7, request, body)).unwrap();
-        write_frame(
-            &mut input,
-            &request_frame(8, RemoteRequest::Shutdown, Vec::new()),
-        )
-        .unwrap();
-
-        let service = WorkspaceService::new(LocalWorkspaceBackend, root.to_path_buf()).unwrap();
-        let mut reader = Cursor::new(input);
-        let mut output = Vec::new();
-        service.serve(&mut reader, &mut output).unwrap();
-        output
-    }
-
-    fn read_first_output_frame(output: Vec<u8>) -> Frame {
-        read_frame(&mut Cursor::new(output)).unwrap().unwrap()
-    }
-
-    fn shell_octal_bytes(bytes: &[u8]) -> String {
-        bytes
-            .iter()
-            .map(|byte| format!("\\{byte:03o}"))
-            .collect::<String>()
-    }
-
-    fn hello_response_frame_bytes(workspace_root: &Path) -> Vec<u8> {
-        let frame = Frame::from_json_header(
-            FrameKind::Response,
-            1,
-            0,
-            &ResponseEnvelope::new(RemoteResponse::Hello(HelloResponse::current(
-                workspace_root.to_path_buf(),
-            ))),
-            Vec::new(),
-        )
-        .unwrap();
-        let mut bytes = Vec::new();
-        write_frame(&mut bytes, &frame).unwrap();
-        bytes
-    }
-
-    #[test]
-    fn frame_round_trip_preserves_header_and_body() {
-        let envelope = RequestEnvelope::new(RemoteRequest::ReadFile {
-            path: PathBuf::from("src/main.rs"),
-            max_bytes: Some(10),
-        });
-        let frame = Frame::from_json_header(FrameKind::Request, 42, 3, &envelope, b"body".to_vec())
-            .unwrap();
-
-        let mut bytes = Vec::new();
-        write_frame(&mut bytes, &frame).unwrap();
-        let decoded = read_frame(&mut Cursor::new(bytes)).unwrap().unwrap();
-
-        assert_eq!(decoded.kind, FrameKind::Request);
-        assert_eq!(decoded.request_id, 42);
-        assert_eq!(decoded.stream_id, 3);
-        assert_eq!(decoded.body, b"body");
-        assert_eq!(
-            decoded.decode_json_header::<RequestEnvelope>().unwrap(),
-            envelope
-        );
-    }
-
-    #[test]
-    fn frame_reader_returns_none_on_clean_eof() {
-        assert!(read_frame(&mut Cursor::new(Vec::new())).unwrap().is_none());
-    }
-
     #[test]
     fn local_service_command_runs_helper_directly() {
         let spec = local_service_command("/tmp/nucleotide-remote", "/workspace/project");
@@ -16737,22 +15354,13 @@ mod tests {
             vec![
                 OsString::from("serve"),
                 OsString::from("--workspace"),
-                OsString::from("/workspace/project")
+                OsString::from("/workspace/project"),
+                OsString::from("--protocol"),
+                OsString::from("v5")
             ]
         );
         assert_eq!(spec.current_dir, Some(PathBuf::from("/workspace/project")));
-    }
-
-    #[test]
-    fn local_service_command_can_request_v5_protocol() {
-        let spec = local_service_command_with_protocol(
-            "/tmp/nucleotide-remote",
-            "/workspace/project",
-            RemoteWorkspaceProtocol::V5,
-        );
-
         assert_arg_pair(&spec.args, "--protocol", "v5");
-        assert_eq!(spec.current_dir, Some(PathBuf::from("/workspace/project")));
     }
 
     #[test]
@@ -16765,12 +15373,12 @@ mod tests {
 
         assert_eq!(
             spec.display_invocation(),
-            format!("'/tmp/nucleotide remote' serve --workspace {quoted_workspace}")
+            format!("'/tmp/nucleotide remote' serve --workspace {quoted_workspace} --protocol v5")
         );
         assert_eq!(
             spec.display_context(),
             format!(
-                "'/tmp/nucleotide remote' serve --workspace {quoted_workspace} (cwd {quoted_workspace})"
+                "'/tmp/nucleotide remote' serve --workspace {quoted_workspace} --protocol v5 (cwd {quoted_workspace})"
             )
         );
     }
@@ -16791,21 +15399,12 @@ mod tests {
                 OsString::from("/home/me/.cache/nucl/remote"),
                 OsString::from("serve"),
                 OsString::from("--workspace"),
-                OsString::from("/home/me/project")
+                OsString::from("/home/me/project"),
+                OsString::from("--protocol"),
+                OsString::from("v5")
             ]
         );
         assert_eq!(spec.current_dir, None);
-    }
-
-    #[test]
-    fn wsl_service_command_can_request_v5_protocol() {
-        let spec = wsl_service_command_with_protocol(
-            "Ubuntu",
-            "/home/me/project",
-            "/home/me/.cache/nucl/remote",
-            RemoteWorkspaceProtocol::V5,
-        );
-
         assert_arg_pair(&spec.args, "--protocol", "v5");
     }
 
@@ -16898,18 +15497,6 @@ mod tests {
         assert!(command.starts_with("exec "));
         assert!(command.contains("'/home/me/.cache/nucleotide remote/bin'"));
         assert!(command.contains("'/home/me/project with spaces/it'\"'\"'s'"));
-    }
-
-    #[test]
-    fn ssh_service_command_can_request_v5_protocol() {
-        let spec = ssh_service_command_with_protocol(
-            SshTarget::new("devbox"),
-            "/home/me/project",
-            "/home/me/.cache/nucl/remote",
-            RemoteWorkspaceProtocol::V5,
-        );
-
-        let command = spec.args.last().unwrap().to_string_lossy();
         assert!(command.contains("--protocol v5"));
     }
 
@@ -16925,6 +15512,7 @@ mod tests {
 
         assert!(command.contains("'/home/me/.cache/nucl/remote'"));
         assert!(command.contains("'/home/me/project'"));
+        assert!(command.contains("--protocol v5"));
 
         let spec = ssh_terminal_proxy_command(
             SshTarget::new("devbox"),
@@ -17057,6 +15645,11 @@ mod tests {
         assert!(arg_index(&spec.args, "bastion") < separator);
         assert!(arg_index(&spec.args, "/tmp/ssh config") < separator);
         assert_eq!(spec.args[separator + 1], OsString::from("devbox"));
+        assert!(
+            spec.args[separator + 2]
+                .to_string_lossy()
+                .contains("--protocol v5")
+        );
     }
 
     #[test]
@@ -17134,6 +15727,7 @@ mod tests {
             OsString::from("/remote/bin/nucleotide-remote")
         );
         assert_eq!(spec.args[8], OsString::from("/home/me/project"));
+        assert_arg_pair(&spec.args, "--protocol", "v5");
     }
 
     #[test]
@@ -17186,6 +15780,7 @@ mod tests {
         let command = spec.args[separator + 2].to_string_lossy();
         assert!(command.contains("/remote/bin/nucleotide-remote"));
         assert!(command.contains("/home/me/project"));
+        assert!(command.contains("--protocol v5"));
     }
 
     #[test]
@@ -17270,7 +15865,7 @@ mod tests {
             path: PathBuf::from("/home/me/project"),
         };
         let error = anyhow::anyhow!(
-            "failed to connect to remote workspace service: unsupported response protocol version 1; expected 2"
+            "failed to connect to v5 remote workspace service after starting ssh helper; verify the helper speaks protocol v5"
         );
 
         assert!(remote_startup_error_can_retry_helper_install(
@@ -17293,7 +15888,7 @@ mod tests {
             path: PathBuf::from("/home/me/project"),
         };
         let auth_error = anyhow::anyhow!("Permission denied (publickey)");
-        let protocol_error = anyhow::anyhow!("unsupported response protocol version 1; expected 2");
+        let protocol_error = anyhow::anyhow!("invalid frame magic; expected NUC2");
 
         assert!(!remote_startup_error_can_retry_helper_install(
             &ssh_location,
@@ -17303,108 +15898,6 @@ mod tests {
             &local_location,
             &protocol_error
         ));
-    }
-
-    #[test]
-    fn v5_startup_protocol_error_allows_v4_fallback() {
-        let protocol_error = anyhow::anyhow!(
-            "failed to connect to v5 remote workspace service after starting helper; verify the helper speaks protocol v5"
-        );
-        let auth_error = anyhow::anyhow!("Permission denied (publickey)");
-
-        assert!(remote_startup_error_can_fallback_v5_to_v4(&protocol_error));
-        assert!(!remote_startup_error_can_fallback_v5_to_v4(&auth_error));
-    }
-
-    #[test]
-    fn v5_fallback_service_command_omits_protocol_argument() {
-        let location = WorkspaceLocation::Ssh {
-            original_path: PathBuf::from("ssh://me@example.com/home/me/project"),
-            target: SshWorkspaceTarget {
-                host: "example.com".to_string(),
-                user: Some("me".to_string()),
-                port: None,
-            },
-            path: PathBuf::from("/home/me/project"),
-        };
-        let options = RemoteWorkspaceBackendOptions {
-            protocol: RemoteWorkspaceProtocol::V5,
-            ssh_control_path: None,
-            ..RemoteWorkspaceBackendOptions::default()
-        };
-
-        let v5 = remote_service_command_for_location_with_options(
-            &location,
-            "/remote/bin/nucleotide-remote",
-            &options,
-        )
-        .unwrap();
-        let fallback = remote_service_command_for_location_with_protocol_options(
-            &location,
-            "/remote/bin/nucleotide-remote",
-            &options,
-            RemoteWorkspaceProtocol::V4,
-        )
-        .unwrap();
-
-        let v5_command = v5.args.last().unwrap().to_string_lossy();
-        let fallback_command = fallback.args.last().unwrap().to_string_lossy();
-        assert!(v5_command.contains("--protocol v5"));
-        assert!(!fallback_command.contains("--protocol"));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn local_service_v5_startup_falls_back_to_v4_helper() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let temp = tempfile::tempdir().unwrap();
-        let helper = temp.path().join("fake-helper");
-        let attempts = temp.path().join("attempts.log");
-        let hello_bytes = shell_octal_bytes(&hello_response_frame_bytes(temp.path()));
-        let script = format!(
-            "#!/bin/sh\n\
-             printf '%s\\n' \"$*\" >> '{}'\n\
-             if [ \"$4\" = \"--protocol\" ] && [ \"$5\" = \"v5\" ]; then\n\
-             \techo 'unsupported serve protocol: v5' >&2\n\
-             \texit 64\n\
-             fi\n\
-             printf '{}'\n",
-            attempts.display(),
-            hello_bytes
-        );
-        std::fs::write(&helper, script).unwrap();
-        let mut permissions = std::fs::metadata(&helper).unwrap().permissions();
-        permissions.set_mode(0o755);
-        std::fs::set_permissions(&helper, permissions).unwrap();
-        let location = WorkspaceLocation::Local {
-            path: temp.path().to_path_buf(),
-        };
-        let options = RemoteWorkspaceBackendOptions {
-            protocol: RemoteWorkspaceProtocol::V5,
-            remote_helper_path: helper.clone(),
-            remote_helper_path_is_override: true,
-            local_helper_path: Some(helper),
-            use_local_service: true,
-            ssh_control_path: None,
-            ..RemoteWorkspaceBackendOptions::default()
-        };
-
-        let connection = connect_workspace_backend_for_location(location, &options).unwrap();
-
-        let hello = connection.hello.unwrap();
-        assert_eq!(hello.workspace_root, temp.path());
-        let attempts = std::fs::read_to_string(attempts).unwrap();
-        assert!(
-            attempts.contains("--protocol v5"),
-            "expected first attempt to request v5: {attempts}"
-        );
-        assert!(
-            attempts
-                .lines()
-                .any(|line| line == format!("serve --workspace {}", temp.path().display())),
-            "expected fallback attempt to omit --protocol: {attempts}"
-        );
     }
 
     #[test]
@@ -17532,39 +16025,6 @@ mod tests {
             options.ssh_helper_download_base_url.as_deref(),
             Some("https://mirror.example/releases/v1")
         );
-    }
-
-    #[test]
-    fn backend_options_parse_remote_protocol_environment_value() {
-        let options = RemoteWorkspaceBackendOptions::from_environment_values(
-            RemoteWorkspaceBackendEnvironment {
-                protocol: Some("v5".to_string()),
-                ssh_control_master: Some("false".to_string()),
-                ..RemoteWorkspaceBackendEnvironment::default()
-            },
-        );
-
-        assert_eq!(options.protocol, RemoteWorkspaceProtocol::V5);
-    }
-
-    #[test]
-    fn backend_options_default_to_v5_with_v4_environment_override() {
-        let default_options = RemoteWorkspaceBackendOptions::from_environment_values(
-            RemoteWorkspaceBackendEnvironment {
-                ssh_control_master: Some("false".to_string()),
-                ..RemoteWorkspaceBackendEnvironment::default()
-            },
-        );
-        let v4_options = RemoteWorkspaceBackendOptions::from_environment_values(
-            RemoteWorkspaceBackendEnvironment {
-                protocol: Some("v4".to_string()),
-                ssh_control_master: Some("false".to_string()),
-                ..RemoteWorkspaceBackendEnvironment::default()
-            },
-        );
-
-        assert_eq!(default_options.protocol, RemoteWorkspaceProtocol::V5);
-        assert_eq!(v4_options.protocol, RemoteWorkspaceProtocol::V4);
     }
 
     #[test]
@@ -17768,939 +16228,5 @@ mod tests {
         assert!(wsl_hint.contains("NUCLEOTIDE_REMOTE_HELPER"));
         assert!(ssh_hint.contains("SSH target me@example.com"));
         assert!(ssh_hint.contains("NUCLEOTIDE_REMOTE_HELPER"));
-    }
-
-    #[test]
-    fn service_hello_returns_workspace_root_and_capabilities() {
-        let temp = tempfile::tempdir().unwrap();
-        let frame = read_first_output_frame(single_request_output(
-            temp.path(),
-            RemoteRequest::Hello,
-            Vec::new(),
-        ));
-
-        assert_eq!(frame.kind, FrameKind::Response);
-        let response = frame.decode_json_header::<ResponseEnvelope>().unwrap();
-        let RemoteResponse::Hello(hello) = response.response else {
-            panic!("expected hello response");
-        };
-        assert_eq!(hello.workspace_root, temp.path());
-        assert!(
-            hello
-                .capabilities
-                .contains(&"binary_body_frames".to_string())
-        );
-        assert!(hello.capabilities.contains(&"list_dirs".to_string()));
-        assert!(hello.capabilities.contains(&"text_search".to_string()));
-        assert!(
-            hello
-                .capabilities
-                .contains(&"project_environment".to_string())
-        );
-        assert!(hello.capabilities.contains(&"git_head".to_string()));
-        assert!(hello.capabilities.contains(&"git_status".to_string()));
-    }
-
-    #[test]
-    fn service_read_file_returns_metadata_and_raw_body() {
-        let temp = tempfile::tempdir().unwrap();
-        std::fs::write(temp.path().join("main.rs"), "abcdef").unwrap();
-
-        let frame = read_first_output_frame(single_request_output(
-            temp.path(),
-            RemoteRequest::ReadFile {
-                path: PathBuf::from("main.rs"),
-                max_bytes: Some(3),
-            },
-            Vec::new(),
-        ));
-
-        assert_eq!(frame.body, b"abc");
-        let response = frame.decode_json_header::<ResponseEnvelope>().unwrap();
-        let RemoteResponse::ReadFile(read) = response.response else {
-            panic!("expected read response");
-        };
-        assert_eq!(read.size, 6);
-        assert!(read.truncated);
-    }
-
-    #[test]
-    fn service_write_file_accepts_raw_body() {
-        let temp = tempfile::tempdir().unwrap();
-        let frame = read_first_output_frame(single_request_output(
-            temp.path(),
-            RemoteRequest::WriteFile {
-                path: PathBuf::from("src/main.rs"),
-                create_parent_dirs: true,
-                expected_modified_unix_millis: None,
-                expected_modified_unix_nanos: None,
-            },
-            b"fn main() {}\n".to_vec(),
-        ));
-
-        let response = frame.decode_json_header::<ResponseEnvelope>().unwrap();
-        let RemoteResponse::WriteFile(write) = response.response else {
-            panic!("expected write response");
-        };
-        assert_eq!(write.size, 13);
-        assert_eq!(
-            std::fs::read_to_string(temp.path().join("src").join("main.rs")).unwrap(),
-            "fn main() {}\n"
-        );
-    }
-
-    #[test]
-    fn service_read_file_allows_absolute_paths_outside_workspace() {
-        let temp = tempfile::tempdir().unwrap();
-        let workspace = temp.path().join("workspace");
-        let outside = temp.path().join("outside.txt");
-        std::fs::create_dir(&workspace).unwrap();
-        std::fs::write(&outside, "secret").unwrap();
-
-        let frame = read_first_output_frame(single_request_output(
-            &workspace,
-            RemoteRequest::ReadFile {
-                path: outside.clone(),
-                max_bytes: None,
-            },
-            Vec::new(),
-        ));
-
-        assert_eq!(frame.kind, FrameKind::Response);
-        assert_eq!(frame.body, b"secret");
-        let response = frame.decode_json_header::<ResponseEnvelope>().unwrap();
-        let RemoteResponse::ReadFile(read) = response.response else {
-            panic!("expected read response");
-        };
-        assert_eq!(read.path, outside);
-        assert_eq!(read.size, 6);
-    }
-
-    #[test]
-    fn service_stat_allows_absolute_paths_outside_workspace() {
-        let temp = tempfile::tempdir().unwrap();
-        let workspace = temp.path().join("workspace");
-        let outside = temp.path().join("outside.txt");
-        std::fs::create_dir(&workspace).unwrap();
-        std::fs::write(&outside, "secret").unwrap();
-
-        let frame = read_first_output_frame(single_request_output(
-            &workspace,
-            RemoteRequest::Stat {
-                path: outside.clone(),
-            },
-            Vec::new(),
-        ));
-
-        assert_eq!(frame.kind, FrameKind::Response);
-        let response = frame.decode_json_header::<ResponseEnvelope>().unwrap();
-        let RemoteResponse::Stat(stat) = response.response else {
-            panic!("expected stat response");
-        };
-        assert_eq!(stat.path, outside);
-        assert_eq!(stat.size, 6);
-        assert_eq!(stat.kind, RemoteFileKind::File);
-    }
-
-    #[test]
-    fn service_rejects_absolute_write_paths_outside_workspace() {
-        let temp = tempfile::tempdir().unwrap();
-        let workspace = temp.path().join("workspace");
-        let outside = temp.path().join("outside.txt");
-        std::fs::create_dir(&workspace).unwrap();
-
-        let frame = read_first_output_frame(single_request_output(
-            &workspace,
-            RemoteRequest::WriteFile {
-                path: outside.clone(),
-                create_parent_dirs: false,
-                expected_modified_unix_millis: None,
-                expected_modified_unix_nanos: None,
-            },
-            b"secret".to_vec(),
-        ));
-
-        assert_eq!(frame.kind, FrameKind::Error);
-        let error = frame.decode_json_header::<ErrorEnvelope>().unwrap();
-        assert_eq!(error.error.code, "path_outside_workspace");
-        assert!(!outside.exists());
-    }
-
-    #[test]
-    fn service_rejects_relative_parent_traversal() {
-        let temp = tempfile::tempdir().unwrap();
-        let workspace = temp.path().join("workspace");
-        let outside = temp.path().join("outside.txt");
-        std::fs::create_dir(&workspace).unwrap();
-
-        let frame = read_first_output_frame(single_request_output(
-            &workspace,
-            RemoteRequest::WriteFile {
-                path: PathBuf::from("../outside.txt"),
-                create_parent_dirs: false,
-                expected_modified_unix_millis: None,
-                expected_modified_unix_nanos: None,
-            },
-            b"escaped".to_vec(),
-        ));
-
-        assert_eq!(frame.kind, FrameKind::Error);
-        let error = frame.decode_json_header::<ErrorEnvelope>().unwrap();
-        assert_eq!(error.error.code, "path_outside_workspace");
-        assert!(!outside.exists());
-    }
-
-    #[test]
-    fn service_find_ancestor_file_does_not_return_outside_workspace() {
-        let temp = tempfile::tempdir().unwrap();
-        let workspace = temp.path().join("workspace");
-        let source = workspace.join("src").join("main.rs");
-        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
-        std::fs::write(temp.path().join("Cargo.toml"), "[package]\n").unwrap();
-        std::fs::write(&source, "fn main() {}\n").unwrap();
-
-        let frame = read_first_output_frame(single_request_output(
-            &workspace,
-            RemoteRequest::FindAncestorFile {
-                start: source,
-                file_name: "Cargo.toml".to_string(),
-                limit: 8,
-            },
-            Vec::new(),
-        ));
-
-        let response = frame.decode_json_header::<ResponseEnvelope>().unwrap();
-        let RemoteResponse::FindAncestorFile(found) = response.response else {
-            panic!("expected find ancestor response");
-        };
-        assert_eq!(found, None);
-    }
-
-    #[test]
-    fn service_file_search_uses_workspace_root_for_empty_root() {
-        let temp = tempfile::tempdir().unwrap();
-        std::fs::create_dir(temp.path().join("src")).unwrap();
-        std::fs::write(temp.path().join("src").join("main.rs"), "").unwrap();
-        std::fs::write(temp.path().join("README.md"), "").unwrap();
-
-        let frame = read_first_output_frame(single_request_output(
-            temp.path(),
-            RemoteRequest::FileSearch(FileSearchRequest {
-                pattern: Some(r"\.rs$".to_string()),
-                limit: 10,
-                ..FileSearchRequest::default()
-            }),
-            Vec::new(),
-        ));
-
-        let response = frame.decode_json_header::<ResponseEnvelope>().unwrap();
-        let RemoteResponse::FileSearch(search) = response.response else {
-            panic!("expected file search response");
-        };
-        assert_eq!(search.files, vec![PathBuf::from("src/main.rs")]);
-        assert!(!search.truncated);
-    }
-
-    #[test]
-    fn service_file_search_excludes_relative_prefixes_before_limit() {
-        let temp = tempfile::tempdir().unwrap();
-        std::fs::create_dir(temp.path().join("skip")).unwrap();
-        std::fs::write(temp.path().join("skip").join("a.rs"), "").unwrap();
-        std::fs::write(temp.path().join("skip").join("b.rs"), "").unwrap();
-        std::fs::write(temp.path().join("main.rs"), "").unwrap();
-
-        let frame = read_first_output_frame(single_request_output(
-            temp.path(),
-            RemoteRequest::FileSearch(FileSearchRequest {
-                limit: 1,
-                excluded_relative_prefixes: vec![PathBuf::from("skip")],
-                ..FileSearchRequest::default()
-            }),
-            Vec::new(),
-        ));
-
-        let response = frame.decode_json_header::<ResponseEnvelope>().unwrap();
-        let RemoteResponse::FileSearch(search) = response.response else {
-            panic!("expected file search response");
-        };
-        assert_eq!(search.files, vec![PathBuf::from("main.rs")]);
-        assert!(!search.truncated);
-    }
-
-    #[test]
-    fn service_text_search_uses_workspace_root_for_empty_root() {
-        let temp = tempfile::tempdir().unwrap();
-        std::fs::create_dir(temp.path().join("src")).unwrap();
-        std::fs::write(temp.path().join("src").join("main.rs"), "Needle\nneedle\n").unwrap();
-        std::fs::write(temp.path().join("README.md"), "needle\n").unwrap();
-
-        let frame = read_first_output_frame(single_request_output(
-            temp.path(),
-            RemoteRequest::TextSearch(TextSearchRequest {
-                pattern: "needle".to_string(),
-                limit: 1,
-                smart_case: true,
-                ..TextSearchRequest::default()
-            }),
-            Vec::new(),
-        ));
-
-        let response = frame.decode_json_header::<ResponseEnvelope>().unwrap();
-        let RemoteResponse::TextSearch(search) = response.response else {
-            panic!("expected text search response");
-        };
-        assert_eq!(search.matches.len(), 1);
-        assert!(search.truncated);
-    }
-
-    #[test]
-    fn service_text_search_excludes_relative_paths() {
-        let temp = tempfile::tempdir().unwrap();
-        std::fs::create_dir(temp.path().join("src")).unwrap();
-        std::fs::write(temp.path().join("src").join("main.rs"), "needle\n").unwrap();
-        std::fs::write(temp.path().join("README.md"), "needle\n").unwrap();
-
-        let frame = read_first_output_frame(single_request_output(
-            temp.path(),
-            RemoteRequest::TextSearch(TextSearchRequest {
-                pattern: "needle".to_string(),
-                limit: 10,
-                excluded_relative_paths: vec![PathBuf::from("src/main.rs")],
-                ..TextSearchRequest::default()
-            }),
-            Vec::new(),
-        ));
-
-        let response = frame.decode_json_header::<ResponseEnvelope>().unwrap();
-        let RemoteResponse::TextSearch(search) = response.response else {
-            panic!("expected text search response");
-        };
-        assert_eq!(search.matches.len(), 1);
-        assert_eq!(search.matches[0].relative_path, PathBuf::from("README.md"));
-    }
-
-    #[test]
-    fn service_project_environment_returns_process_baseline() {
-        let temp = tempfile::tempdir().unwrap();
-        let frame = read_first_output_frame(single_request_output(
-            temp.path(),
-            RemoteRequest::ProjectEnvironment {
-                root: PathBuf::new(),
-            },
-            Vec::new(),
-        ));
-
-        let response = frame.decode_json_header::<ResponseEnvelope>().unwrap();
-        let RemoteResponse::ProjectEnvironment(snapshot) = response.response else {
-            panic!("expected project environment response");
-        };
-        assert_eq!(snapshot.root, temp.path());
-        assert_eq!(
-            snapshot.origin,
-            RemoteProjectEnvironmentOrigin::ProcessBaseline
-        );
-        assert_eq!(
-            snapshot.variables.get("ZED_ENVIRONMENT"),
-            Some(&"process-baseline".to_string())
-        );
-        assert!(snapshot.diagnostics.is_empty());
-    }
-
-    #[test]
-    fn service_project_environment_reports_envrc_fallback_diagnostic() {
-        let temp = tempfile::tempdir().unwrap();
-        std::fs::write(temp.path().join(".envrc"), "export FOO=bar\n").unwrap();
-
-        let frame = read_first_output_frame(single_request_output(
-            temp.path(),
-            RemoteRequest::ProjectEnvironment {
-                root: PathBuf::new(),
-            },
-            Vec::new(),
-        ));
-
-        let response = frame.decode_json_header::<ResponseEnvelope>().unwrap();
-        let RemoteResponse::ProjectEnvironment(snapshot) = response.response else {
-            panic!("expected project environment response");
-        };
-        assert_eq!(
-            snapshot.origin,
-            RemoteProjectEnvironmentOrigin::ProcessBaseline
-        );
-        assert!(
-            snapshot
-                .diagnostics
-                .iter()
-                .any(|message| message.contains("Unsupported .envrc"))
-        );
-        assert!(!snapshot.variables.contains_key("FOO"));
-    }
-
-    #[test]
-    fn service_git_status_uses_workspace_root_for_empty_root() {
-        let temp = tempfile::tempdir().unwrap();
-        init_git_repo(temp.path());
-        std::fs::write(temp.path().join("tracked.txt"), "initial\n").unwrap();
-        run_git(temp.path(), &["add", "tracked.txt"]);
-        run_git(temp.path(), &["commit", "-m", "initial"]);
-        std::fs::write(temp.path().join("tracked.txt"), "changed\n").unwrap();
-        std::fs::write(temp.path().join("notes.md"), "untracked\n").unwrap();
-
-        let frame = read_first_output_frame(single_request_output(
-            temp.path(),
-            RemoteRequest::GitStatus {
-                root: PathBuf::new(),
-                include_untracked: true,
-                limit: 10,
-            },
-            Vec::new(),
-        ));
-
-        let response = frame.decode_json_header::<ResponseEnvelope>().unwrap();
-        let RemoteResponse::GitStatus(status) = response.response else {
-            panic!("expected git status response");
-        };
-        assert_eq!(status.root, temp.path());
-        assert!(status.entries.iter().any(|entry| {
-            entry.relative_path == PathBuf::from("tracked.txt")
-                && entry.working_tree_status == RemoteGitStatusKind::Modified
-        }));
-        assert!(status.entries.iter().any(|entry| {
-            entry.relative_path == PathBuf::from("notes.md")
-                && entry.index_status == RemoteGitStatusKind::Untracked
-        }));
-        assert!(!status.truncated);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn service_project_environment_loads_native_flake_envrc() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let temp = tempfile::tempdir().unwrap();
-        std::fs::write(temp.path().join(".envrc"), "use flake\n").unwrap();
-
-        let fake_bin = executable_tempdir();
-        let fake_nix = fake_bin.path().join("nix");
-        std::fs::write(
-            &fake_nix,
-            r#"#!/bin/sh
-case "$*" in
-  *"print-dev-env"*)
-    printf '{"variables":{"PATH":{"type":"exported","value":"/nix/dev/bin"},"REMOTE_FLAG":{"type":"exported","value":"loaded"}}}\n'
-    ;;
-  *"profile wipe-history"*)
-    exit 0
-    ;;
-  *)
-    exit 2
-    ;;
-esac
-"#,
-        )
-        .unwrap();
-        let mut permissions = std::fs::metadata(&fake_nix).unwrap().permissions();
-        permissions.set_mode(0o755);
-        std::fs::set_permissions(&fake_nix, permissions).unwrap();
-        if !generated_executable_is_allowed(&fake_nix) {
-            return;
-        }
-
-        let baseline = HashMap::from([
-            (
-                "PATH".to_string(),
-                format!("{}:/usr/bin:/bin", fake_bin.path().display()),
-            ),
-            (
-                "HOME".to_string(),
-                temp.path().join("home").display().to_string(),
-            ),
-            (
-                "NUCLEOTIDE_CACHE_DIR".to_string(),
-                temp.path().join("cache").display().to_string(),
-            ),
-        ]);
-
-        let request = request_frame(
-            10,
-            RemoteRequest::ProjectEnvironment {
-                root: PathBuf::new(),
-            },
-            Vec::new(),
-        );
-        let mut input = Vec::new();
-        write_frame(&mut input, &request).unwrap();
-
-        let service = WorkspaceService::with_environment_baseline(
-            LocalWorkspaceBackend,
-            temp.path().to_path_buf(),
-            baseline,
-        )
-        .unwrap();
-        let mut output = Vec::new();
-        service.serve(&mut Cursor::new(input), &mut output).unwrap();
-
-        let frame = read_first_output_frame(output);
-        let response = frame.decode_json_header::<ResponseEnvelope>().unwrap();
-        let RemoteResponse::ProjectEnvironment(snapshot) = response.response else {
-            panic!("expected project environment response");
-        };
-        assert_eq!(snapshot.origin, RemoteProjectEnvironmentOrigin::NativeFlake);
-        assert_eq!(
-            snapshot.variables.get("REMOTE_FLAG"),
-            Some(&"loaded".to_string())
-        );
-        assert_eq!(
-            snapshot.variables.get("ZED_ENVIRONMENT"),
-            Some(&"native-flake".to_string())
-        );
-        assert!(
-            snapshot
-                .variables
-                .get("PATH")
-                .is_some_and(|path| path.starts_with("/nix/dev/bin"))
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn service_run_process_can_inherit_project_environment() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let temp = tempfile::tempdir().unwrap();
-        std::fs::write(temp.path().join(".envrc"), "use flake\n").unwrap();
-
-        let fake_bin = executable_tempdir();
-        let fake_nix = fake_bin.path().join("nix");
-        std::fs::write(
-            &fake_nix,
-            r#"#!/bin/sh
-case "$*" in
-  *"print-dev-env"*)
-    printf '{"variables":{"PATH":{"type":"exported","value":"/nix/dev/bin"},"REMOTE_FLAG":{"type":"exported","value":"loaded"},"DEV_ONLY":{"type":"exported","value":"devshell"}}}\n'
-    ;;
-  *"profile wipe-history"*)
-    exit 0
-    ;;
-  *)
-    exit 2
-    ;;
-esac
-"#,
-        )
-        .unwrap();
-        let mut permissions = std::fs::metadata(&fake_nix).unwrap().permissions();
-        permissions.set_mode(0o755);
-        std::fs::set_permissions(&fake_nix, permissions).unwrap();
-        if !generated_executable_is_allowed(&fake_nix) {
-            return;
-        }
-
-        let baseline = HashMap::from([
-            (
-                "PATH".to_string(),
-                format!("{}:/usr/bin:/bin", fake_bin.path().display()),
-            ),
-            (
-                "HOME".to_string(),
-                temp.path().join("home").display().to_string(),
-            ),
-            (
-                "NUCLEOTIDE_CACHE_DIR".to_string(),
-                temp.path().join("cache").display().to_string(),
-            ),
-        ]);
-        let request = request_frame(
-            11,
-            RemoteRequest::RunProcess(ProcessRequest {
-                program: "/bin/sh".to_string(),
-                args: vec![
-                    "-c".to_string(),
-                    "printf '%s:%s' \"$DEV_ONLY\" \"$REMOTE_FLAG\"".to_string(),
-                ],
-                cwd: PathBuf::new(),
-                env: BTreeMap::from([("REMOTE_FLAG".to_string(), "override".to_string())]),
-                clear_env: true,
-                inherit_project_environment: true,
-                max_output_bytes: None,
-                timeout_ms: None,
-            }),
-            Vec::new(),
-        );
-        let mut input = Vec::new();
-        write_frame(&mut input, &request).unwrap();
-
-        let service = WorkspaceService::with_environment_baseline(
-            LocalWorkspaceBackend,
-            temp.path().to_path_buf(),
-            baseline,
-        )
-        .unwrap();
-        let mut output = Vec::new();
-        service.serve(&mut Cursor::new(input), &mut output).unwrap();
-
-        let frame = read_first_output_frame(output);
-        let response = frame.decode_json_header::<ResponseEnvelope>().unwrap();
-        let RemoteResponse::RunProcess(process) = response.response else {
-            panic!("expected run process response");
-        };
-        assert!(process.success);
-        assert_eq!(process.stdout_len, "devshell:override".len());
-        assert_eq!(&frame.body[..process.stdout_len], b"devshell:override");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn service_run_process_uses_workspace_envrc_for_nested_cwd() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let temp = tempfile::tempdir().unwrap();
-        let nested = temp.path().join("crates").join("app");
-        std::fs::create_dir_all(&nested).unwrap();
-        std::fs::write(temp.path().join(".envrc"), "use flake\n").unwrap();
-
-        let fake_bin = executable_tempdir();
-        let fake_nix = fake_bin.path().join("nix");
-        std::fs::write(
-            &fake_nix,
-            r#"#!/bin/sh
-case "$*" in
-  *"print-dev-env"*)
-    printf '{"variables":{"PATH":{"type":"exported","value":"/nix/dev/bin"},"DEV_ONLY":{"type":"exported","value":"nested-devshell"}}}\n'
-    ;;
-  *"profile wipe-history"*)
-    exit 0
-    ;;
-  *)
-    exit 2
-    ;;
-esac
-"#,
-        )
-        .unwrap();
-        let mut permissions = std::fs::metadata(&fake_nix).unwrap().permissions();
-        permissions.set_mode(0o755);
-        std::fs::set_permissions(&fake_nix, permissions).unwrap();
-        if !generated_executable_is_allowed(&fake_nix) {
-            return;
-        }
-
-        let baseline = HashMap::from([
-            (
-                "PATH".to_string(),
-                format!("{}:/usr/bin:/bin", fake_bin.path().display()),
-            ),
-            (
-                "HOME".to_string(),
-                temp.path().join("home").display().to_string(),
-            ),
-            (
-                "NUCLEOTIDE_CACHE_DIR".to_string(),
-                temp.path().join("cache").display().to_string(),
-            ),
-        ]);
-        let request = request_frame(
-            12,
-            RemoteRequest::RunProcess(ProcessRequest {
-                program: "/bin/sh".to_string(),
-                args: vec![
-                    "-c".to_string(),
-                    "printf '%s:%s' \"$DEV_ONLY\" \"$(pwd -P)\"".to_string(),
-                ],
-                cwd: nested.strip_prefix(temp.path()).unwrap().to_path_buf(),
-                env: BTreeMap::new(),
-                clear_env: true,
-                inherit_project_environment: true,
-                max_output_bytes: None,
-                timeout_ms: None,
-            }),
-            Vec::new(),
-        );
-        let mut input = Vec::new();
-        write_frame(&mut input, &request).unwrap();
-
-        let service = WorkspaceService::with_environment_baseline(
-            LocalWorkspaceBackend,
-            temp.path().to_path_buf(),
-            baseline,
-        )
-        .unwrap();
-        let mut output = Vec::new();
-        service.serve(&mut Cursor::new(input), &mut output).unwrap();
-
-        let frame = read_first_output_frame(output);
-        let response = frame.decode_json_header::<ResponseEnvelope>().unwrap();
-        let RemoteResponse::RunProcess(process) = response.response else {
-            panic!("expected run process response");
-        };
-        let expected = format!(
-            "nested-devshell:{}",
-            nested.canonicalize().unwrap().display()
-        );
-        assert!(process.success);
-        assert_eq!(process.stdout_len, expected.len());
-        assert_eq!(&frame.body[..process.stdout_len], expected.as_bytes());
-    }
-
-    #[test]
-    fn service_reports_protocol_mismatch_as_error_frame() {
-        let temp = tempfile::tempdir().unwrap();
-        let request = RequestEnvelope {
-            protocol_version: PROTOCOL_VERSION + 1,
-            request: RemoteRequest::Hello,
-        };
-        let frame =
-            Frame::from_json_header(FrameKind::Request, 9, 0, &request, Vec::new()).unwrap();
-        let mut input = Vec::new();
-        write_frame(&mut input, &frame).unwrap();
-
-        let service =
-            WorkspaceService::new(LocalWorkspaceBackend, temp.path().to_path_buf()).unwrap();
-        let mut reader = Cursor::new(input);
-        let mut output = Vec::new();
-        service.serve(&mut reader, &mut output).unwrap();
-
-        let frame = read_first_output_frame(output);
-        assert_eq!(frame.kind, FrameKind::Error);
-        let error = frame.decode_json_header::<ErrorEnvelope>().unwrap();
-        assert_eq!(error.error.code, "protocol_mismatch");
-    }
-
-    #[test]
-    fn remote_workspace_backend_reads_files_through_service() {
-        let temp = tempfile::tempdir().unwrap();
-        std::fs::write(temp.path().join("main.rs"), "abcdef").unwrap();
-        let backend = remote_backend(temp.path());
-
-        let read =
-            block_on(backend.read_file(Path::new("main.rs"), ReadOptions { max_bytes: Some(4) }))
-                .unwrap();
-
-        assert_eq!(read.bytes, b"abcd");
-        assert_eq!(read.size, 6);
-        assert!(read.truncated);
-    }
-
-    #[test]
-    fn remote_workspace_backend_writes_files_through_service() {
-        let temp = tempfile::tempdir().unwrap();
-        let backend = remote_backend(temp.path());
-
-        let result = block_on(backend.write_file(
-            Path::new("src/main.rs"),
-            b"fn main() {}\n",
-            WriteOptions {
-                create_parent_dirs: true,
-                expected_modified: None,
-            },
-        ))
-        .unwrap();
-
-        assert_eq!(result.size, 13);
-        assert_eq!(
-            std::fs::read_to_string(temp.path().join("src").join("main.rs")).unwrap(),
-            "fn main() {}\n"
-        );
-    }
-
-    #[test]
-    fn remote_workspace_backend_accepts_exact_read_mtime_on_write() {
-        let temp = tempfile::tempdir().unwrap();
-        std::fs::write(temp.path().join("main.rs"), "old").unwrap();
-        let backend = remote_backend(temp.path());
-        let read =
-            block_on(backend.read_file(Path::new("main.rs"), ReadOptions::default())).unwrap();
-
-        let result = block_on(backend.write_file(
-            Path::new("main.rs"),
-            b"new",
-            WriteOptions {
-                create_parent_dirs: false,
-                expected_modified: read.modified,
-            },
-        ))
-        .unwrap();
-
-        assert_eq!(result.size, 3);
-        assert_eq!(
-            std::fs::read_to_string(temp.path().join("main.rs")).unwrap(),
-            "new"
-        );
-    }
-
-    #[test]
-    fn remote_workspace_backend_maps_modified_errors() {
-        let temp = tempfile::tempdir().unwrap();
-        std::fs::write(temp.path().join("main.rs"), "old").unwrap();
-        let backend = remote_backend(temp.path());
-
-        let result = block_on(backend.write_file(
-            Path::new("main.rs"),
-            b"new",
-            WriteOptions {
-                create_parent_dirs: false,
-                expected_modified: Some(UNIX_EPOCH),
-            },
-        ));
-
-        assert!(matches!(result, Err(WorkspaceError::Modified { .. })));
-        assert_eq!(
-            std::fs::read_to_string(temp.path().join("main.rs")).unwrap(),
-            "old"
-        );
-    }
-
-    #[test]
-    fn remote_workspace_backend_loads_project_environment_through_service() {
-        let temp = tempfile::tempdir().unwrap();
-        let backend = remote_backend(temp.path());
-
-        let snapshot = block_on(backend.project_environment(Path::new(""))).unwrap();
-
-        assert_eq!(snapshot.root, temp.path());
-        assert_eq!(snapshot.origin, ProjectEnvironmentOrigin::ProcessBaseline);
-        assert_eq!(
-            snapshot.variables.get("ZED_ENVIRONMENT"),
-            Some(&"process-baseline".to_string())
-        );
-    }
-
-    #[test]
-    fn remote_workspace_backend_marks_ignored_directory_entries() {
-        let temp = tempfile::tempdir().unwrap();
-        std::fs::write(temp.path().join(".gitignore"), "ignored.log\n").unwrap();
-        std::fs::write(temp.path().join("visible.rs"), "").unwrap();
-        std::fs::write(temp.path().join("ignored.log"), "").unwrap();
-        let backend = remote_backend(temp.path());
-
-        let listing = block_on(backend.list_dir(Path::new(""))).unwrap();
-
-        let visible = listing
-            .entries
-            .iter()
-            .find(|entry| entry.name == "visible.rs")
-            .expect("visible entry");
-        let ignored = listing
-            .entries
-            .iter()
-            .find(|entry| entry.name == "ignored.log")
-            .expect("ignored entry");
-        assert_eq!(visible.ignored, Some(false));
-        assert_eq!(ignored.ignored, Some(true));
-    }
-
-    #[test]
-    fn remote_workspace_backend_batches_directory_listings() {
-        let temp = tempfile::tempdir().unwrap();
-        std::fs::create_dir(temp.path().join("src")).unwrap();
-        std::fs::create_dir(temp.path().join("tests")).unwrap();
-        std::fs::write(temp.path().join("src").join("lib.rs"), "").unwrap();
-        std::fs::write(temp.path().join("tests").join("integration.rs"), "").unwrap();
-        let backend = remote_backend(temp.path());
-
-        let results = block_on(backend.list_dirs(vec![
-            PathBuf::from("src"),
-            PathBuf::from("tests"),
-            PathBuf::from("missing"),
-        ]));
-
-        assert_eq!(results.len(), 3);
-        let (src_path, src_listing) = &results[0];
-        assert_eq!(src_path, Path::new("src"));
-        assert!(
-            src_listing
-                .as_ref()
-                .unwrap()
-                .entries
-                .iter()
-                .any(|entry| entry.name == "lib.rs")
-        );
-        let (tests_path, tests_listing) = &results[1];
-        assert_eq!(tests_path, Path::new("tests"));
-        assert!(
-            tests_listing
-                .as_ref()
-                .unwrap()
-                .entries
-                .iter()
-                .any(|entry| entry.name == "integration.rs")
-        );
-        let (missing_path, missing_listing) = &results[2];
-        assert_eq!(missing_path, Path::new("missing"));
-        assert!(missing_listing.is_err());
-    }
-
-    #[test]
-    fn remote_workspace_backend_runs_text_search_through_service() {
-        let temp = tempfile::tempdir().unwrap();
-        std::fs::write(temp.path().join("main.rs"), "needle\n").unwrap();
-        let backend = remote_backend(temp.path());
-
-        let result = block_on(backend.text_search(TextSearchQuery {
-            root: PathBuf::new(),
-            pattern: "needle".to_string(),
-            limit: 10,
-            ..TextSearchQuery::default()
-        }))
-        .unwrap();
-
-        assert_eq!(result.matches.len(), 1);
-        assert_eq!(result.matches[0].relative_path, PathBuf::from("main.rs"));
-        assert_eq!(result.matches[0].line_number, 1);
-    }
-
-    #[test]
-    fn remote_workspace_backend_reads_git_head_and_status_through_service() {
-        let temp = tempfile::tempdir().unwrap();
-        init_git_repo(temp.path());
-        std::fs::write(temp.path().join("tracked.txt"), "initial\n").unwrap();
-        run_git(temp.path(), &["add", "tracked.txt"]);
-        run_git(temp.path(), &["commit", "-m", "initial"]);
-        let expected_head = git_output(temp.path(), &["rev-parse", "--verify", "HEAD"]);
-        std::fs::write(temp.path().join("tracked.txt"), "changed\n").unwrap();
-
-        let backend = remote_backend(temp.path());
-        let head = block_on(backend.git_head(Path::new(""))).unwrap();
-        let status =
-            block_on(backend.git_status(Path::new(""), GitStatusOptions::default())).unwrap();
-
-        assert_eq!(head.head, Some(expected_head.trim().to_string()));
-        assert!(status.entries.iter().any(|entry| {
-            entry.relative_path == PathBuf::from("tracked.txt")
-                && entry.working_tree_status == GitStatusKind::Modified
-        }));
-    }
-
-    fn init_git_repo(root: &Path) {
-        run_git(root, &["init"]);
-        run_git(root, &["config", "user.email", "nucleotide@example.test"]);
-        run_git(root, &["config", "user.name", "Nucleotide Tests"]);
-    }
-
-    fn run_git(root: &Path, args: &[&str]) {
-        let output = Command::new("git")
-            .args(args)
-            .current_dir(root)
-            .output()
-            .unwrap_or_else(|error| panic!("failed to run git {args:?}: {error}"));
-        assert!(
-            output.status.success(),
-            "git {args:?} failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-
-    fn git_output(root: &Path, args: &[&str]) -> String {
-        let output = Command::new("git")
-            .args(args)
-            .current_dir(root)
-            .output()
-            .unwrap_or_else(|error| panic!("failed to run git {args:?}: {error}"));
-        assert!(
-            output.status.success(),
-            "git {args:?} failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        String::from_utf8(output.stdout).unwrap()
     }
 }

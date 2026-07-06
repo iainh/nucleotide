@@ -72,12 +72,12 @@ Why:
 
 ## Frame layer
 
-All integers in v5 frames are network byte order. v5 uses a new magic so it can coexist with v4 without ambiguous decoding.
+All integers in v5 frames are network byte order. v5 uses the `NUC2` magic as the only supported remote workspace wire family. Peers that see any other magic must close the connection with a clear protocol diagnostic; no alternate remote protocol decode is attempted.
 
 Version identifiers have separate jobs:
 
-- `magic = "NUC2"` selects the v5 wire family and distinguishes it from the current `"NUCL"` protocol.
-- `frame_header_version = 2` selects the fixed header layout below. A peer that sees an unsupported header version must close the connection; the client may then fall back to v4 if no v5 handshake completed.
+- `magic = "NUC2"` selects the v5 wire family.
+- `frame_header_version = 2` selects the fixed header layout below. A peer that sees an unsupported header version must close the connection; the client reports the mismatch and may reinstall or update the helper, but it must not retry using an older protocol.
 - `protocol_major` and `protocol_minor` are negotiated in `HELLO` and describe semantic compatibility above the frame header.
 
 Fixed frame header:
@@ -266,7 +266,7 @@ Compatibility rules:
 - Major versions must match.
 - Minor versions are additive and capability-gated.
 - `capabilities` lists optional features the client can use; `required_capabilities` lists features the client refuses to run without.
-- If the helper does not understand v5, the client falls back to v4 and logs the missing capabilities.
+- If the helper does not understand v5, the client fails the connection with an actionable helper update or reinstall diagnostic.
 - If a v5 helper lacks `watch`, the client keeps the existing remote polling path.
 - A v5 server must reject unknown required capabilities with `UNSUPPORTED_CAPABILITY`.
 
@@ -648,7 +648,7 @@ Why:
 
 What:
 
-- Replace `RemoteWorkspaceClient::request` with an async multiplexed transport handle.
+- Route backend calls through the async v5 multiplexed transport handle.
 - Each backend method opens a stream and awaits the final response while consuming progress/data events.
 - File tree starts `watch.start` when `watch_filesystem` is enabled and the server advertises `watch`.
 - Existing remote polling remains as fallback and as low-frequency reconciliation when watching is active.
@@ -674,15 +674,15 @@ Why:
 - This separates protocol correctness from filesystem/search/git implementation.
 - It also gives tests clear seams: frame tests, scheduler tests, handler tests and watch tests.
 
-## Migration plan
+## Implementation plan
 
-1. Add v5 frame encoder/decoder and handshake behind a feature flag. Keep v4 as default.
-2. Implement multiplexing with existing one-shot methods. Do not add streaming/watch yet.
+1. Keep v5 as the sole supported remote workspace protocol for helper launch, CLI `serve`, tests and documentation.
+2. Keep multiplexing as the baseline for existing one-shot methods.
 3. Add cancellation, deadlines, progress and scheduler priorities.
 4. Convert `fs.read`, `fs.write`, `process.run` and search methods to streaming.
-5. Add `watch.start`, `watch.update`, `watch.stop` and `watch.batch`; keep remote polling as fallback.
+5. Add `watch.start`, `watch.update`, `watch.stop` and `watch.batch`; keep remote polling as a v5 capability fallback and low-frequency reconciliation path.
 6. Add directory generations, `not_modified` responses and optional deltas.
-7. Make v5 default after loopback, SSH and WSL fixtures pass; keep v4 fallback for at least one release.
+7. Remove obsolete protocol compatibility fixtures when the equivalent loopback, SSH and WSL v5 fixtures cover the behaviour.
 
 Why:
 
@@ -723,7 +723,7 @@ Integration tests:
 - Loopback v5 helper.
 - SSH fixture for file tree watch, search cancellation, process output and reconnect.
 - WSL fixture for path mapping and watcher availability.
-- Compatibility fixture where client falls back to a v4 helper.
+- Helper-mismatch fixture where a stale or incompatible helper fails with an actionable v5 diagnostic.
 
 Performance checks:
 
