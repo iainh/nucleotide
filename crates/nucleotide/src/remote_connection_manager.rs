@@ -10,16 +10,17 @@ use anyhow::{Context as _, Result, anyhow};
 use gpui::prelude::FluentBuilder;
 use gpui::{
     Anchor, App, AppContext as _, Context, DismissEvent, Entity, EventEmitter, FocusHandle,
-    Focusable, InteractiveElement, IntoElement, KeyBinding, MouseButton, ParentElement, Render,
-    ScrollHandle, StatefulInteractiveElement, Styled, Subscription, Window, anchored, deferred,
-    div, point, px,
+    Focusable, InteractiveElement, IntoElement, KeyBinding, MouseButton, MouseDownEvent,
+    ParentElement, Render, ScrollHandle, StatefulInteractiveElement, Styled, Subscription, Window,
+    anchored, deferred, div, point, px,
 };
 use nucleotide_core::{EditorStatus, Severity};
 use nucleotide_types::scrollbar::SCROLLBAR_THICKNESS;
 use nucleotide_ui::actions::remote_connection_manager::{
     Accept as AcceptRemoteConnection, Cancel as CancelRemoteConnection,
-    SelectNext as SelectNextRemoteItem, SelectPrevious as SelectPreviousRemoteItem,
-    ToggleProtocol as ToggleRemoteProtocol,
+    CollapseSelected as CollapseSelectedRemoteDirectory,
+    ExpandSelected as ExpandSelectedRemoteDirectory, SelectNext as SelectNextRemoteItem,
+    SelectPrevious as SelectPreviousRemoteItem, ToggleProtocol as ToggleRemoteProtocol,
 };
 use nucleotide_ui::scrollbar::{Scrollbar, ScrollbarState};
 use nucleotide_ui::{
@@ -63,6 +64,16 @@ pub(crate) fn init(cx: &mut App) {
         KeyBinding::new(
             "down",
             SelectNextRemoteItem,
+            Some(REMOTE_CONNECTION_MANAGER_CONTEXT),
+        ),
+        KeyBinding::new(
+            "left",
+            CollapseSelectedRemoteDirectory,
+            Some(REMOTE_CONNECTION_MANAGER_CONTEXT),
+        ),
+        KeyBinding::new(
+            "right",
+            ExpandSelectedRemoteDirectory,
             Some(REMOTE_CONNECTION_MANAGER_CONTEXT),
         ),
     ]);
@@ -130,18 +141,30 @@ impl RemoteSuggestionSource {
 }
 
 #[derive(Debug, Clone)]
-struct RemoteDirectoryRow {
+struct RemoteDirectoryNode {
     name: String,
     path: PathBuf,
+    expanded: bool,
+    loading: bool,
+    loaded: bool,
+    children: Vec<RemoteDirectoryNode>,
+}
+
+#[derive(Debug, Clone)]
+struct RemoteDirectoryTreeRow {
+    name: String,
+    path: PathBuf,
+    depth: usize,
+    expanded: bool,
+    loading: bool,
 }
 
 #[derive(Clone)]
 struct RemoteBrowseSession {
     backend: WorkspaceBackendHandle,
-    home_path: PathBuf,
-    current_path: PathBuf,
     selected_path: PathBuf,
-    rows: Vec<RemoteDirectoryRow>,
+    selected_tree_path: Option<PathBuf>,
+    root: RemoteDirectoryNode,
 }
 
 struct RemoteBrowseConnection {
@@ -194,7 +217,6 @@ pub struct RemoteConnectionManagerView {
 
     browse_session: Option<RemoteBrowseSession>,
     pending_selected_path: Option<PathBuf>,
-    directory_selection: usize,
     directory_scroll_handle: ScrollHandle,
     directory_scrollbar_state: ScrollbarState,
     status: Option<EditorStatus>,
@@ -247,7 +269,6 @@ impl RemoteConnectionManagerView {
             accepted_suggestion: false,
             browse_session: None,
             pending_selected_path: None,
-            directory_selection: 0,
             directory_scroll_handle,
             directory_scrollbar_state,
             status: None,
@@ -301,7 +322,6 @@ impl RemoteConnectionManagerView {
             self.accepted_suggestion = false;
             self.browse_session = None;
             self.pending_selected_path = None;
-            self.directory_selection = 0;
             self.status = None;
 
             if !self.server_input.trim().is_empty()
@@ -510,7 +530,6 @@ impl RemoteConnectionManagerView {
             severity: Severity::Info,
         });
         self.browse_session = None;
-        self.directory_selection = 0;
 
         let options = nucleotide_remote::RemoteWorkspaceBackendOptions::from_environment();
         let handle = self.handle.clone();
@@ -565,22 +584,25 @@ impl RemoteConnectionManagerView {
                         view.connecting = false;
                         match result {
                             Ok(connection) => {
-                                let rows = directory_rows_from_listing(&connection.listing);
-                                let current_path = connection.home_path.clone();
+                                let root = remote_directory_root_from_listing(
+                                    connection.home_path.clone(),
+                                    &connection.listing,
+                                );
                                 let selected_path = view
                                     .pending_selected_path
                                     .take()
                                     .or(connection.selected_path.clone())
-                                    .unwrap_or_else(|| current_path.clone());
+                                    .unwrap_or_else(|| connection.home_path.clone());
+                                let selected_tree_path =
+                                    remote_tree_contains_path(&root, &selected_path)
+                                        .then(|| selected_path.clone());
 
                                 view.browse_session = Some(RemoteBrowseSession {
                                     backend: connection.backend,
-                                    home_path: connection.home_path,
-                                    current_path,
                                     selected_path,
-                                    rows,
+                                    selected_tree_path,
+                                    root,
                                 });
-                                view.directory_selection = 0;
                                 view.status = Some(EditorStatus {
                                     status: "Loaded remote home directory".to_string(),
                                     severity: Severity::Info,
@@ -608,53 +630,130 @@ impl RemoteConnectionManagerView {
         cx.notify();
     }
 
-    fn select_current_folder(&mut self, cx: &mut Context<Self>) {
-        if let Some(session) = &mut self.browse_session {
-            session.selected_path = session.current_path.clone();
+    fn select_tree_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        let Some(session) = &mut self.browse_session else {
+            return;
+        };
+
+        if !remote_tree_contains_path(&session.root, &path) {
+            return;
+        }
+
+        session.selected_tree_path = Some(path.clone());
+        session.selected_path = path;
+        cx.notify();
+    }
+
+    fn toggle_selected_directory(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = self
+            .browse_session
+            .as_ref()
+            .and_then(|session| session.selected_tree_path.clone())
+        else {
+            return;
+        };
+
+        self.toggle_tree_directory(path, cx);
+    }
+
+    fn collapse_selected_directory(&mut self, cx: &mut Context<Self>) {
+        let Some(session) = &mut self.browse_session else {
+            return;
+        };
+        let Some(path) = session.selected_tree_path.clone() else {
+            return;
+        };
+
+        if let Some(node) = remote_tree_node_mut(&mut session.root, &path)
+            && node.expanded
+        {
+            node.expanded = false;
+            cx.notify();
+            return;
+        }
+
+        if let Some(parent) = remote_display_parent(&path)
+            && remote_tree_contains_path(&session.root, &parent)
+        {
+            session.selected_tree_path = Some(parent.clone());
+            session.selected_path = parent;
             cx.notify();
         }
     }
 
-    fn enter_selected_directory(&mut self, cx: &mut Context<Self>) {
-        let Some(session) = &self.browse_session else {
-            return;
-        };
-        let Some(row) = session.rows.get(self.directory_selection).cloned() else {
+    fn expand_selected_directory(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = self
+            .browse_session
+            .as_ref()
+            .and_then(|session| session.selected_tree_path.clone())
+        else {
             return;
         };
 
-        self.load_directory(row.path, cx);
+        let first_child_path = self.browse_session.as_ref().and_then(|session| {
+            remote_tree_node(&session.root, &path).and_then(|node| {
+                node.expanded
+                    .then(|| node.children.first().map(|child| child.path.clone()))
+                    .flatten()
+            })
+        });
+
+        if let Some(first_child_path) = first_child_path {
+            self.select_tree_path(first_child_path, cx);
+        } else {
+            self.expand_tree_directory(path, cx);
+        }
     }
 
-    fn go_to_parent_directory(&mut self, cx: &mut Context<Self>) {
-        let Some(session) = &self.browse_session else {
-            return;
-        };
+    fn toggle_tree_directory(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        let expanded = self
+            .browse_session
+            .as_ref()
+            .and_then(|session| remote_tree_node(&session.root, &path))
+            .is_some_and(|node| node.expanded);
 
-        if session.current_path == session.home_path {
-            return;
-        }
-
-        if let Some(parent) = remote_display_parent(&session.current_path) {
-            self.load_directory(parent, cx);
+        if expanded {
+            if let Some(session) = &mut self.browse_session
+                && let Some(node) = remote_tree_node_mut(&mut session.root, &path)
+            {
+                node.expanded = false;
+                cx.notify();
+            }
+        } else {
+            self.expand_tree_directory(path, cx);
         }
     }
 
-    fn load_directory(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        let Some(session) = &self.browse_session else {
+    fn expand_tree_directory(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        let Some(session) = &mut self.browse_session else {
             return;
         };
         let backend = session.backend.clone();
         let generation = self.connection_generation;
 
+        let Some(node) = remote_tree_node_mut(&mut session.root, &path) else {
+            return;
+        };
+        if node.expanded || node.loading {
+            return;
+        }
+        if node.loaded {
+            node.expanded = true;
+            cx.notify();
+            return;
+        }
+
+        node.loading = true;
         self.connecting = true;
         self.status = Some(EditorStatus {
             status: format!("Loading {}", path.display()),
             severity: Severity::Info,
         });
 
+        let path_for_listing = path.clone();
+
         cx.spawn(async move |this, cx| {
-            let listing = backend.list_dir(&path).await;
+            let listing = backend.list_dir(&path_for_listing).await;
             _ = this.update(cx, |view, cx| {
                 if view.connection_generation != generation {
                     return;
@@ -663,14 +762,22 @@ impl RemoteConnectionManagerView {
                 view.connecting = false;
                 match listing {
                     Ok(listing) => {
-                        if let Some(session) = &mut view.browse_session {
-                            session.current_path = path;
-                            session.rows = directory_rows_from_listing(&listing);
+                        if let Some(session) = &mut view.browse_session
+                            && let Some(node) = remote_tree_node_mut(&mut session.root, &path)
+                        {
+                            node.children = remote_directory_nodes_from_listing(&listing);
+                            node.loaded = true;
+                            node.loading = false;
+                            node.expanded = true;
                         }
-                        view.directory_selection = 0;
                         view.status = None;
                     }
                     Err(error) => {
+                        if let Some(session) = &mut view.browse_session
+                            && let Some(node) = remote_tree_node_mut(&mut session.root, &path)
+                        {
+                            node.loading = false;
+                        }
                         view.status = Some(EditorStatus {
                             status: format!("Could not load directory: {error}"),
                             severity: Severity::Error,
@@ -732,13 +839,22 @@ impl RemoteConnectionManagerView {
     }
 
     fn move_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
-        if self.browse_session.is_some() {
-            let len = self
-                .browse_session
+        if let Some(session) = &mut self.browse_session {
+            let rows = visible_remote_directory_rows(&session.root);
+            if rows.is_empty() {
+                cx.notify();
+                return;
+            }
+
+            let current_index = session
+                .selected_tree_path
                 .as_ref()
-                .map(|session| session.rows.len())
-                .unwrap_or_default();
-            self.directory_selection = moved_index(self.directory_selection, len, delta);
+                .and_then(|path| rows.iter().position(|row| &row.path == path))
+                .unwrap_or(0);
+            let next_index = moved_index(current_index, rows.len(), delta);
+            let next_path = rows[next_index].path.clone();
+            session.selected_tree_path = Some(next_path.clone());
+            session.selected_path = next_path;
         } else {
             let len = self.filtered_suggestions().len();
             self.suggestion_selection = moved_index(self.suggestion_selection, len, delta);
@@ -748,7 +864,7 @@ impl RemoteConnectionManagerView {
 
     fn accept_or_connect(&mut self, cx: &mut Context<Self>) {
         if self.browse_session.is_some() {
-            self.enter_selected_directory(cx);
+            self.toggle_selected_directory(cx);
             return;
         }
 
@@ -815,6 +931,26 @@ impl RemoteConnectionManagerView {
         cx: &mut Context<Self>,
     ) {
         self.move_selection(1, cx);
+        cx.stop_propagation();
+    }
+
+    fn collapse_selected_action(
+        &mut self,
+        _: &CollapseSelectedRemoteDirectory,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.collapse_selected_directory(cx);
+        cx.stop_propagation();
+    }
+
+    fn expand_selected_action(
+        &mut self,
+        _: &ExpandSelectedRemoteDirectory,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.expand_selected_directory(cx);
         cx.stop_propagation();
     }
 
@@ -978,11 +1114,10 @@ impl RemoteConnectionManagerView {
     }
 
     fn render_browse_session(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let (text_sm, chrome_secondary_text, list_border, input_border, input_background) = {
+        let (chrome_secondary_text, list_border, input_border, input_background) = {
             let theme = cx.theme();
             let tokens = &theme.tokens;
             (
-                tokens.sizes.text_sm,
                 tokens.chrome.text_chrome_secondary,
                 tokens.picker_tokens().border,
                 tokens.input_tokens().border,
@@ -992,7 +1127,7 @@ impl RemoteConnectionManagerView {
         let Some(session) = self.browse_session.as_ref() else {
             return div().into_any_element();
         };
-        let at_home_directory = session.current_path == session.home_path;
+        let rows = visible_remote_directory_rows(&session.root);
 
         div()
             .flex()
@@ -1003,18 +1138,9 @@ impl RemoteConnectionManagerView {
             .gap_3()
             .child(
                 div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(
-                        div().flex().flex_col().child("Location").child(
-                            div()
-                                .text_size(text_sm)
-                                .text_color(chrome_secondary_text)
-                                .child(short_display_path(&session.current_path)),
-                        ),
-                    )
-                    .child(self.render_up_button(at_home_directory, cx)),
+                    .flex_shrink_0()
+                    .text_color(chrome_secondary_text)
+                    .child("Directories"),
             )
             .child(
                 div()
@@ -1034,13 +1160,11 @@ impl RemoteConnectionManagerView {
                             .track_scroll(&self.directory_scroll_handle)
                             .child(
                                 div().flex().flex_col().children(
-                                    session
-                                        .rows
-                                        .iter()
-                                        .cloned()
+                                    rows.into_iter()
                                         .enumerate()
                                         .map(|(index, row)| {
-                                            let selected = index == self.directory_selection;
+                                            let selected = session.selected_tree_path.as_ref()
+                                                == Some(&row.path);
                                             self.render_directory_row(index, row, selected, cx)
                                                 .into_any_element()
                                         })
@@ -1048,19 +1172,6 @@ impl RemoteConnectionManagerView {
                                 ),
                             ),
                     )
-                    .when(session.rows.is_empty(), |this| {
-                        this.child(
-                            div()
-                                .absolute()
-                                .top_0()
-                                .left_0()
-                                .right_0()
-                                .px_3()
-                                .py_3()
-                                .text_color(chrome_secondary_text)
-                                .child("No child directories"),
-                        )
-                    })
                     .when_some(
                         Scrollbar::vertical(self.directory_scrollbar_state.clone()),
                         |container, scrollbar| {
@@ -1076,6 +1187,14 @@ impl RemoteConnectionManagerView {
                         },
                     ),
             )
+            .when(session.root.children.is_empty(), |this| {
+                this.child(
+                    div()
+                        .flex_shrink_0()
+                        .text_color(chrome_secondary_text)
+                        .child("No child directories"),
+                )
+            })
             .child(
                 div()
                     .flex()
@@ -1099,7 +1218,7 @@ impl RemoteConnectionManagerView {
     fn render_directory_row(
         &self,
         index: usize,
-        row: RemoteDirectoryRow,
+        row: RemoteDirectoryTreeRow,
         selected: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
@@ -1115,6 +1234,8 @@ impl RemoteConnectionManagerView {
         };
         let chevron_color = if selected {
             tokens.chrome.text_on_chrome
+        } else if row.loading {
+            tokens.chrome.text_chrome_secondary
         } else {
             tokens.chrome.text_chrome_disabled
         };
@@ -1129,9 +1250,11 @@ impl RemoteConnectionManagerView {
             picker_tokens.item_background
         };
         let hover_background = picker_tokens.item_background_hover;
-        let click_listener = cx.listener(move |this, _event, _window, cx| {
-            this.directory_selection = index;
-            this.load_directory(row_path.clone(), cx);
+        let depth = row.depth;
+        let expanded = row.expanded;
+        let click_listener = cx.listener(move |this, _event: &MouseDownEvent, _window, cx| {
+            this.select_tree_path(row_path.clone(), cx);
+            this.toggle_tree_directory(row_path.clone(), cx);
         });
 
         ListItem::new(("remote-directory", index))
@@ -1152,6 +1275,7 @@ impl RemoteConnectionManagerView {
                     .flex()
                     .items_center()
                     .gap_2()
+                    .child(div().w(px(depth as f32 * 16.0)).flex_shrink_0())
                     .child(
                         div()
                             .w(px(14.0))
@@ -1161,12 +1285,16 @@ impl RemoteConnectionManagerView {
                             .items_center()
                             .justify_center()
                             .child(
-                                chevron_icon("right")
+                                chevron_icon(if expanded { "down" } else { "right" })
                                     .size(px(14.0))
                                     .text_color(chevron_color),
                             ),
                     )
-                    .child(FileIcon::directory(false).size(16.0).text_color(icon_color)),
+                    .child(
+                        FileIcon::directory(expanded)
+                            .size(16.0)
+                            .text_color(icon_color),
+                    ),
             )
             .child(
                 div()
@@ -1178,19 +1306,17 @@ impl RemoteConnectionManagerView {
             )
     }
 
-    fn render_up_button(&self, disabled: bool, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_save_connection_checkbox(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let manager = cx.entity().clone();
 
-        Button::new("remote-up-directory", "Up")
-            .variant(ButtonVariant::Secondary)
-            .size(ButtonSize::Medium)
-            .icon("icons/chevron-up.svg")
-            .icon_position(IconPosition::Start)
-            .disabled(disabled)
-            .activate_on_mouse_down()
-            .on_click(move |_event, _window, cx| {
+        Checkbox::new("remote-save-connection", "Save this connection")
+            .checked(self.save_on_open)
+            .size(CheckboxSize::Medium)
+            .focus_handle(self.save_connection_focus_handle.clone())
+            .on_change(move |checked, _window, cx| {
                 manager.update(cx, |this, cx| {
-                    this.go_to_parent_directory(cx);
+                    this.save_on_open = checked;
+                    cx.notify();
                 });
             })
     }
@@ -1212,21 +1338,6 @@ impl RemoteConnectionManagerView {
             .on_click(move |_event, _window, cx| {
                 manager.update(cx, |this, cx| {
                     listener(this, cx);
-                });
-            })
-    }
-
-    fn render_save_connection_checkbox(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let manager = cx.entity().clone();
-
-        Checkbox::new("remote-save-connection", "Save this connection")
-            .checked(self.save_on_open)
-            .size(CheckboxSize::Medium)
-            .focus_handle(self.save_connection_focus_handle.clone())
-            .on_change(move |checked, _window, cx| {
-                manager.update(cx, |this, cx| {
-                    this.save_on_open = checked;
-                    cx.notify();
                 });
             })
     }
@@ -1316,6 +1427,8 @@ impl Render for RemoteConnectionManagerView {
             .on_action(cx.listener(Self::toggle_protocol_action))
             .on_action(cx.listener(Self::select_previous_action))
             .on_action(cx.listener(Self::select_next_action))
+            .on_action(cx.listener(Self::collapse_selected_action))
+            .on_action(cx.listener(Self::expand_selected_action))
             .on_action(cx.listener(Self::select_remote_protocol))
             .flex()
             .flex_col()
@@ -1334,33 +1447,23 @@ impl Render for RemoteConnectionManagerView {
             .text_size(text_md)
             .shadow(shadow)
             .child(
-                div()
-                    .flex()
-                    .flex_shrink_0()
-                    .items_center()
-                    .justify_between()
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .child(
-                                div()
-                                    .text_size(text_lg)
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                                    .child("Remote Connection"),
-                            )
-                            .child(
-                                div()
-                                    .text_size(text_sm)
-                                    .text_color(chrome_secondary_text)
-                                    .child(
-                                        "Choose a host or distro, then browse for a workspace root",
-                                    ),
-                            ),
-                    )
-                    .child(self.render_text_button("Cancel", cx, |this, cx| {
-                        this.cancel(cx);
-                    })),
+                div().flex().flex_shrink_0().items_center().child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div()
+                                .text_size(text_lg)
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .child("Remote Connection"),
+                        )
+                        .child(
+                            div()
+                                .text_size(text_sm)
+                                .text_color(chrome_secondary_text)
+                                .child("Choose a host or distro, then browse for a workspace root"),
+                        ),
+                ),
             )
             .child(
                 div()
@@ -1424,11 +1527,9 @@ impl Render for RemoteConnectionManagerView {
                             .flex()
                             .items_center()
                             .gap_2()
-                            .child(
-                                self.render_text_button("Use current folder", cx, |this, cx| {
-                                    this.select_current_folder(cx);
-                                }),
-                            )
+                            .child(self.render_text_button("Cancel", cx, |this, cx| {
+                                this.cancel(cx);
+                            }))
                             .child(self.render_text_button("Open", cx, |this, cx| {
                                 this.open_selected_workspace(cx);
                             })),
@@ -1838,18 +1939,104 @@ fn decode_wsl_stdout(stdout: &[u8]) -> String {
     String::from_utf8_lossy(stdout).replace(['\0', '\r'], "")
 }
 
-fn directory_rows_from_listing(listing: &DirectoryListing) -> Vec<RemoteDirectoryRow> {
-    let mut rows = listing
+fn remote_directory_root_from_listing(
+    path: PathBuf,
+    listing: &DirectoryListing,
+) -> RemoteDirectoryNode {
+    RemoteDirectoryNode {
+        name: remote_display_name(&path),
+        path,
+        expanded: true,
+        loading: false,
+        loaded: true,
+        children: remote_directory_nodes_from_listing(listing),
+    }
+}
+
+fn remote_directory_nodes_from_listing(listing: &DirectoryListing) -> Vec<RemoteDirectoryNode> {
+    let mut nodes = listing
         .entries
         .iter()
         .filter(|entry| entry.stat.kind == FileKind::Directory)
-        .map(|entry| RemoteDirectoryRow {
+        .map(|entry| RemoteDirectoryNode {
             name: entry.name.clone(),
             path: entry.path.clone(),
+            expanded: false,
+            loading: false,
+            loaded: false,
+            children: Vec::new(),
         })
         .collect::<Vec<_>>();
-    rows.sort_by_key(|row| row.name.to_ascii_lowercase());
+    nodes.sort_by_key(|node| node.name.to_ascii_lowercase());
+    nodes
+}
+
+fn visible_remote_directory_rows(root: &RemoteDirectoryNode) -> Vec<RemoteDirectoryTreeRow> {
+    let mut rows = Vec::new();
+    push_visible_remote_directory_rows(root, 0, &mut rows);
     rows
+}
+
+fn push_visible_remote_directory_rows(
+    node: &RemoteDirectoryNode,
+    depth: usize,
+    rows: &mut Vec<RemoteDirectoryTreeRow>,
+) {
+    rows.push(RemoteDirectoryTreeRow {
+        name: node.name.clone(),
+        path: node.path.clone(),
+        depth,
+        expanded: node.expanded,
+        loading: node.loading,
+    });
+
+    if node.expanded {
+        for child in &node.children {
+            push_visible_remote_directory_rows(child, depth + 1, rows);
+        }
+    }
+}
+
+fn remote_tree_node<'a>(
+    node: &'a RemoteDirectoryNode,
+    path: &Path,
+) -> Option<&'a RemoteDirectoryNode> {
+    if node.path == path {
+        return Some(node);
+    }
+
+    node.children
+        .iter()
+        .find_map(|child| remote_tree_node(child, path))
+}
+
+fn remote_tree_node_mut<'a>(
+    node: &'a mut RemoteDirectoryNode,
+    path: &Path,
+) -> Option<&'a mut RemoteDirectoryNode> {
+    if node.path == path {
+        return Some(node);
+    }
+
+    node.children
+        .iter_mut()
+        .find_map(|child| remote_tree_node_mut(child, path))
+}
+
+fn remote_tree_contains_path(node: &RemoteDirectoryNode, path: &Path) -> bool {
+    remote_tree_node(node, path).is_some()
+}
+
+fn remote_display_name(path: &Path) -> String {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .or_else(|| {
+            path.components()
+                .next_back()
+                .and_then(|component| component.as_os_str().to_str())
+        })
+        .unwrap_or(".")
+        .to_string()
 }
 
 fn remote_display_parent(path: &Path) -> Option<PathBuf> {
@@ -1930,6 +2117,7 @@ fn generated_connection_name(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nucleotide_workspace::{DirectoryEntry, FileStat};
 
     #[test]
     fn ssh_config_alias_parser_skips_wildcards_and_negations() {
@@ -1994,5 +2182,108 @@ mod tests {
 
         assert!(valid_connection_name(&name));
         assert_eq!(name, "me-example.com-2222-project");
+    }
+
+    #[test]
+    fn directory_tree_root_filters_and_sorts_child_directories() {
+        let listing = test_listing(
+            "/home/me",
+            &[
+                ("zeta", FileKind::Directory),
+                ("readme.md", FileKind::File),
+                ("alpha", FileKind::Directory),
+            ],
+        );
+
+        let root = remote_directory_root_from_listing(PathBuf::from("/home/me"), &listing);
+        let rows = visible_remote_directory_rows(&root);
+
+        assert_eq!(root.name, "me");
+        assert_eq!(root.children.len(), 2);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].path, PathBuf::from("/home/me"));
+        assert_eq!(rows[1].name, "alpha");
+        assert_eq!(rows[1].depth, 1);
+        assert_eq!(rows[2].name, "zeta");
+        assert_eq!(rows[2].depth, 1);
+    }
+
+    #[test]
+    fn directory_tree_visible_rows_follow_expansion_state() {
+        let mut root = RemoteDirectoryNode {
+            name: "me".to_string(),
+            path: PathBuf::from("/home/me"),
+            expanded: true,
+            loading: false,
+            loaded: true,
+            children: vec![RemoteDirectoryNode {
+                name: "projects".to_string(),
+                path: PathBuf::from("/home/me/projects"),
+                expanded: true,
+                loading: false,
+                loaded: true,
+                children: vec![RemoteDirectoryNode {
+                    name: "nucleotide".to_string(),
+                    path: PathBuf::from("/home/me/projects/nucleotide"),
+                    expanded: false,
+                    loading: false,
+                    loaded: false,
+                    children: Vec::new(),
+                }],
+            }],
+        };
+
+        let expanded_rows = visible_remote_directory_rows(&root);
+        assert_eq!(
+            expanded_rows
+                .iter()
+                .map(|row| (row.name.as_str(), row.depth))
+                .collect::<Vec<_>>(),
+            vec![("me", 0), ("projects", 1), ("nucleotide", 2)]
+        );
+
+        remote_tree_node_mut(&mut root, Path::new("/home/me/projects"))
+            .unwrap()
+            .expanded = false;
+        let collapsed_rows = visible_remote_directory_rows(&root);
+
+        assert_eq!(
+            collapsed_rows
+                .iter()
+                .map(|row| (row.name.as_str(), row.depth))
+                .collect::<Vec<_>>(),
+            vec![("me", 0), ("projects", 1)]
+        );
+        assert!(remote_tree_contains_path(
+            &root,
+            Path::new("/home/me/projects/nucleotide")
+        ));
+    }
+
+    fn test_listing(path: &str, entries: &[(&str, FileKind)]) -> DirectoryListing {
+        let root = PathBuf::from(path);
+        DirectoryListing {
+            path: root.clone(),
+            entries: entries
+                .iter()
+                .map(|(name, kind)| {
+                    let entry_path = root.join(name);
+                    DirectoryEntry {
+                        name: (*name).to_string(),
+                        path: entry_path.clone(),
+                        stat: FileStat {
+                            path: entry_path,
+                            kind: *kind,
+                            size: 0,
+                            modified: None,
+                            readonly: false,
+                        },
+                        symlink_target: None,
+                        target_exists: None,
+                        ignored: None,
+                    }
+                })
+                .collect(),
+        }
     }
 }
