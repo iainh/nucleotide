@@ -203,7 +203,15 @@ pub mod remote_connection_manager {
 
     actions!(
         remote_connection_manager,
-        [Accept, Cancel, ToggleProtocol, SelectPrevious, SelectNext,]
+        [
+            Accept,
+            Cancel,
+            ToggleProtocol,
+            SelectPrevious,
+            SelectNext,
+            CollapseSelected,
+            ExpandSelected,
+        ]
     );
 }
 

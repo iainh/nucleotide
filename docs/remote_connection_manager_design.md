@@ -211,18 +211,14 @@ Rows should represent directories only by default. A small "Show files" option c
 |                                                                   |
 |  WSL  Ubuntu-24.04                                Connected       |
 |                                                                   |
-|  Location                                                         |
+|  Directories                                                      |
 |  +------------------------------------------------------------+   |
-|  | ~ / projects / nucleotide                                  |   |
-|  +------------------------------------------------------------+   |
-|                                                                   |
-|  Directories                                                     |
-|  +------------------------------------------------------------+   |
-|  | ..                                         parent           |   |
-|  | > crates                                  18 directories    |   |
-|  | > docs                                     2 directories    |   |
-|  | > runtime                                  3 directories    |   |
-|  | > scripts                                  0 directories    |   |
+|  | v iheggie                                                   |   |
+|  |   v projects                                                |   |
+|  |     > nucleotide                                            |   |
+|  |     > zed                                                   |   |
+|  |   > downloads                                               |   |
+|  |   > tmp                                                     |   |
 |  +------------------------------------------------------------+   |
 |                                                                   |
 |  Workspace root                                                   |
@@ -230,12 +226,12 @@ Rows should represent directories only by default. A small "Show files" option c
 |  | /home/iheggie/projects/nucleotide                         |   |
 |  +------------------------------------------------------------+   |
 |                                                                   |
-|  [ Use current folder ]                         [ Open ]          |
+|                                          [ Cancel ] [ Open ]      |
 |                                                                   |
 +-------------------------------------------------------------------+
 ```
 
-`Use current folder` copies the current browser location into the workspace root field. Selecting a row and pressing `Open` should first enter the row if it is not already the chosen workspace root.
+Selecting a directory row immediately updates the workspace root field. Pressing `Open` opens that selected root; clicking or pressing `Enter` toggles expansion, and left/right collapse or expand the selected directory.
 
 ## Wireframe: saved and recent connections
 
