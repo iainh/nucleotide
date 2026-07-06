@@ -1,6 +1,6 @@
 use futures::executor::block_on;
 use nucleotide_remote::{
-    RemoteHelperInstallPolicy, RemoteWorkspaceBackendOptions, RemoteWorkspaceProtocol,
+    RemoteHelperInstallPolicy, RemoteWorkspaceBackendOptions,
     connect_workspace_backend_for_location,
 };
 use nucleotide_workspace::{
@@ -115,7 +115,6 @@ fn path_fixture(directory: &Path, installer: fn(&Path)) -> (MutexGuard<'static, 
 
 fn v5_options(helper: &Path) -> RemoteWorkspaceBackendOptions {
     RemoteWorkspaceBackendOptions {
-        protocol: RemoteWorkspaceProtocol::V5,
         remote_helper_path: helper.to_path_buf(),
         remote_helper_path_is_override: true,
         ssh_helper_install_policy: RemoteHelperInstallPolicy::Never,

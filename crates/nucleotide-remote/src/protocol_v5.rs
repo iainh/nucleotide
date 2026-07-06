@@ -1,5 +1,5 @@
 // ABOUTME: Version 5 remote protocol frame and control-message primitives
-// ABOUTME: Provides multiplexed transport foundations without changing v4 service behaviour
+// ABOUTME: Provides multiplexed transport, flow control, and typed stream metadata
 
 use prost::Message;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -3510,7 +3510,7 @@ mod tests {
         .encode_to_vec();
         let mut bytes = Vec::new();
         write_frame(&mut bytes, &frame).unwrap();
-        bytes[0..4].copy_from_slice(b"NUCL");
+        bytes[0..4].copy_from_slice(b"BAD!");
 
         let error = read_frame(&mut Cursor::new(bytes)).unwrap_err();
 
