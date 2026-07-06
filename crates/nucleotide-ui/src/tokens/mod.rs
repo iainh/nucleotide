@@ -1904,17 +1904,17 @@ impl ChromeTokens {
     pub fn input_tokens(&self, editor: &EditorTokens) -> InputTokens {
         use crate::styling::ColorTheory;
 
-        // Input backgrounds use chrome surface colors
-        let input_bg = self.surface;
-        let input_bg_hover = ColorTheory::surface_variant(self.surface, 0.05);
-        let input_bg_focus = ColorTheory::surface_variant(self.surface, 0.08);
+        // Inputs sit beside editor content and should share its background.
+        let input_bg = editor.background;
+        let input_bg_hover = editor.background;
+        let input_bg_focus = editor.background;
 
         // Focus follows the platform/chrome accent in system look.
         let focus_ring = self.border_focus;
         let error_color = editor.error;
 
         InputTokens {
-            // Container colors - chrome based
+            // Container colors - editor based
             background: input_bg,
             background_hover: input_bg_hover,
             background_focus: input_bg_focus,

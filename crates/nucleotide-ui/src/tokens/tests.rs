@@ -933,8 +933,9 @@ mod component_token_tests {
         let input_tokens = tokens.input_tokens();
 
         // Test basic structure
-        assert_ne!(input_tokens.background, input_tokens.background_hover);
-        assert_ne!(input_tokens.background, input_tokens.background_focus);
+        assert_eq!(input_tokens.background, tokens.editor.background);
+        assert_eq!(input_tokens.background_hover, tokens.editor.background);
+        assert_eq!(input_tokens.background_focus, tokens.editor.background);
         assert_ne!(input_tokens.text, input_tokens.placeholder);
 
         // Test focus uses chrome/system colors

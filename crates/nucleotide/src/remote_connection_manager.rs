@@ -1114,7 +1114,7 @@ impl RemoteConnectionManagerView {
     }
 
     fn render_browse_session(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let (chrome_secondary_text, list_border, input_border, input_background) = {
+        let (chrome_secondary_text, list_border, input_border, input_background, editor_background) = {
             let theme = cx.theme();
             let tokens = &theme.tokens;
             (
@@ -1122,6 +1122,7 @@ impl RemoteConnectionManagerView {
                 tokens.picker_tokens().border,
                 tokens.input_tokens().border,
                 tokens.input_tokens().background,
+                tokens.editor.background,
             )
         };
         let Some(session) = self.browse_session.as_ref() else {
@@ -1150,6 +1151,7 @@ impl RemoteConnectionManagerView {
                     .border_1()
                     .border_color(list_border)
                     .rounded_md()
+                    .bg(editor_background)
                     .overflow_hidden()
                     .child(
                         div()
