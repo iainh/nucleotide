@@ -2331,6 +2331,12 @@ impl Workspace {
                     warn!(error = %error, "Failed to load config for remote terminal helper");
                     nucleotide_remote::RemoteWorkspaceBackendOptions::from_environment()
                 });
+            if shell.is_none() && command.is_none() && env.is_empty() {
+                return nucleotide_remote::remote_interactive_terminal_command_for_location_with_options(
+                    &location,
+                    &options,
+                );
+            }
             let command = command
                 .as_ref()
                 .map(|(program, args)| (program.as_str(), args.as_slice()));
