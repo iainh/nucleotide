@@ -138,7 +138,7 @@ pub struct RemoteServiceCommand {
 impl RemoteServiceCommand {
     pub fn command(&self) -> Command {
         let program = resolve_service_program(&self.program);
-        let mut command = Command::new(&program);
+        let mut command = nucleotide_process::command(&program);
         command.args(&self.args);
         if let Some(current_dir) = &self.current_dir {
             command.current_dir(current_dir);
@@ -10842,7 +10842,7 @@ async fn run_lsp_proxy(options: LspProxyOptions) -> Result<()> {
         &options.workspace_root,
     );
 
-    let mut child = tokio::process::Command::new(&server_program)
+    let mut child = nucleotide_process::tokio_command(&server_program)
         .args(&options.server_args)
         .current_dir(&options.workspace_root)
         .env_clear()

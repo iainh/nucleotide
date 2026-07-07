@@ -5172,6 +5172,7 @@ dependencies = [
  "ignore",
  "notify",
  "nucleotide-env",
+ "nucleotide-process",
  "nucleotide-workspace",
  "prost",
  "regex",
