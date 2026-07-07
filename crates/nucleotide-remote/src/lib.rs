@@ -309,6 +309,23 @@ pub fn wsl_lsp_proxy_command(
     }
 }
 
+pub fn wsl_interactive_terminal_command(
+    distro: impl AsRef<OsStr>,
+    linux_root: impl AsRef<Path>,
+) -> RemoteServiceCommand {
+    let linux_root = linux_root.as_ref();
+    RemoteServiceCommand {
+        program: OsString::from("wsl.exe"),
+        args: vec![
+            OsString::from("--distribution"),
+            distro.as_ref().to_os_string(),
+            OsString::from("--cd"),
+            linux_root.as_os_str().to_os_string(),
+        ],
+        current_dir: None,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SshTarget {
     pub host: String,
@@ -336,6 +353,33 @@ impl SshTarget {
             Some(user) if !user.is_empty() => format!("{user}@{}", self.host),
             _ => self.host.clone(),
         }
+    }
+}
+
+pub fn ssh_interactive_terminal_command(
+    target: SshTarget,
+    remote_root: impl AsRef<Path>,
+) -> RemoteServiceCommand {
+    let remote_root = posix_path_string(remote_root);
+    let remote_command = format!(
+        "cd {} && exec \"${{SHELL:-/bin/sh}}\" -l",
+        quote_posix_shell(&remote_root)
+    );
+    let mut args = Vec::new();
+    append_ssh_connection_args(&mut args, &target);
+    if let Some(port) = target.port {
+        args.push(OsString::from("-p"));
+        args.push(OsString::from(port.to_string()));
+    }
+    args.push(OsString::from("-tt"));
+    args.push(OsString::from("--"));
+    args.push(OsString::from(target.target_arg()));
+    args.push(OsString::from(remote_command));
+
+    RemoteServiceCommand {
+        program: OsString::from("ssh"),
+        args,
+        current_dir: None,
     }
 }
 
@@ -2121,6 +2165,22 @@ pub fn remote_lsp_proxy_command_for_location_with_options(
             path,
             helper_path,
             server,
+        )),
+    }
+}
+
+pub fn remote_interactive_terminal_command_for_location_with_options(
+    location: &WorkspaceLocation,
+    options: &RemoteWorkspaceBackendOptions,
+) -> Option<RemoteServiceCommand> {
+    match location {
+        WorkspaceLocation::Local { .. } => None,
+        WorkspaceLocation::Wsl {
+            distro, linux_path, ..
+        } => Some(wsl_interactive_terminal_command(distro, linux_path)),
+        WorkspaceLocation::Ssh { target, path, .. } => Some(ssh_interactive_terminal_command(
+            ssh_target_from_workspace_target_with_options(target, options),
+            path,
         )),
     }
 }
@@ -10846,27 +10906,48 @@ async fn run_lsp_proxy(options: LspProxyOptions) -> Result<()> {
 async fn run_terminal_proxy(options: TerminalProxyOptions) -> Result<()> {
     let mut environment = load_proxy_environment("terminal-proxy", &options.workspace_root).await?;
     environment.extend(options.env.iter().cloned());
+    remove_interactive_shell_state(&mut environment);
 
-    let (program, args) = terminal_proxy_process(&options, &environment);
-    let program_path =
-        resolve_program_from_environment_path(&program, &environment, &options.workspace_root);
+    let process = terminal_proxy_process(&options, &environment);
+    let program_path = resolve_program_from_environment_path(
+        &process.program,
+        &environment,
+        &options.workspace_root,
+    );
 
-    exec_terminal_proxy_process(&program_path, &args, &environment, &options.workspace_root)
-        .with_context(|| {
-            format!(
-                "failed to run terminal command {} in {}",
-                program_path.display(),
-                options.workspace_root.display()
-            )
-        })
+    exec_terminal_proxy_process(
+        &program_path,
+        &process.args,
+        process.login_shell,
+        &environment,
+        &options.workspace_root,
+    )
+    .with_context(|| {
+        format!(
+            "failed to run terminal command {} in {}",
+            program_path.display(),
+            options.workspace_root.display()
+        )
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TerminalProxyProcess {
+    program: String,
+    args: Vec<String>,
+    login_shell: bool,
 }
 
 fn terminal_proxy_process(
     options: &TerminalProxyOptions,
     environment: &HashMap<String, String>,
-) -> (String, Vec<String>) {
+) -> TerminalProxyProcess {
     match &options.command {
-        Some((program, args)) => (program.clone(), args.clone()),
+        Some((program, args)) => TerminalProxyProcess {
+            program: program.clone(),
+            args: args.clone(),
+            login_shell: false,
+        },
         None => {
             let shell = options
                 .shell
@@ -10876,8 +10957,28 @@ fn terminal_proxy_process(
                 .filter(|shell| !shell.is_empty())
                 .unwrap_or("/bin/sh")
                 .to_string();
-            (shell, Vec::new())
+            TerminalProxyProcess {
+                program: shell,
+                args: Vec::new(),
+                login_shell: true,
+            }
         }
+    }
+}
+
+const INTERACTIVE_SHELL_STATE_ENV_VARS: &[&str] = &[
+    "BASH_ENV",
+    "BASHOPTS",
+    "ENV",
+    "POSIXLY_CORRECT",
+    "PROMPT_COMMAND",
+    "PS1",
+    "SHELLOPTS",
+];
+
+fn remove_interactive_shell_state(environment: &mut HashMap<String, String>) {
+    for key in INTERACTIVE_SHELL_STATE_ENV_VARS {
+        environment.remove(*key);
     }
 }
 
@@ -10885,12 +10986,17 @@ fn terminal_proxy_process(
 fn exec_terminal_proxy_process(
     program: &Path,
     args: &[String],
+    login_shell: bool,
     environment: &HashMap<String, String>,
     workspace_root: &Path,
 ) -> io::Result<()> {
     use std::os::unix::process::CommandExt;
 
-    let error = Command::new(program)
+    let mut command = Command::new(program);
+    if login_shell {
+        command.arg0(login_shell_arg0(program));
+    }
+    let error = command
         .args(args)
         .current_dir(workspace_root)
         .env_clear()
@@ -10903,6 +11009,7 @@ fn exec_terminal_proxy_process(
 fn exec_terminal_proxy_process(
     program: &Path,
     args: &[String],
+    _login_shell: bool,
     environment: &HashMap<String, String>,
     workspace_root: &Path,
 ) -> io::Result<()> {
@@ -10919,6 +11026,13 @@ fn exec_terminal_proxy_process(
             "terminal command exited with status {status}"
         )))
     }
+}
+
+fn login_shell_arg0(program: &Path) -> OsString {
+    let name = program.file_name().unwrap_or(program.as_os_str());
+    let mut arg0 = OsString::from("-");
+    arg0.push(name);
+    arg0
 }
 
 fn pipe_task_result(
@@ -14846,7 +14960,7 @@ mod tests {
     }
 
     #[test]
-    fn terminal_proxy_process_uses_environment_shell_without_extra_flags() {
+    fn terminal_proxy_process_uses_environment_shell_as_login_shell_without_extra_flags() {
         let options = TerminalProxyOptions {
             workspace_root: PathBuf::from("/workspace"),
             shell: None,
@@ -14855,10 +14969,72 @@ mod tests {
         };
         let environment = HashMap::from([("SHELL".to_string(), "/bin/zsh".to_string())]);
 
-        let (program, args) = terminal_proxy_process(&options, &environment);
+        let process = terminal_proxy_process(&options, &environment);
 
-        assert_eq!(program, "/bin/zsh");
-        assert!(args.is_empty());
+        assert_eq!(process.program, "/bin/zsh");
+        assert!(process.args.is_empty());
+        assert!(process.login_shell);
+    }
+
+    #[test]
+    fn terminal_proxy_process_keeps_command_sessions_non_login() {
+        let options = TerminalProxyOptions {
+            workspace_root: PathBuf::from("/workspace"),
+            shell: None,
+            env: Vec::new(),
+            command: Some((
+                "cargo".to_string(),
+                vec!["test".to_string(), "--workspace".to_string()],
+            )),
+        };
+        let environment = HashMap::from([("SHELL".to_string(), "/bin/zsh".to_string())]);
+
+        let process = terminal_proxy_process(&options, &environment);
+
+        assert_eq!(process.program, "cargo");
+        assert_eq!(process.args, ["test", "--workspace"]);
+        assert!(!process.login_shell);
+    }
+
+    #[test]
+    fn terminal_proxy_environment_removes_prompt_and_shell_startup_state() {
+        let mut environment = HashMap::from([
+            ("BASH_ENV".to_string(), "/tmp/bash-env".to_string()),
+            ("BASHOPTS".to_string(), "cmdhist:progcomp".to_string()),
+            ("ENV".to_string(), "/tmp/sh-env".to_string()),
+            ("PATH".to_string(), "/usr/bin:/bin".to_string()),
+            ("POSIXLY_CORRECT".to_string(), "1".to_string()),
+            ("PROMPT_COMMAND".to_string(), "echo prompt".to_string()),
+            ("PS1".to_string(), "\\[broken\\]$ ".to_string()),
+            ("SHELL".to_string(), "/bin/zsh".to_string()),
+            ("SHELLOPTS".to_string(), "posix".to_string()),
+        ]);
+
+        remove_interactive_shell_state(&mut environment);
+
+        for key in INTERACTIVE_SHELL_STATE_ENV_VARS {
+            assert!(
+                !environment.contains_key(*key),
+                "{key} should not leak into remote terminal"
+            );
+        }
+        assert_eq!(
+            environment.get("SHELL").map(String::as_str),
+            Some("/bin/zsh")
+        );
+        assert_eq!(
+            environment.get("PATH").map(String::as_str),
+            Some("/usr/bin:/bin")
+        );
+    }
+
+    #[test]
+    fn login_shell_arg0_prefixes_program_basename() {
+        assert_eq!(
+            login_shell_arg0(Path::new("/bin/zsh")),
+            OsString::from("-zsh")
+        );
+        assert_eq!(login_shell_arg0(Path::new("bash")), OsString::from("-bash"));
     }
 
     #[test]
@@ -15476,6 +15652,23 @@ mod tests {
     }
 
     #[test]
+    fn wsl_interactive_terminal_command_uses_distro_and_directory_without_helper() {
+        let spec = wsl_interactive_terminal_command("Ubuntu", "/home/me/project");
+
+        assert_eq!(spec.program, OsString::from("wsl.exe"));
+        assert_eq!(
+            spec.args,
+            vec![
+                OsString::from("--distribution"),
+                OsString::from("Ubuntu"),
+                OsString::from("--cd"),
+                OsString::from("/home/me/project"),
+            ]
+        );
+        assert_eq!(spec.current_dir, None);
+    }
+
+    #[test]
     fn ssh_service_command_quotes_remote_paths() {
         let mut target = SshTarget::new("devbox");
         target.user = Some("me".to_string());
@@ -15582,6 +15775,29 @@ mod tests {
         assert!(command.contains("'/home/me/project with spaces/it'\"'\"'s'"));
         assert!(command.contains("typescript-language-server"));
         assert!(command.ends_with(" --"));
+    }
+
+    #[test]
+    fn ssh_interactive_terminal_command_reuses_ssh_options_and_starts_login_shell() {
+        let mut target = SshTarget::new("devbox");
+        target.user = Some("me".to_string());
+        target.port = Some(2222);
+        target.control_path = Some(PathBuf::from("/tmp/nucl-ssh/%C"));
+
+        let spec = ssh_interactive_terminal_command(target, "/home/me/project with spaces");
+
+        assert_eq!(spec.program, OsString::from("ssh"));
+        assert_ssh_non_interactive_defaults(&spec.args);
+        assert_arg_pair(&spec.args, "-p", "2222");
+        assert_arg_pair(&spec.args, "-o", "ControlMaster=auto");
+        let tty = arg_index(&spec.args, "-tt");
+        let separator = ssh_target_separator_index(&spec.args);
+        assert!(tty < separator);
+        assert_eq!(spec.args[separator + 1], OsString::from("me@devbox"));
+        let command = spec.args[separator + 2].to_string_lossy();
+        assert!(command.starts_with("cd "));
+        assert!(command.contains("'/home/me/project with spaces'"));
+        assert!(command.contains("exec \"${SHELL:-/bin/sh}\" -l"));
     }
 
     #[test]

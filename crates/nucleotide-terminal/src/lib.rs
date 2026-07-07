@@ -157,24 +157,17 @@ pub mod session {
             };
             let pair = pty_system.openpty(size).context("open PTY")?;
 
-            let program = cfg
-                .program
-                .clone()
-                .unwrap_or_else(|| default_shell(cfg.shell.as_deref()));
-            let mut cmd = CommandBuilder::new(&program);
-            cmd.args(&cfg.args);
+            let terminal_env = terminal_env_with_defaults(&cfg.env, cfg.cwd.as_deref());
+            let (mut cmd, command_label) = terminal_command_builder(&cfg, &terminal_env);
 
             if let Some(cwd) = &cfg.cwd {
                 cmd.cwd(cwd);
-            }
-            for (k, v) in terminal_env_with_defaults(&cfg.env, cfg.cwd.as_deref()) {
-                cmd.env(k, v);
             }
 
             let child = pair
                 .slave
                 .spawn_command(cmd)
-                .with_context(|| format!("spawn terminal command: {}", program))?;
+                .with_context(|| format!("spawn terminal command: {}", command_label))?;
 
             // IO endpoints
             let mut reader = pair.master.try_clone_reader().context("clone PTY reader")?;
@@ -353,18 +346,72 @@ pub mod session {
         }
     }
 
-    fn default_shell(override_shell: Option<&str>) -> String {
-        if let Some(s) = override_shell {
-            return s.to_string();
+    fn terminal_command_builder(
+        cfg: &TerminalSessionCfg,
+        terminal_env: &[(String, String)],
+    ) -> (CommandBuilder, String) {
+        if let Some(program) = cfg.program.as_deref() {
+            let mut cmd = CommandBuilder::new(program);
+            cmd.args(&cfg.args);
+            apply_terminal_env(&mut cmd, terminal_env, ShellEnvMode::Preserve);
+            return (cmd, shell_command_label(program, &cfg.args));
         }
+
+        if let Some(shell) = cfg.shell.as_deref() {
+            let mut cmd = CommandBuilder::new(shell);
+            cmd.args(&cfg.args);
+            apply_terminal_env(&mut cmd, terminal_env, ShellEnvMode::ExplicitShell(shell));
+            return (cmd, shell_command_label(shell, &cfg.args));
+        }
+
         #[cfg(windows)]
         {
-            windows_shell::default_shell()
+            let shell = windows_shell::default_shell();
+            let mut cmd = CommandBuilder::new(&shell);
+            apply_terminal_env(&mut cmd, terminal_env, ShellEnvMode::ExplicitShell(&shell));
+            (cmd, shell)
         }
         #[cfg(not(windows))]
         {
-            std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
+            let mut cmd = CommandBuilder::new_default_prog();
+            apply_terminal_env(&mut cmd, terminal_env, ShellEnvMode::LoginShell);
+            (cmd, "login shell".to_string())
         }
+    }
+
+    enum ShellEnvMode<'a> {
+        Preserve,
+        ExplicitShell(&'a str),
+        LoginShell,
+    }
+
+    fn apply_terminal_env(
+        cmd: &mut CommandBuilder,
+        terminal_env: &[(String, String)],
+        shell_mode: ShellEnvMode<'_>,
+    ) {
+        if matches!(shell_mode, ShellEnvMode::LoginShell) {
+            cmd.env_remove("SHELL");
+        }
+
+        for (key, value) in terminal_env {
+            if matches!(shell_mode, ShellEnvMode::LoginShell) && key.eq_ignore_ascii_case("SHELL") {
+                continue;
+            }
+
+            cmd.env(key, value);
+        }
+
+        if let ShellEnvMode::ExplicitShell(shell) = shell_mode {
+            cmd.env("SHELL", shell);
+        }
+    }
+
+    fn shell_command_label(program: &str, args: &[String]) -> String {
+        std::iter::once(program)
+            .chain(args.iter().map(String::as_str))
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 
     fn terminal_env_with_defaults(
@@ -401,8 +448,25 @@ pub mod session {
             restore_parent_env(&mut merged, parent_env, "PWD");
         }
         restore_parent_env(&mut merged, parent_env, "OLDPWD");
+        remove_interactive_shell_state(&mut merged);
 
         merged.into_iter().collect()
+    }
+
+    const INTERACTIVE_SHELL_STATE_ENV_VARS: &[&str] = &[
+        "BASH_ENV",
+        "BASHOPTS",
+        "ENV",
+        "POSIXLY_CORRECT",
+        "PROMPT_COMMAND",
+        "PS1",
+        "SHELLOPTS",
+    ];
+
+    fn remove_interactive_shell_state(merged: &mut BTreeMap<String, String>) {
+        for key in INTERACTIVE_SHELL_STATE_ENV_VARS {
+            merged.remove(*key);
+        }
     }
 
     fn restore_parent_env(
@@ -555,6 +619,80 @@ pub mod session {
             ));
 
             assert!(!env.contains_key("HOME"));
+        }
+
+        #[test]
+        fn terminal_env_removes_prompt_and_shell_startup_state() {
+            let env = env_map(terminal_env_with_defaults_from(
+                &[
+                    pair("BASH_ENV", "/tmp/bash-env"),
+                    pair("BASHOPTS", "cmdhist:progcomp"),
+                    pair("ENV", "/tmp/sh-env"),
+                    pair("POSIXLY_CORRECT", "1"),
+                    pair("PROMPT_COMMAND", "echo prompt"),
+                    pair("PS1", "\\[broken\\]$ "),
+                    pair("SHELLOPTS", "posix"),
+                ],
+                None,
+                &BTreeMap::new(),
+            ));
+
+            for key in INTERACTIVE_SHELL_STATE_ENV_VARS {
+                assert!(
+                    !env.contains_key(*key),
+                    "{key} should not leak into terminal"
+                );
+            }
+        }
+
+        #[cfg(not(windows))]
+        #[test]
+        fn default_terminal_session_uses_login_shell_lookup() {
+            let env = terminal_env_with_defaults_from(
+                &[],
+                None,
+                &BTreeMap::from([("SHELL".to_string(), "/bin/bash".to_string())]),
+            );
+            let cfg = TerminalSessionCfg::default();
+
+            let (cmd, label) = terminal_command_builder(&cfg, &env);
+
+            assert!(
+                cmd.get_argv().is_empty(),
+                "default terminal should use portable-pty login shell lookup"
+            );
+            assert_eq!(label, "login shell");
+            assert!(cmd.get_env("SHELL").is_none());
+        }
+
+        #[test]
+        fn explicit_shell_session_sets_shell_environment_to_override() {
+            let env = terminal_env_with_defaults_from(
+                &[],
+                None,
+                &BTreeMap::from([("SHELL".to_string(), "/bin/zsh".to_string())]),
+            );
+            let cfg = TerminalSessionCfg {
+                shell: Some("/bin/bash".to_string()),
+                args: vec!["-l".to_string()],
+                ..TerminalSessionCfg::default()
+            };
+
+            let (cmd, label) = terminal_command_builder(&cfg, &env);
+
+            assert_eq!(label, "/bin/bash -l");
+            assert_eq!(
+                cmd.get_argv().first().and_then(|arg| arg.to_str()),
+                Some("/bin/bash")
+            );
+            assert_eq!(
+                cmd.get_argv().get(1).and_then(|arg| arg.to_str()),
+                Some("-l")
+            );
+            assert_eq!(
+                cmd.get_env("SHELL").and_then(|value| value.to_str()),
+                Some("/bin/bash")
+            );
         }
     }
 }
