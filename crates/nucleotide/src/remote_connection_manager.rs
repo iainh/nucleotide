@@ -4,7 +4,6 @@
 use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use anyhow::{Context as _, Result, anyhow};
 use gpui::prelude::FluentBuilder;
@@ -1626,7 +1625,7 @@ fn resolve_ssh_home(
 }
 
 fn resolve_wsl_home(distro: &str) -> Result<PathBuf> {
-    let output = Command::new("wsl.exe")
+    let output = nucleotide_process::command("wsl.exe")
         .args([
             OsString::from("--distribution"),
             OsString::from(distro),
@@ -1794,7 +1793,7 @@ fn known_hosts() -> Vec<String> {
 }
 
 fn wsl_distributions() -> Vec<String> {
-    let output = Command::new("wsl.exe")
+    let output = nucleotide_process::command("wsl.exe")
         .args([OsString::from("--list"), OsString::from("--quiet")])
         .output();
 
