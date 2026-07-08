@@ -5,13 +5,17 @@ use crate::{
     workspace_for_context, Call, Error, LanguageServerId, LspWorkspaceContext, OffsetEncoding,
     Result,
 };
+use log::info;
 
 use crate::lsp::{
     self, notification::DidChangeWorkspaceFolders, CodeActionCapabilityResolveSupport,
     DidChangeWorkspaceFoldersParams, OneOf, PositionEncodingKind, SignatureHelp, Url,
     WorkspaceFolder, WorkspaceFoldersChangeEvent,
 };
-use helix_core::{syntax::config::LanguageServerFeature, ChangeSet, Rope};
+use helix_core::{
+    syntax::config::{LanguageServerFeature, RootMarkers},
+    ChangeSet, Rope,
+};
 use helix_loader::VERSION_AND_GIT_HASH;
 use parking_lot::Mutex;
 use serde::Deserialize;
@@ -38,8 +42,9 @@ use tokio::{
 fn workspace_for_uri(uri: lsp::Url) -> WorkspaceFolder {
     lsp::WorkspaceFolder {
         name: uri
-            .path_segments()
-            .and_then(|mut segments| segments.next_back())
+            .path()
+            .rsplit('/')
+            .find(|segment| !segment.is_empty())
             .map(|basename| basename.to_string())
             .unwrap_or_default(),
         uri,
@@ -53,137 +58,42 @@ fn root_uri_file_path_matches(root_uri: Option<&lsp::Url>, root_path: &Path) -> 
             .is_some_and(|(actual, expected)| actual.as_str() == expected.as_str())
 }
 
-fn file_operation_uri(path: &Path, is_dir: bool) -> Option<String> {
-    let url = if is_dir {
-        Url::from_directory_path(path)
-    } else {
-        Url::from_file_path(path)
-    };
-    Some(url.ok()?.to_string())
-}
+fn apply_nucleotide_text_document_capabilities(
+    capabilities: &mut lsp::TextDocumentClientCapabilities,
+) {
+    let completion = capabilities.completion.get_or_insert_with(Default::default);
+    let completion_item = completion
+        .completion_item
+        .get_or_insert_with(Default::default);
 
-fn text_document_client_capabilities(
-    enable_snippets: bool,
-) -> lsp::TextDocumentClientCapabilities {
-    lsp::TextDocumentClientCapabilities {
-        completion: Some(lsp::CompletionClientCapabilities {
-            completion_item: Some(lsp::CompletionItemCapability {
-                snippet_support: Some(enable_snippets),
-                resolve_support: Some(lsp::CompletionItemCapabilityResolveSupport {
-                    properties: vec![
-                        String::from("documentation"),
-                        String::from("detail"),
-                        String::from("additionalTextEdits"),
-                    ],
-                }),
-                insert_replace_support: Some(true),
-                deprecated_support: Some(true),
-                tag_support: Some(lsp::TagSupport {
-                    value_set: vec![lsp::CompletionItemTag::DEPRECATED],
-                }),
-                // Help servers like rust-analyzer provide enriched labels
-                label_details_support: Some(true),
-                // Advertise supported insert text modes similar to Zed
-                insert_text_mode_support: Some(lsp::InsertTextModeSupport {
-                    value_set: vec![
-                        lsp::InsertTextMode::AS_IS,
-                        lsp::InsertTextMode::ADJUST_INDENTATION,
-                    ],
-                }),
-                ..Default::default()
-            }),
-            completion_item_kind: Some(lsp::CompletionItemKindCapability {
-                ..Default::default()
-            }),
-            // Enable additional completion context information like trigger character
-            context_support: Some(true),
-            // Match Zed's default to adjust indentation on insert
-            insert_text_mode: Some(lsp::InsertTextMode::ADJUST_INDENTATION),
-            // Provide CompletionList item defaults the client understands
-            completion_list: Some(lsp::CompletionListCapability {
-                item_defaults: Some(vec![
-                    "commitCharacters".to_owned(),
-                    "editRange".to_owned(),
-                    "insertTextMode".to_owned(),
-                    "insertTextFormat".to_owned(),
-                    "data".to_owned(),
-                ]),
-            }),
-            ..Default::default()
-        }),
-        hover: Some(lsp::HoverClientCapabilities {
-            // if not specified, rust-analyzer returns plaintext marked as markdown but
-            // badly formatted.
-            content_format: Some(vec![lsp::MarkupKind::Markdown]),
-            ..Default::default()
-        }),
-        signature_help: Some(lsp::SignatureHelpClientCapabilities {
-            signature_information: Some(lsp::SignatureInformationSettings {
-                documentation_format: Some(vec![lsp::MarkupKind::Markdown]),
-                parameter_information: Some(lsp::ParameterInformationSettings {
-                    label_offset_support: Some(true),
-                }),
-                active_parameter_support: Some(true),
-            }),
-            ..Default::default()
-        }),
-        document_symbol: Some(lsp::DocumentSymbolClientCapabilities {
-            dynamic_registration: Some(false),
-            hierarchical_document_symbol_support: Some(true),
-            ..Default::default()
-        }),
-        rename: Some(lsp::RenameClientCapabilities {
-            dynamic_registration: Some(false),
-            prepare_support: Some(true),
-            prepare_support_default_behavior: None,
-            honors_change_annotations: Some(false),
-        }),
-        formatting: Some(lsp::DocumentFormattingClientCapabilities {
-            dynamic_registration: Some(false),
-        }),
-        code_action: Some(lsp::CodeActionClientCapabilities {
-            code_action_literal_support: Some(lsp::CodeActionLiteralSupport {
-                code_action_kind: lsp::CodeActionKindLiteralSupport {
-                    value_set: [
-                        lsp::CodeActionKind::EMPTY,
-                        lsp::CodeActionKind::QUICKFIX,
-                        lsp::CodeActionKind::REFACTOR,
-                        lsp::CodeActionKind::REFACTOR_EXTRACT,
-                        lsp::CodeActionKind::REFACTOR_INLINE,
-                        lsp::CodeActionKind::REFACTOR_REWRITE,
-                        lsp::CodeActionKind::SOURCE,
-                        lsp::CodeActionKind::SOURCE_ORGANIZE_IMPORTS,
-                    ]
-                    .iter()
-                    .map(|kind| kind.as_str().to_string())
-                    .collect(),
-                },
-            }),
-            is_preferred_support: Some(true),
-            disabled_support: Some(true),
-            data_support: Some(true),
-            resolve_support: Some(CodeActionCapabilityResolveSupport {
-                properties: vec!["edit".to_owned(), "command".to_owned()],
-            }),
-            ..Default::default()
-        }),
-        publish_diagnostics: Some(lsp::PublishDiagnosticsClientCapabilities {
-            version_support: Some(true),
-            tag_support: Some(lsp::TagSupport {
-                value_set: vec![
-                    lsp::DiagnosticTag::UNNECESSARY,
-                    lsp::DiagnosticTag::DEPRECATED,
-                ],
-            }),
-            data_support: Some(true),
-            ..Default::default()
-        }),
-        inlay_hint: Some(lsp::InlayHintClientCapabilities {
-            dynamic_registration: Some(false),
-            resolve_support: None,
-        }),
-        ..Default::default()
-    }
+    completion_item.label_details_support = Some(true);
+    completion_item.insert_text_mode_support = Some(lsp::InsertTextModeSupport {
+        value_set: vec![
+            lsp::InsertTextMode::AS_IS,
+            lsp::InsertTextMode::ADJUST_INDENTATION,
+        ],
+    });
+    completion.context_support = Some(true);
+    completion.insert_text_mode = Some(lsp::InsertTextMode::ADJUST_INDENTATION);
+    completion
+        .completion_list
+        .get_or_insert_with(Default::default)
+        .item_defaults = Some(vec![
+        "commitCharacters".to_owned(),
+        "editRange".to_owned(),
+        "insertTextMode".to_owned(),
+        "insertTextFormat".to_owned(),
+        "data".to_owned(),
+    ]);
+
+    capabilities
+        .document_symbol
+        .get_or_insert_with(Default::default)
+        .hierarchical_document_symbol_support = Some(true);
+    capabilities
+        .publish_diagnostics
+        .get_or_insert_with(Default::default)
+        .data_support = Some(true);
 }
 
 #[derive(Debug)]
@@ -200,6 +110,8 @@ pub struct Client {
     root_uri: Option<lsp::Url>,
     workspace_folders: Mutex<Vec<lsp::WorkspaceFolder>>,
     initialize_notify: Arc<Notify>,
+    /// Notified by the transport once `exit` has been flushed to the server's stdin.
+    shutdown_flushed: Arc<Notify>,
     /// workspace folders added while the server is still initializing
     req_timeout: u64,
 }
@@ -207,9 +119,9 @@ pub struct Client {
 impl Client {
     pub fn try_add_doc(
         self: &Arc<Self>,
-        root_markers: &[String],
+        root_markers: &RootMarkers,
         manual_roots: &[PathBuf],
-        doc_path: Option<&std::path::PathBuf>,
+        doc_path: Option<&std::path::Path>,
         may_support_workspace: bool,
         workspace_context: Option<&LspWorkspaceContext>,
     ) -> bool {
@@ -362,6 +274,7 @@ impl Client {
         UnboundedReceiver<(LanguageServerId, Call)>,
         Arc<Notify>,
     )> {
+        info!("Starting lsp {name:?} in root {root_path:?}");
         // Resolve path to the binary
         let cmd = helix_stdx::env::which(cmd)?;
 
@@ -383,7 +296,7 @@ impl Client {
         let reader = BufReader::new(process.stdout.take().expect("Failed to open stdout"));
         let stderr = BufReader::new(process.stderr.take().expect("Failed to open stderr"));
 
-        let (server_rx, server_tx, initialize_notify) =
+        let (server_rx, server_tx, initialize_notify, shutdown_flushed) =
             Transport::start(reader, writer, stderr, id, name.clone());
 
         let workspace_folders = root_uri
@@ -405,6 +318,7 @@ impl Client {
             root_uri,
             workspace_folders: Mutex::new(workspace_folders),
             initialize_notify: initialize_notify.clone(),
+            shutdown_flushed,
         };
 
         Ok((client, server_rx, initialize_notify))
@@ -515,6 +429,7 @@ impl Client {
                         | CodeActionProviderCapability::Options(_),
                 )
             ),
+            LanguageServerFeature::DocumentLinks => capabilities.document_link_provider.is_some(),
             LanguageServerFeature::WorkspaceCommand => {
                 capabilities.execute_command_provider.is_some()
             }
@@ -527,6 +442,7 @@ impl Client {
                 Some(OneOf::Left(true) | OneOf::Right(_))
             ),
             LanguageServerFeature::Diagnostics => true, // there's no extra server capability
+            LanguageServerFeature::PullDiagnostics => capabilities.diagnostic_provider.is_some(),
             LanguageServerFeature::RenameSymbol => matches!(
                 capabilities.rename_provider,
                 Some(OneOf::Left(true)) | Some(OneOf::Right(_))
@@ -541,6 +457,13 @@ impl Client {
                     ColorProviderCapability::Simple(true)
                         | ColorProviderCapability::ColorProvider(_)
                         | ColorProviderCapability::Options(_)
+                )
+            ),
+            LanguageServerFeature::CallHierarchy => matches!(
+                capabilities.call_hierarchy_provider,
+                Some(
+                    CallHierarchyServerCapability::Simple(true)
+                        | CallHierarchyServerCapability::Options(_)
                 )
             ),
         }
@@ -740,6 +663,9 @@ impl Client {
                     apply_edit: Some(true),
                     symbol: Some(lsp::WorkspaceSymbolClientCapabilities {
                         dynamic_registration: Some(false),
+                        symbol_kind: Some(lsp::SymbolKindCapability {
+                            value_set: Some(lsp::SymbolKind::all()),
+                        }),
                         ..Default::default()
                     }),
                     execute_command: Some(lsp::DynamicRegistrationClientCapabilities {
@@ -761,21 +687,145 @@ impl Client {
                     }),
                     did_change_watched_files: Some(lsp::DidChangeWatchedFilesClientCapabilities {
                         dynamic_registration: Some(true),
-                        relative_pattern_support: Some(false),
+                        relative_pattern_support: Some(true),
                     }),
                     file_operations: Some(lsp::WorkspaceFileOperationsClientCapabilities {
+                        will_create: Some(true),
                         did_create: Some(true),
                         will_rename: Some(true),
                         did_rename: Some(true),
+                        will_delete: Some(true),
                         did_delete: Some(true),
                         ..Default::default()
                     }),
+                    diagnostic: Some(lsp::DiagnosticWorkspaceClientCapabilities {
+                        refresh_support: Some(true),
+                    }),
                     ..Default::default()
                 }),
-                text_document: Some(text_document_client_capabilities(enable_snippets)),
+                text_document: Some({
+                    let mut capabilities = lsp::TextDocumentClientCapabilities {
+                        completion: Some(lsp::CompletionClientCapabilities {
+                            completion_item: Some(lsp::CompletionItemCapability {
+                                snippet_support: Some(enable_snippets),
+                                resolve_support: Some(lsp::CompletionItemCapabilityResolveSupport {
+                                    properties: vec![
+                                        String::from("documentation"),
+                                        String::from("detail"),
+                                        String::from("additionalTextEdits"),
+                                    ],
+                                }),
+                                insert_replace_support: Some(true),
+                                deprecated_support: Some(true),
+                                tag_support: Some(lsp::TagSupport {
+                                    value_set: vec![lsp::CompletionItemTag::DEPRECATED],
+                                }),
+                                ..Default::default()
+                            }),
+                            completion_item_kind: Some(lsp::CompletionItemKindCapability {
+                                ..Default::default()
+                            }),
+                            context_support: None, // additional context information Some(true)
+                            ..Default::default()
+                        }),
+                        hover: Some(lsp::HoverClientCapabilities {
+                            // if not specified, rust-analyzer returns plaintext marked as markdown but
+                            // badly formatted.
+                            content_format: Some(vec![lsp::MarkupKind::Markdown]),
+                            ..Default::default()
+                        }),
+                        signature_help: Some(lsp::SignatureHelpClientCapabilities {
+                            signature_information: Some(lsp::SignatureInformationSettings {
+                                documentation_format: Some(vec![lsp::MarkupKind::Markdown]),
+                                parameter_information: Some(lsp::ParameterInformationSettings {
+                                    label_offset_support: Some(true),
+                                }),
+                                active_parameter_support: Some(true),
+                            }),
+                            ..Default::default()
+                        }),
+                        rename: Some(lsp::RenameClientCapabilities {
+                            dynamic_registration: Some(false),
+                            prepare_support: Some(true),
+                            prepare_support_default_behavior: None,
+                            honors_change_annotations: Some(false),
+                        }),
+                        formatting: Some(lsp::DocumentFormattingClientCapabilities {
+                            dynamic_registration: Some(false),
+                        }),
+                        code_action: Some(lsp::CodeActionClientCapabilities {
+                            code_action_literal_support: Some(lsp::CodeActionLiteralSupport {
+                                code_action_kind: lsp::CodeActionKindLiteralSupport {
+                                    value_set: [
+                                        lsp::CodeActionKind::EMPTY,
+                                        lsp::CodeActionKind::QUICKFIX,
+                                        lsp::CodeActionKind::REFACTOR,
+                                        lsp::CodeActionKind::REFACTOR_EXTRACT,
+                                        lsp::CodeActionKind::REFACTOR_INLINE,
+                                        lsp::CodeActionKind::REFACTOR_REWRITE,
+                                        lsp::CodeActionKind::SOURCE,
+                                        lsp::CodeActionKind::SOURCE_ORGANIZE_IMPORTS,
+                                        lsp::CodeActionKind::SOURCE_FIX_ALL,
+                                    ]
+                                    .iter()
+                                    .map(|kind| kind.as_str().to_string())
+                                    .collect(),
+                                },
+                            }),
+                            is_preferred_support: Some(true),
+                            disabled_support: Some(true),
+                            data_support: Some(true),
+                            resolve_support: Some(CodeActionCapabilityResolveSupport {
+                                properties: vec!["edit".to_owned(), "command".to_owned()],
+                            }),
+                            ..Default::default()
+                        }),
+                        diagnostic: Some(lsp::DiagnosticClientCapabilities {
+                            dynamic_registration: Some(false),
+                            related_document_support: Some(true),
+                        }),
+                        publish_diagnostics: Some(lsp::PublishDiagnosticsClientCapabilities {
+                            version_support: Some(true),
+                            tag_support: Some(lsp::TagSupport {
+                                value_set: vec![
+                                    lsp::DiagnosticTag::UNNECESSARY,
+                                    lsp::DiagnosticTag::DEPRECATED,
+                                ],
+                            }),
+                            ..Default::default()
+                        }),
+                        inlay_hint: Some(lsp::InlayHintClientCapabilities {
+                            dynamic_registration: Some(false),
+                            resolve_support: None,
+                        }),
+                        document_link: Some(lsp::DocumentLinkClientCapabilities {
+                            dynamic_registration: Some(false),
+                            tooltip_support: Some(false),
+                        }),
+                        call_hierarchy: Some(lsp::DynamicRegistrationClientCapabilities {
+                            dynamic_registration: Some(false),
+                        }),
+                        document_symbol: Some(lsp::DocumentSymbolClientCapabilities {
+                            dynamic_registration: Some(false),
+                            symbol_kind: Some(lsp::SymbolKindCapability {
+                                value_set: Some(lsp::SymbolKind::all()),
+                            }),
+                            hierarchical_document_symbol_support: Some(false),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    };
+                    apply_nucleotide_text_document_capabilities(&mut capabilities);
+                    capabilities
+                }),
                 window: Some(lsp::WindowClientCapabilities {
+                    show_message: Some(lsp::ShowMessageRequestClientCapabilities {
+                        message_action_item: Some(lsp::MessageActionItemCapabilities {
+                            additional_properties_support: Some(true),
+                        }),
+                    }),
                     work_done_progress: Some(true),
-                    ..Default::default()
+                    show_document: Some(lsp::ShowDocumentClientCapabilities { support: true }),
                 }),
                 general: Some(lsp::GeneralClientCapabilities {
                     position_encodings: Some(vec![
@@ -815,13 +865,37 @@ impl Client {
         Ok(())
     }
 
-    /// Forcefully shuts down the language server ignoring any errors.
-    pub async fn force_shutdown(&self) -> Result<()> {
-        if let Err(e) = self.shutdown().await {
-            log::warn!("language server failed to terminate gracefully - {}", e);
-        }
+    /// Sends the LSP shutdown request followed immediately by the exit
+    /// notification, without waiting for the shutdown response (fire-and-forget).
+    /// The server receives both in order and exits on its own; any late shutdown
+    /// response is discarded. Quitting therefore never blocks on a slow server
+    /// (e.g. gopls flushing ~1k log messages before it would answer `shutdown`).
+    ///
+    /// The child process is not waited on here: it is killed by `kill_on_drop`
+    /// when this `Client` is dropped. `close_language_servers` first gives a short
+    /// grace window so the `exit` reaches stdin and well-behaved servers can begin
+    /// exiting before the kill.
+    pub fn force_shutdown(&self) {
+        let request = jsonrpc::MethodCall {
+            jsonrpc: Some(jsonrpc::Version::V2),
+            id: self.next_request_id(),
+            method: <lsp::request::Shutdown as lsp::request::Request>::METHOD.to_string(),
+            params: jsonrpc::Params::None,
+        };
+        // The response receiver is dropped immediately; we do not wait for a reply.
+        let (chan, _) = tokio::sync::mpsc::channel(1);
+        let _ = self.server_tx.send(Payload::Request {
+            chan,
+            value: request,
+        });
         self.exit();
-        Ok(())
+    }
+
+    /// Resolves once the `exit` notification has been written to the server's stdin
+    /// (i.e. helix's *outbound* write completed — independent of how slow the server
+    /// is, since it doesn't wait for any server response).
+    pub async fn wait_shutdown_flushed(&self) {
+        self.shutdown_flushed.notified().await;
     }
 
     // -------------------------------------------------------------------------------------------
@@ -840,38 +914,13 @@ impl Client {
         })
     }
 
-    pub fn will_rename(
-        &self,
-        old_path: &Path,
-        new_path: &Path,
-        is_dir: bool,
-    ) -> Option<impl Future<Output = Result<Option<lsp::WorkspaceEdit>>>> {
-        let capabilities = self.file_operations_intests();
-        if !capabilities.will_rename.has_interest(old_path, is_dir) {
-            return None;
-        }
-        let files = vec![lsp::FileRename {
-            old_uri: file_operation_uri(old_path, is_dir)?,
-            new_uri: file_operation_uri(new_path, is_dir)?,
-        }];
-        Some(self.call_with_timeout::<lsp::request::WillRenameFiles>(
-            &lsp::RenameFilesParams { files },
-            5,
-        ))
-    }
-
-    pub fn did_rename(&self, old_path: &Path, new_path: &Path, is_dir: bool) -> Option<()> {
-        let capabilities = self.file_operations_intests();
-        if !capabilities.did_rename.has_interest(new_path, is_dir) {
-            return None;
-        }
-
-        let files = vec![lsp::FileRename {
-            old_uri: file_operation_uri(old_path, is_dir)?,
-            new_uri: file_operation_uri(new_path, is_dir)?,
-        }];
-        self.notify::<lsp::notification::DidRenameFiles>(lsp::RenameFilesParams { files });
-        Some(())
+    fn file_operation_uri(path: &Path, is_dir: bool) -> Option<String> {
+        let url = if is_dir {
+            Url::from_directory_path(path)
+        } else {
+            Url::from_file_path(path)
+        };
+        Some(url.ok()?.to_string())
     }
 
     pub fn will_create(
@@ -885,7 +934,7 @@ impl Client {
         }
 
         let files = vec![lsp::FileCreate {
-            uri: file_operation_uri(path, is_dir)?,
+            uri: Self::file_operation_uri(path, is_dir)?,
         }];
         Some(self.call_with_timeout::<lsp::request::WillCreateFiles>(
             &lsp::CreateFilesParams { files },
@@ -900,9 +949,43 @@ impl Client {
         }
 
         let files = vec![lsp::FileCreate {
-            uri: file_operation_uri(path, is_dir)?,
+            uri: Self::file_operation_uri(path, is_dir)?,
         }];
         self.notify::<lsp::notification::DidCreateFiles>(lsp::CreateFilesParams { files });
+        Some(())
+    }
+
+    pub fn will_rename(
+        &self,
+        old_path: &Path,
+        new_path: &Path,
+        is_dir: bool,
+    ) -> Option<impl Future<Output = Result<Option<lsp::WorkspaceEdit>>>> {
+        let capabilities = self.file_operations_intests();
+        if !capabilities.will_rename.has_interest(old_path, is_dir) {
+            return None;
+        }
+        let files = vec![lsp::FileRename {
+            old_uri: Self::file_operation_uri(old_path, is_dir)?,
+            new_uri: Self::file_operation_uri(new_path, is_dir)?,
+        }];
+        Some(self.call_with_timeout::<lsp::request::WillRenameFiles>(
+            &lsp::RenameFilesParams { files },
+            5,
+        ))
+    }
+
+    pub fn did_rename(&self, old_path: &Path, new_path: &Path, is_dir: bool) -> Option<()> {
+        let capabilities = self.file_operations_intests();
+        if !capabilities.did_rename.has_interest(new_path, is_dir) {
+            return None;
+        }
+
+        let files = vec![lsp::FileRename {
+            old_uri: Self::file_operation_uri(old_path, is_dir)?,
+            new_uri: Self::file_operation_uri(new_path, is_dir)?,
+        }];
+        self.notify::<lsp::notification::DidRenameFiles>(lsp::RenameFilesParams { files });
         Some(())
     }
 
@@ -917,7 +1000,7 @@ impl Client {
         }
 
         let files = vec![lsp::FileDelete {
-            uri: file_operation_uri(path, is_dir)?,
+            uri: Self::file_operation_uri(path, is_dir)?,
         }];
         Some(self.call_with_timeout::<lsp::request::WillDeleteFiles>(
             &lsp::DeleteFilesParams { files },
@@ -925,14 +1008,14 @@ impl Client {
         ))
     }
 
-    pub fn did_delete(&self, path: &Path, was_dir: bool) -> Option<()> {
+    pub fn did_delete(&self, path: &Path, is_dir: bool) -> Option<()> {
         let capabilities = self.file_operations_intests();
-        if !capabilities.did_delete.has_interest(path, was_dir) {
+        if !capabilities.did_delete.has_interest(path, is_dir) {
             return None;
         }
 
         let files = vec![lsp::FileDelete {
-            uri: file_operation_uri(path, was_dir)?,
+            uri: Self::file_operation_uri(path, is_dir)?,
         }];
         self.notify::<lsp::notification::DidDeleteFiles>(lsp::DeleteFilesParams { files });
         Some(())
@@ -1272,6 +1355,35 @@ impl Client {
         Some(self.call::<lsp::request::DocumentColor>(params))
     }
 
+    pub fn text_document_document_link(
+        &self,
+        text_document: lsp::TextDocumentIdentifier,
+        work_done_token: Option<lsp::ProgressToken>,
+    ) -> Option<impl Future<Output = Result<Option<Vec<lsp::DocumentLink>>>>> {
+        if !self.supports_feature(LanguageServerFeature::DocumentLinks) {
+            return None;
+        }
+
+        let params = lsp::DocumentLinkParams {
+            text_document,
+            work_done_progress_params: lsp::WorkDoneProgressParams { work_done_token },
+            partial_result_params: lsp::PartialResultParams::default(),
+        };
+
+        Some(self.call::<lsp::request::DocumentLinkRequest>(params))
+    }
+
+    pub fn resolve_document_link(
+        &self,
+        params: lsp::DocumentLink,
+    ) -> Option<impl Future<Output = Result<lsp::DocumentLink>>> {
+        if !self.supports_feature(LanguageServerFeature::DocumentLinks) {
+            return None;
+        }
+
+        Some(self.call::<lsp::request::DocumentLinkResolve>(params))
+    }
+
     pub fn text_document_hover(
         &self,
         text_document: lsp::TextDocumentIdentifier,
@@ -1353,6 +1465,32 @@ impl Client {
         };
 
         Some(self.call::<lsp::request::RangeFormatting>(params))
+    }
+
+    pub fn text_document_diagnostic(
+        &self,
+        text_document: lsp::TextDocumentIdentifier,
+        previous_result_id: Option<String>,
+    ) -> Option<impl Future<Output = Result<lsp::DocumentDiagnosticReportResult>>> {
+        let capabilities = self.capabilities();
+
+        // Return early if the server does not support pull diagnostic.
+        let identifier = match capabilities.diagnostic_provider.as_ref()? {
+            lsp::DiagnosticServerCapabilities::Options(cap) => cap.identifier.clone(),
+            lsp::DiagnosticServerCapabilities::RegistrationOptions(cap) => {
+                cap.diagnostic_options.identifier.clone()
+            }
+        };
+
+        let params = lsp::DocumentDiagnosticParams {
+            text_document,
+            identifier,
+            previous_result_id,
+            work_done_progress_params: lsp::WorkDoneProgressParams::default(),
+            partial_result_params: lsp::PartialResultParams::default(),
+        };
+
+        Some(self.call::<lsp::request::DocumentDiagnosticRequest>(params))
     }
 
     pub fn text_document_document_highlight(
@@ -1555,6 +1693,78 @@ impl Client {
         Some(self.call::<lsp::request::DocumentSymbolRequest>(params))
     }
 
+    pub fn prepare_call_hierarchy(
+        &self,
+        text_document: lsp::TextDocumentIdentifier,
+        position: lsp::Position,
+    ) -> Option<impl Future<Output = Result<Option<Vec<lsp::CallHierarchyItem>>>>> {
+        let capabilities = self.capabilities.get().unwrap();
+
+        match capabilities.call_hierarchy_provider {
+            Some(
+                lsp::CallHierarchyServerCapability::Simple(true)
+                | lsp::CallHierarchyServerCapability::Options(_),
+            ) => (),
+            _ => return None,
+        }
+
+        let params = lsp::CallHierarchyPrepareParams {
+            text_document_position_params: lsp::TextDocumentPositionParams {
+                text_document,
+                position,
+            },
+            work_done_progress_params: lsp::WorkDoneProgressParams::default(),
+        };
+
+        Some(self.call::<lsp::request::CallHierarchyPrepare>(params))
+    }
+
+    pub fn call_hierarchy_incoming(
+        &self,
+        item: lsp::CallHierarchyItem,
+    ) -> Option<impl Future<Output = Result<Option<Vec<lsp::CallHierarchyIncomingCall>>>>> {
+        let capabilities = self.capabilities.get().unwrap();
+
+        match capabilities.call_hierarchy_provider {
+            Some(
+                lsp::CallHierarchyServerCapability::Simple(true)
+                | lsp::CallHierarchyServerCapability::Options(_),
+            ) => (),
+            _ => return None,
+        }
+
+        let params = lsp::CallHierarchyIncomingCallsParams {
+            item,
+            work_done_progress_params: lsp::WorkDoneProgressParams::default(),
+            partial_result_params: lsp::PartialResultParams::default(),
+        };
+
+        Some(self.call::<lsp::request::CallHierarchyIncomingCalls>(params))
+    }
+
+    pub fn call_hierarchy_outgoing(
+        &self,
+        item: lsp::CallHierarchyItem,
+    ) -> Option<impl Future<Output = Result<Option<Vec<lsp::CallHierarchyOutgoingCall>>>>> {
+        let capabilities = self.capabilities.get().unwrap();
+
+        match capabilities.call_hierarchy_provider {
+            Some(
+                lsp::CallHierarchyServerCapability::Simple(true)
+                | lsp::CallHierarchyServerCapability::Options(_),
+            ) => (),
+            _ => return None,
+        }
+
+        let params = lsp::CallHierarchyOutgoingCallsParams {
+            item,
+            work_done_progress_params: lsp::WorkDoneProgressParams::default(),
+            partial_result_params: lsp::PartialResultParams::default(),
+        };
+
+        Some(self.call::<lsp::request::CallHierarchyOutgoingCalls>(params))
+    }
+
     pub fn prepare_rename(
         &self,
         text_document: lsp::TextDocumentIdentifier,
@@ -1693,48 +1903,4 @@ mod tests {
         assert!(!root_uri_file_path_matches(None, root));
     }
 
-    #[test]
-    fn text_document_capabilities_advertise_hierarchical_document_symbols() {
-        let capabilities = text_document_client_capabilities(true);
-        let document_symbol = capabilities.document_symbol.unwrap();
-
-        assert_eq!(document_symbol.dynamic_registration, Some(false));
-        assert_eq!(
-            document_symbol.hierarchical_document_symbol_support,
-            Some(true)
-        );
-    }
-
-    #[test]
-    fn text_document_capabilities_advertise_diagnostic_data_preservation() {
-        let capabilities = text_document_client_capabilities(true);
-        let publish_diagnostics = capabilities.publish_diagnostics.unwrap();
-
-        assert_eq!(publish_diagnostics.data_support, Some(true));
-    }
-
-    #[test]
-    fn text_document_capabilities_preserve_snippet_setting() {
-        let enabled = text_document_client_capabilities(true);
-        let disabled = text_document_client_capabilities(false);
-
-        assert_eq!(
-            enabled
-                .completion
-                .unwrap()
-                .completion_item
-                .unwrap()
-                .snippet_support,
-            Some(true)
-        );
-        assert_eq!(
-            disabled
-                .completion
-                .unwrap()
-                .completion_item
-                .unwrap()
-                .snippet_support,
-            Some(false)
-        );
-    }
 }

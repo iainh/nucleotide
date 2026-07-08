@@ -448,7 +448,7 @@ impl VcsService {
         }
 
         // Get the diff base from VCS
-        if let Some(diff_base_bytes) = self.diff_provider.get_diff_base(&abs_path) {
+        if let Some(diff_base_bytes) = self.diff_provider.get_diff_base(&abs_path, true) {
             self.update_file_diff_from_base(abs_path, diff_base_bytes, file_content, cx);
         } else {
             debug!(

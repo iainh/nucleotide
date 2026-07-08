@@ -5,7 +5,7 @@ version = "25.7.1"
 authors = ["Blaz Hrastnik <blaz@mxxn.io>"]
 edition = "2021"
 license = "MPL-2.0"
-rust-version = "1.82"
+rust-version = "1.90"
 categories = ["editor"]
 repository = "https://github.com/helix-editor/helix"
 homepage = "https://helix-editor.com"
@@ -13,22 +13,23 @@ homepage = "https://helix-editor.com"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-helix-stdx = { git = "https://github.com/helix-editor/helix", rev = "5a8fb732f26d6aabe757ffd2108ee66e8ef25236" }
-helix-core = { git = "https://github.com/helix-editor/helix", rev = "5a8fb732f26d6aabe757ffd2108ee66e8ef25236" }
-helix-loader = { git = "https://github.com/helix-editor/helix", rev = "5a8fb732f26d6aabe757ffd2108ee66e8ef25236" }
-helix-lsp-types = { git = "https://github.com/helix-editor/helix", rev = "5a8fb732f26d6aabe757ffd2108ee66e8ef25236" }
+helix-stdx = { path = "../helix-stdx" }
+helix-core = { git = "https://github.com/helix-editor/helix", rev = "14d6bc0febed9c692048271a8ae2362ac969c6e0" }
+helix-loader = { git = "https://github.com/helix-editor/helix", rev = "14d6bc0febed9c692048271a8ae2362ac969c6e0" }
+helix-lsp-types = { path = "../helix-lsp-types" }
 
 anyhow = "1.0"
 nucleotide-process = { path = "../../crates/nucleotide-process", features = ["tokio"] }
 futures-executor = "0.3"
 futures-util = { version = "0.3", features = ["std", "async-await"], default-features = false }
-globset = "0.4.16"
+globset = "0.4"
 log = "0.4"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-tokio = { version = "1.47", features = ["rt", "rt-multi-thread", "io-util", "io-std", "time", "process", "macros", "fs", "parking_lot", "sync"] }
-tokio-stream = "0.1.17"
+tokio = { version = "1.50", features = ["rt", "rt-multi-thread", "io-util", "io-std", "time", "process", "macros", "fs", "parking_lot", "sync"] }
+tokio-stream = "0.1.18"
 parking_lot = "0.12"
-arc-swap = "1"
-slotmap = "1.0.7"
+arc-swap = "1.9"
+slotmap = "1.1.1"
 thiserror = "2.0"
+sonic-rs = "0.5"

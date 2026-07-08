@@ -420,12 +420,12 @@ fn main() -> Result<()> {
     }
 
     if args.fetch_grammars {
-        helix_loader::grammar::fetch_grammars()?;
+        helix_loader::grammar::fetch_grammars(args.strict)?;
         return Ok(());
     }
 
     if args.build_grammars {
-        helix_loader::grammar::build_grammars(None)?;
+        helix_loader::grammar::build_grammars(None, args.strict)?;
         return Ok(());
     }
 
@@ -466,14 +466,18 @@ fn main() -> Result<()> {
         }
     };
 
-    let lang_loader = helix_core::config::user_lang_loader().unwrap_or_else(|err| {
-        error!("{err}");
-        error!("Press <ENTER> to continue with default language config");
-        use std::io::Read;
-        // This waits for an enter press.
-        let _ = std::io::stdin().read(&mut []);
-        helix_core::config::default_lang_loader()
-    });
+    let workspace_trust = helix_loader::workspace_trust::WorkspaceTrust::new(
+        (&config.helix.editor.workspace_trust).into(),
+    );
+    let lang_loader =
+        helix_core::config::user_lang_loader(&workspace_trust).unwrap_or_else(|err| {
+            error!("{err}");
+            error!("Press <ENTER> to continue with default language config");
+            use std::io::Read;
+            // This waits for an enter press.
+            let _ = std::io::stdin().read(&mut []);
+            helix_core::config::default_lang_loader()
+        });
 
     // TODO: use the thread local executor to spawn the application task separately from the work pool
     // Determine workspace root before creating application

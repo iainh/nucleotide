@@ -73,8 +73,8 @@ fn main() -> Result<()> {
     helix_loader::initialize_log_file(args.log_file);
 
     match args.command {
-        Some(GrammarCommand::Fetch) => helix_loader::grammar::fetch_grammars(),
-        Some(GrammarCommand::Build) => helix_loader::grammar::build_grammars(None),
+        Some(GrammarCommand::Fetch) => helix_loader::grammar::fetch_grammars(false),
+        Some(GrammarCommand::Build) => helix_loader::grammar::build_grammars(None, false),
         None => bail!("nucl-grammar requires `fetch` or `build`"),
     }
 }

@@ -44,6 +44,7 @@ use helix_core::{
     Position, Range, Rope, RopeSlice, Selection, Uri, pos_at_coords, syntax,
     text_annotations::InlineAnnotation,
 };
+use helix_loader::workspace_trust::WorkspaceTrust;
 use helix_lsp::{LanguageServerId, LspProgressMap, OffsetEncoding, lsp};
 use helix_stdx::path::{self as helix_path, get_path_suffix, get_relative_path};
 use helix_view::{
@@ -171,7 +172,7 @@ fn workspace_document_save_target(
     doc: &Document,
     requested_path: Option<PathBuf>,
 ) -> Option<PathBuf> {
-    let doc_path = doc.path().map(PathBuf::as_path);
+    let doc_path = doc.path();
     if should_use_native_save_for_settings_file(doc_path, requested_path.as_deref()) {
         return None;
     }
@@ -190,7 +191,7 @@ fn workspace_document_save_target(
         None => doc
             .path()
             .filter(|path| should_use_workspace_backend_for_document_io(backend_identity, path))
-            .cloned(),
+            .map(std::path::Path::to_path_buf),
     }
 }
 
@@ -819,13 +820,7 @@ fn remote_lsp_root_uri_matches_document_workspace(
 }
 
 fn remote_native_file_uri(path: &Path) -> Option<lsp::Url> {
-    let path = posix_path_string(path);
-    let path = if path.starts_with('/') {
-        path
-    } else {
-        format!("/{path}")
-    };
-    lsp::Url::parse(&format!("file://{}", percent_encode_file_path(&path))).ok()
+    helix_lsp::file_uri_from_path(Path::new(&posix_path_string(path)))
 }
 
 fn lsp_diagnostic_document_uri(
@@ -848,14 +843,23 @@ fn remote_lsp_file_url_path(uri: &lsp::Url) -> Option<PathBuf> {
     if uri.scheme() != "file" {
         return None;
     }
-    if let Some(host) = uri.host_str()
-        && !host.is_empty()
-        && !host.eq_ignore_ascii_case("localhost")
-    {
+    if has_non_local_file_authority(uri.as_str()) {
         return None;
     }
 
     percent_decode_uri_path(uri.path()).map(PathBuf::from)
+}
+
+fn has_non_local_file_authority(uri: &str) -> bool {
+    let Some(rest) = uri.strip_prefix("file:") else {
+        return false;
+    };
+    let Some(rest) = rest.strip_prefix("//") else {
+        return false;
+    };
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let authority = &rest[..authority_end];
+    !authority.is_empty() && !authority.eq_ignore_ascii_case("localhost")
 }
 
 type ApplyEditError = helix_view::handlers::lsp::ApplyEditError;
@@ -1248,19 +1252,6 @@ fn hex_value(byte: u8) -> Option<u8> {
         b'A'..=b'F' => Some(byte - b'A' + 10),
         _ => None,
     }
-}
-
-fn percent_encode_file_path(path: &str) -> String {
-    let mut encoded = String::new();
-    for byte in path.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'/') {
-            encoded.push(char::from(byte));
-        } else {
-            encoded.push('%');
-            encoded.push_str(&format!("{byte:02X}"));
-        }
-    }
-    encoded
 }
 
 fn file_picker_current_directory(
@@ -1692,7 +1683,7 @@ impl Application {
                     && let (Some(lsp_state), Some(path)) = (&self.lsp_state, document.path())
                 {
                     let diagnostics = document.diagnostics();
-                    let uri = helix_core::Uri::from(path.clone());
+                    let uri = helix_core::Uri::from(path);
                     let total = diagnostics.len();
                     let errors = diagnostics
                         .iter()
@@ -2282,7 +2273,7 @@ impl Application {
                 let (path, language_id) = if let Some(document) = self.editor.document(*doc_id) {
                     let path = document
                         .path()
-                        .cloned()
+                        .map(std::path::Path::to_path_buf)
                         .unwrap_or_else(|| std::path::PathBuf::from("untitled"));
                     let language_id = document.language_name().map(|lang| lang.to_string());
                     (path, language_id)
@@ -3507,7 +3498,7 @@ impl Application {
                     continue;
                 };
 
-                let path = doc.path().cloned();
+                let path = doc.path().map(std::path::Path::to_path_buf);
                 let path_label = path
                     .as_deref()
                     .map(get_relative_path)
@@ -4017,7 +4008,7 @@ impl Application {
                 continue;
             }
 
-            let path = doc.path().cloned();
+            let path = doc.path().map(std::path::Path::to_path_buf);
             let path_label =
                 diagnostic_picker_path_label(path.as_deref(), self.project_directory.as_deref());
 
@@ -4536,6 +4527,9 @@ impl Application {
                     }
                 }
             }
+            helix_view::editor::ConfigEvent::ThemeChanged => {
+                cx.emit(crate::Update::Redraw);
+            }
         }
 
         debug!("Forwarding ConfigEvent to workspace");
@@ -5004,7 +4998,7 @@ fn syntax_symbol_items_from_document(
     };
 
     let text = doc.text().slice(..);
-    let path = doc.path().cloned();
+    let path = doc.path().map(std::path::Path::to_path_buf);
     syntax_symbol_items_from_text(syntax, loader, text, path.clone(), |start, end, _line| {
         NativeSymbolTarget::Jump(crate::types::JumpLocation {
             doc_id,
@@ -5023,7 +5017,7 @@ fn syntax_symbol_items_from_text(
     let mut tags_iter = syntax.tags(text, loader, ..);
     let mut items = Vec::new();
     while let Some(event) = tags_iter.next() {
-        let syntax::QueryIterEvent::Match(mat) = event else {
+        let syntax::QueryMatchIterEvent::Match(mat) = event else {
             continue;
         };
         let Some(query) = loader
@@ -5032,12 +5026,14 @@ fn syntax_symbol_items_from_text(
         else {
             continue;
         };
-        let Some(kind) = syntax_symbol_kind_from_capture_name(query.capture_name(mat.capture))
-        else {
+        let Some((matched, kind)) = mat.nodes.iter().find_map(|matched| {
+            let kind = syntax_symbol_kind_from_capture_name(query.capture_name(matched.capture))?;
+            Some((matched, kind))
+        }) else {
             continue;
         };
 
-        let range = mat.node.byte_range();
+        let range = matched.node.byte_range();
         let start = text.byte_to_char(range.start as usize);
         let end = text.byte_to_char(range.end as usize);
         let start_line = text.char_to_line(start);
@@ -6380,11 +6376,8 @@ impl Application {
 
         let matched_path = String::from(matched_path);
         let workspace_backend = self.workspace_backend.clone();
-        let context = local_path_completion_context(
-            &matched_path,
-            doc.path().map(PathBuf::as_path),
-            workspace_backend.identity(),
-        )?;
+        let context =
+            local_path_completion_context(&matched_path, doc.path(), workspace_backend.identity())?;
 
         Some(
             async move {
@@ -7184,7 +7177,7 @@ impl Application {
                     .unwrap_or_default();
 
                 (
-                    doc.path().cloned(),
+                    doc.path().map(std::path::Path::to_path_buf),
                     doc.url().map(|url| url.to_string()),
                     doc.language_id().map(ToOwned::to_owned),
                     configured_server_names,
@@ -7215,7 +7208,7 @@ impl Application {
                             !remote_lsp_root_uri_matches_document_workspace(
                                 &workspace_identity,
                                 project_directory.as_deref(),
-                                doc.path().map(PathBuf::as_path),
+                                doc.path(),
                                 client.root_path(),
                                 client.root_uri(),
                             )
@@ -7739,7 +7732,7 @@ impl Application {
                 syntax_fallback_symbols =
                     Some(syntax_symbol_items_from_document(view.doc, doc, &loader));
             }
-            let doc_path = doc.path().cloned();
+            let doc_path = doc.path().map(std::path::Path::to_path_buf);
             let mut seen_language_servers = HashSet::new();
 
             for language_server in doc
@@ -7839,7 +7832,7 @@ impl Application {
         let open_paths = self
             .editor
             .documents()
-            .filter_map(|doc| doc.path().cloned())
+            .filter_map(|doc| doc.path().map(std::path::Path::to_path_buf))
             .collect::<HashSet<_>>();
         let mut open_symbols = Vec::new();
         for doc in self.editor.documents() {
@@ -8530,6 +8523,10 @@ pub fn init_editor(
     let (signature_tx, _signature_rx) = tokio::sync::mpsc::channel(1);
     let (auto_save_tx, _auto_save_rx) = tokio::sync::mpsc::channel(1);
     let (doc_colors_tx, _doc_colors_rx) = tokio::sync::mpsc::channel(1);
+    let (doc_links_tx, _doc_links_rx) = tokio::sync::mpsc::channel(1);
+    let (pull_diagnostics_tx, _pull_diagnostics_rx) = tokio::sync::mpsc::channel(1);
+    let (pull_all_diagnostics_tx, _pull_all_diagnostics_rx) = tokio::sync::mpsc::channel(1);
+    let (code_action_hint_tx, _code_action_hint_rx) = tokio::sync::mpsc::channel(1);
     // Create a dummy completion channel since Helix CompletionHandler expects one
     // We'll register our own hooks to capture completion results directly
     let (completion_tx, _completion_rx) = tokio::sync::mpsc::channel(1);
@@ -8539,7 +8536,11 @@ pub fn init_editor(
         signature_hints: signature_tx,
         auto_save: auto_save_tx,
         document_colors: doc_colors_tx,
+        document_links: doc_links_tx,
         word_index: helix_view::handlers::word_index::Handler::spawn(),
+        pull_diagnostics: pull_diagnostics_tx,
+        pull_all_documents_diagnostics: pull_all_diagnostics_tx,
+        code_action_hint: code_action_hint_tx,
     };
 
     // Register handler hooks to enable LSP features
@@ -8567,6 +8568,7 @@ pub fn init_editor(
             &config.editor
         })),
         handlers,
+        WorkspaceTrust::fully_trusted(),
     );
     editor.set_save_handler(Some(Arc::new(WorkspaceDocumentSaveHandler::new(
         workspace_backend.clone(),
@@ -8665,7 +8667,7 @@ pub fn init_editor(
         editor.new_file(Action::VerticalSplit);
     }
 
-    editor.set_theme(theme);
+    let _ = editor.set_theme(theme);
 
     let native_keys = Box::new(Map::new(Arc::clone(&config), |config: &Config| {
         &config.keys
@@ -8920,7 +8922,7 @@ pub(crate) fn reload_workspace_document_from_read(
         .get_mut(&doc_id)
         .with_context(|| format!("document {doc_id:?} is no longer open"))?;
 
-    if doc.path().map(PathBuf::as_path) != Some(read.path.as_path()) {
+    if doc.path() != Some(read.path.as_path()) {
         bail!(
             "document path changed before reload: expected {}, found {:?}",
             read.path.display(),
@@ -9097,6 +9099,25 @@ impl Application {
                     );
                     self.editor
                         .set_error(format!("Skipped editor callback: {panic_message}"));
+                }
+            }
+            Callback::Followup(callback) => {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    callback(&mut self.editor)
+                }));
+
+                match result {
+                    Ok(Some(job)) => self.jobs.add(job),
+                    Ok(None) => {}
+                    Err(payload) => {
+                        let panic_message = panic_payload_message(payload.as_ref());
+                        warn!(
+                            panic = %panic_message,
+                            "Skipped Helix follow-up callback after panic in native GPUI mode"
+                        );
+                        self.editor
+                            .set_error(format!("Skipped follow-up callback: {panic_message}"));
+                    }
                 }
             }
         }
@@ -9742,7 +9763,7 @@ fn local_path_completion_context(
     }
 
     let path = if matched_path.starts_with("file://") {
-        let url = url::Url::parse(matched_path).ok()?;
+        let url = lsp::Url::parse(matched_path).ok()?;
         if is_local_workspace {
             url.to_file_path().ok()?
         } else {
@@ -10539,13 +10560,21 @@ mod tests {
         let (signature_tx, _) = tokio::sync::mpsc::channel(1);
         let (auto_save_tx, _) = tokio::sync::mpsc::channel(1);
         let (doc_colors_tx, _) = tokio::sync::mpsc::channel(1);
+        let (doc_links_tx, _) = tokio::sync::mpsc::channel(1);
+        let (pull_diagnostics_tx, _) = tokio::sync::mpsc::channel(1);
+        let (pull_all_diagnostics_tx, _) = tokio::sync::mpsc::channel(1);
+        let (code_action_hint_tx, _) = tokio::sync::mpsc::channel(1);
 
         Handlers {
             completions: helix_view::handlers::completion::CompletionHandler::new(completion_tx),
             signature_hints: signature_tx,
             auto_save: auto_save_tx,
             document_colors: doc_colors_tx,
+            document_links: doc_links_tx,
             word_index: helix_view::handlers::word_index::Handler::spawn(),
+            pull_diagnostics: pull_diagnostics_tx,
+            pull_all_documents_diagnostics: pull_all_diagnostics_tx,
+            code_action_hint: code_action_hint_tx,
         }
     }
 
@@ -10566,6 +10595,7 @@ mod tests {
                 |config: &HelixConfig| &config.editor,
             )),
             test_handlers(),
+            helix_loader::workspace_trust::WorkspaceTrust::fully_trusted(),
         )
     }
 
@@ -10718,10 +10748,7 @@ mod tests {
         .unwrap();
 
         let doc = editor.document(doc_id).unwrap();
-        assert_eq!(
-            doc.path().map(PathBuf::as_path),
-            Some(display_path.as_path())
-        );
+        assert_eq!(doc.path(), Some(display_path.as_path()));
         assert_eq!(
             doc.url().map(|url| url.to_string()),
             Some("file:///home/me/project/src/main.rs".to_string())
@@ -10954,10 +10981,7 @@ mod tests {
                 .unwrap();
 
             let doc = app.editor.document(doc_id).expect("open renamed document");
-            assert_eq!(
-                doc.path().map(PathBuf::as_path),
-                Some(display_new.as_path())
-            );
+            assert_eq!(doc.path(), Some(display_new.as_path()));
             assert_eq!(
                 doc.url().as_ref().map(|url| url.as_str()),
                 Some("file:///home/me/project/src/renamed.rs")
@@ -11000,10 +11024,7 @@ mod tests {
         .unwrap();
 
         let doc = editor.document(doc_id).unwrap();
-        assert_eq!(
-            doc.path().map(PathBuf::as_path),
-            Some(display_path.as_path())
-        );
+        assert_eq!(doc.path(), Some(display_path.as_path()));
         assert_eq!(doc.text(), "fn service_backed() {}\n");
         assert!(!display_path.exists());
 
@@ -11147,10 +11168,7 @@ mod tests {
                 .expect("remote global search jump");
             let doc = app.editor.document(doc_id).expect("opened remote doc");
 
-            assert_eq!(
-                doc.path().map(PathBuf::as_path),
-                Some(display_path.as_path())
-            );
+            assert_eq!(doc.path(), Some(display_path.as_path()));
             assert_eq!(doc.text(), "one\ntwo\nthree\n");
             assert_eq!(
                 doc.selection(view_id)
@@ -11191,10 +11209,7 @@ mod tests {
                 .expect("remote LSP jump");
             let doc = app.editor.document(doc_id).expect("opened remote doc");
 
-            assert_eq!(
-                doc.path().map(PathBuf::as_path),
-                Some(display_path.as_path())
-            );
+            assert_eq!(doc.path(), Some(display_path.as_path()));
             assert_eq!(
                 doc.selection(view_id)
                     .primary()
@@ -11241,10 +11256,7 @@ mod tests {
                 .expect("external remote LSP jump");
             let doc = app.editor.document(doc_id).expect("opened remote doc");
 
-            assert_eq!(
-                doc.path().map(PathBuf::as_path),
-                Some(display_path.as_path())
-            );
+            assert_eq!(doc.path(), Some(display_path.as_path()));
             assert_eq!(
                 doc.selection(view_id)
                     .primary()
@@ -11290,6 +11302,7 @@ mod tests {
                     |config: &HelixConfig| &config.editor,
                 )),
                 test_handlers(),
+                helix_loader::workspace_trust::WorkspaceTrust::fully_trusted(),
             );
             let compositor = Compositor::new(Rect::new(0, 0, 80, 24));
             let native_keymaps = Keymaps::default();

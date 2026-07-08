@@ -1149,6 +1149,7 @@ fn merge_nucleotide_helix_keybindings(config: &mut HelixConfig) -> anyhow::Resul
         keymap::{KeyTrie, KeyTrieNode, merge_keys},
     };
     use helix_view::{document::Mode, input::KeyEvent};
+    use indexmap::IndexMap;
     use std::{collections::HashMap, str::FromStr};
 
     let space = KeyEvent::from_str("space")?;
@@ -1164,23 +1165,20 @@ fn merge_nucleotide_helix_keybindings(config: &mut HelixConfig) -> anyhow::Resul
         return Ok(());
     }
 
-    let mut vcs_node = HashMap::new();
+    let mut vcs_node = IndexMap::new();
     vcs_node.insert(r, KeyTrie::MappableCommand(reset_diff_change));
 
-    let mut space_node = HashMap::new();
-    space_node.insert(v, KeyTrie::Node(KeyTrieNode::new("VCS", vcs_node, vec![r])));
+    let mut space_node = IndexMap::new();
+    space_node.insert(v, KeyTrie::Node(KeyTrieNode::new("VCS", vcs_node)));
 
-    let mut normal_node = HashMap::new();
-    normal_node.insert(
-        space,
-        KeyTrie::Node(KeyTrieNode::new("Space", space_node, vec![v])),
-    );
+    let mut normal_node = IndexMap::new();
+    normal_node.insert(space, KeyTrie::Node(KeyTrieNode::new("Space", space_node)));
 
     merge_keys(
         &mut config.keys,
         HashMap::from([(
             Mode::Normal,
-            KeyTrie::Node(KeyTrieNode::new("Normal mode", normal_node, vec![space])),
+            KeyTrie::Node(KeyTrieNode::new("Normal mode", normal_node)),
         )]),
     );
 
@@ -1385,33 +1383,31 @@ mod tests {
             keymap::{KeyTrie, KeyTrieNode, KeymapResult, Keymaps, merge_keys},
         };
         use helix_view::{document::Mode, input::KeyEvent};
+        use indexmap::IndexMap;
         use std::{collections::HashMap, str::FromStr};
 
         let space = KeyEvent::from_str("space").unwrap();
         let v = KeyEvent::from_str("v").unwrap();
         let r = KeyEvent::from_str("r").unwrap();
 
-        let mut vcs_node = HashMap::new();
+        let mut vcs_node = IndexMap::new();
         vcs_node.insert(
             r,
             KeyTrie::MappableCommand(MappableCommand::command_palette),
         );
 
-        let mut space_node = HashMap::new();
-        space_node.insert(v, KeyTrie::Node(KeyTrieNode::new("VCS", vcs_node, vec![r])));
+        let mut space_node = IndexMap::new();
+        space_node.insert(v, KeyTrie::Node(KeyTrieNode::new("VCS", vcs_node)));
 
-        let mut normal_node = HashMap::new();
-        normal_node.insert(
-            space,
-            KeyTrie::Node(KeyTrieNode::new("Space", space_node, vec![v])),
-        );
+        let mut normal_node = IndexMap::new();
+        normal_node.insert(space, KeyTrie::Node(KeyTrieNode::new("Space", space_node)));
 
         let mut config = HelixConfig::default();
         merge_keys(
             &mut config.keys,
             HashMap::from([(
                 Mode::Normal,
-                KeyTrie::Node(KeyTrieNode::new("Normal mode", normal_node, vec![space])),
+                KeyTrie::Node(KeyTrieNode::new("Normal mode", normal_node)),
             )]),
         );
 

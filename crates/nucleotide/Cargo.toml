@@ -77,6 +77,7 @@ async-trait = "0.1"
 
 # File picker
 ignore.workspace = true
+indexmap.workspace = true
 dirs.workspace = true
 image = "0.25.10"
 # markdown doc rendering

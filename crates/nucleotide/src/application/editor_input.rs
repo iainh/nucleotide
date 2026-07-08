@@ -1898,13 +1898,21 @@ mod tests {
         let (signature_tx, _) = tokio::sync::mpsc::channel(1);
         let (auto_save_tx, _) = tokio::sync::mpsc::channel(1);
         let (doc_colors_tx, _) = tokio::sync::mpsc::channel(1);
+        let (doc_links_tx, _) = tokio::sync::mpsc::channel(1);
+        let (pull_diagnostics_tx, _) = tokio::sync::mpsc::channel(1);
+        let (pull_all_diagnostics_tx, _) = tokio::sync::mpsc::channel(1);
+        let (code_action_hint_tx, _) = tokio::sync::mpsc::channel(1);
 
         Handlers {
             completions: helix_view::handlers::completion::CompletionHandler::new(completion_tx),
             signature_hints: signature_tx,
             auto_save: auto_save_tx,
             document_colors: doc_colors_tx,
+            document_links: doc_links_tx,
             word_index: helix_view::handlers::word_index::Handler::spawn(),
+            pull_diagnostics: pull_diagnostics_tx,
+            pull_all_documents_diagnostics: pull_all_diagnostics_tx,
+            code_action_hint: code_action_hint_tx,
         }
     }
 
@@ -1926,6 +1934,7 @@ mod tests {
             syntax_loader,
             Arc::new(Map::new(Arc::clone(&config), |config: &Config| config)),
             test_handlers(),
+            helix_loader::workspace_trust::WorkspaceTrust::fully_trusted(),
         );
         let doc_id = editor.new_file(Action::VerticalSplit);
         let view_id = editor.tree.focus;
@@ -2046,33 +2055,31 @@ mod tests {
     fn reset_diff_change_keymaps() -> Keymaps {
         use helix_term::config::Config as HelixConfig;
         use helix_term::keymap::{KeyTrie, KeyTrieNode, merge_keys};
+        use indexmap::IndexMap;
         use std::collections::HashMap;
 
         let space = KeyEvent::from_str("space").unwrap();
         let v = KeyEvent::from_str("v").unwrap();
         let r = KeyEvent::from_str("r").unwrap();
 
-        let mut vcs_node = HashMap::new();
+        let mut vcs_node = IndexMap::new();
         vcs_node.insert(
             r,
             KeyTrie::MappableCommand(MappableCommand::from_str(":reset-diff-change").unwrap()),
         );
 
-        let mut space_node = HashMap::new();
-        space_node.insert(v, KeyTrie::Node(KeyTrieNode::new("VCS", vcs_node, vec![r])));
+        let mut space_node = IndexMap::new();
+        space_node.insert(v, KeyTrie::Node(KeyTrieNode::new("VCS", vcs_node)));
 
-        let mut normal_node = HashMap::new();
-        normal_node.insert(
-            space,
-            KeyTrie::Node(KeyTrieNode::new("Space", space_node, vec![v])),
-        );
+        let mut normal_node = IndexMap::new();
+        normal_node.insert(space, KeyTrie::Node(KeyTrieNode::new("Space", space_node)));
 
         let mut config = HelixConfig::default();
         merge_keys(
             &mut config.keys,
             HashMap::from([(
                 Mode::Normal,
-                KeyTrie::Node(KeyTrieNode::new("Normal mode", normal_node, vec![space])),
+                KeyTrie::Node(KeyTrieNode::new("Normal mode", normal_node)),
             )]),
         );
 

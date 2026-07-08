@@ -9,11 +9,12 @@ pub use client::Client;
 pub use futures_executor::block_on;
 pub use helix_lsp_types as lsp;
 pub use jsonrpc::Call;
+use log::warn;
 pub use lsp::{Position, Url};
 
 use futures_util::stream::select_all::SelectAll;
 use helix_core::syntax::config::{
-    LanguageConfiguration, LanguageServerConfiguration, LanguageServerFeatures,
+    LanguageConfiguration, LanguageServerConfiguration, LanguageServerFeatures, RootMarkers,
 };
 use helix_stdx::path;
 use slotmap::SlotMap;
@@ -21,6 +22,7 @@ use tokio::sync::mpsc::UnboundedReceiver;
 
 use std::{
     collections::HashMap,
+    fs,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -83,7 +85,7 @@ pub enum Error {
     #[error("protocol error: {0}")]
     Rpc(#[from] jsonrpc::Error),
     #[error("failed to parse: {0}")]
-    Parse(#[from] serde_json::Error),
+    Parse(Box<dyn std::error::Error + Send + Sync>),
     #[error("IO Error: {0}")]
     IO(#[from] std::io::Error),
     #[error("request {0} timed out")]
@@ -96,6 +98,18 @@ pub enum Error {
     ExecutableNotFound(#[from] helix_stdx::env::ExecutableNotFoundError),
     #[error(transparent)]
     Other(#[from] anyhow::Error),
+}
+
+impl From<serde_json::Error> for Error {
+    fn from(value: serde_json::Error) -> Self {
+        Self::Parse(Box::new(value))
+    }
+}
+
+impl From<sonic_rs::Error> for Error {
+    fn from(value: sonic_rs::Error) -> Self {
+        Self::Parse(Box::new(value))
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -463,40 +477,49 @@ pub mod util {
             }
         }
 
-        Transaction::change(
-            doc,
-            edits.into_iter().map(|edit| {
-                // simplify "" into None for cleaner changesets
-                let replacement = if !edit.new_text.is_empty() {
-                    Some(edit.new_text.into())
-                } else {
-                    None
-                };
+        // `ChangeSet::from_changes` requires its changes to be sorted and
+        // non-overlapping (it does `retain(from - last)`, which underflows when
+        // `from < last`). The sort above handles ordering, but the LSP spec
+        // already forbids overlapping edits and some servers violate that. So
+        // resolve the edits here and drop any that overlap an earlier one (or
+        // fail to map), instead of feeding an overlap into `from_changes` and
+        // panicking. This matches the overlap policy of `Transaction::delete`.
+        // See issue #15514 / AUDIT-044/045.
+        let mut last_end = 0;
+        let mut changes: Vec<(usize, usize, Option<helix_core::Tendril>)> =
+            Vec::with_capacity(edits.len());
+        for edit in edits {
+            let Some(start) = lsp_pos_to_pos(doc, edit.range.start, offset_encoding) else {
+                continue;
+            };
+            let Some(end) = lsp_pos_to_pos(doc, edit.range.end, offset_encoding) else {
+                continue;
+            };
 
-                let start =
-                    if let Some(start) = lsp_pos_to_pos(doc, edit.range.start, offset_encoding) {
-                        start
-                    } else {
-                        return (0, 0, None);
-                    };
-                let end = if let Some(end) = lsp_pos_to_pos(doc, edit.range.end, offset_encoding) {
-                    end
-                } else {
-                    return (0, 0, None);
-                };
+            if start > end {
+                log::error!("Invalid LSP text edit start {start:?} > end {end:?}, discarding");
+                continue;
+            }
 
-                if start > end {
-                    log::error!(
-                        "Invalid LSP text edit start {:?} > end {:?}, discarding",
-                        start,
-                        end
-                    );
-                    return (0, 0, None);
-                }
+            if start < last_end {
+                log::error!(
+                    "Overlapping LSP text edit {start}..{end} (after {last_end}), discarding"
+                );
+                continue;
+            }
+            last_end = end;
 
-                (start, end, replacement)
-            }),
-        )
+            // simplify "" into None for cleaner changesets
+            let replacement = if edit.new_text.is_empty() {
+                None
+            } else {
+                Some(edit.new_text.into())
+            };
+
+            changes.push((start, end, replacement));
+        }
+
+        Transaction::change(doc, changes.into_iter())
     }
 }
 
@@ -509,6 +532,8 @@ pub enum MethodCall {
     RegisterCapability(lsp::RegistrationParams),
     UnregisterCapability(lsp::UnregistrationParams),
     ShowDocument(lsp::ShowDocumentParams),
+    WorkspaceDiagnosticRefresh,
+    ShowMessageRequest(lsp::ShowMessageRequestParams),
 }
 
 impl MethodCall {
@@ -539,6 +564,11 @@ impl MethodCall {
             lsp::request::ShowDocument::METHOD => {
                 let params: lsp::ShowDocumentParams = params.parse()?;
                 Self::ShowDocument(params)
+            }
+            lsp::request::WorkspaceDiagnosticRefresh::METHOD => Self::WorkspaceDiagnosticRefresh,
+            lsp::request::ShowMessageRequest::METHOD => {
+                let params: lsp::ShowMessageRequestParams = params.parse()?;
+                Self::ShowMessageRequest(params)
             }
             _ => {
                 return Err(Error::Unhandled);
@@ -637,7 +667,7 @@ impl Registry {
         &mut self,
         name: String,
         ls_config: &LanguageConfiguration,
-        doc_path: Option<&std::path::PathBuf>,
+        doc_path: Option<&std::path::Path>,
         root_dirs: &[PathBuf],
         enable_snippets: bool,
         workspace_context: Option<&LspWorkspaceContext>,
@@ -672,7 +702,7 @@ impl Registry {
         &mut self,
         name: &str,
         language_config: &LanguageConfiguration,
-        doc_path: Option<&std::path::PathBuf>,
+        doc_path: Option<&std::path::Path>,
         root_dirs: &[PathBuf],
         enable_snippets: bool,
     ) -> Option<Result<Arc<Client>>> {
@@ -685,9 +715,7 @@ impl Registry {
             for old_client in old_clients {
                 self.file_event_handler.remove_client(old_client.id());
                 self.inner.remove(old_client.id());
-                tokio::spawn(async move {
-                    let _ = old_client.force_shutdown().await;
-                });
+                old_client.force_shutdown();
             }
         }
         let client = match self.start_client(
@@ -718,9 +746,7 @@ impl Registry {
             for client in clients.drain(..) {
                 self.file_event_handler.remove_client(client.id());
                 self.inner.remove(client.id());
-                tokio::spawn(async move {
-                    let _ = client.force_shutdown().await;
-                });
+                client.force_shutdown();
             }
         }
     }
@@ -728,7 +754,7 @@ impl Registry {
     pub fn get<'a>(
         &'a mut self,
         language_config: &'a LanguageConfiguration,
-        doc_path: Option<&'a std::path::PathBuf>,
+        doc_path: Option<&'a std::path::Path>,
         root_dirs: &'a [PathBuf],
         enable_snippets: bool,
     ) -> impl Iterator<Item = (LanguageServerName, Result<Arc<Client>>)> + 'a {
@@ -744,7 +770,7 @@ impl Registry {
     pub fn get_with_workspace_context<'a>(
         &'a mut self,
         language_config: &'a LanguageConfiguration,
-        doc_path: Option<&'a std::path::PathBuf>,
+        doc_path: Option<&'a std::path::Path>,
         root_dirs: &'a [PathBuf],
         enable_snippets: bool,
         workspace_context: Option<&'a LspWorkspaceContext>,
@@ -940,7 +966,7 @@ fn start_client(
     name: String,
     config: &LanguageConfiguration,
     ls_config: &LanguageServerConfiguration,
-    doc_path: Option<&std::path::PathBuf>,
+    doc_path: Option<&std::path::Path>,
     root_dirs: &[PathBuf],
     enable_snippets: bool,
     workspace_context: Option<&LspWorkspaceContext>,
@@ -972,6 +998,8 @@ fn start_client(
                 .map(|entry| entry.file_name())
                 .any(|entry| globset.is_match(entry))
             {
+                // TODO: also show the globset that should be matched: https://github.com/BurntSushi/ripgrep/issues/3274
+                warn!("The lsp {name:?} tried to start at {root_path:?} but failed to match it's 'required_root_patterns'");
                 return Err(StartupError::NoRequiredRootFound);
             }
         }
@@ -1028,7 +1056,9 @@ fn root_uri_for_startup(
         .and_then(|root| file_uri_from_path(root))
 }
 
-pub(crate) fn file_uri_from_path(path: &Path) -> Option<lsp::Url> {
+/// Build a `file://` URI for a path, including POSIX paths represented on a
+/// non-POSIX host.
+pub fn file_uri_from_path(path: &Path) -> Option<lsp::Url> {
     lsp::Url::from_file_path(path)
         .ok()
         .or_else(|| lsp::Url::parse(&manual_file_uri_from_path(path)).ok())
@@ -1068,7 +1098,7 @@ fn percent_encode_file_path(path: &str) -> String {
 /// * If we stopped at `workspace` instead and `workspace_is_cwd == true` return `workspace`
 pub fn find_lsp_workspace(
     file: &str,
-    root_markers: &[String],
+    root_markers: &RootMarkers,
     root_dirs: &[PathBuf],
     workspace: &Path,
     workspace_is_cwd: bool,
@@ -1088,10 +1118,16 @@ pub fn find_lsp_workspace(
 
     let mut top_marker = None;
     for ancestor in file.ancestors() {
-        if root_markers
-            .iter()
-            .any(|marker| ancestor.join(marker).exists())
-        {
+        let Ok(mut dir) = fs::read_dir(ancestor) else {
+            continue;
+        };
+
+        if dir.any(|entry| {
+            if let Ok(entry) = entry {
+                return root_markers.is_match(entry.file_name());
+            }
+            false
+        }) {
             top_marker = Some(ancestor);
         }
 
@@ -1225,5 +1261,54 @@ mod tests {
         let transaction = generate_transaction_from_edits(&source, edits, OffsetEncoding::Utf16);
         assert!(transaction.apply(&mut source));
         assert_eq!(source, "[\n  \"🇺🇸\",\n  \"🎄\",\n]");
+    }
+
+    #[test]
+    fn overlapping_edits_are_dropped() {
+        // Regression for issue #15514: a language server may send overlapping text edits.
+        // Feeding overlapping ranges to `ChangeSet::from_changes` violates its sorted/non-overlapping
+        // precondition and underflows `retain(from - last)`. The overlapping edit must be discarded here
+        use lsp::{Position, Range, TextEdit};
+
+        let edit = |sc, ec, text: &str| TextEdit {
+            range: Range {
+                start: Position::new(0, sc),
+                end: Position::new(0, ec),
+            },
+            new_text: text.to_string(),
+        };
+
+        // Edits are given out of order and the second overlaps the first
+        // (0..3 vs 2..4); after sorting, 2..4 starts before 0..3 ends.
+        let edits = vec![edit(4, 5, "Z"), edit(0, 3, "X"), edit(2, 4, "Y")];
+
+        let mut source = Rope::from_str("abcdef");
+        let transaction = generate_transaction_from_edits(&source, edits, OffsetEncoding::Utf16);
+        // Must not panic. The overlapping 2..4 edit is dropped; 0..3 -> "X",
+        // retain "d" (idx 3), 4..5 -> "Z", retain "f": "abcdef" -> "XdZf".
+        assert!(transaction.apply(&mut source));
+        assert_eq!(source, "XdZf");
+    }
+
+    #[test]
+    fn unsorted_edits_are_applied() {
+        // Out-of-order (but non-overlapping) edits must all land; the sort keeps
+        // every edit rather than dropping the earlier-positioned one.
+        use lsp::{Position, Range, TextEdit};
+
+        let edit = |sc, ec, text: &str| TextEdit {
+            range: Range {
+                start: Position::new(0, sc),
+                end: Position::new(0, ec),
+            },
+            new_text: text.to_string(),
+        };
+
+        let edits = vec![edit(4, 5, "Y"), edit(0, 1, "X")];
+
+        let mut source = Rope::from_str("abcdef");
+        let transaction = generate_transaction_from_edits(&source, edits, OffsetEncoding::Utf16);
+        assert!(transaction.apply(&mut source));
+        assert_eq!(source, "XbcdYf");
     }
 }
