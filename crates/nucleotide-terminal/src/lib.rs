@@ -186,6 +186,7 @@ pub mod session {
             {
                 use crate::engine::AlacrittyEngine as Engine;
                 use std::time::{Duration, Instant};
+                let engine_writer = writer.clone();
 
                 // Spawn a reader thread so PTY reads don't block control message
                 // processing (e.g. scroll commands while the terminal is idle).
@@ -206,7 +207,11 @@ pub mod session {
                 });
 
                 tokio::task::spawn_blocking(move || {
-                    let mut engine = Engine::new(cfg.cols.unwrap_or(80), cfg.rows.unwrap_or(24));
+                    let mut engine = Engine::new(
+                        cfg.cols.unwrap_or(80),
+                        cfg.rows.unwrap_or(24),
+                        Some(engine_writer),
+                    );
                     let mut last_emit = Instant::now();
                     let window = Duration::from_millis(16); // ~60 FPS cap
                     let mut needs_frame = false;
@@ -366,10 +371,11 @@ pub mod session {
 
         #[cfg(windows)]
         {
-            let shell = windows_shell::default_shell();
+            let (shell, args) = windows_shell::default_shell_command();
             let mut cmd = CommandBuilder::new(&shell);
+            cmd.args(&args);
             apply_terminal_env(&mut cmd, terminal_env, ShellEnvMode::ExplicitShell(&shell));
-            (cmd, shell)
+            (cmd, shell_command_label(&shell, &args))
         }
         #[cfg(not(windows))]
         {
@@ -382,6 +388,7 @@ pub mod session {
     enum ShellEnvMode<'a> {
         Preserve,
         ExplicitShell(&'a str),
+        #[allow(dead_code)]
         LoginShell,
     }
 
@@ -427,7 +434,8 @@ pub mod session {
         cwd: Option<&Path>,
         parent_env: &BTreeMap<String, String>,
     ) -> Vec<(String, String)> {
-        let mut merged = env.iter().cloned().collect::<BTreeMap<_, _>>();
+        let mut merged = parent_env.clone();
+        merged.extend(env.iter().cloned());
 
         merged.insert("NUCLEOTIDE_TERM".to_string(), "true".to_string());
         merged.insert("TERM_PROGRAM".to_string(), "nucleotide".to_string());
@@ -483,35 +491,78 @@ pub mod session {
 
     #[cfg(windows)]
     mod windows_shell {
-        pub(super) fn default_shell() -> String {
-            super::windows_default_shell_from_comspec(std::env::var("COMSPEC").ok().as_deref())
+        pub(super) fn default_shell_command() -> (String, Vec<String>) {
+            super::windows_default_shell_command_from_comspec(
+                std::env::var("COMSPEC").ok().as_deref(),
+            )
         }
     }
 
     #[cfg(any(test, windows))]
-    fn windows_default_shell_from_comspec(comspec: Option<&str>) -> String {
-        comspec
+    fn windows_default_shell_command_from_comspec(comspec: Option<&str>) -> (String, Vec<String>) {
+        let shell = comspec
             .filter(|shell| !shell.trim().is_empty())
             .unwrap_or("cmd.exe")
-            .to_string()
+            .to_string();
+        let args = if is_cmd_shell(&shell) {
+            vec!["/D".to_string(), "/K".to_string()]
+        } else {
+            Vec::new()
+        };
+        (shell, args)
+    }
+
+    #[cfg(any(test, windows))]
+    fn is_cmd_shell(shell: &str) -> bool {
+        let file_name = shell.rsplit(['/', '\\']).next().unwrap_or(shell);
+        file_name.eq_ignore_ascii_case("cmd") || file_name.eq_ignore_ascii_case("cmd.exe")
     }
 
     #[cfg(test)]
     mod windows_shell_tests {
-        use super::windows_default_shell_from_comspec;
+        use super::windows_default_shell_command_from_comspec;
 
         #[test]
         fn windows_default_shell_falls_back_to_cmd() {
-            assert_eq!(windows_default_shell_from_comspec(None), "cmd.exe");
-            assert_eq!(windows_default_shell_from_comspec(Some("")), "cmd.exe");
-            assert_eq!(windows_default_shell_from_comspec(Some("   ")), "cmd.exe");
+            assert_eq!(
+                windows_default_shell_command_from_comspec(None),
+                (
+                    "cmd.exe".to_string(),
+                    vec!["/D".to_string(), "/K".to_string()]
+                )
+            );
+            assert_eq!(
+                windows_default_shell_command_from_comspec(Some("")),
+                (
+                    "cmd.exe".to_string(),
+                    vec!["/D".to_string(), "/K".to_string()]
+                )
+            );
+            assert_eq!(
+                windows_default_shell_command_from_comspec(Some("   ")),
+                (
+                    "cmd.exe".to_string(),
+                    vec!["/D".to_string(), "/K".to_string()]
+                )
+            );
         }
 
         #[test]
         fn windows_default_shell_uses_comspec() {
             assert_eq!(
-                windows_default_shell_from_comspec(Some("C:\\Windows\\System32\\cmd.exe")),
-                "C:\\Windows\\System32\\cmd.exe"
+                windows_default_shell_command_from_comspec(Some("C:\\Windows\\System32\\cmd.exe")),
+                (
+                    "C:\\Windows\\System32\\cmd.exe".to_string(),
+                    vec!["/D".to_string(), "/K".to_string()]
+                )
+            );
+        }
+
+        #[test]
+        fn windows_default_shell_leaves_custom_shell_args_empty() {
+            assert_eq!(
+                windows_default_shell_command_from_comspec(Some("C:\\Tools\\pwsh.exe")),
+                ("C:\\Tools\\pwsh.exe".to_string(), Vec::<String>::new())
             );
         }
     }
@@ -574,6 +625,33 @@ pub mod session {
             ));
 
             assert_eq!(env.get("PATH").map(String::as_str), Some("/custom/bin"));
+        }
+
+        #[test]
+        fn terminal_env_preserves_parent_process_environment() {
+            let parent = BTreeMap::from([
+                ("PATH".to_string(), "/usr/bin".to_string()),
+                ("SystemRoot".to_string(), "C:\\Windows".to_string()),
+            ]);
+            let env = env_map(terminal_env_with_defaults_from(&[], None, &parent));
+
+            assert_eq!(env.get("PATH").map(String::as_str), Some("/usr/bin"));
+            assert_eq!(
+                env.get("SystemRoot").map(String::as_str),
+                Some("C:\\Windows")
+            );
+        }
+
+        #[test]
+        fn terminal_env_project_values_override_parent_environment() {
+            let parent = BTreeMap::from([("PATH".to_string(), "/usr/bin".to_string())]);
+            let env = env_map(terminal_env_with_defaults_from(
+                &[pair("PATH", "/project/bin")],
+                None,
+                &parent,
+            ));
+
+            assert_eq!(env.get("PATH").map(String::as_str), Some("/project/bin"));
         }
 
         #[test]
@@ -694,6 +772,26 @@ pub mod session {
                 Some("/bin/bash")
             );
         }
+
+        #[cfg(windows)]
+        #[test]
+        fn default_windows_terminal_launches_cmd_interactively() {
+            let env = terminal_env_with_defaults_from(&[], None, &BTreeMap::new());
+            let cfg = TerminalSessionCfg::default();
+
+            let (cmd, label) = terminal_command_builder(&cfg, &env);
+
+            assert!(label.contains("/D"));
+            assert!(label.contains("/K"));
+            assert_eq!(
+                cmd.get_argv().get(1).and_then(|arg| arg.to_str()),
+                Some("/D")
+            );
+            assert_eq!(
+                cmd.get_argv().get(2).and_then(|arg| arg.to_str()),
+                Some("/K")
+            );
+        }
     }
 }
 
@@ -710,6 +808,8 @@ pub mod engine {
     use alacritty_terminal::vte::ansi::{
         self, Color as VteColor, NamedColor as VteNamedColor, Rgb as VteRgb,
     };
+    use std::io::Write;
+    use std::sync::{Arc, Mutex};
 
     /// Placeholder engine producing full snapshots; next iteration will integrate alacritty_terminal
     pub struct AlacrittyEngine {
@@ -718,12 +818,17 @@ pub mod engine {
         cell_width: f32,
         cell_height: f32,
         grid: Vec<Vec<Cell>>,
-        term: Option<Term<NoopListener>>,
+        term: Option<Term<PtyEventListener>>,
         parser: ansi::Processor,
+        event_listener: PtyEventListener,
     }
 
     impl AlacrittyEngine {
-        pub fn new(cols: u16, rows: u16) -> Self {
+        pub fn new(
+            cols: u16,
+            rows: u16,
+            pty_writer: Option<Arc<Mutex<Box<dyn Write + Send>>>>,
+        ) -> Self {
             let cell_width = 8.0f32;
             let cell_height = 16.0f32;
             let mut grid = Vec::with_capacity(rows as usize);
@@ -749,6 +854,7 @@ pub mod engine {
                 grid,
                 term: None,
                 parser: ansi::Processor::new(),
+                event_listener: PtyEventListener { pty_writer },
             };
             engine.rebuild_term();
             engine
@@ -897,12 +1003,11 @@ pub mod engine {
 
         fn rebuild_term(&mut self) {
             let config = term::Config::default();
-            let listener = NoopListener;
             let dims = SimpleSize {
                 cols: self.cols as usize,
                 rows: self.rows as usize,
             };
-            let term = Term::new(config, &dims, listener);
+            let term = Term::new(config, &dims, self.event_listener.clone());
             self.term = Some(term);
         }
 
@@ -1098,7 +1203,7 @@ pub mod engine {
 
         #[test]
         fn application_cursor_mode_is_reported_in_frames() {
-            let mut engine = AlacrittyEngine::new(5, 2);
+            let mut engine = AlacrittyEngine::new(5, 2, None);
 
             engine.feed_bytes(b"\x1b[?1h");
 
@@ -1127,18 +1232,32 @@ pub mod engine {
         }
     }
 
-    #[derive(Clone, Copy, Default)]
-    pub struct NoopListener;
+    #[derive(Clone, Default)]
+    pub struct PtyEventListener {
+        pty_writer: Option<Arc<Mutex<Box<dyn Write + Send>>>>,
+    }
 
-    impl EventListener for NoopListener {
-        fn send_event(&self, _event: TermEvent) {}
+    impl EventListener for PtyEventListener {
+        fn send_event(&self, event: TermEvent) {
+            if let TermEvent::PtyWrite(text) = event
+                && let Some(writer) = &self.pty_writer
+                && let Ok(mut writer) = writer.lock()
+            {
+                let _ = writer.write_all(text.as_bytes());
+                let _ = writer.flush();
+            }
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    #[cfg(unix)]
+    #[cfg(any(unix, all(windows, feature = "emulator")))]
     use super::session::{TerminalSession, TerminalSessionCfg};
+    #[cfg(all(windows, feature = "emulator"))]
+    use crate::frame::FramePayload;
+    #[cfg(all(windows, feature = "emulator"))]
+    use std::time::Duration;
 
     #[cfg(unix)]
     #[tokio::test]
@@ -1156,6 +1275,49 @@ mod tests {
         while rx.recv().await.is_some() {}
 
         assert_eq!(session.wait_exit_code(), Some(7));
+    }
+
+    #[cfg(all(windows, feature = "emulator"))]
+    #[tokio::test]
+    async fn default_windows_terminal_emits_visible_shell_output() {
+        let cfg = TerminalSessionCfg::default();
+        let (mut session, mut rx) = TerminalSession::spawn(42, cfg).await.unwrap();
+
+        let mut saw_visible_output = false;
+        let deadline = tokio::time::timeout(Duration::from_secs(3), async {
+            while let Some(frame) = rx.recv().await {
+                if frame_has_visible_output(&frame) {
+                    saw_visible_output = true;
+                    break;
+                }
+            }
+        });
+
+        let _ = deadline.await;
+        let _ = session.kill().await;
+
+        assert!(
+            saw_visible_output,
+            "default Windows shell produced no visible terminal output"
+        );
+    }
+
+    #[cfg(all(windows, feature = "emulator"))]
+    fn frame_has_visible_output(frame: &FramePayload) -> bool {
+        match frame {
+            FramePayload::Full(snapshot) => snapshot
+                .rows
+                .iter()
+                .flatten()
+                .any(|cell| !cell.ch.is_whitespace()),
+            FramePayload::Diff(diff) => diff
+                .lines
+                .iter()
+                .flat_map(|line| line.ranges.iter())
+                .flat_map(|range| range.cells.iter())
+                .any(|cell| !cell.ch.is_whitespace()),
+            FramePayload::Raw(bytes) => bytes.iter().any(|byte| !byte.is_ascii_whitespace()),
+        }
     }
 }
 
