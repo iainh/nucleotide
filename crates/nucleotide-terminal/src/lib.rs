@@ -983,8 +983,11 @@ pub mod engine {
             if self.ensure_initialized()
                 && let Some(terminal) = &mut self.terminal
             {
+                // Nucleotide's view model uses positive deltas for larger
+                // display offsets, i.e. scrolling up into history. Ghostty's
+                // viewport delta uses the opposite sign.
                 terminal.scroll_viewport(libghostty_vt::terminal::ScrollViewport::Delta(
-                    delta as isize,
+                    -(delta as isize),
                 ));
             }
         }
@@ -1125,11 +1128,29 @@ pub mod engine {
             };
             assert_eq!(bottom.display_offset, 0);
 
-            engine.scroll_display(-1);
+            engine.scroll_display(1);
             let Some(FramePayload::Full(scrolled)) = engine.take_frame() else {
                 panic!("expected full snapshot");
             };
             assert!(scrolled.display_offset > 0);
+        }
+
+        #[test]
+        fn scroll_display_negative_delta_returns_toward_bottom() {
+            let mut engine = Engine::new(5, 2, None);
+
+            engine.feed_bytes(b"one\r\ntwo\r\nthree\r\nfour");
+            engine.scroll_display(1);
+            let Some(FramePayload::Full(scrolled)) = engine.take_frame() else {
+                panic!("expected full snapshot");
+            };
+            assert!(scrolled.display_offset > 0);
+
+            engine.scroll_display(-1);
+            let Some(FramePayload::Full(bottom)) = engine.take_frame() else {
+                panic!("expected full snapshot");
+            };
+            assert!(bottom.display_offset < scrolled.display_offset);
         }
     }
 }
