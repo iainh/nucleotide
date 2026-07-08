@@ -349,6 +349,14 @@ pub mod session {
                 .ok()
                 .and_then(|status| i32::try_from(status.exit_code()).ok())
         }
+
+        pub fn try_exit_code(&mut self) -> Option<i32> {
+            self.child
+                .try_wait()
+                .ok()
+                .flatten()
+                .and_then(|status| i32::try_from(status.exit_code()).ok())
+        }
     }
 
     fn terminal_command_builder(
@@ -1256,7 +1264,7 @@ mod tests {
     use super::session::{TerminalSession, TerminalSessionCfg};
     #[cfg(all(windows, feature = "emulator"))]
     use crate::frame::FramePayload;
-    #[cfg(all(windows, feature = "emulator"))]
+    #[cfg(any(unix, all(windows, feature = "emulator")))]
     use std::time::Duration;
 
     #[cfg(unix)]
@@ -1275,6 +1283,35 @@ mod tests {
         while rx.recv().await.is_some() {}
 
         assert_eq!(session.wait_exit_code(), Some(7));
+    }
+
+    #[cfg(any(unix, all(windows, feature = "emulator")))]
+    #[tokio::test]
+    async fn command_session_try_exit_code_reports_finished_child() {
+        #[cfg(windows)]
+        let cfg = TerminalSessionCfg {
+            program: Some("cmd.exe".to_string()),
+            args: vec!["/D".to_string(), "/C".to_string(), "exit 7".to_string()],
+            ..TerminalSessionCfg::default()
+        };
+        #[cfg(not(windows))]
+        let cfg = TerminalSessionCfg {
+            program: Some("/bin/sh".to_string()),
+            args: vec!["-lc".to_string(), "exit 7".to_string()],
+            ..TerminalSessionCfg::default()
+        };
+
+        let (mut session, _rx) = TerminalSession::spawn(43, cfg).await.unwrap();
+        let mut code = None;
+        for _ in 0..30 {
+            code = session.try_exit_code();
+            if code.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
+        assert_eq!(code, Some(7));
     }
 
     #[cfg(all(windows, feature = "emulator"))]

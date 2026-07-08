@@ -514,7 +514,10 @@ impl TerminalView {
                     cx.background_executor()
                         .timer(std::time::Duration::from_millis(32))
                         .await;
-                    let has_updates = lock_or_recover(poll_model.as_ref()).has_dirty_rows();
+                    let has_updates = {
+                        let guard = lock_or_recover(poll_model.as_ref());
+                        guard.has_dirty_rows() || guard.has_exited()
+                    };
                     if has_updates && this.update(cx, |_, cx| cx.notify()).is_err() {
                         break;
                     }
