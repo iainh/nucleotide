@@ -2818,7 +2818,7 @@ impl Workspace {
             .ok_or_else(|| "No focused document".to_string())?;
         let path = doc
             .path()
-            .cloned()
+            .map(std::path::Path::to_path_buf)
             .ok_or_else(|| "Focused document is not backed by a file".to_string())?;
         let text = doc.text().clone();
         let cursor_line = doc.selection(view.id).primary().cursor_line(text.slice(..));
@@ -3883,7 +3883,7 @@ impl Workspace {
                             .editor
                             .documents
                             .get(&doc_id)
-                            .and_then(|doc| doc.path().cloned());
+                            .and_then(|doc| doc.path().map(std::path::Path::to_path_buf));
 
                         BatchCloseDocument {
                             id: doc_id,
@@ -6400,7 +6400,7 @@ impl Workspace {
         if let Some(view) = editor.tree.try_get(editor.tree.focus)
             && let Some(doc) = editor.document(view.doc)
         {
-            focused_doc_path = doc.path().cloned();
+            focused_doc_path = doc.path().map(std::path::Path::to_path_buf);
             focused_file_name = doc.path().map(|path| {
                 path.file_name()
                     .and_then(|name| name.to_str())
@@ -6903,7 +6903,7 @@ impl Workspace {
 
             // Set theme in the editor
             if let Ok(theme) = core.editor.theme_loader.load(&theme_name) {
-                core.editor.set_theme(theme);
+                let _ = core.editor.set_theme(theme);
                 nucleotide_logging::info!(theme_name = %theme_name, "Theme loaded successfully");
             }
 
@@ -7434,6 +7434,9 @@ impl Workspace {
                         self.apply_workspace_config(&config, cx);
                     }
                     ConfigEvent::Update(_) => {
+                        self.refresh_after_editor_config_change(cx);
+                    }
+                    ConfigEvent::ThemeChanged => {
                         self.refresh_after_editor_config_change(cx);
                     }
                 }
@@ -8037,7 +8040,7 @@ impl Workspace {
                 .values()
                 .filter_map(|doc| {
                     doc.path()
-                        .cloned()
+                        .map(std::path::Path::to_path_buf)
                         .map(|path| (path, doc.text().to_owned()))
                 })
                 .collect::<Vec<_>>();
@@ -8244,7 +8247,7 @@ impl Workspace {
                 };
                 doc.append_changes_to_history(view);
                 let snapshot = doc.selection(view_id).clone();
-                view.jumps.push((doc_id, snapshot));
+                view.push_jump(doc, (doc_id, snapshot));
             }
 
             let result = {
@@ -11120,9 +11123,11 @@ impl Workspace {
             let core = self.core.read(cx);
             let workspace_backend = core.workspace_backend.clone();
             let decision = if matches!(workspace_backend.identity(), WorkspaceIdentity::Remote(_)) {
-                let documents = core.editor.documents.iter().map(|(doc_id, doc)| {
-                    (*doc_id, doc.path().map(PathBuf::as_path), doc.is_modified())
-                });
+                let documents = core
+                    .editor
+                    .documents
+                    .iter()
+                    .map(|(doc_id, doc)| (*doc_id, doc.path(), doc.is_modified()));
                 let visible_views = core
                     .editor
                     .tree
@@ -11258,9 +11263,11 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> anyhow::Result<RemoteDocumentReloadApply> {
         self.core.update(cx, |core, _| {
-            let documents = core.editor.documents.iter().map(|(doc_id, doc)| {
-                (*doc_id, doc.path().map(PathBuf::as_path), doc.is_modified())
-            });
+            let documents = core
+                .editor
+                .documents
+                .iter()
+                .map(|(doc_id, doc)| (*doc_id, doc.path(), doc.is_modified()));
             let visible_views = core
                 .editor
                 .tree

@@ -103,13 +103,21 @@ mod tests {
         let (signature_tx, _) = tokio::sync::mpsc::channel(1);
         let (auto_save_tx, _) = tokio::sync::mpsc::channel(1);
         let (doc_colors_tx, _) = tokio::sync::mpsc::channel(1);
+        let (doc_links_tx, _) = tokio::sync::mpsc::channel(1);
+        let (pull_diagnostics_tx, _) = tokio::sync::mpsc::channel(1);
+        let (pull_all_diagnostics_tx, _) = tokio::sync::mpsc::channel(1);
+        let (code_action_hint_tx, _) = tokio::sync::mpsc::channel(1);
 
         Handlers {
             completions: CompletionHandler::new(completion_tx),
             signature_hints: signature_tx,
             auto_save: auto_save_tx,
             document_colors: doc_colors_tx,
+            document_links: doc_links_tx,
             word_index: WordIndexHandler::spawn(),
+            pull_diagnostics: pull_diagnostics_tx,
+            pull_all_documents_diagnostics: pull_all_diagnostics_tx,
+            code_action_hint: code_action_hint_tx,
         }
     }
 
@@ -123,6 +131,7 @@ mod tests {
             syntax_loader,
             Arc::new(Map::new(Arc::clone(&config), |config: &Config| config)),
             test_handlers(),
+            helix_loader::workspace_trust::WorkspaceTrust::fully_trusted(),
         );
         editor.new_file(Action::VerticalSplit);
         editor

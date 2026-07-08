@@ -88,7 +88,7 @@ impl PickerPreviewExecutor {
                 .editor
                 .documents
                 .iter()
-                .any(|(_, d)| d.path().map(|p| p.as_path() == _path).unwrap_or(false));
+                .any(|(_, d)| d.path().map(|p| p == _path).unwrap_or(false));
             // Open in a vertical split so we don't replace the user's current view
             let action = helix_view::editor::Action::VerticalSplit;
             match core.editor.open(_path, action) {

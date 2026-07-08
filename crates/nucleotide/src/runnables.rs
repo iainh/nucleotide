@@ -558,14 +558,23 @@ fn posix_file_url_path(uri: &lsp::Url) -> Option<PathBuf> {
     if uri.scheme() != "file" {
         return None;
     }
-    if let Some(host) = uri.host_str()
-        && !host.is_empty()
-        && !host.eq_ignore_ascii_case("localhost")
-    {
+    if has_non_local_file_authority(uri.as_str()) {
         return None;
     }
 
     percent_decode_uri_path(uri.path()).map(PathBuf::from)
+}
+
+fn has_non_local_file_authority(uri: &str) -> bool {
+    let Some(rest) = uri.strip_prefix("file:") else {
+        return false;
+    };
+    let Some(rest) = rest.strip_prefix("//") else {
+        return false;
+    };
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let authority = &rest[..authority_end];
+    !authority.is_empty() && !authority.eq_ignore_ascii_case("localhost")
 }
 
 fn percent_decode_uri_path(path: &str) -> Option<String> {

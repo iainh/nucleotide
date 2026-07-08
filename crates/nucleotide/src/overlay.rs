@@ -1227,7 +1227,7 @@ impl OverlayView {
                                     let core_read = core.read(cx);
                                     if let Some(doc) = core_read.editor.documents.get(doc_id) {
                                         let content = String::from(doc.text().slice(..));
-                                        let path_opt = doc.path().cloned();
+                                        let path_opt = doc.path().map(std::path::Path::to_path_buf);
                                         return Some((content, path_opt));
                                     }
                                 } else if let Some(task) = item

@@ -26,11 +26,7 @@ impl DocumentAccess for Application {
     }
 
     fn get_document_path(&self, id: DocumentId) -> Option<&Path> {
-        self.editor
-            .documents
-            .get(&id)?
-            .path()
-            .map(std::path::PathBuf::as_path)
+        self.editor.documents.get(&id)?.path()
     }
 
     fn get_document_language(&self, id: DocumentId) -> Option<String> {

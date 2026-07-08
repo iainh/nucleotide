@@ -565,7 +565,7 @@ impl HelixLspBridge {
             .language_servers
             .get_with_workspace_context(
                 language_config,
-                doc_path.as_ref(),
+                doc_path.as_deref(),
                 &root_dirs,
                 true, // enable_snippets
                 lsp_workspace_context.as_ref(),
@@ -774,26 +774,7 @@ fn remote_lsp_expected_native_root_uri(workspace_root: &std::path::Path) -> Opti
 }
 
 fn remote_native_file_uri(path: &Path) -> Option<helix_lsp::Url> {
-    let path = posix_path_string(path);
-    let path = if path.starts_with('/') {
-        path
-    } else {
-        format!("/{path}")
-    };
-    helix_lsp::Url::parse(&format!("file://{}", percent_encode_file_path(&path))).ok()
-}
-
-fn percent_encode_file_path(path: &str) -> String {
-    let mut encoded = String::new();
-    for byte in path.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'/') {
-            encoded.push(char::from(byte));
-        } else {
-            encoded.push('%');
-            encoded.push_str(&format!("{byte:02X}"));
-        }
-    }
-    encoded
+    helix_lsp::file_uri_from_path(Path::new(&posix_path_string(path)))
 }
 
 fn cached_lsp_client_matches_workspace(

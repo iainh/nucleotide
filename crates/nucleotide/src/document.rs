@@ -232,10 +232,7 @@ impl DocumentView {
             let core = self.core.read(cx);
             let view = core.editor.tree.try_get(self.view_id)?;
             let doc = core.editor.documents.get(&view.doc)?;
-            if !doc
-                .path()
-                .is_some_and(|path| is_markdown_document_path(path))
-            {
+            if !doc.path().is_some_and(is_markdown_document_path) {
                 self.markdown_snapshot_cache = None;
                 return None;
             }
@@ -659,10 +656,7 @@ fn markdown_document_info(
     let core = core.read(cx);
     let view = core.editor.tree.try_get(view_id)?;
     let doc = core.editor.documents.get(&view.doc)?;
-    if !doc
-        .path()
-        .is_some_and(|path| is_markdown_document_path(path))
-    {
+    if !doc.path().is_some_and(is_markdown_document_path) {
         return None;
     }
 
