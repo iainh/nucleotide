@@ -5,7 +5,11 @@ use nucleotide_events::EventBus;
 use nucleotide_events::v2::terminal::{Event as TerminalEvent, TerminalId};
 use nucleotide_logging::{error, info};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{
+    Arc, Mutex, MutexGuard,
+    atomic::{AtomicBool, Ordering},
+};
+use std::time::Duration;
 
 #[cfg(feature = "terminal-emulator")]
 use nucleotide_terminal::TerminalBounds;
@@ -32,8 +36,12 @@ struct SessionEntry {
     session: Arc<Mutex<TerminalSession>>,
     #[allow(dead_code)]
     rx_task: std::thread::JoinHandle<()>,
+    #[allow(dead_code)]
+    exit_task: std::thread::JoinHandle<()>,
+    exit_reported: Arc<AtomicBool>,
     // Background input writer to avoid blocking on each key press
     input_tx: std::sync::mpsc::Sender<Vec<u8>>,
+    #[allow(dead_code)]
     input_task: std::thread::JoinHandle<()>,
     view: Arc<Mutex<TerminalViewModel>>,
     last_size: Option<(u16, u16)>,
@@ -133,6 +141,8 @@ impl TerminalRuntimeHandler {
         // Spawn a blocking thread to consume frames, coalescing bursts to the latest
         let exit_bus = self.event_bus.clone();
         let session_for_exit = Arc::clone(&session_arc);
+        let exit_reported = Arc::new(AtomicBool::new(false));
+        let rx_exit_reported = Arc::clone(&exit_reported);
         let handle = std::thread::spawn(move || {
             while let Some(mut frame) = futures_executor::block_on(rx.recv()) {
                 // Drain any queued frames to coalesce updates
@@ -148,12 +158,43 @@ impl TerminalRuntimeHandler {
                 .lock()
                 .ok()
                 .and_then(|mut session| session.wait_exit_code());
-            if let Some(bus) = exit_bus {
+            if !rx_exit_reported.swap(true, Ordering::SeqCst)
+                && let Some(bus) = exit_bus
+            {
                 bus.dispatch_terminal(TerminalEvent::Exited {
                     id,
                     code,
                     signal: None,
                 });
+            }
+        });
+
+        let exit_bus = self.event_bus.clone();
+        let exit_view = Arc::clone(&view);
+        let session_for_monitor = Arc::clone(&session_arc);
+        let monitor_exit_reported = Arc::clone(&exit_reported);
+        let exit_task = std::thread::spawn(move || {
+            while !monitor_exit_reported.load(Ordering::SeqCst) {
+                let code = session_for_monitor
+                    .lock()
+                    .ok()
+                    .and_then(|mut session| session.try_exit_code());
+
+                if let Some(code) = code {
+                    lock_view_model(exit_view.as_ref(), id, "set_exited").set_exited();
+                    if !monitor_exit_reported.swap(true, Ordering::SeqCst)
+                        && let Some(bus) = exit_bus
+                    {
+                        bus.dispatch_terminal(TerminalEvent::Exited {
+                            id,
+                            code: Some(code),
+                            signal: None,
+                        });
+                    }
+                    break;
+                }
+
+                std::thread::sleep(Duration::from_millis(100));
             }
         });
 
@@ -182,6 +223,8 @@ impl TerminalRuntimeHandler {
             SessionEntry {
                 session: session_arc,
                 rx_task: handle,
+                exit_task,
+                exit_reported,
                 input_tx: tx,
                 input_task,
                 view,
@@ -342,18 +385,20 @@ impl core::EventHandler for TerminalRuntimeHandler {
                     senders.remove(id);
                 }
                 if let Some(entry) = self.sessions.remove(id) {
+                    entry.exit_reported.store(true, Ordering::SeqCst);
                     #[cfg(feature = "terminal-emulator")]
                     if let Ok(mut view) = entry.view.lock() {
                         view.clear_input_sender();
                     }
                     // Close input channel to stop input task
                     drop(entry.input_tx);
-                    // Best-effort: kill session and join workers
+                    // Best-effort: kill the PTY. Do not join worker threads here:
+                    // on Windows, ConPTY can keep the reader blocked after the
+                    // child exits, and blocking event processing prevents the
+                    // workspace from observing Exited and closing the panel.
                     if let Ok(mut session) = entry.session.lock() {
                         let _ = futures_executor::block_on(session.kill());
                     }
-                    let _ = entry.rx_task.join();
-                    let _ = entry.input_task.join();
                 }
             }
             TerminalEvent::FocusChanged { .. } => {}
