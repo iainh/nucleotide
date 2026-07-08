@@ -1974,11 +1974,14 @@ impl Render for OverlayView {
                     let (char_w, line_h) = self.terminal_metrics(cx);
                     // Use resizable panel height
                     let panel_height = self.terminal_height_px;
+                    let terminal_content_height = (panel_height
+                        - nucleotide_terminal_panel::TERMINAL_PANEL_HEADER_HEIGHT_PX)
+                        .max(line_h);
                     // Constrain to editor content width by subtracting file tree width
                     let file_tree_width = f32::from(layout.file_tree_width);
                     let usable_width = (window_width - file_tree_width).max(1.0);
                     let cols = (usable_width / char_w).floor().max(1.0) as u16;
-                    let rows = (panel_height / line_h).floor().max(1.0) as u16;
+                    let rows = (terminal_content_height / line_h).floor().max(1.0) as u16;
                     // Read the active terminal id after metrics calculation to avoid borrow conflicts
                     let active_id = if let Some(panel) = &self.terminal_panel {
                         panel.read(cx).active

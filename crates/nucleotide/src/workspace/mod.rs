@@ -2403,6 +2403,15 @@ impl Workspace {
         });
     }
 
+    fn close_terminal_panel_session(&mut self, id: TerminalId, cx: &mut Context<Self>) {
+        if self.terminal_id != Some(id) {
+            return;
+        }
+
+        self.shutdown_terminal_session(id, cx);
+        self.handle_terminal_exited(id, None, true, cx);
+    }
+
     fn spawn_terminal_session(
         &mut self,
         cwd: Option<PathBuf>,
@@ -2598,8 +2607,15 @@ impl Workspace {
 
     fn set_embedded_terminal_panel(&mut self, terminal_id: TerminalId, cx: &mut Context<Self>) {
         let height = self.basic_terminal_height;
+        let workspace = cx.entity().clone();
         let entity = cx.new(|cx| {
-            let mut p = nucleotide_terminal_panel::TerminalPanel::new(terminal_id, height);
+            let mut p = nucleotide_terminal_panel::TerminalPanel::new(terminal_id, height)
+                .on_close(move |id, _window, cx| {
+                    workspace.update(cx, |workspace, cx| {
+                        workspace.close_terminal_panel_session(id, cx);
+                    });
+                    cx.stop_propagation();
+                });
             p.initialize(cx);
             p
         });
@@ -2668,6 +2684,71 @@ impl Workspace {
         if self.run_output_terminal == cleared_id {
             self.run_output_terminal = None;
         }
+    }
+
+    fn handle_terminal_exited(
+        &mut self,
+        id: TerminalId,
+        code: Option<i32>,
+        force_close_panel: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.terminal_id != Some(id) {
+            return;
+        }
+
+        let was_active_run = self
+            .active_run_terminal
+            .is_some_and(|(terminal_id, _run_id)| terminal_id == id);
+
+        if let Some((terminal_id, run_id)) = self.active_run_terminal
+            && terminal_id == id
+        {
+            let status = match code {
+                Some(0) | None => RunStatus::Finished,
+                Some(_) => RunStatus::Failed,
+            };
+            self.core.update(cx, |app, _cx| {
+                if let Some(bus) = &app.event_aggregator {
+                    bus.dispatch_run(RunEvent::StatusChanged { id: run_id, status });
+                    bus.dispatch_run(RunEvent::Finished { id: run_id, code });
+                    bus.process_events();
+                }
+            });
+            self.active_run_terminal = None;
+            if let Some(activity_id) = self.active_run_activity.take() {
+                self.finish_background_activity(activity_id, cx);
+            }
+            self.terminal_focus_pending = false;
+            self.terminal_active = false;
+            let status_message = match (status, code) {
+                (RunStatus::Finished, Some(0) | None) => "Runnable finished".to_string(),
+                (RunStatus::Failed, Some(exit_code)) => {
+                    format!("Runnable failed with exit code {exit_code}")
+                }
+                _ => "Runnable finished".to_string(),
+            };
+            self.push_editor_status_notification(
+                EditorStatus {
+                    status: status_message,
+                    severity: if status == RunStatus::Failed {
+                        Severity::Error
+                    } else {
+                        Severity::Info
+                    },
+                },
+                cx,
+            );
+        }
+
+        if was_active_run && !force_close_panel {
+            cx.notify();
+            return;
+        }
+
+        self.hide_terminal_panel();
+        self.clear_terminal_panel_session();
+        cx.notify();
     }
 
     fn refresh_environment_badge(&mut self, project_root: Option<PathBuf>, cx: &mut Context<Self>) {
@@ -9923,62 +10004,8 @@ impl Workspace {
                     }
                     crate::types::AppEvent::Terminal(term_event) => {
                         // Close the terminal pane when the shell process exits
-                        if let TerminalEvent::Exited { id, code, .. } = term_event
-                            && self.terminal_id == Some(*id)
-                        {
-                            if let Some((terminal_id, run_id)) = self.active_run_terminal
-                                && terminal_id == *id
-                            {
-                                let status = match code {
-                                    Some(0) | None => RunStatus::Finished,
-                                    Some(_) => RunStatus::Failed,
-                                };
-                                self.core.update(cx, |app, _cx| {
-                                    if let Some(bus) = &app.event_aggregator {
-                                        bus.dispatch_run(RunEvent::StatusChanged {
-                                            id: run_id,
-                                            status,
-                                        });
-                                        bus.dispatch_run(RunEvent::Finished {
-                                            id: run_id,
-                                            code: *code,
-                                        });
-                                        bus.process_events();
-                                    }
-                                });
-                                self.active_run_terminal = None;
-                                if let Some(activity_id) = self.active_run_activity.take() {
-                                    self.finish_background_activity(activity_id, cx);
-                                }
-                                self.terminal_focus_pending = false;
-                                self.terminal_active = false;
-                                let exit_code = *code;
-                                let status_message = match (status, exit_code) {
-                                    (RunStatus::Finished, Some(0) | None) => {
-                                        "Runnable finished".to_string()
-                                    }
-                                    (RunStatus::Failed, Some(exit_code)) => {
-                                        format!("Runnable failed with exit code {exit_code}")
-                                    }
-                                    _ => "Runnable finished".to_string(),
-                                };
-                                self.push_editor_status_notification(
-                                    EditorStatus {
-                                        status: status_message,
-                                        severity: if status == RunStatus::Failed {
-                                            Severity::Error
-                                        } else {
-                                            Severity::Info
-                                        },
-                                    },
-                                    cx,
-                                );
-                                cx.notify();
-                                return;
-                            }
-                            self.hide_terminal_panel();
-                            self.clear_terminal_panel_session();
-                            cx.notify();
+                        if let TerminalEvent::Exited { id, code, .. } = term_event {
+                            self.handle_terminal_exited(*id, *code, false, cx);
                         }
                     }
                     crate::types::AppEvent::Run(_run_event) => {}
@@ -13780,11 +13807,15 @@ impl Workspace {
             return;
         };
 
+        let terminal_content_height_px = (panel_height_px
+            - nucleotide_terminal_panel::TERMINAL_PANEL_HEADER_HEIGHT_PX)
+            .max(cell_height_px);
+
         let bounds = TerminalBounds::from_pixels(
             cell_width_px,
             cell_height_px,
             available_width_px,
-            panel_height_px,
+            terminal_content_height_px,
         );
         let active_id = panel.read(cx).active;
         let bounds_changed = self
@@ -13794,13 +13825,15 @@ impl Workspace {
             .unwrap_or(true);
 
         if bounds_changed {
-            let (_, pixel_height) = bounds.pixel_size();
+            let (_, terminal_content_pixel_height) = bounds.pixel_size();
+            let panel_pixel_height = terminal_content_pixel_height
+                + nucleotide_terminal_panel::TERMINAL_PANEL_HEADER_HEIGHT_PX;
             self.last_terminal_bounds = Some((active_id, bounds));
-            if (self.basic_terminal_height - pixel_height).abs() > 0.5 {
-                self.basic_terminal_height = pixel_height;
+            if (self.basic_terminal_height - panel_pixel_height).abs() > 0.5 {
+                self.basic_terminal_height = panel_pixel_height;
             }
             panel.update(cx, |p, cx| {
-                p.height_px = pixel_height;
+                p.height_px = panel_pixel_height;
                 cx.notify();
             });
             self.core.update(cx, |app, _| {

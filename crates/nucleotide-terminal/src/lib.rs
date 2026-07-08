@@ -41,6 +41,7 @@ pub mod frame {
         pub rows_len: u16,
         pub cursor_row: u16,
         pub cursor_col: u16,
+        pub title: Option<String>,
         pub history_size: usize,
         pub display_offset: usize,
         pub input_mode: TerminalInputMode,
@@ -920,6 +921,10 @@ pub mod engine {
                 .as_ref()
                 .map(|scrollbar| history_size.saturating_sub(scrollbar.offset as usize))
                 .unwrap_or(0);
+            let title = terminal
+                .title()
+                .ok()
+                .and_then(|title| (!title.is_empty()).then(|| title.to_string()));
 
             self.cols = cols;
             self.rows = rows_len;
@@ -931,6 +936,7 @@ pub mod engine {
                 rows_len,
                 cursor_row: cursor.map(|cursor| cursor.y).unwrap_or(0),
                 cursor_col: cursor.map(|cursor| cursor.x).unwrap_or(0),
+                title,
                 history_size,
                 display_offset,
                 input_mode: TerminalInputMode {
@@ -1028,6 +1034,7 @@ pub mod engine {
                     }
                 });
             }
+            let _ = terminal.on_title_changed(|_terminal| {});
 
             let _ = terminal.resize(
                 self.cols,
@@ -1116,6 +1123,18 @@ pub mod engine {
                 panic!("expected full snapshot");
             };
             assert!(snapshot.input_mode.application_cursor);
+        }
+
+        #[test]
+        fn terminal_title_is_reported_in_frames() {
+            let mut engine = Engine::new(5, 2, None);
+
+            engine.feed_bytes(b"\x1b]2;Nucleotide Shell\x1b\\");
+
+            let Some(FramePayload::Full(snapshot)) = engine.take_frame() else {
+                panic!("expected full snapshot");
+            };
+            assert_eq!(snapshot.title.as_deref(), Some("Nucleotide Shell"));
         }
 
         #[test]

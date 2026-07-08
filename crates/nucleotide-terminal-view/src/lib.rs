@@ -21,10 +21,23 @@ use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+const DEFAULT_TERMINAL_TITLE: &str = "Terminal";
+
 fn lock_or_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn sanitize_terminal_title(title: impl AsRef<str>) -> Option<String> {
+    let title = title
+        .as_ref()
+        .chars()
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect::<String>();
+    let title = title.trim();
+
+    (!title.is_empty()).then(|| title.to_string())
 }
 
 #[cfg(feature = "emulator")]
@@ -101,6 +114,7 @@ pub struct TerminalViewModel {
     input_mode: TerminalInputMode,
     #[cfg(feature = "emulator")]
     input_tx: Option<std::sync::mpsc::Sender<Vec<u8>>>,
+    window_title: Option<String>,
     spawn_failure: Option<TerminalSpawnFailure>,
     /// Set to true when the shell process has exited
     exited: bool,
@@ -140,6 +154,7 @@ impl TerminalViewModel {
             input_mode: TerminalInputMode::default(),
             #[cfg(feature = "emulator")]
             input_tx: None,
+            window_title: None,
             spawn_failure: None,
             exited: false,
         }
@@ -200,6 +215,7 @@ impl TerminalViewModel {
             self.display_offset = snapshot.display_offset;
         }
         self.input_mode = snapshot.input_mode;
+        self.window_title = snapshot.title.and_then(sanitize_terminal_title);
         self.dirty.resize_and_fill(self.grid.len(), true);
     }
 
@@ -405,6 +421,21 @@ impl TerminalViewModel {
 
     pub fn has_exited(&self) -> bool {
         self.exited
+    }
+
+    pub fn set_window_title(&mut self, title: impl AsRef<str>) {
+        self.window_title = sanitize_terminal_title(title);
+    }
+
+    pub fn window_title(&self) -> Option<&str> {
+        self.window_title.as_deref()
+    }
+
+    pub fn display_title(&self) -> String {
+        self.window_title
+            .as_deref()
+            .unwrap_or(DEFAULT_TERMINAL_TITLE)
+            .to_string()
     }
 
     pub fn set_spawn_failure(&mut self, message: impl Into<String>, details: Vec<String>) {
@@ -1264,5 +1295,22 @@ mod registry_tests {
         assert_eq!(failure.details, vec!["Command: ssh devbox"]);
         assert!(model.has_exited());
         assert!(model.has_spawn_failure());
+    }
+
+    #[test]
+    fn terminal_view_model_display_title_uses_terminal_title_with_fallback() {
+        let mut model = TerminalViewModel::new(TerminalId(10));
+
+        assert_eq!(model.display_title(), "Terminal");
+
+        model.set_window_title("  cargo test\u{7}  ");
+
+        assert_eq!(model.window_title(), Some("cargo test"));
+        assert_eq!(model.display_title(), "cargo test");
+
+        model.set_window_title(" \n\t ");
+
+        assert_eq!(model.window_title(), None);
+        assert_eq!(model.display_title(), "Terminal");
     }
 }
