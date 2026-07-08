@@ -13817,6 +13817,10 @@ impl Workspace {
             available_width_px,
             terminal_content_height_px,
         );
+        let panel_pixel_height = nucleotide_terminal_panel::snapped_terminal_panel_height(
+            panel_height_px,
+            cell_height_px,
+        );
         let active_id = panel.read(cx).active;
         let bounds_changed = self
             .last_terminal_bounds
@@ -13824,18 +13828,18 @@ impl Workspace {
             .map(|(prev_id, prev_bounds)| *prev_id != active_id || !prev_bounds.approx_eq(&bounds))
             .unwrap_or(true);
 
-        if bounds_changed {
-            let (_, terminal_content_pixel_height) = bounds.pixel_size();
-            let panel_pixel_height = terminal_content_pixel_height
-                + nucleotide_terminal_panel::TERMINAL_PANEL_HEADER_HEIGHT_PX;
-            self.last_terminal_bounds = Some((active_id, bounds));
-            if (self.basic_terminal_height - panel_pixel_height).abs() > 0.5 {
-                self.basic_terminal_height = panel_pixel_height;
-            }
-            panel.update(cx, |p, cx| {
+        if (self.basic_terminal_height - panel_pixel_height).abs() > 0.5 {
+            self.basic_terminal_height = panel_pixel_height;
+        }
+        panel.update(cx, |p, cx| {
+            if (p.height_px - panel_pixel_height).abs() > 0.5 {
                 p.height_px = panel_pixel_height;
                 cx.notify();
-            });
+            }
+        });
+
+        if bounds_changed {
+            self.last_terminal_bounds = Some((active_id, bounds));
             self.core.update(cx, |app, _| {
                 if let Some(bus) = &app.event_aggregator {
                     bus.dispatch_terminal(TerminalEvent::Resized {
@@ -14117,13 +14121,6 @@ impl Render for Workspace {
         };
         let editor_content_w_px = (right_content_w_px - doc_sidebar_w_px).max(1.0);
 
-        let editor_h = if self.terminal_panel_visible {
-            (available_h - self.basic_terminal_height).max(0.0)
-        } else {
-            available_h
-        };
-        let editor_content_h_px = (editor_h - f32::from(tab_bar_height)).max(1.0);
-
         self.sync_embedded_terminal_size(
             right_content_w_px,
             self.basic_terminal_height,
@@ -14131,6 +14128,13 @@ impl Render for Workspace {
             char_w_value,
             cx,
         );
+
+        let editor_h = if self.terminal_panel_visible {
+            (available_h - self.basic_terminal_height).max(0.0)
+        } else {
+            available_h
+        };
+        let editor_content_h_px = (editor_h - f32::from(tab_bar_height)).max(1.0);
 
         let rows = (editor_content_h_px / line_h_value).floor().max(1.0) as u16;
         let cols = (editor_content_w_px / char_w_value).floor().max(1.0) as u16;
@@ -14912,22 +14916,28 @@ impl Render for Workspace {
 
             // Right: actual editor views + bottom terminal panel using shared split
             let right = {
+                let panel_max = (available_h * 0.85).max(120.0).min(max_term);
                 let on_change_height = {
                     let _entity = cx.entity().clone();
+                    let terminal_line_height_px = line_h_value;
                     move |new_h: f32, app_cx: &mut gpui::App| {
                         _entity.update(app_cx, |this: &mut Workspace, cx| {
-                            if (this.basic_terminal_height - new_h).abs() > 0.5 {
-                                this.basic_terminal_height = new_h;
+                            let snapped_h =
+                                nucleotide_terminal_panel::snapped_terminal_panel_height(
+                                    new_h,
+                                    terminal_line_height_px,
+                                )
+                                .clamp(80.0, panel_max);
+                            if (this.basic_terminal_height - snapped_h).abs() > 0.5 {
+                                this.basic_terminal_height = snapped_h;
                                 if let Some(panel) = &this.embedded_terminal_panel {
-                                    panel.update(cx, |p, _| p.height_px = new_h);
+                                    panel.update(cx, |p, _| p.height_px = snapped_h);
                                 }
                                 cx.notify();
                             }
                         });
                     }
                 };
-
-                let panel_max = (available_h * 0.85).max(120.0).min(max_term);
 
                 // Container with editor area + bottom panel
                 let mut root = div()
@@ -14966,7 +14976,11 @@ impl Render for Workspace {
                                 220.0,
                                 on_change_height,
                                 {
-                                    let mut c = div().relative().size_full();
+                                    let mut c = div()
+                                        .relative()
+                                        .size_full()
+                                        .overflow_hidden()
+                                        .bg(cx.theme().tokens.editor.background);
                                     if let Some(panel) = &self.embedded_terminal_panel {
                                         c = c.child(
                                             div()

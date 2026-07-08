@@ -11,6 +11,14 @@ use std::sync::Arc;
 
 pub const TERMINAL_PANEL_HEADER_HEIGHT_PX: f32 = 32.0;
 
+pub fn snapped_terminal_panel_height(panel_height_px: f32, cell_height_px: f32) -> f32 {
+    let cell_height_px = cell_height_px.max(1.0);
+    let content_height_px = (panel_height_px - TERMINAL_PANEL_HEADER_HEIGHT_PX).max(cell_height_px);
+    let rows = (content_height_px / cell_height_px).floor().max(1.0);
+
+    rows * cell_height_px + TERMINAL_PANEL_HEADER_HEIGHT_PX
+}
+
 type CloseHandler = Arc<dyn Fn(TerminalId, &mut Window, &mut App) + 'static>;
 
 /// Minimal terminal panel that mounts a TerminalView for a given TerminalId
@@ -161,6 +169,7 @@ impl Render for TerminalPanel {
         let mut container = div()
             .w_full()
             .h(gpui::px(self.height_px))
+            .min_h(px(0.0))
             .bg(bg)
             .border_t_1()
             .border_color(border)
@@ -201,5 +210,21 @@ impl Render for TerminalPanel {
         }
 
         container
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn snapped_terminal_panel_height_uses_whole_terminal_rows() {
+        assert_eq!(snapped_terminal_panel_height(100.0, 18.0), 86.0);
+        assert_eq!(snapped_terminal_panel_height(104.0, 18.0), 104.0);
+    }
+
+    #[test]
+    fn snapped_terminal_panel_height_keeps_at_least_one_row() {
+        assert_eq!(snapped_terminal_panel_height(20.0, 18.0), 50.0);
     }
 }
