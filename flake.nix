@@ -49,7 +49,7 @@
 
         # Dependency management following Helix patterns
         inherit (pkgs) lib stdenv;
-        zig = zig-overlay.packages.${system}.default;
+        zig = zig-overlay.packages.${system}."0.15.2";
 
         # Keep Nix's cc wrapper so library paths and SDK flags are preserved,
         # while asking clang to use LLD's Darwin linker underneath.

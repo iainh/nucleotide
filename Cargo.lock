@@ -141,31 +141,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "alacritty_terminal"
-version = "0.26.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bda177466b9524d59f1b12f0dd30b68696788e9992a7e959021c4a0ed96fcf59"
-dependencies = [
- "base64",
- "bitflags 2.13.0",
- "home",
- "libc",
- "log",
- "miow",
- "parking_lot",
- "piper",
- "polling",
- "regex-automata",
- "rustix 1.1.4",
- "rustix-openpty",
- "serde",
- "signal-hook 0.4.4",
- "unicode-width 0.2.2",
- "vte",
- "windows-sys 0.59.0",
-]
-
-[[package]]
 name = "aligned"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -663,9 +638,6 @@ name = "bitflags"
 version = "2.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4388bee8683e3d04af747c73422af53102d2bd24d9eadb6cbc100baef4b43f8"
-dependencies = [
- "serde_core",
-]
 
 [[package]]
 name = "bitstream-io"
@@ -1461,9 +1433,9 @@ dependencies = [
 
 [[package]]
 name = "crossbeam-epoch"
-version = "0.9.18"
+version = "0.9.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b82ac4a3c2ca9c3460964f020e1402edd5753411d7737aa39c3714ad1b5420e"
+checksum = "2d6914041f254d6e9176c01941b21115dcfb7089e55135a35411081bd106ef3f"
 dependencies = [
  "crossbeam-utils",
 ]
@@ -1497,7 +1469,7 @@ dependencies = [
  "mio 1.2.1",
  "parking_lot",
  "rustix 0.38.44",
- "signal-hook 0.3.18",
+ "signal-hook",
  "signal-hook-mio",
  "winapi",
 ]
@@ -1536,12 +1508,6 @@ dependencies = [
  "link-section",
  "linktime-proc-macro",
 ]
-
-[[package]]
-name = "cursor-icon"
-version = "1.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f27ae1dd37df86211c42e150270f82743308803d90a6f6e6651cd730d5e1732f"
 
 [[package]]
 name = "dashmap"
@@ -3797,7 +3763,7 @@ dependencies = [
  "pulldown-cmark",
  "serde",
  "serde_json",
- "signal-hook 0.3.18",
+ "signal-hook",
  "signal-hook-tokio",
  "termini",
  "thiserror 2.0.18",
@@ -4210,6 +4176,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "int-enum"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e366a1634cccc76b4cfd3e7580de9b605e4d93f1edac48d786c1f867c0def495"
+dependencies = [
+ "proc-macro2",
+ "proc-macro2-diagnostics",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "interpolate_name"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4480,6 +4458,23 @@ dependencies = [
  "arbitrary",
  "cc",
 ]
+
+[[package]]
+name = "libghostty-vt"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "04c77176dd05b2b5718046d807e786473f463ea6d478d56f8c0105e2fe6f71f5"
+dependencies = [
+ "bitflags 2.13.0",
+ "int-enum",
+ "libghostty-vt-sys",
+]
+
+[[package]]
+name = "libghostty-vt-sys"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "404671567c0ac43389a69ae424eefc89390a25d3a5386a54249cdaf13e01b411"
 
 [[package]]
 name = "libloading"
@@ -4776,15 +4771,6 @@ dependencies = [
  "libc",
  "log",
  "wasi",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "miow"
-version = "0.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "536bfad37a309d62069485248eeaba1e8d9853aaf951caaeaed0585a95346f08"
-dependencies = [
  "windows-sys 0.61.2",
 ]
 
@@ -5188,8 +5174,8 @@ dependencies = [
 name = "nucleotide-terminal"
 version = "0.1.0"
 dependencies = [
- "alacritty_terminal",
  "anyhow",
+ "libghostty-vt",
  "portable-pty",
  "tokio",
 ]
@@ -6195,6 +6181,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "proc-macro2-diagnostics"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "af066a9c399a26e020ada66a034357a868728e72cd426f3adcd35f80d88d88c8"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+ "version_check",
+]
+
+[[package]]
 name = "prodash"
 version = "30.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6795,17 +6793,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rustix-openpty"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1de16c7c59892b870a6336f185dc10943517f1327447096bbb7bb32cd85e2393"
-dependencies = [
- "errno",
- "libc",
- "rustix 1.1.4",
-]
-
-[[package]]
 name = "rustversion"
 version = "1.0.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7165,16 +7152,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "signal-hook"
-version = "0.4.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b2a0c28ca5908dbdbcd52e6fdaa00358ab88637f8ab33e1f188dd510eb44b53d"
-dependencies = [
- "libc",
- "signal-hook-registry",
-]
-
-[[package]]
 name = "signal-hook-mio"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7182,7 +7159,7 @@ checksum = "b75a19a7a740b25bc7944bdee6172368f988763b744e3d4dfe753f6b4ece40cc"
 dependencies = [
  "libc",
  "mio 1.2.1",
- "signal-hook 0.3.18",
+ "signal-hook",
 ]
 
 [[package]]
@@ -7203,7 +7180,7 @@ checksum = "213241f76fb1e37e27de3b6aa1b068a2c333233b59cca6634f634b80a27ecf1e"
 dependencies = [
  "futures-core",
  "libc",
- "signal-hook 0.3.18",
+ "signal-hook",
  "tokio",
 ]
 
@@ -8441,20 +8418,6 @@ checksum = "fb067e4cbd1ff067d1df46c9194b5de0e98efd2810bbc95c5d5e5f25a3231150"
 dependencies = [
  "cc",
  "libc",
-]
-
-[[package]]
-name = "vte"
-version = "0.15.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a5924018406ce0063cd67f8e008104968b74b563ee1b85dde3ed1f7cb87d3dbd"
-dependencies = [
- "arrayvec",
- "bitflags 2.13.0",
- "cursor-icon",
- "log",
- "memchr",
- "serde",
 ]
 
 [[package]]

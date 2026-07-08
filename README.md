@@ -27,6 +27,9 @@ Currently, Nucleotide provides a native GUI wrapper around Helix with:
 
 ### From Source
 
+Install Rust stable and Zig 0.15.2 first. Zig is required to build the
+Ghostty-backed integrated terminal.
+
 ```bash
 cargo build --release
 ./target/release/nucl
@@ -48,6 +51,9 @@ open Nucleotide.app
 Nucleotide publishes a Windows MSI installer from CI. Download
 `Nucleotide-windows-x86_64.msi`, run it, then launch Nucleotide from the Start
 Menu or desktop shortcut.
+
+Install Rust stable, Zig 0.15.2, and the .NET 8 SDK before building the MSI
+locally.
 
 ```powershell
 cargo build --release -p nucleotide --bins

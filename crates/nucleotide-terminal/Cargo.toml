@@ -15,8 +15,9 @@ rust-version = "1.95"
 tokio.workspace = true
 anyhow.workspace = true
 portable-pty = "0.9"
-alacritty_terminal = { version = "0.26", optional = true }
+libghostty-vt = { version = "0.2.0", default-features = false, optional = true }
 
 [features]
 default = []
-emulator = ["alacritty_terminal"]
+emulator = ["dep:libghostty-vt"]
+emulator-ghostty = ["emulator"]

@@ -56,6 +56,11 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
       - name: Install .NET SDK
         uses: actions/setup-dotnet@v4
         with:

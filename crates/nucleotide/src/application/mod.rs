@@ -7,7 +7,7 @@ pub mod document_handler;
 pub mod editor_handler;
 pub mod editor_input;
 pub mod lsp_handler;
-#[cfg(feature = "terminal-emulator")]
+#[cfg(feature = "terminal-emulator-core")]
 pub mod terminal_handler;
 pub mod view_handler;
 pub mod workspace_file_ops;
@@ -18,7 +18,7 @@ pub use completion_handler::CompletionHandler;
 pub use document_handler::DocumentHandler;
 pub use editor_handler::EditorHandler;
 pub use lsp_handler::LspHandler;
-#[cfg(feature = "terminal-emulator")]
+#[cfg(feature = "terminal-emulator-core")]
 pub use terminal_handler::{TerminalInputSenders, TerminalRuntimeHandler};
 pub use view_handler::ViewHandler;
 pub use workspace_file_ops::WorkspaceFileOpHandler;
@@ -1436,7 +1436,7 @@ pub struct Application {
     pub event_aggregator: Option<EventAggregatorHandle>,
     maintenance_wake: Option<MaintenanceWake>,
     // Fast-path input senders for terminal — bypasses the event queue
-    #[cfg(feature = "terminal-emulator")]
+    #[cfg(feature = "terminal-emulator-core")]
     pub terminal_input_senders: TerminalInputSenders,
     // Counter for sync cycles to delay LSP startup until system is fully initialized
     pub sync_cycle_counter: Arc<std::sync::atomic::AtomicUsize>,
@@ -8712,7 +8712,7 @@ pub fn init_editor(
     );
 
     // Initialize V2 Event Aggregator and register core handlers
-    #[cfg(feature = "terminal-emulator")]
+    #[cfg(feature = "terminal-emulator-core")]
     let terminal_input_senders;
     let event_aggregator = {
         let agg = nucleotide_core::EventAggregator::new();
@@ -8724,7 +8724,7 @@ pub fn init_editor(
             WorkspaceFileOpHandler::new(handle.clone(), workspace_backend.clone(), file_op_runtime);
         handle.register_handler(fs_handler);
         // Register Terminal runtime handler (behind feature)
-        #[cfg(feature = "terminal-emulator")]
+        #[cfg(feature = "terminal-emulator-core")]
         {
             let mut terminal_handler = crate::application::TerminalRuntimeHandler::new();
             terminal_handler.set_event_bus(handle.clone());
@@ -8775,7 +8775,7 @@ pub fn init_editor(
         // Event aggregator for UI and workspace events
         event_aggregator: Some(event_aggregator),
         maintenance_wake: None,
-        #[cfg(feature = "terminal-emulator")]
+        #[cfg(feature = "terminal-emulator-core")]
         terminal_input_senders,
         sync_cycle_counter: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     })
@@ -11342,7 +11342,7 @@ mod tests {
                 core,
                 event_aggregator: None,
                 maintenance_wake: None,
-                #[cfg(feature = "terminal-emulator")]
+                #[cfg(feature = "terminal-emulator-core")]
                 terminal_input_senders: Default::default(),
                 sync_cycle_counter: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             };

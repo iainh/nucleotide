@@ -22,3 +22,4 @@ nucleotide-types = { path = "../nucleotide-types", features = ["gpui-bridge"] }
 [features]
 default = []
 emulator = ["nucleotide-terminal/emulator", "dep:nucleotide-terminal"]
+emulator-ghostty = ["emulator"]

@@ -93,7 +93,7 @@ While using traditional cargo for the actual build process.
 
 **Platform-agnostic:**
 - Rust stable toolchain (via rust-overlay)
-- Zig (via zig-overlay)
+- Zig 0.15.2 (via zig-overlay, required by `libghostty-vt-sys`)
 - cargo-zigbuild
 - OpenSSL, pkg-config, git, curl, sqlite
 

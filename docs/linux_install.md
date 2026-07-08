@@ -6,6 +6,7 @@ Overview
 
 Prerequisites
 - Rust toolchain (stable) via rustup
+- Zig 0.15.2 for the Ghostty-backed integrated terminal build
 - C toolchain: distro build tools plus clang
 - System libraries (X11/Wayland, OpenGL/Vulkan, font, SSL/zlib for libgit2)
 
@@ -44,6 +45,10 @@ Rust toolchain
 - Ensure toolchain is up to date:
   rustup update
 
+Zig toolchain
+- Install Zig 0.15.2 and ensure `zig` is on `PATH`.
+- If you use Nix, `nix develop` provides the pinned Zig version.
+
 Build
 - Clone and build:
   git clone https://github.com/<org>/nucleotide.git
@@ -75,6 +80,7 @@ Known issues on Linux
 
 Common build errors
 - C toolchain errors: install the build tools and clang packages listed above.
+- Ghostty/libghostty build errors: ensure `zig version` reports 0.15.2.
 - openssl/libgit2 errors: ensure openssl and zlib dev packages are installed (see prerequisites).
 - Wayland/X11 missing headers: install libxkbcommon-dev and wayland-devel (see distro sections).
 

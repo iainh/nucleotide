@@ -34,8 +34,8 @@ tasks when the app starts.
 
 ## Build Locally
 
-Install the .NET 8 SDK, then prepare the runtime resources that the MSI will
-embed:
+Install Rust stable, Zig 0.15.2, and the .NET 8 SDK, then prepare the runtime
+resources that the MSI will embed:
 
 ```powershell
 cargo build --release -p nucleotide --bins

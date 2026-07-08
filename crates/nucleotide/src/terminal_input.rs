@@ -6,12 +6,12 @@ use nucleotide_core::EventBus;
 use nucleotide_events::v2::terminal::{Event as TerminalEvent, TerminalId};
 
 /// Encode a GPUI key event into terminal bytes using the shared xterm mapping.
-#[cfg(not(feature = "terminal-emulator"))]
+#[cfg(not(feature = "terminal-emulator-core"))]
 pub fn encode_key_event(event: &KeyDownEvent) -> Vec<u8> {
     nucleotide_ui::encode_terminal_key_event(event)
 }
 
-#[cfg(feature = "terminal-emulator")]
+#[cfg(feature = "terminal-emulator-core")]
 pub fn encode_key_event_with_mode(
     event: &KeyDownEvent,
     mode: nucleotide_terminal::frame::TerminalInputMode,
@@ -25,13 +25,13 @@ pub fn encode_key_event_with_mode(
 }
 
 /// Encode a key event for a concrete terminal, using emulator mode state when available.
-#[cfg(not(feature = "terminal-emulator"))]
+#[cfg(not(feature = "terminal-emulator-core"))]
 pub fn encode_key_event_for_terminal(_id: TerminalId, event: &KeyDownEvent) -> Vec<u8> {
     encode_key_event(event)
 }
 
 /// Encode a key event for a concrete terminal, using emulator mode state when available.
-#[cfg(feature = "terminal-emulator")]
+#[cfg(feature = "terminal-emulator-core")]
 pub fn encode_key_event_for_terminal(id: TerminalId, event: &KeyDownEvent) -> Vec<u8> {
     let mode = nucleotide_terminal_view::get_view_model(id)
         .and_then(|vm| vm.lock().ok().map(|guard| guard.input_mode()))
@@ -39,7 +39,7 @@ pub fn encode_key_event_for_terminal(id: TerminalId, event: &KeyDownEvent) -> Ve
     encode_key_event_with_mode(event, mode)
 }
 
-#[cfg(feature = "terminal-emulator")]
+#[cfg(feature = "terminal-emulator-core")]
 fn scroll_terminal_to_bottom(id: TerminalId) {
     if let Some(vm) = nucleotide_terminal_view::get_view_model(id)
         && let Ok(mut guard) = vm.lock()
@@ -59,7 +59,7 @@ pub fn send_terminal_input<C: gpui::AppContext>(
         return false;
     }
 
-    #[cfg(feature = "terminal-emulator")]
+    #[cfg(feature = "terminal-emulator-core")]
     {
         scroll_terminal_to_bottom(id);
         let sent = core.read_with(cx, |app, _| {

@@ -11,9 +11,9 @@ use std::sync::{
 };
 use std::time::Duration;
 
-#[cfg(feature = "terminal-emulator")]
+#[cfg(feature = "terminal-emulator-core")]
 use nucleotide_terminal::TerminalBounds;
-#[cfg(feature = "terminal-emulator")]
+#[cfg(feature = "terminal-emulator-core")]
 use nucleotide_terminal::session::ControlMsg;
 use nucleotide_terminal::session::{TerminalSession, TerminalSessionCfg};
 use nucleotide_terminal_view::{TerminalViewModel, register_view_model};
@@ -45,11 +45,11 @@ struct SessionEntry {
     input_task: std::thread::JoinHandle<()>,
     view: Arc<Mutex<TerminalViewModel>>,
     last_size: Option<(u16, u16)>,
-    #[cfg(feature = "terminal-emulator")]
+    #[cfg(feature = "terminal-emulator-core")]
     last_bounds: Option<TerminalBounds>,
 }
 
-#[cfg(feature = "terminal-emulator")]
+#[cfg(feature = "terminal-emulator-core")]
 fn legacy_resize_bounds(
     last_bounds: Option<TerminalBounds>,
     cols: u16,
@@ -58,7 +58,7 @@ fn legacy_resize_bounds(
     last_bounds.map(|bounds| bounds.with_cells(cols, rows))
 }
 
-#[cfg(feature = "terminal-emulator")]
+#[cfg(feature = "terminal-emulator-core")]
 fn metrics_resize_bounds(
     last_bounds: Option<TerminalBounds>,
     new_bounds: TerminalBounds,
@@ -126,7 +126,7 @@ impl TerminalRuntimeHandler {
             };
 
         let view = Arc::new(Mutex::new(TerminalViewModel::new(id)));
-        #[cfg(feature = "terminal-emulator")]
+        #[cfg(feature = "terminal-emulator-core")]
         {
             lock_view_model(view.as_ref(), id, "set_control_sender")
                 .set_control_sender(session.control_sender());
@@ -199,7 +199,7 @@ impl TerminalRuntimeHandler {
         });
 
         let (tx, rx_input) = std::sync::mpsc::channel::<Vec<u8>>();
-        #[cfg(feature = "terminal-emulator")]
+        #[cfg(feature = "terminal-emulator-core")]
         if let Ok(mut guard) = view.lock() {
             guard.set_input_sender(tx.clone());
         }
@@ -229,7 +229,7 @@ impl TerminalRuntimeHandler {
                 input_task,
                 view,
                 last_size: None,
-                #[cfg(feature = "terminal-emulator")]
+                #[cfg(feature = "terminal-emulator-core")]
                 last_bounds: None,
             },
         );
@@ -289,11 +289,11 @@ impl core::EventHandler for TerminalRuntimeHandler {
 
                     if size_changed {
                         if let Ok(session) = entry.session.lock() {
-                            #[cfg(feature = "terminal-emulator")]
+                            #[cfg(feature = "terminal-emulator-core")]
                             let resized_bounds =
                                 legacy_resize_bounds(entry.last_bounds, *cols, *rows);
 
-                            #[cfg(feature = "terminal-emulator")]
+                            #[cfg(feature = "terminal-emulator-core")]
                             if let Some(bounds) = resized_bounds {
                                 let (cell_width, cell_height) = bounds.cell_size();
                                 let _ = session.control_sender().send(ControlMsg::Resize {
@@ -307,7 +307,7 @@ impl core::EventHandler for TerminalRuntimeHandler {
 
                             let _ = futures_executor::block_on(session.resize(*cols, *rows));
                         }
-                        #[cfg(feature = "terminal-emulator")]
+                        #[cfg(feature = "terminal-emulator-core")]
                         if let Ok(mut view) = entry.view.lock() {
                             view.resize_grid(
                                 *cols,
@@ -327,7 +327,7 @@ impl core::EventHandler for TerminalRuntimeHandler {
                 cell_height,
             } => {
                 if let Some(entry) = self.sessions.get_mut(id) {
-                    #[cfg(feature = "terminal-emulator")]
+                    #[cfg(feature = "terminal-emulator-core")]
                     {
                         let new_bounds =
                             TerminalBounds::from_cells(*cell_width, *cell_height, *cols, *rows);
@@ -353,7 +353,7 @@ impl core::EventHandler for TerminalRuntimeHandler {
                             entry.last_size = Some((*cols, *rows));
                         }
                     }
-                    #[cfg(not(feature = "terminal-emulator"))]
+                    #[cfg(not(feature = "terminal-emulator-core"))]
                     {
                         let _ = (cell_width, cell_height);
                         let size_changed = entry
@@ -386,7 +386,7 @@ impl core::EventHandler for TerminalRuntimeHandler {
                 }
                 if let Some(entry) = self.sessions.remove(id) {
                     entry.exit_reported.store(true, Ordering::SeqCst);
-                    #[cfg(feature = "terminal-emulator")]
+                    #[cfg(feature = "terminal-emulator-core")]
                     if let Ok(mut view) = entry.view.lock() {
                         view.clear_input_sender();
                     }
@@ -406,7 +406,7 @@ impl core::EventHandler for TerminalRuntimeHandler {
     }
 }
 
-#[cfg(all(test, feature = "terminal-emulator"))]
+#[cfg(all(test, feature = "terminal-emulator-core"))]
 mod tests {
     use super::*;
 
