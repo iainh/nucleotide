@@ -822,6 +822,23 @@ mod tests {
     }
 
     #[test]
+    fn terminal_wheel_scroll_sends_positive_delta_for_scrollback() {
+        let mut model = TerminalViewModel::new(TerminalId(1));
+        let (tx, rx) = std::sync::mpsc::channel();
+        model.set_control_sender(tx);
+        model.history_size = 10;
+        model.cell_height = 20.0;
+
+        assert!(model.scroll_wheel_by_pixel_delta(20.0));
+        assert_eq!(model.display_offset, 1);
+
+        let Ok(nucleotide_terminal::session::ControlMsg::Scroll { delta }) = rx.try_recv() else {
+            panic!("expected scroll control message");
+        };
+        assert_eq!(delta, 1);
+    }
+
+    #[test]
     fn terminal_wheel_scroll_discards_remainder_at_edges() {
         let mut model = TerminalViewModel::new(TerminalId(1));
         model.history_size = 10;
