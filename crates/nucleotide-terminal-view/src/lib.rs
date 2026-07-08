@@ -720,7 +720,7 @@ impl Render for TerminalView {
             if let Some(state) = &self.scrollbar_state
                 && let Some(scrollbar) = Scrollbar::vertical(state.clone())
             {
-                w = w.child(scrollbar);
+                w = w.child(div().h_full().bg(default_bg).child(scrollbar));
             }
             w
         };
@@ -1127,7 +1127,12 @@ impl Render for TerminalRowView {
         let mut line = div()
             .flex()
             .flex_row()
-            .flex_shrink(1.0)
+            .w_full()
+            .h(line_height_px)
+            .min_h(line_height_px)
+            .flex_shrink_0()
+            .overflow_hidden()
+            .bg(ansi_palette.default_background)
             .whitespace_nowrap()
             .line_height(line_height_px)
             .text_size(gpui::px(editor_font.size));
@@ -1162,9 +1167,7 @@ impl Render for TerminalRowView {
 
             let mut run = div().child(std::mem::take(text));
             run = run.text_color(mapped_fg);
-            if let Some(c) = mapped_bg {
-                run = run.bg(c);
-            }
+            run = run.bg(contrast_bg);
             if bold {
                 run = run.font_weight(FontWeight::BOLD);
             }

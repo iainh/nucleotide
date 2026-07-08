@@ -6,6 +6,7 @@ use gpui::{
 };
 use helix_stdx::rope::RopeSliceExt;
 use nucleotide_core::EventBus;
+use nucleotide_terminal::TerminalBounds;
 use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::completion_v2::CompletionView;
 use nucleotide_ui::picker::Picker;
@@ -1965,37 +1966,78 @@ impl Render for OverlayView {
                     self.terminal_height_px = st.height;
                 }
 
-                // Dynamically compute terminal cols/rows from current window bounds and font metrics
-                // to keep the PTY/emulator sized to the visible area.
-                if let Some(core) = self.core.upgrade() {
-                    let layout = self.get_workspace_layout_info(cx);
-                    let window_width = f32::from(_window.bounds().size.width);
-                    // Use cached terminal metrics (font family/size/weight)
-                    let (char_w, line_h) = self.terminal_metrics(cx);
-                    // Use resizable panel height
-                    let panel_height = self.terminal_height_px;
-                    let terminal_content_height = (panel_height
-                        - nucleotide_terminal_panel::TERMINAL_PANEL_HEADER_HEIGHT_PX)
-                        .max(line_h);
-                    // Constrain to editor content width by subtracting file tree width
-                    let file_tree_width = f32::from(layout.file_tree_width);
-                    let usable_width = (window_width - file_tree_width).max(1.0);
-                    let cols = (usable_width / char_w).floor().max(1.0) as u16;
-                    let rows = (terminal_content_height / line_h).floor().max(1.0) as u16;
-                    // Read the active terminal id after metrics calculation to avoid borrow conflicts
-                    let active_id = if let Some(panel) = &self.terminal_panel {
-                        panel.read(cx).active
-                    } else {
-                        // If panel disappeared mid-render, skip sizing
-                        return div().into_any_element();
-                    };
-                    let changed = !matches!(
-                        self.last_terminal_size,
-                        Some((id, last_c, last_r))
-                            if id == active_id && last_c == cols && last_r == rows
-                    );
-                    if changed {
-                        self.last_terminal_size = Some((active_id, cols, rows));
+                // Constrain terminal height to avoid covering the entire editor
+                let window_h = f32::from(_window.bounds().size.height);
+                let max_h = (window_h * 0.6).max(120.0);
+                let clamped_h = self.terminal_height_px.clamp(80.0, max_h);
+                if (clamped_h - self.terminal_height_px).abs() > 0.5 {
+                    self.terminal_height_px = clamped_h;
+                    if let Ok(mut st) = self.resize_state.lock() {
+                        st.height = clamped_h;
+                    }
+                }
+
+                // Dynamically compute terminal cols/rows from current window
+                // bounds and font metrics to keep the PTY/emulator sized to
+                // the visible area. Snap the rendered panel height to whole
+                // cells so the split and terminal surface cannot diverge.
+                let layout = self.get_workspace_layout_info(cx);
+                let window_width = f32::from(_window.bounds().size.width);
+                let (char_w, line_h) = self.terminal_metrics(cx);
+                let terminal_content_height = (self.terminal_height_px
+                    - nucleotide_terminal_panel::TERMINAL_PANEL_HEADER_HEIGHT_PX)
+                    .max(line_h);
+                let file_tree_width = f32::from(layout.file_tree_width);
+                let usable_width = (window_width - file_tree_width).max(1.0);
+                let bounds = TerminalBounds::from_pixels(
+                    char_w,
+                    line_h,
+                    usable_width,
+                    terminal_content_height,
+                );
+                let snapped_panel_height =
+                    nucleotide_terminal_panel::snapped_terminal_panel_height(
+                        self.terminal_height_px,
+                        line_h,
+                    )
+                    .clamp(80.0, max_h);
+
+                if (snapped_panel_height - self.terminal_height_px).abs() > 0.5 {
+                    self.terminal_height_px = snapped_panel_height;
+                    if let Ok(mut st) = self.resize_state.lock() {
+                        st.height = snapped_panel_height;
+                    }
+                }
+
+                // Update the panel entity with the current height before
+                // borrowing cx immutably.
+                if let Some(panel) = &self.terminal_panel {
+                    let h = self.terminal_height_px;
+                    panel.update(cx, |p, cx| {
+                        if (p.height_px - h).abs() > 0.5 {
+                            p.height_px = h;
+                            cx.notify();
+                        }
+                    });
+                }
+
+                // Read the active terminal id after metrics calculation to avoid borrow conflicts.
+                let active_id = if let Some(panel) = &self.terminal_panel {
+                    panel.read(cx).active
+                } else {
+                    // If panel disappeared mid-render, skip sizing.
+                    return div().into_any_element();
+                };
+                let cols = bounds.cols();
+                let rows = bounds.rows();
+                let changed = !matches!(
+                    self.last_terminal_size,
+                    Some((id, last_c, last_r))
+                        if id == active_id && last_c == cols && last_r == rows
+                );
+                if changed {
+                    self.last_terminal_size = Some((active_id, cols, rows));
+                    if let Some(core) = self.core.upgrade() {
                         core.update(cx, |app, _| {
                             if let Some(bus) = &app.event_aggregator {
                                 // Dispatch both legacy and metrics-aware resize events
@@ -2021,34 +2063,17 @@ impl Render for OverlayView {
                                 bus.process_events();
                             }
                         });
-                        // Notify the terminal view entity so it re-renders with
-                        // the updated grid dimensions (new row/column count).
-                        if let Some(panel) = &self.terminal_panel {
-                            panel.update(cx, |p, cx| {
-                                cx.notify();
-                                if let Some(view) = &p.view_entity {
-                                    view.update(cx, |_, cx| cx.notify());
-                                }
-                            });
-                        }
                     }
-                }
-
-                // Constrain terminal height to avoid covering the entire editor
-                let window_h = f32::from(_window.bounds().size.height);
-                let max_h = (window_h * 0.6).max(120.0);
-                let clamped_h = self.terminal_height_px.clamp(80.0, max_h);
-                if (clamped_h - self.terminal_height_px).abs() > 0.5 {
-                    self.terminal_height_px = clamped_h;
-                    if let Ok(mut st) = self.resize_state.lock() {
-                        st.height = clamped_h;
+                    // Notify the terminal view entity so it re-renders with
+                    // the updated grid dimensions (new row/column count).
+                    if let Some(panel) = &self.terminal_panel {
+                        panel.update(cx, |p, cx| {
+                            cx.notify();
+                            if let Some(view) = &p.view_entity {
+                                view.update(cx, |_, cx| cx.notify());
+                            }
+                        });
                     }
-                }
-
-                // Update the panel entity with the current height before borrowing cx immutably
-                if let Some(panel) = &self.terminal_panel {
-                    let h = self.terminal_height_px;
-                    panel.update(cx, |p, _| p.height_px = h);
                 }
 
                 // Theme after potential mutable cx borrow above
@@ -2088,11 +2113,18 @@ impl Render for OverlayView {
                         // Use shared bottom panel split
                         let on_change_height = {
                             let entity = cx.entity().clone();
+                            let terminal_line_height_px = line_h;
                             move |new_h: f32, app_cx: &mut gpui::App| {
                                 entity.update(app_cx, |this: &mut OverlayView, cx| {
-                                    this.terminal_height_px = new_h;
+                                    let snapped_h =
+                                        nucleotide_terminal_panel::snapped_terminal_panel_height(
+                                            new_h,
+                                            terminal_line_height_px,
+                                        )
+                                        .clamp(80.0, max_h);
+                                    this.terminal_height_px = snapped_h;
                                     if let Ok(mut st) = this.resize_state.lock() {
-                                        st.height = new_h;
+                                        st.height = snapped_h;
                                         st.resizing = true;
                                     }
                                     cx.notify();
@@ -2114,7 +2146,11 @@ impl Render for OverlayView {
                                         .as_deref(),
                                     Ok("1") | Ok("true") | Ok("yes") | Ok("on")
                                 );
-                                let mut c = div().track_focus(&panel_focus);
+                                let mut c = div()
+                                    .size_full()
+                                    .overflow_hidden()
+                                    .bg(cx.theme().tokens.editor.background)
+                                    .track_focus(&panel_focus);
                                 if debug {
                                     let theme = cx.global::<nucleotide_ui::Theme>();
                                     c = c
