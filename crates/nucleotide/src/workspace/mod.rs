@@ -14125,7 +14125,7 @@ impl Render for Workspace {
         let editor_content_h_px = (editor_h - f32::from(tab_bar_height)).max(1.0);
 
         self.sync_embedded_terminal_size(
-            editor_content_w_px,
+            right_content_w_px,
             self.basic_terminal_height,
             line_h_value,
             char_w_value,

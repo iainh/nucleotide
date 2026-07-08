@@ -25,10 +25,25 @@ pub type TerminalInputSenders = Arc<Mutex<HashMap<TerminalId, std::sync::mpsc::S
 /// Manages terminal sessions and translates frames into UI view state updates
 pub struct TerminalRuntimeHandler {
     sessions: HashMap<TerminalId, SessionEntry>,
+    pending_resizes: HashMap<TerminalId, PendingTerminalResize>,
     /// Shared sender map so callers outside the event loop can write input directly
     input_senders: TerminalInputSenders,
     /// Event bus handle so consumer threads can dispatch Exited events
     event_bus: Option<EventAggregatorHandle>,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum PendingTerminalResize {
+    Cells {
+        cols: u16,
+        rows: u16,
+    },
+    Metrics {
+        cols: u16,
+        rows: u16,
+        cell_width: f32,
+        cell_height: f32,
+    },
 }
 
 struct SessionEntry {
@@ -171,6 +186,7 @@ impl TerminalRuntimeHandler {
     pub fn new() -> Self {
         Self {
             sessions: HashMap::new(),
+            pending_resizes: HashMap::new(),
             input_senders: Arc::new(Mutex::new(HashMap::new())),
             event_bus: None,
         }
@@ -317,7 +333,149 @@ impl TerminalRuntimeHandler {
                 last_bounds: None,
             },
         );
+        self.apply_pending_resize(id);
         info!(terminal_id=?id, "Terminal session spawned and consumer started");
+    }
+
+    fn handle_resize(&mut self, id: TerminalId, cols: u16, rows: u16) {
+        if self.sessions.contains_key(&id) {
+            self.apply_resize(id, cols, rows);
+        } else {
+            self.pending_resizes
+                .insert(id, PendingTerminalResize::Cells { cols, rows });
+        }
+    }
+
+    fn handle_resize_with_metrics(
+        &mut self,
+        id: TerminalId,
+        cols: u16,
+        rows: u16,
+        cell_width: f32,
+        cell_height: f32,
+    ) {
+        if self.sessions.contains_key(&id) {
+            self.apply_resize_with_metrics(id, cols, rows, cell_width, cell_height);
+        } else {
+            self.pending_resizes.insert(
+                id,
+                PendingTerminalResize::Metrics {
+                    cols,
+                    rows,
+                    cell_width,
+                    cell_height,
+                },
+            );
+        }
+    }
+
+    fn apply_pending_resize(&mut self, id: TerminalId) {
+        let Some(resize) = self.pending_resizes.remove(&id) else {
+            return;
+        };
+
+        match resize {
+            PendingTerminalResize::Cells { cols, rows } => self.apply_resize(id, cols, rows),
+            PendingTerminalResize::Metrics {
+                cols,
+                rows,
+                cell_width,
+                cell_height,
+            } => self.apply_resize_with_metrics(id, cols, rows, cell_width, cell_height),
+        }
+    }
+
+    fn apply_resize(&mut self, id: TerminalId, cols: u16, rows: u16) {
+        let Some(entry) = self.sessions.get_mut(&id) else {
+            return;
+        };
+
+        let size_changed = entry
+            .last_size
+            .map(|(prev_cols, prev_rows)| prev_cols != cols || prev_rows != rows)
+            .unwrap_or(true);
+
+        if size_changed {
+            if let Ok(session) = entry.session.lock() {
+                #[cfg(feature = "terminal-emulator-core")]
+                let resized_bounds = legacy_resize_bounds(entry.last_bounds, cols, rows);
+
+                #[cfg(feature = "terminal-emulator-core")]
+                if let Some(bounds) = resized_bounds {
+                    let (cell_width, cell_height) = bounds.cell_size();
+                    let _ = session.control_sender().send(ControlMsg::Resize {
+                        cols,
+                        rows,
+                        cell_width,
+                        cell_height,
+                    });
+                    entry.last_bounds = Some(bounds);
+                }
+
+                let _ = futures_executor::block_on(session.resize(cols, rows));
+            }
+            #[cfg(feature = "terminal-emulator-core")]
+            if let Ok(mut view) = entry.view.lock() {
+                view.resize_grid(
+                    cols,
+                    rows,
+                    entry.last_bounds.map(|bounds| bounds.cell_size()),
+                );
+            }
+            entry.last_size = Some((cols, rows));
+        }
+    }
+
+    fn apply_resize_with_metrics(
+        &mut self,
+        id: TerminalId,
+        cols: u16,
+        rows: u16,
+        cell_width: f32,
+        cell_height: f32,
+    ) {
+        let Some(entry) = self.sessions.get_mut(&id) else {
+            return;
+        };
+
+        #[cfg(feature = "terminal-emulator-core")]
+        {
+            let new_bounds = TerminalBounds::from_cells(cell_width, cell_height, cols, rows);
+
+            if let Some(new_bounds) = metrics_resize_bounds(entry.last_bounds, new_bounds) {
+                if let Ok(session) = entry.session.lock() {
+                    // Push control message to engine so emulator redraws with new metrics
+                    let _ = session.control_sender().send(ControlMsg::Resize {
+                        cols,
+                        rows,
+                        cell_width,
+                        cell_height,
+                    });
+                    // Also resize PTY to maintain app expectations
+                    let _ = futures_executor::block_on(session.resize(cols, rows));
+                }
+                if let Ok(mut view) = entry.view.lock() {
+                    view.resize_grid(cols, rows, Some(new_bounds.cell_size()));
+                }
+                entry.last_bounds = Some(new_bounds);
+                entry.last_size = Some((cols, rows));
+            }
+        }
+        #[cfg(not(feature = "terminal-emulator-core"))]
+        {
+            let _ = (cell_width, cell_height);
+            let size_changed = entry
+                .last_size
+                .map(|(prev_cols, prev_rows)| prev_cols != cols || prev_rows != rows)
+                .unwrap_or(true);
+
+            if size_changed {
+                if let Ok(session) = entry.session.lock() {
+                    let _ = futures_executor::block_on(session.resize(cols, rows));
+                }
+                entry.last_size = Some((cols, rows));
+            }
+        }
     }
 }
 impl Default for TerminalRuntimeHandler {
@@ -365,43 +523,7 @@ impl core::EventHandler for TerminalRuntimeHandler {
                 self.handle_spawn(*id, &cfg);
             }
             TerminalEvent::Resized { id, cols, rows } => {
-                if let Some(entry) = self.sessions.get_mut(id) {
-                    let size_changed = entry
-                        .last_size
-                        .map(|(prev_cols, prev_rows)| prev_cols != *cols || prev_rows != *rows)
-                        .unwrap_or(true);
-
-                    if size_changed {
-                        if let Ok(session) = entry.session.lock() {
-                            #[cfg(feature = "terminal-emulator-core")]
-                            let resized_bounds =
-                                legacy_resize_bounds(entry.last_bounds, *cols, *rows);
-
-                            #[cfg(feature = "terminal-emulator-core")]
-                            if let Some(bounds) = resized_bounds {
-                                let (cell_width, cell_height) = bounds.cell_size();
-                                let _ = session.control_sender().send(ControlMsg::Resize {
-                                    cols: *cols,
-                                    rows: *rows,
-                                    cell_width,
-                                    cell_height,
-                                });
-                                entry.last_bounds = Some(bounds);
-                            }
-
-                            let _ = futures_executor::block_on(session.resize(*cols, *rows));
-                        }
-                        #[cfg(feature = "terminal-emulator-core")]
-                        if let Ok(mut view) = entry.view.lock() {
-                            view.resize_grid(
-                                *cols,
-                                *rows,
-                                entry.last_bounds.map(|bounds| bounds.cell_size()),
-                            );
-                        }
-                        entry.last_size = Some((*cols, *rows));
-                    }
-                }
+                self.handle_resize(*id, *cols, *rows);
             }
             TerminalEvent::ResizedWithMetrics {
                 id,
@@ -410,49 +532,7 @@ impl core::EventHandler for TerminalRuntimeHandler {
                 cell_width,
                 cell_height,
             } => {
-                if let Some(entry) = self.sessions.get_mut(id) {
-                    #[cfg(feature = "terminal-emulator-core")]
-                    {
-                        let new_bounds =
-                            TerminalBounds::from_cells(*cell_width, *cell_height, *cols, *rows);
-
-                        if let Some(new_bounds) =
-                            metrics_resize_bounds(entry.last_bounds, new_bounds)
-                        {
-                            if let Ok(session) = entry.session.lock() {
-                                // Push control message to engine so emulator redraws with new metrics
-                                let _ = session.control_sender().send(ControlMsg::Resize {
-                                    cols: *cols,
-                                    rows: *rows,
-                                    cell_width: *cell_width,
-                                    cell_height: *cell_height,
-                                });
-                                // Also resize PTY to maintain app expectations
-                                let _ = futures_executor::block_on(session.resize(*cols, *rows));
-                            }
-                            if let Ok(mut view) = entry.view.lock() {
-                                view.resize_grid(*cols, *rows, Some(new_bounds.cell_size()));
-                            }
-                            entry.last_bounds = Some(new_bounds);
-                            entry.last_size = Some((*cols, *rows));
-                        }
-                    }
-                    #[cfg(not(feature = "terminal-emulator-core"))]
-                    {
-                        let _ = (cell_width, cell_height);
-                        let size_changed = entry
-                            .last_size
-                            .map(|(prev_cols, prev_rows)| prev_cols != *cols || prev_rows != *rows)
-                            .unwrap_or(true);
-
-                        if size_changed {
-                            if let Ok(session) = entry.session.lock() {
-                                let _ = futures_executor::block_on(session.resize(*cols, *rows));
-                            }
-                            entry.last_size = Some((*cols, *rows));
-                        }
-                    }
-                }
+                self.handle_resize_with_metrics(*id, *cols, *rows, *cell_width, *cell_height);
             }
             TerminalEvent::Input { id, bytes } => {
                 if let Some(entry) = self.sessions.get(id) {
@@ -468,6 +548,7 @@ impl core::EventHandler for TerminalRuntimeHandler {
                 if let Ok(mut senders) = self.input_senders.lock() {
                     senders.remove(id);
                 }
+                self.pending_resizes.remove(id);
                 if let Some(entry) = self.sessions.remove(id) {
                     entry.exit_reported.store(true, Ordering::SeqCst);
                     #[cfg(feature = "terminal-emulator-core")]
@@ -526,6 +607,28 @@ mod tests {
         assert_eq!(metrics_resize.cols(), 100);
         assert_eq!(metrics_resize.rows(), 30);
         assert_eq!(metrics_resize.cell_size(), (9.0, 18.0));
+    }
+
+    #[test]
+    fn resize_before_spawn_is_kept_until_session_exists() {
+        let mut handler = TerminalRuntimeHandler::new();
+        let id = TerminalId(1);
+
+        handler.handle_resize(id, 80, 24);
+        handler.handle_resize_with_metrics(id, 120, 32, 9.0, 18.0);
+
+        match handler.pending_resizes.get(&id) {
+            Some(PendingTerminalResize::Metrics {
+                cols,
+                rows,
+                cell_width,
+                cell_height,
+            }) => {
+                assert_eq!((*cols, *rows), (120, 32));
+                assert_eq!((*cell_width, *cell_height), (9.0, 18.0));
+            }
+            resize => panic!("unexpected pending resize: {resize:?}"),
+        }
     }
 
     #[test]

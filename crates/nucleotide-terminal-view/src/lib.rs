@@ -644,6 +644,8 @@ impl Render for TerminalView {
             .w_full()
             .h_full()
             .flex_1()
+            .min_w(gpui::px(0.0))
+            .min_h(gpui::px(0.0))
             .overflow_hidden()
             .bg(default_bg)
             .text_color(default_fg)
@@ -713,6 +715,7 @@ impl Render for TerminalView {
                 .flex()
                 .flex_row()
                 .size_full()
+                .bg(default_bg)
                 .child(interactive_content);
             if let Some(state) = &self.scrollbar_state
                 && let Some(scrollbar) = Scrollbar::vertical(state.clone())
@@ -722,7 +725,12 @@ impl Render for TerminalView {
             w
         };
         #[cfg(not(feature = "emulator"))]
-        let wrapper = div().flex().flex_row().size_full().child(content);
+        let wrapper = div()
+            .flex()
+            .flex_row()
+            .size_full()
+            .bg(default_bg)
+            .child(content);
 
         wrapper
     }

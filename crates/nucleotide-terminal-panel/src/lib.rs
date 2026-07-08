@@ -176,6 +176,7 @@ impl Render for TerminalPanel {
                     .min_h(px(0.0))
                     .w_full()
                     .overflow_hidden()
+                    .bg(tokens.editor.background)
                     .child(view.clone()),
             );
         } else {
