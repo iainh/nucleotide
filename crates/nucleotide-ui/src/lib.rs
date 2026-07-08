@@ -35,6 +35,7 @@ pub mod notification;
 pub mod overlay_surface;
 pub mod picker;
 pub mod picker_view;
+pub mod progress_indicator;
 pub mod prompt;
 pub mod prompt_view;
 pub mod providers;
@@ -118,6 +119,7 @@ pub use modal_layer::{DismissDecision, ModalLayer, ModalOpenedEvent, ModalView};
 pub use navigable::{NAVIGABLE_CONTEXT, Navigable, NavigableEntry};
 pub use overlay_surface::{OVERLAY_SURFACE_CONTEXT, OverlaySurface};
 pub use picker::Picker;
+pub use progress_indicator::IndeterminateProgressIndicator;
 pub use prompt::Prompt;
 pub use providers::{
     AccessibilityConfiguration, ConfigurationProvider, CustomEventData, CustomEventDetails,
@@ -309,6 +311,7 @@ pub(crate) const BUILT_IN_COMPONENTS: &[&str] = &[
     "Picker",
     "PopupMenu",
     "PopupMenuSurface",
+    "IndeterminateProgressIndicator",
     "Prompt",
     "ResizeDragController",
     "SmartPopup",

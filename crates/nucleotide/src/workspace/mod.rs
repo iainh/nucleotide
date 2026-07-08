@@ -51,8 +51,9 @@ use nucleotide_ui::notification::{StatusBarNotification, StatusBarNotificationSe
 use nucleotide_ui::scrollbar::{Scrollbar, ScrollbarState};
 use nucleotide_ui::{
     AboutWindow, Button, ButtonSize, ButtonVariant, ConfirmDialog, ConfirmDialogEvent,
-    ConfirmDialogView, ContextMenuController, EditorPaneGrid, MarkdownStyle, ModalLayer, PopupMenu,
-    PopupMenuSurface, Tooltipped, completion_menu_action_for_key, markdown_extended,
+    ConfirmDialogView, ContextMenuController, EditorPaneGrid, IndeterminateProgressIndicator,
+    MarkdownStyle, ModalLayer, PopupMenu, PopupMenuSurface, Tooltipped,
+    completion_menu_action_for_key, markdown_extended,
 };
 
 use crate::input_coordinator::{InputContext, InputCoordinator};
@@ -235,6 +236,7 @@ type TabBarNewMenuHandler = fn(&mut Workspace, &mut Context<Workspace>);
 
 const STATUSBAR_NOTIFICATION_MESSAGE_MAX_CHARS: usize = 64;
 const STATUSBAR_LSP_INDICATOR_MAX_CHARS: usize = 56;
+const STATUSBAR_BACKGROUND_ACTIVITY_MAX_CHARS: usize = 72;
 const IMAGE_ZOOM_STEP: f32 = 0.25;
 const IMAGE_ZOOM_MIN: f32 = 0.10;
 const IMAGE_ZOOM_MAX: f32 = 8.0;
@@ -252,6 +254,19 @@ enum RunnableAction {
     ShowPicker,
     RunNearest,
     RunFileTests,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct BackgroundActivityId(u64);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct BackgroundActivity {
+    id: BackgroundActivityId,
+    message: String,
+}
+
+fn latest_background_activity(activities: &[BackgroundActivity]) -> Option<&BackgroundActivity> {
+    activities.last()
 }
 
 #[derive(Clone)]
@@ -956,7 +971,11 @@ pub struct Workspace {
     next_run_id: u64,
     last_run_task: Option<ResolvedTask>,
     active_run_terminal: Option<(TerminalId, RunId)>,
+    active_run_activity: Option<BackgroundActivityId>,
     run_output_terminal: Option<TerminalId>,
+    next_background_activity_id: u64,
+    background_activities: Vec<BackgroundActivity>,
+    vcs_refresh_activity: Option<BackgroundActivityId>,
     // Debug: color major panes when enabled via env
     debug_colors_enabled: bool,
     // Height of the bottom (terminal) pane in basic layout mode
@@ -994,6 +1013,7 @@ pub struct Workspace {
 struct PendingRemoteOpen {
     id: u64,
     workspace_root: PathBuf,
+    activity_id: BackgroundActivityId,
 }
 
 #[derive(Clone, Debug)]
@@ -2850,7 +2870,9 @@ impl Workspace {
 
         let workspace_backend = self.core.read(cx).workspace_backend.clone();
         if matches!(workspace_backend.identity(), WorkspaceIdentity::Remote(_)) {
-            self.set_run_status("Discovering Rust runnables...", Severity::Info, cx);
+            let message = "Discovering Rust runnables...";
+            self.set_run_status(message, Severity::Info, cx);
+            let activity_id = self.start_background_activity(message, cx);
             let runtime_handle = self.handle.clone();
             cx.spawn(async move |this, cx| {
                 let document_for_discovery = document.clone();
@@ -2870,6 +2892,7 @@ impl Workspace {
 
                 if let Some(this) = this.upgrade() {
                     this.update(cx, |workspace, cx| {
+                        workspace.finish_background_activity(activity_id, cx);
                         workspace.request_runnables_for_document(action, document, local_tasks, cx);
                     });
                 }
@@ -2945,7 +2968,9 @@ impl Workspace {
             return;
         }
 
-        self.set_run_status("Discovering Rust runnables...", Severity::Info, cx);
+        let message = "Discovering Rust runnables...";
+        self.set_run_status(message, Severity::Info, cx);
+        let activity_id = self.start_background_activity(message, cx);
         let workspace_handle = cx.entity().downgrade();
         cx.spawn(async move |_this, cx| {
             let mut rust_analyzer_tasks = Vec::new();
@@ -2969,6 +2994,7 @@ impl Workspace {
             let tasks = crate::runnables::merge_runnable_tasks(rust_analyzer_tasks, local_tasks);
             if let Some(workspace) = workspace_handle.upgrade() {
                 workspace.update(cx, |workspace, cx| {
+                    workspace.finish_background_activity(activity_id, cx);
                     workspace.finish_runnable_request(action, tasks, cursor_line, cx);
                 });
             }
@@ -3049,6 +3075,7 @@ impl Workspace {
         self.next_run_id += 1;
 
         let command_line = crate::runnables::shell_command_line(&task.command);
+        let run_message = format!("Running {}: {command_line}", task.label());
         let cwd = task
             .command
             .cwd
@@ -3070,8 +3097,13 @@ impl Workspace {
             env,
             cx,
         );
+        if let Some(activity_id) = self.active_run_activity.take() {
+            self.finish_background_activity(activity_id, cx);
+        }
+        let activity_id = self.start_background_activity(run_message.clone(), cx);
         self.last_run_task = Some(task.clone());
         self.active_run_terminal = Some((terminal_id, run_id));
+        self.active_run_activity = Some(activity_id);
 
         self.core.update(cx, |app, app_cx| {
             if let Some(bus) = &app.event_aggregator {
@@ -3087,11 +3119,7 @@ impl Workspace {
                 });
                 bus.process_events();
             }
-            app.set_editor_status_feedback(
-                app_cx,
-                format!("Running {}: {command_line}", task.label()),
-                Severity::Info,
-            );
+            app.set_editor_status_feedback(app_cx, run_message, Severity::Info);
         });
     }
 
@@ -3105,6 +3133,52 @@ impl Workspace {
         self.core.update(cx, |app, app_cx| {
             app.set_editor_status_feedback(app_cx, message, severity);
         });
+    }
+
+    fn start_background_activity(
+        &mut self,
+        message: impl Into<String>,
+        cx: &mut Context<Self>,
+    ) -> BackgroundActivityId {
+        let id = BackgroundActivityId(self.next_background_activity_id);
+        self.next_background_activity_id = self.next_background_activity_id.wrapping_add(1).max(1);
+        self.background_activities.push(BackgroundActivity {
+            id,
+            message: message.into(),
+        });
+        cx.notify();
+        id
+    }
+
+    fn update_background_activity(
+        &mut self,
+        id: BackgroundActivityId,
+        message: impl Into<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let message = message.into();
+        if let Some(activity) = self
+            .background_activities
+            .iter_mut()
+            .find(|activity| activity.id == id)
+            && activity.message != message
+        {
+            activity.message = message;
+            cx.notify();
+        }
+    }
+
+    fn finish_background_activity(&mut self, id: BackgroundActivityId, cx: &mut Context<Self>) {
+        let previous_len = self.background_activities.len();
+        self.background_activities
+            .retain(|activity| activity.id != id);
+        if self.background_activities.len() != previous_len {
+            cx.notify();
+        }
+    }
+
+    fn current_background_activity(&self) -> Option<&BackgroundActivity> {
+        latest_background_activity(&self.background_activities)
     }
 
     /// Compute document and LSP context for the status bar without triggering borrow conflicts.
@@ -3265,6 +3339,7 @@ impl Workspace {
         file_name: String,
         position_text: String,
         notification: Option<StatusBarNotification>,
+        background_activity: Option<String>,
         lsp_indicator: Option<String>,
         divider_color: gpui::Hsla,
         status_bar_tokens: &nucleotide_ui::tokens::StatusBarTokens,
@@ -3293,7 +3368,13 @@ impl Workspace {
             .child(self.statusbar_divider(divider_color))
             .child(
                 // File name grows
-                self.statusbar_message_slot(file_name, notification, status_bar_tokens, cx),
+                self.statusbar_message_slot(
+                    file_name,
+                    notification,
+                    background_activity,
+                    status_bar_tokens,
+                    cx,
+                ),
             )
             .child(self.statusbar_divider(divider_color))
             .child(
@@ -3338,9 +3419,47 @@ impl Workspace {
         &self,
         file_name: String,
         notification: Option<StatusBarNotification>,
+        background_activity: Option<String>,
         status_bar_tokens: &nucleotide_ui::tokens::StatusBarTokens,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        if let Some(activity_message) = background_activity {
+            let notification_tokens = cx.theme().tokens.notification_tokens();
+            let message =
+                shorten_statusbar_text(&activity_message, STATUSBAR_BACKGROUND_ACTIVITY_MAX_CHARS);
+
+            return gpui::div()
+                .flex()
+                .flex_1()
+                .min_w_0()
+                .items_center()
+                .gap_2()
+                .overflow_hidden()
+                .child(
+                    IndeterminateProgressIndicator::new("statusbar-background-activity")
+                        .size(13.0)
+                        .text_color(notification_tokens.info_text),
+                )
+                .child(
+                    gpui::div()
+                        .flex_none()
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(notification_tokens.info_text)
+                        .child("WORKING"),
+                )
+                .child(
+                    gpui::div()
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .text_color(status_bar_tokens.text_primary)
+                        .child(message),
+                )
+                .into_any_element();
+        }
+
         let Some(notification) = notification else {
             return gpui::div()
                 .flex_1()
@@ -4845,7 +4964,11 @@ impl Workspace {
             next_run_id: 1,
             last_run_task: None,
             active_run_terminal: None,
+            active_run_activity: None,
             run_output_terminal: None,
+            next_background_activity_id: 1,
+            background_activities: Vec::new(),
+            vcs_refresh_activity: None,
             debug_colors_enabled: matches!(
                 std::env::var("NUCL_DEBUG_COLORS")
                     .map(|v| v.to_ascii_lowercase())
@@ -8776,6 +8899,7 @@ impl Workspace {
             return;
         };
 
+        self.finish_background_activity(pending.activity_id, cx);
         self.remote_open_generation = self.remote_open_generation.wrapping_add(1).max(1);
         self.push_editor_status_notification(
             EditorStatus {
@@ -8800,14 +8924,20 @@ impl Workspace {
 
         self.remote_open_generation = self.remote_open_generation.wrapping_add(1).max(1);
         let remote_open_id = self.remote_open_generation;
+        if let Some(pending) = self.pending_remote_open.take() {
+            self.finish_background_activity(pending.activity_id, cx);
+        }
+        let message = format!("Connecting to remote project: {}", workspace_root.display());
+        let activity_id = self.start_background_activity(message.clone(), cx);
         self.pending_remote_open = Some(PendingRemoteOpen {
             id: remote_open_id,
             workspace_root: workspace_root.clone(),
+            activity_id,
         });
 
         self.push_editor_status_notification(
             EditorStatus {
-                status: format!("Connecting to remote project: {}", workspace_root.display()),
+                status: message,
                 severity: Severity::Info,
             },
             cx,
@@ -8863,9 +8993,21 @@ impl Workspace {
                                 return;
                             }
 
+                            let message = progress.message();
+                            if let Some(activity_id) = workspace
+                                .pending_remote_open
+                                .as_ref()
+                                .map(|pending| pending.activity_id)
+                            {
+                                workspace.update_background_activity(
+                                    activity_id,
+                                    message.clone(),
+                                    cx,
+                                );
+                            }
                             workspace.push_editor_status_notification(
                                 EditorStatus {
-                                    status: progress.message(),
+                                    status: message,
                                     severity: Severity::Info,
                                 },
                                 cx,
@@ -8879,7 +9021,10 @@ impl Workspace {
                                     return;
                                 }
 
-                                workspace.pending_remote_open = None;
+                                let pending = workspace.pending_remote_open.take();
+                                if let Some(pending) = pending {
+                                    workspace.finish_background_activity(pending.activity_id, cx);
+                                }
                                 workspace.last_remote_open_target = Some(target.clone());
                                 workspace.record_successful_remote_open(&workspace_root, cx);
 
@@ -8910,7 +9055,10 @@ impl Workspace {
                                     return;
                                 }
 
-                                workspace.pending_remote_open = None;
+                                let pending = workspace.pending_remote_open.take();
+                                if let Some(pending) = pending {
+                                    workspace.finish_background_activity(pending.activity_id, cx);
+                                }
                                 workspace.push_editor_status_notification(
                                     remote_open_failure_status(&workspace_root, &error),
                                     cx,
@@ -9165,11 +9313,9 @@ impl Workspace {
                     let backend = workspace_backend.clone();
                     let runtime_handle = self.handle.clone();
                     let source_path = path.to_path_buf();
-                    self.set_run_status(
-                        format!("Loading remote image: {}", source_path.display()),
-                        Severity::Info,
-                        cx,
-                    );
+                    let message = format!("Loading remote image: {}", source_path.display());
+                    self.set_run_status(message.clone(), Severity::Info, cx);
+                    let activity_id = self.start_background_activity(message, cx);
                     cx.spawn(async move |this, cx| {
                         let cache_path = source_path.clone();
                         let result = match runtime_handle
@@ -9185,6 +9331,7 @@ impl Workspace {
                         if let Some(this) = this.upgrade() {
                             this.update(cx, |workspace, cx| match result {
                                 Ok(render_path) => {
+                                    workspace.finish_background_activity(activity_id, cx);
                                     workspace.open_image_file_with_render_path(
                                         &source_path,
                                         &render_path,
@@ -9198,6 +9345,7 @@ impl Workspace {
                                         error = %error,
                                         "Failed to cache remote image"
                                     );
+                                    workspace.finish_background_activity(activity_id, cx);
                                     workspace.set_run_status(
                                         format!("Failed to load remote image: {error}"),
                                         Severity::Error,
@@ -9246,11 +9394,9 @@ impl Workspace {
         let workspace_backend = self.core.read(cx).workspace_backend.clone();
         let open_backend = workspace_backend.clone();
         let runtime_handle = self.handle.clone();
-        self.set_run_status(
-            format!("Loading remote file: {}", path.display()),
-            Severity::Info,
-            cx,
-        );
+        let message = format!("Loading remote file: {}", path.display());
+        self.set_run_status(message.clone(), Severity::Info, cx);
+        let activity_id = self.start_background_activity(message, cx);
 
         cx.spawn(async move |this, cx| {
             let path_for_read = path.clone();
@@ -9268,6 +9414,7 @@ impl Workspace {
             if let Some(this) = this.upgrade() {
                 this.update(cx, |workspace, cx| match document_read {
                     Ok(document_read) => {
+                        workspace.finish_background_activity(activity_id, cx);
                         workspace.finish_open_file_internal(
                             &path,
                             should_focus,
@@ -9284,6 +9431,7 @@ impl Workspace {
                             error = %error,
                             "Failed to open remote file"
                         );
+                        workspace.finish_background_activity(activity_id, cx);
                         workspace.set_run_status(
                             format!("Failed to open remote file: {error}"),
                             Severity::Error,
@@ -9296,6 +9444,7 @@ impl Workspace {
         .detach();
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn finish_open_file_internal(
         &mut self,
         path: &std::path::Path,
@@ -9795,6 +9944,9 @@ impl Workspace {
                                     }
                                 });
                                 self.active_run_terminal = None;
+                                if let Some(activity_id) = self.active_run_activity.take() {
+                                    self.finish_background_activity(activity_id, cx);
+                                }
                                 self.terminal_focus_pending = false;
                                 self.terminal_active = false;
                                 let exit_code = *code;
@@ -10665,6 +10817,9 @@ impl Workspace {
         let lsp_indicator =
             self.compute_statusbar_lsp_indicator(cx, has_lsp_state, preferred_server_id);
         let notification = self.notifications.read(cx).status_bar_notification();
+        let background_activity = self
+            .current_background_activity()
+            .map(|activity| activity.message.clone());
 
         // Use consistent border and divider colors from hybrid system
         // Status bar border color
@@ -10789,6 +10944,7 @@ impl Workspace {
                     file_name,
                     position_text,
                     notification,
+                    background_activity,
                     lsp_indicator,
                     divider_color,
                     &status_bar_tokens,
@@ -10873,9 +11029,15 @@ impl Workspace {
             }
             FileTreeEvent::VcsRefreshStarted { repository_root } => {
                 info!("VCS refresh started for repository: {:?}", repository_root);
+                if let Some(activity_id) = self.vcs_refresh_activity.take() {
+                    self.finish_background_activity(activity_id, cx);
+                }
+                let message = format!("Refreshing VCS status for {}", repository_root.display());
+                let activity_id = self.start_background_activity(message.clone(), cx);
+                self.vcs_refresh_activity = Some(activity_id);
                 self.push_editor_status_notification(
                     EditorStatus {
-                        status: format!("Refreshing VCS status for {}", repository_root.display()),
+                        status: message,
                         severity: Severity::Info,
                     },
                     cx,
@@ -10891,6 +11053,9 @@ impl Workspace {
                     repository_root,
                     affected_files.len()
                 );
+                if let Some(activity_id) = self.vcs_refresh_activity.take() {
+                    self.finish_background_activity(activity_id, cx);
+                }
                 // VCS status has been updated, file tree should already be refreshed
                 // Could trigger status bar updates or notifications here
                 cx.notify();
@@ -10903,6 +11068,9 @@ impl Workspace {
                     "VCS refresh failed for repository: {:?} - {}",
                     repository_root, error
                 );
+                if let Some(activity_id) = self.vcs_refresh_activity.take() {
+                    self.finish_background_activity(activity_id, cx);
+                }
                 self.push_editor_status_notification(
                     EditorStatus {
                         status: format!(
@@ -17003,6 +17171,30 @@ mod tests {
     #[test]
     fn statusbar_text_shortening_counts_characters() {
         assert_eq!(shorten_statusbar_text("éééééé", 4), "ééé…");
+    }
+
+    #[test]
+    fn latest_background_activity_uses_most_recent_active_wait() {
+        let activities = vec![
+            BackgroundActivity {
+                id: BackgroundActivityId(1),
+                message: "Loading remote file".to_string(),
+            },
+            BackgroundActivity {
+                id: BackgroundActivityId(2),
+                message: "Running tests".to_string(),
+            },
+        ];
+
+        let activity = latest_background_activity(&activities).expect("activity");
+
+        assert_eq!(activity.id, BackgroundActivityId(2));
+        assert_eq!(activity.message, "Running tests");
+    }
+
+    #[test]
+    fn latest_background_activity_is_none_when_idle() {
+        assert!(latest_background_activity(&[]).is_none());
     }
 
     #[test]
