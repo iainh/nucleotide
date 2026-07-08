@@ -137,13 +137,17 @@ pub struct RemoteServiceCommand {
 
 impl RemoteServiceCommand {
     pub fn command(&self) -> Command {
-        let program = resolve_service_program(&self.program);
+        let program = self.resolved_program();
         let mut command = nucleotide_process::command(&program);
         command.args(&self.args);
         if let Some(current_dir) = &self.current_dir {
             command.current_dir(current_dir);
         }
         command
+    }
+
+    pub fn resolved_program(&self) -> OsString {
+        resolve_service_program(&self.program)
     }
 
     pub fn display_invocation(&self) -> String {

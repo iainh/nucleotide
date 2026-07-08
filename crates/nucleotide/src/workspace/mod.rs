@@ -2381,7 +2381,7 @@ impl Workspace {
     fn terminal_proxy_event_command(
         spec: nucleotide_remote::RemoteServiceCommand,
     ) -> (Option<PathBuf>, String, Vec<String>) {
-        let program = os_string_to_string(spec.program);
+        let program = os_string_to_string(spec.resolved_program());
         let args = spec.args.into_iter().map(os_string_to_string).collect();
         (spec.current_dir, program, args)
     }

@@ -86,6 +86,87 @@ fn lock_view_model<'a>(
     }
 }
 
+fn quote_command_part(value: &str) -> String {
+    if value.is_empty() {
+        return "''".to_string();
+    }
+
+    if value.chars().all(|ch| {
+        ch.is_ascii_alphanumeric()
+            || matches!(
+                ch,
+                '/' | '\\' | '.' | '_' | '-' | '=' | ':' | '@' | ',' | '+'
+            )
+    }) {
+        return value.to_string();
+    }
+
+    let mut quoted = String::with_capacity(value.len() + 2);
+    quoted.push('\'');
+    for ch in value.chars() {
+        if ch == '\'' {
+            quoted.push_str("'\"'\"'");
+        } else {
+            quoted.push(ch);
+        }
+    }
+    quoted.push('\'');
+    quoted
+}
+
+fn terminal_command_summary(cfg: &TerminalSessionCfg) -> String {
+    let Some(program) = cfg.program.as_deref().or(cfg.shell.as_deref()) else {
+        return "default login shell".to_string();
+    };
+
+    std::iter::once(program)
+        .chain(cfg.args.iter().map(String::as_str))
+        .map(quote_command_part)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn terminal_program_is_ssh(cfg: &TerminalSessionCfg) -> bool {
+    let Some(program) = cfg.program.as_deref() else {
+        return false;
+    };
+    let file_name = program.rsplit(['/', '\\']).next().unwrap_or(program);
+    let lower_file_name = file_name.to_ascii_lowercase();
+    lower_file_name
+        .strip_suffix(".exe")
+        .unwrap_or(&lower_file_name)
+        == "ssh"
+}
+
+fn terminal_spawn_failure_details(cfg: &TerminalSessionCfg, error: &anyhow::Error) -> Vec<String> {
+    let mut details = vec![
+        format!("Command: {}", terminal_command_summary(cfg)),
+        format!("Spawn error: {error:#}"),
+    ];
+
+    if let Some(cwd) = cfg.cwd.as_ref() {
+        details.insert(1, format!("Working directory: {}", cwd.display()));
+    }
+
+    if terminal_program_is_ssh(cfg) {
+        details.push(
+            "SSH remote terminals start a local PTY running OpenSSH with -tt before the remote shell starts."
+                .to_string(),
+        );
+        #[cfg(windows)]
+        details.push(
+            "Windows: verify the OpenSSH Client optional feature is installed and System32\\OpenSSH\\ssh.exe is accessible to Nucleotide."
+                .to_string(),
+        );
+        details.push(
+            "Try the command above from PowerShell or a local terminal to check SSH options, host keys, ControlMaster, and remote shell startup."
+                .to_string(),
+        );
+    }
+
+    details
+}
+
 impl TerminalRuntimeHandler {
     pub fn new() -> Self {
         Self {
@@ -116,24 +197,27 @@ impl TerminalRuntimeHandler {
     #[allow(clippy::await_holding_lock)]
     fn handle_spawn(&mut self, id: TerminalId, cfg: &TerminalSessionCfg) {
         let cfg = cfg.clone();
+        let view = Arc::new(Mutex::new(TerminalViewModel::new(id)));
+        register_view_model(id, view.clone());
+
         let (session, mut rx) =
             match futures_executor::block_on(TerminalSession::spawn(id.0, cfg.clone())) {
                 Ok(pair) => pair,
                 Err(e) => {
+                    let details = terminal_spawn_failure_details(&cfg, &e);
+                    lock_view_model(view.as_ref(), id, "set_spawn_failure")
+                        .set_spawn_failure("Terminal session failed to start", details);
                     error!(terminal_id=?id, error=%e, "Failed to spawn terminal session");
                     return;
                 }
             };
 
-        let view = Arc::new(Mutex::new(TerminalViewModel::new(id)));
         #[cfg(feature = "terminal-emulator-core")]
         {
             lock_view_model(view.as_ref(), id, "set_control_sender")
                 .set_control_sender(session.control_sender());
         }
         let view_clone = Arc::clone(&view);
-        // Register globally so UI panels can fetch by TerminalId
-        register_view_model(id, view.clone());
 
         // Wrap session for cross-thread access and create a non-blocking input queue
         let session_arc = Arc::new(Mutex::new(session));
@@ -442,5 +526,28 @@ mod tests {
         assert_eq!(metrics_resize.cols(), 100);
         assert_eq!(metrics_resize.rows(), 30);
         assert_eq!(metrics_resize.cell_size(), (9.0, 18.0));
+    }
+
+    #[test]
+    fn terminal_spawn_failure_details_include_ssh_context() {
+        let cfg = TerminalSessionCfg {
+            program: Some(r"C:\Windows\System32\OpenSSH\ssh.exe".to_string()),
+            args: vec!["-tt".to_string(), "--".to_string(), "devbox".to_string()],
+            ..TerminalSessionCfg::default()
+        };
+        let error = anyhow::anyhow!("program not found");
+        let details = terminal_spawn_failure_details(&cfg, &error);
+
+        assert!(terminal_program_is_ssh(&cfg));
+        assert!(
+            details
+                .iter()
+                .any(|detail| detail.contains("local PTY running OpenSSH"))
+        );
+        assert!(
+            details
+                .iter()
+                .any(|detail| detail.contains("program not found"))
+        );
     }
 }
