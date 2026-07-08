@@ -4,6 +4,8 @@ use nucleotide_events::v2::terminal::TerminalId;
 
 #[cfg(feature = "emulator")]
 use gpui::AppContext;
+#[cfg(feature = "emulator")]
+use gpui::prelude::FluentBuilder;
 use gpui::{Context, FontWeight, IntoElement, ParentElement, Render, Styled, Window, div};
 #[cfg(feature = "emulator")]
 use gpui::{Hsla, InteractiveElement, hsla, rgb};
@@ -12,6 +14,8 @@ use nucleotide_terminal::frame::{
     Cell, DEFAULT_BACKGROUND, DEFAULT_FOREGROUND, FramePayload, GridDiff, GridSnapshot,
     TerminalInputMode, ansi_color_index,
 };
+#[cfg(feature = "emulator")]
+use nucleotide_types::scrollbar::SCROLLBAR_THICKNESS;
 use nucleotide_ui::ThemedContext;
 #[cfg(feature = "emulator")]
 use nucleotide_ui::scrollbar::{Scrollbar, ScrollbarState};
@@ -468,6 +472,13 @@ fn blank_cell() -> Cell {
     }
 }
 
+#[cfg(feature = "emulator")]
+fn terminal_render_text(text: &str) -> String {
+    text.chars()
+        .map(|ch| if ch == ' ' { '\u{00a0}' } else { ch })
+        .collect()
+}
+
 /// Bridges the terminal's line-based scrollback to the pixel-based `ScrollableHandle` trait.
 #[cfg(feature = "emulator")]
 #[derive(Debug)]
@@ -711,18 +722,29 @@ impl Render for TerminalView {
                         }
                         cx.stop_propagation();
                     });
-            let mut w = div()
-                .flex()
-                .flex_row()
+            div()
+                .relative()
                 .size_full()
+                .min_h(gpui::px(0.0))
+                .overflow_hidden()
                 .bg(default_bg)
-                .child(interactive_content);
-            if let Some(state) = &self.scrollbar_state
-                && let Some(scrollbar) = Scrollbar::vertical(state.clone())
-            {
-                w = w.child(div().h_full().bg(default_bg).child(scrollbar));
-            }
-            w
+                .child(interactive_content)
+                .when_some(
+                    self.scrollbar_state
+                        .as_ref()
+                        .and_then(|state| Scrollbar::vertical(state.clone())),
+                    |container, scrollbar| {
+                        container.child(
+                            div()
+                                .absolute()
+                                .top_0()
+                                .right_0()
+                                .bottom_0()
+                                .w(SCROLLBAR_THICKNESS)
+                                .child(scrollbar),
+                        )
+                    },
+                )
         };
         #[cfg(not(feature = "emulator"))]
         let wrapper = div()
@@ -1063,6 +1085,14 @@ mod tests {
         assert_eq!(palette.background_for_code(DEFAULT_BACKGROUND), None);
     }
 
+    #[test]
+    fn terminal_render_text_preserves_spaces_as_cells() {
+        assert_eq!(
+            terminal_render_text(" a  b "),
+            "\u{00a0}a\u{00a0}\u{00a0}b\u{00a0}"
+        );
+    }
+
     fn hue_distance(a: Hsla, b: Hsla) -> f32 {
         let raw = (a.h - b.h).abs();
         raw.min(1.0 - raw)
@@ -1101,7 +1131,7 @@ impl Render for TerminalRowView {
         let editor_font = cx.global::<nucleotide_types::EditorFontConfig>();
         let ansi_palette = TerminalAnsiPalette::from_tokens(tokens);
 
-        let (grid_row, cursor_row, cursor_col, cell_height) = {
+        let (grid_row, cursor_row, cursor_col, cell_width, cell_height) = {
             let guard = lock_or_recover(self.model.as_ref());
             let row = if self.row_index < guard.grid.len() {
                 guard.grid[self.row_index].clone()
@@ -1112,10 +1142,17 @@ impl Render for TerminalRowView {
                 row,
                 guard.cursor_row as usize,
                 guard.cursor_col as usize,
+                guard.cell_width,
                 guard.cell_height,
             )
         };
 
+        let fallback_cell_width = editor_font.size * 0.6;
+        let applied_cell_width = if cell_width > 0.0 {
+            cell_width
+        } else {
+            fallback_cell_width
+        };
         let fallback_line_height = editor_font.size * 1.35;
         let applied_line_height = if cell_height > 0.0 {
             cell_height
@@ -1135,6 +1172,7 @@ impl Render for TerminalRowView {
             .bg(ansi_palette.default_background)
             .whitespace_nowrap()
             .line_height(line_height_px)
+            .font_family(editor_font.family.clone())
             .text_size(gpui::px(editor_font.size));
         // Accumulate runs
         let mut cur_fg = 0xffffffff; // sentinel to force first run
@@ -1165,7 +1203,14 @@ impl Render for TerminalRowView {
                 ContrastRatios::AA_NORMAL,
             );
 
-            let mut run = div().child(std::mem::take(text));
+            let cell_count = text.chars().count().max(1);
+            let rendered_text = terminal_render_text(&std::mem::take(text));
+            let mut run = div()
+                .w(gpui::px(applied_cell_width * cell_count as f32))
+                .h(line_height_px)
+                .flex_shrink_0()
+                .overflow_hidden()
+                .child(rendered_text);
             run = run.text_color(mapped_fg);
             run = run.bg(contrast_bg);
             if bold {
@@ -1228,7 +1273,12 @@ impl Render for TerminalRowView {
                     cur_inverse,
                 );
                 // Render the cursor cell as a block using theme tokens
-                let mut run = div().child(cell.ch.to_string());
+                let mut run = div()
+                    .w(gpui::px(applied_cell_width))
+                    .h(line_height_px)
+                    .flex_shrink_0()
+                    .overflow_hidden()
+                    .child(terminal_render_text(&cell.ch.to_string()));
                 run = run.bg(tokens.editor.cursor_normal);
                 run = run.text_color(tokens.editor.text_on_primary);
                 // Make cursor more prominent
