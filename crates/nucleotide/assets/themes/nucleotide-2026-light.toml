@@ -1,0 +1,178 @@
+# Nucleotide 2026 Light Theme
+# Author: Nucleotide contributors
+# License: MPL-2.0
+# Compatibility: This theme was created for Nucleotide but is fully compatible with Helix.
+#
+# Source palette and token colors:
+# https://github.com/microsoft/vscode/blob/main/extensions/theme-defaults/themes/2026-light.json
+
+attribute = "constant_blue"
+keyword = "keyword_red"
+"keyword.directive" = "keyword_red"
+namespace = "constant_blue"
+punctuation = "text_soft"
+"punctuation.delimiter" = "text_soft"
+operator = "text_soft"
+special = "entity_orange"
+"variable.other.member" = "text_soft"
+variable = "entity_orange"
+"variable.other" = "text_soft"
+"variable.parameter" = { fg = "text_soft" }
+"variable.builtin" = "constant_blue"
+type = "entity_orange"
+"type.builtin" = "constant_blue"
+"type.parameter" = "text_soft"
+constructor = "entity_orange"
+function = "function_purple"
+"function.macro" = "constant_blue"
+"function.builtin" = "constant_blue"
+tag = "tag_green"
+comment = "comment"
+"comment.block.documentation" = "comment"
+"comment.line.documentation" = "comment"
+constant = "constant_blue"
+"constant.builtin" = "constant_blue"
+"constant.numeric" = "constant_blue"
+"constant.character" = "keyword_red"
+"constant.character.escape" = { fg = "tag_green", modifiers = ["bold"] }
+string = "string_blue"
+"string.regexp" = "string_blue"
+"string.special.url" = { fg = "link", modifiers = ["underlined"] }
+label = "constant_blue"
+module = "constant_blue"
+tabstop = { modifiers = ["italic"], bg = "panel" }
+
+"markup.heading" = { fg = "constant_blue", modifiers = ["bold"] }
+"markup.bold" = { fg = "text_soft", modifiers = ["bold"] }
+"markup.italic" = { fg = "text_soft", modifiers = ["italic"] }
+"markup.strikethrough" = { modifiers = ["crossed_out"] }
+"markup.link.url" = { fg = "link", modifiers = ["underlined"] }
+"markup.link.text" = "string_blue"
+"markup.raw" = "constant_blue"
+"markup.quote" = "tag_green"
+"markup.list" = "entity_orange"
+"markup.normal.completion" = "text_soft"
+"markup.normal.hover" = "text_soft"
+
+"diff.plus" = "vcs_added"
+"diff.minus" = "vcs_deleted"
+"diff.delta" = "vcs_modified"
+
+"ui.background" = { fg = "editor_fg", bg = "editor_bg" }
+"ui.background.separator" = { fg = "border", bg = "border" }
+"ui.linenr" = { fg = "line_number", bg = "editor_bg" }
+"ui.linenr.selected" = { fg = "editor_fg", bg = "editor_bg" }
+"ui.gutter" = { bg = "editor_bg" }
+"ui.gutter.selected" = { bg = "line_highlight" }
+"ui.statusline" = { fg = "muted", bg = "chrome" }
+"ui.statusline.inactive" = { fg = "muted", bg = "chrome" }
+"ui.bufferline" = { fg = "muted", bg = "chrome" }
+"ui.bufferline.active" = { fg = "foreground", bg = "editor_bg" }
+"ui.bufferline.inactive" = { fg = "muted", bg = "chrome" }
+"ui.popup" = { fg = "foreground", bg = "panel" }
+"ui.window" = { fg = "border", bg = "chrome" }
+"ui.help" = { fg = "white", bg = "button" }
+"ui.text" = { fg = "foreground" }
+"ui.text.focus" = { fg = "foreground" }
+"ui.text.inactive" = "muted"
+"ui.text.directory" = { fg = "link" }
+"ui.virtual" = { fg = "muted" }
+"ui.virtual.ruler" = { bg = "panel_high" }
+"ui.virtual.jump-label" = { fg = "error", modifiers = ["bold"] }
+"ui.virtual.indent-guide" = { fg = "indent_guide" }
+"ui.virtual.inlay-hint" = { fg = "muted" }
+"ui.virtual.inlay-hint.parameter" = { fg = "muted" }
+"ui.virtual.inlay-hint.type" = { fg = "muted" }
+
+"ui.selection" = { fg = "foreground", bg = "selection" }
+"ui.selection.primary" = { fg = "foreground", bg = "selection" }
+"ui.cursor.select" = { bg = "bracket_match" }
+"ui.cursor.insert" = { bg = "editor_fg" }
+"ui.cursor.primary.select" = { bg = "bracket_match" }
+"ui.cursor.primary.insert" = { bg = "editor_fg" }
+"ui.cursor.match" = { fg = "foreground", bg = "bracket_match" }
+"ui.cursor" = { modifiers = ["reversed"] }
+"ui.cursorline.primary" = { bg = "line_highlight" }
+"ui.highlight" = { bg = "line_highlight" }
+"ui.highlight.frameline" = { bg = "panel_high" }
+"ui.highlight.search" = { fg = "foreground", bg = "selection" }
+"ui.highlight.search.current" = { fg = "foreground", bg = "find_match" }
+"ui.debug" = { fg = "link_active" }
+"ui.debug.breakpoint" = { fg = "error" }
+"ui.menu" = { fg = "foreground", bg = "panel" }
+"ui.menu.selected" = { fg = "white", bg = "button" }
+"ui.menu.scroll" = { fg = "foreground", bg = "border_strong" }
+"ui.menu.separator" = { fg = "menu_separator", bg = "menu_separator" }
+"ui.focus" = { fg = "focus", bg = "focus" }
+
+"diagnostic.hint" = { underline = { color = "muted", style = "curl" } }
+"diagnostic.info" = { underline = { color = "info", style = "curl" } }
+"diagnostic.warning" = { underline = { color = "warning", style = "curl" } }
+"diagnostic.error" = { underline = { color = "error", style = "curl" } }
+"diagnostic.unnecessary" = { modifiers = ["dim"] }
+"diagnostic.deprecated" = { modifiers = ["crossed_out"] }
+
+warning = "warning"
+error = "error"
+info = "info"
+hint = "muted"
+
+rainbow = [
+  "keyword_red",
+  "entity_orange",
+  "tag_green",
+  "constant_blue",
+  "function_purple",
+  "string_blue",
+]
+
+[palette]
+# VS Code 2026 Light editor and chrome surfaces.
+editor_bg = "#FFFFFF"
+chrome = "#FAFAFD"
+panel = "#FAFAFD"
+panel_high = "#F0F0F3"
+field = "#FFFFFF"
+line_highlight = "#F8F8F8"
+border = "#F0F1F2"
+border_strong = "#D8D8D8"
+command_border = "#D8D8D8"
+menu_separator = "#EEEEF1"
+selection = "#BFDAF2"
+find_match = "#BFDAF2"
+bracket_match = "#BFDAF2"
+focus = "#0069CC"
+
+# Foreground and neutral roles.
+white = "#FFFFFF"
+foreground = "#202020"
+editor_fg = "#202020"
+text_soft = "#1f2328"
+muted = "#606060"
+disabled = "#BBBBBB"
+comment = "#6e7781"
+line_number = "#606060"
+indent_guide = "#EEEEEE"
+
+# VS Code 2026 Light accents and TextMate token colors.
+button = "#0069CC"
+button_hover = "#0063C1"
+link = "#0069CC"
+link_active = "#0069CC"
+info = "#0069CC"
+keyword_red = "#cf222e"
+constant_blue = "#0550ae"
+entity_orange = "#953800"
+function_purple = "#8250df"
+tag_green = "#116329"
+string_blue = "#0a3069"
+invalid = "#82071e"
+
+# Diagnostics, VCS, and diff colors.
+error = "#ad0707"
+warning = "#667309"
+vcs_added = "#587c0c"
+vcs_modified = "#667309"
+vcs_deleted = "#ad0707"
+diff_insert_bg = "#DAFBE1"
+diff_delete_bg = "#FFEBE9"
