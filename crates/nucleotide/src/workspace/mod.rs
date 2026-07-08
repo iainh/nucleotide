@@ -953,6 +953,7 @@ pub struct Workspace {
     prefix_extractor: PrefixExtractor,                // Language-aware completion prefix extraction
     about_window: Entity<AboutWindow>,                // About dialog window
     theme_debug: Entity<nucleotide_ui::ThemeDebugView>, // Theme debug overlay
+    component_gallery: Entity<nucleotide_ui::ComponentGallery>, // Interactive component gallery
     // Pending file operation that expects a text input via prompt
     pending_file_op: Option<PendingFileOp>,
     // Defer a file tree refresh until after processing core events
@@ -4960,9 +4961,10 @@ impl Workspace {
             info!("Workspace: No file tree to subscribe to");
         }
 
-        // Create about window and theme debug overlay
+        // Create debug and informational modal views
         let about_window = cx.new(AboutWindow::new);
         let theme_debug = cx.new(nucleotide_ui::ThemeDebugView::new);
+        let component_gallery = cx.new(nucleotide_ui::ComponentGallery::new);
 
         let doc_sidebar_scroll_handle = ScrollHandle::new();
         let doc_sidebar_scrollbar_state = ScrollbarState::new(doc_sidebar_scroll_handle.clone());
@@ -5032,6 +5034,7 @@ impl Workspace {
             prefix_extractor: PrefixExtractor::new(),
             about_window,
             theme_debug,
+            component_gallery,
             pending_file_op: None,
             needs_file_tree_refresh: false,
             delete_confirm_open: false,
@@ -14388,6 +14391,10 @@ impl Render for Workspace {
                 }
             }))
             .on_key_down(cx.listener(|view, ev, window, cx| {
+                if view.modal_layer.read(cx).has_active_modal() {
+                    cx.stop_propagation();
+                    return;
+                }
                 view.handle_key(ev, window, cx);
             }));
 
@@ -14469,6 +14476,15 @@ impl Render for Workspace {
                 let theme_debug = workspace.theme_debug.clone();
                 workspace.modal_layer.update(cx, |layer, cx| {
                     layer.show_modal(theme_debug, window, cx);
+                });
+            },
+        ));
+
+        workspace_div = workspace_div.on_action(cx.listener(
+            move |workspace, _: &crate::actions::help::ComponentGallery, window, cx| {
+                let component_gallery = workspace.component_gallery.clone();
+                workspace.modal_layer.update(cx, |layer, cx| {
+                    layer.show_modal(component_gallery, window, cx);
                 });
             },
         ));
