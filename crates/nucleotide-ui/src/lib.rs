@@ -319,6 +319,7 @@ pub(crate) const BUILT_IN_COMPONENTS: &[&str] = &[
     "TextInput",
     "ThemeDebugView",
     "Toolbar",
+    "VcsIcon",
     "WorkspaceChrome",
 ];
 

@@ -843,7 +843,7 @@ use nucleotide::actions::{
         OpenFile, OpenRemote, OpenSettings, Paste, Quit, ReconnectRemote, Redo,
         ReloadConfiguration, RevertCurrentChange, Save, SaveAs, Undo,
     },
-    help::{About, OpenTutorial, ThemeDebug},
+    help::{About, ComponentGallery, OpenTutorial, ThemeDebug},
     test::{TestCompletion, TestPrompt},
     window::{Minimize, Zoom},
     workspace::{
@@ -943,15 +943,20 @@ fn default_app_menus() -> Vec<Menu> {
             ],
         },
         Menu {
-            name: "Help".into(),
+            name: "Debug".into(),
             disabled: false,
             items: vec![
-                MenuItem::action("Tutorial", OpenTutorial),
                 MenuItem::action("Test Prompt", TestPrompt),
                 MenuItem::action("Test Completion", TestCompletion),
                 MenuItem::separator(),
+                MenuItem::action("Component Gallery", ComponentGallery),
                 MenuItem::action("Theme Debug", ThemeDebug),
             ],
+        },
+        Menu {
+            name: "Help".into(),
+            disabled: false,
+            items: vec![MenuItem::action("Tutorial", OpenTutorial)],
         },
     ]
 }
@@ -1023,15 +1028,15 @@ fn windows_app_menus() -> Vec<Menu> {
             MenuItem::action("Minimize", Minimize),
             MenuItem::action("Maximize/Restore", Zoom),
         ]),
+        Menu::new("Debug").items([
+            MenuItem::action("Component Gallery", ComponentGallery),
+            MenuItem::action("Theme Debug", ThemeDebug),
+            MenuItem::separator(),
+            MenuItem::action("Test Prompt", TestPrompt),
+            MenuItem::action("Test Completion", TestCompletion),
+        ]),
         Menu::new("Help").items([
             MenuItem::action("Tutorial", OpenTutorial),
-            MenuItem::separator(),
-            MenuItem::submenu(Menu::new("Developer").items([
-                MenuItem::action("Theme Debug", ThemeDebug),
-                MenuItem::separator(),
-                MenuItem::action("Test Prompt", TestPrompt),
-                MenuItem::action("Test Completion", TestCompletion),
-            ])),
             MenuItem::separator(),
             MenuItem::action("About Nucleotide", About),
         ]),
@@ -1813,7 +1818,10 @@ mod tests {
             .map(|menu| menu.name.as_ref())
             .collect::<Vec<_>>();
 
-        assert_eq!(names, ["File", "Edit", "View", "Run", "Window", "Help"]);
+        assert_eq!(
+            names,
+            ["File", "Edit", "View", "Run", "Window", "Debug", "Help"]
+        );
         assert!(menus.iter().all(|menu| menu.name.as_ref() != "Nucleotide"));
 
         let file_menu = &menus[0];
@@ -1833,6 +1841,22 @@ mod tests {
             MenuItem::Action { name, action, .. }
                 if name.as_ref() == "About Nucleotide"
                     && action.partial_eq(&nucleotide::actions::help::About)
+        )));
+    }
+
+    #[test]
+    fn debug_menu_exposes_component_gallery() {
+        let menus = app_menus();
+        let debug_menu = menus
+            .iter()
+            .find(|menu| menu.name.as_ref() == "Debug")
+            .expect("Debug menu should exist");
+
+        assert!(debug_menu.items.iter().any(|item| matches!(
+            item,
+            MenuItem::Action { name, action, .. }
+                if name.as_ref() == "Component Gallery"
+                    && action.partial_eq(&nucleotide::actions::help::ComponentGallery)
         )));
     }
 

@@ -116,7 +116,7 @@ pub mod editor {
 pub mod help {
     use super::actions;
 
-    actions!(help, [About, OpenTutorial, ThemeDebug,]);
+    actions!(help, [About, OpenTutorial, ThemeDebug, ComponentGallery,]);
 }
 
 pub mod workspace {
