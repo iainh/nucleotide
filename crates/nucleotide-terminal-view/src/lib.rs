@@ -3,10 +3,10 @@
 use nucleotide_events::v2::terminal::TerminalId;
 
 #[cfg(feature = "emulator")]
-use gpui::AppContext; // bring trait into scope for Context::new
-use gpui::{Context, IntoElement, ParentElement, Render, Styled, Window, div};
+use gpui::AppContext;
+use gpui::{Context, FontWeight, IntoElement, ParentElement, Render, Styled, Window, div};
 #[cfg(feature = "emulator")]
-use gpui::{FontWeight, Hsla, InteractiveElement, hsla, rgb};
+use gpui::{Hsla, InteractiveElement, hsla, rgb};
 #[cfg(feature = "emulator")]
 use nucleotide_terminal::frame::{
     Cell, DEFAULT_BACKGROUND, DEFAULT_FOREGROUND, FramePayload, GridDiff, GridSnapshot,
@@ -62,6 +62,12 @@ impl DirtyFlags {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TerminalSpawnFailure {
+    pub message: String,
+    pub details: Vec<String>,
+}
+
 #[derive(Debug)]
 pub struct TerminalViewModel {
     pub id: TerminalId,
@@ -95,6 +101,7 @@ pub struct TerminalViewModel {
     input_mode: TerminalInputMode,
     #[cfg(feature = "emulator")]
     input_tx: Option<std::sync::mpsc::Sender<Vec<u8>>>,
+    spawn_failure: Option<TerminalSpawnFailure>,
     /// Set to true when the shell process has exited
     exited: bool,
 }
@@ -133,6 +140,7 @@ impl TerminalViewModel {
             input_mode: TerminalInputMode::default(),
             #[cfg(feature = "emulator")]
             input_tx: None,
+            spawn_failure: None,
             exited: false,
         }
     }
@@ -398,6 +406,22 @@ impl TerminalViewModel {
     pub fn has_exited(&self) -> bool {
         self.exited
     }
+
+    pub fn set_spawn_failure(&mut self, message: impl Into<String>, details: Vec<String>) {
+        self.spawn_failure = Some(TerminalSpawnFailure {
+            message: message.into(),
+            details,
+        });
+        self.exited = true;
+    }
+
+    pub fn spawn_failure(&self) -> Option<TerminalSpawnFailure> {
+        self.spawn_failure.clone()
+    }
+
+    pub fn has_spawn_failure(&self) -> bool {
+        self.spawn_failure.is_some()
+    }
 }
 
 #[cfg(feature = "emulator")]
@@ -503,10 +527,8 @@ impl TerminalView {
             Some(ScrollbarState::new(handle))
         };
 
-        // Poll for background frame updates and trigger GPUI re-renders.
-        // The frame consumer thread updates the view model on a background
-        // thread with no access to GPUI; this task bridges the gap.
-        #[cfg(feature = "emulator")]
+        // Poll for background frame and failure updates. Runtime workers update
+        // the view model on background threads with no access to GPUI.
         {
             let poll_model = model.clone();
             cx.spawn(async move |this, cx| {
@@ -516,7 +538,16 @@ impl TerminalView {
                         .await;
                     let has_updates = {
                         let guard = lock_or_recover(poll_model.as_ref());
-                        guard.has_dirty_rows() || guard.has_exited()
+                        let has_terminal_state_change =
+                            guard.has_exited() || guard.has_spawn_failure();
+                        #[cfg(feature = "emulator")]
+                        {
+                            has_terminal_state_change || guard.has_dirty_rows()
+                        }
+                        #[cfg(not(feature = "emulator"))]
+                        {
+                            has_terminal_state_change
+                        }
                     };
                     if has_updates && this.update(cx, |_, cx| cx.notify()).is_err() {
                         break;
@@ -542,6 +573,38 @@ impl Render for TerminalView {
         let tokens = &theme.tokens;
         let default_bg = tokens.editor.background;
         let default_fg = tokens.editor.text_primary;
+        let failure = { lock_or_recover(self.model.as_ref()).spawn_failure() };
+
+        if let Some(failure) = failure {
+            let mut failure_content = div()
+                .flex()
+                .flex_col()
+                .size_full()
+                .overflow_hidden()
+                .bg(default_bg)
+                .text_color(default_fg)
+                .p_3()
+                .gap_2()
+                .text_size(tokens.sizes.text_sm)
+                .child(
+                    div()
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(tokens.editor.error)
+                        .child(failure.message),
+                );
+
+            for detail in failure.details {
+                failure_content = failure_content.child(
+                    div()
+                        .font_family("monospace")
+                        .text_size(tokens.sizes.text_xs)
+                        .text_color(tokens.chrome.text_chrome_secondary)
+                        .child(detail),
+                );
+            }
+
+            return failure_content;
+        }
 
         // Terminal content column (flex_1 so scrollbar gets space)
         let mut content = div()
@@ -1183,5 +1246,23 @@ mod registry_tests {
 
         unregister_view_model(id);
         assert!(get_view_model(id).is_none());
+    }
+
+    #[test]
+    fn terminal_view_model_records_spawn_failure() {
+        let mut model = TerminalViewModel::new(TerminalId(9));
+
+        model.set_spawn_failure(
+            "Terminal session failed to start",
+            vec!["Command: ssh devbox".to_string()],
+        );
+
+        let failure = model
+            .spawn_failure()
+            .expect("spawn failure should be recorded");
+        assert_eq!(failure.message, "Terminal session failed to start");
+        assert_eq!(failure.details, vec!["Command: ssh devbox"]);
+        assert!(model.has_exited());
+        assert!(model.has_spawn_failure());
     }
 }
