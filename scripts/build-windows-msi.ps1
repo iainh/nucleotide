@@ -2,6 +2,7 @@ param(
   [string]$NuclExe = "target\release\nucl.exe",
   [string]$RuntimeDir = "crates\nucleotide\runtime",
   [string]$RemoteHelperDir = "target\remote-helpers",
+  [string]$GhosttyDll,
   [string]$OutputDir = "target\release\bundle\wxsmsi",
   [string]$OutputName = "nucleotide",
   [string]$ProductVersion,
@@ -269,6 +270,84 @@ function Emit-RemoteHelperComponents {
   return $lines
 }
 
+function Resolve-GhosttyDll {
+  param(
+    [string]$NuclExePath,
+    [string]$ExplicitPath
+  )
+
+  if ($ExplicitPath) {
+    $resolved = Resolve-RepoPath $ExplicitPath
+    if (-not (Test-Path -LiteralPath $resolved -PathType Leaf)) {
+      throw "Ghostty runtime DLL not found: $resolved"
+    }
+
+    return $resolved
+  }
+
+  $profileDir = [System.IO.Path]::GetDirectoryName($NuclExePath)
+  $directCandidates = @(
+    (Join-Path $profileDir "ghostty-vt.dll"),
+    (Join-Path $profileDir "deps\ghostty-vt.dll")
+  )
+
+  foreach ($candidate in $directCandidates) {
+    if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+      return [System.IO.Path]::GetFullPath($candidate)
+    }
+  }
+
+  $buildDir = Join-Path $profileDir "build"
+  if (Test-Path -LiteralPath $buildDir -PathType Container) {
+    $generatedDll = Get-ChildItem `
+      -LiteralPath $buildDir `
+      -Filter "ghostty-vt.dll" `
+      -File `
+      -Recurse `
+      -ErrorAction SilentlyContinue |
+      Sort-Object LastWriteTimeUtc -Descending |
+      Select-Object -First 1
+
+    if ($generatedDll) {
+      return $generatedDll.FullName
+    }
+  }
+
+  throw "ghostty-vt.dll was not found near $NuclExePath. Build Nucleotide with the Ghostty terminal backend first, or pass -GhosttyDll <path>."
+}
+
+function Emit-NativeDllComponents {
+  param(
+    [string[]]$DllPaths,
+    [int]$Level,
+    [System.Collections.Generic.List[string]]$ComponentRefs
+  )
+
+  $indent = " " * $Level
+  $lines = [System.Collections.Generic.List[string]]::new()
+
+  foreach ($dllPath in $DllPaths) {
+    if (-not (Test-Path -LiteralPath $dllPath -PathType Leaf)) {
+      throw "Native runtime DLL not found: $dllPath"
+    }
+
+    $file = Get-Item -LiteralPath $dllPath
+    $componentId = Get-WixId "cmp_native_dll_" $file.Name
+    $componentGuid = Get-WixGuid "nucleotide:native-dll:$($file.Name)"
+    $fileId = Get-WixId "fil_native_dll_" $file.Name
+    $source = Escape-Xml $file.FullName
+    $name = Escape-Xml $file.Name
+
+    $lines.Add("$indent<Component Id=`"$componentId`" Guid=`"$componentGuid`">")
+    $lines.Add("$indent  <File Id=`"$fileId`" Name=`"$name`" Source=`"$source`"/>")
+    $lines.Add("$indent  <RegistryValue Root=`"HKCU`" Key=`"Software\the nucleotide contributors\Nucleotide\Components`" Name=`"$componentId`" Type=`"integer`" Value=`"1`" KeyPath=`"yes`"/>")
+    $lines.Add("$indent</Component>")
+    $ComponentRefs.Add("      <ComponentRef Id=`"$componentId`"/>")
+  }
+
+  return $lines
+}
+
 $nuclExePath = Resolve-RepoPath $NuclExe
 $runtimePath = Resolve-RepoPath $RuntimeDir
 $remoteHelperPath = Resolve-RepoPath $RemoteHelperDir
@@ -289,6 +368,10 @@ if (-not (Test-Path -LiteralPath $iconPath -PathType Leaf)) {
   throw "Nucleotide icon not found: $iconPath"
 }
 
+$ghosttyDllPath = Resolve-GhosttyDll -NuclExePath $nuclExePath -ExplicitPath $GhosttyDll
+
+Write-Host "Bundling Ghostty runtime DLL: $ghosttyDllPath"
+
 Ensure-LicenseRtf $licenseRtfPath
 
 if (-not $ProductVersion) {
@@ -304,6 +387,11 @@ $remoteHelperComponents = Emit-RemoteHelperComponents `
   -ComponentRefs $componentRefs `
   -Required:$RequireRemoteHelpers
 
+$nativeDllComponents = Emit-NativeDllComponents `
+  -DllPaths @($ghosttyDllPath) `
+  -Level 10 `
+  -ComponentRefs $componentRefs
+
 $runtimeDirectory = Emit-RuntimeDirectory `
   -Directory $runtimePath `
   -DirectoryId "runtime_Dir" `
@@ -317,6 +405,7 @@ $replacements = @{
   "{{OUTPUT_NAME}}" = Escape-Xml $OutputName
   "{{NUCL_EXE}}" = Escape-Xml $nuclExePath
   "{{MAIN_EXECUTABLE_GUID}}" = Get-WixGuid "nucleotide:nucl.exe"
+  "{{NATIVE_DLL_COMPONENTS}}" = ($nativeDllComponents -join [Environment]::NewLine)
   "{{REMOTE_HELPER_COMPONENTS}}" = ($remoteHelperComponents -join [Environment]::NewLine)
   "{{RUNTIME_DIRECTORY}}" = ($runtimeDirectory -join [Environment]::NewLine)
   "{{COMPONENT_REFS}}" = ($componentRefs -join [Environment]::NewLine)

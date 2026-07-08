@@ -10,7 +10,8 @@ Nucleotide publishes a Windows MSI installer named
 3. Launch Nucleotide from the Start Menu or desktop shortcut.
 
 The installer is built from the checked-in WiX template in `build/windows`. It
-installs `nucl.exe` and the bundled Helix runtime together under:
+installs `nucl.exe`, `ghostty-vt.dll`, and the bundled Helix runtime together
+under:
 
 ```text
 %LOCALAPPDATA%\Spiralpoint\nucleotide
@@ -51,6 +52,13 @@ Then build the MSI:
 
 ```powershell
 .\scripts\build-windows-msi.ps1
+```
+
+The MSI build discovers `ghostty-vt.dll` from the release build output. If a
+custom build places the DLL elsewhere, pass it explicitly:
+
+```powershell
+.\scripts\build-windows-msi.ps1 -GhosttyDll path\to\ghostty-vt.dll
 ```
 
 The installer is written to:

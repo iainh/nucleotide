@@ -314,6 +314,12 @@ jobs:
             throw "Extracted MSI does not contain nucl.exe."
           }
 
+          $ghosttyDll = Get-ChildItem -Path $extractDir -Recurse -Filter ghostty-vt.dll -File |
+            Select-Object -First 1
+          if (-not $ghosttyDll) {
+            throw "Extracted MSI does not contain ghostty-vt.dll."
+          }
+
           foreach ($helper in @("nucleotide-remote-linux-x86_64", "nucleotide-remote-linux-aarch64")) {
             $installed = Get-ChildItem -Path $extractDir -Recurse -Filter $helper -File |
               Select-Object -First 1
