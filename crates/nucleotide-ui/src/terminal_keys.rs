@@ -3,7 +3,7 @@
 
 use gpui::KeyDownEvent;
 
-/// Encode a GPUI key event into terminal bytes using an Alacritty/xterm-compatible mapping.
+/// Encode a GPUI key event into terminal bytes using an xterm-compatible mapping.
 pub fn encode_terminal_key_event(event: &KeyDownEvent) -> Vec<u8> {
     encode_terminal_key_event_with_mode(event, TerminalKeyEncodingMode::default())
 }

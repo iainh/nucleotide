@@ -13,6 +13,10 @@ Run the script from the repository root:
 ./scripts/bundle-mac.sh
 ```
 
+When `target/release/nucl` is missing, `bundle-mac.sh` runs a default release
+build. Install Zig 0.15.2 first, or run the script from `nix develop`, so the
+Ghostty-backed terminal dependency can build.
+
 The script creates `Nucleotide.app`.
 
 ## What gets bundled

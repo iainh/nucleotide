@@ -1,5 +1,5 @@
 // ABOUTME: Core terminal session implementation using portable-pty
-// ABOUTME: Incremental: raw PTY IO now; emulator/grid later
+// ABOUTME: Ghostty-backed terminal emulation with raw PTY fallback
 
 pub mod frame {
     #[cfg(feature = "emulator")]
@@ -184,7 +184,7 @@ pub mod session {
 
             #[cfg(feature = "emulator")]
             {
-                use crate::engine::AlacrittyEngine as Engine;
+                use crate::engine::Engine;
                 use std::time::{Duration, Instant};
                 let engine_writer = writer.clone();
 
@@ -803,180 +803,155 @@ pub mod session {
     }
 }
 
-// Alacritty-based terminal engine scaffold (emulator feature)
 #[cfg(feature = "emulator")]
 pub mod engine {
     use crate::frame::{
         Cell, DEFAULT_BACKGROUND, DEFAULT_FOREGROUND, FramePayload, GridSnapshot,
         TerminalInputMode, ansi_color,
     };
-    use alacritty_terminal::event::{Event as TermEvent, EventListener};
-    use alacritty_terminal::grid::{Dimensions, Scroll};
-    use alacritty_terminal::term::{self, RenderableContent, Term, TermMode};
-    use alacritty_terminal::vte::ansi::{
-        self, Color as VteColor, NamedColor as VteNamedColor, Rgb as VteRgb,
-    };
+    use libghostty_vt::render::{CellIterator, RenderState, RowIterator};
+    use libghostty_vt::style::{PaletteIndex, RgbColor, Style, StyleColor, Underline};
+    use libghostty_vt::{Terminal, TerminalOptions};
     use std::io::Write;
     use std::sync::{Arc, Mutex};
 
-    /// Placeholder engine producing full snapshots; next iteration will integrate alacritty_terminal
-    pub struct AlacrittyEngine {
+    const DEFAULT_CELL_WIDTH: f32 = 8.0;
+    const DEFAULT_CELL_HEIGHT: f32 = 16.0;
+    const DEFAULT_SCROLLBACK_LINES: usize = 10_000;
+
+    pub struct Engine {
         cols: u16,
         rows: u16,
         cell_width: f32,
         cell_height: f32,
         grid: Vec<Vec<Cell>>,
-        term: Option<Term<PtyEventListener>>,
-        parser: ansi::Processor,
-        event_listener: PtyEventListener,
+        terminal: Option<Terminal<'static, 'static>>,
+        render_state: Option<RenderState<'static>>,
+        row_iter: Option<RowIterator<'static>>,
+        cell_iter: Option<CellIterator<'static>>,
+        pty_writer: Option<Arc<Mutex<Box<dyn Write + Send>>>>,
     }
 
-    impl AlacrittyEngine {
+    impl Engine {
         pub fn new(
             cols: u16,
             rows: u16,
             pty_writer: Option<Arc<Mutex<Box<dyn Write + Send>>>>,
         ) -> Self {
-            let cell_width = 8.0f32;
-            let cell_height = 16.0f32;
-            let mut grid = Vec::with_capacity(rows as usize);
-            for _ in 0..rows {
-                grid.push(vec![
-                    Cell {
-                        ch: ' ',
-                        fg: DEFAULT_FOREGROUND,
-                        bg: DEFAULT_BACKGROUND,
-                        bold: false,
-                        italic: false,
-                        underline: false,
-                        inverse: false
-                    };
-                    cols as usize
-                ]);
-            }
+            let cols = cols.max(1);
+            let rows = rows.max(1);
             let mut engine = Self {
                 cols,
                 rows,
-                cell_width,
-                cell_height,
-                grid,
-                term: None,
-                parser: ansi::Processor::new(),
-                event_listener: PtyEventListener { pty_writer },
+                cell_width: DEFAULT_CELL_WIDTH,
+                cell_height: DEFAULT_CELL_HEIGHT,
+                grid: blank_grid(cols, rows),
+                terminal: None,
+                render_state: None,
+                row_iter: None,
+                cell_iter: None,
+                pty_writer,
             };
-            engine.rebuild_term();
+            engine.rebuild_terminal();
             engine
         }
 
         pub fn feed_bytes(&mut self, bytes: &[u8]) {
-            if self.term.is_none() {
-                self.rebuild_term();
-            }
-            if let Some(term) = &mut self.term {
-                self.parser.advance(term, bytes);
+            if self.ensure_initialized()
+                && let Some(terminal) = &mut self.terminal
+            {
+                terminal.vt_write(bytes);
             }
         }
 
         pub fn take_frame(&mut self) -> Option<FramePayload> {
-            if self.term.is_none() {
-                self.rebuild_term();
+            if !self.ensure_initialized() {
+                return None;
             }
-            if let Some(term) = &mut self.term {
-                // Renderable content for current viewport
-                let content: RenderableContent<'_> = term.renderable_content();
-                // Prepare grid buffer
-                let blank = Cell {
-                    ch: ' ',
-                    fg: DEFAULT_FOREGROUND,
-                    bg: DEFAULT_BACKGROUND,
-                    bold: false,
-                    italic: false,
-                    underline: false,
-                    inverse: false,
-                };
-                if self.grid.len() as u16 != self.rows
-                    || self.grid.first().map(|r| r.len()).unwrap_or(0) as u16 != self.cols
-                {
-                    self.grid = vec![vec![blank; self.cols as usize]; self.rows as usize];
-                } else {
-                    // Clear stale content so cells not yielded by display_iter
-                    // (e.g. blanks after scrolling) don't retain old values.
-                    for row in &mut self.grid {
-                        row.fill(blank);
-                    }
-                }
-                // display_offset shifts Line indices: scrollback lines have
-                // negative Line values (e.g. Line(-5) when display_offset=5).
-                // Convert to viewport-relative row by adding the offset.
-                let display_offset = term.grid().display_offset() as i32;
-                for indexed in content.display_iter {
-                    let pos = indexed.point;
-                    let cell = indexed.cell;
-                    let viewport_line = pos.line.0 + display_offset;
-                    if viewport_line < 0 {
-                        continue;
-                    }
-                    let row = viewport_line as usize;
-                    let col = pos.column.0;
-                    if row < self.grid.len() && col < self.grid[row].len() {
-                        let ch = cell.c;
-                        let fg = Self::color_to_cell_color(cell.fg);
-                        let bg = Self::color_to_cell_color(cell.bg);
-                        self.grid[row][col] = Cell {
-                            ch,
-                            fg,
-                            bg,
-                            bold: cell.flags.contains(term::cell::Flags::BOLD),
-                            italic: cell.flags.contains(term::cell::Flags::ITALIC),
-                            underline: cell.flags.contains(term::cell::Flags::UNDERLINE),
-                            inverse: cell.flags.contains(term::cell::Flags::INVERSE),
-                        };
-                    }
+
+            let terminal = self.terminal.as_mut()?;
+            let render_state = self.render_state.as_mut()?;
+            let row_iter_handle = self.row_iter.as_mut()?;
+            let cell_iter_handle = self.cell_iter.as_mut()?;
+
+            let snapshot = render_state.update(terminal).ok()?;
+            let cols = snapshot.cols().unwrap_or(self.cols).max(1);
+            let rows_len = snapshot.rows().unwrap_or(self.rows).max(1);
+            let blank = blank_cell();
+            let mut grid = vec![vec![blank; cols as usize]; rows_len as usize];
+
+            let mut row_index = 0usize;
+            let mut row_iter = row_iter_handle.update(&snapshot).ok()?;
+            while let Some(row) = row_iter.next() {
+                if row_index >= grid.len() {
+                    break;
                 }
 
-                let cursor = content.cursor.point;
-                let history_size = term.grid().history_size();
-                let grid_display_offset = term.grid().display_offset();
-                let cursor_viewport_row = (cursor.line.0 + display_offset).max(0) as u16;
-                return Some(FramePayload::Full(GridSnapshot {
-                    rows: self.grid.clone(),
-                    cols: self.cols,
-                    rows_len: self.rows,
-                    cursor_row: cursor_viewport_row,
-                    cursor_col: (cursor.column.0 as u16),
-                    history_size,
-                    display_offset: grid_display_offset,
-                    input_mode: TerminalInputMode {
-                        application_cursor: content.mode.contains(TermMode::APP_CURSOR),
-                        alternate_screen: content.mode.contains(TermMode::ALT_SCREEN),
-                        alternate_scroll: content.mode.contains(TermMode::ALTERNATE_SCROLL),
-                        mouse_mode: content.mode.intersects(TermMode::MOUSE_MODE),
-                    },
-                }));
-            }
-            None
-        }
+                let mut col_index = 0usize;
+                let mut cell_iter = cell_iter_handle.update(row).ok()?;
+                while let Some(cell) = cell_iter.next() {
+                    if col_index >= grid[row_index].len() {
+                        break;
+                    }
 
-        pub fn resize(&mut self, cols: u16, rows: u16) {
-            if cols != self.cols || rows != self.rows {
-                self.cols = cols;
-                self.rows = rows;
-                self.grid.clear();
-                for _ in 0..rows {
-                    self.grid.push(vec![
-                        Cell {
-                            ch: ' ',
-                            fg: DEFAULT_FOREGROUND,
-                            bg: DEFAULT_BACKGROUND,
-                            bold: false,
-                            italic: false,
-                            underline: false,
-                            inverse: false
-                        };
-                        cols as usize
-                    ]);
+                    let style = cell.style().unwrap_or_default();
+                    grid[row_index][col_index] = Cell {
+                        ch: first_grapheme_char(cell.graphemes().ok().as_deref()),
+                        fg: foreground_cell_color(&style, cell.fg_color().ok().flatten()),
+                        bg: background_cell_color(&style, cell.bg_color().ok().flatten()),
+                        bold: style.bold,
+                        italic: style.italic,
+                        underline: style.underline != Underline::None,
+                        inverse: style.inverse,
+                    };
+                    col_index += 1;
                 }
+
+                row_index += 1;
             }
+
+            let cursor = snapshot.cursor_viewport().ok().flatten();
+            let scrollbar = terminal.scrollbar().ok();
+            let history_size = scrollbar
+                .as_ref()
+                .map(|scrollbar| scrollbar.total.saturating_sub(scrollbar.len) as usize)
+                .unwrap_or_else(|| terminal.scrollback_rows().unwrap_or(0));
+            let display_offset = scrollbar
+                .as_ref()
+                .map(|scrollbar| history_size.saturating_sub(scrollbar.offset as usize))
+                .unwrap_or(0);
+
+            self.cols = cols;
+            self.rows = rows_len;
+            self.grid = grid;
+
+            Some(FramePayload::Full(GridSnapshot {
+                rows: self.grid.clone(),
+                cols,
+                rows_len,
+                cursor_row: cursor.map(|cursor| cursor.y).unwrap_or(0),
+                cursor_col: cursor.map(|cursor| cursor.x).unwrap_or(0),
+                history_size,
+                display_offset,
+                input_mode: TerminalInputMode {
+                    application_cursor: terminal
+                        .mode(libghostty_vt::terminal::Mode::DECCKM)
+                        .unwrap_or(false),
+                    alternate_screen: terminal
+                        .mode(libghostty_vt::terminal::Mode::ALT_SCREEN)
+                        .unwrap_or(false)
+                        || terminal
+                            .mode(libghostty_vt::terminal::Mode::ALT_SCREEN_LEGACY)
+                            .unwrap_or(false)
+                        || terminal
+                            .mode(libghostty_vt::terminal::Mode::ALT_SCREEN_SAVE)
+                            .unwrap_or(false),
+                    alternate_scroll: terminal
+                        .mode(libghostty_vt::terminal::Mode::ALT_SCROLL)
+                        .unwrap_or(false),
+                    mouse_mode: terminal.is_mouse_tracking().unwrap_or(false),
+                },
+            }))
         }
 
         pub fn resize_with_metrics(
@@ -986,193 +961,130 @@ pub mod engine {
             cell_width: f32,
             cell_height: f32,
         ) {
-            self.cell_width = cell_width;
-            self.cell_height = cell_height;
-            // Resize the local snapshot buffer
-            self.resize(cols, rows);
-            // Resize the Alacritty Term in-place to preserve scrollback history.
-            // Only rebuild if no Term exists yet.
-            if let Some(term) = &mut self.term {
-                let dims = SimpleSize {
-                    cols: cols as usize,
-                    rows: rows as usize,
-                };
-                term.resize(dims);
-            } else {
-                self.rebuild_term();
+            self.cols = cols.max(1);
+            self.rows = rows.max(1);
+            self.cell_width = cell_width.max(1.0);
+            self.cell_height = cell_height.max(1.0);
+            self.grid = blank_grid(self.cols, self.rows);
+
+            if self.ensure_initialized()
+                && let Some(terminal) = &mut self.terminal
+            {
+                let _ = terminal.resize(
+                    self.cols,
+                    self.rows,
+                    self.cell_width.round().clamp(1.0, u32::MAX as f32) as u32,
+                    self.cell_height.round().clamp(1.0, u32::MAX as f32) as u32,
+                );
             }
         }
 
         pub fn scroll_display(&mut self, delta: i32) {
-            if let Some(term) = &mut self.term {
-                term.scroll_display(Scroll::Delta(delta));
+            if self.ensure_initialized()
+                && let Some(terminal) = &mut self.terminal
+            {
+                terminal.scroll_viewport(libghostty_vt::terminal::ScrollViewport::Delta(
+                    delta as isize,
+                ));
             }
         }
 
-        fn rebuild_term(&mut self) {
-            let config = term::Config::default();
-            let dims = SimpleSize {
-                cols: self.cols as usize,
-                rows: self.rows as usize,
-            };
-            let term = Term::new(config, &dims, self.event_listener.clone());
-            self.term = Some(term);
+        fn ensure_initialized(&mut self) -> bool {
+            if self.terminal.is_none()
+                || self.render_state.is_none()
+                || self.row_iter.is_none()
+                || self.cell_iter.is_none()
+            {
+                self.rebuild_terminal();
+            }
+
+            self.terminal.is_some()
+                && self.render_state.is_some()
+                && self.row_iter.is_some()
+                && self.cell_iter.is_some()
         }
 
-        #[inline]
-        fn ansi_named_color_to_cell_color(nc: VteNamedColor) -> u32 {
-            match nc {
-                VteNamedColor::Background => DEFAULT_BACKGROUND,
-                VteNamedColor::Foreground => DEFAULT_FOREGROUND,
-                VteNamedColor::Black => ansi_color(0),
-                VteNamedColor::Red => ansi_color(1),
-                VteNamedColor::Green => ansi_color(2),
-                VteNamedColor::Yellow => ansi_color(3),
-                VteNamedColor::Blue => ansi_color(4),
-                VteNamedColor::Magenta => ansi_color(5),
-                VteNamedColor::Cyan => ansi_color(6),
-                VteNamedColor::White => ansi_color(7),
-                VteNamedColor::BrightBlack => ansi_color(8),
-                VteNamedColor::BrightRed => ansi_color(9),
-                VteNamedColor::BrightGreen => ansi_color(10),
-                VteNamedColor::BrightYellow => ansi_color(11),
-                VteNamedColor::BrightBlue => ansi_color(12),
-                VteNamedColor::BrightMagenta => ansi_color(13),
-                VteNamedColor::BrightCyan => ansi_color(14),
-                VteNamedColor::BrightWhite => ansi_color(15),
-                VteNamedColor::Cursor => DEFAULT_FOREGROUND,
-                VteNamedColor::DimBlack => ansi_color(8),
-                VteNamedColor::DimRed => ansi_color(1),
-                VteNamedColor::DimGreen => ansi_color(2),
-                VteNamedColor::DimYellow => ansi_color(3),
-                VteNamedColor::DimBlue => ansi_color(4),
-                VteNamedColor::DimMagenta => ansi_color(5),
-                VteNamedColor::DimCyan => ansi_color(6),
-                VteNamedColor::DimWhite => ansi_color(7),
-                VteNamedColor::BrightForeground => ansi_color(15),
-                VteNamedColor::DimForeground => ansi_color(8),
-            }
-        }
-
-        #[inline]
-        fn xterm_256_to_rgb(idx: u8) -> VteRgb {
-            if idx < 16 {
-                // Map to bright 8 defaults above
-                return match idx {
-                    0 => VteRgb {
-                        r: 0x00,
-                        g: 0x00,
-                        b: 0x00,
-                    },
-                    1 => VteRgb {
-                        r: 0xcc,
-                        g: 0x00,
-                        b: 0x00,
-                    },
-                    2 => VteRgb {
-                        r: 0x00,
-                        g: 0xa6,
-                        b: 0x00,
-                    },
-                    3 => VteRgb {
-                        r: 0x99,
-                        g: 0x99,
-                        b: 0x00,
-                    },
-                    4 => VteRgb {
-                        r: 0x00,
-                        g: 0x00,
-                        b: 0xcc,
-                    },
-                    5 => VteRgb {
-                        r: 0xcc,
-                        g: 0x00,
-                        b: 0xcc,
-                    },
-                    6 => VteRgb {
-                        r: 0x00,
-                        g: 0xa6,
-                        b: 0xb2,
-                    },
-                    7 => VteRgb {
-                        r: 0xcc,
-                        g: 0xcc,
-                        b: 0xcc,
-                    },
-                    8 => VteRgb {
-                        r: 0x4d,
-                        g: 0x4d,
-                        b: 0x4d,
-                    },
-                    9 => VteRgb {
-                        r: 0xff,
-                        g: 0x00,
-                        b: 0x00,
-                    },
-                    10 => VteRgb {
-                        r: 0x00,
-                        g: 0xff,
-                        b: 0x00,
-                    },
-                    11 => VteRgb {
-                        r: 0xff,
-                        g: 0xff,
-                        b: 0x00,
-                    },
-                    12 => VteRgb {
-                        r: 0x00,
-                        g: 0x00,
-                        b: 0xff,
-                    },
-                    13 => VteRgb {
-                        r: 0xff,
-                        g: 0x00,
-                        b: 0xff,
-                    },
-                    14 => VteRgb {
-                        r: 0x00,
-                        g: 0xff,
-                        b: 0xff,
-                    },
-                    _ => VteRgb {
-                        r: 0xff,
-                        g: 0xff,
-                        b: 0xff,
-                    },
-                };
-            }
-            if (16..=231).contains(&idx) {
-                let i = (idx - 16) as u32;
-                let r = (i / 36) % 6;
-                let g = (i / 6) % 6;
-                let b = i % 6;
-                let comp = |v: u32| if v == 0 { 0 } else { 55 + 40 * v } as u8;
-                return VteRgb {
-                    r: comp(r),
-                    g: comp(g),
-                    b: comp(b),
-                };
-            }
-            let gray = 8 + 10 * (idx as u32 - 232);
-            VteRgb {
-                r: gray as u8,
-                g: gray as u8,
-                b: gray as u8,
-            }
-        }
-
-        #[inline]
-        fn color_to_cell_color(color: VteColor) -> u32 {
-            let rgb = match color {
-                VteColor::Spec(rgb) => {
-                    return ((rgb.r as u32) << 16) | ((rgb.g as u32) << 8) | (rgb.b as u32);
+        fn rebuild_terminal(&mut self) {
+            let mut terminal = match Terminal::new(TerminalOptions {
+                cols: self.cols,
+                rows: self.rows,
+                max_scrollback: DEFAULT_SCROLLBACK_LINES,
+            }) {
+                Ok(terminal) => terminal,
+                Err(_) => {
+                    self.terminal = None;
+                    return;
                 }
-                VteColor::Named(nc) => return Self::ansi_named_color_to_cell_color(nc),
-                VteColor::Indexed(idx) if idx < 16 => return ansi_color(idx),
-                VteColor::Indexed(idx) => Self::xterm_256_to_rgb(idx),
             };
-            ((rgb.r as u32) << 16) | ((rgb.g as u32) << 8) | (rgb.b as u32)
+
+            if let Some(writer) = self.pty_writer.clone() {
+                let _ = terminal.on_pty_write(move |_terminal, data| {
+                    if let Ok(mut writer) = writer.lock() {
+                        let _ = writer.write_all(data);
+                        let _ = writer.flush();
+                    }
+                });
+            }
+
+            let _ = terminal.resize(
+                self.cols,
+                self.rows,
+                self.cell_width.round().clamp(1.0, u32::MAX as f32) as u32,
+                self.cell_height.round().clamp(1.0, u32::MAX as f32) as u32,
+            );
+
+            self.terminal = Some(terminal);
+            self.render_state = RenderState::new().ok();
+            self.row_iter = RowIterator::new().ok();
+            self.cell_iter = CellIterator::new().ok();
         }
+    }
+
+    fn blank_grid(cols: u16, rows: u16) -> Vec<Vec<Cell>> {
+        vec![vec![blank_cell(); cols as usize]; rows as usize]
+    }
+
+    fn blank_cell() -> Cell {
+        Cell {
+            ch: ' ',
+            fg: DEFAULT_FOREGROUND,
+            bg: DEFAULT_BACKGROUND,
+            bold: false,
+            italic: false,
+            underline: false,
+            inverse: false,
+        }
+    }
+
+    fn first_grapheme_char(graphemes: Option<&[char]>) -> char {
+        graphemes
+            .and_then(|graphemes| graphemes.first().copied())
+            .unwrap_or(' ')
+    }
+
+    fn foreground_cell_color(style: &Style, resolved: Option<RgbColor>) -> u32 {
+        style_color_to_cell_color(style.fg_color, resolved, DEFAULT_FOREGROUND)
+    }
+
+    fn background_cell_color(style: &Style, resolved: Option<RgbColor>) -> u32 {
+        style_color_to_cell_color(style.bg_color, resolved, DEFAULT_BACKGROUND)
+    }
+
+    fn style_color_to_cell_color(
+        style_color: StyleColor,
+        resolved: Option<RgbColor>,
+        default: u32,
+    ) -> u32 {
+        match style_color {
+            StyleColor::None => resolved.map(rgb_to_cell_color).unwrap_or(default),
+            StyleColor::Palette(PaletteIndex(index)) if index < 16 => ansi_color(index),
+            StyleColor::Palette(_) => resolved.map(rgb_to_cell_color).unwrap_or(default),
+            StyleColor::Rgb(rgb) => rgb_to_cell_color(rgb),
+        }
+    }
+
+    fn rgb_to_cell_color(rgb: RgbColor) -> u32 {
+        (u32::from(rgb.r) << 16) | (u32::from(rgb.g) << 8) | u32::from(rgb.b)
     }
 
     #[cfg(test)]
@@ -1180,38 +1092,20 @@ pub mod engine {
         use super::*;
 
         #[test]
-        fn ansi_named_and_indexed_colors_use_palette_markers() {
-            assert_eq!(
-                AlacrittyEngine::color_to_cell_color(VteColor::Named(VteNamedColor::Red)),
-                ansi_color(1)
-            );
-            assert_eq!(
-                AlacrittyEngine::color_to_cell_color(VteColor::Named(VteNamedColor::BrightBlue)),
-                ansi_color(12)
-            );
-            assert_eq!(
-                AlacrittyEngine::color_to_cell_color(VteColor::Indexed(2)),
-                ansi_color(2)
-            );
-        }
-
-        #[test]
         fn truecolor_values_remain_literal_rgb() {
-            let rgb = VteRgb {
-                r: 0xcc,
-                g: 0x00,
-                b: 0x00,
-            };
-
             assert_eq!(
-                AlacrittyEngine::color_to_cell_color(VteColor::Spec(rgb)),
+                rgb_to_cell_color(RgbColor {
+                    r: 0xcc,
+                    g: 0x00,
+                    b: 0x00,
+                }),
                 0xcc0000
             );
         }
 
         #[test]
         fn application_cursor_mode_is_reported_in_frames() {
-            let mut engine = AlacrittyEngine::new(5, 2, None);
+            let mut engine = Engine::new(5, 2, None);
 
             engine.feed_bytes(b"\x1b[?1h");
 
@@ -1220,40 +1114,22 @@ pub mod engine {
             };
             assert!(snapshot.input_mode.application_cursor);
         }
-    }
 
-    #[derive(Clone, Copy)]
-    struct SimpleSize {
-        cols: usize,
-        rows: usize,
-    }
+        #[test]
+        fn scrollback_display_offset_uses_bottom_zero_convention() {
+            let mut engine = Engine::new(5, 2, None);
 
-    impl Dimensions for SimpleSize {
-        fn total_lines(&self) -> usize {
-            self.rows
-        }
-        fn screen_lines(&self) -> usize {
-            self.rows
-        }
-        fn columns(&self) -> usize {
-            self.cols
-        }
-    }
+            engine.feed_bytes(b"one\r\ntwo\r\nthree\r\nfour");
+            let Some(FramePayload::Full(bottom)) = engine.take_frame() else {
+                panic!("expected full snapshot");
+            };
+            assert_eq!(bottom.display_offset, 0);
 
-    #[derive(Clone, Default)]
-    pub struct PtyEventListener {
-        pty_writer: Option<Arc<Mutex<Box<dyn Write + Send>>>>,
-    }
-
-    impl EventListener for PtyEventListener {
-        fn send_event(&self, event: TermEvent) {
-            if let TermEvent::PtyWrite(text) = event
-                && let Some(writer) = &self.pty_writer
-                && let Ok(mut writer) = writer.lock()
-            {
-                let _ = writer.write_all(text.as_bytes());
-                let _ = writer.flush();
-            }
+            engine.scroll_display(-1);
+            let Some(FramePayload::Full(scrolled)) = engine.take_frame() else {
+                panic!("expected full snapshot");
+            };
+            assert!(scrolled.display_offset > 0);
         }
     }
 }
