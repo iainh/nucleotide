@@ -3,9 +3,7 @@
 
 use nucleotide_logging::{info, instrument, warn};
 
-use crate::application::{
-    CompletionHandler, DocumentHandler, EditorHandler, LspHandler, ViewHandler, WorkspaceHandler,
-};
+use crate::application::{DocumentHandler, EditorHandler, ViewHandler};
 
 /// Core application logic for event processing and coordination
 /// Separated from the main Application struct to reduce complexity
@@ -14,11 +12,6 @@ pub struct ApplicationCore {
     pub document_handler: DocumentHandler,
     pub view_handler: ViewHandler,
     pub editor_handler: EditorHandler,
-
-    /// V2 Event System Handlers - Phase 2
-    pub lsp_handler: LspHandler,
-    pub completion_handler: CompletionHandler,
-    pub workspace_handler: WorkspaceHandler,
 
     /// Initialization state
     initialized: bool,
@@ -31,29 +24,8 @@ impl ApplicationCore {
             document_handler: DocumentHandler::new(),
             view_handler: ViewHandler::new(),
             editor_handler: EditorHandler::new(),
-            lsp_handler: LspHandler::new(),
-            completion_handler: CompletionHandler::new(),
-            workspace_handler: WorkspaceHandler::new(),
             initialized: false,
         }
-    }
-
-    /// Create a new application core with application handle for LSP integration
-    pub fn with_app_handle(app_handle: gpui::WeakEntity<crate::Application>) -> Self {
-        Self {
-            document_handler: DocumentHandler::new(),
-            view_handler: ViewHandler::new(),
-            editor_handler: EditorHandler::new(),
-            lsp_handler: LspHandler::new(),
-            completion_handler: CompletionHandler::with_app_handle(app_handle),
-            workspace_handler: WorkspaceHandler::new(),
-            initialized: false,
-        }
-    }
-
-    /// Set the application handle for LSP completion
-    pub fn set_app_handle(&mut self, app_handle: gpui::WeakEntity<crate::Application>) {
-        self.completion_handler.set_app_handle(app_handle);
     }
 
     /// Initialize all event handlers
@@ -70,11 +42,6 @@ impl ApplicationCore {
         self.document_handler.initialize()?;
         self.view_handler.initialize()?;
         self.editor_handler.initialize()?;
-
-        // Initialize Phase 2 handlers
-        self.lsp_handler.initialize()?;
-        self.completion_handler.initialize()?;
-        self.workspace_handler.initialize()?;
 
         self.initialized = true;
         info!("ApplicationCore initialized successfully");
@@ -109,36 +76,6 @@ impl ApplicationCore {
     /// Get mutable access to editor handler
     pub fn editor_handler_mut(&mut self) -> &mut EditorHandler {
         &mut self.editor_handler
-    }
-
-    /// Get access to LSP handler for external coordination
-    pub fn lsp_handler(&self) -> &LspHandler {
-        &self.lsp_handler
-    }
-
-    /// Get mutable access to LSP handler
-    pub fn lsp_handler_mut(&mut self) -> &mut LspHandler {
-        &mut self.lsp_handler
-    }
-
-    /// Get access to completion handler for external coordination
-    pub fn completion_handler(&self) -> &CompletionHandler {
-        &self.completion_handler
-    }
-
-    /// Get mutable access to completion handler
-    pub fn completion_handler_mut(&mut self) -> &mut CompletionHandler {
-        &mut self.completion_handler
-    }
-
-    /// Get access to workspace handler for external coordination
-    pub fn workspace_handler(&self) -> &WorkspaceHandler {
-        &self.workspace_handler
-    }
-
-    /// Get mutable access to workspace handler
-    pub fn workspace_handler_mut(&mut self) -> &mut WorkspaceHandler {
-        &mut self.workspace_handler
     }
 
     /// Check if the core is initialized
