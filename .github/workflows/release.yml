@@ -12,12 +12,65 @@ on:
         type: string
 
 jobs:
+  prepare-release:
+    name: Prepare Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      release_ref: ${{ steps.release.outputs.release_ref }}
+      release_sha: ${{ steps.verify.outputs.release_sha }}
+      version: ${{ steps.release.outputs.version }}
+
+    steps:
+      - name: Resolve release tag
+        id: release
+        env:
+          REQUESTED_TAG: ${{ github.event.inputs.tag }}
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            version="${REQUESTED_TAG}"
+          else
+            version="${GITHUB_REF#refs/tags/}"
+          fi
+
+          if ! printf '%s' "${version}" | grep -Eq '^v[0-9]+[.][0-9]+[.][0-9]+([-+][0-9A-Za-z.-]+)?$'; then
+            echo "Invalid release tag: ${version}" >&2
+            exit 1
+          fi
+
+          printf 'version=%s\n' "${version}" >> "${GITHUB_OUTPUT}"
+          printf 'release_ref=refs/tags/%s\n' "${version}" >> "${GITHUB_OUTPUT}"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.release.outputs.release_ref }}
+          fetch-depth: 0
+
+      - name: Verify release ref
+        id: verify
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          tag_sha="$(git rev-list -n 1 "${RELEASE_VERSION}^{commit}")"
+          head_sha="$(git rev-parse HEAD)"
+
+          if [ "${head_sha}" != "${tag_sha}" ]; then
+            echo "Checked out ${head_sha}, but ${RELEASE_VERSION} resolves to ${tag_sha}" >&2
+            exit 1
+          fi
+
+          printf 'release_sha=%s\n' "${head_sha}" >> "${GITHUB_OUTPUT}"
+
   build-linux:
     name: Build Linux
     runs-on: ubuntu-latest
+    needs: prepare-release
     
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare-release.outputs.release_ref }}
       
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -90,7 +143,7 @@ jobs:
   build-macos:
     name: Build macOS
     runs-on: macos-latest
-    needs: build-linux
+    needs: [prepare-release, build-linux]
     strategy:
       matrix:
         include:
@@ -101,6 +154,8 @@ jobs:
     
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare-release.outputs.release_ref }}
 
       - name: Download Linux remote helpers
         uses: actions/download-artifact@v4
@@ -157,10 +212,12 @@ jobs:
   build-macos-universal:
     name: Build macOS Universal
     runs-on: macos-latest
-    needs: build-macos
+    needs: [prepare-release, build-macos]
     
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare-release.outputs.release_ref }}
       
       - name: Download artifacts
         uses: actions/download-artifact@v4
@@ -209,10 +266,12 @@ jobs:
   build-windows:
     name: Build Windows
     runs-on: windows-latest
-    needs: build-linux
+    needs: [prepare-release, build-linux]
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare-release.outputs.release_ref }}
 
       - name: Download Linux remote helpers
         uses: actions/download-artifact@v4
@@ -352,12 +411,14 @@ jobs:
   create-release:
     name: Create Release
     runs-on: ubuntu-latest
-    needs: [build-linux, build-macos-universal, build-windows]
+    needs: [prepare-release, build-linux, build-macos-universal, build-windows]
     permissions:
       contents: write
     
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare-release.outputs.release_ref }}
       
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -382,27 +443,11 @@ jobs:
           echo "Release files:"
           ls -lh release/
       
-      - name: Get version
-        id: version
-        env:
-          REQUESTED_TAG: ${{ github.event.inputs.tag }}
-        run: |
-          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
-            if ! printf '%s' "${REQUESTED_TAG}" | grep -Eq '^v[0-9]+[.][0-9]+[.][0-9]+([-+][0-9A-Za-z.-]+)?$'; then
-              echo "Invalid release tag: ${REQUESTED_TAG}" >&2
-              exit 1
-            fi
-
-            printf 'version=%s\n' "${REQUESTED_TAG}" >> "${GITHUB_OUTPUT}"
-          else
-            printf 'version=%s\n' "${GITHUB_REF#refs/tags/}" >> "${GITHUB_OUTPUT}"
-          fi
-      
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: ${{ steps.version.outputs.version }}
-          name: Nucleotide ${{ steps.version.outputs.version }}
+          tag_name: ${{ needs.prepare-release.outputs.version }}
+          name: Nucleotide ${{ needs.prepare-release.outputs.version }}
           body: |
             ## Downloads
             
