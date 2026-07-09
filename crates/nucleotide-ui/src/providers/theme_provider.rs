@@ -1,9 +1,9 @@
 // ABOUTME: Theme provider component for distributing theme state across the component tree
 // ABOUTME: Enables theme switching, inheritance, and context-aware styling
 
-use super::{Provider, ProviderContainer, use_provider, use_provider_or_default};
+use super::{use_provider, use_provider_or_default};
 use crate::Theme;
-use gpui::{AnyElement, App, IntoElement, SharedString};
+use gpui::SharedString;
 use std::collections::HashMap;
 
 /// Theme provider for managing theme state
@@ -416,65 +416,6 @@ pub struct ThemeTransitionStyles {
     pub properties: Vec<ThemeAnimatedProperty>,
 }
 
-impl Provider for ThemeProvider {
-    fn type_name(&self) -> &'static str {
-        "ThemeProvider"
-    }
-
-    fn initialize(&mut self, _cx: &mut App) {
-        nucleotide_logging::info!(
-            current_theme = ?self.theme_inheritance.first(),
-            available_themes = ?self.available_theme_names(),
-            "ThemeProvider initialized"
-        );
-    }
-
-    fn cleanup(&mut self, _cx: &mut App) {
-        nucleotide_logging::debug!("ThemeProvider cleaned up");
-    }
-}
-
-/// Create a theme provider component
-pub fn theme_provider(provider: ThemeProvider) -> ThemeProviderComponent {
-    ThemeProviderComponent::new(provider)
-}
-
-/// Theme provider component wrapper
-pub struct ThemeProviderComponent {
-    provider: ThemeProvider,
-    children: Vec<AnyElement>,
-}
-
-impl ThemeProviderComponent {
-    pub fn new(provider: ThemeProvider) -> Self {
-        Self {
-            provider,
-            children: Vec::new(),
-        }
-    }
-
-    pub fn child(mut self, child: impl IntoElement) -> Self {
-        self.children.push(child.into_any_element());
-        self
-    }
-
-    pub fn children(mut self, children: impl IntoIterator<Item = impl IntoElement>) -> Self {
-        self.children
-            .extend(children.into_iter().map(|child| child.into_any_element()));
-        self
-    }
-}
-
-impl IntoElement for ThemeProviderComponent {
-    type Element = AnyElement;
-
-    fn into_element(self) -> Self::Element {
-        ProviderContainer::new("theme-provider", self.provider)
-            .children(self.children)
-            .into_any_element()
-    }
-}
-
 /// Hook to use the theme provider
 pub fn use_theme() -> Theme {
     use_provider_or_default::<ThemeProvider>().current_theme
@@ -490,78 +431,6 @@ pub fn use_is_dark_theme() -> bool {
     use_provider::<ThemeProvider>()
         .map(|provider| provider.is_dark_theme())
         .unwrap_or(false)
-}
-
-/// Helper to create common theme configurations
-pub struct ThemeConfigurations;
-
-impl ThemeConfigurations {
-    /// Create a standard light/dark theme provider
-    pub fn light_dark() -> ThemeProvider {
-        let mut themes = HashMap::new();
-        themes.insert(
-            "light".into(),
-            Theme::from_tokens(crate::tokens::DesignTokens::light()),
-        );
-        themes.insert(
-            "dark".into(),
-            Theme::from_tokens(crate::tokens::DesignTokens::dark()),
-        );
-
-        ThemeProvider::with_themes(themes, "light")
-    }
-
-    /// Create a high contrast theme provider
-    pub fn high_contrast() -> ThemeProvider {
-        let mut provider = Self::light_dark();
-
-        // Add high contrast variants
-        let mut high_contrast_light = Theme::from_tokens(crate::tokens::DesignTokens::light());
-        high_contrast_light.tokens.chrome.text_on_chrome = gpui::Hsla {
-            h: 0.0,
-            s: 0.0,
-            l: 0.0,
-            a: 1.0,
-        };
-        high_contrast_light.tokens.editor.background = gpui::Hsla {
-            h: 0.0,
-            s: 0.0,
-            l: 1.0,
-            a: 1.0,
-        };
-
-        let mut high_contrast_dark = Theme::from_tokens(crate::tokens::DesignTokens::dark());
-        high_contrast_dark.tokens.chrome.text_on_chrome = gpui::Hsla {
-            h: 0.0,
-            s: 0.0,
-            l: 1.0,
-            a: 1.0,
-        };
-        high_contrast_dark.tokens.editor.background = gpui::Hsla {
-            h: 0.0,
-            s: 0.0,
-            l: 0.0,
-            a: 1.0,
-        };
-
-        provider.add_theme("high-contrast-light", high_contrast_light);
-        provider.add_theme("high-contrast-dark", high_contrast_dark);
-
-        provider
-    }
-
-    /// Create a provider with custom brand colors
-    pub fn with_brand_colors(
-        primary_color: gpui::Hsla,
-        secondary_color: gpui::Hsla,
-    ) -> ThemeProvider {
-        let mut provider = Self::light_dark();
-
-        provider.override_color_key(ColorKey::Primary, primary_color);
-        provider.override_color_key(ColorKey::TextSecondary, secondary_color);
-
-        provider
-    }
 }
 
 #[cfg(test)]
@@ -709,47 +578,6 @@ mod tests {
         let toggled_back = provider.toggle_dark_mode();
         assert!(toggled_back);
         assert!(!provider.is_dark_theme());
-    }
-
-    #[test]
-    fn test_theme_configurations() {
-        let light_dark_provider = ThemeConfigurations::light_dark();
-        assert!(light_dark_provider.has_theme("light"));
-        assert!(light_dark_provider.has_theme("dark"));
-        assert_eq!(light_dark_provider.available_theme_names().len(), 2);
-
-        let high_contrast_provider = ThemeConfigurations::high_contrast();
-        assert!(high_contrast_provider.has_theme("high-contrast-light"));
-        assert!(high_contrast_provider.has_theme("high-contrast-dark"));
-        assert_eq!(high_contrast_provider.available_theme_names().len(), 4);
-
-        let brand_color = gpui::Hsla {
-            h: 220.0,
-            s: 0.9,
-            l: 0.6,
-            a: 1.0,
-        };
-        let secondary_color = gpui::Hsla {
-            h: 180.0,
-            s: 0.7,
-            l: 0.5,
-            a: 1.0,
-        };
-        let brand_provider = ThemeConfigurations::with_brand_colors(brand_color, secondary_color);
-
-        assert_eq!(
-            brand_provider.current_theme().tokens.chrome.primary,
-            brand_color
-        );
-        // Note: "secondary" maps to text_secondary since there's no dedicated secondary color field
-        assert_eq!(
-            brand_provider
-                .current_theme()
-                .tokens
-                .chrome
-                .text_chrome_secondary,
-            secondary_color
-        );
     }
 
     #[test]

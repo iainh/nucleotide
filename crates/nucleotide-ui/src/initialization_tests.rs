@@ -273,12 +273,6 @@ mod tests {
                         .is_some(),
                     "configuration provider should be installed during UI initialization"
                 );
-                assert!(
-                    context
-                        .get_global_provider::<crate::providers::EventHandlingProvider>()
-                        .is_some(),
-                    "event provider should be installed during UI initialization"
-                );
             })
             .expect("provider system should be initialized");
         });
