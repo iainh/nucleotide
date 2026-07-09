@@ -431,7 +431,10 @@ jobs:
     runs-on: ubuntu-latest
     needs: [prepare-release, build-linux, build-macos-universal, build-windows]
     permissions:
+      actions: read
       contents: write
+      attestations: write
+      id-token: write
     
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
@@ -461,6 +464,19 @@ jobs:
           
           echo "Release files:"
           ls -lh release/
+
+      - name: Attest release artifacts
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a
+        with:
+          subject-path: |
+            release/Nucleotide.dmg
+            release/Nucleotide-x86_64.dmg
+            release/Nucleotide-aarch64.dmg
+            release/nucleotide-linux-x86_64.tar.gz
+            release/nucleotide-remote-linux-x86_64
+            release/nucleotide-remote-linux-aarch64
+            release/Nucleotide-windows-x86_64.msi
+            release/SHA256SUMS
       
       - name: Create GitHub Release
         uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844
