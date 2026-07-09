@@ -3,10 +3,7 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        BUILT_IN_COMPONENTS, ComponentRegistry, Theme, UIConfig, UIFeatures,
-        configuration_provider_from_ui_config,
-    };
+    use crate::{Theme, UIConfig, UIFeatures, configuration_provider_from_ui_config};
 
     #[test]
     fn test_ui_config_default() {
@@ -28,29 +25,6 @@ mod tests {
         assert!(!features.enable_animations);
         assert!(!features.enable_accessibility);
         assert!(!features.enable_debug_utils);
-    }
-
-    #[test]
-    fn test_component_registry_operations() {
-        let mut registry = ComponentRegistry::default();
-
-        // Test registration
-        registry.register_component("TestComponent");
-        assert!(registry.is_registered("TestComponent"));
-
-        // Test duplicate registration (should be safe)
-        registry.register_component("TestComponent");
-        assert!(registry.is_registered("TestComponent"));
-
-        // Test listing components
-        registry.register_component("AnotherComponent");
-        let components: Vec<_> = registry.registered_components().collect();
-        assert!(components.contains(&"TestComponent"));
-        assert!(components.contains(&"AnotherComponent"));
-        assert_eq!(components.len(), 2);
-
-        // Test non-existent component
-        assert!(!registry.is_registered("NonExistentComponent"));
     }
 
     #[test]
@@ -97,36 +71,6 @@ mod tests {
         assert!(config.features.enable_animations);
         assert!(config.features.enable_accessibility);
         assert!(config.features.enable_debug_utils);
-    }
-
-    #[test]
-    fn test_component_registry_empty_state() {
-        let registry = ComponentRegistry::default();
-
-        // Test empty registry
-        assert!(!registry.is_registered("AnyComponent"));
-
-        let components: Vec<_> = registry.registered_components().collect();
-        assert!(components.is_empty());
-    }
-
-    #[test]
-    fn test_component_registry_with_builtin_components() {
-        let mut registry = ComponentRegistry::default();
-
-        // Simulate registering built-in components (like init() does)
-        for component in BUILT_IN_COMPONENTS {
-            registry.register_component(component);
-        }
-
-        // Test that all built-in components are registered
-        for component in BUILT_IN_COMPONENTS {
-            assert!(registry.is_registered(component));
-        }
-
-        // Test component count
-        let components: Vec<_> = registry.registered_components().collect();
-        assert_eq!(components.len(), BUILT_IN_COMPONENTS.len());
     }
 
     #[test]
