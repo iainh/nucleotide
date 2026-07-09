@@ -11,6 +11,9 @@ on:
         required: true
         type: string
 
+permissions:
+  contents: read
+
 jobs:
   prepare-release:
     name: Prepare Release
@@ -44,6 +47,7 @@ jobs:
 
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
+          persist-credentials: false
           ref: ${{ steps.release.outputs.release_ref }}
           fetch-depth: 0
 
@@ -70,6 +74,7 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
+          persist-credentials: false
           ref: ${{ needs.prepare-release.outputs.release_ref }}
       
       - name: Install Rust
@@ -155,6 +160,7 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
+          persist-credentials: false
           ref: ${{ needs.prepare-release.outputs.release_ref }}
 
       - name: Download Linux remote helpers
@@ -217,6 +223,7 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
+          persist-credentials: false
           ref: ${{ needs.prepare-release.outputs.release_ref }}
       
       - name: Download artifacts
@@ -271,6 +278,7 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
+          persist-credentials: false
           ref: ${{ needs.prepare-release.outputs.release_ref }}
 
       - name: Download Linux remote helpers
@@ -418,6 +426,7 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
+          persist-credentials: false
           ref: ${{ needs.prepare-release.outputs.release_ref }}
       
       - name: Download all artifacts
