@@ -234,9 +234,7 @@ pub struct PickerView {
 
     // Optional capability bridge for preview operations
     capability: Option<
-        std::sync::Arc<
-            std::sync::RwLock<dyn nucleotide_core::capabilities::PickerCapability + Send + Sync>,
-        >,
+        std::sync::Arc<std::sync::RwLock<dyn nucleotide_core::PickerCapability + Send + Sync>>,
     >,
 }
 
@@ -438,7 +436,7 @@ impl PickerView {
     pub fn with_capability(
         mut self,
         capability: std::sync::Arc<
-            std::sync::RwLock<dyn nucleotide_core::capabilities::PickerCapability + Send + Sync>,
+            std::sync::RwLock<dyn nucleotide_core::PickerCapability + Send + Sync>,
         >,
     ) -> Self {
         self.capability = Some(capability);

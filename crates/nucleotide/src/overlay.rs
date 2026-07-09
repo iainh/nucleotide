@@ -864,7 +864,7 @@ impl OverlayView {
                                     cap_arc.clone()
                                         as std::sync::Arc<
                                             std::sync::RwLock<
-                                                dyn nucleotide_core::capabilities::PickerCapability
+                                                dyn nucleotide_core::PickerCapability
                                                     + Send
                                                     + Sync,
                                             >,

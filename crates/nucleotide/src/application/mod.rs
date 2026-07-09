@@ -4710,25 +4710,6 @@ impl Application {
     // Note: Terminal panel is managed by Workspace via its overlay; no app-level show method.
 }
 
-// Implement capability traits for Application
-impl nucleotide_core::EditorReadAccess for Application {
-    fn editor(&self) -> &Editor {
-        &self.editor
-    }
-}
-
-impl nucleotide_core::EditorWriteAccess for Application {
-    fn editor_mut(&mut self) -> &mut Editor {
-        &mut self.editor
-    }
-}
-
-impl nucleotide_core::JobSystemAccess for Application {
-    fn jobs_mut(&mut self) -> &mut Jobs {
-        &mut self.jobs
-    }
-}
-
 impl editor_input::NativeLspNavigationRequest {
     fn language_server_feature(self) -> syntax::config::LanguageServerFeature {
         match self {

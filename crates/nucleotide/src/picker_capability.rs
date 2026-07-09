@@ -21,7 +21,7 @@ impl HelixPickerCapability {
     }
 }
 
-impl nucleotide_core::capabilities::PickerCapability for HelixPickerCapability {
+impl nucleotide_core::PickerCapability for HelixPickerCapability {
     fn render_preview(&self, doc_id: DocumentId, view_id: ViewId) -> gpui::AnyElement {
         // Render the registered DocumentView preview when available, otherwise
         // show a small placeholder while the preview entity is being created.

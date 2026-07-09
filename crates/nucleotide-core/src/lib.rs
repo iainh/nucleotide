@@ -1,31 +1,19 @@
 // ABOUTME: Core event bridges between Helix and GPUI
 // ABOUTME: Provides the fundamental event translation layer
 
-pub mod capabilities;
 pub mod command_system;
 pub mod core_event;
 pub mod document_manager;
-pub mod editor_capabilities;
 pub mod event_aggregator;
 pub mod event_bridge;
 pub mod fs;
 pub mod gpui_to_helix_bridge;
+pub mod picker_capability;
 pub mod preview_tracker;
 pub mod snippets;
 pub mod utils;
 
-// Capability traits exports
-pub use capabilities::{
-    BufferStore, CapabilityProvider, CommandExecutor, EditorReadAccess, EditorState,
-    EditorWriteAccess, EventEmitter, EventSubscriber, JobSystemAccess, LineCache, LineLayoutInfo,
-    OverlayProvider, SubscriptionId, ThemeProvider, ViewStore,
-};
-
-// Extended editor capabilities exports
-pub use editor_capabilities::{
-    CommandExecution, DocumentAccess, EditorAccess, EditorCapabilities, StatusInfo, ViewManagement,
-    WeakEditorCapabilities,
-};
+pub use picker_capability::PickerCapability;
 
 // Re-export event types from nucleotide-events
 pub use nucleotide_events::{
