@@ -2643,7 +2643,7 @@ mod tests {
         ];
 
         for kind in kinds {
-            let item = CompletionItem::new("test").with_kind(kind.clone());
+            let item = CompletionItem::new("test").with_kind(kind);
             assert_eq!(item.kind, Some(kind));
         }
     }

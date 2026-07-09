@@ -3951,7 +3951,7 @@ mod tests {
         let modified = status
             .entries
             .iter()
-            .find(|entry| entry.relative_path == PathBuf::from("tracked.txt"))
+            .find(|entry| entry.relative_path == Path::new("tracked.txt"))
             .unwrap();
         assert_eq!(modified.index_status, GitStatusKind::Unmodified);
         assert_eq!(modified.working_tree_status, GitStatusKind::Modified);
@@ -3959,7 +3959,7 @@ mod tests {
         let renamed = status
             .entries
             .iter()
-            .find(|entry| entry.relative_path == PathBuf::from("renamed.txt"))
+            .find(|entry| entry.relative_path == Path::new("renamed.txt"))
             .unwrap();
         assert_eq!(renamed.index_status, GitStatusKind::Renamed);
         assert_eq!(renamed.working_tree_status, GitStatusKind::Unmodified);
@@ -3971,7 +3971,7 @@ mod tests {
         let untracked = status
             .entries
             .iter()
-            .find(|entry| entry.relative_path == PathBuf::from("notes.md"))
+            .find(|entry| entry.relative_path == Path::new("notes.md"))
             .unwrap();
         assert_eq!(untracked.index_status, GitStatusKind::Untracked);
         assert_eq!(untracked.working_tree_status, GitStatusKind::Untracked);

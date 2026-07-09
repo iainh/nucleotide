@@ -630,7 +630,7 @@ mod tests {
             cell_width: px(8.0),
         };
         let render_snapshot = document_render_snapshot(document, view_id, 0, 2);
-        let visible_lines = vec![
+        let visible_lines = [
             VisibleLinePlan {
                 line_idx: 0,
                 line_start: 0,
