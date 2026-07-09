@@ -384,11 +384,18 @@ jobs:
       
       - name: Get version
         id: version
+        env:
+          REQUESTED_TAG: ${{ github.event.inputs.tag }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "version=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            if ! printf '%s' "${REQUESTED_TAG}" | grep -Eq '^v[0-9]+[.][0-9]+[.][0-9]+([-+][0-9A-Za-z.-]+)?$'; then
+              echo "Invalid release tag: ${REQUESTED_TAG}" >&2
+              exit 1
+            fi
+
+            printf 'version=%s\n' "${REQUESTED_TAG}" >> "${GITHUB_OUTPUT}"
           else
-            echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+            printf 'version=%s\n' "${GITHUB_REF#refs/tags/}" >> "${GITHUB_OUTPUT}"
           fi
       
       - name: Create GitHub Release
