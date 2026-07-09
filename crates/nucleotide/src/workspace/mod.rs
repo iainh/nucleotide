@@ -8314,12 +8314,8 @@ impl Workspace {
                     doc.set_selection(view_id, selection);
                     core.editor.ensure_cursor_in_view(view_id);
                     changed_selection = Some((doc_id, view_id));
-                    cx.emit(crate::Update::Event(crate::types::AppEvent::Core(
-                        crate::types::CoreEvent::SelectionChanged { doc_id, view_id },
-                    )));
-                    cx.emit(crate::Update::Event(crate::types::AppEvent::Core(
-                        crate::types::CoreEvent::RedrawRequested,
-                    )));
+                    cx.emit(crate::Update::SelectionChanged { doc_id, view_id });
+                    cx.emit(crate::Update::Redraw);
                 }
                 Err(message) => {
                     core.editor.set_error(message);
@@ -8532,9 +8528,7 @@ impl Workspace {
         // Check if we should quit after command execution
         let should_quit = core.read(cx).editor.should_close();
         if should_quit {
-            cx.emit(crate::Update::Event(crate::types::AppEvent::Core(
-                crate::types::CoreEvent::ShouldQuit,
-            )));
+            cx.emit(crate::Update::ShouldQuit);
         }
 
         // Log bufferline config after execution
@@ -9526,9 +9520,7 @@ impl Workspace {
                     helix_event::request_redraw();
 
                     // Emit an editor redraw event which should trigger various checks
-                    cx.emit(crate::Update::Event(crate::types::AppEvent::Core(
-                        crate::types::CoreEvent::RedrawRequested,
-                    )));
+                    cx.emit(crate::Update::Redraw);
 
                     // Set cursor to beginning of file without selecting content
                     let view_id = core.editor.tree.focus;
@@ -9672,13 +9664,7 @@ impl Workspace {
     #[instrument(skip(self, cx), fields(event = ?ev))]
     pub fn handle_event(&mut self, ev: &crate::Update, cx: &mut Context<Self>) {
         trace!("handling event {ev:?}");
-        let skip_editor_status_sync = matches!(
-            ev,
-            crate::Update::EditorStatus(_)
-                | crate::Update::Event(crate::types::AppEvent::Core(
-                    crate::types::CoreEvent::StatusChanged { .. }
-                ))
-        );
+        let skip_editor_status_sync = matches!(ev, crate::Update::EditorStatus(_));
 
         match ev {
             crate::Update::EditorEvent(ev) => self.handle_editor_event(ev, cx),
@@ -9810,21 +9796,7 @@ impl Workspace {
             crate::Update::SelectionChanged { doc_id, view_id } => {
                 self.handle_selection_changed(*doc_id, *view_id, cx)
             }
-            crate::Update::ModeChanged { old_mode, new_mode } => {
-                self.handle_mode_changed(old_mode, new_mode, cx)
-            }
             crate::Update::ViewFocused { view_id } => self.handle_view_focused(*view_id, cx),
-            crate::Update::LanguageServerInitialized { server_id, .. } => {
-                self.handle_language_server_initialized(*server_id, cx)
-            }
-            crate::Update::LanguageServerExited { server_id } => {
-                self.handle_language_server_exited(*server_id, cx)
-            }
-            crate::Update::CompletionRequested {
-                doc_id,
-                view_id,
-                trigger,
-            } => self.handle_completion_requested(*doc_id, *view_id, trigger, cx),
             crate::Update::ViewportScroll { view_id, request } => {
                 self.handle_viewport_scroll(*view_id, *request, cx);
             }
@@ -9834,52 +9806,6 @@ impl Workspace {
             // Handle new event-based updates (during migration)
             crate::Update::Event(event) => {
                 match event {
-                    crate::types::AppEvent::Core(core_event) => {
-                        match core_event {
-                            crate::types::CoreEvent::ShouldQuit => {
-                                info!("ShouldQuit event received via Event system");
-                                // Ensure editor state is cleanly flushed and views are closed before quit
-                                let handle = self.handle.clone();
-                                let core = self.core.clone();
-                                quit(core, handle, cx);
-                                cx.quit();
-                            }
-                            crate::types::CoreEvent::RedrawRequested => {
-                                self.handle_redraw(cx);
-                            }
-                            crate::types::CoreEvent::CommandSubmitted { command } => {
-                                self.handle_command_submitted(command, cx);
-                            }
-                            crate::types::CoreEvent::SearchSubmitted { query } => {
-                                self.handle_search_submitted(query, cx);
-                            }
-                            crate::types::CoreEvent::StatusChanged { message, severity } => {
-                                self.push_editor_status_notification(
-                                    EditorStatus {
-                                        status: message.clone(),
-                                        severity: *severity,
-                                    },
-                                    cx,
-                                );
-                            }
-                            crate::types::CoreEvent::SelectionChanged { doc_id, view_id } => {
-                                self.handle_selection_changed(*doc_id, *view_id, cx);
-                            }
-                            crate::types::CoreEvent::ModeChanged { old_mode, new_mode } => {
-                                self.handle_mode_changed(old_mode, new_mode, cx);
-                            }
-                            crate::types::CoreEvent::ViewFocused { view_id } => {
-                                self.handle_view_focused(*view_id, cx);
-                            }
-                            crate::types::CoreEvent::CompletionRequested {
-                                doc_id,
-                                view_id,
-                                trigger,
-                            } => {
-                                self.handle_completion_requested(*doc_id, *view_id, trigger, cx);
-                            }
-                        }
-                    }
                     crate::types::AppEvent::Terminal(term_event) => {
                         // Close the terminal pane when the shell process exits
                         if let TerminalEvent::Exited { id, code, .. } = term_event {
