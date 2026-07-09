@@ -50,7 +50,7 @@ LAYERS=(
 echo "Checking layer dependencies..."
 for i in "${!LAYERS[@]}"; do
     for lower_crate in ${LAYERS[$i]}; do
-        for j in $(seq $((i + 1)) $((${#LAYERS[@]} - 1))); do
+        for ((j = i + 1; j < ${#LAYERS[@]}; j++)); do
             for higher_crate in ${LAYERS[$j]}; do
                 if [[ "$lower_crate" != "$higher_crate" ]]; then
                     if check_dep "$lower_crate" "$higher_crate"; then
