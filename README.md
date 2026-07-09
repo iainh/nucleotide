@@ -46,14 +46,14 @@ when you need to update packaged runtime grammars.
 open Nucleotide.app
 ```
 
-### Windows Installer
+### Velopack Installers
 
-Nucleotide publishes a Windows MSI installer from CI. Download
-`Nucleotide-windows-x86_64.msi`, run it, then launch Nucleotide from the Start
-Menu or desktop shortcut.
+Nucleotide publishes Velopack installers and update feeds for macOS and
+Windows. Download the platform setup package from a release, run it, then launch
+Nucleotide from Applications or the Start Menu.
 
-Install Rust stable, Zig 0.15.2, and the .NET 8 SDK before building the MSI
-locally.
+Install Rust stable, Zig 0.15.2, the .NET 8 SDK, and the Velopack CLI before
+building a Windows installer locally.
 
 ```powershell
 cargo build --release -p nucleotide --bins
@@ -63,10 +63,12 @@ try {
 } finally {
   Remove-Item -LiteralPath helix-temp -Recurse -Force
 }
-.\scripts\build-windows-msi.ps1
+dotnet tool update -g vpk
+.\scripts\package-velopack.ps1 -RequireRemoteHelpers
 ```
 
-See `docs/windows_install.md` for local Windows MSI build and install notes.
+See `docs/windows_install.md` for local Windows Velopack build and install
+notes.
 
 ## Development Setup
 

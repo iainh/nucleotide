@@ -461,6 +461,34 @@
           exec ./scripts/build-remote-helpers.sh "$@"
         '';
 
+        installVelopackCli = pkgs.writeScriptBin "install-velopack-cli" ''
+          #!${pkgs.stdenv.shell}
+          set -euo pipefail
+
+          export DOTNET_ROOT="${pkgs.dotnet-sdk_8}/share/dotnet"
+          tool_path="''${NUCLEOTIDE_DOTNET_TOOL_PATH:-$PWD/.dotnet-tools}"
+          mkdir -p "$tool_path"
+
+          exec ${pkgs.dotnet-sdk_8}/bin/dotnet tool update vpk --tool-path "$tool_path" "$@"
+        '';
+
+        velopackCli = pkgs.writeScriptBin "vpk" ''
+          #!${pkgs.stdenv.shell}
+          set -euo pipefail
+
+          export DOTNET_ROOT="${pkgs.dotnet-sdk_8}/share/dotnet"
+          tool_path="''${NUCLEOTIDE_DOTNET_TOOL_PATH:-$PWD/.dotnet-tools}"
+          executable="$tool_path/vpk"
+
+          if [ -x "$executable" ]; then
+            exec "$executable" "$@"
+          fi
+
+          echo "Velopack CLI is not installed at $executable." >&2
+          echo "Run: install-velopack-cli" >&2
+          exit 127
+        '';
+
       in
       {
         packages = {
@@ -469,6 +497,8 @@
           makeMacOSBundle = makeMacOSBundle;
           makeLinuxPackage = makeLinuxPackage;
           buildRemoteHelpers = buildRemoteHelpers;
+          installVelopackCli = installVelopackCli;
+          velopackCli = velopackCli;
         };
 
         devShells.default = pkgs.mkShell ({
@@ -488,6 +518,11 @@
             # Build performance tools
             sccache
 
+            # Velopack packaging tools
+            dotnet-sdk_8
+            installVelopackCli
+            velopackCli
+
             # For running the application
             ripgrep
             tree-sitter
@@ -500,6 +535,8 @@
             buildRemoteHelpers
 
             # Platform-specific tools
+          ] ++ lib.optionals (lib.meta.availableOn stdenv.hostPlatform powershell) [
+            powershell
           ] ++ lib.optionals stdenv.isDarwin [
             darwin.DarwinTools
             xcbuild
@@ -517,12 +554,22 @@
           HELIX_RUNTIME = "${helixRuntime}";
           PKG_CONFIG_PATH = "${pkgs.openssl.dev}/lib/pkgconfig";
           OPENSSL_NO_VENDOR = 1;
+          DOTNET_CLI_TELEMETRY_OPTOUT = 1;
+          DOTNET_NOLOGO = 1;
+          DOTNET_ROOT = "${pkgs.dotnet-sdk_8}/share/dotnet";
+          NUCLEOTIDE_DOTNET_TOOL_PATH = ".dotnet-tools";
 
           # Build performance settings following Helix patterns
           CARGO_INCREMENTAL = "1";  # Default to incremental for dev builds
 
         } // darwinRustLinkerEnv) // {
           shellHook = ''
+            case "$NUCLEOTIDE_DOTNET_TOOL_PATH" in
+              /*) ;;
+              *) export NUCLEOTIDE_DOTNET_TOOL_PATH="$PWD/$NUCLEOTIDE_DOTNET_TOOL_PATH" ;;
+            esac
+            export PATH="$NUCLEOTIDE_DOTNET_TOOL_PATH:$PATH"
+
             # Define build mode aliases
             alias build-cached='CARGO_INCREMENTAL=0 RUSTC_WRAPPER=sccache cargo build'
             alias build-incremental='unset RUSTC_WRAPPER && CARGO_INCREMENTAL=1 cargo build'
@@ -548,9 +595,11 @@
             echo "  build-release-cached         - Release build with sccache" >&2
             echo "" >&2
             echo "Bundle creation:" >&2
-            echo "  build-remote-helpers       - Build Linux SSH helper binaries" >&2
+            echo "  build-remote-helpers        - Build Linux SSH helper binaries" >&2
             echo "  make-macos-bundle            - Create macOS .app bundle" >&2
             echo "  make-linux-package           - Create Linux distribution" >&2
+            echo "  install-velopack-cli         - Install/update vpk into .dotnet-tools" >&2
+            echo "  ./scripts/package-velopack.sh - Create macOS Velopack package from Nucleotide.app" >&2
             echo "" >&2
             echo "Build optimizations enabled (following Helix patterns):" >&2
             echo "  • Thin LTO for release builds (faster than full LTO)" >&2

@@ -89,6 +89,7 @@ rand = "0.10"
 slotmap = "1.0"
 pulldown-cmark = { version = "0.13", default-features = false }
 zstd = { version = "0.13", default-features = false }
+velopack = "1.2.0"
 
 # macOS framework bindings
 objc2 = "0.6"

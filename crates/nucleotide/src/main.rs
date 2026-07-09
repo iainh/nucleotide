@@ -385,8 +385,9 @@ fn startup_protocol_request() -> Result<Option<ProtocolOpenRequest>> {
 #[cfg(not(any(target_os = "windows", test)))]
 fn apply_protocol_request_to_args(_args: &mut Args, _request: ProtocolOpenRequest) {}
 
-#[instrument]
 fn main() -> Result<()> {
+    nucleotide::updates::run_startup_hooks();
+
     // Set HELIX_RUNTIME for packaged apps before any Helix runtime lookup occurs.
     configure_bundle_runtime_environment();
 
@@ -446,6 +447,8 @@ fn main() -> Result<()> {
             windows_single_instance::ClaimResult::Primary(guard) => guard,
             windows_single_instance::ClaimResult::Forwarded => return Ok(()),
         };
+
+    nucleotide::updates::spawn_background_update_check();
 
     let (platform_open_tx, platform_open_rx) =
         tokio::sync::mpsc::unbounded_channel::<ExternalOpenRequest>();

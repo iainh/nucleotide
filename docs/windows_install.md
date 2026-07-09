@@ -1,25 +1,19 @@
 # Windows Install
 
-Nucleotide publishes a Windows MSI installer named
-`Nucleotide-windows-x86_64.msi`.
+Nucleotide publishes Windows Velopack setup and update artifacts from CI.
 
 ## Install
 
-1. Download `Nucleotide-windows-x86_64.msi`.
+1. Download the Windows Velopack setup executable from the release.
 2. Run the installer.
 3. Launch Nucleotide from the Start Menu or desktop shortcut.
 
-The installer is built from the checked-in WiX template in `build/windows`. It
-installs `nucl.exe`, `ghostty-vt.dll`, and the bundled Helix runtime together
-under:
+The installer is built from the checked-in Velopack packaging script. It stages
+`nucl.exe`, `ghostty-vt.dll`, Linux SSH remote helpers, and the bundled Helix
+runtime, then runs `vpk pack`.
 
-```text
-%LOCALAPPDATA%\Spiralpoint\nucleotide
-```
-
-The MSI is scoped per-user and does not require elevated permissions.
 Nucleotide detects that bundled runtime automatically when launched from the
-installer shortcuts or directly from the install directory.
+installed app directory.
 
 Nucleotide sets a stable Windows AppUserModelID (`org.spiralpoint.nucleotide`)
 at startup so taskbar grouping and Jump Lists use the same identity across
@@ -35,11 +29,12 @@ tasks when the app starts.
 
 ## Build Locally
 
-Install Rust stable, Zig 0.15.2, and the .NET 8 SDK, then prepare the runtime
-resources that the MSI will embed:
+Install Rust stable, Zig 0.15.2, the .NET 8 SDK, and the Velopack CLI, then
+prepare the runtime resources that the package will embed:
 
 ```powershell
 cargo build --release -p nucleotide --bins
+dotnet tool update -g vpk
 .\scripts\clone-helix-runtime.ps1 -Destination helix-temp
 try {
   .\scripts\setup-windows-runtime.cmd -RuntimeSource helix-temp\runtime -NuclExe target\release\nucl-grammar.exe
@@ -48,23 +43,23 @@ try {
 }
 ```
 
-Then build the MSI:
+Then build the Velopack package:
 
 ```powershell
-.\scripts\build-windows-msi.ps1
+.\scripts\package-velopack.ps1 -RequireRemoteHelpers
 ```
 
-The MSI build discovers `ghostty-vt.dll` from the release build output. If a
-custom build places the DLL elsewhere, pass it explicitly:
+The package build discovers `ghostty-vt.dll` from the release build output. If
+a custom build places the DLL elsewhere, pass it explicitly:
 
 ```powershell
-.\scripts\build-windows-msi.ps1 -GhosttyDll path\to\ghostty-vt.dll
+.\scripts\package-velopack.ps1 -GhosttyDll path\to\ghostty-vt.dll
 ```
 
-The installer is written to:
+Velopack output is written to:
 
 ```text
-target\release\bundle\wxsmsi\bin\Release\nucleotide.msi
+target\release\bundle\velopack
 ```
 
 `setup-windows-runtime.cmd` copies the Helix runtime into

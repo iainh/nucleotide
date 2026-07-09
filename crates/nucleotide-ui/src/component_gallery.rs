@@ -518,7 +518,7 @@ fn gallery_panel(
 
 impl Render for ComponentGallery {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let tokens = cx.global::<crate::Theme>().tokens.clone();
+        let tokens = cx.global::<crate::Theme>().tokens;
 
         div()
             .w(px(980.0))

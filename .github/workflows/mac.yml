@@ -133,30 +133,14 @@ jobs:
             echo "✗ App bundle not created!"
             exit 1
           fi
-      
-      - name: Create DMG
-        run: |
-          # Create a simple DMG
-          mkdir -p dmg-content
-          cp -r Nucleotide.app dmg-content/
-          
-          # Create Applications symlink
-          ln -s /Applications dmg-content/Applications
-          
-          # Create DMG
-          hdiutil create -volname "Nucleotide" -srcfolder dmg-content -ov -format UDZO Nucleotide-${{ matrix.arch }}.dmg
-          
-          echo "DMG created:"
-          ls -lh Nucleotide-${{ matrix.arch }}.dmg
-          
-          # Clean up
-          rm -rf dmg-content
-      
-      - name: Upload DMG
+
+          tar -czf Nucleotide-${{ matrix.arch }}.app.tar.gz Nucleotide.app
+
+      - name: Upload app bundle
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: nucleotide-macos-${{ matrix.arch }}
-          path: Nucleotide-${{ matrix.arch }}.dmg
+          path: Nucleotide-${{ matrix.arch }}.app.tar.gz
           retention-days: 7
 
   build-universal:
@@ -181,17 +165,23 @@ jobs:
           name: nucleotide-macos-aarch64
           path: aarch64
       
+      - name: Install .NET SDK
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Install Velopack CLI
+        run: |
+          dotnet tool update -g vpk
+          echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
+
       - name: Extract apps
         run: |
-          # Mount and extract x86_64
-          hdiutil attach x86_64/Nucleotide-x86_64.dmg -mountpoint /tmp/x86_64-mount
-          cp -r /tmp/x86_64-mount/Nucleotide.app ./Nucleotide-x86_64.app
-          hdiutil detach /tmp/x86_64-mount
-          
-          # Mount and extract aarch64
-          hdiutil attach aarch64/Nucleotide-aarch64.dmg -mountpoint /tmp/aarch64-mount
-          cp -r /tmp/aarch64-mount/Nucleotide.app ./Nucleotide-aarch64.app
-          hdiutil detach /tmp/aarch64-mount
+          tar -xzf x86_64/Nucleotide-x86_64.app.tar.gz
+          mv Nucleotide.app Nucleotide-x86_64.app
+
+          tar -xzf aarch64/Nucleotide-aarch64.app.tar.gz
+          mv Nucleotide.app Nucleotide-aarch64.app
       
       - name: Create universal binary
         run: |
@@ -224,24 +214,25 @@ jobs:
           file Nucleotide-Universal.app/Contents/MacOS/Nucleotide
           lipo -info Nucleotide-Universal.app/Contents/MacOS/Nucleotide
       
-      - name: Create Universal DMG
+      - name: Build macOS Velopack package
         run: |
-          # Create DMG content
-          mkdir -p dmg-content
-          cp -r Nucleotide-Universal.app dmg-content/Nucleotide.app
-          ln -s /Applications dmg-content/Applications
-          
-          # Create DMG
-          hdiutil create -volname "Nucleotide" -srcfolder dmg-content -ov -format UDZO Nucleotide-universal.dmg
-          
-          echo "Universal DMG created:"
-          ls -lh Nucleotide-universal.dmg
-      
-      - name: Upload Universal DMG
+          mv Nucleotide-Universal.app Nucleotide.app
+          chmod +x scripts/package-velopack.sh
+          NUCL_VELOPACK_PACK_DIR="Nucleotide.app" \
+            NUCL_VELOPACK_OUTPUT_DIR="target/release/bundle/velopack-macos" \
+            NUCL_VELOPACK_PACK_ID="org.spiralpoint.nucleotide.macos" \
+            NUCL_VELOPACK_CHANNEL="macos" \
+            NUCL_VELOPACK_RUNTIME="" \
+            ./scripts/package-velopack.sh
+
+          test -f target/release/bundle/velopack-macos/releases.macos.json
+          test -n "$(find target/release/bundle/velopack-macos -maxdepth 1 -name '*-full.nupkg' -print -quit)"
+
+      - name: Upload Velopack package
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: nucleotide-macos-universal
-          path: Nucleotide-universal.dmg
+          path: target/release/bundle/velopack-macos/*
           retention-days: 7
 
   build-with-nix:
@@ -266,6 +257,16 @@ jobs:
       
       - name: Setup Nix cache
         uses: DeterminateSystems/magic-nix-cache-action@76aaf8814cdb385b86597c32b8c51b66b69b0839
+
+      - name: Install .NET SDK
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Install Velopack CLI
+        run: |
+          dotnet tool update -g vpk
+          echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
       
       - name: Build with Nix
         run: |
@@ -296,21 +297,19 @@ jobs:
             echo "✓ Nix app bundle created"
             test -x Nucleotide.app/Contents/MacOS/nucleotide-remote-linux-x86_64
             test -x Nucleotide.app/Contents/MacOS/nucleotide-remote-linux-aarch64
-            
-            # Create DMG
-            mkdir -p dmg-content
-            cp -r Nucleotide.app dmg-content/
-            ln -s /Applications dmg-content/Applications
-            hdiutil create -volname "Nucleotide" -srcfolder dmg-content -ov -format UDZO Nucleotide-nix.dmg
-            
-            echo "Nix DMG created:"
-            ls -lh Nucleotide-nix.dmg
+
+            chmod +x scripts/package-velopack.sh
+            NUCL_VELOPACK_PACK_DIR="Nucleotide.app" \
+              NUCL_VELOPACK_OUTPUT_DIR="target/release/bundle/velopack-macos-nix" \
+              NUCL_VELOPACK_PACK_ID="org.spiralpoint.nucleotide.macos" \
+              NUCL_VELOPACK_CHANNEL="macos" \
+              ./scripts/package-velopack.sh
           fi
       
-      - name: Upload Nix DMG
+      - name: Upload Nix Velopack package
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: nucleotide-macos-nix
-          path: Nucleotide-nix.dmg
+          path: target/release/bundle/velopack-macos-nix/*
           retention-days: 7

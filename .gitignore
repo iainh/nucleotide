@@ -34,6 +34,7 @@ flake-cross.nix
 .cargo/
 # Local cargo config
 .cargo-home/
+.dotnet-tools/
 
 # Helix/Editor temporary files
 .helix/

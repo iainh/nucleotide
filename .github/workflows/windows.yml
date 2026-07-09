@@ -35,7 +35,7 @@ jobs:
           retention-days: 7
 
   build:
-    name: Build Windows installer
+    name: Build Windows Velopack package
     runs-on: windows-latest
     needs: build-linux-remote-helpers
 
@@ -73,6 +73,12 @@ jobs:
         with:
           dotnet-version: 8.0.x
 
+      - name: Install Velopack CLI
+        shell: pwsh
+        run: |
+          dotnet tool update -g vpk
+          "$env:USERPROFILE\.dotnet\tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
       - name: Cache cargo dependencies
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
@@ -106,95 +112,39 @@ jobs:
             -File
 
           if ($grammarDlls.Count -eq 0) {
-            throw "Windows installer runtime does not contain any grammar DLLs."
+            throw "Windows package runtime does not contain any grammar DLLs."
           }
 
-          Write-Host "Windows installer runtime contains $($grammarDlls.Count) grammar DLL(s)."
+          Write-Host "Windows package runtime contains $($grammarDlls.Count) grammar DLL(s)."
 
           $grammarSources = "crates\nucleotide\runtime\grammars\sources"
           if (Test-Path $grammarSources) {
-            throw "Windows installer runtime must not contain grammar sources: $grammarSources"
+            throw "Windows package runtime must not contain grammar sources: $grammarSources"
           }
 
-      - name: Build Windows MSI
+      - name: Build Windows Velopack package
         shell: pwsh
         run: |
-          .\scripts\build-windows-msi.ps1 -RequireRemoteHelpers
+          .\scripts\package-velopack.ps1 `
+            -OutputDir "target\release\bundle\velopack-windows" `
+            -PackId "org.spiralpoint.nucleotide.windows" `
+            -Channel "windows" `
+            -Runtime "win-x64" `
+            -RequireRemoteHelpers
 
-          $installer = "target\release\bundle\wxsmsi\bin\Release\nucleotide.msi"
-          if (-not (Test-Path $installer)) {
-            throw "Windows installer not found: $installer"
+          if (-not (Test-Path "target\release\bundle\velopack-windows\releases.windows.json" -PathType Leaf)) {
+            throw "Velopack Windows release feed was not created."
+          }
+          if (-not (Get-ChildItem "target\release\bundle\velopack-windows" -Filter "*-full.nupkg" -File | Select-Object -First 1)) {
+            throw "Velopack Windows full package was not created."
+          }
+          if (-not (Get-ChildItem "target\release\bundle\velopack-windows" -Filter "*Setup.exe" -File | Select-Object -First 1)) {
+            throw "Velopack Windows setup executable was not created."
           }
 
-          Copy-Item -LiteralPath $installer -Destination Nucleotide-windows-x86_64.msi -Force
-          Get-Item Nucleotide-windows-x86_64.msi
-
-      - name: Verify MSI payload
-        shell: pwsh
-        run: |
-          $extractDir = Join-Path $PWD "dist\windows-msi"
-          New-Item -ItemType Directory -Path $extractDir -Force | Out-Null
-
-          $installer = (Resolve-Path "Nucleotide-windows-x86_64.msi").Path
-          $process = Start-Process `
-            -FilePath msiexec.exe `
-            -ArgumentList @("/a", $installer, "/qn", "TARGETDIR=$extractDir") `
-            -Wait `
-            -PassThru
-
-          if ($process.ExitCode -ne 0) {
-            throw "Administrative MSI extraction failed with exit code $($process.ExitCode)."
-          }
-
-          $runtime = Get-ChildItem -Path $extractDir -Recurse -Directory -Filter runtime |
-            Select-Object -First 1
-          if (-not $runtime) {
-            throw "Extracted MSI does not contain a runtime directory."
-          }
-
-          $languages = Join-Path $runtime.FullName "languages.toml"
-          if (-not (Test-Path -LiteralPath $languages -PathType Leaf)) {
-            throw "Extracted MSI runtime does not contain languages.toml."
-          }
-
-          $queries = Join-Path $runtime.FullName "queries"
-          if (-not (Test-Path -LiteralPath $queries -PathType Container)) {
-            throw "Extracted MSI runtime does not contain a queries directory."
-          }
-
-          $queryDirs = Get-ChildItem -Path $queries -Directory
-          if ($queryDirs.Count -eq 0) {
-            throw "Extracted MSI runtime queries directory is empty."
-          }
-
-          $grammarDlls = Get-ChildItem -Path (Join-Path $runtime.FullName "grammars") -Filter *.dll -File
-          if ($grammarDlls.Count -eq 0) {
-            throw "Extracted MSI runtime does not contain any grammar DLLs."
-          }
-
-          $exe = Get-ChildItem -Path $extractDir -Recurse -Filter nucl.exe -File |
-            Select-Object -First 1
-          if (-not $exe) {
-            throw "Extracted MSI does not contain nucl.exe."
-          }
-
-          $ghosttyDll = Get-ChildItem -Path $extractDir -Recurse -Filter ghostty-vt.dll -File |
-            Select-Object -First 1
-          if (-not $ghosttyDll) {
-            throw "Extracted MSI does not contain ghostty-vt.dll."
-          }
-
-          foreach ($helper in @("nucleotide-remote-linux-x86_64", "nucleotide-remote-linux-aarch64")) {
-            $installed = Get-ChildItem -Path $extractDir -Recurse -Filter $helper -File |
-              Select-Object -First 1
-            if (-not $installed) {
-              throw "Extracted MSI does not contain $helper."
-            }
-          }
-
-      - name: Upload Windows installer
+      - name: Upload Windows Velopack package
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: nucleotide-windows-x86_64
-          path: Nucleotide-windows-x86_64.msi
+          path: target/release/bundle/velopack-windows/*
           retention-days: 7
