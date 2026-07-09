@@ -7,7 +7,26 @@ pub mod terminal_handler;
 pub mod workspace_file_ops;
 
 #[cfg(feature = "terminal-emulator-core")]
-pub use terminal_handler::{TerminalInputSenders, TerminalRuntimeHandler};
+pub use terminal_handler::TerminalRuntimeHandle;
+#[cfg(not(feature = "terminal-emulator-core"))]
+#[derive(Clone, Default)]
+pub struct TerminalRuntimeHandle;
+#[cfg(not(feature = "terminal-emulator-core"))]
+impl TerminalRuntimeHandle {
+    pub fn new() -> Self {
+        Self
+    }
+
+    pub fn dispatch(&self, _event: &nucleotide_events::v2::terminal::Event) {}
+
+    pub fn send_input(
+        &self,
+        _id: nucleotide_events::v2::terminal::TerminalId,
+        _bytes: Vec<u8>,
+    ) -> bool {
+        false
+    }
+}
 pub use workspace_file_ops::WorkspaceFileOpHandler;
 
 use std::{
@@ -1276,8 +1295,7 @@ pub fn implicit_workspace_root_from_current_dir() -> Option<PathBuf> {
 // Removed unused Tag-related structs and enums
 
 use anyhow::{Context as _, Error, bail};
-use nucleotide_core::{EventAggregatorHandle, EventBus, event_bridge};
-use nucleotide_events::v2::diagnostics::Event as DiagnosticsEvent;
+use nucleotide_core::event_bridge;
 use nucleotide_logging::{
     Level, PerfTimer, debug, error, info, instrument, span, timed, trace, warn,
 };
@@ -1397,12 +1415,8 @@ pub struct Application {
     pub workspace_file_ops: WorkspaceFileOpHandler,
     project_env_overrides: HashMap<String, Option<String>>,
     prewarmed_lsp_startups: HashSet<(PathBuf, String, String)>,
-    // Event aggregator for dispatching integration events
-    pub event_aggregator: Option<EventAggregatorHandle>,
+    pub terminal_runtime: TerminalRuntimeHandle,
     maintenance_wake: Option<MaintenanceWake>,
-    // Fast-path input senders for terminal — bypasses the event queue
-    #[cfg(feature = "terminal-emulator-core")]
-    pub terminal_input_senders: TerminalInputSenders,
     // Counter for sync cycles to delay LSP startup until system is fully initialized
     pub sync_cycle_counter: Arc<std::sync::atomic::AtomicUsize>,
 }
@@ -1691,37 +1705,6 @@ impl Application {
                     });
 
                     trace!(uri = %uri.to_string(), "DIAG: LspState.set_diagnostics applied");
-
-                    if let Some(aggregator) = &self.event_aggregator {
-                        use helix_core::diagnostic::DiagnosticProvider;
-                        use std::collections::BTreeMap;
-
-                        let mut by_provider: BTreeMap<
-                            DiagnosticProvider,
-                            Vec<helix_core::diagnostic::Diagnostic>,
-                        > = BTreeMap::new();
-                        for diagnostic in diagnostics.iter().cloned() {
-                            by_provider
-                                .entry(diagnostic.provider.clone())
-                                .or_default()
-                                .push(diagnostic);
-                        }
-
-                        for (provider, diagnostics) in by_provider {
-                            trace!(
-                                provider = ?provider,
-                                count = diagnostics.len(),
-                                "DIAG: Dispatching diagnostics provider set"
-                            );
-                            aggregator.dispatch_diagnostics(
-                                DiagnosticsEvent::DocumentDiagnosticsSet {
-                                    uri: uri.clone(),
-                                    diagnostics,
-                                    provider,
-                                },
-                            );
-                        }
-                    }
                 }
             }
             event_bridge::BridgedEvent::DiagnosticsPickerRequested { workspace } => {
@@ -1785,15 +1768,6 @@ impl Application {
                         state.remove_server(*server_id);
                         cx.notify();
                     });
-                }
-
-                if let Some(aggregator) = &self.event_aggregator {
-                    trace!(server_id = ?server_id, "DIAG: Dispatching workspace diagnostics cleared for server");
-                    aggregator.dispatch_diagnostics(
-                        DiagnosticsEvent::WorkspaceDiagnosticsClearedForServer {
-                            server_id: *server_id,
-                        },
-                    );
                 }
             }
             event_bridge::BridgedEvent::DocumentOpened { .. }
@@ -8162,22 +8136,7 @@ pub fn init_editor(
     let workspace_file_ops =
         WorkspaceFileOpHandler::new(workspace_backend.clone(), file_op_runtime);
 
-    // Initialize the terminal event queue.
-    #[cfg(feature = "terminal-emulator-core")]
-    let terminal_input_senders;
-    let event_aggregator = {
-        let agg = nucleotide_core::EventAggregator::new();
-        let handle = nucleotide_core::EventAggregatorHandle::new(agg);
-        // Register Terminal runtime handler (behind feature)
-        #[cfg(feature = "terminal-emulator-core")]
-        {
-            let mut terminal_handler = crate::application::TerminalRuntimeHandler::new();
-            terminal_handler.set_event_bus(handle.clone());
-            terminal_input_senders = terminal_handler.input_senders();
-            handle.register_handler(terminal_handler);
-        }
-        handle
-    };
+    let terminal_runtime = TerminalRuntimeHandle::new();
 
     Ok(Application {
         editor,
@@ -8202,11 +8161,8 @@ pub fn init_editor(
         workspace_file_ops,
         project_env_overrides: HashMap::new(),
         prewarmed_lsp_startups: HashSet::new(),
-        // Event aggregator for UI and workspace events
-        event_aggregator: Some(event_aggregator),
+        terminal_runtime,
         maintenance_wake: None,
-        #[cfg(feature = "terminal-emulator-core")]
-        terminal_input_senders,
         sync_cycle_counter: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     })
 }
@@ -10754,10 +10710,8 @@ mod tests {
                 ),
                 project_env_overrides: HashMap::new(),
                 prewarmed_lsp_startups: HashSet::new(),
-                event_aggregator: None,
+                terminal_runtime: crate::application::TerminalRuntimeHandle::new(),
                 maintenance_wake: None,
-                #[cfg(feature = "terminal-emulator-core")]
-                terminal_input_senders: Default::default(),
                 sync_cycle_counter: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             };
 

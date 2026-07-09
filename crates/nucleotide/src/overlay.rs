@@ -5,7 +5,6 @@ use gpui::{
     div, px,
 };
 use helix_stdx::rope::RopeSliceExt;
-use nucleotide_core::EventBus;
 use nucleotide_terminal::TerminalBounds;
 use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::completion_v2::CompletionView;
@@ -2009,21 +2008,15 @@ impl Render for OverlayView {
                     self.last_terminal_size = Some((active_id, cols, rows));
                     if let Some(core) = self.core.upgrade() {
                         core.update(cx, |app, _| {
-                            if let Some(bus) = &app.event_aggregator {
-                                bus.dispatch_terminal(
-                                    nucleotide_events::v2::terminal::Event::Resized {
-                                        id: active_id,
-                                        cols,
-                                        rows,
-                                        cell_width: char_w,
-                                        cell_height: line_h,
-                                    },
-                                );
-                                // Process resize events immediately so the PTY is
-                                // resized in the same frame rather than waiting for
-                                // the next render cycle.
-                                bus.process_events();
-                            }
+                            app.terminal_runtime.dispatch(
+                                &nucleotide_events::v2::terminal::Event::Resized {
+                                    id: active_id,
+                                    cols,
+                                    rows,
+                                    cell_width: char_w,
+                                    cell_height: line_h,
+                                },
+                            );
                         });
                     }
                     // Notify the terminal view entity so it re-renders with

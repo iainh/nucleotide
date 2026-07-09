@@ -7,10 +7,7 @@ pub use nucleotide_core::{
 };
 
 // Re-export V2 event types from nucleotide-core
-pub use nucleotide_core::{
-    AppEvent, DocumentEvent, EditorEvent, IntegrationEvent, LspV2Event as LspEvent, UiEvent,
-    WorkspaceEvent,
-};
+pub use nucleotide_core::{AppEvent, DocumentEvent, UiEvent, WorkspaceEvent};
 
 // Re-export UI enums from V2 events
 pub use nucleotide_events::v2::ui::SystemAppearance;

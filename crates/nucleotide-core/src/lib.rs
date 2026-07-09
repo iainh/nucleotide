@@ -1,8 +1,8 @@
 // ABOUTME: Core event bridges between Helix and GPUI
 // ABOUTME: Provides the fundamental event translation layer
 
+pub mod app_event;
 pub mod document_manager;
-pub mod event_aggregator;
 pub mod event_bridge;
 pub mod picker_capability;
 pub mod preview_tracker;
@@ -11,19 +11,12 @@ pub mod utils;
 
 pub use picker_capability::PickerCapability;
 
-// Re-export event types from nucleotide-events
-pub use nucleotide_events::{
-    EventBus, EventHandler, LspEvent, integration::Event as IntegrationEvent,
-};
-
 // Re-export V2 domain events
 pub use nucleotide_events::v2::{
-    document::Event as DocumentEvent, editor::Event as EditorEvent, lsp::Event as LspV2Event,
-    run::Event as RunEvent, ui::Event as UiEvent, workspace::Event as WorkspaceEvent,
+    document::Event as DocumentEvent, ui::Event as UiEvent, workspace::Event as WorkspaceEvent,
 };
 
-// Event aggregator exports (includes V2 AppEvent)
-pub use event_aggregator::{AppEvent, EventAggregator, EventAggregatorHandle};
+pub use app_event::AppEvent;
 
 // Event bridge exports
 pub use event_bridge::{
