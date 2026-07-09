@@ -9939,52 +9939,10 @@ impl Workspace {
                             }
                         }
                     }
-                    crate::types::AppEvent::Ui(ui_event) => {
-                        match ui_event {
-                            crate::types::UiEvent::OverlayShown {
-                                overlay_type,
-                                overlay_id: _,
-                            } => {
-                                use nucleotide_events::v2::ui::OverlayType;
-                                match overlay_type {
-                                    OverlayType::FilePicker => {
-                                        nucleotide_logging::debug!(
-                                            "DIAG: Workspace observed OverlayShown(FilePicker)"
-                                        );
-                                        let handle = self.handle.clone();
-                                        let core = self.core.clone();
-                                        let overlay = self.overlay.clone();
-                                        open(core, handle, overlay, cx);
-                                    }
-                                    OverlayType::BufferPicker => {
-                                        nucleotide_logging::debug!(
-                                            "DIAG: Workspace observed OverlayShown(BufferPicker)"
-                                        );
-                                        let handle = self.handle.clone();
-                                        let core = self.core.clone();
-                                        let overlay = self.overlay.clone();
-                                        show_buffer_picker(core, handle, overlay, cx);
-                                    }
-                                    OverlayType::Search
-                                    | OverlayType::Completion
-                                    | OverlayType::Prompt
-                                    | OverlayType::Dialog
-                                    | OverlayType::Tooltip
-                                    | OverlayType::ContextMenu => {
-                                        nucleotide_logging::debug!(
-                                            overlay_type = ?overlay_type,
-                                            "OverlayShown is handled by its owning UI component"
-                                        );
-                                    }
-                                }
-                            }
-                            crate::types::UiEvent::SystemAppearanceChanged { appearance } => {
-                                self.handle_system_appearance_changed(*appearance, cx);
-                            }
-                            _ => {
-                                // Other UI events not yet handled
-                            }
-                        }
+                    crate::types::AppEvent::Ui(
+                        crate::types::UiEvent::SystemAppearanceChanged { appearance },
+                    ) => {
+                        self.handle_system_appearance_changed(*appearance, cx);
                     }
                     crate::types::AppEvent::Lsp(lsp_event) => {
                         match lsp_event {
@@ -10015,7 +9973,6 @@ impl Workspace {
                         // Diagnostics domain events are handled upstream to update LspState
                     }
                 }
-                self.forward_info_box_event(event, cx);
             }
         }
 
@@ -11715,16 +11672,6 @@ impl Workspace {
         self.key_hints.update(cx, |key_hints, cx| {
             key_hints.set_info(editor_info);
             cx.notify();
-        });
-    }
-
-    fn forward_info_box_event(&self, event: &crate::types::AppEvent, cx: &mut Context<Self>) {
-        if !matches!(event, crate::types::AppEvent::Ui(_)) {
-            return;
-        }
-
-        self.info.update(cx, |info_box, info_cx| {
-            info_box.handle_app_event(event, info_cx);
         });
     }
 

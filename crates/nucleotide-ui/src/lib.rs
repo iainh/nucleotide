@@ -256,32 +256,6 @@ impl Default for UIConfig {
 
 impl gpui::Global for UIConfig {}
 
-/// Component registration system for future extensibility
-#[derive(Debug, Default)]
-pub struct ComponentRegistry {
-    /// Registered component types
-    registered_components: std::collections::HashSet<&'static str>,
-}
-
-impl ComponentRegistry {
-    /// Register a component type
-    pub fn register_component(&mut self, component_type: &'static str) {
-        self.registered_components.insert(component_type);
-    }
-
-    /// Check if a component type is registered
-    pub fn is_registered(&self, component_type: &'static str) -> bool {
-        self.registered_components.contains(component_type)
-    }
-
-    /// Get all registered component types
-    pub fn registered_components(&self) -> impl Iterator<Item = &'static str> + '_ {
-        self.registered_components.iter().copied()
-    }
-}
-
-impl gpui::Global for ComponentRegistry {}
-
 pub(crate) const BUILT_IN_COMPONENTS: &[&str] = &[
     "AboutWindow",
     "AppShell",
@@ -321,7 +295,6 @@ pub(crate) const BUILT_IN_COMPONENTS: &[&str] = &[
 ///
 /// This function should be called once during application startup to:
 /// - Setup global state management for themes and configuration
-/// - Initialize the component registration system
 /// - Setup performance monitoring (if enabled)
 /// - Configure default themes and tokens
 ///
@@ -379,16 +352,6 @@ pub fn init(cx: &mut App, config: Option<UIConfig>) {
 
     // Setup global configuration
     cx.set_global(config);
-
-    // Initialize component registry
-    let mut registry = ComponentRegistry::default();
-
-    // Register built-in components
-    for component in BUILT_IN_COMPONENTS {
-        registry.register_component(component);
-    }
-
-    cx.set_global(registry);
 }
 
 fn configuration_provider_from_ui_config(config: &UIConfig) -> providers::ConfigurationProvider {
@@ -432,15 +395,6 @@ fn configuration_provider_from_ui_config(config: &UIConfig) -> providers::Config
 /// Panics if `init()` has not been called first to setup the global configuration.
 pub fn get_config(cx: &App) -> &UIConfig {
     cx.global::<UIConfig>()
-}
-
-/// Get the current component registry
-///
-/// # Panics
-///
-/// Panics if `init()` has not been called first to setup the component registry.
-pub fn get_registry(cx: &App) -> &ComponentRegistry {
-    cx.global::<ComponentRegistry>()
 }
 
 /// Check if a feature is enabled in the current configuration
