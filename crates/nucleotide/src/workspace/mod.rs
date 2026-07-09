@@ -41,7 +41,6 @@ use helix_stdx::rope::RopeSliceExt;
 use helix_view::input::KeyEvent;
 use helix_view::keyboard::{KeyCode, KeyModifiers};
 use helix_view::{DocumentId, ViewId, graphics::Rect as HelixRect};
-use nucleotide_core::event_bridge;
 use nucleotide_logging::{debug, error, info, instrument, trace, warn};
 use nucleotide_types::scrollbar::SCROLLBAR_THICKNESS;
 use nucleotide_ui::ThemedContext as UIThemedContext;
@@ -7867,7 +7866,7 @@ impl Workspace {
         &mut self,
         doc_id: helix_view::DocumentId,
         view_id: helix_view::ViewId,
-        trigger: &event_bridge::CompletionTrigger,
+        trigger: &crate::types::CompletionTrigger,
         cx: &mut Context<Self>,
     ) {
         // Completion was requested - trigger completion UI

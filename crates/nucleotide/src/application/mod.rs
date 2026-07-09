@@ -1303,12 +1303,8 @@ fn bridged_event_needs_gpui_context(bridged_event: &event_bridge::BridgedEvent) 
         | event_bridge::BridgedEvent::LanguageServerInitialized { .. }
         | event_bridge::BridgedEvent::LanguageServerExited { .. } => true,
         event_bridge::BridgedEvent::DocumentChanged { .. }
-        | event_bridge::BridgedEvent::SelectionChanged { .. }
-        | event_bridge::BridgedEvent::ModeChanged { .. }
         | event_bridge::BridgedEvent::DocumentOpened { .. }
-        | event_bridge::BridgedEvent::DocumentClosed { .. }
-        | event_bridge::BridgedEvent::ViewFocused { .. }
-        | event_bridge::BridgedEvent::CompletionRequested { .. } => false,
+        | event_bridge::BridgedEvent::DocumentClosed { .. } => false,
     }
 }
 
@@ -1326,14 +1322,10 @@ fn coalesce_bridged_events(
                 }
             }
             event_bridge::BridgedEvent::DocumentChanged { .. }
-            | event_bridge::BridgedEvent::SelectionChanged { .. }
-            | event_bridge::BridgedEvent::ModeChanged { .. }
             | event_bridge::BridgedEvent::DocumentOpened { .. }
             | event_bridge::BridgedEvent::DocumentClosed { .. }
-            | event_bridge::BridgedEvent::ViewFocused { .. }
             | event_bridge::BridgedEvent::LanguageServerInitialized { .. }
             | event_bridge::BridgedEvent::LanguageServerExited { .. }
-            | event_bridge::BridgedEvent::CompletionRequested { .. }
             | event_bridge::BridgedEvent::DiagnosticsPickerRequested { .. }
             | event_bridge::BridgedEvent::FilePickerRequested
             | event_bridge::BridgedEvent::BufferPickerRequested => {}
@@ -1801,13 +1793,9 @@ impl Application {
                     );
                 }
             }
-            event_bridge::BridgedEvent::CompletionRequested { .. }
-            | event_bridge::BridgedEvent::DocumentOpened { .. }
+            event_bridge::BridgedEvent::DocumentOpened { .. }
             | event_bridge::BridgedEvent::DocumentChanged { .. }
-            | event_bridge::BridgedEvent::DocumentClosed { .. }
-            | event_bridge::BridgedEvent::SelectionChanged { .. }
-            | event_bridge::BridgedEvent::ModeChanged { .. }
-            | event_bridge::BridgedEvent::ViewFocused { .. } => {}
+            | event_bridge::BridgedEvent::DocumentClosed { .. } => {}
         }
     }
 
@@ -2156,10 +2144,6 @@ impl Application {
                 }))
             }
 
-            event_bridge::BridgedEvent::SelectionChanged { .. }
-            | event_bridge::BridgedEvent::ModeChanged { .. }
-            | event_bridge::BridgedEvent::ViewFocused { .. } => None,
-
             event_bridge::BridgedEvent::DocumentOpened { doc_id } => {
                 // Extract document information for enriched event
                 let (path, language_id) = if let Some(document) = self.editor.document(*doc_id) {
@@ -2224,7 +2208,6 @@ impl Application {
 
             event_bridge::BridgedEvent::LanguageServerInitialized { .. }
             | event_bridge::BridgedEvent::LanguageServerExited { .. }
-            | event_bridge::BridgedEvent::CompletionRequested { .. }
             | event_bridge::BridgedEvent::DiagnosticsPickerRequested { .. }
             | event_bridge::BridgedEvent::FilePickerRequested
             | event_bridge::BridgedEvent::BufferPickerRequested => None,
@@ -9717,7 +9700,7 @@ mod tests {
     };
     use crate::test_utils::test_support::{
         TestUpdate, create_counting_channel, create_test_diagnostic_events,
-        create_test_document_events, create_test_selection_events,
+        create_test_document_events,
     };
     use arc_swap::{ArcSwap, access::Map};
     use futures_util::{FutureExt, stream::FuturesOrdered};
@@ -9784,8 +9767,6 @@ mod tests {
     #[test]
     fn bridged_event_gpui_context_route_only_includes_side_effect_variants() {
         let doc_id = helix_view::DocumentId::default();
-        let view_id = helix_view::ViewId::default();
-
         assert!(bridged_event_needs_gpui_context(
             &event_bridge::BridgedEvent::DiagnosticsChanged { doc_id }
         ));
@@ -9816,31 +9797,12 @@ mod tests {
             }
         ));
         assert!(!bridged_event_needs_gpui_context(
-            &event_bridge::BridgedEvent::SelectionChanged { doc_id, view_id }
-        ));
-        assert!(!bridged_event_needs_gpui_context(
-            &event_bridge::BridgedEvent::ModeChanged {
-                old_mode: helix_view::document::Mode::Normal,
-                new_mode: helix_view::document::Mode::Insert,
-            }
-        ));
-        assert!(!bridged_event_needs_gpui_context(
             &event_bridge::BridgedEvent::DocumentOpened { doc_id }
         ));
         assert!(!bridged_event_needs_gpui_context(
             &event_bridge::BridgedEvent::DocumentClosed {
                 doc_id,
                 was_modified: false,
-            }
-        ));
-        assert!(!bridged_event_needs_gpui_context(
-            &event_bridge::BridgedEvent::ViewFocused { view_id }
-        ));
-        assert!(!bridged_event_needs_gpui_context(
-            &event_bridge::BridgedEvent::CompletionRequested {
-                doc_id,
-                view_id,
-                trigger: event_bridge::CompletionTrigger::Manual,
             }
         ));
     }
@@ -12277,38 +12239,6 @@ mod tests {
         );
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].label, "println");
-    }
-
-    #[ignore] // Temporarily disabled due to SIGBUS compiler crash
-    #[tokio::test]
-    async fn test_event_batching_reduces_update_calls() {
-        // This test SHOULD FAIL initially
-        // We're testing that multiple rapid events get batched into fewer updates
-
-        let (event_tx, mut event_rx, _counter) = create_counting_channel();
-
-        // Send 10 rapid selection changed events
-        let events = create_test_selection_events(10);
-        for event in events {
-            let _ = event_tx.send(event);
-        }
-
-        // Small delay to let events accumulate
-        tokio::time::sleep(Duration::from_millis(10)).await;
-
-        // Process events (simulating what Application::step would do)
-        let mut update_count = 0;
-        while event_rx.try_recv().is_ok() {
-            update_count += 1;
-        }
-
-        // WITHOUT BATCHING: We expect 10 updates (one per event)
-        // WITH BATCHING: We expect fewer updates (events batched together)
-        assert!(
-            update_count < 5,
-            "Expected fewer than 5 updates with batching, but got {}. Events are not being batched.",
-            update_count
-        );
     }
 
     #[ignore] // Temporarily disabled due to SIGBUS compiler crash
