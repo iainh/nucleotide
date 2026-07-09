@@ -1702,8 +1702,10 @@ mod tests {
 
     #[test]
     fn startup_host_working_directory_uses_local_workspace_root() {
-        let mut args = Args::default();
-        args.working_directory = Some(PathBuf::from("/ignored"));
+        let args = Args {
+            working_directory: Some(PathBuf::from("/ignored")),
+            ..Args::default()
+        };
         let workspace_root = PathBuf::from("/tmp/project");
 
         assert_eq!(
@@ -1736,16 +1738,20 @@ mod tests {
 
     #[test]
     fn startup_host_working_directory_skips_remote_explicit_working_directory() {
-        let mut args = Args::default();
-        args.working_directory = Some(PathBuf::from("ssh://me@example.com/home/me/project"));
+        let args = Args {
+            working_directory: Some(PathBuf::from("ssh://me@example.com/home/me/project")),
+            ..Args::default()
+        };
 
         assert_eq!(startup_host_working_directory(&args, None), None);
     }
 
     #[test]
     fn startup_host_working_directory_uses_local_explicit_working_directory() {
-        let mut args = Args::default();
-        args.working_directory = Some(PathBuf::from("/tmp/project"));
+        let args = Args {
+            working_directory: Some(PathBuf::from("/tmp/project")),
+            ..Args::default()
+        };
 
         assert_eq!(
             startup_host_working_directory(&args, None),

@@ -16,9 +16,7 @@ async fn test_command_routing_integration() {
     let (project_lsp_command_tx, project_lsp_command_rx) = tokio::sync::mpsc::unbounded_channel();
 
     // Simulate what happens in Application's command processor.
-    let mut command_rx = Some(project_lsp_command_rx)
-        .take()
-        .expect("Command receiver should be available");
+    let mut command_rx = project_lsp_command_rx;
 
     // Start command processor (simplified version)
     let processor_handle = tokio::spawn(async move {
@@ -131,9 +129,7 @@ async fn test_event_driven_command_pattern_end_to_end() {
     // Simulate Application command processor (simplified)
     let processor_handle = {
         tokio::spawn(async move {
-            let mut command_rx = Some(project_lsp_command_rx)
-                .take()
-                .expect("Command receiver should be available");
+            let mut command_rx = project_lsp_command_rx;
 
             if let Some(ProjectLspCommand::StartServer {
                 workspace_root: _,
@@ -224,9 +220,7 @@ async fn test_event_driven_command_pattern_failure() {
     // Simulate Application command processor
     let processor_handle = {
         tokio::spawn(async move {
-            let mut command_rx = Some(project_lsp_command_rx)
-                .take()
-                .expect("Command receiver should be available");
+            let mut command_rx = project_lsp_command_rx;
 
             if let Some(ProjectLspCommand::StartServer {
                 workspace_root: _,
