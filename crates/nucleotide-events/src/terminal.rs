@@ -27,16 +27,8 @@ pub enum Event {
         env: Vec<(String, String)>,
     },
 
-    /// Terminal viewport resized (in character cells)
+    /// Terminal viewport resized with explicit cell metrics.
     Resized {
-        id: TerminalId,
-        cols: u16,
-        rows: u16,
-    },
-
-    /// Terminal viewport resized with explicit cell metrics (recommended)
-    /// Allows the emulator to construct an accurate SizeInfo in pixels.
-    ResizedWithMetrics {
         id: TerminalId,
         cols: u16,
         rows: u16,
@@ -47,18 +39,12 @@ pub enum Event {
     /// Input bytes sent to the terminal (raw)
     Input { id: TerminalId, bytes: Vec<u8> },
 
-    /// Output bytes produced by the terminal (raw)
-    Output { id: TerminalId, bytes: Vec<u8> },
-
     /// Terminal process exited
     Exited {
         id: TerminalId,
         code: Option<i32>,
         signal: Option<i32>,
     },
-
-    /// Focus changed for a terminal view
-    FocusChanged { id: TerminalId, focused: bool },
 }
 
 #[cfg(test)]

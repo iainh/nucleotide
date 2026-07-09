@@ -13761,11 +13761,6 @@ impl Workspace {
                         id: active_id,
                         cols: bounds.cols(),
                         rows: bounds.rows(),
-                    });
-                    bus.dispatch_terminal(TerminalEvent::ResizedWithMetrics {
-                        id: active_id,
-                        cols: bounds.cols(),
-                        rows: bounds.rows(),
                         cell_width: bounds.cell_size().0,
                         cell_height: bounds.cell_size().1,
                     });

@@ -33,17 +33,11 @@ pub struct TerminalRuntimeHandler {
 }
 
 #[derive(Clone, Copy, Debug)]
-enum PendingTerminalResize {
-    Cells {
-        cols: u16,
-        rows: u16,
-    },
-    Metrics {
-        cols: u16,
-        rows: u16,
-        cell_width: f32,
-        cell_height: f32,
-    },
+struct PendingTerminalResize {
+    cols: u16,
+    rows: u16,
+    cell_width: f32,
+    cell_height: f32,
 }
 
 struct SessionEntry {
@@ -62,15 +56,6 @@ struct SessionEntry {
     last_size: Option<(u16, u16)>,
     #[cfg(feature = "terminal-emulator-core")]
     last_bounds: Option<TerminalBounds>,
-}
-
-#[cfg(feature = "terminal-emulator-core")]
-fn legacy_resize_bounds(
-    last_bounds: Option<TerminalBounds>,
-    cols: u16,
-    rows: u16,
-) -> Option<TerminalBounds> {
-    last_bounds.map(|bounds| bounds.with_cells(cols, rows))
 }
 
 #[cfg(feature = "terminal-emulator-core")]
@@ -337,16 +322,7 @@ impl TerminalRuntimeHandler {
         info!(terminal_id=?id, "Terminal session spawned and consumer started");
     }
 
-    fn handle_resize(&mut self, id: TerminalId, cols: u16, rows: u16) {
-        if self.sessions.contains_key(&id) {
-            self.apply_resize(id, cols, rows);
-        } else {
-            self.pending_resizes
-                .insert(id, PendingTerminalResize::Cells { cols, rows });
-        }
-    }
-
-    fn handle_resize_with_metrics(
+    fn handle_resize(
         &mut self,
         id: TerminalId,
         cols: u16,
@@ -355,11 +331,11 @@ impl TerminalRuntimeHandler {
         cell_height: f32,
     ) {
         if self.sessions.contains_key(&id) {
-            self.apply_resize_with_metrics(id, cols, rows, cell_width, cell_height);
+            self.apply_resize(id, cols, rows, cell_width, cell_height);
         } else {
             self.pending_resizes.insert(
                 id,
-                PendingTerminalResize::Metrics {
+                PendingTerminalResize {
                     cols,
                     rows,
                     cell_width,
@@ -374,59 +350,16 @@ impl TerminalRuntimeHandler {
             return;
         };
 
-        match resize {
-            PendingTerminalResize::Cells { cols, rows } => self.apply_resize(id, cols, rows),
-            PendingTerminalResize::Metrics {
-                cols,
-                rows,
-                cell_width,
-                cell_height,
-            } => self.apply_resize_with_metrics(id, cols, rows, cell_width, cell_height),
-        }
+        self.apply_resize(
+            id,
+            resize.cols,
+            resize.rows,
+            resize.cell_width,
+            resize.cell_height,
+        );
     }
 
-    fn apply_resize(&mut self, id: TerminalId, cols: u16, rows: u16) {
-        let Some(entry) = self.sessions.get_mut(&id) else {
-            return;
-        };
-
-        let size_changed = entry
-            .last_size
-            .map(|(prev_cols, prev_rows)| prev_cols != cols || prev_rows != rows)
-            .unwrap_or(true);
-
-        if size_changed {
-            if let Ok(session) = entry.session.lock() {
-                #[cfg(feature = "terminal-emulator-core")]
-                let resized_bounds = legacy_resize_bounds(entry.last_bounds, cols, rows);
-
-                #[cfg(feature = "terminal-emulator-core")]
-                if let Some(bounds) = resized_bounds {
-                    let (cell_width, cell_height) = bounds.cell_size();
-                    let _ = session.control_sender().send(ControlMsg::Resize {
-                        cols,
-                        rows,
-                        cell_width,
-                        cell_height,
-                    });
-                    entry.last_bounds = Some(bounds);
-                }
-
-                let _ = futures_executor::block_on(session.resize(cols, rows));
-            }
-            #[cfg(feature = "terminal-emulator-core")]
-            if let Ok(mut view) = entry.view.lock() {
-                view.resize_grid(
-                    cols,
-                    rows,
-                    entry.last_bounds.map(|bounds| bounds.cell_size()),
-                );
-            }
-            entry.last_size = Some((cols, rows));
-        }
-    }
-
-    fn apply_resize_with_metrics(
+    fn apply_resize(
         &mut self,
         id: TerminalId,
         cols: u16,
@@ -522,26 +455,20 @@ impl core::EventHandler for TerminalRuntimeHandler {
                 };
                 self.handle_spawn(*id, &cfg);
             }
-            TerminalEvent::Resized { id, cols, rows } => {
-                self.handle_resize(*id, *cols, *rows);
-            }
-            TerminalEvent::ResizedWithMetrics {
+            TerminalEvent::Resized {
                 id,
                 cols,
                 rows,
                 cell_width,
                 cell_height,
             } => {
-                self.handle_resize_with_metrics(*id, *cols, *rows, *cell_width, *cell_height);
+                self.handle_resize(*id, *cols, *rows, *cell_width, *cell_height);
             }
             TerminalEvent::Input { id, bytes } => {
                 if let Some(entry) = self.sessions.get(id) {
                     // Send bytes to background writer; drop if receiver is gone
                     let _ = entry.input_tx.send(bytes.clone());
                 }
-            }
-            TerminalEvent::Output { .. } => {
-                // Output is produced by session read loop; nothing to do
             }
             TerminalEvent::Exited { id, .. } => {
                 // Remove from shared sender map first
@@ -566,7 +493,6 @@ impl core::EventHandler for TerminalRuntimeHandler {
                     }
                 }
             }
-            TerminalEvent::FocusChanged { .. } => {}
         }
     }
 }
@@ -576,32 +502,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn legacy_resize_reuses_cached_cell_metrics_for_emulator() {
-        let initial = TerminalBounds::from_cells(8.0, 16.0, 80, 24);
-        let resized = legacy_resize_bounds(Some(initial), 100, 30)
-            .expect("cached metrics should produce emulator resize bounds");
-
-        assert_eq!(resized.cols(), 100);
-        assert_eq!(resized.rows(), 30);
-        assert_eq!(resized.cell_size(), (8.0, 16.0));
-    }
-
-    #[test]
-    fn metrics_resize_is_skipped_after_matching_legacy_resize() {
-        let initial = TerminalBounds::from_cells(8.0, 16.0, 80, 24);
-        let resized = legacy_resize_bounds(Some(initial), 100, 30).unwrap();
-        let matching_metrics = TerminalBounds::from_cells(8.0, 16.0, 100, 30);
-
-        assert!(metrics_resize_bounds(Some(resized), matching_metrics).is_none());
-    }
-
-    #[test]
     fn metrics_resize_still_applies_when_cell_metrics_change() {
         let initial = TerminalBounds::from_cells(8.0, 16.0, 80, 24);
-        let resized = legacy_resize_bounds(Some(initial), 100, 30).unwrap();
         let updated_metrics = TerminalBounds::from_cells(9.0, 18.0, 100, 30);
 
-        let metrics_resize = metrics_resize_bounds(Some(resized), updated_metrics)
+        let metrics_resize = metrics_resize_bounds(Some(initial), updated_metrics)
             .expect("changed cell metrics should force an emulator resize");
 
         assert_eq!(metrics_resize.cols(), 100);
@@ -614,11 +519,10 @@ mod tests {
         let mut handler = TerminalRuntimeHandler::new();
         let id = TerminalId(1);
 
-        handler.handle_resize(id, 80, 24);
-        handler.handle_resize_with_metrics(id, 120, 32, 9.0, 18.0);
+        handler.handle_resize(id, 120, 32, 9.0, 18.0);
 
         match handler.pending_resizes.get(&id) {
-            Some(PendingTerminalResize::Metrics {
+            Some(PendingTerminalResize {
                 cols,
                 rows,
                 cell_width,
