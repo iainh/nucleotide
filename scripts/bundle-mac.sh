@@ -11,8 +11,13 @@ EXECUTABLE_NAME="nucl"
 BUNDLE_ID="org.spiralpoint.nucleotide"
 BINARY_PATH="${NUCL_BINARY:-target/release/${EXECUTABLE_NAME}}"
 BINARY_PATH_EXPLICIT="${NUCL_BINARY:+1}"
+GRAMMAR_TOOL_PATH="${NUCL_GRAMMAR_TOOL:-target/release/nucl-grammar}"
+GRAMMAR_TOOL_PATH_EXPLICIT="${NUCL_GRAMMAR_TOOL:+1}"
 REMOTE_HELPER_DIR="${NUCL_REMOTE_HELPER_DIR:-target/remote-helpers}"
 REMOTE_HELPERS_REQUIRED="${NUCL_REQUIRE_REMOTE_HELPERS:-0}"
+GRAMMAR_LIB_EXTENSION="dylib"
+HELIX_REV="$(sed -n 's/.*helix-loader = .*rev = "\([0-9a-f]*\)".*/\1/p' Cargo.toml | head -n 1)"
+HELIX_REV_SHORT="${HELIX_REV:0:7}"
 
 # Colors for output
 RED='\033[0;31m'
@@ -45,6 +50,23 @@ if [ ! -f "${BINARY_PATH}" ]; then
     fi
 else
     echo -e "${GREEN}Using existing binary at ${BINARY_PATH}${NC}"
+fi
+
+if [ ! -f "${GRAMMAR_TOOL_PATH}" ]; then
+    if [ -n "${GRAMMAR_TOOL_PATH_EXPLICIT}" ]; then
+        echo -e "${RED}Error: NUCL_GRAMMAR_TOOL does not exist: ${GRAMMAR_TOOL_PATH}${NC}"
+        exit 1
+    fi
+
+    echo -e "${GREEN}Building grammar helper...${NC}"
+    cargo build --release --bin nucl-grammar
+
+    if [ ! -f "${GRAMMAR_TOOL_PATH}" ]; then
+        echo -e "${RED}Error: grammar helper ${GRAMMAR_TOOL_PATH} not found${NC}"
+        exit 1
+    fi
+else
+    echo -e "${GREEN}Using existing grammar helper at ${GRAMMAR_TOOL_PATH}${NC}"
 fi
 
 # Create bundle directory structure
@@ -191,6 +213,16 @@ is_complete_runtime() {
     [ -d "${candidate}/queries" ] && [ -d "${candidate}/themes" ]
 }
 
+grammar_source_count() {
+    local grammar_dir="$1"
+    if [ ! -d "${grammar_dir}/sources" ]; then
+        echo 0
+        return
+    fi
+
+    find "${grammar_dir}/sources" -mindepth 2 -path "*/src/parser.c" | wc -l
+}
+
 # Check multiple possible locations for runtime files
 # 1. Local runtime directory (prepared by CI or manual setup)
 if [ -d "runtime" ]; then
@@ -200,9 +232,22 @@ if [ -d "runtime" ]; then
     else
         echo -e "${YELLOW}Warning: local runtime directory is incomplete; looking for another Helix runtime${NC}"
     fi
-# 2. Try to find any helix checkout in cargo
+# 2. Try to find the Helix checkout pinned by this workspace
 fi
 
+if [ -z "${HELIX_RUNTIME_SOURCE}" ] && [ -n "${HELIX_REV_SHORT}" ] && [ -d "$HOME/.cargo/git/checkouts" ]; then
+    while IFS= read -r candidate; do
+        if is_complete_runtime "${candidate}"; then
+            HELIX_RUNTIME_SOURCE="${candidate}"
+            break
+        fi
+    done < <(find "$HOME/.cargo/git/checkouts" -path "*/${HELIX_REV_SHORT}/runtime" -type d)
+    if [ -n "${HELIX_RUNTIME_SOURCE}" ]; then
+        echo -e "${GREEN}Found pinned Helix runtime at: ${HELIX_RUNTIME_SOURCE}${NC}"
+    fi
+fi
+
+# 3. Fall back to any available Helix checkout
 if [ -z "${HELIX_RUNTIME_SOURCE}" ] && [ -d "$HOME/.cargo/git/checkouts" ]; then
     while IFS= read -r candidate; do
         if is_complete_runtime "${candidate}"; then
@@ -246,14 +291,18 @@ else
 fi
 
 # Build compiled tree-sitter grammars into the bundled runtime when the source
-# runtime does not already provide them. Helix uses ".so" for grammar dynamic
-# libraries on all Unix platforms, including macOS.
+# runtime does not already provide them.
 mkdir -p "${RUNTIME_DEST}/grammars"
-GRAMMAR_COUNT=$(find "${RUNTIME_DEST}/grammars" -maxdepth 1 -name "*.so" | wc -l)
+GRAMMAR_COUNT=$(find "${RUNTIME_DEST}/grammars" -maxdepth 1 -name "*.${GRAMMAR_LIB_EXTENSION}" | wc -l)
 if [ "${GRAMMAR_COUNT}" -eq 0 ]; then
     mkdir -p "${RUNTIME_DEST}/grammars/sources"
 
-    SOURCE_COUNT=$(find "${RUNTIME_DEST}/grammars/sources" -mindepth 1 -maxdepth 1 -type d | wc -l)
+    SOURCE_COUNT=$(grammar_source_count "${RUNTIME_DEST}/grammars")
+    if [ "${SOURCE_COUNT}" -eq 0 ]; then
+        rm -rf "${RUNTIME_DEST}/grammars/sources"
+        mkdir -p "${RUNTIME_DEST}/grammars/sources"
+    fi
+
     if [ "${SOURCE_COUNT}" -eq 0 ]; then
         echo -e "${GREEN}Fetching grammar sources for bundled runtime...${NC}"
         # helix_loader writes grammars to the first runtime directory. Setting
@@ -261,18 +310,24 @@ if [ "${GRAMMAR_COUNT}" -eq 0 ]; then
         set +e
         CARGO_MANIFEST_DIR="$(pwd)/${BUNDLE_NAME}/Contents/Resources/nucleotide" \
             HELIX_RUNTIME="$(pwd)/${RUNTIME_DEST}" \
-            "${BUNDLE_NAME}/Contents/MacOS/${APP_NAME}" --grammar fetch
+            "${GRAMMAR_TOOL_PATH}" fetch
         GRAMMAR_FETCH_STATUS=$?
         set -e
 
-        SOURCE_COUNT=$(find "${RUNTIME_DEST}/grammars/sources" -mindepth 1 -maxdepth 1 -type d | wc -l)
+        SOURCE_COUNT=$(grammar_source_count "${RUNTIME_DEST}/grammars")
         if [ "${GRAMMAR_FETCH_STATUS}" -ne 0 ]; then
             if [ "${SOURCE_COUNT}" -gt 0 ]; then
                 echo -e "${YELLOW}Warning: some grammars failed to fetch; attempting to build fetched sources${NC}"
             else
-                echo -e "${RED}Error: grammar fetch failed and produced no grammar sources${NC}"
+                echo -e "${RED}Error: grammar fetch failed and produced no usable grammar sources${NC}"
+                echo "No fetched grammar checkout contains src/parser.c. Check network access"
+                echo "to the grammar source hosts, then rerun the bundle script."
                 exit "${GRAMMAR_FETCH_STATUS}"
             fi
+        elif [ "${SOURCE_COUNT}" -eq 0 ]; then
+            echo -e "${RED}Error: grammar fetch completed but produced no usable grammar sources${NC}"
+            echo "No fetched grammar checkout contains src/parser.c."
+            exit 1
         fi
     fi
 
@@ -280,17 +335,22 @@ if [ "${GRAMMAR_COUNT}" -eq 0 ]; then
     set +e
     CARGO_MANIFEST_DIR="$(pwd)/${BUNDLE_NAME}/Contents/Resources/nucleotide" \
         HELIX_RUNTIME="$(pwd)/${RUNTIME_DEST}" \
-        "${BUNDLE_NAME}/Contents/MacOS/${APP_NAME}" --grammar build
+        "${GRAMMAR_TOOL_PATH}" build
     GRAMMAR_BUILD_STATUS=$?
     set -e
+    GRAMMAR_COUNT=$(find "${RUNTIME_DEST}/grammars" -maxdepth 1 -name "*.${GRAMMAR_LIB_EXTENSION}" | wc -l)
     if [ "${GRAMMAR_BUILD_STATUS}" -ne 0 ]; then
-        GRAMMAR_COUNT=$(find "${RUNTIME_DEST}/grammars" -maxdepth 1 -name "*.so" | wc -l)
         if [ "${GRAMMAR_COUNT}" -gt 0 ]; then
             echo -e "${YELLOW}Warning: some grammars failed to build; bundling ${GRAMMAR_COUNT} compiled grammar(s)${NC}"
         else
             echo -e "${RED}Error: grammar build failed and produced no compiled grammars${NC}"
             exit "${GRAMMAR_BUILD_STATUS}"
         fi
+    elif [ "${GRAMMAR_COUNT}" -eq 0 ]; then
+        echo -e "${RED}Error: grammar build completed but produced no compiled grammars${NC}"
+        echo "Check that ${RUNTIME_DEST}/languages.toml contains grammar entries and that"
+        echo "${RUNTIME_DEST}/grammars/sources contains fetched parser sources."
+        exit 1
     fi
 fi
 
@@ -308,7 +368,7 @@ if [ -d "crates/nucleotide/assets/themes" ]; then
 fi
 
 if [ -d "${RUNTIME_DEST}/grammars" ] && [ -d "${RUNTIME_DEST}/themes" ] && [ -d "${RUNTIME_DEST}/queries" ]; then
-    GRAMMAR_COUNT=$(find "${RUNTIME_DEST}/grammars" -maxdepth 1 -name "*.so" | wc -l)
+    GRAMMAR_COUNT=$(find "${RUNTIME_DEST}/grammars" -maxdepth 1 -name "*.${GRAMMAR_LIB_EXTENSION}" | wc -l)
     THEME_COUNT=$(find "${RUNTIME_DEST}/themes" -name "*.toml" | wc -l)
     QUERY_COUNT=$(find "${RUNTIME_DEST}/queries" -mindepth 1 -type d | wc -l)
     if [ "${GRAMMAR_COUNT}" -eq 0 ]; then
