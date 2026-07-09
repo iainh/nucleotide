@@ -128,9 +128,8 @@ impl TitleBar {
         true
     }
 
-    pub fn height(window: &Window) -> gpui::Pixels {
-        // Use PlatformTitleBar's height calculation which now uses tokens
-        PlatformTitleBar::height(window)
+    pub fn height(window: &Window, cx: &gpui::App) -> gpui::Pixels {
+        PlatformTitleBar::height(window, cx)
     }
 }
 
@@ -154,20 +153,14 @@ impl Render for TitleBar {
                 let content_width = px(windows_titlebar_content_width(f32::from(
                     window.viewport_size().width,
                 )));
-                let titlebar_tokens = if let Some(provider) =
-                    crate::providers::use_provider::<crate::providers::ThemeProvider>()
-                {
-                    provider.titlebar_tokens(crate::tokens::ColorContext::OnSurface)
-                } else {
-                    cx.global::<crate::Theme>().tokens.titlebar_tokens()
-                };
+                let titlebar_tokens = cx.global::<crate::Theme>().tokens.titlebar_tokens();
                 let tokens = cx.global::<crate::Theme>().tokens;
 
                 return div()
                     .relative()
                     .w_full()
-                    .h(TitleBar::height(window))
-                    .min_h(TitleBar::height(window))
+                    .h(TitleBar::height(window, cx))
+                    .min_h(TitleBar::height(window, cx))
                     .flex_shrink_0()
                     .child(self.platform_titlebar.clone())
                     .child(

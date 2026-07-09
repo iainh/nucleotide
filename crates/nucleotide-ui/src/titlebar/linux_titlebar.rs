@@ -12,10 +12,10 @@ use crate::titlebar::linux_platform_detector::{
     get_platform_info,
 };
 use crate::titlebar::linux_window_controls::LinuxWindowControls;
-use crate::tokens::{ColorContext, TitleBarTokens};
+use crate::tokens::TitleBarTokens;
 use nucleotide_logging::debug;
 #[cfg(debug_assertions)]
-use nucleotide_logging::{info, warn};
+use nucleotide_logging::info;
 
 #[derive(Debug, Clone)]
 pub struct LinuxTitlebarStyle {
@@ -95,11 +95,12 @@ pub struct LinuxTitlebar {
     title: String,
     platform_info: LinuxPlatformInfo,
     style: LinuxTitlebarStyle,
+    title_text_size: Pixels,
     inset_applied: bool,
 }
 
 impl LinuxTitlebar {
-    pub fn new(id: impl Into<ElementId>) -> Self {
+    pub fn new(id: impl Into<ElementId>, theme: &crate::Theme) -> Self {
         let platform_info = get_platform_info().clone();
 
         #[cfg(debug_assertions)]
@@ -110,17 +111,7 @@ impl LinuxTitlebar {
             platform_info.button_layout
         );
 
-        // Get titlebar tokens from theme provider
-        let tokens = if let Some(theme_provider) =
-            crate::providers::use_provider::<crate::providers::ThemeProvider>()
-        {
-            theme_provider.titlebar_tokens(ColorContext::OnSurface)
-        } else {
-            // Fallback to default tokens
-            #[cfg(debug_assertions)]
-            warn!("No theme provider available, using default titlebar tokens");
-            crate::DesignTokens::dark().titlebar_tokens()
-        };
+        let tokens = theme.tokens.titlebar_tokens();
 
         // Choose style based on desktop environment
         let style = match platform_info.desktop_environment {
@@ -134,6 +125,7 @@ impl LinuxTitlebar {
             title: String::new(),
             platform_info,
             style,
+            title_text_size: theme.tokens.sizes.text_md,
             inset_applied: false,
         }
     }
@@ -231,7 +223,7 @@ impl LinuxTitlebar {
             .child(
                 div().flex().items_center().gap_2().child(
                     div()
-                        .text_size(crate::providers::use_theme().tokens.sizes.text_md)
+                        .text_size(self.title_text_size)
                         .font_weight(gpui::FontWeight::MEDIUM)
                         .text_color(self.style.foreground)
                         .child(self.title.clone()),

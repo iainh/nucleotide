@@ -155,20 +155,17 @@ impl WindowControlStyle {
     }
 
     pub fn default(cx: &App) -> Self {
-        // Use enhanced styling system with provider support
-        let ui_theme = crate::providers::use_provider::<crate::providers::ThemeProvider>()
-            .map(|provider| provider.current_theme().clone())
-            .unwrap_or_else(|| cx.global::<crate::Theme>().clone());
+        let ui_theme = cx.global::<crate::Theme>();
 
         // Use ghost variant for subtle window controls
         let default_style = compute_component_style(
-            &ui_theme,
+            ui_theme,
             StyleState::Default,
             StyleVariant::Ghost.as_str(),
             StyleSize::Small.as_str(),
         );
         let hover_style = compute_component_style(
-            &ui_theme,
+            ui_theme,
             StyleState::Hover,
             StyleVariant::Ghost.as_str(),
             StyleSize::Small.as_str(),
@@ -212,14 +209,11 @@ impl WindowControlStyle {
     }
 
     pub fn close(cx: &App) -> Self {
-        // Use enhanced styling system with provider support
-        let ui_theme = crate::providers::use_provider::<crate::providers::ThemeProvider>()
-            .map(|provider| provider.current_theme().clone())
-            .unwrap_or_else(|| cx.global::<crate::Theme>().clone());
+        let ui_theme = cx.global::<crate::Theme>();
 
         // Use danger variant for close button
         let danger_style = compute_component_style(
-            &ui_theme,
+            ui_theme,
             StyleState::Hover,
             StyleVariant::Danger.as_str(),
             StyleSize::Small.as_str(),
@@ -476,16 +470,7 @@ impl RenderOnce for WindowControls {
                 titlebar_tokens.background, titlebar_tokens.foreground, titlebar_tokens.border
             );
 
-            // Get theme tokens for creating controls
-            let theme_tokens = if let Some(theme_provider) =
-                crate::providers::use_provider::<crate::providers::ThemeProvider>()
-            {
-                debug!("TITLEBAR WINDOW_CONTROLS: Using theme provider for theme tokens");
-                theme_provider.current_theme.tokens
-            } else {
-                debug!("TITLEBAR WINDOW_CONTROLS: Using global theme for theme tokens");
-                cx.global::<crate::Theme>().tokens
-            };
+            let theme_tokens = cx.global::<crate::Theme>().tokens;
 
             // Add controls based on platform with tokens
             match self.platform_style {

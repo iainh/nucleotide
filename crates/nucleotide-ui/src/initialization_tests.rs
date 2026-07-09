@@ -3,7 +3,7 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::{Theme, UIConfig, UIFeatures, configuration_provider_from_ui_config};
+    use crate::{Theme, UIConfig, UIFeatures};
 
     #[test]
     fn test_ui_config_default() {
@@ -142,83 +142,13 @@ mod tests {
         assert!(!config.enable_performance_monitoring);
     }
 
-    #[test]
-    fn test_ui_config_initializes_provider_performance_flags() {
-        let config = UIConfig {
-            default_theme: Theme::from_tokens(crate::tokens::DesignTokens::dark()),
-            enable_performance_monitoring: true,
-            features: UIFeatures {
-                enable_virtualization: true,
-                enable_animations: false,
-                enable_accessibility: false,
-                enable_debug_utils: false,
-            },
-        };
-
-        let provider = configuration_provider_from_ui_config(&config);
-
-        assert!(provider.performance_config.enable_virtualization);
-        assert!(
-            provider
-                .feature_flags
-                .performance_features
-                .enable_performance_monitoring
-        );
-        assert!(
-            provider
-                .feature_flags
-                .performance_features
-                .enable_virtualization
-        );
-        assert!(!provider.ui_config.animation_config.enable_animations);
-    }
-
-    #[test]
-    fn test_ui_config_initializes_provider_accessibility_flags() {
-        let config = UIConfig {
-            default_theme: Theme::from_tokens(crate::tokens::DesignTokens::dark()),
-            enable_performance_monitoring: false,
-            features: UIFeatures {
-                enable_virtualization: false,
-                enable_animations: true,
-                enable_accessibility: true,
-                enable_debug_utils: false,
-            },
-        };
-
-        let provider = configuration_provider_from_ui_config(&config);
-
-        assert!(provider.accessibility_config.screen_reader_support);
-        assert!(provider.accessibility_config.high_contrast_mode);
-        assert!(
-            provider
-                .accessibility_config
-                .focus_config
-                .show_focus_indicators
-        );
-        assert!(provider.feature_flags.ui_features.enable_high_contrast);
-    }
-
     #[gpui::test]
-    async fn init_registers_required_global_providers(cx: &mut gpui::TestAppContext) {
+    async fn init_registers_required_globals(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
             crate::init(cx, None);
 
-            crate::providers::with_provider_context(|context| {
-                assert!(
-                    context
-                        .get_global_provider::<crate::providers::ThemeProvider>()
-                        .is_some(),
-                    "theme provider should be installed during UI initialization"
-                );
-                assert!(
-                    context
-                        .get_global_provider::<crate::providers::ConfigurationProvider>()
-                        .is_some(),
-                    "configuration provider should be installed during UI initialization"
-                );
-            })
-            .expect("provider system should be initialized");
+            assert!(cx.has_global::<crate::Theme>());
+            assert!(cx.has_global::<crate::UIConfig>());
         });
     }
 }

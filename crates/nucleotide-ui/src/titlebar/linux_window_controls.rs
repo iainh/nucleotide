@@ -327,13 +327,7 @@ impl LinuxWindowControls {
 
 impl RenderOnce for LinuxWindowControls {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let theme_tokens = if let Some(theme_provider) =
-            crate::providers::use_provider::<crate::providers::ThemeProvider>()
-        {
-            theme_provider.current_theme.tokens
-        } else {
-            cx.global::<crate::Theme>().tokens
-        };
+        let theme_tokens = cx.global::<crate::Theme>().tokens;
 
         let controls = self.get_control_layout(window);
         let mut container = div()

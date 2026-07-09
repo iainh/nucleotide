@@ -271,32 +271,6 @@ impl Default for PickerStyle {
 impl PickerStyle {
     /// Create PickerStyle from helix theme using appropriate theme keys
     pub fn from_theme(theme: &helix_view::Theme) -> Self {
-        // Prefer provider tokens (OKLab/OKLCH-driven); fallback to Helix mapping
-        if let Some(provider) = crate::providers::use_theme_provider() {
-            let ui = provider.current_theme();
-            let dt = ui.tokens;
-            let dd = dt.dropdown_tokens();
-            let modal_style = ModalStyle {
-                background: dt.chrome.popup_background,
-                text: crate::styling::ColorTheory::ensure_contrast(
-                    dt.chrome.popup_background,
-                    dt.chrome.text_on_chrome,
-                    crate::styling::color_theory::ContrastRatios::AA_NORMAL,
-                ),
-                border: dt.chrome.popup_border,
-                // Align selection with dropdown menus
-                selected_background: dd.item_background_selected,
-                selected_text: dd.item_text_selected,
-                prompt_text: dt.chrome.text_chrome_secondary,
-            };
-            return Self {
-                modal_style,
-                preview_background: dt.editor.background,
-                preview_text: dt.editor.text_primary,
-                cursor: dt.editor.cursor_normal,
-            };
-        }
-
         use crate::theme_utils::color_to_hsla;
         let modal_style = ModalStyle::from_theme(theme);
         let preview_background = theme

@@ -6817,11 +6817,7 @@ impl Workspace {
 
     fn sync_ui_theme_from_theme_manager<V: 'static>(cx: &mut Context<V>) {
         let ui_theme = cx.global::<crate::ThemeManager>().ui_theme().clone();
-        *cx.global_mut::<nucleotide_ui::Theme>() = ui_theme.clone();
-        nucleotide_ui::providers::update_provider_context(|context| {
-            let theme_provider = nucleotide_ui::providers::ThemeProvider::new(ui_theme);
-            context.register_global_provider(theme_provider);
-        });
+        *cx.global_mut::<nucleotide_ui::Theme>() = ui_theme;
     }
 
     fn handle_appearance_change(
@@ -13000,7 +12996,7 @@ impl Workspace {
 
     fn rendered_titlebar_height(&self, window: &Window, cx: &Context<Self>) -> Pixels {
         if self.renders_app_titlebar(cx) {
-            nucleotide_ui::titlebar::TitleBar::height(window)
+            nucleotide_ui::titlebar::TitleBar::height(window, cx)
         } else {
             px(0.0)
         }

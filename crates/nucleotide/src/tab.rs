@@ -555,12 +555,10 @@ impl RenderOnce for Tab {
         let theme = cx.theme();
         let tokens = theme.tokens; // DesignTokens is Copy
 
-        // Use provider hooks to get configuration for animations
-        let enable_animations = nucleotide_ui::providers::use_provider::<
-            nucleotide_ui::providers::ConfigurationProvider,
-        >()
-        .map(|config| config.ui_config.animation_config.enable_animations)
-        .unwrap_or(true);
+        let enable_animations = cx
+            .global::<nucleotide_ui::UIConfig>()
+            .features
+            .enable_animations;
 
         // Compute component styles using nucleotide-ui styling system
         let component_state = self.component_state();

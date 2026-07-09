@@ -9,9 +9,9 @@ use gpui::{
     div, point, px,
 };
 
+use crate::Theme;
 use crate::actions::menu::{Cancel, SelectLeft, SelectRight};
 use crate::menu::{APP_MENU_BAR_CONTEXT, PopupMenu};
-use crate::{Theme, tokens::ColorContext};
 
 #[cfg(target_os = "windows")]
 const WINDOWS_UI_FONT_FAMILY: &str = "Segoe UI Variable";
@@ -78,13 +78,7 @@ impl ApplicationMenu {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let menus = cx.get_menus().unwrap_or_default();
 
-        let titlebar_height = if let Some(provider) =
-            crate::providers::use_provider::<crate::providers::ThemeProvider>()
-        {
-            provider.titlebar_tokens(ColorContext::OnSurface).height
-        } else {
-            px(34.0)
-        };
+        let titlebar_height = cx.global::<Theme>().tokens.titlebar_tokens().height;
 
         Self {
             id: ElementId::from("application-menu"),
@@ -219,13 +213,7 @@ impl ApplicationMenu {
 impl Render for ApplicationMenu {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let tokens = cx.global::<Theme>().tokens;
-        let titlebar_tokens = if let Some(provider) =
-            crate::providers::use_provider::<crate::providers::ThemeProvider>()
-        {
-            provider.titlebar_tokens(ColorContext::OnSurface)
-        } else {
-            tokens.titlebar_tokens()
-        };
+        let titlebar_tokens = tokens.titlebar_tokens();
 
         let row_h = self.row_height;
         let metrics = menu_bar_metrics(self.embedded_in_titlebar);

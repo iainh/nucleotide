@@ -1100,9 +1100,6 @@ fn gui_main(
         let workspace_root_for_closure = workspace_root.clone();
         move |cx| {
             let workspace_root = workspace_root_for_closure;
-            // Initialize the enhanced UI system
-            use nucleotide_ui::providers::init_provider_system;
-
             // Initialize nucleotide-ui first (sets up UIConfig and component registry)
             nucleotide_ui::init(cx, None);
             overlay::init(cx);
@@ -1124,9 +1121,6 @@ fn gui_main(
 
             // Initialize SystemAppearance global state from current window appearance
             nucleotide_appearance::SystemAppearance::init(cx);
-
-            // Initialize the provider system
-            init_provider_system();
 
             // Set up fonts from configuration
             let editor_font_config = config.editor_font();
@@ -1150,25 +1144,6 @@ fn gui_main(
             cx.set_global(nucleotide_ui::markdown::MarkdownSyntaxLoader::new(
                 app.editor.syn_loader.load_full(),
             ));
-
-            // Set up the enhanced provider system using the derived theme
-            let ui_theme = ui_theme_derived;
-
-            // Create theme provider from existing theme manager
-            let theme_provider = nucleotide_ui::providers::ThemeProvider::new(ui_theme.clone());
-
-            // Create configuration provider for UI settings
-            let config_provider = nucleotide_ui::providers::ConfigurationProvider::new();
-
-            // Register global providers
-            nucleotide_ui::providers::update_provider_context(|context| {
-                context.register_global_provider(theme_provider);
-                context.register_global_provider(config_provider);
-            });
-
-            nucleotide_logging::info!(
-                "Provider system initialized with theme and configuration providers"
-            );
 
             // Initialize centralized focus coordinator for input/focus management
             cx.set_global(nucleotide_ui::FocusCoordinator::default());

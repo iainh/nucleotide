@@ -38,7 +38,6 @@ pub mod picker_view;
 pub mod progress_indicator;
 pub mod prompt;
 pub mod prompt_view;
-pub mod providers;
 pub mod scrollbar;
 pub mod split;
 pub mod style_utils;
@@ -121,10 +120,6 @@ pub use overlay_surface::{OVERLAY_SURFACE_CONTEXT, OverlaySurface};
 pub use picker::Picker;
 pub use progress_indicator::IndeterminateProgressIndicator;
 pub use prompt::Prompt;
-pub use providers::{
-    AccessibilityConfiguration, ConfigurationProvider, PerformanceConfiguration, ThemeProvider,
-    UIConfiguration, use_provider, use_provider_or_default,
-};
 pub use split::{
     ResizeDragController, SPLITTER_HITBOX_PX, SPLITTER_LINE_PX, SplitterAxis, bottom_panel_split,
     resize_capture_area, resize_handle, right_sidebar_split, sidebar_split, splitter,
@@ -325,7 +320,6 @@ pub(crate) const BUILT_IN_COMPONENTS: &[&str] = &[
 pub fn init(cx: &mut App, config: Option<UIConfig>) {
     let config = config.unwrap_or_default();
 
-    providers::init_provider_system();
     completion_v2::init(cx);
     confirm_dialog::init(cx);
     focus::init(cx);
@@ -337,55 +331,11 @@ pub fn init(cx: &mut App, config: Option<UIConfig>) {
     prompt_view::init(cx);
     text_input::init(cx);
 
-    let theme_provider = providers::ThemeProvider::new(config.default_theme.clone());
-
-    let mut configuration_provider = configuration_provider_from_ui_config(&config);
-    configuration_provider.load_from_env();
-
-    providers::update_provider_context(|context| {
-        context.register_global_provider(theme_provider);
-        context.register_global_provider(configuration_provider);
-    });
-
     // Setup global theme
     cx.set_global(config.default_theme.clone());
 
     // Setup global configuration
     cx.set_global(config);
-}
-
-fn configuration_provider_from_ui_config(config: &UIConfig) -> providers::ConfigurationProvider {
-    let mut provider = if config.features.enable_accessibility {
-        providers::ConfigurationProvider::accessibility_focused()
-    } else if config.enable_performance_monitoring || config.features.enable_virtualization {
-        providers::ConfigurationProvider::performance_focused()
-    } else {
-        providers::ConfigurationProvider::new()
-    };
-
-    provider.ui_config.animation_config.enable_animations = config.features.enable_animations;
-    provider.performance_config.enable_virtualization = config.features.enable_virtualization;
-    provider
-        .feature_flags
-        .performance_features
-        .enable_virtualization = config.features.enable_virtualization;
-    provider
-        .feature_flags
-        .performance_features
-        .enable_performance_monitoring = config.enable_performance_monitoring;
-    provider.feature_flags.ui_features.enable_animations = config.features.enable_animations;
-
-    if config.features.enable_accessibility {
-        provider.accessibility_config.screen_reader_support = true;
-        provider.accessibility_config.high_contrast_mode = true;
-        provider
-            .accessibility_config
-            .focus_config
-            .show_focus_indicators = true;
-        provider.feature_flags.ui_features.enable_high_contrast = true;
-    }
-
-    provider
 }
 
 /// Get the current UI configuration
