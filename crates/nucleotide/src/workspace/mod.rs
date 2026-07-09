@@ -41,7 +41,7 @@ use helix_stdx::rope::RopeSliceExt;
 use helix_view::input::KeyEvent;
 use helix_view::keyboard::{KeyCode, KeyModifiers};
 use helix_view::{DocumentId, ViewId, graphics::Rect as HelixRect};
-use nucleotide_core::{event_bridge, gpui_to_helix_bridge};
+use nucleotide_core::event_bridge;
 use nucleotide_logging::{debug, error, info, instrument, trace, warn};
 use nucleotide_types::scrollbar::SCROLLBAR_THICKNESS;
 use nucleotide_ui::ThemedContext as UIThemedContext;
@@ -8544,13 +8544,6 @@ impl Workspace {
                     old_theme = %theme_before_for_closure,
                     new_theme = %theme_name_after,
                     "Theme changed via command execution"
-                );
-
-                // Send theme change event to Helix
-                gpui_to_helix_bridge::send_gpui_event_to_helix(
-                    gpui_to_helix_bridge::GpuiToHelixEvent::ThemeChanged {
-                        theme_name: theme_name_after.clone(),
-                    },
                 );
             }
 

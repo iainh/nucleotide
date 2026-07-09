@@ -1220,23 +1220,6 @@ fn gui_main(
             let options = window_options(cx, &config, is_dark_chrome);
 
             let _ = cx.open_window(options, |#[allow(unused)] window, cx| {
-                // Set up window event handlers to send events to Helix
-                info!("Setting up window event handlers");
-
-                // Example: Send window resize events to Helix
-                // Note: This is a conceptual example - actual GPUI window resize events
-                // would be handled differently depending on the GPUI version
-                cx.spawn(async move |_cx| {
-                    // This would be triggered by actual GPUI window events
-                    nucleotide_core::gpui_to_helix_bridge::send_gpui_event_to_helix(
-                        nucleotide_core::gpui_to_helix_bridge::GpuiToHelixEvent::WindowResized {
-                            width: 120,
-                            height: 40,
-                        },
-                    );
-                })
-                .detach();
-
                 let input = cx.new(|_| nucleotide::application::Input);
 
                 let input_1 = input.clone();

@@ -6,7 +6,6 @@ pub mod document_manager;
 pub mod event_aggregator;
 pub mod event_bridge;
 pub mod fs;
-pub mod gpui_to_helix_bridge;
 pub mod picker_capability;
 pub mod preview_tracker;
 pub mod snippets;
@@ -35,13 +34,6 @@ pub use core_event::CoreEvent;
 pub use event_bridge::{
     BridgedEvent, BridgedEventReceiver, CompletionTrigger, create_bridge_channel,
     initialize_bridge, register_event_hooks, send_bridged_event,
-};
-
-// GPUI to Helix bridge exports
-pub use gpui_to_helix_bridge::{
-    GpuiToHelixEvent, MemoryPressureLevel, create_gpui_to_helix_channel,
-    handle_gpui_event_in_helix, initialize_gpui_to_helix_bridge, register_gpui_event_handlers,
-    send_gpui_event_to_helix,
 };
 
 // Document manager exports
