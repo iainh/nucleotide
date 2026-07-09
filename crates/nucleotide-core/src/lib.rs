@@ -1,7 +1,6 @@
 // ABOUTME: Core event bridges between Helix and GPUI
 // ABOUTME: Provides the fundamental event translation layer
 
-pub mod command_system;
 pub mod core_event;
 pub mod document_manager;
 pub mod event_aggregator;
@@ -47,9 +46,6 @@ pub use gpui_to_helix_bridge::{
 
 // Document manager exports
 pub use document_manager::{DocumentManager, DocumentManagerMut};
-
-// Command system exports
-pub use command_system::{Command, ParsedCommand};
 
 // Snippet parsing exports
 pub use snippets::{SnippetParseError, SnippetTemplate, Tabstop, TextPart};
