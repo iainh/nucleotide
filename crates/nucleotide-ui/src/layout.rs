@@ -357,6 +357,7 @@ pub struct Toolbar {
     id: ElementId,
     label: Option<SharedString>,
     compact: bool,
+    border_color: Option<Hsla>,
     children: Vec<AnyElement>,
 }
 
@@ -366,6 +367,7 @@ impl Toolbar {
             id: id.into(),
             label: None,
             compact: false,
+            border_color: None,
             children: Vec::new(),
         }
     }
@@ -377,6 +379,11 @@ impl Toolbar {
 
     pub fn compact(mut self, compact: bool) -> Self {
         self.compact = compact;
+        self
+    }
+
+    pub fn border_color(mut self, border_color: Hsla) -> Self {
+        self.border_color = Some(border_color);
         self
     }
 }
@@ -395,6 +402,7 @@ impl RenderOnce for Toolbar {
         } else {
             tokens.sizes.space_10
         };
+        let border_color = self.border_color.unwrap_or(tokens.chrome.separator_color);
 
         div()
             .id(self.id)
@@ -407,7 +415,7 @@ impl RenderOnce for Toolbar {
             .px(tokens.sizes.space_3)
             .bg(tokens.chrome.surface)
             .border_b_1()
-            .border_color(tokens.chrome.separator_color)
+            .border_color(border_color)
             .text_color(tokens.chrome.text_on_chrome)
             .when_some(self.label, |this, label| {
                 this.child(

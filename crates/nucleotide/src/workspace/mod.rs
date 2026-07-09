@@ -5374,6 +5374,8 @@ impl Workspace {
             .flex_col()
             .overflow_hidden()
             .bg(file_tree_tokens.background)
+            .border_l_1()
+            .border_color(file_tree_tokens.border)
             .text_color(file_tree_tokens.item_text)
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(
@@ -15101,7 +15103,12 @@ impl Render for Workspace {
                 let file_tree_background = file_tree_tokens.background;
                 let file_tree_top_inset_background =
                     native_sidebar_enabled.then_some(file_tree_background);
-                let mut file_tree_container = div().w_full().h_full().min_h(px(0.0));
+                let mut file_tree_container = div()
+                    .w_full()
+                    .h_full()
+                    .min_h(px(0.0))
+                    .border_r_1()
+                    .border_color(file_tree_tokens.border);
                 if let Some(file_tree) = &self.file_tree {
                     file_tree_container = file_tree_container.child(
                         div()
