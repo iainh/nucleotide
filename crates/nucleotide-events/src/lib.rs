@@ -11,7 +11,6 @@ pub mod completion;
 pub mod diagnostics;
 pub mod document;
 pub mod editor;
-pub mod handler;
 pub mod integration;
 pub mod lsp;
 pub mod run;
@@ -28,7 +27,6 @@ pub mod v2 {
     pub use crate::diagnostics;
     pub use crate::document;
     pub use crate::editor;
-    pub use crate::handler;
     pub use crate::integration;
     pub use crate::lsp;
     pub use crate::run;
