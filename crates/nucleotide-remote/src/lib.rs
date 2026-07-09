@@ -11616,11 +11616,7 @@ mod tests {
         let bytes = output.bytes();
         let mut cursor = Cursor::new(bytes);
         let mut data = Vec::new();
-        loop {
-            let frame = match protocol_v5::read_frame(&mut cursor) {
-                Ok(Some(frame)) => frame,
-                Ok(None) | Err(_) => break,
-            };
+        while let Ok(Some(frame)) = protocol_v5::read_frame(&mut cursor) {
             if frame.stream_id != stream_id || frame.frame_type != protocol_v5::FrameType::Data {
                 continue;
             }
@@ -11760,10 +11756,10 @@ mod tests {
             let Some(protocol_v5::stream_envelope::Message::Event(event)) = envelope.message else {
                 continue;
             };
-            if event.kind == "watch.batch" {
-                if let Some(batch) = event.watch_batch {
-                    return Some(batch);
-                }
+            if event.kind == "watch.batch"
+                && let Some(batch) = event.watch_batch
+            {
+                return Some(batch);
             }
         }
         None
@@ -11783,10 +11779,10 @@ mod tests {
             let Some(protocol_v5::stream_envelope::Message::Event(event)) = envelope.message else {
                 continue;
             };
-            if event.kind == "watch.batch" {
-                if let Some(batch) = event.watch_batch {
-                    return Some(batch);
-                }
+            if event.kind == "watch.batch"
+                && let Some(batch) = event.watch_batch
+            {
+                return Some(batch);
             }
         }
         None
@@ -14022,44 +14018,36 @@ mod tests {
             expected_modified_unix_nanos: None,
         };
         let (method, payload) = write.to_v5_method_payload().unwrap();
-        let mut frames = Vec::new();
-        frames.push(protocol_v5::Frame::from_control(
-            protocol_v5::FrameType::Headers,
-            1,
-            &protocol_v5::StreamEnvelope::request_with_options(
+        let frames = vec![
+            protocol_v5::Frame::from_control(
+                protocol_v5::FrameType::Headers,
                 1,
-                method,
-                &write.v5_request_options(),
+                &protocol_v5::StreamEnvelope::request_with_options(
+                    1,
+                    method,
+                    &write.v5_request_options(),
+                ),
             ),
-        ));
-        frames.push(
             protocol_v5::stream_data_frame(
                 1,
                 payload,
                 protocol_v5::DataFrameOptions::new(protocol_v5::DataChannel::Unspecified),
             )
             .unwrap(),
-        );
-        frames.push(
             protocol_v5::stream_data_frame(
                 1,
                 b"fn main".to_vec(),
                 protocol_v5::DataFrameOptions::new(protocol_v5::DataChannel::FileBody),
             )
             .unwrap(),
-        );
-        frames.push(
             protocol_v5::stream_data_frame(
                 1,
                 b"() {}\n".to_vec(),
                 protocol_v5::DataFrameOptions::new(protocol_v5::DataChannel::FileBody),
             )
             .unwrap(),
-        );
-        frames.push(protocol_v5::Frame::new(
-            protocol_v5::FrameType::EndStream,
-            1,
-        ));
+            protocol_v5::Frame::new(protocol_v5::FrameType::EndStream, 1),
+        ];
         let input = v5_client_input(frames);
         let output = SharedWrite::default();
         let service =
@@ -16014,10 +16002,12 @@ mod tests {
             },
             path: PathBuf::from("/home/me/project"),
         };
-        let mut options = RemoteWorkspaceBackendOptions::default();
-        options.ssh_connect_timeout_secs = Some(4);
-        options.ssh_control_path = None;
-        options.ssh_extra_args = vec![OsString::from("-J"), OsString::from("bastion")];
+        let options = RemoteWorkspaceBackendOptions {
+            ssh_connect_timeout_secs: Some(4),
+            ssh_control_path: None,
+            ssh_extra_args: vec![OsString::from("-J"), OsString::from("bastion")],
+            ..RemoteWorkspaceBackendOptions::default()
+        };
 
         let spec = remote_service_command_for_location_with_options(
             &location,
@@ -16250,7 +16240,6 @@ mod tests {
     #[test]
     fn default_ssh_control_path_leaves_room_for_openssh_suffix() {
         let Some(control_path) = default_ssh_control_path() else {
-            assert!(!cfg!(unix));
             return;
         };
 
@@ -16380,9 +16369,12 @@ mod tests {
 
     #[test]
     fn remote_helper_download_urls_use_release_assets_and_checksums() {
-        let mut options = RemoteWorkspaceBackendOptions::default();
-        options.ssh_helper_download_base_url =
-            Some("https://downloads.example/nucleotide/v1/".to_string());
+        let options = RemoteWorkspaceBackendOptions {
+            ssh_helper_download_base_url: Some(
+                "https://downloads.example/nucleotide/v1/".to_string(),
+            ),
+            ..RemoteWorkspaceBackendOptions::default()
+        };
         let manager = RemoteHelperManager::new(&options);
         let platform = SshRemotePlatform {
             os: "linux".to_string(),
