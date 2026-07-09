@@ -260,7 +260,7 @@ jobs:
       - name: Prepare bundled runtime
         shell: pwsh
         run: |
-          git clone --depth 1 --branch 25.07.1 https://github.com/helix-editor/helix.git helix-temp
+          .\scripts\clone-helix-runtime.ps1 -Destination helix-temp
           try {
             .\scripts\setup-windows-runtime.ps1 -RuntimeSource helix-temp\runtime -NuclExe target\release\nucl-grammar.exe -AllowGrammarFailures
           } finally {
@@ -301,6 +301,21 @@ jobs:
             Select-Object -First 1
           if (-not $runtime) {
             throw "Extracted MSI does not contain a runtime directory."
+          }
+
+          $languages = Join-Path $runtime.FullName "languages.toml"
+          if (-not (Test-Path -LiteralPath $languages -PathType Leaf)) {
+            throw "Extracted MSI runtime does not contain languages.toml."
+          }
+
+          $queries = Join-Path $runtime.FullName "queries"
+          if (-not (Test-Path -LiteralPath $queries -PathType Container)) {
+            throw "Extracted MSI runtime does not contain a queries directory."
+          }
+
+          $queryDirs = Get-ChildItem -Path $queries -Directory
+          if ($queryDirs.Count -eq 0) {
+            throw "Extracted MSI runtime queries directory is empty."
           }
 
           $grammarDlls = Get-ChildItem -Path (Join-Path $runtime.FullName "grammars") -Filter *.dll -File

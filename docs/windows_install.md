@@ -40,7 +40,7 @@ resources that the MSI will embed:
 
 ```powershell
 cargo build --release -p nucleotide --bins
-git clone --depth 1 --branch 25.07.1 https://github.com/helix-editor/helix.git helix-temp
+.\scripts\clone-helix-runtime.ps1 -Destination helix-temp
 try {
   .\scripts\setup-windows-runtime.cmd -RuntimeSource helix-temp\runtime -NuclExe target\release\nucl-grammar.exe
 } finally {
