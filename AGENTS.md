@@ -56,9 +56,9 @@
 - Migration: Theme now uses tokens exclusively. Use `Theme::from_tokens(...)` with `DesignTokens::{dark,light}()`; legacy constructors like `Theme::dark()` have been removed.
 
 ## UI Paradigms
-- Providers: `crates/nucleotide-ui/src/providers` offers React‑style providers for theme, config, and events.
-  - Compose: `ProviderComposition::app_providers()` or build via `provider_tree()`.
-  - Access: `use_theme()`, `use_provider<T>()`, `use_provider_or_default<T>()`.
+- Global state: GPUI globals are authoritative for shared UI state.
+  - Access the active `Theme` and `UIConfig` through the render context (`cx.global::<Theme>()`, `cx.global::<UIConfig>()`).
+  - Update runtime theme state through `theme_manager` and keep the GPUI `Theme` global in sync.
 - Styling: Use `Styled`, `ComponentFactory`, and `Variant*` types from `nucleotide-ui::styling` to compute styles from tokens/state.
 - Keyboard & Focus: Centralized input handling in `nucleotide-ui::global_input` with focus group management, navigation, and shortcut routing. No separate `keyboard_navigation` module.
 - Popups & Layout: Use `completion_popup` and sizing utilities for anchored overlays; avoid manual positioning where helpers exist.

@@ -1,26 +1,22 @@
 # nucleotide-core
 
-Core event bridges and capabilities for Nucleotide editor (Layer 3).
+Shared event bridges and editor utilities for Nucleotide (Layer 3).
 
 ## Purpose
 
-This crate provides the fundamental event translation layer between Helix and GPUI, along with capability traits that enable loose coupling between layers.
+This crate provides the Helix-to-GPUI event bridge and small shared utilities used by the application layer.
 
 ## Public API
 
-### Capability Traits
-- `EditorState`, `EditorAccess`, `EditorCapabilities`
-- `EventEmitter`, `EventSubscriber`
-- `ThemeProvider`, `OverlayProvider`
-- `ScrollManager`, `LineCache`
-
 ### Event Bridges
 - `event_bridge`: Helix → GPUI event translation
-- `gpui_to_helix_bridge`: GPUI → Helix event translation
-- `EventAggregator`: Central event routing
+- `AppEvent`: active document, UI, and workspace events delivered to GPUI
 
-### Command System
-- `Command`, `ParsedCommand`: Command parsing and execution
+### Editor Utilities
+- `DocumentManager`, `DocumentManagerMut`: document access helpers
+- `PickerCapability`: picker integration boundary
+- `PreviewTracker`: preview document state
+- `SnippetTemplate`: snippet parsing and tab stops
 
 ## Dependencies
 

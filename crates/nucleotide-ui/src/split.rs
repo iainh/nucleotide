@@ -146,10 +146,14 @@ pub enum SplitterAxis {
 
 /// A single splitter component: a transparent, symmetric drag hitbox with one
 /// centered visible separator line.
-pub fn splitter(id: impl Into<ElementId>, axis: SplitterAxis, handle_px: f32) -> Stateful<Div> {
+pub fn splitter(
+    id: impl Into<ElementId>,
+    axis: SplitterAxis,
+    handle_px: f32,
+    theme: &crate::Theme,
+) -> Stateful<Div> {
     let hitbox_px = resize_handle_hitbox_px(handle_px).unwrap_or(RESIZE_HANDLE_MIN_HITBOX_PX);
     let visual_offset = resize_handle_visual_offset(hitbox_px);
-    let theme = crate::providers::use_theme();
     let sep_color = crate::tokens::with_alpha(theme.tokens.chrome.separator_color, 0.7);
     let sep_hover_color = crate::tokens::with_alpha(theme.tokens.editor.focus_ring, 0.55);
 
@@ -720,6 +724,7 @@ pub fn two_pane_split<A: IntoElement, B: IntoElement>(
     on_change_fraction: impl Fn(f32, &mut App) + 'static,
     a: A,
     b: B,
+    theme: &crate::Theme,
 ) -> impl IntoElement {
     let drag = ResizeDragController::new();
     let handle_px = handle_px.max(2.0);
@@ -751,6 +756,7 @@ pub fn two_pane_split<A: IntoElement, B: IntoElement>(
                 SplitterAxis::Horizontal
             },
             handle_px,
+            theme,
         )
         .absolute()
         .when(horizontal, |d| {

@@ -3,12 +3,11 @@
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    Context, Decorations, ElementId, Hsla, InteractiveElement, IntoElement, ParentElement, Pixels,
-    Render, Styled, Window, WindowControlArea, div, px,
+    App, Context, Decorations, ElementId, Hsla, InteractiveElement, IntoElement, ParentElement,
+    Pixels, Render, Styled, Window, WindowControlArea, div, px,
 };
 
 use crate::titlebar::window_controls::WindowControls;
-use crate::tokens::ColorContext;
 use nucleotide_logging::debug;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,27 +80,8 @@ impl PlatformTitleBar {
         true
     }
 
-    pub fn height(_window: &Window) -> Pixels {
-        // Use theme provider for consistent height with token system
-        if let Some(theme_provider) =
-            crate::providers::use_provider::<crate::providers::ThemeProvider>()
-        {
-            let tokens = theme_provider.titlebar_tokens(ColorContext::OnSurface);
-            debug!(
-                "TITLEBAR HEIGHT: Using theme provider tokens, height={:?}",
-                tokens.height
-            );
-            // Respect the tokenized height exactly to keep
-            // titlebar and status bar visually aligned.
-            return tokens.height;
-        }
-
-        debug!("TITLEBAR HEIGHT: No theme provider, using fallback heights");
-        #[cfg(target_os = "windows")]
-        return px(32.0);
-
-        #[cfg(not(target_os = "windows"))]
-        return px(34.0);
+    pub fn height(_window: &Window, cx: &App) -> Pixels {
+        cx.global::<crate::Theme>().tokens.titlebar_tokens().height
     }
 }
 
@@ -116,7 +96,8 @@ impl Render for PlatformTitleBar {
 
             if LinuxTitlebar::should_create_for_decorations(&decorations) {
                 debug!("Using enhanced Linux titlebar");
-                let mut linux_titlebar = LinuxTitlebar::new(self.id.clone());
+                let mut linux_titlebar =
+                    LinuxTitlebar::new(self.id.clone(), cx.global::<crate::Theme>());
                 linux_titlebar.set_title(self.title.clone());
 
                 return linux_titlebar.render_element(window);
@@ -125,35 +106,7 @@ impl Render for PlatformTitleBar {
             }
         }
 
-        // Get titlebar tokens from theme provider
-        let theme_provider = crate::providers::use_provider::<crate::providers::ThemeProvider>();
-        #[cfg(debug_assertions)]
-        debug!(
-            "TITLEBAR RENDER: Theme provider available: {}",
-            theme_provider.is_some()
-        );
-
-        let titlebar_tokens = if let Some(provider) = theme_provider {
-            // Use OnSurface context for standard titlebar appearance
-            let tokens = provider.titlebar_tokens(ColorContext::OnSurface);
-            #[cfg(debug_assertions)]
-            debug!(
-                "TITLEBAR RENDER: Using theme provider tokens - bg={:?}, fg={:?}, border={:?}, height={:?}",
-                tokens.background, tokens.foreground, tokens.border, tokens.height
-            );
-            tokens
-        } else {
-            // Fallback: use global theme for tokens
-            let ui_theme = cx.global::<crate::Theme>();
-            // Prefer computed chrome-based titlebar tokens for consistency
-            let tokens = ui_theme.tokens.titlebar_tokens();
-            #[cfg(debug_assertions)]
-            debug!(
-                "TITLEBAR RENDER: Using fallback global theme tokens - bg={:?}, fg={:?}, border={:?}, height={:?}",
-                tokens.background, tokens.foreground, tokens.border, tokens.height
-            );
-            tokens
-        };
+        let titlebar_tokens = cx.global::<crate::Theme>().tokens.titlebar_tokens();
 
         let height = titlebar_tokens.height;
         #[cfg(debug_assertions)]

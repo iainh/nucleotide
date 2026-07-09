@@ -36,29 +36,8 @@ impl Default for ModalStyle {
 }
 
 impl ModalStyle {
-    /// Create ModalStyle using our ThemeProvider tokens when available (OKLab/OKLCH-driven)
-    /// Falls back to Helix theme mapping only if provider is unavailable
+    /// Create a modal style from the Helix theme.
     pub fn from_theme(theme: &helix_view::Theme) -> Self {
-        if let Some(provider) = crate::providers::use_theme_provider() {
-            let theme = provider.current_theme();
-            let dt = theme.tokens;
-            let dd = dt.dropdown_tokens();
-            return Self {
-                background: dt.chrome.popup_background,
-                text: crate::styling::ColorTheory::ensure_contrast(
-                    dt.chrome.popup_background,
-                    dt.chrome.text_on_chrome,
-                    crate::styling::color_theory::ContrastRatios::AA_NORMAL,
-                ),
-                border: dt.chrome.popup_border,
-                // Align selection with dropdowns
-                selected_background: dd.item_background_selected,
-                selected_text: dd.item_text_selected,
-                prompt_text: dt.chrome.text_chrome_secondary,
-            };
-        }
-
-        // Fallback: derive chrome tokens from the Helix popup/background surface.
         use crate::theme_utils::color_to_hsla;
         let fallback_tokens = Self::default();
         let surface = theme

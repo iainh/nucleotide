@@ -94,16 +94,6 @@ impl Default for PromptStyle {
 
 impl PromptStyle {
     pub fn from_helix_theme(theme: &helix_view::Theme) -> Self {
-        // Prefer provider tokens for OKLab/OKLCH-driven colors
-        if let Some(provider) = crate::providers::use_theme_provider() {
-            let ui = provider.current_theme();
-            let dt = ui.tokens;
-            return Self {
-                modal_style: ModalStyle::from_theme(theme),
-                completion_background: dt.chrome.menu_background,
-            };
-        }
-
         let modal_style = ModalStyle::from_theme(theme);
         Self {
             completion_background: modal_style.background,
