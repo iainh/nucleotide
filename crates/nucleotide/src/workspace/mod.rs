@@ -8477,38 +8477,13 @@ impl Workspace {
             return;
         }
 
-        // Parse the command using our typed system
-        match nucleotide_core::ParsedCommand::parse(command) {
-            Ok(parsed) => {
-                // Log the parsed command for debugging
-                debug!("Parsed command: {:?}", parsed);
-
-                // Convert to typed command if possible
-                match nucleotide_core::Command::from_parsed(parsed.clone()) {
-                    Ok(typed_cmd) => {
-                        debug!("Typed command: {:?}", typed_cmd);
-                        // Execute the typed command
-                        self.execute_typed_command(typed_cmd, cx);
-                    }
-                    Err(_) => {
-                        // Fall back to raw command execution for untyped commands
-                        self.execute_raw_command(command, cx);
-                    }
-                }
-            }
-            Err(e) => {
-                // Show error to user
-                let status = EditorStatus {
-                    status: format!("Invalid command: {e}"),
-                    severity: Severity::Error,
-                };
-                self.core.update(cx, |core, cx| {
-                    core.editor.set_error(status.status.clone());
-                    cx.notify();
-                });
-                self.push_editor_status_notification(status, cx);
-            }
+        if let Some(force) = buffer_close_command_force(command) {
+            self.close_active_buffer_document_with_force(force, cx);
+            return;
         }
+
+        let command = normalized_helix_command(command);
+        self.execute_raw_command(&command, cx);
     }
 
     fn handle_runnable_command(&mut self, command: &str, cx: &mut Context<Self>) -> bool {
@@ -8530,64 +8505,6 @@ impl Workspace {
                 true
             }
             _ => false,
-        }
-    }
-
-    fn execute_typed_command(&mut self, command: nucleotide_core::Command, cx: &mut Context<Self>) {
-        use nucleotide_core::{Command, command_system::SplitDirection};
-
-        debug!("execute_typed_command called with: {:?}", command);
-
-        match command {
-            Command::Quit { force } => {
-                self.execute_raw_command(if force { "quit !" } else { "quit" }, cx);
-            }
-            Command::Write { path } => {
-                let cmd = match path {
-                    Some(p) => format!("write {p}"),
-                    None => "write".to_string(),
-                };
-                self.execute_raw_command(&cmd, cx);
-            }
-            Command::WriteQuit { force } => {
-                self.execute_raw_command(if force { "wq !" } else { "wq" }, cx);
-            }
-            Command::Goto { line } => {
-                self.execute_raw_command(&format!("goto {line}"), cx);
-            }
-            Command::Theme { name } => {
-                self.execute_raw_command(&format!("theme {name}"), cx);
-            }
-            Command::Open { path } => {
-                self.execute_raw_command(&format!("open {path}"), cx);
-            }
-            Command::Split { direction } => match direction {
-                SplitDirection::Horizontal => self.execute_raw_command("hsplit", cx),
-                SplitDirection::Vertical => self.execute_raw_command("vsplit", cx),
-            },
-            Command::Close { force } => {
-                self.close_active_buffer_document_with_force(force, cx);
-            }
-            Command::Help { topic } => {
-                let cmd = match topic {
-                    Some(t) => format!("help {t}"),
-                    None => "help".to_string(),
-                };
-                self.execute_raw_command(&cmd, cx);
-            }
-            Command::Search { pattern } => {
-                self.execute_raw_command(&format!("search {pattern}"), cx);
-            }
-            Command::Replace {
-                pattern,
-                replacement,
-            } => {
-                self.execute_raw_command(&format!("replace {pattern} {replacement}"), cx);
-            }
-            Command::Generic(parsed) => {
-                // Execute generic commands
-                self.execute_raw_command(&format!("{parsed}"), cx);
-            }
         }
     }
 
@@ -16719,6 +16636,40 @@ fn quit(core: Entity<Core>, rt: tokio::runtime::Handle, cx: &mut App) {
     });
 }
 
+fn buffer_close_command_force(command: &str) -> Option<bool> {
+    let mut parts = command.split_whitespace();
+    let name = parts.next()?;
+    let (name, force_suffix) = name
+        .strip_suffix('!')
+        .map_or((name, false), |name| (name, true));
+
+    if !matches!(name, "bc" | "bclose" | "buffer-close" | "close") {
+        return None;
+    }
+
+    let mut force = force_suffix;
+    for argument in parts {
+        if argument != "!" {
+            return None;
+        }
+        force = true;
+    }
+    Some(force)
+}
+
+fn normalized_helix_command(command: &str) -> std::borrow::Cow<'_, str> {
+    let command = command.trim();
+    if !command.is_empty() && command.chars().all(|character| character.is_ascii_digit()) {
+        return format!("goto {command}").into();
+    }
+
+    match command {
+        "sp" | "split" => "hsplit".into(),
+        "vs" => "vsplit".into(),
+        _ => command.into(),
+    }
+}
+
 impl Workspace {}
 
 #[cfg(test)]
@@ -16738,6 +16689,30 @@ mod tests {
 
     fn default_file_picker_config() -> helix_view::editor::FilePickerConfig {
         helix_view::editor::Config::default().file_picker
+    }
+
+    #[test]
+    fn buffer_close_aliases_preserve_force() {
+        for command in ["close", "bc", "bclose", "buffer-close"] {
+            assert_eq!(buffer_close_command_force(command), Some(false));
+        }
+        for command in ["close!", "bc !", "bclose!", "buffer-close !"] {
+            assert_eq!(buffer_close_command_force(command), Some(true));
+        }
+        assert_eq!(buffer_close_command_force("buffer-close other"), None);
+        assert_eq!(buffer_close_command_force("quit"), None);
+    }
+
+    #[test]
+    fn helix_command_aliases_are_normalized() {
+        assert_eq!(normalized_helix_command("42"), "goto 42");
+        assert_eq!(normalized_helix_command("split"), "hsplit");
+        assert_eq!(normalized_helix_command("sp"), "hsplit");
+        assert_eq!(normalized_helix_command("vs"), "vsplit");
+        assert_eq!(
+            normalized_helix_command("open 'two words'"),
+            "open 'two words'"
+        );
     }
 
     #[test]
