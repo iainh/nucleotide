@@ -3,8 +3,6 @@
 
 use helix_core::{ChangeSet, Operation};
 use helix_view::DocumentId;
-use helix_view::ViewId;
-use helix_view::document::Mode;
 use nucleotide_events::v2::document::ChangeType;
 use nucleotide_logging::{debug, info, instrument, trace, warn};
 use std::sync::OnceLock;
@@ -17,14 +15,6 @@ pub enum BridgedEvent {
         doc_id: DocumentId,
         change_summary: ChangeType,
     },
-    SelectionChanged {
-        doc_id: DocumentId,
-        view_id: ViewId,
-    },
-    ModeChanged {
-        old_mode: Mode,
-        new_mode: Mode,
-    },
     DiagnosticsChanged {
         doc_id: DocumentId,
     },
@@ -35,19 +25,11 @@ pub enum BridgedEvent {
         doc_id: DocumentId,
         was_modified: bool,
     },
-    ViewFocused {
-        view_id: ViewId,
-    },
     LanguageServerInitialized {
         server_id: helix_lsp::LanguageServerId,
     },
     LanguageServerExited {
         server_id: helix_lsp::LanguageServerId,
-    },
-    CompletionRequested {
-        doc_id: DocumentId,
-        view_id: ViewId,
-        trigger: CompletionTrigger,
     },
     /// Request to show diagnostics picker (mapped from Helix keybindings)
     DiagnosticsPickerRequested {
@@ -58,9 +40,6 @@ pub enum BridgedEvent {
     /// Request to show buffer picker (mapped from Helix keybindings)
     BufferPickerRequested,
 }
-
-// Use the CompletionTrigger from nucleotide-types
-pub use nucleotide_types::CompletionTrigger;
 
 /// Global event bridge sender - initialized once when application starts
 static EVENT_BRIDGE_SENDER: OnceLock<mpsc::UnboundedSender<BridgedEvent>> = OnceLock::new();
@@ -139,7 +118,7 @@ fn analyze_change_type(changes: &ChangeSet) -> ChangeType {
 #[instrument]
 pub fn register_event_hooks() {
     use helix_event::register_hook;
-    use helix_term::events::{OnModeSwitch, PostCommand, PostInsertChar};
+    use helix_term::events::PostCommand;
     use helix_view::doc_mut;
     use helix_view::events::{
         DiagnosticsDidChange, DocumentDidChange, DocumentDidClose, DocumentDidOpen,
@@ -179,33 +158,12 @@ pub fn register_event_hooks() {
             event.doc.active_snippet = None;
         }
 
-        let doc_id = event.doc.id();
-        let view_id = event.view;
-        debug!(
-            doc_id = ?doc_id,
-            view_id = ?view_id,
-            "Selection changed event"
-        );
-        send_bridged_event(BridgedEvent::SelectionChanged { doc_id, view_id });
         Ok(())
     });
 
     register_hook!(move |event: &mut DocumentFocusLost<'_>| {
         let editor = &mut event.editor;
         doc_mut!(editor, &event.doc).active_snippet = None;
-        Ok(())
-    });
-
-    // Mode switch events (from helix-term)
-    register_hook!(move |event: &mut OnModeSwitch<'_, '_>| {
-        let old_mode = event.old_mode;
-        let new_mode = event.new_mode;
-        debug!(
-            old_mode = ?old_mode,
-            new_mode = ?new_mode,
-            "Mode switch event"
-        );
-        send_bridged_event(BridgedEvent::ModeChanged { old_mode, new_mode });
         Ok(())
     });
 
@@ -266,33 +224,6 @@ pub fn register_event_hooks() {
             "Language server exited event"
         );
         send_bridged_event(BridgedEvent::LanguageServerExited { server_id });
-        Ok(())
-    });
-
-    // Post insert character events - trigger completion
-    register_hook!(move |event: &mut PostInsertChar<'_, '_>| {
-        // Get the current view and document
-        let view_id = event.cx.editor.tree.focus;
-        let doc_id = match event.cx.editor.tree.try_get(view_id) {
-            Some(v) => v.doc,
-            None => {
-                // No focused view; skip triggering completion
-                return Ok(());
-            }
-        };
-
-        debug!(
-            doc_id = ?doc_id,
-            view_id = ?view_id,
-            character = %event.c,
-            "Completion requested after character insert"
-        );
-
-        send_bridged_event(BridgedEvent::CompletionRequested {
-            doc_id,
-            view_id,
-            trigger: CompletionTrigger::Character(event.c),
-        });
         Ok(())
     });
 
