@@ -4,13 +4,6 @@
 use gpui::{App, AppContext, Context, Entity, EventEmitter};
 use helix_core::Rope;
 use helix_vcs::{DiffHandle, DiffProviderRegistry, Hunk};
-use nucleotide_events::{
-    EventBus,
-    v2::vcs::{
-        DiffHunk as DomainDiffHunk, Event as DomainVcsEvent, StageStatus as DomainStageStatus,
-        WorkingStatus as DomainWorkingStatus,
-    },
-};
 use nucleotide_logging::{debug, error, info, warn};
 use nucleotide_types::{DiffChangeType, DiffHunkInfo, VcsStatus};
 use nucleotide_workspace::{
@@ -52,97 +45,6 @@ pub enum VcsEvent {
     },
     /// VCS service encountered an error
     Error { message: String },
-}
-
-/// Convert VCS service event to domain event for the event bus
-fn vcs_event_to_domain_events(event: &VcsEvent) -> Vec<DomainVcsEvent> {
-    match event {
-        VcsEvent::DiffHunksUpdated {
-            file_path,
-            hunks,
-            diff_base_revision,
-        } => {
-            // Convert DiffHunkInfo to DomainDiffHunk
-            let domain_hunks: Vec<DomainDiffHunk> = hunks
-                .iter()
-                .map(|hunk| {
-                    let change_type = match hunk.change_type {
-                        DiffChangeType::Addition => {
-                            nucleotide_events::v2::vcs::HunkChangeType::Addition
-                        }
-                        DiffChangeType::Deletion => {
-                            nucleotide_events::v2::vcs::HunkChangeType::Deletion
-                        }
-                        DiffChangeType::Modification => {
-                            nucleotide_events::v2::vcs::HunkChangeType::Modification
-                        }
-                    };
-
-                    DomainDiffHunk {
-                        after_start: hunk.after_start,
-                        after_end: hunk.after_end,
-                        before_start: hunk.before_start,
-                        before_end: hunk.before_end,
-                        change_type,
-                    }
-                })
-                .collect();
-
-            vec![DomainVcsEvent::DiffStatusChanged {
-                doc_id: helix_view::DocumentId::default(), // TODO: Get actual doc_id when available
-                path: file_path.clone(),
-                hunks: domain_hunks,
-                diff_base_revision: diff_base_revision.clone(),
-            }]
-        }
-        VcsEvent::RepositoryStarted {
-            root_path,
-            current_head,
-        } => vec![DomainVcsEvent::RepositoryHeadChanged {
-            repository_path: root_path.clone(),
-            previous_head: None,
-            current_head: current_head.clone().unwrap_or_else(|| "HEAD".to_string()),
-        }],
-        VcsEvent::RepositoryHeadChanged {
-            root_path,
-            previous_head,
-            current_head,
-        } => vec![DomainVcsEvent::RepositoryHeadChanged {
-            repository_path: root_path.clone(),
-            previous_head: previous_head.clone(),
-            current_head: current_head.clone(),
-        }],
-        VcsEvent::StatusUpdated { changes } => changes
-            .iter()
-            .map(|(path, status)| DomainVcsEvent::FileStageStatusChanged {
-                path: path.clone(),
-                stage_status: domain_stage_status(*status),
-                working_status: domain_working_status(*status),
-            })
-            .collect(),
-        VcsEvent::Error { .. } => {
-            // Error events could be mapped to a domain error event if needed
-            Vec::new()
-        }
-    }
-}
-
-fn domain_stage_status(status: VcsStatus) -> DomainStageStatus {
-    match status {
-        VcsStatus::Added => DomainStageStatus::Staged,
-        _ => DomainStageStatus::Unstaged,
-    }
-}
-
-fn domain_working_status(status: VcsStatus) -> Option<DomainWorkingStatus> {
-    match status {
-        VcsStatus::Modified => Some(DomainWorkingStatus::Modified),
-        VcsStatus::Untracked => Some(DomainWorkingStatus::Untracked),
-        VcsStatus::Deleted => Some(DomainWorkingStatus::Deleted),
-        VcsStatus::Renamed => Some(DomainWorkingStatus::Renamed),
-        VcsStatus::Conflicted => Some(DomainWorkingStatus::Conflicted),
-        VcsStatus::Clean | VcsStatus::Added | VcsStatus::Unknown => None,
-    }
 }
 
 fn current_git_head(root_path: &Path) -> Option<String> {
@@ -256,8 +158,6 @@ pub struct VcsService {
     diff_hunks_cache: HashMap<PathBuf, Vec<DiffHunkInfo>>,
     /// Access order for bounded diff metadata caches
     diff_access_order: VecDeque<PathBuf>,
-    /// Event bus for forwarding VCS events
-    event_bus: Option<Box<dyn EventBus + Send + Sync>>,
     /// Configuration
     config: VcsConfig,
     /// Last time VCS status was checked
@@ -295,7 +195,6 @@ impl VcsService {
             diff_handles: HashMap::new(),
             diff_hunks_cache: HashMap::new(),
             diff_access_order: VecDeque::new(),
-            event_bus: None,
             config,
             last_check: None,
             status_refresh_in_flight: false,
@@ -306,11 +205,6 @@ impl VcsService {
             cache_cleanup_interval: Duration::from_secs(30), // Clean every 30 seconds
             max_cache_size: 5000,                            // Maximum 5000 cached entries
         }
-    }
-
-    /// Set the event bus for forwarding VCS events
-    pub fn set_event_bus(&mut self, event_bus: Box<dyn EventBus + Send + Sync>) {
-        self.event_bus = Some(event_bus);
     }
 
     pub fn set_workspace_backend(&mut self, backend: WorkspaceBackendHandle) {
@@ -1380,16 +1274,8 @@ fn git_error_is_not_repository(message: &str) -> bool {
 impl EventEmitter<VcsEvent> for VcsService {}
 
 impl VcsService {
-    /// Emit a VCS event and forward it to the event bus if available
+    /// Emit a VCS event to GPUI subscribers.
     fn emit_vcs_event(&self, event: VcsEvent, cx: &mut Context<Self>) {
-        // Forward to event bus if available
-        if let Some(ref event_bus) = self.event_bus {
-            for domain_event in vcs_event_to_domain_events(&event) {
-                event_bus.dispatch_vcs(domain_event);
-            }
-        }
-
-        // Also emit the local event for subscribers
         cx.emit(event);
     }
 }
@@ -1510,13 +1396,6 @@ impl VcsServiceHandle {
     pub fn update_file_diff(&self, file_path: &Path, file_content: helix_core::Rope, cx: &mut App) {
         self.service.update(cx, |service, cx| {
             service.update_file_diff(file_path, file_content, cx);
-        });
-    }
-
-    /// Set the event bus for forwarding VCS events to the application event system
-    pub fn set_event_bus(&self, event_bus: Box<dyn EventBus + Send + Sync>, cx: &mut App) {
-        self.service.update(cx, |service, _cx| {
-            service.set_event_bus(event_bus);
         });
     }
 
@@ -1686,75 +1565,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn status_updated_maps_each_changed_file_to_domain_event() {
-        let modified = PathBuf::from("/repo/src/lib.rs");
-        let untracked = PathBuf::from("/repo/notes.md");
-        let clean = PathBuf::from("/repo/old.rs");
-        let mut changes = HashMap::new();
-        changes.insert(modified.clone(), VcsStatus::Modified);
-        changes.insert(untracked.clone(), VcsStatus::Untracked);
-        changes.insert(clean.clone(), VcsStatus::Clean);
-
-        let mut events = vcs_event_to_domain_events(&VcsEvent::StatusUpdated { changes });
-        events.sort_by(|a, b| {
-            let a_path = match a {
-                DomainVcsEvent::FileStageStatusChanged { path, .. } => path,
-                _ => panic!("expected file stage status event"),
-            };
-            let b_path = match b {
-                DomainVcsEvent::FileStageStatusChanged { path, .. } => path,
-                _ => panic!("expected file stage status event"),
-            };
-            a_path.cmp(b_path)
-        });
-
-        assert_eq!(events.len(), 3);
-        assert!(events.iter().any(|event| matches!(
-            event,
-            DomainVcsEvent::FileStageStatusChanged {
-                path,
-                stage_status: DomainStageStatus::Unstaged,
-                working_status: Some(DomainWorkingStatus::Modified),
-            } if path == &modified
-        )));
-        assert!(events.iter().any(|event| matches!(
-            event,
-            DomainVcsEvent::FileStageStatusChanged {
-                path,
-                stage_status: DomainStageStatus::Unstaged,
-                working_status: Some(DomainWorkingStatus::Untracked),
-            } if path == &untracked
-        )));
-        assert!(events.iter().any(|event| matches!(
-            event,
-            DomainVcsEvent::FileStageStatusChanged {
-                path,
-                stage_status: DomainStageStatus::Unstaged,
-                working_status: None,
-            } if path == &clean
-        )));
-    }
-
-    #[test]
-    fn added_status_maps_to_staged_domain_event() {
-        let path = PathBuf::from("/repo/src/new.rs");
-        let mut changes = HashMap::new();
-        changes.insert(path.clone(), VcsStatus::Added);
-
-        let events = vcs_event_to_domain_events(&VcsEvent::StatusUpdated { changes });
-
-        assert_eq!(events.len(), 1);
-        assert!(matches!(
-            &events[0],
-            DomainVcsEvent::FileStageStatusChanged {
-                path: event_path,
-                stage_status: DomainStageStatus::Staged,
-                working_status: None,
-            } if event_path == &path
-        ));
-    }
-
     #[tokio::test]
     async fn diff_cache_stays_within_capacity() {
         let mut service = VcsService::new(VcsConfig::default());
@@ -1797,32 +1607,5 @@ mod tests {
                 .contains_key(&PathBuf::from("/repo/file-1.rs"))
         );
         assert_eq!(service.diff_handles.len(), DIFF_CACHE_CAPACITY);
-    }
-
-    #[test]
-    fn diff_hunks_include_current_head_as_base_revision() {
-        let file_path = PathBuf::from("/repo/src/lib.rs");
-        let head = "abc123".to_string();
-        let events = vcs_event_to_domain_events(&VcsEvent::DiffHunksUpdated {
-            file_path: file_path.clone(),
-            hunks: vec![DiffHunkInfo {
-                change_type: DiffChangeType::Modification,
-                after_start: 1,
-                after_end: 2,
-                before_start: 1,
-                before_end: 1,
-            }],
-            diff_base_revision: Some(head.clone()),
-        });
-
-        assert_eq!(events.len(), 1);
-        assert!(matches!(
-            &events[0],
-            DomainVcsEvent::DiffStatusChanged {
-                path,
-                diff_base_revision: Some(base_revision),
-                ..
-            } if path == &file_path && base_revision == &head
-        ));
     }
 }

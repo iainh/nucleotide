@@ -82,9 +82,8 @@ use crate::types::{
 };
 use crate::utils;
 use crate::{Core, Input, InputEvent};
-use nucleotide_core::EventBus;
 use nucleotide_env::EnvironmentOrigin;
-use nucleotide_events::v2::run::{Event as RunEvent, ResolvedTask, RunId, RunStatus};
+use nucleotide_events::v2::run::{ResolvedTask, RunId, RunStatus};
 use nucleotide_events::v2::terminal::{Event as TerminalEvent, TerminalId};
 use nucleotide_terminal::TerminalBounds;
 use nucleotide_workspace::local_workspace_backend;
@@ -1773,26 +1772,6 @@ fn editor_status_matches(a: &EditorStatus, b: &EditorStatus) -> bool {
     a.status == b.status && a.severity == b.severity
 }
 
-fn integration_status_severity(severity: &str) -> Severity {
-    match severity.to_ascii_lowercase().as_str() {
-        "error" => Severity::Error,
-        "warning" | "warn" => Severity::Warning,
-        "hint" => Severity::Hint,
-        _ => Severity::Info,
-    }
-}
-
-fn editor_domain_status_severity(
-    severity: nucleotide_events::v2::editor::StatusSeverity,
-) -> Severity {
-    match severity {
-        nucleotide_events::v2::editor::StatusSeverity::Info
-        | nucleotide_events::v2::editor::StatusSeverity::Success => Severity::Info,
-        nucleotide_events::v2::editor::StatusSeverity::Warning => Severity::Warning,
-        nucleotide_events::v2::editor::StatusSeverity::Error => Severity::Error,
-    }
-}
-
 fn unsaved_buffers_remaining_status(names: Vec<String>) -> EditorStatus {
     let buffer_count = names.len();
     EditorStatus {
@@ -2392,14 +2371,11 @@ impl Workspace {
 
     fn shutdown_terminal_session(&mut self, id: TerminalId, cx: &mut Context<Self>) {
         self.core.update(cx, |app, _cx| {
-            if let Some(bus) = &app.event_aggregator {
-                bus.dispatch_terminal(TerminalEvent::Exited {
-                    id,
-                    code: None,
-                    signal: None,
-                });
-                bus.process_events();
-            }
+            app.terminal_runtime.dispatch(&TerminalEvent::Exited {
+                id,
+                code: None,
+                signal: None,
+            });
         });
     }
 
@@ -2435,10 +2411,10 @@ impl Workspace {
         self.last_terminal_bounds = None;
 
         let shell: Option<String> = None;
-        let (event_bus, project_environment) = {
+        let (terminal_runtime, project_environment) = {
             let core = self.core.read(cx);
             (
-                core.event_aggregator.clone(),
+                core.terminal_runtime.clone(),
                 core.project_environment.clone(),
             )
         };
@@ -2452,24 +2428,18 @@ impl Workspace {
             .await;
 
             if let Some(remote_proxy) = remote_proxy {
-                if let Some(bus) = event_bus.as_ref() {
-                    let (proxy_cwd, program, args) =
-                        Self::terminal_proxy_event_command(remote_proxy);
-                    bus.dispatch_terminal(TerminalEvent::CommandSpawnRequested {
-                        id,
-                        cwd: proxy_cwd,
-                        program,
-                        args,
-                        env: Vec::new(),
-                    });
-                    bus.process_events();
+                let (proxy_cwd, program, args) =
+                    Self::terminal_proxy_event_command(remote_proxy);
+                terminal_runtime.dispatch(&TerminalEvent::CommandSpawnRequested {
+                    id,
+                    cwd: proxy_cwd,
+                    program,
+                    args,
+                    env: Vec::new(),
+                });
 
-                    if let Some(bytes) = initial_input {
-                        bus.dispatch_terminal(TerminalEvent::Input { id, bytes });
-                        bus.process_events();
-                    }
-                } else {
-                    warn!("No event aggregator; remote terminal spawn not dispatched");
+                if let Some(bytes) = initial_input {
+                    terminal_runtime.dispatch(&TerminalEvent::Input { id, bytes });
                 }
                 return;
             }
@@ -2496,21 +2466,15 @@ impl Workspace {
             };
             env.extend(extra_env);
 
-            if let Some(bus) = event_bus {
-                bus.dispatch_terminal(TerminalEvent::SpawnRequested {
-                    id,
-                    cwd,
-                    shell,
-                    env,
-                });
-                bus.process_events();
+            terminal_runtime.dispatch(&TerminalEvent::SpawnRequested {
+                id,
+                cwd,
+                shell,
+                env,
+            });
 
-                if let Some(bytes) = initial_input {
-                    bus.dispatch_terminal(TerminalEvent::Input { id, bytes });
-                    bus.process_events();
-                }
-            } else {
-                warn!("No event aggregator; terminal spawn not dispatched");
+            if let Some(bytes) = initial_input {
+                terminal_runtime.dispatch(&TerminalEvent::Input { id, bytes });
             }
         });
 
@@ -2532,10 +2496,10 @@ impl Workspace {
         self.run_output_terminal = Some(id);
         self.last_terminal_bounds = None;
 
-        let (event_bus, project_environment) = {
+        let (terminal_runtime, project_environment) = {
             let core = self.core.read(cx);
             (
-                core.event_aggregator.clone(),
+                core.terminal_runtime.clone(),
                 core.project_environment.clone(),
             )
         };
@@ -2549,20 +2513,15 @@ impl Workspace {
             .await;
 
             if let Some(remote_proxy) = remote_proxy {
-                if let Some(bus) = event_bus.as_ref() {
-                    let (proxy_cwd, proxy_program, proxy_args) =
-                        Self::terminal_proxy_event_command(remote_proxy);
-                    bus.dispatch_terminal(TerminalEvent::CommandSpawnRequested {
-                        id,
-                        cwd: proxy_cwd,
-                        program: proxy_program,
-                        args: proxy_args,
-                        env: Vec::new(),
-                    });
-                    bus.process_events();
-                } else {
-                    warn!("No event aggregator; remote runnable terminal spawn not dispatched");
-                }
+                let (proxy_cwd, proxy_program, proxy_args) =
+                    Self::terminal_proxy_event_command(remote_proxy);
+                terminal_runtime.dispatch(&TerminalEvent::CommandSpawnRequested {
+                    id,
+                    cwd: proxy_cwd,
+                    program: proxy_program,
+                    args: proxy_args,
+                    env: Vec::new(),
+                });
                 return;
             }
 
@@ -2588,18 +2547,13 @@ impl Workspace {
             };
             env.extend(extra_env);
 
-            if let Some(bus) = event_bus {
-                bus.dispatch_terminal(TerminalEvent::CommandSpawnRequested {
-                    id,
-                    cwd,
-                    program,
-                    args,
-                    env,
-                });
-                bus.process_events();
-            } else {
-                warn!("No event aggregator; runnable terminal spawn not dispatched");
-            }
+            terminal_runtime.dispatch(&TerminalEvent::CommandSpawnRequested {
+                id,
+                cwd,
+                program,
+                args,
+                env,
+            });
         });
 
         id
@@ -2701,20 +2655,13 @@ impl Workspace {
             .active_run_terminal
             .is_some_and(|(terminal_id, _run_id)| terminal_id == id);
 
-        if let Some((terminal_id, run_id)) = self.active_run_terminal
+        if let Some((terminal_id, _run_id)) = self.active_run_terminal
             && terminal_id == id
         {
             let status = match code {
                 Some(0) | None => RunStatus::Finished,
                 Some(_) => RunStatus::Failed,
             };
-            self.core.update(cx, |app, _cx| {
-                if let Some(bus) = &app.event_aggregator {
-                    bus.dispatch_run(RunEvent::StatusChanged { id: run_id, status });
-                    bus.dispatch_run(RunEvent::Finished { id: run_id, code });
-                    bus.process_events();
-                }
-            });
             self.active_run_terminal = None;
             if let Some(activity_id) = self.active_run_activity.take() {
                 self.finish_background_activity(activity_id, cx);
@@ -3187,19 +3134,6 @@ impl Workspace {
         self.active_run_activity = Some(activity_id);
 
         self.core.update(cx, |app, app_cx| {
-            if let Some(bus) = &app.event_aggregator {
-                bus.dispatch_run(RunEvent::Requested { task: task.clone() });
-                bus.dispatch_run(RunEvent::Started {
-                    id: run_id,
-                    task: task.clone(),
-                    terminal_id: Some(terminal_id),
-                });
-                bus.dispatch_run(RunEvent::StatusChanged {
-                    id: run_id,
-                    status: RunStatus::Running,
-                });
-                bus.process_events();
-            }
             app.set_editor_status_feedback(app_cx, run_message, Severity::Info);
         });
     }
@@ -7686,18 +7620,6 @@ impl Workspace {
         cx.notify();
     }
 
-    fn handle_mode_changed(
-        &mut self,
-        old_mode: &helix_view::document::Mode,
-        new_mode: &helix_view::document::Mode,
-        cx: &mut Context<Self>,
-    ) {
-        // Editor mode changed - update status line and current view
-        info!("Mode changed from {:?} to {:?}", old_mode, new_mode);
-        self.update_current_document_view(cx);
-        cx.notify();
-    }
-
     fn handle_diagnostics_changed(
         &mut self,
         doc_id: helix_view::DocumentId,
@@ -7839,26 +7761,6 @@ impl Workspace {
             });
         }
 
-        cx.notify();
-    }
-
-    fn handle_language_server_initialized(
-        &mut self,
-        server_id: helix_lsp::LanguageServerId,
-        cx: &mut Context<Self>,
-    ) {
-        // LSP server initialized - update status
-        info!("Language server initialized: {:?}", server_id);
-        cx.notify();
-    }
-
-    fn handle_language_server_exited(
-        &mut self,
-        server_id: helix_lsp::LanguageServerId,
-        cx: &mut Context<Self>,
-    ) {
-        // LSP server exited - update status
-        info!("Language server exited: {:?}", server_id);
         cx.notify();
     }
 
@@ -9803,16 +9705,8 @@ impl Workspace {
             crate::Update::ViewportCursor { view_id, request } => {
                 self.handle_viewport_cursor(*view_id, *request, cx);
             }
-            // Handle new event-based updates (during migration)
             crate::Update::Event(event) => {
                 match event {
-                    crate::types::AppEvent::Terminal(term_event) => {
-                        // Close the terminal pane when the shell process exits
-                        if let TerminalEvent::Exited { id, code, .. } = term_event {
-                            self.handle_terminal_exited(*id, *code, false, cx);
-                        }
-                    }
-                    crate::types::AppEvent::Run(_run_event) => {}
                     crate::types::AppEvent::Workspace(workspace_event) => {
                         if let crate::types::WorkspaceEvent::FileSelected { path, source } =
                             workspace_event
@@ -9833,33 +9727,8 @@ impl Workspace {
                     ) => {
                         self.handle_system_appearance_changed(*appearance, cx);
                     }
-                    crate::types::AppEvent::Lsp(lsp_event) => {
-                        match lsp_event {
-                            crate::types::LspEvent::ServerInitialized { server_id, .. } => {
-                                self.handle_language_server_initialized(*server_id, cx);
-                            }
-                            crate::types::LspEvent::ServerExited { server_id, .. } => {
-                                self.handle_language_server_exited(*server_id, cx);
-                            }
-                            _ => {
-                                // Other LSP events not yet handled
-                            }
-                        }
-                    }
                     crate::types::AppEvent::Document(doc_event) => {
                         self.handle_document_domain_event(doc_event, cx);
-                    }
-                    crate::types::AppEvent::Editor(editor_event) => {
-                        self.handle_editor_domain_event(editor_event, cx);
-                    }
-                    crate::types::AppEvent::Vcs(vcs_event) => {
-                        self.handle_vcs_domain_event(vcs_event, cx);
-                    }
-                    crate::types::AppEvent::Integration(integration_event) => {
-                        self.handle_integration_event(integration_event, cx);
-                    }
-                    crate::types::AppEvent::Diagnostics(_d) => {
-                        // Diagnostics domain events are handled upstream to update LspState
                     }
                 }
             }
@@ -11269,53 +11138,6 @@ impl Workspace {
         }
     }
 
-    fn handle_integration_event(
-        &mut self,
-        event: &crate::types::IntegrationEvent,
-        cx: &mut Context<Self>,
-    ) {
-        use nucleotide_events::integration::{Event as IntegrationEvent, RecoveryAction, SyncType};
-
-        debug!(integration_event = ?event, "Integration event received");
-
-        match event {
-            IntegrationEvent::DocumentViewSync {
-                doc_id,
-                view_id,
-                sync_type,
-            } => {
-                match sync_type {
-                    SyncType::FocusSync => self.handle_view_focused(*view_id, cx),
-                    SyncType::SelectionToView | SyncType::ViewToDocument | SyncType::ScrollSync => {
-                        self.update_specific_document_view(*doc_id, cx);
-                    }
-                }
-                cx.notify();
-            }
-            IntegrationEvent::UiEditorSync { sync_type, data } => {
-                self.handle_ui_editor_sync_event(*sync_type, data, cx);
-            }
-            IntegrationEvent::ErrorRecoveryCoordination {
-                recovery_action: RecoveryAction::ShowUserError { message },
-                ..
-            } => {
-                self.push_editor_status_notification(
-                    EditorStatus {
-                        status: message.clone(),
-                        severity: Severity::Error,
-                    },
-                    cx,
-                );
-            }
-            IntegrationEvent::ErrorRecoveryCoordination { .. }
-            | IntegrationEvent::LspDocumentAssociation { .. }
-            | IntegrationEvent::CompletionCoordination { .. }
-            | IntegrationEvent::WorkspaceLspCoordination { .. } => {
-                cx.notify();
-            }
-        }
-    }
-
     fn handle_document_domain_event(
         &mut self,
         event: &crate::types::DocumentEvent,
@@ -11362,184 +11184,6 @@ impl Workspace {
                 self.handle_diagnostics_changed(*doc_id, cx);
             }
         }
-    }
-
-    fn handle_editor_domain_event(
-        &mut self,
-        event: &crate::types::EditorEvent,
-        cx: &mut Context<Self>,
-    ) {
-        use nucleotide_events::v2::editor::Event as EditorEvent;
-
-        debug!(editor_event = ?event, "Editor domain event received");
-
-        match event {
-            EditorEvent::ModeChanged {
-                previous_mode,
-                new_mode,
-                ..
-            } => {
-                self.handle_mode_changed(previous_mode, new_mode, cx);
-            }
-            EditorEvent::StatusChanged {
-                message, severity, ..
-            } => {
-                self.push_editor_status_notification(
-                    EditorStatus {
-                        status: message.clone(),
-                        severity: editor_domain_status_severity(*severity),
-                    },
-                    cx,
-                );
-            }
-            EditorEvent::ConfigurationChanged { .. } => {
-                self.update_document_views(cx);
-                cx.notify();
-            }
-            EditorEvent::RedrawRequested { .. } => {
-                self.handle_redraw(cx);
-            }
-            EditorEvent::ShutdownRequested { force, .. } => {
-                if *force {
-                    let handle = self.handle.clone();
-                    let core = self.core.clone();
-                    quit(core, handle, cx);
-                    cx.quit();
-                } else {
-                    cx.notify();
-                }
-            }
-            EditorEvent::CommandExecuted { success, .. } => {
-                if !success {
-                    cx.notify();
-                }
-            }
-            EditorEvent::MacroRecordingChanged { .. }
-            | EditorEvent::SearchCompleted { .. }
-            | EditorEvent::ReplaceCompleted { .. } => {
-                cx.notify();
-            }
-        }
-    }
-
-    fn handle_vcs_domain_event(
-        &mut self,
-        event: &nucleotide_events::v2::vcs::Event,
-        cx: &mut Context<Self>,
-    ) {
-        use nucleotide_events::v2::vcs::Event as VcsDomainEvent;
-
-        debug!(vcs_event = ?event, "VCS domain event received");
-
-        match event {
-            VcsDomainEvent::DiffStatusChanged { doc_id, path, .. }
-            | VcsDomainEvent::DiffCalculationCompleted { doc_id, path, .. } => {
-                self.update_vcs_document_view(*doc_id, path, cx);
-            }
-            VcsDomainEvent::DiffCalculationFailed {
-                doc_id,
-                path,
-                error,
-            } => {
-                self.push_editor_status_notification(
-                    EditorStatus {
-                        status: format!("Failed to calculate diff for {}: {error}", path.display()),
-                        severity: Severity::Error,
-                    },
-                    cx,
-                );
-                self.update_vcs_document_view(*doc_id, path, cx);
-            }
-            VcsDomainEvent::FileStageStatusChanged { path, .. }
-            | VcsDomainEvent::FileTrackingChanged { path, .. } => {
-                self.update_open_document_for_path(path, cx);
-                if let Some(file_tree) = &self.file_tree {
-                    file_tree.update(cx, |_tree, cx| cx.notify());
-                }
-                cx.notify();
-            }
-            VcsDomainEvent::RepositoryHeadChanged { .. }
-            | VcsDomainEvent::DiffProviderStatusChanged { .. } => {
-                if let Some(file_tree) = &self.file_tree {
-                    file_tree.update(cx, |_tree, cx| cx.notify());
-                }
-                cx.notify();
-            }
-        }
-    }
-
-    fn handle_ui_editor_sync_event(
-        &mut self,
-        sync_type: nucleotide_events::integration::UiEditorSyncType,
-        data: &nucleotide_events::integration::UiEditorSyncData,
-        cx: &mut Context<Self>,
-    ) {
-        use nucleotide_events::integration::{UiEditorSyncData, UiEditorSyncType};
-
-        match (sync_type, data) {
-            (UiEditorSyncType::ModeSync, UiEditorSyncData::ModeData { .. }) => {
-                self.update_current_document_view(cx);
-                cx.notify();
-            }
-            (UiEditorSyncType::StatusSync, UiEditorSyncData::StatusData { message, severity }) => {
-                self.push_editor_status_notification(
-                    EditorStatus {
-                        status: message.clone(),
-                        severity: integration_status_severity(severity),
-                    },
-                    cx,
-                );
-            }
-            (UiEditorSyncType::ThemeChange, UiEditorSyncData::ThemeData { .. })
-            | (UiEditorSyncType::FontChange, UiEditorSyncData::FontData { .. }) => {
-                cx.notify();
-            }
-            _ => {
-                debug!(
-                    sync_type = ?sync_type,
-                    data = ?data,
-                    "Ignoring mismatched UI-editor sync payload"
-                );
-            }
-        }
-    }
-
-    fn update_vcs_document_view(
-        &mut self,
-        doc_id: helix_view::DocumentId,
-        path: &Path,
-        cx: &mut Context<Self>,
-    ) {
-        let has_document = self.core.read(cx).editor.document(doc_id).is_some();
-        if has_document {
-            self.update_specific_document_view(doc_id, cx);
-        } else {
-            self.update_open_document_for_path(path, cx);
-        }
-        cx.notify();
-    }
-
-    fn update_open_document_for_path(&mut self, path: &Path, cx: &mut Context<Self>) {
-        if let Some(doc_id) = self.document_id_for_path(path, cx) {
-            self.update_specific_document_view(doc_id, cx);
-        }
-    }
-
-    fn document_id_for_path(
-        &self,
-        path: &Path,
-        cx: &mut Context<Self>,
-    ) -> Option<helix_view::DocumentId> {
-        let core = self.core.read(cx);
-        core.editor
-            .documents
-            .iter()
-            .find_map(|(doc_id, doc)| {
-                doc.path()
-                    .is_some_and(|doc_path| doc_path == path)
-                    .then_some(doc_id)
-            })
-            .copied()
     }
 
     fn update_key_hints(&mut self, cx: &mut Context<Self>) {
@@ -12993,17 +12637,6 @@ impl Workspace {
         }
     }
 
-    /// Update only the currently focused document view
-    fn update_current_document_view(&mut self, cx: &mut Context<Self>) {
-        if let Some(focused_view_id) = self.view_manager.focused_view_id()
-            && let Some(view_entity) = self.view_manager.get_document_view(&focused_view_id)
-        {
-            view_entity.update(cx, |_view, cx| {
-                cx.notify();
-            });
-        }
-    }
-
     fn document_view_layouts(&self, cx: &mut Context<Self>) -> Vec<DocumentViewLayout> {
         self.core
             .read(cx)
@@ -13586,20 +13219,13 @@ impl Workspace {
         if bounds_changed {
             self.last_terminal_bounds = Some((active_id, bounds));
             self.core.update(cx, |app, _| {
-                if let Some(bus) = &app.event_aggregator {
-                    bus.dispatch_terminal(TerminalEvent::Resized {
-                        id: active_id,
-                        cols: bounds.cols(),
-                        rows: bounds.rows(),
-                        cell_width: bounds.cell_size().0,
-                        cell_height: bounds.cell_size().1,
-                    });
-                    // Process resize events immediately so the PTY is resized
-                    // in the same frame. Without this, events dispatched during
-                    // render sit in the queue until the next render cycle which
-                    // may never come (process_events runs at the top of render).
-                    bus.process_events();
-                }
+                app.terminal_runtime.dispatch(&TerminalEvent::Resized {
+                    id: active_id,
+                    cols: bounds.cols(),
+                    rows: bounds.rows(),
+                    cell_width: bounds.cell_size().0,
+                    cell_height: bounds.cell_size().1,
+                });
             });
             // Notify the terminal view entity so it re-renders with the
             // updated grid dimensions (new row/column count).
@@ -13628,13 +13254,6 @@ impl Render for Workspace {
                     workspace.start_deferred_project_services(cx);
                 });
             });
-        }
-
-        // Drive queued workspace and terminal operations.
-        if let Some(aggregator) = self.core.read(cx).event_aggregator.clone()
-            && aggregator.has_queued_events()
-        {
-            aggregator.process_events();
         }
 
         // Close terminal panel when the shell process has exited
@@ -18625,28 +18244,6 @@ mod tests {
             "2 unsaved buffers remaining: [\"main.rs\", \"lib.rs\"]"
         );
         assert_eq!(status.severity, Severity::Error);
-    }
-
-    #[test]
-    fn editor_domain_status_severity_maps_to_workspace_severity() {
-        use nucleotide_events::v2::editor::StatusSeverity;
-
-        assert_eq!(
-            editor_domain_status_severity(StatusSeverity::Info),
-            Severity::Info
-        );
-        assert_eq!(
-            editor_domain_status_severity(StatusSeverity::Success),
-            Severity::Info
-        );
-        assert_eq!(
-            editor_domain_status_severity(StatusSeverity::Warning),
-            Severity::Warning
-        );
-        assert_eq!(
-            editor_domain_status_severity(StatusSeverity::Error),
-            Severity::Error
-        );
     }
 
     #[test]

@@ -1,7 +1,5 @@
 // ABOUTME: Terminal runtime handler; consumes terminal events and updates view state
 
-use nucleotide_core::{self as core, EventAggregatorHandle};
-use nucleotide_events::EventBus;
 use nucleotide_events::v2::terminal::{Event as TerminalEvent, TerminalId};
 use nucleotide_logging::{error, info};
 use std::collections::HashMap;
@@ -22,14 +20,53 @@ use nucleotide_terminal_view::{TerminalViewModel, register_view_model};
 /// event queue and write keystrokes directly to the PTY background writer.
 pub type TerminalInputSenders = Arc<Mutex<HashMap<TerminalId, std::sync::mpsc::Sender<Vec<u8>>>>>;
 
+#[derive(Clone)]
+pub struct TerminalRuntimeHandle {
+    inner: Arc<Mutex<TerminalRuntimeHandler>>,
+    input_senders: TerminalInputSenders,
+}
+
+impl TerminalRuntimeHandle {
+    pub fn new() -> Self {
+        let handler = TerminalRuntimeHandler::new();
+        let input_senders = handler.input_senders();
+        Self {
+            inner: Arc::new(Mutex::new(handler)),
+            input_senders,
+        }
+    }
+
+    pub fn dispatch(&self, event: &TerminalEvent) {
+        match self.inner.lock() {
+            Ok(mut handler) => handler.handle_event(event),
+            Err(poisoned) => {
+                error!("Terminal runtime lock poisoned; recovering");
+                poisoned.into_inner().handle_event(event);
+            }
+        }
+    }
+
+    pub fn send_input(&self, id: TerminalId, bytes: Vec<u8>) -> bool {
+        self.input_senders
+            .lock()
+            .ok()
+            .and_then(|senders| senders.get(&id).cloned())
+            .is_some_and(|sender| sender.send(bytes).is_ok())
+    }
+}
+
+impl Default for TerminalRuntimeHandle {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Manages terminal sessions and translates frames into UI view state updates
 pub struct TerminalRuntimeHandler {
     sessions: HashMap<TerminalId, SessionEntry>,
     pending_resizes: HashMap<TerminalId, PendingTerminalResize>,
     /// Shared sender map so callers outside the event loop can write input directly
     input_senders: TerminalInputSenders,
-    /// Event bus handle so consumer threads can dispatch Exited events
-    event_bus: Option<EventAggregatorHandle>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -173,13 +210,7 @@ impl TerminalRuntimeHandler {
             sessions: HashMap::new(),
             pending_resizes: HashMap::new(),
             input_senders: Arc::new(Mutex::new(HashMap::new())),
-            event_bus: None,
         }
-    }
-
-    /// Set the event bus handle so exit events can be dispatched from consumer threads
-    pub fn set_event_bus(&mut self, bus: EventAggregatorHandle) {
-        self.event_bus = Some(bus);
     }
 
     /// Get a clone of the shared input senders map.
@@ -224,7 +255,6 @@ impl TerminalRuntimeHandler {
         let session_arc = Arc::new(Mutex::new(session));
 
         // Spawn a blocking thread to consume frames, coalescing bursts to the latest
-        let exit_bus = self.event_bus.clone();
         let session_for_exit = Arc::clone(&session_arc);
         let exit_reported = Arc::new(AtomicBool::new(false));
         let rx_exit_reported = Arc::clone(&exit_reported);
@@ -237,24 +267,15 @@ impl TerminalRuntimeHandler {
                 let mut guard = lock_view_model(view_clone.as_ref(), id, "apply_frame");
                 guard.apply_frame(frame);
             }
-            // Channel closed – shell process exited; mark view model and notify the event bus
+            // Channel closed: reap the shell and mark the shared view model exited.
             lock_view_model(view_clone.as_ref(), id, "set_exited").set_exited();
-            let code = session_for_exit
+            let _ = session_for_exit
                 .lock()
                 .ok()
                 .and_then(|mut session| session.wait_exit_code());
-            if !rx_exit_reported.swap(true, Ordering::SeqCst)
-                && let Some(bus) = exit_bus
-            {
-                bus.dispatch_terminal(TerminalEvent::Exited {
-                    id,
-                    code,
-                    signal: None,
-                });
-            }
+            rx_exit_reported.store(true, Ordering::SeqCst);
         });
 
-        let exit_bus = self.event_bus.clone();
         let exit_view = Arc::clone(&view);
         let session_for_monitor = Arc::clone(&session_arc);
         let monitor_exit_reported = Arc::clone(&exit_reported);
@@ -265,17 +286,9 @@ impl TerminalRuntimeHandler {
                     .ok()
                     .and_then(|mut session| session.try_exit_code());
 
-                if let Some(code) = code {
+                if code.is_some() {
                     lock_view_model(exit_view.as_ref(), id, "set_exited").set_exited();
-                    if !monitor_exit_reported.swap(true, Ordering::SeqCst)
-                        && let Some(bus) = exit_bus
-                    {
-                        bus.dispatch_terminal(TerminalEvent::Exited {
-                            id,
-                            code: Some(code),
-                            signal: None,
-                        });
-                    }
+                    monitor_exit_reported.store(true, Ordering::SeqCst);
                     break;
                 }
 
@@ -410,15 +423,8 @@ impl TerminalRuntimeHandler {
             }
         }
     }
-}
-impl Default for TerminalRuntimeHandler {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 
-impl core::EventHandler for TerminalRuntimeHandler {
-    fn handle_terminal(&mut self, event: &TerminalEvent) {
+    fn handle_event(&mut self, event: &TerminalEvent) {
         match event {
             TerminalEvent::SpawnRequested {
                 id,
@@ -466,12 +472,10 @@ impl core::EventHandler for TerminalRuntimeHandler {
             }
             TerminalEvent::Input { id, bytes } => {
                 if let Some(entry) = self.sessions.get(id) {
-                    // Send bytes to background writer; drop if receiver is gone
                     let _ = entry.input_tx.send(bytes.clone());
                 }
             }
             TerminalEvent::Exited { id, .. } => {
-                // Remove from shared sender map first
                 if let Ok(mut senders) = self.input_senders.lock() {
                     senders.remove(id);
                 }
@@ -482,18 +486,18 @@ impl core::EventHandler for TerminalRuntimeHandler {
                     if let Ok(mut view) = entry.view.lock() {
                         view.clear_input_sender();
                     }
-                    // Close input channel to stop input task
                     drop(entry.input_tx);
-                    // Best-effort: kill the PTY. Do not join worker threads here:
-                    // on Windows, ConPTY can keep the reader blocked after the
-                    // child exits, and blocking event processing prevents the
-                    // workspace from observing Exited and closing the panel.
                     if let Ok(mut session) = entry.session.lock() {
                         let _ = futures_executor::block_on(session.kill());
                     }
                 }
             }
         }
+    }
+}
+impl Default for TerminalRuntimeHandler {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

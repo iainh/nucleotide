@@ -2,7 +2,6 @@
 // ABOUTME: Keeps terminal input call sites on the shared UI encoder
 
 use gpui::KeyDownEvent;
-use nucleotide_core::EventBus;
 use nucleotide_events::v2::terminal::{Event as TerminalEvent, TerminalId};
 
 /// Encode a GPUI key event into terminal bytes using the shared xterm mapping.
@@ -48,7 +47,7 @@ fn scroll_terminal_to_bottom(id: TerminalId) {
     }
 }
 
-/// Send terminal input bytes through the direct PTY sender when available, falling back to events.
+/// Send terminal input bytes through the terminal runtime's direct PTY sender.
 pub fn send_terminal_input<C: gpui::AppContext>(
     core: &gpui::Entity<crate::Core>,
     id: TerminalId,
@@ -60,29 +59,14 @@ pub fn send_terminal_input<C: gpui::AppContext>(
     }
 
     #[cfg(feature = "terminal-emulator-core")]
-    {
-        scroll_terminal_to_bottom(id);
-        let sent = core.read_with(cx, |app, _| {
-            app.terminal_input_senders
-                .lock()
-                .ok()
-                .and_then(|senders| {
-                    senders.get(&id).map(|tx| {
-                        let _ = tx.send(bytes.clone());
-                    })
-                })
-                .is_some()
-        });
-        if sent {
-            return true;
-        }
-    }
+    scroll_terminal_to_bottom(id);
 
-    core.update(cx, |app, _| {
-        if let Some(bus) = &app.event_aggregator {
-            bus.dispatch_terminal(TerminalEvent::Input { id, bytes });
+    core.read_with(cx, |app, _| {
+        if app.terminal_runtime.send_input(id, bytes.clone()) {
             true
         } else {
+            app.terminal_runtime
+                .dispatch(&TerminalEvent::Input { id, bytes });
             false
         }
     })
