@@ -26,35 +26,26 @@ fn button_shadow_stack(
     inset_shadow: crate::tokens::ShadowToken,
     pressed: bool,
 ) -> Vec<gpui::BoxShadow> {
-    let mut shadows = Vec::with_capacity(if pressed { 3 } else { 4 });
-
     if pressed {
-        shadows.push(gpui::BoxShadow {
-            color: alpha_multiply(shadow.color, 0.24),
-            offset: gpui::point(px(0.0), px(1.0)),
-            blur_radius: px(1.0),
-            spread_radius: px(0.0),
-            inset: false,
-        });
-
-        if let Some(edge_highlight) =
-            button_inner_edge_highlight_shadow(background, variant, StyleState::Active)
-        {
-            shadows.push(edge_highlight);
-        }
-
-        shadows.push(inset_shadow_with_alpha(
+        return vec![inset_shadow_with_alpha(
             inset_shadow,
             button_lower_shadow_alpha(variant, true),
-        ));
-        return shadows;
+        )];
     }
 
+    let mut shadows = Vec::with_capacity(5);
     shadows.push(gpui::BoxShadow {
         color: alpha_multiply(shadow.color, button_outer_shadow_alpha(variant)),
-        offset: gpui::point(shadow.offset_x, shadow.offset_y),
-        blur_radius: shadow.blur_radius,
-        spread_radius: shadow.spread_radius,
+        offset: gpui::point(px(0.0), px(4.0)),
+        blur_radius: px(6.0),
+        spread_radius: px(-1.0),
+        inset: false,
+    });
+    shadows.push(gpui::BoxShadow {
+        color: alpha_multiply(shadow.color, button_outer_shadow_alpha(variant) * 0.9),
+        offset: gpui::point(px(0.0), px(2.0)),
+        blur_radius: px(4.0),
+        spread_radius: px(-2.0),
         inset: false,
     });
 
@@ -185,17 +176,17 @@ fn button_inner_edge_highlight_shadow(
 
 fn button_outer_shadow_alpha(variant: ButtonVariant) -> f32 {
     match variant {
-        ButtonVariant::Secondary => 0.50,
+        ButtonVariant::Secondary => 0.42,
         ButtonVariant::Ghost => 0.0,
-        _ => 0.58,
+        _ => 0.36,
     }
 }
 
 fn button_top_highlight_alpha(variant: ButtonVariant) -> f32 {
     match variant {
-        ButtonVariant::Secondary => 0.38,
+        ButtonVariant::Secondary => 0.44,
         ButtonVariant::Ghost => 0.0,
-        _ => 0.30,
+        _ => 0.34,
     }
 }
 
@@ -762,11 +753,15 @@ impl Button {
         ComputedStyle {
             background,
             foreground: text,
-            border_color: border,
-            border_width: if matches!(self.variant, ButtonVariant::Secondary) {
-                px(1.0)
+            border_color: if matches!(self.variant, ButtonVariant::Ghost) {
+                border
             } else {
+                design_tokens.chrome.border_shadow
+            },
+            border_width: if matches!(self.variant, ButtonVariant::Ghost) {
                 px(0.0)
+            } else {
+                px(1.0)
             },
             border_radius: metrics.border_radius,
             padding_x: metrics.padding_x,
@@ -1378,17 +1373,24 @@ mod tests {
             inset_shadow,
             false,
         );
-        assert_eq!(raised.len(), 4);
+        assert_eq!(raised.len(), 5);
         assert!(!raised[0].inset);
-        assert!(raised[1].inset);
+        assert!(!raised[1].inset);
         assert!(raised[2].inset);
         assert!(raised[3].inset);
+        assert!(raised[4].inset);
         assert!(raised[0].color.a < outer_shadow.color.a);
-        assert_eq!(raised[1].offset.x, px(0.0));
-        assert_eq!(raised[1].offset.y, px(0.0));
-        assert_eq!(raised[1].spread_radius, px(1.0));
-        assert!(raised[1].color.l > raised[3].color.l);
-        assert!(raised[3].color.a < inset_shadow.color.a);
+        assert_eq!(raised[0].offset.y, px(4.0));
+        assert_eq!(raised[0].blur_radius, px(6.0));
+        assert_eq!(raised[0].spread_radius, px(-1.0));
+        assert_eq!(raised[1].offset.y, px(2.0));
+        assert_eq!(raised[1].blur_radius, px(4.0));
+        assert_eq!(raised[1].spread_radius, px(-2.0));
+        assert_eq!(raised[2].offset.x, px(0.0));
+        assert_eq!(raised[2].offset.y, px(0.0));
+        assert_eq!(raised[2].spread_radius, px(1.0));
+        assert!(raised[2].color.l > raised[4].color.l);
+        assert!(raised[4].color.a < inset_shadow.color.a);
 
         let pressed = button_shadow_stack(
             &outer_shadow,
@@ -1398,13 +1400,9 @@ mod tests {
             inset_shadow,
             true,
         );
-        assert_eq!(pressed.len(), 3);
-        assert!(!pressed[0].inset);
-        assert!(pressed[1].inset);
-        assert!(pressed[2].inset);
-        assert!(pressed[0].color.a < outer_shadow.color.a);
-        assert!(pressed[0].color.a < raised[0].color.a);
-        assert!(pressed[2].color.a < inset_shadow.color.a);
+        assert_eq!(pressed.len(), 1);
+        assert!(pressed[0].inset);
+        assert!(pressed[0].color.a < inset_shadow.color.a);
     }
 
     #[test]
