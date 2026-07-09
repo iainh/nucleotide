@@ -15,9 +15,6 @@ pub use nucleotide_core::{
 // Re-export UI enums from V2 events
 pub use nucleotide_events::v2::ui::SystemAppearance;
 
-// Re-export CoreEvent from nucleotide-core
-pub use nucleotide_core::CoreEvent;
-
 // Local enums that haven't been migrated to V2 yet
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MessageSeverity {
@@ -114,23 +111,8 @@ pub enum Update {
         doc_id: helix_view::DocumentId,
         view_id: helix_view::ViewId,
     },
-    ModeChanged {
-        old_mode: helix_view::document::Mode,
-        new_mode: helix_view::document::Mode,
-    },
     ViewFocused {
         view_id: helix_view::ViewId,
-    },
-    LanguageServerInitialized {
-        server_id: helix_lsp::LanguageServerId,
-    },
-    LanguageServerExited {
-        server_id: helix_lsp::LanguageServerId,
-    },
-    CompletionRequested {
-        doc_id: helix_view::DocumentId,
-        view_id: helix_view::ViewId,
-        trigger: CompletionTrigger,
     },
     ViewportScroll {
         view_id: helix_view::ViewId,
@@ -183,26 +165,7 @@ impl std::fmt::Debug for Update {
             Update::SelectionChanged { doc_id, view_id } => {
                 write!(f, "SelectionChanged(doc: {doc_id:?}, view: {view_id:?})")
             }
-            Update::ModeChanged { old_mode, new_mode } => {
-                write!(f, "ModeChanged({old_mode:?} -> {new_mode:?})")
-            }
             Update::ViewFocused { view_id } => write!(f, "ViewFocused({view_id:?})"),
-            Update::LanguageServerInitialized { server_id } => {
-                write!(f, "LanguageServerInitialized({server_id:?})")
-            }
-            Update::LanguageServerExited { server_id } => {
-                write!(f, "LanguageServerExited({server_id:?})")
-            }
-            Update::CompletionRequested {
-                doc_id,
-                view_id,
-                trigger,
-            } => {
-                write!(
-                    f,
-                    "CompletionRequested(doc: {doc_id:?}, view: {view_id:?}, trigger: {trigger:?})"
-                )
-            }
             Update::ViewportScroll { view_id, request } => {
                 write!(f, "ViewportScroll(view: {view_id:?}, request: {request:?})")
             }

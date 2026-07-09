@@ -1312,19 +1312,13 @@ impl OverlayView {
                                         core.update(picker_cx, |core, core_cx| {
                                             match core.jump_to_lsp_location(location) {
                                                 Ok((doc_id, view_id)) => {
-                                                    core_cx.emit(crate::Update::Event(
-                                                        crate::types::AppEvent::Core(
-                                                            crate::types::CoreEvent::SelectionChanged {
-                                                                doc_id,
-                                                                view_id,
-                                                            },
-                                                        ),
-                                                    ));
-                                                    core_cx.emit(crate::Update::Event(
-                                                        crate::types::AppEvent::Core(
-                                                            crate::types::CoreEvent::RedrawRequested,
-                                                        ),
-                                                    ));
+                                                    core_cx.emit(
+                                                        crate::Update::SelectionChanged {
+                                                            doc_id,
+                                                            view_id,
+                                                        },
+                                                    );
+                                                    core_cx.emit(crate::Update::Redraw);
                                                 }
                                                 Err(err) => core.editor.set_error(err.to_string()),
                                             }
@@ -1339,19 +1333,13 @@ impl OverlayView {
                                         core.update(picker_cx, |core, core_cx| {
                                             match core.jump_to_jumplist_location(location) {
                                                 Ok((doc_id, view_id)) => {
-                                                    core_cx.emit(crate::Update::Event(
-                                                        crate::types::AppEvent::Core(
-                                                            crate::types::CoreEvent::SelectionChanged {
-                                                                doc_id,
-                                                                view_id,
-                                                            },
-                                                        ),
-                                                    ));
-                                                    core_cx.emit(crate::Update::Event(
-                                                        crate::types::AppEvent::Core(
-                                                            crate::types::CoreEvent::RedrawRequested,
-                                                        ),
-                                                    ));
+                                                    core_cx.emit(
+                                                        crate::Update::SelectionChanged {
+                                                            doc_id,
+                                                            view_id,
+                                                        },
+                                                    );
+                                                    core_cx.emit(crate::Update::Redraw);
                                                 }
                                                 Err(err) => core.editor.set_error(err.to_string()),
                                             }
@@ -1366,19 +1354,13 @@ impl OverlayView {
                                         core.update(picker_cx, |core, core_cx| {
                                             match core.jump_to_diagnostic_location(location) {
                                                 Ok((doc_id, view_id)) => {
-                                                    core_cx.emit(crate::Update::Event(
-                                                        crate::types::AppEvent::Core(
-                                                            crate::types::CoreEvent::SelectionChanged {
-                                                                doc_id,
-                                                                view_id,
-                                                            },
-                                                        ),
-                                                    ));
-                                                    core_cx.emit(crate::Update::Event(
-                                                        crate::types::AppEvent::Core(
-                                                            crate::types::CoreEvent::RedrawRequested,
-                                                        ),
-                                                    ));
+                                                    core_cx.emit(
+                                                        crate::Update::SelectionChanged {
+                                                            doc_id,
+                                                            view_id,
+                                                        },
+                                                    );
+                                                    core_cx.emit(crate::Update::Redraw);
                                                 }
                                                 Err(err) => core.editor.set_error(err.to_string()),
                                             }
@@ -1393,19 +1375,13 @@ impl OverlayView {
                                         core.update(picker_cx, |core, core_cx| {
                                             match core.jump_to_syntax_file_location(location) {
                                                 Ok((doc_id, view_id)) => {
-                                                    core_cx.emit(crate::Update::Event(
-                                                        crate::types::AppEvent::Core(
-                                                            crate::types::CoreEvent::SelectionChanged {
-                                                                doc_id,
-                                                                view_id,
-                                                            },
-                                                        ),
-                                                    ));
-                                                    core_cx.emit(crate::Update::Event(
-                                                        crate::types::AppEvent::Core(
-                                                            crate::types::CoreEvent::RedrawRequested,
-                                                        ),
-                                                    ));
+                                                    core_cx.emit(
+                                                        crate::Update::SelectionChanged {
+                                                            doc_id,
+                                                            view_id,
+                                                        },
+                                                    );
+                                                    core_cx.emit(crate::Update::Redraw);
                                                 }
                                                 Err(err) => core.editor.set_error(err.to_string()),
                                             }
@@ -1420,19 +1396,13 @@ impl OverlayView {
                                         core.update(picker_cx, |core, core_cx| {
                                             match core.jump_to_global_search_location(location) {
                                                 Ok((doc_id, view_id)) => {
-                                                    core_cx.emit(crate::Update::Event(
-                                                        crate::types::AppEvent::Core(
-                                                            crate::types::CoreEvent::SelectionChanged {
-                                                                doc_id,
-                                                                view_id,
-                                                            },
-                                                        ),
-                                                    ));
-                                                    core_cx.emit(crate::Update::Event(
-                                                        crate::types::AppEvent::Core(
-                                                            crate::types::CoreEvent::RedrawRequested,
-                                                        ),
-                                                    ));
+                                                    core_cx.emit(
+                                                        crate::Update::SelectionChanged {
+                                                            doc_id,
+                                                            view_id,
+                                                        },
+                                                    );
+                                                    core_cx.emit(crate::Update::Redraw);
                                                 }
                                                 Err(err) => core.editor.set_error(err.to_string()),
                                             }

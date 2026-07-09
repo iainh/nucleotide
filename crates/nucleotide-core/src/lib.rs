@@ -1,7 +1,6 @@
 // ABOUTME: Core event bridges between Helix and GPUI
 // ABOUTME: Provides the fundamental event translation layer
 
-pub mod core_event;
 pub mod document_manager;
 pub mod event_aggregator;
 pub mod event_bridge;
@@ -25,9 +24,6 @@ pub use nucleotide_events::v2::{
 
 // Event aggregator exports (includes V2 AppEvent)
 pub use event_aggregator::{AppEvent, EventAggregator, EventAggregatorHandle};
-
-// Core event exports
-pub use core_event::CoreEvent;
 
 // Event bridge exports
 pub use event_bridge::{

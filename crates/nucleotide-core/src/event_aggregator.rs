@@ -28,7 +28,6 @@ pub enum AppEvent {
     Vcs(VcsEvent),
     Diagnostics(DiagnosticsEvent),
     Integration(IntegrationEvent),
-    Core(crate::core_event::CoreEvent),
 }
 
 fn lock_or_recover<'a, T>(mutex: &'a Mutex<T>, name: &'static str) -> MutexGuard<'a, T> {
@@ -53,7 +52,6 @@ fn app_event_kind(event: &AppEvent) -> &'static str {
         AppEvent::Vcs(_) => "vcs",
         AppEvent::Diagnostics(_) => "diagnostics",
         AppEvent::Integration(_) => "integration",
-        AppEvent::Core(_) => "core",
     }
 }
 
@@ -79,9 +77,6 @@ fn dispatch_event_to_handler(handler: &mut (dyn EventHandler + Send), event: &Ap
         AppEvent::Vcs(e) => handler.handle_vcs(e),
         AppEvent::Integration(e) => handler.handle_integration(e),
         AppEvent::Diagnostics(e) => handler.handle_diagnostics(e),
-        AppEvent::Core(_) => {
-            // Core events are consumed by the workspace Update path.
-        }
     }
 }
 

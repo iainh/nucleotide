@@ -1283,7 +1283,7 @@ use nucleotide_logging::{
 };
 use nucleotide_lsp::lsp_state::DiagnosticInfo;
 
-use crate::types::{AppEvent, CoreEvent, Update};
+use crate::types::{AppEvent, Update};
 use editor_input::EditorInputBridge;
 use gpui::EventEmitter;
 
@@ -1543,9 +1543,10 @@ impl Application {
             _ => self.editor.set_status(message.clone()),
         }
 
-        cx.emit(crate::Update::Event(crate::types::AppEvent::Core(
-            crate::types::CoreEvent::StatusChanged { message, severity },
-        )));
+        cx.emit(crate::Update::EditorStatus(crate::types::EditorStatus {
+            status: message,
+            severity,
+        }));
     }
 
     fn handle_job_status_message(
@@ -1568,9 +1569,10 @@ impl Application {
         };
 
         let message = msg.message.to_string();
-        cx.emit(crate::Update::Event(AppEvent::Core(
-            CoreEvent::StatusChanged { message, severity },
-        )));
+        cx.emit(crate::Update::EditorStatus(crate::types::EditorStatus {
+            status: message,
+            severity,
+        }));
 
         // Keep Helix's single status slot current while the GPUI notification
         // view keeps recent status messages stacked.
@@ -3190,9 +3192,7 @@ impl Application {
         }
 
         if modified_reset {
-            cx.emit(crate::Update::Event(AppEvent::Core(
-                CoreEvent::RedrawRequested,
-            )));
+            cx.emit(crate::Update::Redraw);
         }
     }
 
@@ -3254,9 +3254,7 @@ impl Application {
                         &path,
                         &expected_text,
                     ) {
-                        cx.emit(crate::Update::Event(AppEvent::Core(
-                            CoreEvent::RedrawRequested,
-                        )));
+                        cx.emit(crate::Update::Redraw);
                     }
                 });
             }
@@ -3353,12 +3351,10 @@ impl Application {
                 if outcome.selection_changed
                     && let Some(doc_id) = outcome.focused_doc_id
                 {
-                    cx.emit(crate::Update::Event(AppEvent::Core(
-                        CoreEvent::SelectionChanged {
-                            doc_id,
-                            view_id: outcome.focused_view_id,
-                        },
-                    )));
+                    cx.emit(crate::Update::SelectionChanged {
+                        doc_id,
+                        view_id: outcome.focused_view_id,
+                    });
                 }
 
                 if let Some(request) = outcome.completion_requested {
@@ -3542,9 +3538,7 @@ impl Application {
                 }
 
                 if !is_navigation_repeat || !selection_or_viewport_updated {
-                    cx.emit(crate::Update::Event(AppEvent::Core(
-                        CoreEvent::RedrawRequested,
-                    )));
+                    cx.emit(crate::Update::Redraw);
                 }
             }
         }
@@ -3878,9 +3872,6 @@ impl Application {
             self.sync_lsp_state(cx);
             self.cleanup_zombie_lsp_progress();
             cx.emit(crate::Update::Redraw);
-            cx.emit(crate::Update::Event(AppEvent::Core(
-                CoreEvent::RedrawRequested,
-            )));
             cx.notify();
         }
 
@@ -3928,12 +3919,10 @@ impl Application {
             }
             EditorEvent::Redraw => {
                 if self.editor.tree.views().count() == 0 {
-                    cx.emit(crate::Update::Event(AppEvent::Core(CoreEvent::ShouldQuit)));
+                    cx.emit(crate::Update::ShouldQuit);
                     return false;
                 }
-                cx.emit(crate::Update::Event(AppEvent::Core(
-                    CoreEvent::RedrawRequested,
-                )));
+                cx.emit(crate::Update::Redraw);
             }
             EditorEvent::ConfigEvent(config_event) => {
                 self.handle_config_event(config_event, cx);
@@ -3947,9 +3936,7 @@ impl Application {
                 handle.block_on(self.handle_language_server_message(call, id));
                 self.sync_lsp_state(cx);
                 cx.emit(crate::Update::Redraw);
-                cx.emit(crate::Update::Event(AppEvent::Core(
-                    CoreEvent::RedrawRequested,
-                )));
+                cx.emit(crate::Update::Redraw);
             }
             EditorEvent::DebuggerEvent(event) => {
                 debug!(
@@ -4028,9 +4015,6 @@ impl Application {
         }
 
         cx.emit(crate::Update::Redraw);
-        cx.emit(crate::Update::Event(AppEvent::Core(
-            CoreEvent::RedrawRequested,
-        )));
     }
 
     fn handle_config_event(
@@ -7350,9 +7334,7 @@ impl Application {
                         }
                         Err(err) if symbols.is_empty() => {
                             core.editor.set_error(err.to_string());
-                            cx.emit(crate::Update::Event(AppEvent::Core(
-                                CoreEvent::RedrawRequested,
-                            )));
+                            cx.emit(crate::Update::Redraw);
                         }
                         Err(err) => {
                             warn!(error = %err, "Workspace syntax symbol scan failed");
@@ -7377,9 +7359,7 @@ impl Application {
             let picker = lsp_symbol_picker(title, symbols, self.project_directory.as_deref());
             cx.emit(crate::Update::Picker(picker));
         }
-        cx.emit(crate::Update::Event(AppEvent::Core(
-            CoreEvent::RedrawRequested,
-        )));
+        cx.emit(crate::Update::Redraw);
     }
 
     fn finish_lsp_navigation(
@@ -7393,9 +7373,7 @@ impl Application {
             [] => self.editor.set_error(empty_message),
             [location] => match self.jump_to_lsp_location(location) {
                 Ok((doc_id, view_id)) => {
-                    cx.emit(crate::Update::Event(AppEvent::Core(
-                        CoreEvent::SelectionChanged { doc_id, view_id },
-                    )));
+                    cx.emit(crate::Update::SelectionChanged { doc_id, view_id });
                 }
                 Err(err) => self.editor.set_error(err.to_string()),
             },
@@ -7406,9 +7384,7 @@ impl Application {
             }
         }
 
-        cx.emit(crate::Update::Event(AppEvent::Core(
-            CoreEvent::RedrawRequested,
-        )));
+        cx.emit(crate::Update::Redraw);
     }
 
     pub fn jump_to_lsp_location(
@@ -10812,9 +10788,10 @@ mod tests {
                         .borrow_mut()
                         .push(CapturedUpdate::ShowBufferPicker);
                 }
-                crate::Update::Event(crate::types::AppEvent::Core(
-                    crate::types::CoreEvent::StatusChanged { message, severity },
-                )) => {
+                crate::Update::EditorStatus(crate::types::EditorStatus {
+                    status: message,
+                    severity,
+                }) => {
                     updates_for_subscription
                         .borrow_mut()
                         .push(CapturedUpdate::StatusChanged(message.clone(), *severity));
