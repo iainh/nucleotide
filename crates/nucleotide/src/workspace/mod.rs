@@ -5476,7 +5476,7 @@ impl Workspace {
 
         let action_context = self.focus_handle.clone();
         let menu = PopupMenu::build(window, cx, move |mut menu, _window, _cx| {
-            menu = menu.action_context(action_context).min_w(px(200.0));
+            menu = menu.action_context(action_context);
             for intent in Workspace::context_menu_intents().iter().copied() {
                 menu = menu.menu(
                     intent.label(),
@@ -5578,7 +5578,7 @@ impl Workspace {
         let action_context = self.focus_handle.clone();
 
         let menu = PopupMenu::build(window, cx, move |mut menu, _window, _cx| {
-            menu = menu.action_context(action_context).min_w(px(220.0));
+            menu = menu.action_context(action_context);
             for entry in entries {
                 match entry {
                     TabContextMenuEntry::Action(intent) => {
@@ -5647,7 +5647,7 @@ impl Workspace {
 
         let action_context = self.focus_handle.clone();
         let menu = PopupMenu::build(window, cx, move |mut menu, _window, _cx| {
-            menu = menu.action_context(action_context).min_w(px(180.0));
+            menu = menu.action_context(action_context);
             for intent in Self::tab_bar_split_menu_intents().iter().copied() {
                 menu = menu.menu(
                     intent.label(),
@@ -5701,7 +5701,7 @@ impl Workspace {
 
         let action_context = self.focus_handle.clone();
         let menu = PopupMenu::build(window, cx, move |mut menu, _window, _cx| {
-            menu = menu.action_context(action_context).min_w(px(200.0));
+            menu = menu.action_context(action_context);
             for entry in Self::tab_bar_new_menu_entries().iter().copied() {
                 match entry {
                     TabBarNewMenuEntry::Action(intent) => {

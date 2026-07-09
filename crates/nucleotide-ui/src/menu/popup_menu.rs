@@ -145,6 +145,16 @@ impl PopupMenuItem {
     fn is_checked(&self) -> bool {
         matches!(self, Self::Item { checked: true, .. })
     }
+
+    fn has_shortcut(&self) -> bool {
+        matches!(
+            self,
+            Self::Item {
+                shortcut: Some(_),
+                ..
+            }
+        )
+    }
 }
 
 fn shortcut_label_for_action(action: &dyn Action) -> Option<&'static str> {
@@ -239,12 +249,21 @@ fn submenu_opens_past_bottom(parent_bounds: Bounds<Pixels>, viewport_height: Pix
     parent_bounds.bottom() > viewport_height - menu_window_margin()
 }
 
+fn popup_menu_effective_min_width(
+    min_width: Option<Pixels>,
+    shortcut_min_width: Option<Pixels>,
+    has_shortcut_column: bool,
+) -> Option<Pixels> {
+    min_width.or_else(|| has_shortcut_column.then(|| shortcut_min_width.unwrap_or(px(180.0))))
+}
+
 pub struct PopupMenu {
     pub(crate) focus_handle: FocusHandle,
     pub(crate) menu_items: Vec<PopupMenuItem>,
     pub(crate) action_context: Option<FocusHandle>,
     selected_index: Option<usize>,
     min_width: Option<Pixels>,
+    shortcut_min_width: Option<Pixels>,
     max_width: Option<Pixels>,
     max_height: Option<Pixels>,
     bounds: Bounds<Pixels>,
@@ -264,6 +283,7 @@ impl PopupMenu {
             menu_items: Vec::new(),
             selected_index: None,
             min_width: None,
+            shortcut_min_width: None,
             max_width: None,
             max_height: None,
             bounds: Bounds::default(),
@@ -308,6 +328,11 @@ impl PopupMenu {
 
     pub fn min_w(mut self, width: impl Into<Pixels>) -> Self {
         self.min_width = Some(width.into());
+        self
+    }
+
+    pub fn shortcut_min_w(mut self, width: impl Into<Pixels>) -> Self {
+        self.shortcut_min_width = Some(width.into());
         self
     }
 
@@ -438,6 +463,10 @@ impl PopupMenu {
 
     pub fn is_empty(&self) -> bool {
         self.menu_items.is_empty()
+    }
+
+    fn has_shortcut_column(&self) -> bool {
+        self.menu_items.iter().any(PopupMenuItem::has_shortcut)
     }
 
     pub(crate) fn active_submenu(&self) -> Option<Entity<PopupMenu>> {
@@ -716,11 +745,33 @@ impl PopupMenu {
             .when(checked, |this| this.child("✓"))
     }
 
+    fn render_shortcut(
+        &self,
+        shortcut: Option<SharedString>,
+        disabled: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let tokens = cx.theme().tokens;
+        let dropdown = tokens.dropdown_tokens();
+
+        div()
+            .ml(tokens.sizes.space_8)
+            .min_w(px(76.0))
+            .text_align(gpui::TextAlign::Right)
+            .text_color(if disabled {
+                dropdown.item_text_disabled
+            } else {
+                dropdown.item_text_secondary
+            })
+            .when_some(shortcut, |this, shortcut| this.child(shortcut))
+    }
+
     fn render_item(
         &self,
         index: usize,
         item: &PopupMenuItem,
         has_check_column: bool,
+        has_shortcut_column: bool,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let tokens = cx.theme().tokens;
@@ -766,19 +817,8 @@ impl PopupMenu {
                                 this.child(self.render_indicator(is_checked_left, *disabled, cx))
                             })
                             .child(div().flex_1().min_w(px(120.0)).child(label.clone()))
-                            .when_some(shortcut.clone(), |this, shortcut| {
-                                this.child(
-                                    div()
-                                        .ml(tokens.sizes.space_8)
-                                        .min_w(px(76.0))
-                                        .text_align(gpui::TextAlign::Right)
-                                        .text_color(if *disabled {
-                                            dropdown.item_text_disabled
-                                        } else {
-                                            dropdown.item_text_secondary
-                                        })
-                                        .child(shortcut),
-                                )
+                            .when(has_shortcut_column, |this| {
+                                this.child(self.render_shortcut(shortcut.clone(), *disabled, cx))
                             })
                             .when(is_checked_right, |this| {
                                 this.child(self.render_indicator(true, *disabled, cx))
@@ -854,7 +894,6 @@ impl PopupMenu {
             .id(index)
             .role(gpui::accesskit::Role::MenuItem)
             .relative()
-            .w_full()
             .self_stretch()
             .rounded(tokens.sizes.radius_sm)
             .text_size(tokens.sizes.text_sm)
@@ -907,6 +946,12 @@ impl Render for PopupMenu {
             .menu_items
             .iter()
             .any(|item| self.check_side.is_left() && item.is_checked());
+        let has_shortcut_column = self.has_shortcut_column();
+        let min_width = popup_menu_effective_min_width(
+            self.min_width,
+            self.shortcut_min_width,
+            has_shortcut_column,
+        );
         let max_height = self.max_height.unwrap_or_else(|| {
             let window_half_height = window.window_bounds().get_bounds().size.height * 0.5;
             window_half_height.min(px(450.0))
@@ -949,7 +994,7 @@ impl Render for PopupMenu {
                     .flex_col()
                     .items_stretch()
                     .py(tokens.sizes.space_1)
-                    .min_w(self.min_width.unwrap_or(px(180.0)))
+                    .when_some(min_width, |this, min_width| this.min_w(min_width))
                     .max_w(self.max_width())
                     .when(self.scrollable, |this| {
                         this.max_h(max_height)
@@ -964,7 +1009,13 @@ impl Render for PopupMenu {
                                 !(*index + 1 == items_count && item.is_separator())
                             })
                             .map(|(index, item)| {
-                                self.render_item(index, item, has_check_column, cx)
+                                self.render_item(
+                                    index,
+                                    item,
+                                    has_check_column,
+                                    has_shortcut_column,
+                                    cx,
+                                )
                             }),
                     ),
             )
@@ -1005,6 +1056,33 @@ mod tests {
         assert_eq!(
             shortcut_label_for_action(&workspace::RunFileTests),
             Some("Ctrl+Alt+T")
+        );
+    }
+
+    #[test]
+    fn popup_menu_min_width_is_shortcut_aware() {
+        assert_eq!(popup_menu_effective_min_width(None, None, false), None);
+        assert_eq!(
+            popup_menu_effective_min_width(None, None, true),
+            Some(px(180.0))
+        );
+        assert_eq!(
+            popup_menu_effective_min_width(None, Some(px(220.0)), true),
+            Some(px(220.0))
+        );
+        assert_eq!(
+            popup_menu_effective_min_width(Some(px(200.0)), None, false),
+            Some(px(200.0))
+        );
+    }
+
+    #[test]
+    fn popup_menu_item_reports_shortcut_presence() {
+        assert!(!PopupMenuItem::new("Close").has_shortcut());
+        assert!(
+            PopupMenuItem::new("Close")
+                .shortcut("Ctrl+W")
+                .has_shortcut()
         );
     }
 
