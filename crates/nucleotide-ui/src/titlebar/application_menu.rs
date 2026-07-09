@@ -186,7 +186,7 @@ impl ApplicationMenu {
         let items = self.entries[index].menu.items.clone();
         let action_context = self.action_context.clone();
         let popup_menu = PopupMenu::build(window, cx, |menu, window, cx| {
-            menu.min_w(px(220.0))
+            menu.shortcut_min_w(px(220.0))
                 .max_w(px(420.0))
                 .with_menu_items(items, window, cx)
         });
