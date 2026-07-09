@@ -65,8 +65,13 @@ jobs:
       
       - name: Prepare runtime files
         run: |
-          # Clone helix to get runtime files
-          git clone --depth 1 --branch 25.07.1 https://github.com/helix-editor/helix.git helix-temp
+          # Fetch the Cargo-pinned Helix revision for runtime files.
+          HELIX_REV="$(sed -n 's/.*helix-loader = .*rev = "\([0-9a-f]*\)".*/\1/p' Cargo.toml | head -n 1)"
+          test -n "${HELIX_REV}"
+          git init helix-temp
+          git -C helix-temp remote add origin https://github.com/helix-editor/helix.git
+          git -C helix-temp fetch --depth 1 origin "${HELIX_REV}"
+          git -C helix-temp checkout --detach FETCH_HEAD
           
           # Create distribution structure
           mkdir -p dist/bin
