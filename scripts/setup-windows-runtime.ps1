@@ -38,6 +38,17 @@ $ManifestDir = Join-Path $BundleCrateRoot "nucleotide"
 $ExcludedGrammarIds = @($ExcludeGrammars | ForEach-Object { $_ -split ',' } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_.Trim() } | Sort-Object -Unique)
 $ResolvedNuclExe = $null
 
+function Get-CargoHelixRevision {
+    $cargoToml = Join-Path $RepoRoot "Cargo.toml"
+    $content = [System.IO.File]::ReadAllText($cargoToml)
+    $match = [regex]::Match($content, 'helix-loader\s*=\s*\{[^\r\n]*rev\s*=\s*"(?<rev>[0-9a-fA-F]+)"')
+    if (-not $match.Success) {
+        throw "Could not find helix-loader rev in $cargoToml"
+    }
+
+    return $match.Groups["rev"].Value.ToLowerInvariant()
+}
+
 function Find-HelixRuntime {
     if (-not [string]::IsNullOrWhiteSpace($RuntimeSource)) {
         if (-not (Test-Path -LiteralPath $RuntimeSource)) {
@@ -49,6 +60,19 @@ function Find-HelixRuntime {
 
     $cargoCheckouts = Join-Path $env:USERPROFILE ".cargo\git\checkouts"
     if (Test-Path $cargoCheckouts) {
+        $helixRev = Get-CargoHelixRevision
+        $helixRevShort = $helixRev.Substring(0, [Math]::Min(7, $helixRev.Length))
+        $pinnedRuntime = Get-ChildItem $cargoCheckouts -Recurse -Directory -Filter "runtime" |
+            Where-Object {
+                $_.FullName -match "\\helix-[^\\]+\\$helixRevShort\\runtime$" -or
+                $_.FullName -match "\\helix-[^\\]+\\$helixRev\\runtime$"
+            } |
+            Select-Object -First 1
+
+        if ($pinnedRuntime) {
+            return $pinnedRuntime.FullName
+        }
+
         $runtime = Get-ChildItem $cargoCheckouts -Recurse -Directory -Filter "runtime" |
             Where-Object { $_.FullName -match "\\helix-[^\\]+\\[^\\]+\\runtime$" } |
             Sort-Object LastWriteTime -Descending |
