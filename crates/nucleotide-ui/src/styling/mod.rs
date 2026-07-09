@@ -6,16 +6,10 @@ use crate::{DesignTokens, Theme};
 use gpui::{Hsla, Pixels, px};
 use std::time::Duration;
 
-pub mod animations;
 pub mod color_theory;
-pub mod combinations;
-pub mod responsive;
 pub mod variants;
 
-pub use animations::*;
 pub use color_theory::*;
-pub use combinations::*;
-pub use responsive::*;
 pub use variants::*;
 
 /// Component style state for style computation
@@ -34,24 +28,6 @@ impl StyleState {
     /// Check if this state allows interaction
     pub fn is_interactive(self) -> bool {
         !matches!(self, Self::Disabled | Self::Loading)
-    }
-
-    /// Check if this state indicates user interaction
-    pub fn is_user_interaction(self) -> bool {
-        matches!(self, Self::Hover | Self::Active | Self::Focused)
-    }
-
-    /// Get the priority of this state for style resolution
-    pub fn priority(self) -> u8 {
-        match self {
-            Self::Disabled => 10,
-            Self::Loading => 9,
-            Self::Active => 8,
-            Self::Focused => 7,
-            Self::Selected => 6,
-            Self::Hover => 5,
-            Self::Default => 0,
-        }
     }
 }
 
@@ -154,25 +130,6 @@ impl<'a> StyleContext<'a> {
             size,
             is_dark_theme: theme.is_dark(),
             color_context: crate::tokens::ColorContext::OnSurface, // Default context
-        }
-    }
-
-    /// Create a style context with specific color context
-    pub fn with_context(
-        theme: &'a Theme,
-        state: StyleState,
-        variant: &'a str,
-        size: &'a str,
-        context: crate::tokens::ColorContext,
-    ) -> Self {
-        Self {
-            theme,
-            tokens: &theme.tokens,
-            state,
-            variant,
-            size,
-            is_dark_theme: theme.is_dark(),
-            color_context: context,
         }
     }
 
@@ -423,35 +380,6 @@ pub fn compute_component_style(
 ) -> ComputedStyle {
     let context = StyleContext::new(theme, state, variant, size);
     context.compute_style()
-}
-
-/// Utility function to compute component styles with specific color context
-pub fn compute_contextual_style(
-    theme: &Theme,
-    state: StyleState,
-    variant: &str,
-    size: &str,
-    color_context: crate::tokens::ColorContext,
-) -> ComputedStyle {
-    let context = StyleContext::with_context(theme, state, variant, size, color_context);
-    context.compute_style()
-}
-
-/// Style computation for lists of states (priority-based resolution)
-pub fn compute_style_for_states(
-    theme: &Theme,
-    states: &[StyleState],
-    variant: &str,
-    size: &str,
-) -> ComputedStyle {
-    // Find the highest priority state
-    let primary_state = states
-        .iter()
-        .max_by_key(|state| state.priority())
-        .copied()
-        .unwrap_or(StyleState::Default);
-
-    compute_component_style(theme, primary_state, variant, size)
 }
 
 /// Check if animations should be enabled based on context
