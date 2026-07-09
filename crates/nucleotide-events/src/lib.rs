@@ -6,7 +6,6 @@ pub mod event_bus;
 pub mod lsp_events;
 
 // V2 Bounded Context Event Modules
-pub mod bridge;
 pub mod completion;
 pub mod diagnostics;
 pub mod document;
@@ -22,7 +21,6 @@ pub mod workspace;
 
 // Re-export V2 bounded context events
 pub mod v2 {
-    pub use crate::bridge;
     pub use crate::completion;
     pub use crate::diagnostics;
     pub use crate::document;

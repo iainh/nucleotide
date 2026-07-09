@@ -5,7 +5,6 @@ pub mod core_event;
 pub mod document_manager;
 pub mod event_aggregator;
 pub mod event_bridge;
-pub mod fs;
 pub mod picker_capability;
 pub mod preview_tracker;
 pub mod snippets;
