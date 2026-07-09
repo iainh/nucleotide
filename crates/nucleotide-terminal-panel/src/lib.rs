@@ -119,7 +119,7 @@ impl Render for TerminalPanel {
         let theme = cx.theme();
         let tokens = &theme.tokens;
         let bg = tokens.chrome.surface;
-        let border = tokens.chrome.border_muted;
+        let border = tokens.status_bar_tokens().border;
         self.title = terminal_display_title(self.active);
         let title = self.title.clone();
         let terminal_id = self.active;
@@ -145,6 +145,7 @@ impl Render for TerminalPanel {
 
         let header = Toolbar::new("terminal-panel-header")
             .compact(true)
+            .border_color(border)
             .child(
                 svg()
                     .path("icons/terminal.svg")
