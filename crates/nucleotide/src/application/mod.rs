@@ -1410,7 +1410,6 @@ pub struct Application {
         Option<tokio::sync::mpsc::UnboundedReceiver<nucleotide_events::ProjectLspCommand>>,
     pub project_lsp_processor_started: Arc<std::sync::atomic::AtomicBool>,
     pub project_lsp_system_initialized: Arc<std::sync::atomic::AtomicBool>,
-    pub shell_env_cache: Arc<tokio::sync::Mutex<nucleotide_env::ShellEnvironmentCache>>,
     pub project_environment: Arc<ProjectEnvironment>,
     project_env_overrides: HashMap<String, Option<String>>,
     prewarmed_lsp_startups: HashSet<(PathBuf, String, String)>,
@@ -6863,10 +6862,8 @@ impl Application {
         if let Some(old_root) = old_workspace_root
             && old_root != new_workspace_root
         {
-            self.shell_env_cache
-                .lock()
-                .await
-                .clear_directory_cache(old_root)
+            self.project_environment
+                .invalidate_directory_cache(old_root)
                 .await;
             debug!(
                 old_workspace_root = %old_root.display(),
@@ -6893,9 +6890,8 @@ impl Application {
                     .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>);
             }
 
-            let mut cache = self.shell_env_cache.lock().await;
-            cache
-                .get_environment(new_workspace_root)
+            self.project_environment
+                .get_environment_for_directory(new_workspace_root)
                 .await
                 .map(|env| (env, Vec::new()))
                 .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>)
@@ -8680,9 +8676,6 @@ pub fn init_editor(
         project_lsp_command_rx: Some(project_lsp_command_rx),
         project_lsp_processor_started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         project_lsp_system_initialized: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        shell_env_cache: Arc::new(tokio::sync::Mutex::new(
-            nucleotide_env::ShellEnvironmentCache::new(),
-        )),
         project_environment, // Already created above before LSP system initialization
         project_env_overrides: HashMap::new(),
         prewarmed_lsp_startups: HashSet::new(),
@@ -11254,9 +11247,6 @@ mod tests {
                 project_lsp_command_rx: Some(project_lsp_command_rx),
                 project_lsp_processor_started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 project_lsp_system_initialized: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                shell_env_cache: Arc::new(tokio::sync::Mutex::new(
-                    nucleotide_env::ShellEnvironmentCache::new(),
-                )),
                 project_environment: Arc::new(nucleotide_env::ProjectEnvironment::new(Some(
                     cli_env,
                 ))),

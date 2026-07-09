@@ -38,8 +38,7 @@ pub use nucleotide_core::preview_tracker;
 
 // Re-export from new specialized crates
 pub use nucleotide_env::{
-    CachedEnvironment, EnvironmentOrigin, ProjectEnvironment, ShellEnvError, ShellEnvironmentCache,
-    ShellEnvironmentError,
+    CachedEnvironment, EnvironmentOrigin, ProjectEnvironment, ShellEnvironmentError,
 };
 pub use nucleotide_lsp::{LspError, LspManager, LspManagerConfig, LspStartupMode};
 pub use nucleotide_project::{
