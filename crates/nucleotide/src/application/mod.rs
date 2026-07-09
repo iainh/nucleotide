@@ -1284,7 +1284,7 @@ pub fn implicit_workspace_root_from_current_dir() -> Option<PathBuf> {
 // Removed unused Tag-related structs and enums
 
 use anyhow::{Context as _, Error, bail};
-use nucleotide_core::{EventAggregatorHandle, EventBus, event_bridge, gpui_to_helix_bridge};
+use nucleotide_core::{EventAggregatorHandle, EventBus, event_bridge};
 use nucleotide_events::v2::diagnostics::Event as DiagnosticsEvent;
 use nucleotide_logging::{
     Level, PerfTimer, debug, error, info, instrument, span, timed, trace, warn,
@@ -1399,7 +1399,6 @@ pub struct Application {
     pub project_directory: Option<PathBuf>,
     pub workspace_backend: WorkspaceBackendHandle,
     pub event_bridge_rx: Option<event_bridge::BridgedEventReceiver>,
-    pub gpui_to_helix_rx: Option<gpui_to_helix_bridge::GpuiToHelixEventReceiver>,
     pub config: crate::config::Config,
     pub helix_config_arc: Arc<ArcSwap<helix_term::config::Config>>,
     pub lsp_manager: nucleotide_lsp::LspManager,
@@ -1873,38 +1872,6 @@ impl Application {
             progressed = true;
             self.jobs
                 .handle_callback(&mut self.editor, &mut self.compositor, callback);
-        }
-
-        progressed
-    }
-
-    fn poll_pending_gpui_to_helix_events(&mut self, task_cx: &mut TaskContext<'_>) -> bool {
-        let mut progressed = false;
-        let mut disconnected = false;
-
-        if let Some(ref mut rx) = self.gpui_to_helix_rx {
-            loop {
-                match rx.poll_recv(task_cx) {
-                    Poll::Ready(Some(gpui_event)) => {
-                        progressed = true;
-                        gpui_to_helix_bridge::handle_gpui_event_in_helix(
-                            &gpui_event,
-                            &mut self.editor,
-                        );
-                        helix_event::request_redraw();
-                    }
-                    Poll::Ready(None) => {
-                        info!("GPUI-to-Helix event channel disconnected");
-                        disconnected = true;
-                        break;
-                    }
-                    Poll::Pending => break,
-                }
-            }
-        }
-
-        if disconnected {
-            self.gpui_to_helix_rx = None;
         }
 
         progressed
@@ -4258,18 +4225,6 @@ impl Application {
                 let _timer = PerfTimer::new("Application::poll_pending_helix_jobs")
                     .with_warn_threshold(MAINTENANCE_POLLER_WARN_THRESHOLD);
                 self.poll_pending_helix_jobs(cx, &mut task_cx)
-            };
-
-            if progressed && turn_started.elapsed() >= MAINTENANCE_TURN_BUDGET {
-                made_progress = true;
-                yielded_for_budget = true;
-                break;
-            }
-
-            progressed |= {
-                let _timer = PerfTimer::new("Application::poll_pending_gpui_to_helix_events")
-                    .with_warn_threshold(MAINTENANCE_POLLER_WARN_THRESHOLD);
-                self.poll_pending_gpui_to_helix_events(&mut task_cx)
             };
 
             if progressed && turn_started.elapsed() >= MAINTENANCE_TURN_BUDGET {
@@ -8526,11 +8481,6 @@ pub fn init_editor(
     // Initialize LSP command bridge for ProjectLspManager -> Application communication
     nucleotide_logging::info!("Initialized LSP command bridge for event-driven command pattern");
 
-    // Initialize reverse event bridge system for GPUI -> Helix event forwarding
-    let (gpui_to_helix_tx, gpui_to_helix_rx) = gpui_to_helix_bridge::create_gpui_to_helix_channel();
-    gpui_to_helix_bridge::initialize_gpui_to_helix_bridge(gpui_to_helix_tx);
-    gpui_to_helix_bridge::register_gpui_event_handlers();
-
     let mut editor = Editor::new(
         area,
         theme_loader.clone(),
@@ -8721,7 +8671,6 @@ pub fn init_editor(
         project_directory,
         workspace_backend,
         event_bridge_rx: Some(bridge_rx),
-        gpui_to_helix_rx: Some(gpui_to_helix_rx),
         config: gui_config,
         helix_config_arc: config,
         lsp_manager,
@@ -11296,7 +11245,6 @@ mod tests {
                 project_directory: None,
                 workspace_backend: local_workspace_backend(),
                 event_bridge_rx: None,
-                gpui_to_helix_rx: None,
                 config: gui_config,
                 helix_config_arc: helix_config,
                 lsp_manager,
