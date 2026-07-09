@@ -5189,7 +5189,6 @@ dependencies = [
 name = "nucleotide-events"
 version = "0.1.0"
 dependencies = [
- "async-trait",
  "helix-core",
  "helix-lsp",
  "helix-vcs",

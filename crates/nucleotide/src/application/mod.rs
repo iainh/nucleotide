@@ -1,21 +1,13 @@
 // ABOUTME: Application module decomposition for V2 event system migration
 // ABOUTME: Contains domain-specific handlers and main Application implementation
 
-pub mod app_core;
-pub mod document_handler;
-pub mod editor_handler;
 pub mod editor_input;
 #[cfg(feature = "terminal-emulator-core")]
 pub mod terminal_handler;
-pub mod view_handler;
 pub mod workspace_file_ops;
 
-pub use app_core::ApplicationCore;
-pub use document_handler::DocumentHandler;
-pub use editor_handler::EditorHandler;
 #[cfg(feature = "terminal-emulator-core")]
 pub use terminal_handler::{TerminalInputSenders, TerminalRuntimeHandler};
-pub use view_handler::ViewHandler;
 pub use workspace_file_ops::WorkspaceFileOpHandler;
 
 use std::{
@@ -1292,7 +1284,6 @@ use nucleotide_logging::{
 use nucleotide_lsp::lsp_state::DiagnosticInfo;
 
 use crate::types::{AppEvent, CoreEvent, Update};
-// ApplicationCore already imported above via pub use
 use editor_input::EditorInputBridge;
 use gpui::EventEmitter;
 
@@ -1413,8 +1404,6 @@ pub struct Application {
     pub project_environment: Arc<ProjectEnvironment>,
     project_env_overrides: HashMap<String, Option<String>>,
     prewarmed_lsp_startups: HashSet<(PathBuf, String, String)>,
-    // V2 Event System Core
-    pub core: crate::application::ApplicationCore,
     // Event aggregator for dispatching integration events
     pub event_aggregator: Option<EventAggregatorHandle>,
     maintenance_wake: Option<MaintenanceWake>,
@@ -1600,7 +1589,7 @@ impl Application {
     fn poll_pending_bridged_events(
         &mut self,
         cx: &mut gpui::Context<crate::Core>,
-        handle: &tokio::runtime::Handle,
+        _handle: &tokio::runtime::Handle,
         task_cx: &mut TaskContext<'_>,
     ) -> bool {
         let mut bridged_events = Vec::new();
@@ -1644,16 +1633,8 @@ impl Application {
         }
 
         for bridged_event in bridged_events {
-            match handle.block_on(self.process_v2_event(&bridged_event)) {
-                Ok(Some(event)) => cx.emit(crate::Update::Event(event)),
-                Ok(None) => {}
-                Err(error) => {
-                    warn!(
-                        error = %error,
-                        bridged_event = ?bridged_event,
-                        "Failed to process bridged event from maintenance path"
-                    );
-                }
+            if let Some(event) = self.process_v2_event(&bridged_event) {
+                cx.emit(crate::Update::Event(event));
             }
 
             if bridged_event_needs_gpui_context(&bridged_event) {
@@ -2152,17 +2133,10 @@ impl Application {
         );
     }
 
-    /// Process events through V2 event system domain handlers
-    #[instrument(skip(self, bridged_event))]
-    async fn process_v2_event(
-        &mut self,
-        bridged_event: &event_bridge::BridgedEvent,
-    ) -> Result<Option<AppEvent>, Box<dyn std::error::Error + Send + Sync>> {
+    fn process_v2_event(&mut self, bridged_event: &event_bridge::BridgedEvent) -> Option<AppEvent> {
         use nucleotide_events::v2::document::Event as DocumentEvent;
-        use nucleotide_events::v2::handler::EventHandler;
 
-        // Process V2 events for all supported event types
-        let event = match bridged_event {
+        match bridged_event {
             event_bridge::BridgedEvent::DocumentChanged {
                 doc_id,
                 change_summary,
@@ -2175,55 +2149,16 @@ impl Application {
                     0
                 };
 
-                // Create a V2 document event with actual change type
-                let v2_event = DocumentEvent::ContentChanged {
+                Some(AppEvent::Document(DocumentEvent::ContentChanged {
                     doc_id: *doc_id,
                     revision,
                     change_summary: *change_summary,
-                };
-
-                debug!(
-                    doc_id = ?doc_id,
-                    revision = revision,
-                    "Processing DocumentChanged through V2 handler"
-                );
-                self.handle_document_v2_event(v2_event).await?
+                }))
             }
 
-            event_bridge::BridgedEvent::SelectionChanged { doc_id, view_id } => {
-                let v2_event = self.build_v2_selection_changed(*doc_id, *view_id);
-                debug!(
-                    doc_id = ?doc_id,
-                    view_id = ?view_id,
-                    "Processing SelectionChanged through V2 ViewHandler"
-                );
-                self.core
-                    .view_handler
-                    .handle(v2_event)
-                    .await
-                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
-                None
-            }
-
-            event_bridge::BridgedEvent::ModeChanged { old_mode, new_mode } => {
-                let v2_event = nucleotide_events::v2::editor::Event::ModeChanged {
-                    previous_mode: *old_mode,
-                    new_mode: *new_mode,
-                    context: nucleotide_events::v2::editor::ModeChangeContext::UserAction,
-                };
-
-                debug!(
-                    old_mode = ?old_mode,
-                    new_mode = ?new_mode,
-                    "Processing ModeChanged through V2 EditorHandler"
-                );
-                self.core
-                    .editor_handler
-                    .handle(v2_event)
-                    .await
-                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
-                None
-            }
+            event_bridge::BridgedEvent::SelectionChanged { .. }
+            | event_bridge::BridgedEvent::ModeChanged { .. }
+            | event_bridge::BridgedEvent::ViewFocused { .. } => None,
 
             event_bridge::BridgedEvent::DocumentOpened { doc_id } => {
                 // Extract document information for enriched event
@@ -2238,29 +2173,20 @@ impl Application {
                     (std::path::PathBuf::from("unknown"), None)
                 };
 
-                let v2_event = DocumentEvent::Opened {
+                Some(AppEvent::Document(DocumentEvent::Opened {
                     doc_id: *doc_id,
                     path,
                     language_id,
-                };
-
-                debug!(doc_id = ?doc_id, "Processing DocumentOpened through V2 handler");
-                self.handle_document_v2_event(v2_event).await?
+                }))
             }
 
             event_bridge::BridgedEvent::DocumentClosed {
                 doc_id,
                 was_modified,
-            } => {
-                // Use the actual modification state from the Helix event
-                let v2_event = DocumentEvent::Closed {
-                    doc_id: *doc_id,
-                    was_modified: *was_modified,
-                };
-
-                debug!(doc_id = ?doc_id, "Processing DocumentClosed through V2 handler");
-                self.handle_document_v2_event(v2_event).await?
-            }
+            } => Some(AppEvent::Document(DocumentEvent::Closed {
+                doc_id: *doc_id,
+                was_modified: *was_modified,
+            })),
 
             event_bridge::BridgedEvent::DiagnosticsChanged { doc_id } => {
                 // Extract diagnostic counts from the document
@@ -2288,47 +2214,12 @@ impl Application {
                     (0, 0, 0)
                 };
 
-                let v2_event = DocumentEvent::DiagnosticsUpdated {
+                Some(AppEvent::Document(DocumentEvent::DiagnosticsUpdated {
                     doc_id: *doc_id,
                     diagnostic_count,
                     error_count,
                     warning_count,
-                };
-
-                debug!(
-                    doc_id = ?doc_id,
-                    diagnostic_count = diagnostic_count,
-                    "DIAG: Processing DiagnosticsChanged through V2 handler"
-                );
-                self.handle_document_v2_event(v2_event).await?
-            }
-
-            event_bridge::BridgedEvent::ViewFocused { view_id } => {
-                // Extract associated document ID from the view
-                if let Some(view) = self.editor.tree.try_get(*view_id) {
-                    let doc_id = view.doc;
-                    let previous_view = self.core.view_handler.get_focused_view();
-
-                    let v2_event = nucleotide_events::v2::view::Event::Focused {
-                        view_id: *view_id,
-                        doc_id,
-                        previous_view,
-                    };
-
-                    debug!(
-                        view_id = ?view_id,
-                        doc_id = ?doc_id,
-                        "Processing ViewFocused through V2 ViewHandler"
-                    );
-                    self.core
-                        .view_handler
-                        .handle(v2_event)
-                        .await
-                        .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
-                } else {
-                    nucleotide_logging::warn!(view_id = ?view_id, "Ignoring focus event for unknown view");
-                }
-                None
+                }))
             }
 
             event_bridge::BridgedEvent::LanguageServerInitialized { .. }
@@ -2336,31 +2227,8 @@ impl Application {
             | event_bridge::BridgedEvent::CompletionRequested { .. }
             | event_bridge::BridgedEvent::DiagnosticsPickerRequested { .. }
             | event_bridge::BridgedEvent::FilePickerRequested
-            | event_bridge::BridgedEvent::BufferPickerRequested => {
-                debug!(
-                    event = ?bridged_event,
-                    "Bridged event is handled by the GPUI context loop"
-                );
-                None
-            }
-        };
-
-        Ok(event)
-    }
-
-    async fn handle_document_v2_event(
-        &mut self,
-        event: nucleotide_events::v2::document::Event,
-    ) -> Result<Option<AppEvent>, Box<dyn std::error::Error + Send + Sync>> {
-        use nucleotide_events::v2::handler::EventHandler;
-
-        self.core
-            .document_handler
-            .handle(event.clone())
-            .await
-            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
-
-        Ok(Some(AppEvent::Document(event)))
+            | event_bridge::BridgedEvent::BufferPickerRequested => None,
+        }
     }
 
     /// Handle language server message, adapted from Helix's implementation
@@ -4320,17 +4188,7 @@ impl Application {
                         path: event.path.clone(),
                         revision: event.revision as u64,
                     };
-                    match handle.block_on(self.handle_document_v2_event(v2_event)) {
-                        Ok(Some(event)) => cx.emit(crate::Update::Event(event)),
-                        Ok(None) => {}
-                        Err(error) => {
-                            warn!(
-                                error = %error,
-                                doc_id = ?event.doc_id,
-                                "Failed to process document saved event"
-                            );
-                        }
-                    }
+                    cx.emit(crate::Update::Event(AppEvent::Document(v2_event)));
                 }
             }
             EditorEvent::IdleTimer => {
@@ -4501,42 +4359,6 @@ impl Application {
 
 // Helper methods to improve function shape and centralize control flow
 impl Application {
-    /// Build a V2 selection changed event from the current editor state.
-    fn build_v2_selection_changed(
-        &self,
-        doc_id: helix_view::DocumentId,
-        view_id: helix_view::ViewId,
-    ) -> nucleotide_events::v2::view::Event {
-        let selection = if let Some(view) = self.editor.tree.try_get(view_id) {
-            if let Some(doc) = self.editor.document(view.doc) {
-                doc.selection(view.id).clone()
-            } else {
-                helix_core::Selection::point(0)
-            }
-        } else {
-            helix_core::Selection::point(0)
-        };
-
-        let v2_selection = nucleotide_events::view::Selection {
-            ranges: selection
-                .ranges()
-                .iter()
-                .map(|range| nucleotide_events::view::SelectionRange {
-                    anchor: nucleotide_events::view::Position::new(range.anchor, range.anchor),
-                    head: nucleotide_events::view::Position::new(range.head, range.head),
-                })
-                .collect(),
-            primary_index: selection.primary_index(),
-        };
-
-        nucleotide_events::v2::view::Event::SelectionChanged {
-            view_id,
-            doc_id,
-            selection: v2_selection,
-            was_movement: true,
-        }
-    }
-
     /// Return active language servers and their names.
     fn active_servers(&self) -> Vec<(helix_lsp::LanguageServerId, String)> {
         self.editor
@@ -8653,10 +8475,6 @@ pub fn init_editor(
         handle
     };
 
-    let mut core = ApplicationCore::new();
-    core.initialize()
-        .expect("Failed to initialize ApplicationCore");
-
     Ok(Application {
         editor,
         compositor,
@@ -8679,8 +8497,6 @@ pub fn init_editor(
         project_environment, // Already created above before LSP system initialization
         project_env_overrides: HashMap::new(),
         prewarmed_lsp_startups: HashSet::new(),
-        // V2 Event System Core
-        core,
         // Event aggregator for UI and workspace events
         event_aggregator: Some(event_aggregator),
         maintenance_wake: None,
@@ -10125,7 +9941,7 @@ mod tests {
 
     use super::editor_input::NativeLspNavigationRequest;
     use super::{
-        Application, ApplicationCore, EditorInputBridge, LspCompletionTrigger, MaintenanceWake,
+        Application, EditorInputBridge, LspCompletionTrigger, MaintenanceWake,
         NativeOpenFileOutcome, NativeSymbolItem, NativeSymbolTarget, PendingCompletionRequest,
         RemoteLspLaunchProxyProvider, WorkspaceDocumentSaveHandler,
         bridged_event_needs_gpui_context, buffer_text_matches_path, buffer_text_matches_string,
@@ -11223,8 +11039,6 @@ mod tests {
                 }));
             let (project_lsp_command_tx, project_lsp_command_rx) =
                 tokio::sync::mpsc::unbounded_channel();
-            let mut core = ApplicationCore::new();
-            core.initialize().expect("test application core");
             let mut cli_env = HashMap::new();
             cli_env.insert("HOME".to_string(), "/tmp".to_string());
 
@@ -11252,7 +11066,6 @@ mod tests {
                 ))),
                 project_env_overrides: HashMap::new(),
                 prewarmed_lsp_startups: HashSet::new(),
-                core,
                 event_aggregator: None,
                 maintenance_wake: None,
                 #[cfg(feature = "terminal-emulator-core")]
