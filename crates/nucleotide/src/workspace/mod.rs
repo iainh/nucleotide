@@ -13747,7 +13747,7 @@ impl Render for Workspace {
             });
         }
 
-        // Drive V2 event processing so FsOpHandler can execute intents
+        // Drive queued workspace and terminal operations.
         if let Some(aggregator) = self.core.read(cx).event_aggregator.clone()
             && aggregator.has_queued_events()
         {
