@@ -18,7 +18,6 @@ build = "build.rs"
 default = ["git", "terminal-emulator"]
 terminal-emulator = ["terminal-emulator-core"]
 terminal-emulator-core = ["nucleotide-terminal/emulator", "nucleotide-terminal-view/emulator"]
-terminal-emulator-ghostty = ["terminal-emulator"]
 unicode-lines = ["helix-core/unicode-lines"]
 integration = ["helix-event/integration_test"]
 git = ["helix-vcs/git"]
