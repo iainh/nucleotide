@@ -1394,6 +1394,7 @@ pub struct Application {
     pub project_lsp_processor_started: Arc<std::sync::atomic::AtomicBool>,
     pub project_lsp_system_initialized: Arc<std::sync::atomic::AtomicBool>,
     pub project_environment: Arc<ProjectEnvironment>,
+    pub workspace_file_ops: WorkspaceFileOpHandler,
     project_env_overrides: HashMap<String, Option<String>>,
     prewarmed_lsp_startups: HashSet<(PathBuf, String, String)>,
     // Event aggregator for dispatching integration events
@@ -2081,13 +2082,9 @@ impl Application {
 
         None
     }
-    /// Dispatch a workspace event via the event aggregator if available
+    /// Dispatch a workspace operation through the active backend.
     pub fn dispatch_workspace_event(&self, event: nucleotide_events::v2::workspace::Event) {
-        if let Some(aggregator) = &self.event_aggregator {
-            aggregator.dispatch_workspace(event);
-        } else {
-            nucleotide_logging::debug!("No event aggregator; workspace event not dispatched");
-        }
+        self.workspace_file_ops.dispatch(&event);
     }
     /// Initialize the application with its own entity handle for LSP completion
     pub fn post_init(&mut self, cx: &mut gpui::Context<Self>) {
@@ -8160,18 +8157,17 @@ pub fn init_editor(
         "Application created with direct completion and LSP manager initialized"
     );
 
-    // Initialize V2 Event Aggregator and register core handlers
+    let file_op_runtime = tokio::runtime::Handle::try_current()
+        .context("workspace file operations require an active Tokio runtime")?;
+    let workspace_file_ops =
+        WorkspaceFileOpHandler::new(workspace_backend.clone(), file_op_runtime);
+
+    // Initialize the terminal event queue.
     #[cfg(feature = "terminal-emulator-core")]
     let terminal_input_senders;
     let event_aggregator = {
         let agg = nucleotide_core::EventAggregator::new();
         let handle = nucleotide_core::EventAggregatorHandle::new(agg);
-        // Register workspace file operations through the active backend.
-        let file_op_runtime = tokio::runtime::Handle::try_current()
-            .context("workspace file operations require an active Tokio runtime")?;
-        let fs_handler =
-            WorkspaceFileOpHandler::new(handle.clone(), workspace_backend.clone(), file_op_runtime);
-        handle.register_handler(fs_handler);
         // Register Terminal runtime handler (behind feature)
         #[cfg(feature = "terminal-emulator-core")]
         {
@@ -8203,6 +8199,7 @@ pub fn init_editor(
         project_lsp_processor_started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         project_lsp_system_initialized: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         project_environment, // Already created above before LSP system initialization
+        workspace_file_ops,
         project_env_overrides: HashMap::new(),
         prewarmed_lsp_startups: HashSet::new(),
         // Event aggregator for UI and workspace events
@@ -10751,6 +10748,10 @@ mod tests {
                 project_environment: Arc::new(nucleotide_env::ProjectEnvironment::new(Some(
                     cli_env,
                 ))),
+                workspace_file_ops: crate::application::WorkspaceFileOpHandler::new(
+                    local_workspace_backend(),
+                    TEST_RUNTIME.handle().clone(),
+                ),
                 project_env_overrides: HashMap::new(),
                 prewarmed_lsp_startups: HashSet::new(),
                 event_aggregator: None,

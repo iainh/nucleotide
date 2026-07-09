@@ -11220,13 +11220,7 @@ impl Workspace {
         event: nucleotide_events::v2::workspace::Event,
         cx: &mut Context<Self>,
     ) {
-        self.core.update(cx, |core, _cx| {
-            if let Some(bus) = &core.event_aggregator {
-                bus.dispatch_workspace(event);
-                bus.process_events();
-                bus.process_events();
-            }
-        });
+        self.core.read(cx).workspace_file_ops.dispatch(&event);
     }
 
     fn handle_vcs_service_event(&mut self, event: &VcsEvent, cx: &mut Context<Self>) {

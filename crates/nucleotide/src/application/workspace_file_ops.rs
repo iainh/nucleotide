@@ -8,32 +8,20 @@ use std::{
     process::Command,
 };
 
-use nucleotide_core::{EventAggregatorHandle, EventBus, EventHandler};
 use nucleotide_events::v2::workspace::{
     DeleteMode, Event as WorkspaceEvent, FileOpIntent, PathCopyKind,
 };
 use nucleotide_logging::{error, info, warn};
-use nucleotide_workspace::{
-    FileKind, FileStat, WorkspaceBackendHandle, WorkspaceError, WorkspaceIdentity,
-};
+use nucleotide_workspace::{WorkspaceBackendHandle, WorkspaceError, WorkspaceIdentity};
 
 pub struct WorkspaceFileOpHandler {
-    bus: EventAggregatorHandle,
     backend: WorkspaceBackendHandle,
     runtime: tokio::runtime::Handle,
 }
 
 impl WorkspaceFileOpHandler {
-    pub fn new(
-        bus: EventAggregatorHandle,
-        backend: WorkspaceBackendHandle,
-        runtime: tokio::runtime::Handle,
-    ) -> Self {
-        Self {
-            bus,
-            backend,
-            runtime,
-        }
+    pub fn new(backend: WorkspaceBackendHandle, runtime: tokio::runtime::Handle) -> Self {
+        Self { backend, runtime }
     }
 
     fn create_child_path(
@@ -49,41 +37,13 @@ impl WorkspaceFileOpHandler {
         Ok(parent.join(name))
     }
 
-    fn parent_for(path: &Path) -> PathBuf {
-        path.parent()
-            .unwrap_or_else(|| Path::new("."))
-            .to_path_buf()
-    }
-
-    fn created_event(stat: FileStat) -> WorkspaceEvent {
-        let parent_directory = Self::parent_for(&stat.path);
-        WorkspaceEvent::FileCreated {
-            path: stat.path,
-            parent_directory,
-        }
-    }
-
-    fn deleted_event(stat: FileStat) -> WorkspaceEvent {
-        WorkspaceEvent::FileDeleted {
-            was_directory: stat.kind == FileKind::Directory,
-            path: stat.path,
-        }
-    }
-
     fn spawn_file_op<F>(&self, intent: FileOpIntent, future: F)
     where
-        F: Future<Output = Result<WorkspaceEvent, WorkspaceError>> + Send + 'static,
+        F: Future<Output = Result<(), WorkspaceError>> + Send + 'static,
     {
-        let bus = self.bus.clone();
         self.runtime.spawn(async move {
-            match future.await {
-                Ok(event) => {
-                    bus.dispatch_workspace(event);
-                    bus.process_events();
-                }
-                Err(err) => {
-                    error!(error = %err, intent = ?intent, "Failed to perform workspace file operation");
-                }
+            if let Err(err) = future.await {
+                error!(error = %err, intent = ?intent, "Failed to perform workspace file operation");
             }
         });
     }
@@ -97,8 +57,8 @@ impl WorkspaceFileOpHandler {
                 name: name.to_string(),
             },
             async move {
-                let stat = backend.create_file(&path).await?;
-                Ok(Self::created_event(stat))
+                backend.create_file(&path).await?;
+                Ok(())
             },
         );
         Ok(())
@@ -113,8 +73,8 @@ impl WorkspaceFileOpHandler {
                 name: name.to_string(),
             },
             async move {
-                let stat = backend.create_dir(&path).await?;
-                Ok(Self::created_event(stat))
+                backend.create_dir(&path).await?;
+                Ok(())
             },
         );
         Ok(())
@@ -135,11 +95,8 @@ impl WorkspaceFileOpHandler {
                 new_name: new_name.to_string(),
             },
             async move {
-                let stat = backend.rename_path(&old_path, &new_path).await?;
-                Ok(WorkspaceEvent::FileRenamed {
-                    old_path,
-                    new_path: stat.path,
-                })
+                backend.rename_path(&old_path, &new_path).await?;
+                Ok(())
             },
         );
         Ok(())
@@ -161,8 +118,8 @@ impl WorkspaceFileOpHandler {
                 mode,
             },
             async move {
-                let stat = backend.delete_path(&path).await?;
-                Ok(Self::deleted_event(stat))
+                backend.delete_path(&path).await?;
+                Ok(())
             },
         );
         Ok(())
@@ -183,8 +140,8 @@ impl WorkspaceFileOpHandler {
                 target_name: target_name.to_string(),
             },
             async move {
-                let stat = backend.copy_path(&source_path, &target_path).await?;
-                Ok(Self::created_event(stat))
+                backend.copy_path(&source_path, &target_path).await?;
+                Ok(())
             },
         );
         Ok(())
@@ -223,10 +180,8 @@ impl WorkspaceFileOpHandler {
             source,
         })
     }
-}
 
-impl EventHandler for WorkspaceFileOpHandler {
-    fn handle_workspace(&mut self, event: &WorkspaceEvent) {
+    pub fn dispatch(&self, event: &WorkspaceEvent) {
         let WorkspaceEvent::FileOpRequested { intent } = event else {
             return;
         };
@@ -325,8 +280,6 @@ fn reveal_path_in_os(path: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nucleotide_core::EventAggregator;
-    use std::sync::{Arc, Mutex};
 
     #[test]
     fn validate_child_name_rejects_path_traversal_and_separators() {
@@ -391,10 +344,8 @@ mod tests {
 
     #[test]
     fn trash_delete_is_rejected_by_backend_handler() {
-        let bus = EventAggregatorHandle::new(EventAggregator::new());
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let handler = WorkspaceFileOpHandler::new(
-            bus,
             nucleotide_workspace::local_workspace_backend(),
             runtime.handle().clone(),
         );
@@ -410,54 +361,29 @@ mod tests {
         ));
     }
 
-    struct CapturedWorkspaceEvents {
-        events: Arc<Mutex<Vec<WorkspaceEvent>>>,
-    }
-
-    impl EventHandler for CapturedWorkspaceEvents {
-        fn handle_workspace(&mut self, event: &WorkspaceEvent) {
-            self.events.lock().unwrap().push(event.clone());
-        }
-    }
-
     #[tokio::test]
-    async fn file_op_handler_dispatches_created_event_after_backend_op() {
+    async fn file_op_handler_creates_file_with_backend() {
         let temp_dir = tempfile::tempdir().unwrap();
         let created_path = temp_dir.path().join("new.rs");
-        let events = Arc::new(Mutex::new(Vec::new()));
-        let bus = EventAggregatorHandle::new(EventAggregator::new());
-
-        bus.register_handler(CapturedWorkspaceEvents {
-            events: events.clone(),
-        });
-        bus.register_handler(WorkspaceFileOpHandler::new(
-            bus.clone(),
+        let handler = WorkspaceFileOpHandler::new(
             nucleotide_workspace::local_workspace_backend(),
             tokio::runtime::Handle::current(),
-        ));
+        );
 
-        bus.dispatch_workspace(WorkspaceEvent::FileOpRequested {
+        handler.dispatch(&WorkspaceEvent::FileOpRequested {
             intent: FileOpIntent::NewFile {
                 parent: temp_dir.path().to_path_buf(),
                 name: "new.rs".to_string(),
             },
         });
-        bus.process_events();
 
         for _ in 0..50 {
-            if created_path.exists()
-                && events.lock().unwrap().iter().any(|event| {
-                    matches!(
-                        event,
-                        WorkspaceEvent::FileCreated { path, .. } if path == &created_path
-                    )
-                })
-            {
+            if created_path.exists() {
                 return;
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
 
-        panic!("timed out waiting for async file creation event");
+        panic!("timed out waiting for async file creation");
     }
 }
