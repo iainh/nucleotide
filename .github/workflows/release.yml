@@ -212,18 +212,14 @@ jobs:
             NUCL_REQUIRE_REMOTE_HELPERS=1 \
             NUCL_BINARY="target/${{ matrix.target }}/release/nucl" \
             ./scripts/bundle-mac.sh
-          
-          # Create DMG
-          mkdir -p dmg-content
-          cp -r Nucleotide.app dmg-content/
-          ln -s /Applications dmg-content/Applications
-          hdiutil create -volname "Nucleotide" -srcfolder dmg-content -ov -format UDZO Nucleotide-${{ matrix.arch }}.dmg
+
+          tar -czf Nucleotide-${{ matrix.arch }}.app.tar.gz Nucleotide.app
       
       - name: Upload artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: macos-${{ matrix.arch }}-build
-          path: Nucleotide-${{ matrix.arch }}.dmg
+          name: macos-${{ matrix.arch }}-app
+          path: Nucleotide-${{ matrix.arch }}.app.tar.gz
 
   build-macos-universal:
     name: Build macOS Universal
@@ -239,25 +235,32 @@ jobs:
       - name: Download artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: macos-x86_64-build
+          name: macos-x86_64-app
           path: x86_64
       
       - name: Download artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: macos-aarch64-build
+          name: macos-aarch64-app
           path: aarch64
+
+      - name: Install .NET SDK
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Install Velopack CLI
+        run: |
+          dotnet tool update -g vpk
+          echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
       
       - name: Create universal binary
         run: |
-          # Extract apps from DMGs
-          hdiutil attach x86_64/Nucleotide-x86_64.dmg -mountpoint /tmp/x86_64-mount
-          cp -r /tmp/x86_64-mount/Nucleotide.app ./Nucleotide-x86_64.app
-          hdiutil detach /tmp/x86_64-mount
-          
-          hdiutil attach aarch64/Nucleotide-aarch64.dmg -mountpoint /tmp/aarch64-mount
-          cp -r /tmp/aarch64-mount/Nucleotide.app ./Nucleotide-aarch64.app
-          hdiutil detach /tmp/aarch64-mount
+          tar -xzf x86_64/Nucleotide-x86_64.app.tar.gz
+          mv Nucleotide.app Nucleotide-x86_64.app
+
+          tar -xzf aarch64/Nucleotide-aarch64.app.tar.gz
+          mv Nucleotide.app Nucleotide-aarch64.app
           
           # Create universal app
           cp -r Nucleotide-x86_64.app Nucleotide.app
@@ -267,18 +270,26 @@ jobs:
             -output Nucleotide.app/Contents/MacOS/Nucleotide
           test -x Nucleotide.app/Contents/MacOS/nucleotide-remote-linux-x86_64
           test -x Nucleotide.app/Contents/MacOS/nucleotide-remote-linux-aarch64
-          
-          # Create universal DMG
-          mkdir -p dmg-content
-          cp -r Nucleotide.app dmg-content/
-          ln -s /Applications dmg-content/Applications
-          hdiutil create -volname "Nucleotide" -srcfolder dmg-content -ov -format UDZO Nucleotide-universal.dmg
+
+      - name: Build macOS Velopack package
+        run: |
+          chmod +x scripts/package-velopack.sh
+          NUCL_VELOPACK_VERSION="${{ needs.prepare-release.outputs.version }}" \
+            NUCL_VELOPACK_PACK_DIR="Nucleotide.app" \
+            NUCL_VELOPACK_OUTPUT_DIR="target/release/bundle/velopack-macos" \
+            NUCL_VELOPACK_PACK_ID="org.spiralpoint.nucleotide.macos" \
+            NUCL_VELOPACK_CHANNEL="macos" \
+            NUCL_VELOPACK_RUNTIME="" \
+            ./scripts/package-velopack.sh
+
+          test -f target/release/bundle/velopack-macos/releases.macos.json
+          test -n "$(find target/release/bundle/velopack-macos -maxdepth 1 -name '*-full.nupkg' -print -quit)"
       
       - name: Upload artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: macos-universal-build
-          path: Nucleotide-universal.dmg
+          name: macos-velopack
+          path: target/release/bundle/velopack-macos/*
 
   build-windows:
     name: Build Windows
@@ -320,6 +331,12 @@ jobs:
         with:
           dotnet-version: 8.0.x
 
+      - name: Install Velopack CLI
+        shell: pwsh
+        run: |
+          dotnet tool update -g vpk
+          "$env:USERPROFILE\.dotnet\tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
       - name: Cache cargo dependencies
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
@@ -344,87 +361,32 @@ jobs:
             Remove-Item -LiteralPath helix-temp -Recurse -Force
           }
 
-      - name: Build Windows MSI
+      - name: Build Windows Velopack package
         shell: pwsh
         run: |
-          .\scripts\build-windows-msi.ps1 -RequireRemoteHelpers
+          .\scripts\package-velopack.ps1 `
+            -Version "${{ needs.prepare-release.outputs.version }}" `
+            -OutputDir "target\release\bundle\velopack-windows" `
+            -PackId "org.spiralpoint.nucleotide.windows" `
+            -Channel "windows" `
+            -Runtime "win-x64" `
+            -RequireRemoteHelpers
 
-          $installer = "target\release\bundle\wxsmsi\bin\Release\nucleotide.msi"
-          if (-not (Test-Path $installer)) {
-            throw "Windows installer not found: $installer"
+          if (-not (Test-Path "target\release\bundle\velopack-windows\releases.windows.json" -PathType Leaf)) {
+            throw "Velopack Windows release feed was not created."
           }
-
-          Copy-Item -LiteralPath $installer -Destination Nucleotide-windows-x86_64.msi -Force
-          Get-Item Nucleotide-windows-x86_64.msi
-
-      - name: Verify MSI payload
-        shell: pwsh
-        run: |
-          $extractDir = Join-Path $PWD "dist\windows-msi"
-          New-Item -ItemType Directory -Path $extractDir -Force | Out-Null
-
-          $installer = (Resolve-Path "Nucleotide-windows-x86_64.msi").Path
-          $process = Start-Process `
-            -FilePath msiexec.exe `
-            -ArgumentList @("/a", $installer, "/qn", "TARGETDIR=$extractDir") `
-            -Wait `
-            -PassThru
-
-          if ($process.ExitCode -ne 0) {
-            throw "Administrative MSI extraction failed with exit code $($process.ExitCode)."
+          if (-not (Get-ChildItem "target\release\bundle\velopack-windows" -Filter "*-full.nupkg" -File | Select-Object -First 1)) {
+            throw "Velopack Windows full package was not created."
           }
-
-          $runtime = Get-ChildItem -Path $extractDir -Recurse -Directory -Filter runtime |
-            Select-Object -First 1
-          if (-not $runtime) {
-            throw "Extracted MSI does not contain a runtime directory."
-          }
-
-          $languages = Join-Path $runtime.FullName "languages.toml"
-          if (-not (Test-Path -LiteralPath $languages -PathType Leaf)) {
-            throw "Extracted MSI runtime does not contain languages.toml."
-          }
-
-          $queries = Join-Path $runtime.FullName "queries"
-          if (-not (Test-Path -LiteralPath $queries -PathType Container)) {
-            throw "Extracted MSI runtime does not contain a queries directory."
-          }
-
-          $queryDirs = Get-ChildItem -Path $queries -Directory
-          if ($queryDirs.Count -eq 0) {
-            throw "Extracted MSI runtime queries directory is empty."
-          }
-
-          $grammarDlls = Get-ChildItem -Path (Join-Path $runtime.FullName "grammars") -Filter *.dll -File
-          if ($grammarDlls.Count -eq 0) {
-            throw "Extracted MSI runtime does not contain any grammar DLLs."
-          }
-
-          $exe = Get-ChildItem -Path $extractDir -Recurse -Filter nucl.exe -File |
-            Select-Object -First 1
-          if (-not $exe) {
-            throw "Extracted MSI does not contain nucl.exe."
-          }
-
-          $ghosttyDll = Get-ChildItem -Path $extractDir -Recurse -Filter ghostty-vt.dll -File |
-            Select-Object -First 1
-          if (-not $ghosttyDll) {
-            throw "Extracted MSI does not contain ghostty-vt.dll."
-          }
-
-          foreach ($helper in @("nucleotide-remote-linux-x86_64", "nucleotide-remote-linux-aarch64")) {
-            $installed = Get-ChildItem -Path $extractDir -Recurse -Filter $helper -File |
-              Select-Object -First 1
-            if (-not $installed) {
-              throw "Extracted MSI does not contain $helper."
-            }
+          if (-not (Get-ChildItem "target\release\bundle\velopack-windows" -Filter "*Setup.exe" -File | Select-Object -First 1)) {
+            throw "Velopack Windows setup executable was not created."
           }
 
       - name: Upload artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: windows-build
-          path: Nucleotide-windows-x86_64.msi
+          path: target/release/bundle/velopack-windows/*
 
   create-release:
     name: Create Release
@@ -451,10 +413,8 @@ jobs:
         run: |
           mkdir -p release
           cp artifacts/linux-build/nucleotide-linux-x86_64.tar.gz release/
-          cp artifacts/macos-universal-build/Nucleotide-universal.dmg release/Nucleotide.dmg
-          cp artifacts/macos-x86_64-build/Nucleotide-x86_64.dmg release/
-          cp artifacts/macos-aarch64-build/Nucleotide-aarch64.dmg release/
-          cp artifacts/windows-build/Nucleotide-windows-x86_64.msi release/
+          find artifacts/macos-velopack -maxdepth 1 -type f -exec cp {} release/ \;
+          find artifacts/windows-build -maxdepth 1 -type f -exec cp {} release/ \;
           cp artifacts/linux-remote-helpers/nucleotide-remote-linux-* release/
           
           # Generate checksums
@@ -468,15 +428,7 @@ jobs:
       - name: Attest release artifacts
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a
         with:
-          subject-path: |
-            release/Nucleotide.dmg
-            release/Nucleotide-x86_64.dmg
-            release/Nucleotide-aarch64.dmg
-            release/nucleotide-linux-x86_64.tar.gz
-            release/nucleotide-remote-linux-x86_64
-            release/nucleotide-remote-linux-aarch64
-            release/Nucleotide-windows-x86_64.msi
-            release/SHA256SUMS
+          subject-path: release/*
       
       - name: Create GitHub Release
         uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844
@@ -487,23 +439,20 @@ jobs:
             ## Downloads
             
             ### macOS
-            - **Universal (Intel + Apple Silicon):** `Nucleotide.dmg`
-            - **Intel only:** `Nucleotide-x86_64.dmg`
-            - **Apple Silicon only:** `Nucleotide-aarch64.dmg`
+            - **Velopack installer/update feed:** `org.spiralpoint.nucleotide.macos*`, `releases.macos.json`
             
             ### Linux
             - **x86_64:** `nucleotide-linux-x86_64.tar.gz`
             - **SSH remote helpers:** `nucleotide-remote-linux-x86_64`, `nucleotide-remote-linux-aarch64`
 
             ### Windows
-            - **x86_64:** `Nucleotide-windows-x86_64.msi`
+            - **Velopack installer/update feed:** `org.spiralpoint.nucleotide.windows*`, `releases.windows.json`
             
             ## Installation
             
             ### macOS
-            1. Download the appropriate DMG file
-            2. Open the DMG and drag Nucleotide to Applications
-            3. On first launch, you may need to right-click and select "Open" to bypass Gatekeeper
+            1. Download the macOS Velopack installer package.
+            2. Run the installer.
             
             ### Linux
             1. Download and extract the tarball:
@@ -517,19 +466,11 @@ jobs:
                ```
 
             ### Windows
-            1. Download `Nucleotide-windows-x86_64.msi`.
+            1. Download the Windows Velopack setup executable.
             2. Run the installer and launch Nucleotide from the Start Menu or desktop shortcut.
             3. The installer includes the bundled Helix runtime and compiled Windows grammar DLLs.
             
             ## Checksums
             SHA256 checksums are available in `SHA256SUMS`
           draft: true
-          files: |
-            release/Nucleotide.dmg
-            release/Nucleotide-x86_64.dmg
-            release/Nucleotide-aarch64.dmg
-            release/nucleotide-linux-x86_64.tar.gz
-            release/nucleotide-remote-linux-x86_64
-            release/nucleotide-remote-linux-aarch64
-            release/Nucleotide-windows-x86_64.msi
-            release/SHA256SUMS
+          files: release/*

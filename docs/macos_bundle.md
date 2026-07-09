@@ -19,6 +19,16 @@ Ghostty-backed terminal dependency can build.
 
 The script creates `Nucleotide.app`.
 
+To package that app for installation and automatic updates, install the
+Velopack CLI and run:
+
+```bash
+dotnet tool update -g vpk
+NUCL_VELOPACK_PACK_DIR=Nucleotide.app ./scripts/package-velopack.sh
+```
+
+Velopack output is written to `target/release/bundle/velopack` by default.
+
 ## What gets bundled
 
 The bundle script:

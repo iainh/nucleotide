@@ -97,6 +97,7 @@ chrono = "0.4"
 regex.workspace = true
 smallvec.workspace = true
 slotmap.workspace = true
+velopack.workspace = true
 
 # error handling
 

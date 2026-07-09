@@ -31,6 +31,7 @@ pub mod test_utils;
 #[cfg(test)]
 pub mod tests;
 pub mod types;
+pub mod updates;
 pub mod utils;
 pub mod workspace;
 
