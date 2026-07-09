@@ -6226,38 +6226,6 @@ impl Workspace {
         debug!(context = ?new_context, "Updated input context");
     }
 
-    /// Handle workspace actions triggered by InputCoordinator
-    fn handle_workspace_action(&mut self, action: &str, cx: &mut Context<Self>) {
-        match action {
-            "ToggleFileTree" => {
-                info!("Toggling file tree");
-                self.show_file_tree = !self.show_file_tree;
-                cx.notify();
-            }
-            "ShowFileFinder" => {
-                info!("Showing file finder");
-                let handle = self.handle.clone();
-                let core = self.core.clone();
-                let overlay = self.overlay.clone();
-                open(core, handle, overlay, cx);
-            }
-            "ShowCommandPrompt" => {
-                info!("Showing command prompt");
-                self.show_command_prompt(cx);
-            }
-            "ShowBufferPicker" => {
-                info!("Showing buffer picker");
-                let handle = self.handle.clone();
-                let core = self.core.clone();
-                let overlay = self.overlay.clone();
-                show_buffer_picker(core, handle, overlay, cx);
-            }
-            _ => {
-                warn!(action = %action, "Unknown workspace action");
-            }
-        }
-    }
-
     /// Routes Helix-style completion keys while the completion menu is open.
     fn handle_regular_completion_menu_key(
         &mut self,
@@ -6382,10 +6350,6 @@ impl Workspace {
                         "DEBUG: CTRL-X sent to Helix - should trigger completion in insert mode"
                     );
                 }
-            }
-            InputResult::WorkspaceAction(action) => {
-                debug!(action = %action, "Executing workspace action");
-                self.handle_workspace_action(&action, cx);
             }
         }
     }

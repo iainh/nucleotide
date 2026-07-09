@@ -1,10 +1,9 @@
 // ABOUTME: Central hub for workspace keyboard context routing in Nucleotide
 // ABOUTME: Keeps app/Helix key handoff separate from component-owned GPUI actions
 
-use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use gpui::{KeyDownEvent, Window, actions};
+use gpui::{KeyDownEvent, Window};
 use nucleotide_logging::{debug, info, instrument};
 
 // Import for Helix integration
@@ -20,8 +19,6 @@ pub enum InputResult {
     Handled,
     /// Key should be sent to Helix editor
     SendToHelix(KeyEvent),
-    /// A workspace action should be executed
-    WorkspaceAction(String),
 }
 
 /// Central coordinator for workspace-level keyboard context routing.
@@ -31,12 +28,10 @@ pub struct InputCoordinator {
     active_context: Arc<RwLock<InputContext>>,
     /// Context priority stack for modal behavior
     context_stack: Arc<RwLock<Vec<InputContext>>>,
-    /// Action handler registry by context
-    action_handlers: Arc<RwLock<HashMap<InputContext, ContextActionHandlers>>>,
 }
 
 /// Input contexts that determine which shortcuts are active
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputContext {
     /// Normal editing mode
     Normal,
@@ -52,79 +47,14 @@ pub enum InputContext {
     Prompt,
 }
 
-/// Context priority levels for resolving conflicts
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum ContextPriority {
-    Background = 0,
-    Normal = 1,
-    Component = 2,
-    Modal = 3,
-    Critical = 4,
-}
-
-/// Action handlers for a specific context
-#[derive(Default)]
-pub struct ContextActionHandlers {
-    /// Global action handlers that work in this context
-    global_handlers: HashMap<String, Arc<dyn Fn() + Send + Sync>>,
-    /// Context-specific action handlers
-    _context_handlers: HashMap<String, Arc<dyn Fn() + Send + Sync>>,
-}
-
-// Define global actions for the input coordinator
-actions!(
-    input_coordinator,
-    [
-        // Global navigation
-        ToggleFileTree,
-        ShowFileFinder,
-        ShowCommandPrompt,
-        ShowBufferPicker,
-        // Modal handling
-        Escape,
-        // Quick navigation
-        QuickNav1,
-        QuickNav2,
-        QuickNav3,
-        QuickNav0,
-        // Editor actions
-        SaveFile,
-        CloseFile,
-        NewFile,
-        Quit,
-    ]
-);
-
 impl InputCoordinator {
     /// Create a new input coordinator
     pub fn new() -> Self {
         debug!("Creating new InputCoordinator");
 
-        let coordinator = Self {
+        Self {
             active_context: Arc::new(RwLock::new(InputContext::Normal)),
             context_stack: Arc::new(RwLock::new(Vec::new())),
-            action_handlers: Arc::new(RwLock::new(HashMap::new())),
-        };
-
-        coordinator.setup_default_handlers();
-        coordinator
-    }
-
-    /// Set up default action handlers for common shortcuts
-    fn setup_default_handlers(&self) {
-        debug!("Setting up default action handlers");
-
-        // Initialize context handlers for all contexts
-        let mut handlers = self.action_handlers.write().unwrap();
-        for context in [
-            InputContext::Normal,
-            InputContext::Completion,
-            InputContext::FileTree,
-            InputContext::Picker,
-            InputContext::Modal,
-            InputContext::Prompt,
-        ] {
-            handlers.insert(context, ContextActionHandlers::default());
         }
     }
 
@@ -173,58 +103,6 @@ impl InputCoordinator {
     /// Get the current active context
     pub fn current_context(&self) -> InputContext {
         *self.active_context.read().unwrap()
-    }
-
-    /// Register an action handler for a specific context
-    pub fn register_action(
-        &self,
-        context: InputContext,
-        action_name: impl Into<String>,
-        handler: impl Fn() + Send + Sync + 'static,
-    ) {
-        let action_name = action_name.into();
-        let mut handlers = self.action_handlers.write().unwrap();
-
-        if let Some(context_handlers) = handlers.get_mut(&context) {
-            context_handlers
-                .global_handlers
-                .insert(action_name.clone(), Arc::new(handler));
-
-            debug!(
-                action = %action_name,
-                context = ?context,
-                "Registered action handler"
-            );
-        }
-    }
-
-    /// Register a global action handler that works in any context
-    pub fn register_global_action(
-        &self,
-        action_name: impl Into<String>,
-        handler: impl Fn() + Send + Sync + 'static,
-    ) {
-        let action_name = action_name.into();
-        let handler = Arc::new(handler);
-
-        // Register for all contexts
-        for context in [
-            InputContext::Normal,
-            InputContext::Completion,
-            InputContext::FileTree,
-            InputContext::Picker,
-            InputContext::Modal,
-            InputContext::Prompt,
-        ] {
-            let mut handlers = self.action_handlers.write().unwrap();
-            if let Some(context_handlers) = handlers.get_mut(&context) {
-                context_handlers
-                    .global_handlers
-                    .insert(action_name.clone(), handler.clone());
-            }
-        }
-
-        debug!(action = %action_name, "Registered global action handler");
     }
 
     /// Handle a key down event - main entry point for input processing
@@ -390,16 +268,5 @@ mod tests {
         let popped = coordinator.pop_context();
         assert_eq!(popped, None);
         assert_eq!(coordinator.current_context(), InputContext::Normal);
-    }
-
-    #[test]
-    fn test_action_registration() {
-        let coordinator = InputCoordinator::new();
-
-        // This should not panic
-        coordinator.register_action(InputContext::Normal, "test_action", || { /* test handler */
-        });
-
-        coordinator.register_global_action("global_test_action", || { /* global test handler */ });
     }
 }
