@@ -122,10 +122,8 @@ pub use picker::Picker;
 pub use progress_indicator::IndeterminateProgressIndicator;
 pub use prompt::Prompt;
 pub use providers::{
-    AccessibilityConfiguration, ConfigurationProvider, CustomEventData, CustomEventDetails,
-    EventHandlingProvider, EventResult, PerformanceConfiguration, Provider, ProviderComposition,
-    ProviderContainer, ProviderHooks, ThemeProvider, UIConfiguration, provider_tree, use_provider,
-    use_provider_or_default,
+    AccessibilityConfiguration, ConfigurationProvider, PerformanceConfiguration, ThemeProvider,
+    UIConfiguration, use_provider, use_provider_or_default,
 };
 pub use split::{
     ResizeDragController, SPLITTER_HITBOX_PX, SPLITTER_LINE_PX, SplitterAxis, bottom_panel_split,
@@ -366,21 +364,14 @@ pub fn init(cx: &mut App, config: Option<UIConfig>) {
     prompt_view::init(cx);
     text_input::init(cx);
 
-    let mut theme_provider = providers::ThemeProvider::new(config.default_theme.clone());
-    theme_provider.initialize(cx);
+    let theme_provider = providers::ThemeProvider::new(config.default_theme.clone());
 
     let mut configuration_provider = configuration_provider_from_ui_config(&config);
-    configuration_provider.initialize(cx);
-
-    let mut event_provider = providers::EventHandlingProvider::new();
-    event_provider.analytics_config.enable_analytics = config.enable_performance_monitoring;
-    event_provider.analytics_config.track_performance = config.enable_performance_monitoring;
-    event_provider.initialize(cx);
+    configuration_provider.load_from_env();
 
     providers::update_provider_context(|context| {
         context.register_global_provider(theme_provider);
         context.register_global_provider(configuration_provider);
-        context.register_global_provider(event_provider);
     });
 
     // Setup global theme

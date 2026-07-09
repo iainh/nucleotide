@@ -1,9 +1,9 @@
 // ABOUTME: Configuration provider component for app-wide settings and preferences
 // ABOUTME: Manages user preferences, accessibility settings, and runtime configuration
 
-use super::{Provider, ProviderContainer, use_provider, use_provider_or_default};
+use super::{use_provider, use_provider_or_default};
 use crate::utils::FeatureFlags;
-use gpui::{AnyElement, App, IntoElement, Pixels, SharedString, px};
+use gpui::{Pixels, SharedString, px};
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -802,67 +802,6 @@ impl ConfigurationProvider {
 impl Default for ConfigurationProvider {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-impl Provider for ConfigurationProvider {
-    fn type_name(&self) -> &'static str {
-        "ConfigurationProvider"
-    }
-
-    fn initialize(&mut self, _cx: &mut App) {
-        self.load_from_env();
-        nucleotide_logging::info!(
-            locale = %self.i18n_config.locale,
-            font_scale = self.ui_config.font_scale,
-            reduced_motion = self.accessibility_config.reduced_motion,
-            "ConfigurationProvider initialized"
-        );
-    }
-
-    fn cleanup(&mut self, _cx: &mut App) {
-        nucleotide_logging::debug!("ConfigurationProvider cleaned up");
-    }
-}
-
-/// Create a configuration provider component
-pub fn config_provider(provider: ConfigurationProvider) -> ConfigProviderComponent {
-    ConfigProviderComponent::new(provider)
-}
-
-/// Configuration provider component wrapper
-pub struct ConfigProviderComponent {
-    provider: ConfigurationProvider,
-    children: Vec<AnyElement>,
-}
-
-impl ConfigProviderComponent {
-    pub fn new(provider: ConfigurationProvider) -> Self {
-        Self {
-            provider,
-            children: Vec::new(),
-        }
-    }
-
-    pub fn child(mut self, child: impl IntoElement) -> Self {
-        self.children.push(child.into_any_element());
-        self
-    }
-
-    pub fn children(mut self, children: impl IntoIterator<Item = impl IntoElement>) -> Self {
-        self.children
-            .extend(children.into_iter().map(|child| child.into_any_element()));
-        self
-    }
-}
-
-impl IntoElement for ConfigProviderComponent {
-    type Element = AnyElement;
-
-    fn into_element(self) -> Self::Element {
-        ProviderContainer::new("config-provider", self.provider)
-            .children(self.children)
-            .into_any_element()
     }
 }
 
