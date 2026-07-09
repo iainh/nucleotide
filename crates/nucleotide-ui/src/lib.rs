@@ -133,13 +133,9 @@ pub use split::{
     two_pane_split,
 };
 pub use styling::{
-    AnimationConfig, AnimationDuration, AnimationPreset, AnimationProperty, AnimationType,
-    BoxShadow, Breakpoint, ColorTheory, ComputedStyle, ConditionalStyle, ContextualColors,
-    ContrastRatios, MergeStrategy, ResponsiveSizes, ResponsiveTypography, ResponsiveValue,
-    StyleCombiner, StyleComposer, StyleContext, StylePresets, StyleSize, StyleState, StyleUtils,
-    StyleVariant, TimingFunction, Transition, TransitionProperty, VariantColors, VariantStyle,
-    VariantStyler, ViewportContext, compute_component_style, compute_contextual_style,
-    compute_style_for_states, merge_styles, should_enable_animations,
+    BoxShadow, ColorTheory, ComputedStyle, ContextualColors, ContrastRatios, StyleContext,
+    StyleSize, StyleState, StyleVariant, TimingFunction, Transition, TransitionProperty,
+    compute_component_style, should_enable_animations,
 };
 pub use terminal_keys::{
     TerminalKeyEncodingMode, encode_terminal_key_event, encode_terminal_key_event_with_mode,
