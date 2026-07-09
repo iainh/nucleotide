@@ -2,27 +2,21 @@
 // ABOUTME: Contains domain-specific handlers and main Application implementation
 
 pub mod app_core;
-pub mod completion_handler;
 pub mod document_handler;
 pub mod editor_handler;
 pub mod editor_input;
-pub mod lsp_handler;
 #[cfg(feature = "terminal-emulator-core")]
 pub mod terminal_handler;
 pub mod view_handler;
 pub mod workspace_file_ops;
-pub mod workspace_handler;
 
 pub use app_core::ApplicationCore;
-pub use completion_handler::CompletionHandler;
 pub use document_handler::DocumentHandler;
 pub use editor_handler::EditorHandler;
-pub use lsp_handler::LspHandler;
 #[cfg(feature = "terminal-emulator-core")]
 pub use terminal_handler::{TerminalInputSenders, TerminalRuntimeHandler};
 pub use view_handler::ViewHandler;
 pub use workspace_file_ops::WorkspaceFileOpHandler;
-pub use workspace_handler::WorkspaceHandler;
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
@@ -2161,9 +2155,6 @@ impl Application {
     /// Initialize the application with its own entity handle for LSP completion
     pub fn post_init(&mut self, cx: &mut gpui::Context<Self>) {
         nucleotide_logging::info!("POST_INIT: Starting application post-initialization");
-
-        let app_handle = cx.entity().downgrade();
-        self.core.set_app_handle(app_handle);
 
         // Initialize LSP state entity for statusline indicator
         if self.lsp_state.is_none() {
@@ -8552,7 +8543,6 @@ pub fn init_editor(
     event_bridge::register_event_hooks();
 
     // Initialize LSP command bridge for ProjectLspManager -> Application communication
-    nucleotide_core::event_bridge::initialize_lsp_command_bridge(project_lsp_command_tx.clone());
     nucleotide_logging::info!("Initialized LSP command bridge for event-driven command pattern");
 
     // Initialize reverse event bridge system for GPUI -> Helix event forwarding
@@ -8736,15 +8726,9 @@ pub fn init_editor(
         handle
     };
 
-    // Create the dispatcher for routing LSP commands from events
-    let dispatcher = nucleotide_core::LspCommandDispatcher::new(project_lsp_command_tx.clone());
-
-    // Initialize the core with the dispatcher
     let mut core = ApplicationCore::new();
     core.initialize()
         .expect("Failed to initialize ApplicationCore");
-    // Wire the dispatcher into the LSP handler
-    core.lsp_handler_mut().set_command_dispatcher(dispatcher);
 
     Ok(Application {
         editor,
@@ -11316,11 +11300,8 @@ mod tests {
                 }));
             let (project_lsp_command_tx, project_lsp_command_rx) =
                 tokio::sync::mpsc::unbounded_channel();
-            let dispatcher =
-                nucleotide_core::LspCommandDispatcher::new(project_lsp_command_tx.clone());
             let mut core = ApplicationCore::new();
             core.initialize().expect("test application core");
-            core.lsp_handler_mut().set_command_dispatcher(dispatcher);
             let mut cli_env = HashMap::new();
             cli_env.insert("HOME".to_string(), "/tmp".to_string());
 

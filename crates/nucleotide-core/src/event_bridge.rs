@@ -5,7 +5,6 @@ use helix_core::{ChangeSet, Operation};
 use helix_view::DocumentId;
 use helix_view::ViewId;
 use helix_view::document::Mode;
-use nucleotide_events::ProjectLspCommand;
 use nucleotide_events::v2::document::ChangeType;
 use nucleotide_logging::{debug, info, instrument, trace, warn};
 use std::sync::OnceLock;
@@ -66,9 +65,6 @@ pub use nucleotide_types::CompletionTrigger;
 /// Global event bridge sender - initialized once when application starts
 static EVENT_BRIDGE_SENDER: OnceLock<mpsc::UnboundedSender<BridgedEvent>> = OnceLock::new();
 
-/// Global LSP command sender - initialized once when application starts
-static LSP_COMMAND_SENDER: OnceLock<mpsc::UnboundedSender<ProjectLspCommand>> = OnceLock::new();
-
 /// Initialize the event bridge system with a sender
 #[instrument(skip(sender))]
 pub fn initialize_bridge(sender: mpsc::UnboundedSender<BridgedEvent>) {
@@ -76,16 +72,6 @@ pub fn initialize_bridge(sender: mpsc::UnboundedSender<BridgedEvent>) {
         warn!("Event bridge was already initialized");
     } else {
         info!("Event bridge initialized successfully");
-    }
-}
-
-/// Initialize the LSP command bridge system with a sender
-#[instrument(skip(sender))]
-pub fn initialize_lsp_command_bridge(sender: mpsc::UnboundedSender<ProjectLspCommand>) {
-    if LSP_COMMAND_SENDER.set(sender).is_err() {
-        warn!("LSP command bridge was already initialized");
-    } else {
-        info!("LSP command bridge initialized successfully");
     }
 }
 
@@ -354,62 +340,10 @@ pub fn register_event_hooks() {
     info!("Successfully registered all Helix event hooks for event bridge");
 }
 
-/// Send an LSP command - used by ProjectLspManager
-pub fn send_lsp_command(command: ProjectLspCommand) {
-    if let Some(sender) = LSP_COMMAND_SENDER.get() {
-        debug!(
-            command.type = ?std::mem::discriminant(&command),
-            "Sending LSP command"
-        );
-        if let Err(e) = sender.send(command) {
-            warn!(
-                error = %e,
-                "Failed to send LSP command"
-            );
-        }
-    } else {
-        warn!(
-            command = ?command,
-            "LSP command bridge not initialized, dropping command"
-        );
-    }
-}
-
 /// Receiver type for bridged events
 pub type BridgedEventReceiver = mpsc::UnboundedReceiver<BridgedEvent>;
-
-/// Receiver type for LSP commands
-pub type LspCommandReceiver = mpsc::UnboundedReceiver<ProjectLspCommand>;
 
 /// Create a channel pair for bridged events
 pub fn create_bridge_channel() -> (mpsc::UnboundedSender<BridgedEvent>, BridgedEventReceiver) {
     mpsc::unbounded_channel()
-}
-
-/// Create a channel pair for LSP commands
-pub fn create_lsp_command_channel() -> (mpsc::UnboundedSender<ProjectLspCommand>, LspCommandReceiver)
-{
-    mpsc::unbounded_channel()
-}
-
-/// LSP Command Dispatcher - a lightweight wrapper around ProjectLspCommand sender
-/// Used to dispatch LSP commands from event handlers without tight coupling to the raw channel
-#[derive(Clone)]
-pub struct LspCommandDispatcher {
-    sender: mpsc::UnboundedSender<ProjectLspCommand>,
-}
-
-impl LspCommandDispatcher {
-    /// Create a new LSP command dispatcher
-    pub fn new(sender: mpsc::UnboundedSender<ProjectLspCommand>) -> Self {
-        Self { sender }
-    }
-
-    /// Send an LSP command
-    pub fn send(
-        &self,
-        command: ProjectLspCommand,
-    ) -> Result<(), mpsc::error::SendError<ProjectLspCommand>> {
-        self.sender.send(command)
-    }
 }
