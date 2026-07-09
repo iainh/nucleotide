@@ -653,7 +653,7 @@ impl PendingCompletionRequest {
     }
 }
 
-use gpui::{App, AppContext};
+use gpui::AppContext;
 use helix_term::{args::Args, compositor::Compositor, config::Config, job::Jobs, keymap::Keymaps};
 use helix_view::document::DocumentSavedEventResult;
 use helix_view::{DocumentId, ViewId};
@@ -2991,17 +2991,6 @@ impl Application {
             }
         }
     }
-    /// Legacy method - no longer used for event-based prompts
-    pub fn check_for_prompt_and_emit_event(
-        &mut self,
-        _cx: &mut gpui::Context<crate::Core>,
-    ) -> bool {
-        // Disabled - prompts are now handled through the legacy Update::Prompt system
-        false
-    }
-
-    // Native picker creation methods that demonstrate the new GPUI-native picker functionality
-
     pub fn create_sample_native_prompt(&self) -> crate::prompt::Prompt {
         crate::prompt::Prompt::native("Search:", "", |_input| {
             // For now, just show the input - we'll handle the actual search via a different mechanism
@@ -3066,231 +3055,6 @@ impl Application {
             let mut doc_manager = nucleotide_lsp::DocumentManagerMut::new(&mut self.editor);
             doc_manager.open_file(path)
         })
-    }
-
-    #[allow(dead_code)]
-    fn create_file_picker_items(&self, cx: &mut App) -> Vec<crate::picker_view::PickerItem> {
-        use crate::picker_view::PickerItem;
-        use ignore::WalkBuilder;
-        use std::sync::Arc;
-
-        let mut items = Vec::new();
-
-        // Find workspace root (similar to Helix)
-        let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        let workspace_root = find_workspace_root_from(&current_dir);
-
-        // Use WalkBuilder from the ignore crate to walk all files
-        let mut walk_builder = WalkBuilder::new(&workspace_root);
-        walk_builder
-            .hidden(false) // Show hidden files (can be made configurable)
-            .follow_links(true)
-            .git_ignore(true) // Respect .gitignore
-            .git_global(true) // Respect global .gitignore
-            .git_exclude(true) // Respect .git/info/exclude
-            .sort_by_file_name(std::cmp::Ord::cmp) // Sort alphabetically
-            .filter_entry(|entry| {
-                // Filter out VCS directories and common build directories
-                if let Some(name) = entry.file_name().to_str() {
-                    !matches!(
-                        name,
-                        ".git" | ".svn" | ".hg" | ".jj" | "target" | "node_modules"
-                    )
-                } else {
-                    true
-                }
-            });
-
-        // Walk the directory tree and collect files only
-        for entry in walk_builder.build().flatten() {
-            // Skip directories - we only want files
-            if entry.file_type().is_some_and(|ft| ft.is_file()) {
-                let path = entry.path().to_path_buf();
-
-                // Get relative path from workspace root
-                let relative_path = path.strip_prefix(&workspace_root).unwrap_or(&path);
-
-                // Format the label to show relative path like Helix
-                let label = relative_path.display().to_string();
-
-                items.push(PickerItem {
-                    label: label.into(),
-                    sublabel: None, // No sublabel needed since full path is in label
-                    data: Arc::new(path.clone()) as Arc<dyn std::any::Any + Send + Sync>,
-                    file_path: Some(path.clone()),
-                    vcs_status: None, // Will be populated below using bulk VCS lookup
-                    columns: None,    // File picker uses simple label display
-                });
-
-                // Limit to reasonable number of files
-                if items.len() >= 10000 {
-                    break;
-                }
-            }
-        }
-
-        // If no files found, add a placeholder
-        if items.is_empty() {
-            items.push(PickerItem {
-                label: "No files found".into(),
-                sublabel: Some("Workspace is empty or unreadable".into()),
-                data: Arc::new(std::path::PathBuf::new()) as Arc<dyn std::any::Any + Send + Sync>,
-                file_path: None, // No file path for placeholder items
-                vcs_status: None,
-                columns: None, // Placeholder items use simple label display
-            });
-        }
-
-        // Populate VCS status for all file items using the global VCS service
-        {
-            // Extract all file paths for bulk lookup
-            let file_paths: Vec<PathBuf> = items
-                .iter()
-                .filter_map(|item| item.file_path.clone())
-                .collect();
-
-            if !file_paths.is_empty() {
-                // Try to get the VCS service handle
-                if cx.has_global::<nucleotide_vcs::VcsServiceHandle>() {
-                    let vcs_results = {
-                        let vcs_service = cx.global::<nucleotide_vcs::VcsServiceHandle>();
-                        vcs_service.get_status_bulk(&file_paths, cx)
-                    };
-
-                    if !vcs_results.is_empty() {
-                        // Create a lookup map for O(1) access
-                        let vcs_map: std::collections::HashMap<
-                            PathBuf,
-                            Option<nucleotide_types::VcsStatus>,
-                        > = vcs_results.into_iter().collect();
-
-                        // Update items with VCS status from bulk lookup
-                        for item in &mut items {
-                            if let Some(ref file_path) = item.file_path {
-                                item.vcs_status = vcs_map.get(file_path).and_then(|status| *status);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        items
-    }
-
-    #[allow(dead_code)]
-    fn create_buffer_picker(&self, cx: &mut App) -> Option<crate::picker::Picker> {
-        use crate::picker_view::PickerItem;
-        use helix_view::DocumentId;
-        use std::sync::Arc;
-
-        // Structure to hold buffer metadata for sorting
-        #[derive(Clone)]
-        struct BufferMeta {
-            doc_id: DocumentId,
-            path: Option<std::path::PathBuf>,
-            is_modified: bool,
-            is_current: bool,
-            focused_at: std::time::Instant,
-        }
-
-        // Get current document ID
-        let current_doc_id = self
-            .editor
-            .tree
-            .try_get(self.editor.tree.focus)
-            .map(|view| view.doc)
-            .unwrap_or_else(|| {
-                // Fallback to the first document if no view exists
-                self.editor
-                    .documents
-                    .keys()
-                    .next()
-                    .copied()
-                    .unwrap_or_default()
-            });
-
-        // Collect buffer metadata
-        let mut buffer_metas = Vec::new();
-        for (doc_id, doc) in self.editor.documents.iter() {
-            let focused_at = doc.focused_at;
-
-            buffer_metas.push(BufferMeta {
-                doc_id: *doc_id,
-                path: doc.path().map(|p| p.to_path_buf()),
-                is_modified: doc.is_modified(),
-                is_current: *doc_id == current_doc_id,
-                focused_at,
-            });
-        }
-
-        // Sort by MRU (Most Recently Used) - most recent first
-        buffer_metas.sort_by_key(|meta| std::cmp::Reverse(meta.focused_at));
-
-        // Create picker items with terminal-like formatting
-        let mut items = Vec::new();
-
-        for meta in buffer_metas {
-            // Format like terminal: "ID  FLAGS  PATH"
-            let id_str = format!("{:?}", meta.doc_id);
-
-            // Build flags column - ensure consistent 2-character width
-            let mut flags = String::new();
-            if meta.is_modified {
-                flags.push('+');
-            }
-            if meta.is_current {
-                flags.push('*');
-            }
-
-            // Ensure flags are always exactly 2 characters for consistent column alignment
-            let flags_str = format!("{flags:2}");
-
-            // Get path or [scratch] label
-            let path_str = if let Some(path) = &meta.path {
-                // Show relative path if possible
-                if let Some(project_dir) = &self.project_directory {
-                    path.strip_prefix(project_dir)
-                        .unwrap_or(path)
-                        .display()
-                        .to_string()
-                } else {
-                    path.display().to_string()
-                }
-            } else {
-                "[scratch]".to_string()
-            };
-
-            // Use structured columns instead of text formatting
-            items.push(PickerItem::with_buffer_columns(
-                id_str,
-                flags_str,
-                path_str,
-                Arc::new(meta.doc_id),
-            ));
-        }
-
-        if items.is_empty() {
-            // No buffers open
-            return None;
-        }
-
-        // Populate VCS status for all buffer items using the global VCS service
-        if let Some(vcs_service) = cx.try_global::<nucleotide_vcs::VcsServiceHandle>() {
-            for item in &mut items {
-                if let Some(ref file_path) = item.file_path {
-                    item.vcs_status = vcs_service.get_status_cached(file_path, cx);
-                }
-            }
-        }
-
-        // Create the picker
-        Some(
-            crate::picker::Picker::native("Switch Buffer", items, |_index| {
-                // Buffer selection is handled by the overlay
-            })
-            .with_preview(true),
-        )
     }
 
     fn create_jumplist_picker(&mut self) -> Option<crate::picker::Picker> {
@@ -3384,21 +3148,6 @@ impl Application {
         };
 
         crate::prompt::Prompt::native(prompt, "", |_| {}).with_cancel(|| {})
-    }
-
-    #[allow(dead_code)]
-    fn emit_overlays_except_prompt(&mut self, cx: &mut gpui::Context<crate::Core>) {
-        // Don't check for prompts here - this method specifically excludes prompts
-
-        // Don't take() the autoinfo - just clone it so it persists
-        if let Some(info) = &self.editor.autoinfo {
-            cx.emit(crate::Update::Info(helix_view::info::Info {
-                title: info.title.clone(),
-                text: info.text.clone(),
-                width: info.width,
-                height: info.height,
-            }));
-        }
     }
 
     fn emit_overlays(&mut self, cx: &mut gpui::Context<crate::Core>) {
