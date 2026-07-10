@@ -648,9 +648,17 @@ impl Registry {
     }
 
     pub fn remove_by_id(&mut self, id: LanguageServerId) {
+        let _ = self.take_by_id(id);
+    }
+
+    /// Remove a client from the registry and return ownership to the caller.
+    ///
+    /// Frontends use this when they need to send shutdown/exit and retain the
+    /// client briefly while its transport flushes.
+    pub fn take_by_id(&mut self, id: LanguageServerId) -> Option<Arc<Client>> {
         let Some(client) = self.inner.remove(id) else {
             log::debug!("client was already removed");
-            return;
+            return None;
         };
         self.file_event_handler.remove_client(id);
         let instances = self
@@ -661,6 +669,7 @@ impl Registry {
         if instances.is_empty() {
             self.inner_by_name.remove(client.name());
         }
+        Some(client)
     }
 
     fn start_client(
@@ -824,6 +833,66 @@ impl Registry {
         )
     }
 
+    /// Get or start exactly one named server for a language and workspace.
+    ///
+    /// Unlike [`Self::get_with_workspace_context`], this does not start every
+    /// server listed for the language before the caller filters by name.
+    pub fn get_named_with_workspace_context(
+        &mut self,
+        language_config: &LanguageConfiguration,
+        server_name: &str,
+        doc_path: Option<&std::path::Path>,
+        root_dirs: &[PathBuf],
+        enable_snippets: bool,
+        workspace_context: Option<&LspWorkspaceContext>,
+    ) -> Option<Result<Arc<Client>>> {
+        let features = language_config
+            .language_servers
+            .iter()
+            .find(|features| features.name == server_name)?;
+
+        if let Some(clients) = self.inner_by_name.get(server_name) {
+            if clients.is_empty() {
+                return None;
+            }
+
+            if let Some((_, client)) = clients.iter().enumerate().find(|(index, client)| {
+                let manual_roots = language_config
+                    .workspace_lsp_roots
+                    .as_deref()
+                    .unwrap_or(root_dirs);
+                client.try_add_doc(
+                    &language_config.roots,
+                    manual_roots,
+                    doc_path,
+                    *index == 0,
+                    workspace_context,
+                )
+            }) {
+                return Some(Ok(client.clone()));
+            }
+        }
+
+        match self.start_client(
+            features.name.clone(),
+            language_config,
+            doc_path,
+            root_dirs,
+            enable_snippets,
+            workspace_context,
+        ) {
+            Ok(client) => {
+                self.inner_by_name
+                    .entry(features.name.clone())
+                    .or_default()
+                    .push(client.clone());
+                Some(Ok(client))
+            }
+            Err(StartupError::NoRequiredRootFound) => None,
+            Err(StartupError::Error(error)) => Some(Err(error)),
+        }
+    }
+
     pub fn iter_clients(&self) -> impl Iterator<Item = &Arc<Client>> {
         self.inner.values()
     }
@@ -856,6 +925,10 @@ pub struct LspProgressMap(HashMap<LanguageServerId, HashMap<lsp::ProgressToken, 
 impl LspProgressMap {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn clear(&mut self) {
+        self.0.clear();
     }
 
     /// Returns a map of all tokens corresponding to the language server with `id`.
@@ -933,16 +1006,29 @@ impl LspProgressMap {
         token: lsp::ProgressToken,
         status: lsp::WorkDoneProgressReport,
     ) {
-        self.0
-            .entry(id)
-            .or_default()
-            .entry(token)
-            .and_modify(|e| match e {
-                ProgressStatus::Created => (),
-                ProgressStatus::Started { progress, .. } => {
-                    *progress = lsp::WorkDoneProgress::Report(status)
+        use std::collections::hash_map::Entry;
+
+        let progress = lsp::WorkDoneProgress::Report(status);
+        match self.0.entry(id).or_default().entry(token) {
+            Entry::Occupied(mut entry) => match entry.get_mut() {
+                current @ ProgressStatus::Created => {
+                    *current = ProgressStatus::Started {
+                        title: String::new(),
+                        progress,
+                    };
                 }
-            });
+                ProgressStatus::Started {
+                    progress: current,
+                    ..
+                } => *current = progress,
+            },
+            Entry::Vacant(entry) => {
+                entry.insert(ProgressStatus::Started {
+                    title: String::new(),
+                    progress,
+                });
+            }
+        }
     }
 }
 
@@ -972,15 +1058,19 @@ fn start_client(
     workspace_context: Option<&LspWorkspaceContext>,
 ) -> Result<NewClient, StartupError> {
     let (workspace, workspace_is_cwd) = workspace_for_context(workspace_context);
-    let root = find_lsp_workspace(
-        doc_path
-            .and_then(|x| x.parent().and_then(|x| x.to_str()))
-            .unwrap_or("."),
-        &config.roots,
-        config.workspace_lsp_roots.as_deref().unwrap_or(root_dirs),
-        &workspace,
-        workspace_is_cwd,
-    );
+    let root = if doc_path.is_none() && workspace_context.is_some() {
+        Some(workspace.clone())
+    } else {
+        find_lsp_workspace(
+            doc_path
+                .and_then(|x| x.parent().and_then(|x| x.to_str()))
+                .unwrap_or("."),
+            &config.roots,
+            config.workspace_lsp_roots.as_deref().unwrap_or(root_dirs),
+            &workspace,
+            workspace_is_cwd,
+        )
+    };
 
     // `root_uri` and `workspace_folder` can be empty in case there is no workspace
     // `root_url` can not, use `workspace` as a fallback
@@ -1156,28 +1246,98 @@ pub fn find_lsp_workspace(
 mod tests {
     use super::{
         find_lsp_workspace, lsp, root_uri_for_startup, util::*, workspace_for_context,
-        LspWorkspaceContext, OffsetEncoding,
+        LanguageServerId, LspProgressMap, LspWorkspaceContext, OffsetEncoding, ProgressStatus,
+        Registry,
     };
+    use arc_swap::ArcSwap;
     use helix_core::Rope;
-    use std::path::{Path, PathBuf};
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+        sync::Arc,
+        time::{Duration, SystemTime, UNIX_EPOCH},
+    };
+
+    #[test]
+    fn progress_report_promotes_created_token_to_visible_progress() {
+        let server_id = LanguageServerId::default();
+        let token = lsp::NumberOrString::String("rustAnalyzer/cachePriming".to_string());
+        let mut progress = LspProgressMap::new();
+        progress.create(server_id, token.clone());
+
+        progress.update(
+            server_id,
+            token.clone(),
+            lsp::WorkDoneProgressReport {
+                cancellable: Some(true),
+                message: Some("723/724 (nucl)".to_string()),
+                percentage: Some(99),
+            },
+        );
+
+        let ProgressStatus::Started {
+            title,
+            progress: lsp::WorkDoneProgress::Report(report),
+        } = progress.progress(server_id, &token).unwrap()
+        else {
+            panic!("report should become visible progress");
+        };
+        assert!(title.is_empty());
+        assert_eq!(report.message.as_deref(), Some("723/724 (nucl)"));
+        assert_eq!(report.percentage, Some(99));
+    }
+
+    #[test]
+    fn progress_report_without_create_is_still_tracked() {
+        let server_id = LanguageServerId::default();
+        let token = lsp::NumberOrString::String("rustAnalyzer/cachePriming".to_string());
+        let mut progress = LspProgressMap::new();
+
+        progress.update(
+            server_id,
+            token.clone(),
+            lsp::WorkDoneProgressReport {
+                cancellable: Some(true),
+                message: Some("723/724 (nucl)".to_string()),
+                percentage: Some(99),
+            },
+        );
+
+        assert!(matches!(
+            progress.progress(server_id, &token),
+            Some(ProgressStatus::Started {
+                progress: lsp::WorkDoneProgress::Report(_),
+                ..
+            })
+        ));
+    }
 
     #[test]
     fn workspace_context_finds_native_remote_root_without_host_cwd() {
-        let workspace = PathBuf::from("/home/me/project");
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let workspace = std::env::temp_dir().join(format!("helix-remote-root-{unique}"));
+        let document = workspace.join("src/main.rs");
+        fs::create_dir_all(document.parent().unwrap()).unwrap();
+        fs::write(&document, "fn main() {}\n").unwrap();
         let context = LspWorkspaceContext::remote(workspace.clone(), PathBuf::from("/tmp"));
         let (resolved_workspace, workspace_is_cwd) = workspace_for_context(Some(&context));
+        let root_markers = helix_core::syntax::config::RootMarkers::default();
 
         let root = find_lsp_workspace(
-            "/home/me/project/src/main.rs",
-            &[],
-            &[workspace.clone()],
+            document.to_str().unwrap(),
+            &root_markers,
+            std::slice::from_ref(&workspace),
             &resolved_workspace,
             workspace_is_cwd,
         );
 
         assert_eq!(resolved_workspace, workspace);
         assert!(!workspace_is_cwd);
-        assert_eq!(root, Some(PathBuf::from("/home/me/project")));
+        assert_eq!(root, Some(workspace.clone()));
+        fs::remove_dir_all(workspace).unwrap();
     }
 
     #[test]
@@ -1310,5 +1470,202 @@ mod tests {
         let transaction = generate_transaction_from_edits(&source, edits, OffsetEncoding::Utf16);
         assert!(transaction.apply(&mut source));
         assert_eq!(source, "XbcdYf");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn named_server_initializes_local_and_remote_contexts_without_documents_and_shuts_down() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        struct TestEnvironment {
+            root: PathBuf,
+            original_path: Option<std::ffi::OsString>,
+            original_log: Option<std::ffi::OsString>,
+        }
+
+        impl Drop for TestEnvironment {
+            fn drop(&mut self) {
+                match self.original_path.take() {
+                    Some(path) => std::env::set_var("PATH", path),
+                    None => std::env::remove_var("PATH"),
+                }
+                match self.original_log.take() {
+                    Some(path) => std::env::set_var("MOCK_LSP_LOG", path),
+                    None => std::env::remove_var("MOCK_LSP_LOG"),
+                }
+                let _ = fs::remove_dir_all(&self.root);
+            }
+        }
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "helix-project-lsp-{}-{unique}",
+            std::process::id()
+        ));
+        let bin_dir = root.join("bin");
+        let project_root = root.join("project");
+        let log_path = root.join("lsp.jsonl");
+        fs::create_dir_all(&bin_dir).unwrap();
+        fs::create_dir_all(&project_root).unwrap();
+        fs::write(project_root.join("Cargo.toml"), "[package]\nname='mock'\n").unwrap();
+
+        let server_path = bin_dir.join("rust-analyzer");
+        fs::write(
+            &server_path,
+            r#"#!/usr/bin/env python3
+import json, os, sys
+log = open(os.environ["MOCK_LSP_LOG"], "a", buffering=1)
+while True:
+    headers = {}
+    while True:
+        line = sys.stdin.buffer.readline()
+        if not line:
+            sys.exit(0)
+        if line in (b"\r\n", b"\n"):
+            break
+        key, value = line.decode().split(":", 1)
+        headers[key.lower()] = value.strip()
+    body = sys.stdin.buffer.read(int(headers["content-length"]))
+    message = json.loads(body)
+    log.write(json.dumps({"method": message.get("method"), "params": message.get("params")}) + "\n")
+    if message.get("method") == "initialize":
+        response = {"jsonrpc": "2.0", "id": message["id"], "result": {"capabilities": {}}}
+        payload = json.dumps(response).encode()
+        sys.stdout.buffer.write(("Content-Length: %d\r\n\r\n" % len(payload)).encode() + payload)
+        sys.stdout.buffer.flush()
+    elif message.get("method") == "shutdown":
+        response = {"jsonrpc": "2.0", "id": message["id"], "result": None}
+        payload = json.dumps(response).encode()
+        sys.stdout.buffer.write(("Content-Length: %d\r\n\r\n" % len(payload)).encode() + payload)
+        sys.stdout.buffer.flush()
+    elif message.get("method") == "exit":
+        sys.exit(0)
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&server_path, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let original_path = std::env::var_os("PATH");
+        let original_log = std::env::var_os("MOCK_LSP_LOG");
+        let path = format!(
+            "{}:{}",
+            bin_dir.display(),
+            original_path
+                .as_deref()
+                .unwrap_or_default()
+                .to_string_lossy()
+        );
+        std::env::set_var("PATH", path);
+        std::env::set_var("MOCK_LSP_LOG", &log_path);
+        let _environment = TestEnvironment {
+            root,
+            original_path,
+            original_log,
+        };
+
+        let configuration = helix_loader::config::default_lang_config()
+            .try_into()
+            .unwrap();
+        let loader = Arc::new(ArcSwap::from_pointee(
+            helix_core::syntax::Loader::new(configuration).unwrap(),
+        ));
+        let mut registry = Registry::new(loader.clone());
+        let loader_guard = loader.load();
+        let language = loader_guard
+            .language_configs()
+            .find(|language| language.language_id == "rust")
+            .unwrap();
+        let context = LspWorkspaceContext::new(
+            project_root.clone(),
+            true,
+            project_root.clone(),
+        );
+        let client = registry
+            .get_named_with_workspace_context(
+                language,
+                "rust-analyzer",
+                None,
+                std::slice::from_ref(&project_root),
+                true,
+                Some(&context),
+            )
+            .unwrap()
+            .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !client.is_initialized() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let log = fs::read_to_string(&log_path).unwrap();
+        assert!(log.contains("\"method\": \"initialize\""));
+        assert!(log.contains(project_root.to_string_lossy().as_ref()));
+        assert!(!log.contains("textDocument/didOpen"));
+
+        client.force_shutdown();
+        let removed = registry.take_by_id(client.id()).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), removed.wait_shutdown_flushed())
+            .await
+            .unwrap();
+        drop(removed);
+        drop(client);
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let log = fs::read_to_string(&log_path).unwrap();
+        assert!(log.contains("\"method\": \"shutdown\""));
+        assert!(log.contains("\"method\": \"exit\""));
+
+        let remote_root = PathBuf::from("/home/me/remote-project");
+        let mut remote_registry = Registry::new(loader.clone());
+        let remote_context = LspWorkspaceContext::remote(remote_root.clone(), project_root.clone());
+        let remote_client = remote_registry
+            .get_named_with_workspace_context(
+                language,
+                "rust-analyzer",
+                None,
+                std::slice::from_ref(&remote_root),
+                true,
+                Some(&remote_context),
+            )
+            .unwrap()
+            .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !remote_client.is_initialized() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let log = fs::read_to_string(&log_path).unwrap();
+        assert!(log.contains("file:///home/me/remote-project"));
+        assert!(!log.contains("textDocument/didOpen"));
+        let lines = log.lines().collect::<Vec<_>>();
+        let initialize_positions = lines
+            .iter()
+            .enumerate()
+            .filter_map(|(index, line)| line.contains("\"method\": \"initialize\"").then_some(index))
+            .collect::<Vec<_>>();
+        let first_shutdown = lines
+            .iter()
+            .position(|line| line.contains("\"method\": \"shutdown\""))
+            .unwrap();
+        assert_eq!(initialize_positions.len(), 2);
+        assert!(first_shutdown < initialize_positions[1]);
+
+        remote_client.force_shutdown();
+        let removed = remote_registry.take_by_id(remote_client.id()).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), removed.wait_shutdown_flushed())
+            .await
+            .unwrap();
+        drop(removed);
+        drop(remote_client);
     }
 }

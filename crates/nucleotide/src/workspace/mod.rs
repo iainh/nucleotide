@@ -146,25 +146,6 @@ where
         .unwrap_or(RemoteDocumentReloadDecision::Hidden { doc_id })
 }
 
-fn remote_project_lsp_root_for_opened_document(
-    workspace_identity: &WorkspaceIdentity,
-    project_directory: Option<&Path>,
-    document_path: Option<&Path>,
-) -> Option<PathBuf> {
-    if matches!(workspace_identity, WorkspaceIdentity::Local) {
-        return None;
-    }
-
-    project_directory
-        .filter(|path| classify_workspace_location(path).is_remote())
-        .map(Path::to_path_buf)
-        .or_else(|| {
-            document_path
-                .filter(|path| classify_workspace_location(path).is_remote())
-                .and_then(|path| path.parent().map(Path::to_path_buf))
-        })
-}
-
 fn project_status_types_from_lsp_project_type(
     project_type: &nucleotide_events::ProjectType,
 ) -> Vec<nucleotide_project::ProjectType> {
@@ -949,7 +930,6 @@ pub struct Workspace {
     tab_bar_document_cache_misses: u64,
     input_coordinator: Arc<InputCoordinator>, // Central input coordination system
     current_project_root: Option<std::path::PathBuf>, // Track current project root for change detection
-    initial_project_startup_pending: bool, // Defer project/LSP startup until after first render
     environment_badge: Option<EnvironmentBadge>,
     _pending_lsp_startup: Option<std::path::PathBuf>, // Track pending server startup requests
     prefix_extractor: PrefixExtractor,                // Language-aware completion prefix extraction
@@ -5052,7 +5032,6 @@ impl Workspace {
             tab_bar_document_cache_misses: 0,
             input_coordinator,
             current_project_root: root_path_for_manager.clone(),
-            initial_project_startup_pending: root_path_for_manager.is_some(),
             environment_badge: None,
             _pending_lsp_startup: None,
             prefix_extractor: PrefixExtractor::new(),
@@ -5129,6 +5108,10 @@ impl Workspace {
         workspace.setup_lsp_state_subscription(cx);
 
         workspace.refresh_environment_badge(workspace.current_project_root.clone(), cx);
+
+        if let Some(project_root) = workspace.current_project_root.clone() {
+            workspace.trigger_project_detection_and_lsp_startup(project_root, cx);
+        }
 
         workspace
     }
@@ -6390,16 +6373,6 @@ impl Workspace {
         self.titlebar = Some(titlebar);
     }
 
-    fn start_deferred_project_services(&mut self, cx: &mut Context<Self>) {
-        let Some(root) = self.current_project_root.clone() else {
-            warn!("No project root found - project level LSP will not be initialized");
-            return;
-        };
-
-        info!(project_root = %root.display(), "Triggering deferred project detection and LSP startup");
-        self.trigger_project_detection_and_lsp_startup(root, cx);
-    }
-
     fn update_titlebar_filename(
         &mut self,
         filename: Option<&str>,
@@ -6526,7 +6499,6 @@ impl Workspace {
 
         // Check if this is a project root change
         let is_project_change = self.current_project_root.as_ref() != Some(&dir);
-        let old_project_root = self.current_project_root.clone();
 
         debug!(
             current_root = ?self.current_project_root,
@@ -6570,44 +6542,18 @@ impl Workspace {
             self.current_project_root = Some(dir.clone());
             self.refresh_environment_badge(Some(dir.clone()), cx);
 
-            // Clear existing LSP state to avoid stale indicators from previous project
+            // Clear visible state immediately. Application owns process teardown
+            // and will repopulate state only for the new project generation.
             if let Some(lsp_state_entity) = self.core.read(cx).lsp_state.clone() {
                 lsp_state_entity.update(cx, |state, cx| {
                     state.clear_all_state();
                     cx.notify();
                 });
                 info!("Cleared LSP state for project root change");
-
-                // Immediately sync any existing servers to populate the new project context
-                // This ensures LSP indicators appear quickly for the new project
-                let editor = &self.core.read(cx).editor;
-                let active_servers: Vec<(helix_lsp::LanguageServerId, String)> = editor
-                    .language_servers
-                    .iter_clients()
-                    .map(|client| (client.id(), client.name().to_string()))
-                    .collect();
-
-                if !active_servers.is_empty() {
-                    lsp_state_entity.update(cx, |state, cx| {
-                        for (id, name) in active_servers {
-                            info!(
-                                server_id = ?id,
-                                server_name = %name,
-                                "Registering existing LSP server for new project"
-                            );
-                            state.register_server(id, name, Some(dir.display().to_string()));
-                            state.update_server_status(id, nucleotide_lsp::ServerStatus::Running);
-                        }
-                        cx.notify();
-                    });
-                    info!("Registered existing LSP servers for new project");
-                }
             }
 
-            // Restart existing LSP servers with the new workspace root.
-            self.restart_lsp_servers_for_workspace_change(old_project_root, &dir, cx);
-
-            // Trigger project detection and LSP coordination
+            // One authoritative project-session command stops the old session,
+            // plans the new one and starts its configured servers.
             self.trigger_project_detection_and_lsp_startup(dir, cx);
 
             // Note: File tree header update will be handled via project status service update
@@ -6620,6 +6566,7 @@ impl Workspace {
 
     /// Restart LSP servers with new workspace root when project directory changes
     #[instrument(skip(self, cx))]
+    #[allow(dead_code)]
     fn restart_lsp_servers_for_workspace_change(
         &mut self,
         old_project_root: Option<std::path::PathBuf>,
@@ -6758,7 +6705,7 @@ impl Workspace {
                 workspace_root = %project_root.display()
             );
             let (response_tx, response_rx) = tokio::sync::oneshot::channel();
-            let command = nucleotide_events::ProjectLspCommand::DetectAndStartProject {
+            let command = nucleotide_events::ProjectLspCommand::OpenProjectSession {
                 workspace_root: project_root.clone(),
                 response: response_tx,
                 span,
@@ -6768,7 +6715,7 @@ impl Workspace {
                 error!(
                     error = %error,
                     project_root = %project_root.display(),
-                    "Failed to send DetectAndStartProject command"
+                    "Failed to send OpenProjectSession command"
                 );
             } else {
                 let project_root_display = project_root.display().to_string();
@@ -6777,13 +6724,15 @@ impl Workspace {
                     let timeout = tokio::time::Duration::from_secs(30);
                     match tokio::time::timeout(timeout, response_rx).await {
                         Ok(Ok(Ok(result))) => {
-                            let detected_types =
-                                project_status_types_from_lsp_project_type(&result.project_type);
+                            let detected_types = project_status_types_from_lsp_project_type(
+                                &result.plan.project_type,
+                            );
                             project_status.set_detected_project_types(detected_types);
 
                             info!(
                                 project_root = %project_root_display,
-                                project_type = ?result.project_type,
+                                generation = result.generation,
+                                project_type = ?result.plan.project_type,
                                 language_servers = ?result.language_servers,
                                 servers_started = result.servers_started.len(),
                                 "Project detection and LSP startup completed"
@@ -6805,7 +6754,7 @@ impl Workspace {
                         Ok(Err(_)) => {
                             warn!(
                                 project_root = %project_root_display,
-                                "DetectAndStartProject response channel was dropped"
+                                "OpenProjectSession response channel was dropped"
                             );
                         }
                         Err(_) => {
@@ -6854,16 +6803,19 @@ impl Workspace {
     /// Subscribe to LSP state changes to update project indicators
     #[instrument(skip(self, cx))]
     fn setup_lsp_state_subscription(&mut self, cx: &mut Context<Self>) {
-        // For now, refresh the status from explicit workspace/LSP update paths
-        // since LspState doesn't implement EventEmitter yet.
-        if let Some(_lsp_state_entity) = self.core.read(cx).lsp_state.clone() {
-            info!("LSP state available for project status updates");
-
-            // Initial update
-            self.update_project_status_from_lsp_state(cx);
-        } else {
+        let Some(lsp_state_entity) = self.core.read(cx).lsp_state.clone() else {
             debug!("No LSP state available for subscription");
-        }
+            return;
+        };
+
+        info!("Subscribing workspace to LSP state updates");
+        cx.observe(&lsp_state_entity, |workspace, _lsp_state, cx| {
+            workspace.update_project_status_from_lsp_state(cx);
+            cx.notify();
+        })
+        .detach();
+
+        self.update_project_status_from_lsp_state(cx);
     }
 
     /// Update project status indicators based on current LSP state
@@ -7767,30 +7719,6 @@ impl Workspace {
         info!("Document opened: {:?}", doc_id);
         self.ensure_document_in_order(doc_id);
         self.invalidate_tab_bar_documents();
-
-        let remote_project_lsp_root = {
-            let core = self.core.read(cx);
-            let workspace_identity = core.workspace_backend.identity();
-            let document_path = core
-                .editor
-                .document(doc_id)
-                .and_then(|doc| doc.path())
-                .map(|path| path.to_path_buf());
-
-            remote_project_lsp_root_for_opened_document(
-                &workspace_identity,
-                core.project_directory.as_deref(),
-                document_path.as_deref(),
-            )
-        };
-        if let Some(project_root) = remote_project_lsp_root {
-            info!(
-                doc_id = ?doc_id,
-                project_root = %project_root.display(),
-                "Requesting remote project LSP tracking for opened document"
-            );
-            self.trigger_project_detection_and_lsp_startup(project_root, cx);
-        }
 
         // Sync file tree selection with the newly opened document
         let doc_path = {
@@ -13331,16 +13259,6 @@ impl Focusable for Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.initial_project_startup_pending {
-            self.initial_project_startup_pending = false;
-            let workspace = cx.entity().clone();
-            cx.defer(move |cx| {
-                workspace.update(cx, |workspace, cx| {
-                    workspace.start_deferred_project_services(cx);
-                });
-            });
-        }
-
         // Close terminal panel when the shell process has exited
         if self.terminal_panel_visible
             && let Some(id) = self.terminal_id
@@ -16309,60 +16227,6 @@ mod tests {
         assert_eq!(
             remote_document_reload_decision(docs, views, path),
             RemoteDocumentReloadDecision::NoMatch
-        );
-    }
-
-    #[test]
-    fn remote_project_lsp_root_for_opened_document_uses_project_directory() {
-        let remote_identity =
-            WorkspaceIdentity::Remote(nucleotide_workspace::RemoteWorkspaceIdentity {
-                kind: nucleotide_workspace::RemoteWorkspaceKind::Ssh,
-                name: "example.test".to_string(),
-            });
-        let project_root = Path::new("ssh://me@example.test/home/me/project");
-        let document_path = Path::new("ssh://me@example.test/home/me/project/src/main.rs");
-
-        assert_eq!(
-            remote_project_lsp_root_for_opened_document(
-                &remote_identity,
-                Some(project_root),
-                Some(document_path)
-            ),
-            Some(project_root.to_path_buf())
-        );
-    }
-
-    #[test]
-    fn remote_project_lsp_root_for_opened_document_ignores_local_workspace() {
-        let project_root = Path::new("/tmp/project");
-        let document_path = Path::new("/tmp/project/src/main.rs");
-
-        assert_eq!(
-            remote_project_lsp_root_for_opened_document(
-                &WorkspaceIdentity::Local,
-                Some(project_root),
-                Some(document_path)
-            ),
-            None
-        );
-    }
-
-    #[test]
-    fn remote_project_lsp_root_for_opened_document_falls_back_to_document_parent() {
-        let remote_identity =
-            WorkspaceIdentity::Remote(nucleotide_workspace::RemoteWorkspaceIdentity {
-                kind: nucleotide_workspace::RemoteWorkspaceKind::Wsl,
-                name: "Ubuntu".to_string(),
-            });
-        let document_path = Path::new("//wsl.localhost/Ubuntu/home/me/project/src/main.rs");
-
-        assert_eq!(
-            remote_project_lsp_root_for_opened_document(
-                &remote_identity,
-                None,
-                Some(document_path)
-            ),
-            Some(PathBuf::from("//wsl.localhost/Ubuntu/home/me/project/src"))
         );
     }
 

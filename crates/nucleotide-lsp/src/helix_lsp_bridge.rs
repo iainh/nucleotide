@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 
-use helix_lsp::{LanguageServerId, LspWorkspaceContext};
+use helix_lsp::{Client, LanguageServerId, LspWorkspaceContext};
 use helix_view::Editor;
 use nucleotide_events::{ProjectLspEvent, ServerStartupResult};
 use nucleotide_logging::{debug, error, info, instrument, warn};
@@ -55,18 +55,29 @@ pub trait LspLaunchProxyProvider: Send + Sync {
 
 #[derive(Debug, Default)]
 struct LaunchProxyCleanupRegistry {
-    paths: std::sync::Mutex<Vec<PathBuf>>,
+    paths: std::sync::Mutex<HashMap<LanguageServerId, Vec<PathBuf>>>,
 }
 
 impl LaunchProxyCleanupRegistry {
-    fn retain(&self, mut paths: Vec<PathBuf>) {
+    fn retain(&self, server_id: LanguageServerId, paths: Vec<PathBuf>) {
         if paths.is_empty() {
             return;
         }
 
         match self.paths.lock() {
-            Ok(mut retained_paths) => retained_paths.append(&mut paths),
+            Ok(mut retained_paths) => retained_paths.entry(server_id).or_default().extend(paths),
             Err(_) => cleanup_launch_proxy_paths(paths),
+        }
+    }
+
+    fn release(&self, server_id: LanguageServerId) {
+        let paths = self
+            .paths
+            .lock()
+            .ok()
+            .and_then(|mut retained_paths| retained_paths.remove(&server_id));
+        if let Some(paths) = paths {
+            cleanup_launch_proxy_paths(paths);
         }
     }
 }
@@ -76,7 +87,9 @@ impl Drop for LaunchProxyCleanupRegistry {
         let Ok(mut paths) = self.paths.lock() else {
             return;
         };
-        cleanup_launch_proxy_paths(std::mem::take(&mut *paths));
+        let retained = std::mem::take(&mut *paths);
+        drop(paths);
+        cleanup_launch_proxy_paths(retained.into_values().flatten().collect());
     }
 }
 
@@ -275,17 +288,7 @@ impl HelixLspBridge {
             );
         }
 
-        // Send success event
-        let _ = self
-            .project_event_tx
-            .send(ProjectLspEvent::ServerStartupCompleted {
-                workspace_root: workspace_root.to_path_buf(),
-                server_name: server_name.to_string(),
-                server_id,
-                status: ServerStartupResult::Success,
-            });
-
-        info!(server_id = ?server_id, "Server started successfully");
+        info!(server_id = ?server_id, "Server process started; awaiting initialization");
         Ok(server_id)
     }
 
@@ -298,8 +301,13 @@ impl HelixLspBridge {
     ) -> Result<(), ProjectLspError> {
         info!("Stopping server through Helix registry");
 
-        // Remove server from registry
+        if let Some(client) = editor.language_servers.get_by_id(server_id).cloned() {
+            detach_server_from_documents(editor, &client);
+            client.force_shutdown();
+        }
+
         editor.language_servers.remove_by_id(server_id);
+        self.launch_proxy_cleanup_registry.release(server_id);
 
         // Remove any mapping entries referencing this server_id
         {
@@ -309,6 +317,42 @@ impl HelixLspBridge {
 
         info!("Server stopped successfully");
         Ok(())
+    }
+
+    /// Stop every language server owned by one workspace.
+    ///
+    /// Removed clients are returned so the application can retain them briefly
+    /// while shutdown and exit flush. Dropping them provides the force-kill
+    /// fallback through Helix's child-process ownership.
+    pub fn stop_workspace_servers(
+        &self,
+        editor: &mut Editor,
+        workspace_root: &Path,
+    ) -> Vec<Arc<Client>> {
+        let server_ids = {
+            let map = self.workspace_server_map.lock().unwrap();
+            map.iter()
+                .filter_map(|((root, _), server_id)| (root == workspace_root).then_some(*server_id))
+                .collect::<Vec<_>>()
+        };
+
+        let mut stopped = Vec::with_capacity(server_ids.len());
+        for server_id in server_ids {
+            if let Some(client) = editor.language_servers.get_by_id(server_id).cloned() {
+                detach_server_from_documents(editor, &client);
+                client.force_shutdown();
+            }
+            if let Some(client) = editor.language_servers.take_by_id(server_id) {
+                stopped.push(client);
+            }
+            self.launch_proxy_cleanup_registry.release(server_id);
+        }
+
+        self.workspace_server_map
+            .lock()
+            .unwrap()
+            .retain(|(root, _), _| root != workspace_root);
+        stopped
     }
 
     /// Find existing server for workspace and server name
@@ -490,9 +534,11 @@ impl HelixLspBridge {
             vec![lsp_workspace_root.clone()]
         };
 
-        let lsp_workspace_context = remote_path_mapping
-            .as_ref()
-            .map(|_| LspWorkspaceContext::remote(lsp_workspace_root.clone(), host_process_cwd()));
+        let lsp_workspace_context = Some(if remote_path_mapping.is_some() {
+            LspWorkspaceContext::remote(lsp_workspace_root.clone(), host_process_cwd())
+        } else {
+            LspWorkspaceContext::new(lsp_workspace_root.clone(), true, lsp_workspace_root.clone())
+        });
 
         if let Some(context) = &lsp_workspace_context {
             info!(
@@ -571,40 +617,31 @@ impl HelixLspBridge {
             "Starting language server lookup through Helix registry"
         );
 
-        // Representative document for server lookup. Remote launch proxies must
-        // not fall back to host filesystem scans under WSL/SSH roots.
-        let doc_path = representative_document_for_server(
-            editor,
-            workspace_root,
-            language_id,
-            &root_dirs,
-            !launch_proxy_enabled,
-        )
-        .map(|path| lsp_document_path_for_launch(path, remote_path_mapping.as_ref()));
+        // Project startup has an explicit workspace context and does not depend
+        // on a representative or already-open document.
+        let doc_path: Option<PathBuf> = None;
 
         info!(
             doc_path = ?doc_path,
             workspace_root = %workspace_root.display(),
             lsp_workspace_root = %lsp_workspace_root.display(),
             language_id = %language_id,
-            "Representative file found for LSP initialization"
+            "Using explicit workspace context for LSP initialization"
         );
 
         // Keep all detected workspace roots to support multi-crate workspaces.
         // This allows rust-analyzer to serve files across all member crates.
 
-        let mut servers: Vec<_> = editor
-            .language_servers
-            .get_with_workspace_context(
-                language_config,
-                doc_path.as_deref(),
-                &root_dirs,
-                true, // enable_snippets
-                lsp_workspace_context.as_ref(),
-            )
-            .collect();
+        let server = editor.language_servers.get_named_with_workspace_context(
+            language_config,
+            server_name,
+            doc_path.as_deref(),
+            &root_dirs,
+            true, // enable_snippets
+            lsp_workspace_context.as_ref(),
+        );
 
-        let server_count = servers.len();
+        let server_count = usize::from(server.is_some());
         info!(
             server_count = server_count,
             "Language server lookup completed"
@@ -636,56 +673,52 @@ impl HelixLspBridge {
             let _ = std::fs::remove_dir(dir);
         }
 
-        // Find the server with matching name
-        for (name, result) in &mut servers {
-            if name == server_name {
-                match result {
-                    Ok(client) => {
-                        if !launch_proxy_cleanup_paths.is_empty() {
-                            debug!(
-                                server_id = ?client.id(),
-                                server_name = %name,
-                                retained_paths = launch_proxy_cleanup_paths.len(),
-                                "Retaining LSP launch proxy shims for active server"
-                            );
-                            self.launch_proxy_cleanup_registry
-                                .retain(std::mem::take(&mut launch_proxy_cleanup_paths));
-                        }
-                        info!(
-                            server_id = ?client.id(),
-                            server_name = %name,
-                            "Server started successfully via registry"
-                        );
-                        return Ok(client.id());
-                    }
-                    Err(e) => {
-                        cleanup_launch_proxy_paths(std::mem::take(&mut launch_proxy_cleanup_paths));
-                        let error_msg = format!("Failed to start server: {}", e);
-                        error!(error = %error_msg);
-
-                        // Send failure event
-                        let _ =
-                            self.project_event_tx
-                                .send(ProjectLspEvent::ServerStartupCompleted {
-                                    workspace_root: workspace_root.to_path_buf(),
-                                    server_name: server_name.to_string(),
-                                    server_id: slotmap::KeyData::from_ffi(0).into(), // Invalid ID for failure
-                                    status: ServerStartupResult::Failed {
-                                        error: error_msg.clone(),
-                                    },
-                                });
-
-                        return Err(ProjectLspError::ServerStartup(error_msg));
-                    }
+        match server {
+            Some(Ok(client)) => {
+                if !launch_proxy_cleanup_paths.is_empty() {
+                    debug!(
+                        server_id = ?client.id(),
+                        server_name = %server_name,
+                        retained_paths = launch_proxy_cleanup_paths.len(),
+                        "Retaining LSP launch proxy shims for active server"
+                    );
+                    self.launch_proxy_cleanup_registry
+                        .retain(client.id(), std::mem::take(&mut launch_proxy_cleanup_paths));
                 }
+                info!(
+                    server_id = ?client.id(),
+                    server_name = %server_name,
+                    "Server started successfully via registry"
+                );
+                Ok(client.id())
+            }
+            Some(Err(e)) => {
+                cleanup_launch_proxy_paths(std::mem::take(&mut launch_proxy_cleanup_paths));
+                let error_msg = format!("Failed to start server: {}", e);
+                error!(error = %error_msg);
+
+                // Send failure event
+                let _ = self
+                    .project_event_tx
+                    .send(ProjectLspEvent::ServerStartupCompleted {
+                        workspace_root: workspace_root.to_path_buf(),
+                        server_name: server_name.to_string(),
+                        server_id: slotmap::KeyData::from_ffi(0).into(), // Invalid ID for failure
+                        status: ServerStartupResult::Failed {
+                            error: error_msg.clone(),
+                        },
+                    });
+
+                Err(ProjectLspError::ServerStartup(error_msg))
+            }
+            None => {
+                cleanup_launch_proxy_paths(launch_proxy_cleanup_paths);
+                Err(ProjectLspError::Configuration(format!(
+                    "No server configuration found for: {}",
+                    server_name
+                )))
             }
         }
-
-        cleanup_launch_proxy_paths(launch_proxy_cleanup_paths);
-        Err(ProjectLspError::Configuration(format!(
-            "No server configuration found for: {}",
-            server_name
-        )))
     }
 
     /// Ensure document is tracked by language server
@@ -744,6 +777,21 @@ impl HelixLspBridge {
     }
 }
 
+fn detach_server_from_documents(editor: &mut Editor, client: &Arc<Client>) {
+    for document in editor.documents.values_mut() {
+        let identifier = document.url().map(|_| document.identifier());
+        let attached = document
+            .remove_language_server_by_name(client.name())
+            .filter(|attached| attached.id() == client.id());
+        if attached.is_some()
+            && let Some(identifier) = identifier
+        {
+            client.text_document_did_close(identifier);
+        }
+        document.clear_diagnostics_for_language_server(client.id());
+    }
+}
+
 fn prepend_path_entry(path_entry: &Path) -> String {
     let mut paths = vec![path_entry.to_path_buf()];
     if let Some(existing) = std::env::var_os("PATH") {
@@ -784,6 +832,7 @@ fn remote_lsp_native_root(workspace_root: &std::path::Path) -> Option<PathBuf> {
         .then(|| PathBuf::from(posix_path_string(location.native_root())))
 }
 
+#[cfg(test)]
 fn lsp_document_path_for_launch(
     path: PathBuf,
     remote_path_mapping: Option<&WorkspacePathMapping>,
@@ -1003,175 +1052,10 @@ impl MockHelixLspBridge {
     }
 }
 
-/// Find a representative file within the workspace that rust-analyzer can use
-/// to determine the proper workspace root and configuration
-fn find_representative_file(
-    workspace_root: &std::path::Path,
-    language_id: &str,
-) -> Option<PathBuf> {
-    // For Rust projects, try to find common files that rust-analyzer can use
-    if language_id == "rust" {
-        // Try src/main.rs
-        let main_rs = workspace_root.join("src").join("main.rs");
-        if main_rs.exists() && main_rs.is_file() {
-            return Some(main_rs);
-        }
-
-        // Try src/lib.rs
-        let lib_rs = workspace_root.join("src").join("lib.rs");
-        if lib_rs.exists() && lib_rs.is_file() {
-            return Some(lib_rs);
-        }
-
-        // Try to find any .rs file in src/ or shallow subdirectories (limited depth)
-        if let Some(found) = find_rs_file_shallow(workspace_root, 2) {
-            return Some(found);
-        }
-    }
-
-    // For other languages, add similar logic here
-    // For now, fall back to the old behavior for non-Rust languages
-    None
-}
-
-fn representative_document_for_server(
-    editor: &Editor,
-    workspace_root: &std::path::Path,
-    language_id: &str,
-    root_dirs: &[PathBuf],
-    allow_disk_scan: bool,
-) -> Option<PathBuf> {
-    find_active_document_for_language(editor, workspace_root, language_id).or_else(|| {
-        representative_document_from_disk(workspace_root, language_id, root_dirs, allow_disk_scan)
-    })
-}
-
-fn representative_document_from_disk(
-    workspace_root: &std::path::Path,
-    language_id: &str,
-    root_dirs: &[PathBuf],
-    allow_disk_scan: bool,
-) -> Option<PathBuf> {
-    if !allow_disk_scan {
-        return None;
-    }
-
-    if language_id == "rust" {
-        for root in root_dirs {
-            if let Some(rs) = find_rs_file_shallow(root, 3) {
-                return Some(rs);
-            }
-        }
-    }
-
-    find_representative_file(workspace_root, language_id)
-}
-
 /// For Rust, prefer a single workspace root and let rust-analyzer expand the workspace members.
 fn rust_root_dirs(workspace_root: &std::path::Path) -> Vec<PathBuf> {
     vec![workspace_root.to_path_buf()]
 }
-
-// removed: cargo_toml_has_workspace (no longer used)
-
-/// Find any .rs file within the directory up to a limited depth to use as a representative file.
-fn find_rs_file_shallow(root: &std::path::Path, max_depth: usize) -> Option<PathBuf> {
-    // Prefer conventional entry points if present
-    let lib_rs = root.join("src").join("lib.rs");
-    if lib_rs.is_file() {
-        return Some(lib_rs);
-    }
-    let main_rs = root.join("src").join("main.rs");
-    if main_rs.is_file() {
-        return Some(main_rs);
-    }
-
-    fn walk(dir: &std::path::Path, depth: usize, max_depth: usize) -> Option<PathBuf> {
-        if depth > max_depth {
-            return None;
-        }
-        let entries = std::fs::read_dir(dir).ok()?;
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("rs") {
-                return Some(path);
-            } else if path.is_dir() {
-                // Skip common large/irrelevant directories
-                if let Some(name) = path.file_name().and_then(|s| s.to_str())
-                    && matches!(name, "target" | ".git" | "node_modules" | ".cache")
-                {
-                    continue;
-                }
-                if let Some(found) = walk(&path, depth + 1, max_depth) {
-                    return Some(found);
-                }
-            }
-        }
-        None
-    }
-    walk(root, 0, max_depth)
-}
-/// Try to pick an open document for the requested language within the workspace root.
-fn find_active_document_for_language(
-    editor: &Editor,
-    workspace_root: &std::path::Path,
-    language_id: &str,
-) -> Option<PathBuf> {
-    // Prefer the focused view if available, otherwise scan visible views
-    // Fallback: first document whose path is inside the workspace root
-    // Note: We intentionally avoid borrowing the editor mutably here
-
-    let expected_extension = language_file_extension(language_id)?;
-
-    // Helper to validate a document path
-    let is_candidate = |path: &std::path::Path| -> bool {
-        path.starts_with(workspace_root)
-            && path
-                .extension()
-                .and_then(|value| value.to_str())
-                .is_some_and(|value| value == expected_extension)
-    };
-
-    // 1) Try focused view first
-    let focused = editor.tree.focus;
-    if editor.tree.contains(focused) {
-        let view = editor.tree.get(focused);
-        if let Some(doc) = editor.documents.get(&view.doc)
-            && let Some(path) = doc.path()
-            && is_candidate(path)
-        {
-            return Some(path.to_path_buf());
-        }
-    }
-
-    // 2) Fall back to any open view within the workspace
-    for (view_ref, _) in editor.tree.views() {
-        let view = editor.tree.get(view_ref.id);
-        if let Some(doc) = editor.documents.get(&view.doc)
-            && let Some(path) = doc.path()
-            && is_candidate(path)
-        {
-            return Some(path.to_path_buf());
-        }
-    }
-
-    None
-}
-
-fn language_file_extension(language_id: &str) -> Option<&'static str> {
-    match language_id {
-        "rust" => Some("rs"),
-        "typescript" => Some("ts"),
-        "javascript" => Some("js"),
-        "python" => Some("py"),
-        "go" => Some("go"),
-        "c-sharp" | "csharp" => Some("cs"),
-        "java" => Some("java"),
-        _ => None,
-    }
-}
-
-// removed unused helper find_cargo_root_for to eliminate dead code warnings
 
 #[cfg(test)]
 mod tests {
@@ -1274,7 +1158,7 @@ mod tests {
     }
 
     #[test]
-    fn launch_proxy_cleanup_registry_retains_paths_until_drop() {
+    fn launch_proxy_cleanup_registry_releases_server_paths() {
         let temp = TestDir::new("launch-proxy-cleanup");
         let shim_dir = temp.path().join("shims");
         let shim_path = shim_dir.join("rust-analyzer");
@@ -1283,10 +1167,15 @@ mod tests {
 
         {
             let registry = LaunchProxyCleanupRegistry::default();
-            registry.retain(vec![shim_path.clone(), shim_dir.clone()]);
+            let server_id = slotmap::KeyData::from_ffi(42).into();
+            registry.retain(server_id, vec![shim_path.clone(), shim_dir.clone()]);
 
             assert!(shim_path.exists());
             assert!(shim_dir.exists());
+
+            registry.release(server_id);
+            assert!(!shim_path.exists());
+            assert!(!shim_dir.exists());
         }
 
         assert!(!shim_path.exists());
@@ -1348,40 +1237,5 @@ mod tests {
             Path::new("/tmp/other-root"),
             None
         ));
-    }
-
-    #[test]
-    fn representative_document_skips_disk_for_proxied_launches() {
-        let temp = TestDir::new("proxied-representative");
-        let src = temp.path().join("src");
-        std::fs::create_dir_all(&src).unwrap();
-        std::fs::write(src.join("main.rs"), "fn main() {}\n").unwrap();
-
-        let found = representative_document_from_disk(
-            temp.path(),
-            "rust",
-            &[temp.path().to_path_buf()],
-            false,
-        );
-
-        assert!(found.is_none());
-    }
-
-    #[test]
-    fn representative_document_scans_disk_for_local_launches() {
-        let temp = TestDir::new("local-representative");
-        let src = temp.path().join("src");
-        let main = src.join("main.rs");
-        std::fs::create_dir_all(&src).unwrap();
-        std::fs::write(&main, "fn main() {}\n").unwrap();
-
-        let found = representative_document_from_disk(
-            temp.path(),
-            "rust",
-            &[temp.path().to_path_buf()],
-            true,
-        );
-
-        assert_eq!(found, Some(main));
     }
 }

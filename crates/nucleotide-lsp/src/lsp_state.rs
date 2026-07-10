@@ -5,6 +5,7 @@ use helix_core::Uri;
 use helix_core::diagnostic::Diagnostic;
 use helix_lsp::LanguageServerId;
 use std::collections::{BTreeMap, HashMap};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 /// Spinner frames matching helix-term
@@ -29,6 +30,48 @@ pub enum ServerStatus {
     Running,
     Failed(String),
     Stopped,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProjectServerLifecycle {
+    Planned,
+    PreparingEnvironment,
+    Starting,
+    Initializing,
+    Running,
+    RetryScheduled {
+        attempt: usize,
+        next_retry_at: Instant,
+    },
+    Failed {
+        error: String,
+    },
+    Stopping,
+    Stopped,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProjectEnvironmentSource {
+    Project,
+    ProcessFallback,
+    Unavailable,
+}
+
+#[derive(Clone, Debug)]
+pub struct PlannedServerStatus {
+    pub language_id: String,
+    pub server_name: String,
+    pub lifecycle: ProjectServerLifecycle,
+    pub last_error: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ProjectLspSessionStatus {
+    pub generation: u64,
+    pub workspace_root: PathBuf,
+    pub opened_at: Instant,
+    pub environment_source: Option<ProjectEnvironmentSource>,
+    pub servers: Vec<PlannedServerStatus>,
 }
 
 /// Information about a language server
@@ -63,6 +106,9 @@ pub struct LspState {
     /// Last status message
     pub status_message: Option<String>,
 
+    /// Observable project-scoped startup and retry status.
+    pub project_session: Option<ProjectLspSessionStatus>,
+
     /// Spinner state
     pub spinner_frame: usize,
     pub last_spinner_update: Instant,
@@ -75,6 +121,7 @@ impl LspState {
             progress: HashMap::new(),
             diagnostics: BTreeMap::new(),
             status_message: None,
+            project_session: None,
             spinner_frame: 0,
             last_spinner_update: Instant::now(),
         };
@@ -93,10 +140,79 @@ impl LspState {
         self.progress.clear();
         self.diagnostics.clear();
         self.status_message = None;
+        self.project_session = None;
         self.spinner_frame = 0;
         self.last_spinner_update = Instant::now();
 
         nucleotide_logging::debug!("LSP state cleared - ready for new project LSP servers");
+    }
+
+    pub fn begin_project_session(&mut self, generation: u64, workspace_root: PathBuf) {
+        self.project_session = Some(ProjectLspSessionStatus {
+            generation,
+            workspace_root,
+            opened_at: Instant::now(),
+            environment_source: None,
+            servers: Vec::new(),
+        });
+    }
+
+    pub fn set_project_server_plan(&mut self, servers: &[(String, String)]) {
+        let Some(session) = &mut self.project_session else {
+            return;
+        };
+        session.servers = servers
+            .iter()
+            .map(|(language_id, server_name)| PlannedServerStatus {
+                language_id: language_id.clone(),
+                server_name: server_name.clone(),
+                lifecycle: ProjectServerLifecycle::Planned,
+                last_error: None,
+            })
+            .collect();
+    }
+
+    pub fn extend_project_server_plan(&mut self, servers: &[(String, String)]) {
+        let Some(session) = &mut self.project_session else {
+            return;
+        };
+        for (language_id, server_name) in servers {
+            if session.servers.iter().any(|server| {
+                server.language_id == *language_id && server.server_name == *server_name
+            }) {
+                continue;
+            }
+            session.servers.push(PlannedServerStatus {
+                language_id: language_id.clone(),
+                server_name: server_name.clone(),
+                lifecycle: ProjectServerLifecycle::Planned,
+                last_error: None,
+            });
+        }
+    }
+
+    pub fn set_project_environment_source(&mut self, source: ProjectEnvironmentSource) {
+        if let Some(session) = &mut self.project_session {
+            session.environment_source = Some(source);
+        }
+    }
+
+    pub fn update_project_server_lifecycle(
+        &mut self,
+        language_id: &str,
+        server_name: &str,
+        lifecycle: ProjectServerLifecycle,
+        error: Option<String>,
+    ) {
+        let Some(server) = self.project_session.as_mut().and_then(|session| {
+            session.servers.iter_mut().find(|server| {
+                server.language_id == language_id && server.server_name == server_name
+            })
+        }) else {
+            return;
+        };
+        server.lifecycle = lifecycle;
+        server.last_error = error;
     }
 
     /// Get the current spinner frame, advancing if needed
@@ -287,8 +403,20 @@ impl LspState {
                 ServerStatus::Starting | ServerStatus::Initializing
             )
         });
+        let has_busy_project_server = self.project_session.as_ref().is_some_and(|session| {
+            session.servers.iter().any(|server| {
+                matches!(
+                    server.lifecycle,
+                    ProjectServerLifecycle::Planned
+                        | ProjectServerLifecycle::PreparingEnvironment
+                        | ProjectServerLifecycle::Starting
+                        | ProjectServerLifecycle::Initializing
+                        | ProjectServerLifecycle::RetryScheduled { .. }
+                )
+            })
+        });
 
-        has_active_progress || has_busy_servers
+        has_active_progress || has_busy_servers || has_busy_project_server
     }
 
     /// Check if any LSP servers are present (regardless of activity)
@@ -454,21 +582,32 @@ impl LspState {
 
     /// Get the most important progress message (prioritize those with messages)
     fn get_most_important_progress(&self) -> Option<&LspProgress> {
-        // First priority: progress with both title and message
+        // Active work must always outrank synthetic/legacy idle entries from
+        // another server in the same project.
         if let Some(progress) = self
             .progress
             .values()
-            .find(|p| p.message.is_some() && !p.title.is_empty())
+            .find(|p| p.token != "idle" && p.message.is_some() && !p.title.is_empty())
         {
             return Some(progress);
         }
 
-        // Second priority: progress with just a message
-        if let Some(progress) = self.progress.values().find(|p| p.message.is_some()) {
+        if let Some(progress) = self
+            .progress
+            .values()
+            .find(|p| p.token != "idle" && p.message.is_some())
+        {
             return Some(progress);
         }
 
-        // Third priority: any progress with a title
+        if let Some(progress) = self
+            .progress
+            .values()
+            .find(|p| p.token != "idle" && !p.title.is_empty())
+        {
+            return Some(progress);
+        }
+
         self.progress.values().find(|p| !p.title.is_empty())
     }
 
@@ -505,5 +644,62 @@ mod tests {
         let state = LspState::new();
 
         assert_eq!(state.get_short_server_name("ééééé"), "ééééé");
+    }
+
+    #[test]
+    fn project_session_exposes_plan_environment_and_lifecycle() {
+        let mut state = LspState::new();
+        state.begin_project_session(7, PathBuf::from("/workspace"));
+        state.set_project_server_plan(&[("toml".to_string(), "taplo".to_string())]);
+        state.set_project_environment_source(ProjectEnvironmentSource::Project);
+        state.update_project_server_lifecycle(
+            "toml",
+            "taplo",
+            ProjectServerLifecycle::Initializing,
+            None,
+        );
+
+        let session = state.project_session.as_ref().unwrap();
+        assert_eq!(session.generation, 7);
+        assert_eq!(
+            session.environment_source,
+            Some(ProjectEnvironmentSource::Project)
+        );
+        assert_eq!(session.servers.len(), 1);
+        assert_eq!(session.servers[0].server_name, "taplo");
+        assert_eq!(
+            session.servers[0].lifecycle,
+            ProjectServerLifecycle::Initializing
+        );
+        assert!(state.should_show_spinner());
+    }
+
+    #[test]
+    fn active_progress_outranks_idle_progress_from_another_server() {
+        let idle_server = slotmap::KeyData::from_ffi(1).into();
+        let active_server = slotmap::KeyData::from_ffi(2).into();
+        let mut state = LspState::new();
+        state.register_server(idle_server, "taplo".to_string(), None);
+        state.register_server(active_server, "rust-analyzer".to_string(), None);
+        state.add_progress(LspProgress {
+            server_id: idle_server,
+            token: "idle".to_string(),
+            title: "Connected".to_string(),
+            message: Some("Ready".to_string()),
+            percentage: None,
+        });
+        state.add_progress(LspProgress {
+            server_id: active_server,
+            token: "workspace-index".to_string(),
+            title: "Indexing".to_string(),
+            message: Some("123/456 crates".to_string()),
+            percentage: Some(27),
+        });
+
+        let indicator = state.get_lsp_indicator().unwrap();
+        assert!(indicator.contains("rust-analyzer"));
+        assert!(indicator.contains("Indexing"));
+        assert!(indicator.contains("123/456 crates"));
+        assert!(!indicator.contains("taplo"));
     }
 }
