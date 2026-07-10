@@ -12738,7 +12738,7 @@ impl Workspace {
         total_area: HelixRect,
         editor_width: f32,
         editor_height: f32,
-        dim_inactive_panes: bool,
+        show_focus_indicator: bool,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
         let view_entity = self
@@ -12746,8 +12746,6 @@ impl Workspace {
             .get_document_view(&layout.view_id)?
             .clone();
         let theme = cx.theme();
-        let inactive_overlay =
-            nucleotide_ui::tokens::with_alpha(theme.tokens.chrome.surface_overlay, 0.10);
         let (left, top, width, height) =
             helix_rect_to_scaled_pixel_bounds(layout.area, total_area, editor_width, editor_height);
 
@@ -12764,16 +12762,10 @@ impl Workspace {
                         .border_color(theme.tokens.chrome.border_default)
                 })
                 .child(view_entity)
-                .when(dim_inactive_panes && !layout.is_focused, |d| {
-                    d.child(
-                        div()
-                            .absolute()
-                            .top_0()
-                            .left_0()
-                            .right_0()
-                            .bottom_0()
-                            .bg(inactive_overlay),
-                    )
+                .when(show_focus_indicator && layout.is_focused, |d| {
+                    d.child(div().absolute().top_0().left_0().bottom_0().w(px(2.0)).bg(
+                        nucleotide_ui::tokens::with_alpha(theme.tokens.editor.focus_ring, 0.8),
+                    ))
                 })
                 .into_any_element(),
         )
@@ -12862,7 +12854,12 @@ impl Workspace {
             }
         };
 
-        handle.into_any_element()
+        let hover_color =
+            nucleotide_ui::tokens::with_alpha(cx.theme().tokens.editor.focus_ring, 0.10);
+
+        handle
+            .hover(move |handle| handle.bg(hover_color))
+            .into_any_element()
     }
 
     fn render_split_pane_divider_line(
@@ -12879,7 +12876,7 @@ impl Workspace {
         let editor_height = editor_height.max(1.0);
         let line_px = nucleotide_ui::SPLITTER_LINE_PX;
         let color =
-            nucleotide_ui::tokens::with_alpha(cx.theme().tokens.chrome.separator_color, 0.7);
+            nucleotide_ui::tokens::with_alpha(cx.theme().tokens.chrome.separator_color, 0.42);
 
         match divider.axis {
             SplitPaneResizeAxis::Vertical => {
@@ -13649,7 +13646,7 @@ impl Render for Workspace {
                             total_area,
                             editor_content_w_px,
                             editor_content_h_px,
-                            editor_pane_layout.dim_inactive_panes(),
+                            editor_pane_layout.show_focus_indicator(),
                             cx,
                         ) {
                             docs_root = docs_root.child(doc_element);

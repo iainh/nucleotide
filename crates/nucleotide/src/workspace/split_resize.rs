@@ -26,7 +26,7 @@ pub(super) struct EditorPaneLayout {
     panes: Vec<EditorPane>,
     resize_handles: Vec<SplitPaneDivider>,
     divider_lines: Vec<SplitPaneDivider>,
-    dim_inactive_panes: bool,
+    show_focus_indicator: bool,
 }
 
 impl EditorPaneLayout {
@@ -42,7 +42,7 @@ impl EditorPaneLayout {
             .cloned()
             .map(|divider| split_pane_divider_visual_line(divider, &resize_handles))
             .collect();
-        let dim_inactive_panes =
+        let show_focus_indicator =
             layouts.len() > 1 && layouts.iter().any(|layout| layout.is_focused);
         let panes = layouts
             .into_iter()
@@ -59,7 +59,7 @@ impl EditorPaneLayout {
             panes,
             resize_handles,
             divider_lines,
-            dim_inactive_panes,
+            show_focus_indicator,
         }
     }
 
@@ -83,8 +83,8 @@ impl EditorPaneLayout {
         &self.divider_lines
     }
 
-    pub(super) fn dim_inactive_panes(&self) -> bool {
-        self.dim_inactive_panes
+    pub(super) fn show_focus_indicator(&self) -> bool {
+        self.show_focus_indicator
     }
 }
 
@@ -638,7 +638,7 @@ mod tests {
         assert!(layout.panes().is_empty());
         assert!(layout.resize_handles().is_empty());
         assert!(layout.divider_lines().is_empty());
-        assert!(!layout.dim_inactive_panes());
+        assert!(!layout.show_focus_indicator());
     }
 
     #[test]
@@ -663,7 +663,7 @@ mod tests {
         );
         assert!(layout.resize_handles().is_empty());
         assert!(layout.divider_lines().is_empty());
-        assert!(!layout.dim_inactive_panes());
+        assert!(!layout.show_focus_indicator());
     }
 
     #[test]
@@ -690,7 +690,7 @@ mod tests {
         ]);
 
         assert_eq!(layout.total_area(), Some(HelixRect::new(0, 0, 81, 21)));
-        assert!(layout.dim_inactive_panes());
+        assert!(layout.show_focus_indicator());
         assert_eq!(layout.resize_handles().len(), 2);
         assert_eq!(layout.divider_lines().len(), 2);
         assert_eq!(layout.panes().len(), 3);

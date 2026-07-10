@@ -621,7 +621,6 @@ impl RenderOnce for Tab {
         let on_toggle_pin = self.on_toggle_pin.clone();
         let on_toggle_readonly = self.on_toggle_readonly.clone();
         let root = self.div;
-        let position = self.position;
         let tooltip = self.tooltip.clone();
         let git_status = self.git_status;
         let diagnostic_severity = self.diagnostic_severity;
@@ -653,6 +652,7 @@ impl RenderOnce for Tab {
             cx,
         );
         root.group(tab_hover_group)
+            .relative()
             .flex()
             .flex_none() // Don't grow or shrink
             .items_center()
@@ -665,24 +665,12 @@ impl RenderOnce for Tab {
             })
             .when(!disabled, |tab| tab.cursor(CursorStyle::PointingHand))
             .border_color(border_color)
-            .map(|tab| match position {
-                TabPosition::First => {
-                    if is_active {
-                        tab.pl(px(1.0)).border_r_1().pb(px(1.0))
-                    } else {
-                        tab.pl(px(1.0)).pr(px(1.0)).border_b_1()
-                    }
-                }
-                TabPosition::Last => {
-                    if is_active {
-                        tab.border_l_1().border_r_1().pb(px(1.0))
-                    } else {
-                        tab.pl(px(1.0)).border_b_1().border_r_1()
-                    }
-                }
-                TabPosition::Middle(Ordering::Equal) => tab.border_l_1().border_r_1().pb(px(1.0)),
-                TabPosition::Middle(Ordering::Less) => tab.border_l_1().pr(px(1.0)).border_b_1(),
-                TabPosition::Middle(Ordering::Greater) => tab.border_r_1().pl(px(1.0)).border_b_1(),
+            .when(is_active, |tab| tab.border_l_1().border_r_1())
+            .when(!is_active, |tab| tab.border_b_1())
+            .when(is_active, |tab| {
+                tab.child(div().absolute().top_0().left_0().right_0().h(px(2.0)).bg(
+                    nucleotide_ui::tokens::with_alpha(tokens.editor.focus_ring, 0.9),
+                ))
             })
             .when(!disabled, |tab| {
                 tab.on_mouse_down(MouseButton::Left, {
