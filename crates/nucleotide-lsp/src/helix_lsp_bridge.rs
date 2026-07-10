@@ -217,10 +217,54 @@ impl HelixLspBridge {
             return Ok(existing_server);
         }
 
-        // Start the server through Helix's registry
-        let server_id = self
-            .start_server_via_registry(editor, language_id, workspace_root, server_name)
-            .await?;
+        let environment = self.prepare_server_environment(workspace_root).await;
+        self.start_server_prepared(
+            editor,
+            workspace_root,
+            server_name,
+            language_id,
+            environment,
+        )
+    }
+
+    /// Resolve the project environment away from the UI thread before server startup.
+    pub async fn prepare_server_environment(
+        &self,
+        workspace_root: &Path,
+    ) -> Result<Option<HashMap<String, String>>, String> {
+        let Some(environment_provider) = &self.environment_provider else {
+            return Ok(None);
+        };
+
+        environment_provider
+            .get_lsp_environment(workspace_root)
+            .await
+            .map(Some)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Complete server startup using environment data prepared asynchronously.
+    pub fn start_server_prepared(
+        &self,
+        editor: &mut Editor,
+        workspace_root: &Path,
+        server_name: &str,
+        language_id: &str,
+        environment: Result<Option<HashMap<String, String>>, String>,
+    ) -> Result<LanguageServerId, ProjectLspError> {
+        if let Some(existing_server) =
+            self.find_existing_server(editor, server_name, workspace_root)
+        {
+            return Ok(existing_server);
+        }
+
+        let server_id = self.start_server_via_registry(
+            editor,
+            language_id,
+            workspace_root,
+            server_name,
+            environment,
+        )?;
 
         // Record mapping for future scoped reuse
         {
@@ -247,7 +291,7 @@ impl HelixLspBridge {
 
     /// Stop a language server through Helix's registry
     #[instrument(skip(self, editor), fields(server_id = ?server_id))]
-    pub async fn stop_server(
+    pub fn stop_server(
         &self,
         editor: &mut Editor,
         server_id: LanguageServerId,
@@ -318,12 +362,13 @@ impl HelixLspBridge {
 
     /// Start server via Helix's registry system
     #[allow(clippy::ptr_arg)]
-    async fn start_server_via_registry(
+    fn start_server_via_registry(
         &self,
         editor: &mut Editor,
         language_id: &str,
         workspace_root: &std::path::Path,
         server_name: &str,
+        environment: Result<Option<HashMap<String, String>>, String>,
     ) -> Result<LanguageServerId, ProjectLspError> {
         // Get the language configuration for this language
         let syntax_loader = editor.syn_loader.load();
@@ -380,66 +425,53 @@ impl HelixLspBridge {
                 workspace_root = %workspace_root.display(),
                 "Skipping host environment injection for proxied LSP launch"
             );
-        } else if let Some(ref env_provider) = self.environment_provider {
+        } else if let Ok(Some(project_env)) = environment {
             debug!("Injecting environment variables for LSP server startup");
+            info!(
+                env_count = project_env.len(),
+                workspace_root = %workspace_root.display(),
+                home = %project_env.get("HOME").map(String::as_str).unwrap_or("<unset>"),
+                cargo_home = %project_env.get("CARGO_HOME").map(String::as_str).unwrap_or("<unset>"),
+                xdg_cache_home = %project_env.get("XDG_CACHE_HOME").map(String::as_str).unwrap_or("<unset>"),
+                xdg_config_home = %project_env.get("XDG_CONFIG_HOME").map(String::as_str).unwrap_or("<unset>"),
+                xdg_data_home = %project_env.get("XDG_DATA_HOME").map(String::as_str).unwrap_or("<unset>"),
+                xdg_state_home = %project_env.get("XDG_STATE_HOME").map(String::as_str).unwrap_or("<unset>"),
+                "Successfully retrieved project environment for LSP server"
+            );
 
-            match env_provider.get_lsp_environment(workspace_root).await {
-                Ok(project_env) => {
-                    info!(
-                        env_count = project_env.len(),
-                        workspace_root = %workspace_root.display(),
-                        home = %project_env.get("HOME").map(String::as_str).unwrap_or("<unset>"),
-                        cargo_home = %project_env.get("CARGO_HOME").map(String::as_str).unwrap_or("<unset>"),
-                        xdg_cache_home = %project_env.get("XDG_CACHE_HOME").map(String::as_str).unwrap_or("<unset>"),
-                        xdg_config_home = %project_env.get("XDG_CONFIG_HOME").map(String::as_str).unwrap_or("<unset>"),
-                        xdg_data_home = %project_env.get("XDG_DATA_HOME").map(String::as_str).unwrap_or("<unset>"),
-                        xdg_state_home = %project_env.get("XDG_STATE_HOME").map(String::as_str).unwrap_or("<unset>"),
-                        "Successfully retrieved project environment for LSP server"
-                    );
+            for (key, value) in &project_env {
+                let original = std::env::var(key).ok();
+                original_env_vars.push((key.clone(), original));
 
-                    // TEMPORARY SOLUTION: Set environment variables in the current process
-                    // This works because Helix will inherit the environment when starting servers
-                    // TODO: This is not ideal as it affects the entire process, but it's a working solution
-                    for (key, value) in &project_env {
-                        // Store original value for restoration
-                        let original = std::env::var(key).ok();
-                        original_env_vars.push((key.clone(), original));
-
-                        // Set the new environment variable
-                        // SAFETY: This is safe because we're setting environment variables
-                        // in a single-threaded context during server startup
-                        unsafe {
-                            std::env::set_var(key, value);
-                        }
-
-                        // Log key variables for debugging
-                        if key == "PATH"
-                            || key == "HOME"
-                            || key == "CARGO_HOME"
-                            || key == "XDG_CACHE_HOME"
-                            || key == "XDG_CONFIG_HOME"
-                            || key == "XDG_DATA_HOME"
-                            || key == "XDG_STATE_HOME"
-                            || key == "RUSTC"
-                            || key == "CARGO"
-                        {
-                            debug!(key = %key, value = %value, "Set environment variable for LSP server");
-                        }
-                    }
-
-                    info!(
-                        "Temporarily set {} environment variables for LSP server startup",
-                        project_env.len()
-                    );
+                // SAFETY: Server startup runs serially on the UI thread and restores every key.
+                unsafe {
+                    std::env::set_var(key, value);
                 }
-                Err(e) => {
-                    warn!(
-                        error = %e,
-                        workspace_root = %workspace_root.display(),
-                        "Failed to get project environment, using default"
-                    );
+
+                if key == "PATH"
+                    || key == "HOME"
+                    || key == "CARGO_HOME"
+                    || key == "XDG_CACHE_HOME"
+                    || key == "XDG_CONFIG_HOME"
+                    || key == "XDG_DATA_HOME"
+                    || key == "XDG_STATE_HOME"
+                    || key == "RUSTC"
+                    || key == "CARGO"
+                {
+                    debug!(key = %key, value = %value, "Set environment variable for LSP server");
                 }
             }
+
+            info!(
+                "Temporarily set {} environment variables for LSP server startup",
+                project_env.len()
+            );
+        } else if let Err(error) = environment {
+            warn!(
+                %error,
+                workspace_root = %workspace_root.display(),
+                "Failed to get project environment, using default"
+            );
         } else {
             debug!("No environment provider configured, using default environment");
         }
@@ -1146,6 +1178,32 @@ mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    struct TestEnvironmentProvider;
+
+    impl EnvironmentProvider for TestEnvironmentProvider {
+        fn get_lsp_environment(
+            &self,
+            _directory: &Path,
+        ) -> Pin<
+            Box<
+                dyn Future<
+                        Output = Result<
+                            HashMap<String, String>,
+                            Box<dyn std::error::Error + Send + Sync>,
+                        >,
+                    > + Send
+                    + '_,
+            >,
+        > {
+            Box::pin(async {
+                Ok(HashMap::from([(
+                    "PATH".to_string(),
+                    "/test/bin".to_string(),
+                )]))
+            })
+        }
+    }
+
     struct TestDir {
         path: PathBuf,
     }
@@ -1173,6 +1231,24 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.path);
         }
+    }
+
+    #[tokio::test]
+    async fn server_environment_can_be_prepared_without_an_editor() {
+        let (event_tx, _) = broadcast::channel(4);
+        let bridge =
+            HelixLspBridge::new_with_environment(event_tx, Arc::new(TestEnvironmentProvider));
+
+        let environment = bridge
+            .prepare_server_environment(Path::new("/workspace"))
+            .await
+            .expect("prepared environment")
+            .expect("environment provider");
+
+        assert_eq!(
+            environment.get("PATH").map(String::as_str),
+            Some("/test/bin")
+        );
     }
 
     #[test]
