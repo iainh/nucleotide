@@ -7,7 +7,7 @@ use crate::actions::picker::{
     ConfirmSelection, DismissPicker, SelectFirst, SelectLast, SelectNext, SelectPrev, TogglePreview,
 };
 use crate::common::{FocusableModal, ModalStyle};
-use crate::{InputSize, InputVariant, TextInput, TextInputEvent};
+use crate::{InputSize, InputVariant, StateView, TextInput, TextInputEvent};
 use gpui::prelude::FluentBuilder;
 use gpui::{
     App, AppContext as _, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, Hsla,
@@ -1319,13 +1319,10 @@ impl PickerView {
                             })
                             .when(self.filtered_indices.is_empty(), |this| {
                                 this.child(
-                                    div()
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .h_24()
-                                        .text_color(self.style.modal_style.prompt_text)
-                                        .child("No matches found"),
+                                    StateView::new("picker-no-matches", "No matches found")
+                                        .detail("Try a broader search.")
+                                        .icon("icons/search.svg")
+                                        .compact(true),
                                 )
                             })
                             .when(!self.filtered_indices.is_empty(), |this| {

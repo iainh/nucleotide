@@ -3,7 +3,7 @@
 
 use crate::{
     ComponentFactory, Composable, Interactive, Slotted, StyleSize, StyleState, StyleVariant,
-    Styled as UIStyled, compute_component_style, is_feature_enabled, should_enable_animations,
+    Styled as UIStyled, animations_enabled, compute_component_style, should_enable_animations,
 };
 use gpui::prelude::FluentBuilder;
 use gpui::px;
@@ -437,8 +437,8 @@ impl RenderOnce for ListItem {
         );
 
         // Check if animations should be enabled
-        let enable_animations = is_feature_enabled(cx, |features| features.enable_animations)
-            && should_enable_animations(theme, current_state);
+        let enable_animations =
+            animations_enabled(cx) && should_enable_animations(theme, current_state);
 
         let mut base = div()
             .id(self.id)

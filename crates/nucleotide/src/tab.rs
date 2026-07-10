@@ -556,10 +556,7 @@ impl RenderOnce for Tab {
         let theme = cx.theme();
         let tokens = theme.tokens; // DesignTokens is Copy
 
-        let enable_animations = cx
-            .global::<nucleotide_ui::UIConfig>()
-            .features
-            .enable_animations;
+        let enable_animations = nucleotide_ui::animations_enabled(cx);
 
         // Compute component styles using nucleotide-ui styling system
         let component_state = self.component_state();

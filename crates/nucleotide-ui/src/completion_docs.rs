@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 
 use crate::completion_v2::CompletionItem;
 use crate::markdown::{MarkdownStyle, markdown_extended};
+use crate::{StateView, StateViewTone};
 
 /// Documentation content with metadata
 #[derive(Debug, Clone)]
@@ -511,55 +512,54 @@ impl IntoElement for DocumentationPanel {
 }
 
 impl DocumentationPanel {
-    fn render_content(&mut self, tokens: &crate::DesignTokens) -> impl IntoElement {
+    fn render_content(&mut self, tokens: &crate::DesignTokens) -> gpui::AnyElement {
         match &self.content {
             Some(content) => match &content.state {
                 DocumentationState::Loading => {
-                    div().flex().items_center().justify_center().h_20().child(
-                        div()
-                            .text_sm()
-                            .text_color(tokens.chrome.text_chrome_secondary)
-                            .child("Loading documentation..."),
-                    )
+                    StateView::new("completion-documentation-loading", "Loading documentation")
+                        .loading(true)
+                        .compact(true)
+                        .into_any_element()
                 }
-                DocumentationState::Failed(error) => {
-                    div().flex().items_center().justify_center().h_20().child(
-                        div()
-                            .text_sm()
-                            .text_color(tokens.editor.error)
-                            .child(format!("Failed to load: {}", error)),
-                    )
-                }
+                DocumentationState::Failed(error) => StateView::new(
+                    "completion-documentation-failed",
+                    "Documentation unavailable",
+                )
+                .detail(error.clone())
+                .icon("icons/triangle-alert.svg")
+                .tone(StateViewTone::Error)
+                .compact(true)
+                .into_any_element(),
                 DocumentationState::Loaded => {
                     if content.markdown.is_empty() {
-                        div().flex().items_center().justify_center().h_20().child(
-                            div()
-                                .text_sm()
-                                .text_color(tokens.chrome.text_chrome_secondary)
-                                .child("No documentation available"),
+                        StateView::new(
+                            "completion-documentation-empty",
+                            "No documentation available",
                         )
+                        .icon("icons/book-text.svg")
+                        .compact(true)
+                        .into_any_element()
                     } else {
-                        div().child(markdown_extended(
-                            content.markdown.clone(),
-                            MarkdownStyle::from_tokens(tokens),
-                        ))
+                        div()
+                            .child(markdown_extended(
+                                content.markdown.clone(),
+                                MarkdownStyle::from_tokens(tokens),
+                            ))
+                            .into_any_element()
                     }
                 }
-                DocumentationState::NotLoaded => {
-                    div().flex().items_center().justify_center().h_20().child(
-                        div()
-                            .text_sm()
-                            .text_color(tokens.chrome.text_chrome_secondary)
-                            .child("Select an item to view documentation"),
-                    )
-                }
+                DocumentationState::NotLoaded => StateView::new(
+                    "completion-documentation-idle",
+                    "Select an item to view documentation",
+                )
+                .icon("icons/book-text.svg")
+                .compact(true)
+                .into_any_element(),
             },
-            None => div().flex().items_center().justify_center().h_20().child(
-                div()
-                    .text_sm()
-                    .text_color(tokens.chrome.text_chrome_secondary)
-                    .child("No item selected"),
-            ),
+            None => StateView::new("completion-documentation-none", "No item selected")
+                .icon("icons/book-text.svg")
+                .compact(true)
+                .into_any_element(),
         }
     }
 }

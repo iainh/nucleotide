@@ -40,6 +40,7 @@ pub mod prompt;
 pub mod prompt_view;
 pub mod scrollbar;
 pub mod split;
+pub mod state_view;
 pub mod style_utils;
 pub mod styling;
 pub mod terminal_keys;
@@ -125,6 +126,7 @@ pub use split::{
     resize_capture_area, resize_handle, right_sidebar_split, sidebar_split, splitter,
     two_pane_split,
 };
+pub use state_view::{StateView, StateViewTone};
 pub use styling::{
     BoxShadow, ColorTheory, ComputedStyle, ContextualColors, ContrastRatios, StyleContext,
     StyleSize, StyleState, StyleVariant, TimingFunction, Transition, TransitionProperty,
@@ -228,7 +230,7 @@ pub struct UIConfig {
 }
 
 /// Feature flags for optional components and functionality
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct UIFeatures {
     /// Enable virtualization for large lists
     pub enable_virtualization: bool,
@@ -238,6 +240,62 @@ pub struct UIFeatures {
     pub enable_accessibility: bool,
     /// Enable debugging utilities in development
     pub enable_debug_utils: bool,
+    /// Enable explanatory tooltips
+    pub enable_tooltips: bool,
+    /// Enable dark-mode presentation
+    pub enable_dark_mode: bool,
+    /// Enable high-contrast presentation
+    pub enable_high_contrast: bool,
+    /// Suppress non-essential motion
+    pub enable_reduced_motion: bool,
+    /// Enable keyboard navigation affordances
+    pub enable_keyboard_navigation: bool,
+}
+
+impl Default for UIFeatures {
+    fn default() -> Self {
+        Self {
+            enable_virtualization: false,
+            enable_animations: true,
+            enable_accessibility: false,
+            enable_debug_utils: false,
+            enable_tooltips: true,
+            enable_dark_mode: true,
+            enable_high_contrast: false,
+            enable_reduced_motion: false,
+            enable_keyboard_navigation: true,
+        }
+    }
+}
+
+impl UIFeatures {
+    pub fn stable() -> Self {
+        Self::default()
+    }
+
+    pub fn all_enabled() -> Self {
+        Self {
+            enable_virtualization: true,
+            enable_accessibility: true,
+            enable_debug_utils: true,
+            enable_high_contrast: true,
+            ..Self::default()
+        }
+    }
+
+    pub fn accessibility_focused() -> Self {
+        Self {
+            enable_animations: false,
+            enable_accessibility: true,
+            enable_high_contrast: true,
+            enable_reduced_motion: true,
+            ..Self::default()
+        }
+    }
+
+    pub fn animations_enabled(&self) -> bool {
+        self.enable_animations && !self.enable_reduced_motion
+    }
 }
 
 impl Default for UIConfig {
@@ -279,6 +337,7 @@ pub(crate) const BUILT_IN_COMPONENTS: &[&str] = &[
     "Prompt",
     "ResizeDragController",
     "SmartPopup",
+    "StateView",
     "StatusBar",
     "TextInput",
     "ThemeDebugView",
@@ -373,6 +432,11 @@ where
 {
     let config = get_config(cx);
     feature_check(&config.features)
+}
+
+/// Whether non-essential UI motion is enabled for the current configuration.
+pub fn animations_enabled(cx: &App) -> bool {
+    get_config(cx).features.animations_enabled()
 }
 
 /// Update the global theme

@@ -4,14 +4,14 @@
 use std::time::Duration;
 
 use gpui::{
-    Animation, AnimationExt as _, AnyElement, ElementId, Hsla, IntoElement, Styled, Transformation,
-    percentage, px, svg,
+    Animation, AnimationExt as _, App, ElementId, Hsla, IntoElement, RenderOnce, Styled,
+    Transformation, percentage, px, svg,
 };
 
 const DEFAULT_SPINNER_SIZE: f32 = 14.0;
 const DEFAULT_SPINNER_DURATION: Duration = Duration::from_millis(900);
 
-#[derive(Clone)]
+#[derive(Clone, IntoElement)]
 pub struct IndeterminateProgressIndicator {
     id: ElementId,
     size: f32,
@@ -45,10 +45,8 @@ impl IndeterminateProgressIndicator {
     }
 }
 
-impl IntoElement for IndeterminateProgressIndicator {
-    type Element = AnyElement;
-
-    fn into_element(self) -> Self::Element {
+impl RenderOnce for IndeterminateProgressIndicator {
+    fn render(self, _window: &mut gpui::Window, cx: &mut App) -> impl IntoElement {
         let mut indicator = svg()
             .path("icons/loader-circle.svg")
             .size(px(self.size))
@@ -58,13 +56,17 @@ impl IntoElement for IndeterminateProgressIndicator {
             indicator = indicator.text_color(color);
         }
 
-        indicator
-            .with_animation(
-                self.id,
-                Animation::new(self.duration).repeat(),
-                |svg, delta| svg.with_transformation(Transformation::rotate(percentage(delta))),
-            )
-            .into_any_element()
+        if crate::animations_enabled(cx) {
+            indicator
+                .with_animation(
+                    self.id,
+                    Animation::new(self.duration).repeat(),
+                    |svg, delta| svg.with_transformation(Transformation::rotate(percentage(delta))),
+                )
+                .into_any_element()
+        } else {
+            indicator.into_any_element()
+        }
     }
 }
 
