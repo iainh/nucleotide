@@ -8,9 +8,6 @@ on:
 permissions:
   contents: read
 
-env:
-  VPK_VERSION: '1.2.0'
-
 jobs:
   build-linux-remote-helpers:
     name: Build Linux remote helpers
@@ -78,7 +75,12 @@ jobs:
             ${{ runner.os }}-aarch64-cargo-
       
       - name: Build release binary
-        run: nix develop --command cargo build --release --target aarch64-apple-darwin
+        run: |
+          nix develop --command cargo build --release \
+            --target aarch64-apple-darwin \
+            -p nucleotide \
+            --bin nucl \
+            --bin nucl-grammar
       
       - name: Prepare runtime files
         run: |
@@ -136,137 +138,4 @@ jobs:
         with:
           name: nucleotide-macos-aarch64
           path: Nucleotide-aarch64.app.tar.gz
-          retention-days: 7
-
-  package:
-    name: Package ARM64 macOS app
-    runs-on: macos-latest
-    needs: build
-    
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-        with:
-          persist-credentials: false
-      
-      - name: Download aarch64 artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          name: nucleotide-macos-aarch64
-          path: aarch64
-      
-      - name: Install .NET SDK
-        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
-        with:
-          dotnet-version: 8.0.x
-
-      - name: Install Velopack CLI
-        run: |
-          dotnet tool update -g vpk --version "${VPK_VERSION}"
-          echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
-
-      - name: Extract app
-        run: |
-          tar -xzf aarch64/Nucleotide-aarch64.app.tar.gz
-          test -f Nucleotide.app/Contents/MacOS/Nucleotide
-          test "$(lipo -archs Nucleotide.app/Contents/MacOS/Nucleotide)" = "arm64"
-          test -x Nucleotide.app/Contents/MacOS/nucleotide-remote-linux-x86_64
-          test -x Nucleotide.app/Contents/MacOS/nucleotide-remote-linux-aarch64
-      
-      - name: Build macOS Velopack package
-        run: |
-          chmod +x scripts/package-velopack.sh
-          NUCL_VELOPACK_PACK_DIR="Nucleotide.app" \
-            NUCL_VELOPACK_OUTPUT_DIR="target/release/bundle/velopack-macos" \
-            NUCL_VELOPACK_PACK_ID="org.spiralpoint.nucleotide.macos" \
-            NUCL_VELOPACK_CHANNEL="macos" \
-            NUCL_VELOPACK_RUNTIME="" \
-            ./scripts/package-velopack.sh
-
-          test -f target/release/bundle/velopack-macos/releases.macos.json
-          test -n "$(find target/release/bundle/velopack-macos -maxdepth 1 -name '*-full.nupkg' -print -quit)"
-
-      - name: Upload Velopack package
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: nucleotide-macos-aarch64-velopack
-          path: target/release/bundle/velopack-macos/*
-          retention-days: 7
-
-  build-with-nix:
-    name: Build with Nix on macOS (using GitHub cache)
-    runs-on: macos-latest
-    needs: build-linux-remote-helpers
-    continue-on-error: true  # Optional build - don't fail the whole workflow
-    
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-        with:
-          persist-credentials: false
-
-      - name: Download Linux remote helpers
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          name: linux-remote-helpers
-          path: target/remote-helpers
-      
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@a7ad9c4f0c65208097f4d34f3cfa1913b80cce5c
-      
-      - name: Setup Nix cache
-        uses: DeterminateSystems/magic-nix-cache-action@76aaf8814cdb385b86597c32b8c51b66b69b0839
-
-      - name: Install .NET SDK
-        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
-        with:
-          dotnet-version: 8.0.x
-
-      - name: Install Velopack CLI
-        run: |
-          dotnet tool update -g vpk --version "${VPK_VERSION}"
-          echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
-      
-      - name: Build with Nix
-        run: |
-          # Build runtime files
-          nix build .#runtime --print-build-logs
-          
-          # Build in Nix shell
-          nix develop --command cargo build --release
-          
-          # Test the result
-          if [ -f "target/release/nucl" ]; then
-            echo "✓ Binary created successfully"
-            file target/release/nucl
-          else
-            echo "✗ Binary not found!"
-            exit 1
-          fi
-      
-      - name: Create Nix app bundle
-        run: |
-          # Run the Nix-based bundle command
-          NUCL_REMOTE_HELPER_DIR="target/remote-helpers" \
-            NUCL_REQUIRE_REMOTE_HELPERS=1 \
-            nix develop --command make-macos-bundle
-          
-          # Verify the app
-          if [ -d "Nucleotide.app" ]; then
-            echo "✓ Nix app bundle created"
-            test -x Nucleotide.app/Contents/MacOS/nucleotide-remote-linux-x86_64
-            test -x Nucleotide.app/Contents/MacOS/nucleotide-remote-linux-aarch64
-
-            chmod +x scripts/package-velopack.sh
-            NUCL_VELOPACK_PACK_DIR="Nucleotide.app" \
-              NUCL_VELOPACK_OUTPUT_DIR="target/release/bundle/velopack-macos-nix" \
-              NUCL_VELOPACK_PACK_ID="org.spiralpoint.nucleotide.macos" \
-              NUCL_VELOPACK_CHANNEL="macos" \
-              ./scripts/package-velopack.sh
-          fi
-      
-      - name: Upload Nix Velopack package
-        if: success()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: nucleotide-macos-nix
-          path: target/release/bundle/velopack-macos-nix/*
           retention-days: 7

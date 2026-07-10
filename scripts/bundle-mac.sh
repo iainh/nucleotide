@@ -11,8 +11,19 @@ EXECUTABLE_NAME="nucl"
 BUNDLE_ID="org.spiralpoint.nucleotide"
 BINARY_PATH="${NUCL_BINARY:-target/release/${EXECUTABLE_NAME}}"
 BINARY_PATH_EXPLICIT="${NUCL_BINARY:+1}"
-GRAMMAR_TOOL_PATH="${NUCL_GRAMMAR_TOOL:-target/release/nucl-grammar}"
-GRAMMAR_TOOL_PATH_EXPLICIT="${NUCL_GRAMMAR_TOOL:+1}"
+if [ -n "${NUCL_GRAMMAR_TOOL:-}" ]; then
+    GRAMMAR_TOOL_PATH="${NUCL_GRAMMAR_TOOL}"
+    GRAMMAR_TOOL_PATH_EXPLICIT=1
+elif [ -n "${BINARY_PATH_EXPLICIT}" ]; then
+    # Target-specific builds place all binaries together. Keep the grammar
+    # helper in the same toolchain environment instead of rebuilding it with
+    # a host-level Cargo invocation that may not have Zig available.
+    GRAMMAR_TOOL_PATH="$(dirname "${BINARY_PATH}")/nucl-grammar"
+    GRAMMAR_TOOL_PATH_EXPLICIT=1
+else
+    GRAMMAR_TOOL_PATH="target/release/nucl-grammar"
+    GRAMMAR_TOOL_PATH_EXPLICIT=""
+fi
 REMOTE_HELPER_DIR="${NUCL_REMOTE_HELPER_DIR:-target/remote-helpers}"
 REMOTE_HELPERS_REQUIRED="${NUCL_REQUIRE_REMOTE_HELPERS:-0}"
 GRAMMAR_LIB_EXTENSION="dylib"
