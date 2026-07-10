@@ -14,6 +14,17 @@
 # limit.
 # max_tabs = 10
 
+[updates]
+# Check for stable updates in Velopack-installed builds. Default: true.
+enabled = true
+
+# Check shortly after the first application window opens. Default: true.
+check_on_startup = true
+
+# Download discovered updates automatically. Restart remains user-controlled.
+# Default: false.
+auto_download = false
+
 [theme]
 # Select how the GUI chooses between light and dark themes.
 # Options: "system", "light", "dark". Default: "system".

@@ -845,6 +845,32 @@ fn default_true() -> bool {
     true
 }
 
+/// Application update behaviour.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UpdatesConfig {
+    /// Enable update discovery for Velopack-installed builds.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Check for updates after the first application window opens.
+    #[serde(default = "default_true")]
+    pub check_on_startup: bool,
+
+    /// Download discovered updates without waiting for an explicit user action.
+    #[serde(default)]
+    pub auto_download: bool,
+}
+
+impl Default for UpdatesConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            check_on_startup: true,
+            auto_download: false,
+        }
+    }
+}
+
 /// GUI-specific configuration that extends Helix configuration
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GuiConfig {
@@ -899,6 +925,10 @@ pub struct GuiConfig {
     /// Remote workspace settings
     #[serde(default)]
     pub remote: RemoteConfig,
+
+    /// Application update settings.
+    #[serde(default)]
+    pub updates: UpdatesConfig,
 }
 
 /// Delete behavior preference
@@ -1489,6 +1519,11 @@ enable_keep_preview_on_code_navigation = true
 [file_tree]
 density = "compact"
 flatten_empty_directories = false
+
+[updates]
+enabled = false
+check_on_startup = false
+auto_download = true
 "#;
 
         let config: GuiConfig = toml::from_str(config_str).expect("Failed to parse GuiConfig");
@@ -1534,6 +1569,9 @@ flatten_empty_directories = false
             Some(gpui::DirectWriteRenderingMode::GdiClassic)
         );
         assert_eq!(config.max_tabs.map(std::num::NonZeroUsize::get), Some(5));
+        assert!(!config.updates.enabled);
+        assert!(!config.updates.check_on_startup);
+        assert!(config.updates.auto_download);
         assert!(!config.tab_bar.show);
         assert!(!config.tab_bar.show_nav_history_buttons);
         assert!(!config.tab_bar.show_tab_bar_buttons);
@@ -1563,6 +1601,15 @@ flatten_empty_directories = false
         assert!(config.preview_tabs.enable_keep_preview_on_code_navigation);
         assert_eq!(config.file_tree.density, FileTreeDisplayDensity::Compact);
         assert!(!config.file_tree.flatten_empty_directories);
+    }
+
+    #[test]
+    fn update_defaults_check_without_downloading() {
+        let config: GuiConfig = toml::from_str("").expect("default GUI config should parse");
+
+        assert!(config.updates.enabled);
+        assert!(config.updates.check_on_startup);
+        assert!(!config.updates.auto_download);
     }
 
     #[test]

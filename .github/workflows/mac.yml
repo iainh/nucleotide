@@ -8,6 +8,9 @@ on:
 permissions:
   contents: read
 
+env:
+  VPK_VERSION: '1.2.0'
+
 jobs:
   build-linux-remote-helpers:
     name: Build Linux remote helpers
@@ -172,7 +175,7 @@ jobs:
 
       - name: Install Velopack CLI
         run: |
-          dotnet tool update -g vpk
+          dotnet tool update -g vpk --version "${VPK_VERSION}"
           echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
 
       - name: Extract apps
@@ -265,7 +268,7 @@ jobs:
 
       - name: Install Velopack CLI
         run: |
-          dotnet tool update -g vpk
+          dotnet tool update -g vpk --version "${VPK_VERSION}"
           echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
       
       - name: Build with Nix

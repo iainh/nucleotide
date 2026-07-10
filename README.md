@@ -63,12 +63,13 @@ try {
 } finally {
   Remove-Item -LiteralPath helix-temp -Recurse -Force
 }
-dotnet tool update -g vpk
+dotnet tool update -g vpk --version 1.2.0
 .\scripts\package-velopack.ps1 -RequireRemoteHelpers
 ```
 
 See `docs/windows_install.md` for local Windows Velopack build and install
-notes.
+notes. See `docs/application_updates.md` for the in-app update flow and release
+pipeline.
 
 ## Development Setup
 

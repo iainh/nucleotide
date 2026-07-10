@@ -33,6 +33,11 @@ title="${NUCL_VELOPACK_TITLE:-Nucleotide}"
 main_exe="${NUCL_VELOPACK_MAIN_EXE:-Nucleotide}"
 icon="${NUCL_VELOPACK_ICON:-crates/nucleotide/assets/nucleotide.icns}"
 runtime="${NUCL_VELOPACK_RUNTIME:-}"
+release_notes="${NUCL_VELOPACK_RELEASE_NOTES:-}"
+sign_app_identity="${NUCL_VELOPACK_SIGN_APP_IDENTITY:-}"
+sign_install_identity="${NUCL_VELOPACK_SIGN_INSTALL_IDENTITY:-}"
+notary_profile="${NUCL_VELOPACK_NOTARY_PROFILE:-}"
+keychain="${NUCL_VELOPACK_KEYCHAIN:-}"
 
 if ! command -v vpk >/dev/null 2>&1; then
   echo "vpk was not found. Install it with: dotnet tool update -g vpk" >&2
@@ -80,6 +85,26 @@ fi
 
 if [ -n "${runtime}" ]; then
   args+=(--runtime "${runtime}")
+fi
+
+if [ -n "${release_notes}" ]; then
+  args+=(--releaseNotes "${release_notes}")
+fi
+
+if [ -n "${sign_app_identity}" ]; then
+  args+=(--signAppIdentity "${sign_app_identity}")
+fi
+
+if [ -n "${sign_install_identity}" ]; then
+  args+=(--signInstallIdentity "${sign_install_identity}")
+fi
+
+if [ -n "${notary_profile}" ]; then
+  args+=(--notaryProfile "${notary_profile}")
+fi
+
+if [ -n "${keychain}" ]; then
+  args+=(--keychain "${keychain}")
 fi
 
 vpk "${args[@]}"

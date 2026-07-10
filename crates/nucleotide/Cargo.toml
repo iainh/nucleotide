@@ -21,6 +21,7 @@ terminal-emulator-core = ["nucleotide-terminal/emulator", "nucleotide-terminal-v
 unicode-lines = ["helix-core/unicode-lines"]
 integration = ["helix-event/integration_test"]
 git = ["helix-vcs/git"]
+update-smoke-test = []
 
 [[bin]]
 name = "nucl"
@@ -29,6 +30,11 @@ path = "src/main.rs"
 [[bin]]
 name = "nucl-grammar"
 path = "src/grammar_tool.rs"
+
+[[bin]]
+name = "nucleotide-update-smoke"
+path = "src/update_smoke.rs"
+required-features = ["update-smoke-test"]
 
 [dependencies]
 # Internal crates
@@ -94,6 +100,7 @@ serde_json.workspace = true
 serde.workspace = true
 chrono = "0.4"
 regex.workspace = true
+thiserror.workspace = true
 smallvec.workspace = true
 slotmap.workspace = true
 velopack.workspace = true

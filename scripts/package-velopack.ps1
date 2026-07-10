@@ -9,6 +9,8 @@ param(
   [string]$PackId = "org.spiralpoint.nucleotide.windows",
   [string]$Channel = "windows",
   [string]$Runtime = "win-x64",
+  [string]$ReleaseNotes,
+  [string]$SignParams,
   [switch]$RequireRemoteHelpers
 )
 
@@ -125,6 +127,14 @@ $vpkArgs = @(
 
 if ($Runtime) {
   $vpkArgs += @("--runtime", $Runtime)
+}
+
+if ($ReleaseNotes) {
+  $vpkArgs += @("--releaseNotes", (Resolve-RepoPath $ReleaseNotes))
+}
+
+if ($SignParams) {
+  $vpkArgs += @("--signParams", $SignParams)
 }
 
 & vpk @vpkArgs
