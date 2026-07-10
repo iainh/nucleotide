@@ -12,7 +12,7 @@ mod tests {
         assert!(config.default_theme.is_dark());
         assert_eq!(config.enable_performance_monitoring, cfg!(debug_assertions));
         assert!(!config.features.enable_virtualization);
-        assert!(!config.features.enable_animations);
+        assert!(config.features.enable_animations);
         assert!(!config.features.enable_accessibility);
         assert!(!config.features.enable_debug_utils);
     }
@@ -22,9 +22,21 @@ mod tests {
         let features = UIFeatures::default();
 
         assert!(!features.enable_virtualization);
-        assert!(!features.enable_animations);
+        assert!(features.enable_animations);
         assert!(!features.enable_accessibility);
         assert!(!features.enable_debug_utils);
+        assert!(features.animations_enabled());
+    }
+
+    #[test]
+    fn reduced_motion_suppresses_animations() {
+        let features = UIFeatures {
+            enable_reduced_motion: true,
+            ..Default::default()
+        };
+
+        assert!(features.enable_animations);
+        assert!(!features.animations_enabled());
     }
 
     #[test]
@@ -34,6 +46,7 @@ mod tests {
             enable_animations: false,
             enable_accessibility: true,
             enable_debug_utils: false,
+            ..Default::default()
         };
 
         let config = UIConfig {
@@ -57,6 +70,7 @@ mod tests {
             enable_animations: true,
             enable_accessibility: true,
             enable_debug_utils: true,
+            ..Default::default()
         };
 
         let config = UIConfig {
@@ -81,25 +95,22 @@ mod tests {
             ..Default::default()
         };
         assert!(minimal.enable_virtualization);
-        assert!(!minimal.enable_animations);
+        assert!(minimal.enable_animations);
         assert!(!minimal.enable_accessibility);
         assert!(!minimal.enable_debug_utils);
 
-        let accessibility_focused = UIFeatures {
-            enable_accessibility: true,
-            enable_debug_utils: true,
-            ..Default::default()
-        };
+        let accessibility_focused = UIFeatures::accessibility_focused();
         assert!(!accessibility_focused.enable_virtualization);
-        assert!(!accessibility_focused.enable_animations);
+        assert!(!accessibility_focused.animations_enabled());
         assert!(accessibility_focused.enable_accessibility);
-        assert!(accessibility_focused.enable_debug_utils);
+        assert!(!accessibility_focused.enable_debug_utils);
 
         let performance_focused = UIFeatures {
             enable_virtualization: true,
             enable_animations: false,    // Disable for performance
             enable_accessibility: false, // Disable for performance
             enable_debug_utils: false,
+            ..Default::default()
         };
         assert!(performance_focused.enable_virtualization);
         assert!(!performance_focused.enable_animations);

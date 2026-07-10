@@ -51,7 +51,7 @@ use nucleotide_ui::scrollbar::{Scrollbar, ScrollbarState};
 use nucleotide_ui::{
     AboutWindow, Button, ButtonSize, ButtonVariant, ConfirmDialog, ConfirmDialogEvent,
     ConfirmDialogView, ContextMenuController, EditorPaneGrid, IndeterminateProgressIndicator,
-    MarkdownStyle, ModalLayer, PopupMenu, PopupMenuSurface, Tooltipped,
+    MarkdownStyle, ModalLayer, PopupMenu, PopupMenuSurface, StateView, Tooltipped,
     completion_menu_action_for_key, markdown_extended,
 };
 
@@ -5325,17 +5325,16 @@ impl Workspace {
 
         if self.doc_sidebar_loading {
             body = body.child(
-                div()
-                    .text_sm()
-                    .text_color(file_tree_tokens.item_text_secondary)
-                    .child("Loading documentation..."),
+                StateView::new("documentation-sidebar-loading", "Loading documentation")
+                    .loading(true)
+                    .compact(true),
             );
         } else if self.doc_sidebar_entries.is_empty() {
             body = body.child(
-                div()
-                    .text_sm()
-                    .text_color(file_tree_tokens.item_text_secondary)
-                    .child("No documentation available."),
+                StateView::new("documentation-sidebar-empty", "No documentation available")
+                    .detail("Move the cursor to a symbol with hover documentation.")
+                    .icon("icons/book-text.svg")
+                    .compact(true),
             );
         } else {
             for (index, entry) in self.doc_sidebar_entries.iter().enumerate() {

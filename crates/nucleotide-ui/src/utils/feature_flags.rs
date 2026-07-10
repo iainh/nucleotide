@@ -1,6 +1,7 @@
 // ABOUTME: Feature flag system for conditional compilation and runtime features
 // ABOUTME: Provides compile-time and runtime feature toggling for nucleotide-ui components
 
+use crate::UIFeatures;
 use gpui::SharedString;
 use std::collections::HashMap;
 
@@ -74,58 +75,6 @@ impl FeatureFlags {
 
             // Runtime flags
             _ => self.get_flag(feature),
-        }
-    }
-}
-
-/// UI-specific feature flags
-#[derive(Debug, Clone)]
-pub struct UIFeatures {
-    pub enable_animations: bool,
-    pub enable_tooltips: bool,
-    pub enable_dark_mode: bool,
-    pub enable_high_contrast: bool,
-    pub enable_reduced_motion: bool,
-    pub enable_keyboard_navigation: bool,
-}
-
-impl Default for UIFeatures {
-    fn default() -> Self {
-        Self {
-            enable_animations: true,
-            enable_tooltips: true,
-            enable_dark_mode: true,
-            enable_high_contrast: false,
-            enable_reduced_motion: false,
-            enable_keyboard_navigation: true,
-        }
-    }
-}
-
-impl UIFeatures {
-    pub fn stable() -> Self {
-        Self::default()
-    }
-
-    pub fn all_enabled() -> Self {
-        Self {
-            enable_animations: true,
-            enable_tooltips: true,
-            enable_dark_mode: true,
-            enable_high_contrast: true,
-            enable_reduced_motion: false, // Reduced motion means fewer animations
-            enable_keyboard_navigation: true,
-        }
-    }
-
-    pub fn accessibility_focused() -> Self {
-        Self {
-            enable_animations: false,
-            enable_tooltips: true,
-            enable_dark_mode: true,
-            enable_high_contrast: true,
-            enable_reduced_motion: true,
-            enable_keyboard_navigation: true,
         }
     }
 }
