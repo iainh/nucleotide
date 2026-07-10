@@ -148,6 +148,8 @@ pub struct VcsService {
     workspace_backend: Option<WorkspaceBackendHandle>,
     /// Current VCS status cache
     status_cache: HashMap<PathBuf, VcsStatus>,
+    /// Monotonic revision for presentation caches that consume status data.
+    status_revision: u64,
     /// Timestamp of last cache update for each path
     cache_timestamps: HashMap<PathBuf, Instant>,
     /// Diff provider registry for getting diff base files
@@ -190,6 +192,7 @@ impl VcsService {
             repository_head: None,
             workspace_backend: None,
             status_cache: HashMap::new(),
+            status_revision: 0,
             cache_timestamps: HashMap::new(),
             diff_provider: DiffProviderRegistry::default(),
             diff_handles: HashMap::new(),
@@ -275,7 +278,10 @@ impl VcsService {
         self.is_monitoring = false;
         self.root_path = None;
         self.repository_head = None;
-        self.status_cache.clear();
+        if !self.status_cache.is_empty() {
+            self.status_cache.clear();
+            self.status_revision = self.status_revision.wrapping_add(1);
+        }
         self.diff_handles.clear();
         self.diff_hunks_cache.clear();
         self.diff_access_order.clear();
@@ -311,6 +317,10 @@ impl VcsService {
     /// Get all files with VCS status
     pub fn get_all_status(&self) -> &HashMap<PathBuf, VcsStatus> {
         &self.status_cache
+    }
+
+    pub fn status_revision(&self) -> u64 {
+        self.status_revision
     }
 
     /// Get diff hunks for a specific file
@@ -758,6 +768,7 @@ impl VcsService {
         }
 
         if stale_count > 0 {
+            self.status_revision = self.status_revision.wrapping_add(1);
             if let Ok(mut stats) = self.cache_stats.try_borrow_mut() {
                 stats.invalidations += stale_count as u64;
             }
@@ -964,6 +975,9 @@ impl VcsService {
         // Update cache and timestamps
         let now = Instant::now();
         self.status_cache = new_status;
+        if !changes.is_empty() {
+            self.status_revision = self.status_revision.wrapping_add(1);
+        }
 
         // Update timestamps for all paths in the new status
         for path in self.status_cache.keys() {
@@ -1316,6 +1330,10 @@ impl VcsServiceHandle {
         self.service.read(cx).get_status(path)
     }
 
+    pub fn status_revision(&self, cx: &App) -> u64 {
+        self.service.read(cx).status_revision()
+    }
+
     /// Force refresh VCS status
     pub fn force_refresh(&self, cx: &mut App) {
         self.service.update(cx, |service, cx| {
@@ -1507,6 +1525,21 @@ mod tests {
             service.absolute_path(Path::new("src/main.rs")),
             Some(PathBuf::from("ssh://devbox/home/me/project/src/main.rs"))
         );
+    }
+
+    #[test]
+    fn status_revision_changes_only_when_status_presentation_changes() {
+        let mut service = VcsService::new(VcsConfig::default());
+        service
+            .status_cache
+            .insert(PathBuf::from("/repo/src/lib.rs"), VcsStatus::Modified);
+
+        assert_eq!(service.status_revision(), 0);
+        service.stop_monitoring();
+        assert_eq!(service.status_revision(), 1);
+
+        service.stop_monitoring();
+        assert_eq!(service.status_revision(), 1);
     }
 
     #[tokio::test]

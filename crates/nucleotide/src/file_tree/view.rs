@@ -31,6 +31,7 @@ use nucleotide_workspace::{
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 const REMOTE_FILE_TREE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
@@ -61,6 +62,34 @@ struct DirectoryEntryFingerprint {
     symlink_target: Option<PathBuf>,
     target_exists: Option<bool>,
     ignored: Option<bool>,
+}
+
+#[derive(Clone)]
+struct FileTreePresentationCache {
+    tree_revision: u64,
+    density: FileTreeDisplayDensity,
+    vcs_revision: u64,
+    entry_count: usize,
+    vcs_statuses: Arc<[Option<VcsStatus>]>,
+    width_measure_item_index: Option<usize>,
+    content_width: f32,
+}
+
+fn cached_file_tree_presentation(
+    cache: Option<&FileTreePresentationCache>,
+    tree_revision: u64,
+    density: FileTreeDisplayDensity,
+    vcs_revision: u64,
+    entry_count: usize,
+) -> Option<FileTreePresentationCache> {
+    cache
+        .filter(|cache| {
+            cache.tree_revision == tree_revision
+                && cache.density == density
+                && cache.vcs_revision == vcs_revision
+                && cache.entry_count == entry_count
+        })
+        .cloned()
 }
 
 struct RemoteDirectoryPollResult {
@@ -152,7 +181,7 @@ fn widest_project_tree_entry_index_in_range(
 fn project_tree_content_width(
     entries: &[FileTreeEntry],
     density: FileTreeDisplayDensity,
-    vcs_status: impl Fn(&FileTreeEntry) -> Option<VcsStatus>,
+    mut vcs_status: impl FnMut(&FileTreeEntry) -> Option<VcsStatus>,
 ) -> f32 {
     entries
         .iter()
@@ -409,6 +438,9 @@ pub struct FileTreeView {
     initial_load_in_flight: bool,
     /// Monotonic revision for structural tree changes.
     tree_revision: u64,
+    presentation_cache: Option<FileTreePresentationCache>,
+    presentation_cache_hits: u64,
+    presentation_cache_misses: u64,
 }
 
 impl FileTreeView {
@@ -455,6 +487,9 @@ impl FileTreeView {
             remote_file_watch_last_sequence: 0,
             initial_load_in_flight: false,
             tree_revision: 0,
+            presentation_cache: None,
+            presentation_cache_hits: 0,
+            presentation_cache_misses: 0,
         };
 
         // Auto-select the first entry if there are any entries
@@ -523,6 +558,9 @@ impl FileTreeView {
             remote_file_watch_last_sequence: 0,
             initial_load_in_flight: false,
             tree_revision: 0,
+            presentation_cache: None,
+            presentation_cache_hits: 0,
+            presentation_cache_misses: 0,
         };
 
         instance.start_initial_load(cx);
@@ -1352,6 +1390,7 @@ impl FileTreeView {
     /// Set the search query and keep selection on a visible row.
     pub fn set_search_query(&mut self, query: Option<String>, cx: &mut Context<Self>) {
         self.tree.set_search_query(query);
+        self.tree_revision = self.tree_revision.wrapping_add(1);
         self.select_valid_search_row(cx);
         cx.notify();
     }
@@ -1359,6 +1398,7 @@ impl FileTreeView {
     /// Clear the search query.
     pub fn clear_search_query(&mut self, cx: &mut Context<Self>) {
         self.tree.clear_search_query();
+        self.tree_revision = self.tree_revision.wrapping_add(1);
         self.select_valid_search_row(cx);
         cx.notify();
     }
@@ -2073,6 +2113,47 @@ impl FileTreeView {
         vcs_service.get_status(path, cx)
     }
 
+    fn resolve_presentation_cache(
+        &mut self,
+        entries: &[FileTreeEntry],
+        density: FileTreeDisplayDensity,
+        vcs_revision: u64,
+        cx: &Context<Self>,
+    ) -> FileTreePresentationCache {
+        if let Some(cache) = cached_file_tree_presentation(
+            self.presentation_cache.as_ref(),
+            self.tree_revision,
+            density,
+            vcs_revision,
+            entries.len(),
+        ) {
+            self.presentation_cache_hits += 1;
+            return cache;
+        }
+
+        self.presentation_cache_misses += 1;
+        let vcs_statuses: Arc<[Option<VcsStatus>]> = entries
+            .iter()
+            .map(|entry| self.get_vcs_status_for_entry(&entry.path, cx))
+            .collect::<Vec<_>>()
+            .into();
+        let width_measure_item_index = widest_project_tree_entry_index(entries, density);
+        let mut statuses = vcs_statuses.iter().copied();
+        let content_width =
+            project_tree_content_width(entries, density, |_| statuses.next().flatten());
+        let cache = FileTreePresentationCache {
+            tree_revision: self.tree_revision,
+            density,
+            vcs_revision,
+            entry_count: entries.len(),
+            vcs_statuses,
+            width_measure_item_index,
+            content_width,
+        };
+        self.presentation_cache = Some(cache.clone());
+        cache
+    }
+
     /// Handle file/directory deletion  
     fn handle_file_deleted(&mut self, path: &PathBuf, cx: &mut Context<Self>) {
         debug!(path = ?path, "Handling file deletion");
@@ -2516,10 +2597,10 @@ impl FileTreeView {
     fn render_entry(
         &self,
         entry: &FileTreeEntry,
+        vcs_status: Option<VcsStatus>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let is_selected = self.selected_paths.contains(&entry.path);
-        let vcs_status = self.get_vcs_status_for_entry(&entry.path, cx);
         let row = ProjectTreeRow::from_entry(entry, is_selected, vcs_status);
         let theme = cx.theme().clone();
         let file_tree_tokens = if self.tree.config().translucent_background {
@@ -3293,6 +3374,33 @@ mod tests {
         assert_eq!(tree.root_path(), root.as_path());
     }
 
+    #[test]
+    fn presentation_cache_reuses_only_matching_tree_and_vcs_revisions() {
+        let statuses: Arc<[Option<VcsStatus>]> = Arc::from(vec![Some(VcsStatus::Modified)]);
+        let cache = FileTreePresentationCache {
+            tree_revision: 3,
+            density: FileTreeDisplayDensity::Default,
+            vcs_revision: 5,
+            entry_count: 1,
+            vcs_statuses: statuses.clone(),
+            width_measure_item_index: Some(0),
+            content_width: 120.0,
+        };
+
+        let reused =
+            cached_file_tree_presentation(Some(&cache), 3, FileTreeDisplayDensity::Default, 5, 1)
+                .expect("cache hit");
+        assert!(Arc::ptr_eq(&reused.vcs_statuses, &statuses));
+        assert!(
+            cached_file_tree_presentation(Some(&cache), 4, FileTreeDisplayDensity::Default, 5, 1,)
+                .is_none()
+        );
+        assert!(
+            cached_file_tree_presentation(Some(&cache), 3, FileTreeDisplayDensity::Default, 6, 1,)
+                .is_none()
+        );
+    }
+
     #[gpui::test]
     async fn remote_watch_batch_refresh_plan_targets_expanded_directories(cx: &mut TestAppContext) {
         let temp_dir = tempfile::tempdir().unwrap();
@@ -3608,6 +3716,7 @@ mod tests {
         std::fs::write(&readme_path, "readme\n").unwrap();
 
         let view = cx.new(|cx| FileTreeView::new(root_path, test_config(), cx));
+        let initial_revision = view.read_with(cx, |view, _cx| view.tree_revision);
 
         view.update(cx, |view, cx| {
             view.set_search_query(Some("button".to_string()), cx);
@@ -3618,7 +3727,10 @@ mod tests {
             assert_eq!(view.search_query(), Some("button"));
             assert_eq!(view.selected_path(), Some(&button_path));
             assert_eq!(view.selected_paths(), vec![button_path.clone()]);
+            assert!(view.tree_revision > initial_revision);
         });
+
+        let search_revision = view.read_with(cx, |view, _cx| view.tree_revision);
 
         view.update(cx, |view, cx| {
             view.clear_search_query(cx);
@@ -3627,6 +3739,7 @@ mod tests {
 
         view.read_with(cx, |view, _cx| {
             assert_eq!(view.search_query(), None);
+            assert!(view.tree_revision > search_revision);
         });
     }
 
@@ -3785,10 +3898,11 @@ impl Render for FileTreeView {
         let theme = cx.theme().clone();
         let entries = self.tree.visible_entries();
         let density = self.tree.config().density;
-        let width_measure_item_index = widest_project_tree_entry_index(&entries, density);
-        let content_width = project_tree_content_width(&entries, density, |entry| {
-            self.get_vcs_status_for_entry(&entry.path, cx)
-        });
+        let vcs_revision = cx.global::<VcsServiceHandle>().status_revision(cx);
+        let presentation = self.resolve_presentation_cache(&entries, density, vcs_revision, cx);
+        let width_measure_item_index = presentation.width_measure_item_index;
+        let content_width = presentation.content_width;
+        let vcs_statuses = presentation.vcs_statuses;
 
         // (debug logging removed)
 
@@ -3933,11 +4047,13 @@ impl Render for FileTreeView {
                     .child({
                         let list = uniform_list("file-tree-list", entries.len(), {
                             let entries = entries.clone();
+                            let vcs_statuses = vcs_statuses.clone();
                             cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
                                 let mut items = Vec::with_capacity(range.end - range.start);
                                 for index in range {
                                     if let Some(entry) = entries.get(index) {
-                                        items.push(this.render_entry(entry, cx));
+                                        let vcs_status = vcs_statuses.get(index).copied().flatten();
+                                        items.push(this.render_entry(entry, vcs_status, cx));
                                     }
                                 }
                                 items
