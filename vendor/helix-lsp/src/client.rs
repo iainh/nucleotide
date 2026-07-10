@@ -126,15 +126,19 @@ impl Client {
         workspace_context: Option<&LspWorkspaceContext>,
     ) -> bool {
         let (workspace, workspace_is_cwd) = workspace_for_context(workspace_context);
-        let root = find_lsp_workspace(
-            doc_path
-                .and_then(|x| x.parent().and_then(|x| x.to_str()))
-                .unwrap_or("."),
-            root_markers,
-            manual_roots,
-            &workspace,
-            workspace_is_cwd,
-        );
+        let root = if doc_path.is_none() && workspace_context.is_some() {
+            Some(workspace.clone())
+        } else {
+            find_lsp_workspace(
+                doc_path
+                    .and_then(|x| x.parent().and_then(|x| x.to_str()))
+                    .unwrap_or("."),
+                root_markers,
+                manual_roots,
+                &workspace,
+                workspace_is_cwd,
+            )
+        };
         let root_uri = root.as_ref().and_then(|root| file_uri_from_path(root));
 
         let candidate_root = root.unwrap_or(workspace);

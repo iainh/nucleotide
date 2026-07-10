@@ -194,8 +194,8 @@ extra_args = []
 
 [lsp]
 # Start language servers from detected project roots instead of individual
-# files. Default: false.
-project_lsp_startup = false
+# files. Default: true.
+project_lsp_startup = true
 
 # Maximum time to spend starting project LSPs, in milliseconds. Default: 5000.
 # Valid range: 1 to 60000.

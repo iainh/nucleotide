@@ -436,6 +436,25 @@ impl ProjectLspManager {
         removed
     }
 
+    /// Remove all bookkeeping owned by a closed project session.
+    pub async fn remove_project(&self, workspace_root: &std::path::Path) -> Vec<ManagedServer> {
+        self.projects.write().await.remove(workspace_root);
+        let removed = self
+            .servers
+            .write()
+            .await
+            .remove(workspace_root)
+            .unwrap_or_default();
+
+        for server in &removed {
+            let _ = self.event_tx.send(ProjectLspEvent::ServerCleanupCompleted {
+                workspace_root: workspace_root.to_path_buf(),
+                server_id: server.server_id,
+            });
+        }
+        removed
+    }
+
     /// Get event sender for external coordination
     pub fn get_event_sender(&self) -> broadcast::Sender<ProjectLspEvent> {
         self.event_tx.clone()
@@ -1162,6 +1181,41 @@ mod tests {
                 .is_empty()
         );
         assert!(!manager.remove_managed_server(server_id).await);
+    }
+
+    #[tokio::test]
+    async fn project_lsp_manager_removes_all_closed_session_state() {
+        let manager = ProjectLspManager::new(ProjectLspConfig::default(), None);
+        let workspace_root = PathBuf::from("/home/me/old-project");
+        let server_id = slotmap::KeyData::from_ffi(14).into();
+
+        manager
+            .register_project(
+                workspace_root.clone(),
+                ProjectType::Rust,
+                vec!["rust-analyzer".to_string()],
+            )
+            .await;
+        manager
+            .upsert_managed_server(
+                workspace_root.clone(),
+                "rust-analyzer".to_string(),
+                "rust".to_string(),
+                server_id,
+            )
+            .await;
+
+        let removed = manager.remove_project(&workspace_root).await;
+
+        assert_eq!(removed.len(), 1);
+        assert_eq!(removed[0].server_id, server_id);
+        assert!(manager.get_project_info(&workspace_root).await.is_none());
+        assert!(
+            manager
+                .get_managed_servers(&workspace_root)
+                .await
+                .is_empty()
+        );
     }
 
     #[tokio::test]

@@ -52,7 +52,8 @@ use helix_view::{
 };
 use nucleotide_events::{ProjectLspCommand, ProjectLspCommandError};
 use nucleotide_lsp::{
-    HelixLspBridge, LspLaunchProxy, LspLaunchProxyProvider, ProjectLspManager, ServerStatus,
+    HelixLspBridge, LspLaunchProxy, LspLaunchProxyProvider, ProjectEnvironmentSource,
+    ProjectLspManager, ProjectServerLifecycle, ServerStatus,
 };
 use nucleotide_workspace::{
     DirectoryListing, FileKind, FileRead, FileStat, ProcessSpec, ReadOptions,
@@ -470,16 +471,28 @@ fn quote_windows_command_arg(value: &std::ffi::OsStr) -> String {
     format!("\"{}\"", value.replace('"', "\\\""))
 }
 
-fn should_launch_lsp_on_local_host(identity: &WorkspaceIdentity) -> bool {
-    matches!(identity, WorkspaceIdentity::Local)
-}
-
 fn project_lsp_config(config: &crate::config::LspConfig) -> nucleotide_lsp::ProjectLspConfig {
     nucleotide_lsp::ProjectLspConfig {
         enable_proactive_startup: config.project_lsp_startup,
         startup_timeout: Duration::from_millis(config.startup_timeout_ms),
         ..nucleotide_lsp::ProjectLspConfig::default()
     }
+}
+
+fn canonical_project_lsp_root(workspace_root: &Path) -> PathBuf {
+    if classify_workspace_location(workspace_root).is_remote() {
+        return workspace_root.to_path_buf();
+    }
+    std::fs::canonicalize(workspace_root).unwrap_or_else(|_| workspace_root.to_path_buf())
+}
+
+fn project_lsp_error_is_retryable(error: &ProjectLspCommandError) -> bool {
+    let message = error.to_string().to_ascii_lowercase();
+    !message.contains("not configured")
+        && !message.contains("no language configuration")
+        && !message.contains("not found")
+        && !message.contains("missing executable")
+        && !matches!(error, ProjectLspCommandError::StaleProjectSession)
 }
 
 fn should_stat_picker_root_with_backend(identity: &WorkspaceIdentity) -> bool {
@@ -1474,6 +1487,120 @@ struct ProjectLspSystem {
     bridge: HelixLspBridge,
 }
 
+#[derive(Debug, Default)]
+struct ProjectLspSupervisor {
+    generation: u64,
+    active_root: Option<PathBuf>,
+    retrying_servers: HashSet<(u64, String, String)>,
+    session_in_flight: bool,
+    session_result: Option<nucleotide_events::ProjectSessionResult>,
+    session_waiters: Vec<
+        tokio::sync::oneshot::Sender<
+            Result<nucleotide_events::ProjectSessionResult, ProjectLspCommandError>,
+        >,
+    >,
+}
+
+#[derive(Debug)]
+struct ProjectSessionTransition {
+    generation: u64,
+    previous_root: Option<PathBuf>,
+}
+
+impl ProjectLspSupervisor {
+    fn open_session(&mut self, workspace_root: PathBuf) -> ProjectSessionTransition {
+        if self.active_root.as_ref() == Some(&workspace_root) {
+            return ProjectSessionTransition {
+                generation: self.generation,
+                previous_root: None,
+            };
+        }
+
+        self.generation = self.generation.wrapping_add(1).max(1);
+        self.retrying_servers.clear();
+        ProjectSessionTransition {
+            generation: self.generation,
+            previous_root: self.active_root.replace(workspace_root),
+        }
+    }
+
+    fn queue_session_open(
+        &mut self,
+        workspace_root: PathBuf,
+        response: tokio::sync::oneshot::Sender<
+            Result<nucleotide_events::ProjectSessionResult, ProjectLspCommandError>,
+        >,
+    ) -> Option<ProjectSessionTransition> {
+        if self.active_root.as_ref() == Some(&workspace_root) {
+            if let Some(result) = &self.session_result {
+                let _ = response.send(Ok(result.clone()));
+                return None;
+            }
+            if self.session_in_flight {
+                self.session_waiters.push(response);
+                return None;
+            }
+
+            self.session_in_flight = true;
+            self.session_waiters.push(response);
+            return Some(ProjectSessionTransition {
+                generation: self.generation,
+                previous_root: None,
+            });
+        }
+
+        for waiter in self.session_waiters.drain(..) {
+            let _ = waiter.send(Err(ProjectLspCommandError::StaleProjectSession));
+        }
+        let transition = self.open_session(workspace_root);
+        self.session_in_flight = true;
+        self.session_result = None;
+        self.session_waiters.push(response);
+        Some(transition)
+    }
+
+    fn complete_session(
+        &mut self,
+        generation: u64,
+        result: Result<nucleotide_events::ProjectSessionResult, ProjectLspCommandError>,
+    ) {
+        if self.generation != generation {
+            return;
+        }
+        self.session_in_flight = false;
+        if let Ok(session) = &result {
+            self.session_result = Some(session.clone());
+        }
+        for waiter in self.session_waiters.drain(..) {
+            let _ = waiter.send(result.clone());
+        }
+    }
+
+    fn is_current(&self, generation: u64, workspace_root: &Path) -> bool {
+        self.generation == generation && self.active_root.as_deref() == Some(workspace_root)
+    }
+
+    fn allows_start(&self, generation: u64, workspace_root: &Path) -> bool {
+        match self.active_root.as_deref() {
+            Some(_) => self.is_current(generation, workspace_root),
+            None => generation == self.generation,
+        }
+    }
+
+    fn begin_retry(&mut self, generation: u64, language_id: &str, server_name: &str) -> bool {
+        self.retrying_servers
+            .insert((generation, language_id.to_string(), server_name.to_string()))
+    }
+
+    fn finish_retry(&mut self, generation: u64, language_id: &str, server_name: &str) {
+        self.retrying_servers.remove(&(
+            generation,
+            language_id.to_string(),
+            server_name.to_string(),
+        ));
+    }
+}
+
 struct PendingLspWorkspaceEdit {
     server_id: LanguageServerId,
     request_id: helix_lsp::jsonrpc::Id,
@@ -1524,6 +1651,7 @@ pub struct Application {
     pub project_lsp_command_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<nucleotide_events::ProjectLspCommand>>,
     project_lsp_initialization_attempted: bool,
+    project_lsp_supervisor: ProjectLspSupervisor,
     pub project_environment: Arc<ProjectEnvironment>,
     pub workspace_file_ops: WorkspaceFileOpHandler,
     project_env_overrides: HashMap<String, Option<String>>,
@@ -1575,9 +1703,7 @@ impl gpui::EventEmitter<InputEvent> for Input {}
 
 // Crank struct removed - replaced with event-driven LSP completion processing
 
-const LSP_TOKEN_IDLE: &str = "idle";
 const LSP_TOKEN_ACTIVITY: &str = "activity";
-const LSP_MSG_READY: &str = "Ready";
 
 fn is_navigation_repeat_key(key: &KeyEvent, mode: Mode) -> bool {
     let has_shortcut_modifier = key
@@ -1599,12 +1725,6 @@ fn is_navigation_repeat_key(key: &KeyEvent, mode: Mode) -> bool {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum LspUiState {
-    Idle,
-    Activity(String),
-}
-
 impl Application {
     pub fn set_maintenance_wake(&mut self, wake: MaintenanceWake) {
         self.maintenance_wake = Some(wake);
@@ -1614,6 +1734,15 @@ impl Application {
         if let Some(wake) = &self.maintenance_wake {
             wake.notify();
         }
+    }
+
+    fn notify_language_server_stream_added(&self) {
+        // `helix_lsp::Registry::incoming` is a dynamically populated
+        // `SelectAll`. Pushing a new receiver does not wake the task that last
+        // polled the previously empty set, so explicitly poll it once after a
+        // project server is registered. Subsequent server messages wake the
+        // maintenance task through the receiver's registered waker.
+        self.request_event_driven_maintenance();
     }
 
     pub(crate) fn apply_lsp_workspace_edit(
@@ -1636,27 +1765,6 @@ impl Application {
             .set_save_handler(Some(Arc::new(WorkspaceDocumentSaveHandler::new(
                 workspace_backend,
             ))));
-    }
-
-    fn lsp_title_for_state(state: &LspUiState) -> &'static str {
-        match state {
-            LspUiState::Idle => "Connected",
-            LspUiState::Activity(_) => "Processing",
-        }
-    }
-
-    fn lsp_token_for_state(state: &LspUiState) -> &'static str {
-        match state {
-            LspUiState::Idle => LSP_TOKEN_IDLE,
-            LspUiState::Activity(_) => LSP_TOKEN_ACTIVITY,
-        }
-    }
-
-    fn lsp_key_for_state(server_id: helix_lsp::LanguageServerId, state: &LspUiState) -> String {
-        match state {
-            LspUiState::Idle => format!("{}-{}", server_id, LSP_TOKEN_IDLE),
-            LspUiState::Activity(_) => format!("{}-{}", server_id, LSP_TOKEN_ACTIVITY),
-        }
     }
 
     pub(crate) fn set_editor_status_feedback(
@@ -2316,6 +2424,11 @@ impl Application {
         handle: &tokio::runtime::Handle,
     ) {
         match command {
+            ProjectLspCommand::OpenProjectSession {
+                workspace_root,
+                response,
+                ..
+            } => self.schedule_open_project_session(workspace_root, response, cx, handle),
             ProjectLspCommand::StartServer {
                 workspace_root,
                 server_name,
@@ -2363,6 +2476,14 @@ impl Application {
                 {
                     handle.spawn(async move {
                         manager.remove_managed_server(server_id).await;
+                    });
+                }
+                if result.is_ok()
+                    && let Some(state) = &self.lsp_state
+                {
+                    state.update(cx, |state, cx| {
+                        state.remove_server(server_id);
+                        cx.notify();
                     });
                 }
                 let _ = response.send(result);
@@ -2417,20 +2538,823 @@ impl Application {
                 workspace_root,
                 response,
                 ..
-            } => self.schedule_detect_and_start_project(workspace_root, response, cx, handle),
+            } => {
+                self.schedule_legacy_detect_as_project_session(workspace_root, response, cx, handle)
+            }
             ProjectLspCommand::RestartServersForWorkspaceChange {
-                old_workspace_root,
+                old_workspace_root: _,
                 new_workspace_root,
                 response,
                 ..
-            } => self.schedule_workspace_lsp_restart(
-                old_workspace_root,
+            } => self.schedule_legacy_restart_as_project_session(
                 new_workspace_root,
                 response,
                 cx,
                 handle,
             ),
         }
+    }
+
+    fn schedule_legacy_detect_as_project_session(
+        &mut self,
+        workspace_root: PathBuf,
+        response: tokio::sync::oneshot::Sender<
+            Result<nucleotide_events::ProjectDetectionResult, ProjectLspCommandError>,
+        >,
+        cx: &mut gpui::Context<crate::Core>,
+        handle: &tokio::runtime::Handle,
+    ) {
+        let (session_tx, session_rx) = tokio::sync::oneshot::channel();
+        self.schedule_open_project_session(workspace_root, session_tx, cx, handle);
+        cx.spawn(async move |_this, _cx| {
+            let result = session_rx
+                .await
+                .map_err(|_| {
+                    ProjectLspCommandError::Internal(
+                        "project session response channel dropped".to_string(),
+                    )
+                })
+                .and_then(|result| result)
+                .map(|session| nucleotide_events::ProjectDetectionResult {
+                    project_type: session.plan.project_type,
+                    language_servers: session.language_servers,
+                    servers_started: session.servers_started,
+                });
+            let _ = response.send(result);
+        })
+        .detach();
+    }
+
+    fn schedule_legacy_restart_as_project_session(
+        &mut self,
+        workspace_root: PathBuf,
+        response: tokio::sync::oneshot::Sender<
+            Result<Vec<nucleotide_events::ServerStartResult>, ProjectLspCommandError>,
+        >,
+        cx: &mut gpui::Context<crate::Core>,
+        handle: &tokio::runtime::Handle,
+    ) {
+        let (session_tx, session_rx) = tokio::sync::oneshot::channel();
+        self.schedule_open_project_session(workspace_root, session_tx, cx, handle);
+        cx.spawn(async move |_this, _cx| {
+            let result = session_rx
+                .await
+                .map_err(|_| {
+                    ProjectLspCommandError::Internal(
+                        "project session response channel dropped".to_string(),
+                    )
+                })
+                .and_then(|result| result)
+                .map(|session| session.servers_started);
+            let _ = response.send(result);
+        })
+        .detach();
+    }
+
+    fn schedule_open_project_session(
+        &mut self,
+        workspace_root: PathBuf,
+        response: tokio::sync::oneshot::Sender<
+            Result<nucleotide_events::ProjectSessionResult, ProjectLspCommandError>,
+        >,
+        cx: &mut gpui::Context<crate::Core>,
+        handle: &tokio::runtime::Handle,
+    ) {
+        let workspace_root = canonical_project_lsp_root(&workspace_root);
+        let Some(transition) = self
+            .project_lsp_supervisor
+            .queue_session_open(workspace_root.clone(), response)
+        else {
+            return;
+        };
+        let generation = transition.generation;
+
+        if let Some(manager) = self.project_lsp_manager_handle() {
+            let _ = manager.get_event_sender().send(
+                nucleotide_events::ProjectLspEvent::ProjectSessionOpened {
+                    generation,
+                    workspace_root: workspace_root.clone(),
+                    backend_identity: format!("{:?}", self.workspace_backend.identity()),
+                    proactive_startup: self.config.gui.lsp.project_lsp_startup,
+                },
+            );
+        }
+
+        self.end_previous_project_session(transition.previous_root, cx, handle);
+
+        if let Some(state) = &self.lsp_state {
+            let status_root = workspace_root.clone();
+            state.update(cx, |state, cx| {
+                state.begin_project_session(generation, status_root);
+                cx.notify();
+            });
+        }
+
+        if !classify_workspace_location(&workspace_root).is_remote()
+            && let Err(error) = self.editor.set_cwd(&workspace_root)
+        {
+            warn!(%error, workspace_root = %workspace_root.display(), "Failed to update Editor working directory");
+        }
+
+        self.set_editor_status_feedback(
+            cx,
+            "Preparing project language servers".to_string(),
+            crate::types::Severity::Info,
+        );
+
+        let bridge = self.helix_lsp_bridge_handle();
+        let inventory_bridge = bridge.clone();
+        let workspace_backend = self.workspace_backend.clone();
+        let inventory_backend = workspace_backend.clone();
+        let timeout = Duration::from_millis(self.config.gui.lsp.startup_timeout_ms);
+        let proactive_startup_enabled = self.config.gui.lsp.project_lsp_startup;
+        let runtime = handle.clone();
+
+        cx.spawn(async move |this, cx| {
+            let task_root = workspace_root.clone();
+            let preparation = runtime
+                .spawn(async move {
+                    let plan_future =
+                        detect_project_lsp_plan_with_backend(&task_root, workspace_backend);
+                    let environment_future = async {
+                        match bridge {
+                            Some(bridge) => tokio::time::timeout(
+                                timeout,
+                                bridge.prepare_server_environment(&task_root),
+                            )
+                            .await
+                            .map_err(|_| {
+                                format!(
+                                    "environment preparation timed out after {}ms",
+                                    timeout.as_millis()
+                                )
+                            })
+                            .and_then(|result| result),
+                            None => Err("HelixLspBridge not initialized".to_string()),
+                        }
+                    };
+                    tokio::join!(plan_future, environment_future)
+                })
+                .await;
+
+            let Ok((plan, environment)) = preparation else {
+                if let Some(this) = this.upgrade() {
+                    this.update(cx, |app, _cx| {
+                        app.project_lsp_supervisor.complete_session(
+                            generation,
+                            Err(ProjectLspCommandError::Internal(
+                                "project session preparation task failed".to_string(),
+                            )),
+                        );
+                    });
+                }
+                return;
+            };
+
+            if let Some(this) = this.upgrade() {
+                this.update(cx, move |app, cx| {
+                    if !app
+                        .project_lsp_supervisor
+                        .is_current(generation, &workspace_root)
+                    {
+                        return;
+                    }
+
+                    let planned_servers = if proactive_startup_enabled {
+                        configured_project_servers(&app.editor, &plan)
+                    } else {
+                        Vec::new()
+                    };
+                    if let Some(state) = &app.lsp_state {
+                        let environment_source = match &environment {
+                            Ok(Some(_)) => ProjectEnvironmentSource::Project,
+                            Ok(None) | Err(_) => ProjectEnvironmentSource::ProcessFallback,
+                        };
+                        state.update(cx, |state, cx| {
+                            state.set_project_server_plan(&planned_servers);
+                            state.set_project_environment_source(environment_source);
+                            cx.notify();
+                        });
+                    }
+                    let server_names = planned_servers
+                        .iter()
+                        .map(|(_, server_name)| server_name.clone())
+                        .collect::<Vec<_>>();
+                    let project_type = plan.project_type.clone();
+                    let servers_started = app.start_planned_project_servers_prepared(
+                        &runtime,
+                        generation,
+                        &workspace_root,
+                        &planned_servers,
+                        environment,
+                        cx,
+                    );
+
+                    if let Some(manager) = app.project_lsp_manager_handle() {
+                        let manager_root = workspace_root.clone();
+                        let manager_servers = server_names.clone();
+                        runtime.spawn(async move {
+                            manager
+                                .register_project(manager_root, project_type, manager_servers)
+                                .await;
+                        });
+                    }
+
+                    let session_result = nucleotide_events::ProjectSessionResult {
+                        generation,
+                        plan: plan.clone(),
+                        language_servers: server_names,
+                        servers_started,
+                    };
+                    app.project_lsp_supervisor
+                        .complete_session(generation, Ok(session_result));
+                    let planned_language_ids = plan
+                        .languages
+                        .iter()
+                        .map(|language| language.language_id.clone())
+                        .collect::<HashSet<_>>();
+                    app.schedule_project_language_inventory(
+                        &runtime,
+                        generation,
+                        workspace_root.clone(),
+                        inventory_backend,
+                        inventory_bridge,
+                        planned_language_ids,
+                        cx,
+                    );
+                    app.sync_lsp_state(cx);
+                    cx.emit(crate::Update::Redraw);
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn schedule_project_language_inventory(
+        &mut self,
+        handle: &tokio::runtime::Handle,
+        generation: u64,
+        workspace_root: PathBuf,
+        workspace_backend: WorkspaceBackendHandle,
+        bridge: Option<HelixLspBridge>,
+        existing_languages: HashSet<String>,
+        cx: &mut gpui::Context<crate::Core>,
+    ) {
+        let runtime = handle.clone();
+        let timeout = Duration::from_millis(self.config.gui.lsp.startup_timeout_ms);
+        cx.spawn(async move |this, cx| {
+            let task_root = workspace_root.clone();
+            let preparation = runtime
+                .spawn(async move {
+                    let discovered = discover_project_languages_with_backend(
+                        &task_root,
+                        workspace_backend,
+                        &existing_languages,
+                    )
+                    .await;
+                    let environment = if discovered.is_empty() {
+                        Ok(None)
+                    } else {
+                        match bridge {
+                            Some(bridge) => tokio::time::timeout(
+                                timeout,
+                                bridge.prepare_server_environment(&task_root),
+                            )
+                            .await
+                            .map_err(|_| {
+                                format!(
+                                    "environment preparation timed out after {}ms",
+                                    timeout.as_millis()
+                                )
+                            })
+                            .and_then(|result| result),
+                            None => Err("HelixLspBridge not initialized".to_string()),
+                        }
+                    };
+                    (discovered, environment)
+                })
+                .await;
+
+            let Ok((discovered, environment)) = preparation else {
+                return;
+            };
+            if discovered.is_empty() {
+                return;
+            }
+
+            if let Some(this) = this.upgrade() {
+                this.update(cx, move |app, cx| {
+                    if !app
+                        .project_lsp_supervisor
+                        .is_current(generation, &workspace_root)
+                    {
+                        return;
+                    }
+
+                    let discovered_plan = nucleotide_events::ProjectLspPlan {
+                        project_type: nucleotide_events::ProjectType::Unknown,
+                        languages: discovered
+                            .into_iter()
+                            .map(|language_id| nucleotide_events::PlannedProjectLanguage {
+                                language_id,
+                                evidence:
+                                    nucleotide_events::ProjectLanguageEvidence::DiscoveredLanguage,
+                            })
+                            .collect(),
+                    };
+                    let mut servers = configured_project_servers(&app.editor, &discovered_plan);
+                    if let Some(state) = &app.lsp_state {
+                        let existing_servers =
+                            state.read(cx).project_session.as_ref().map(|session| {
+                                session
+                                    .servers
+                                    .iter()
+                                    .map(|server| {
+                                        (server.language_id.clone(), server.server_name.clone())
+                                    })
+                                    .collect::<HashSet<_>>()
+                            });
+                        if let Some(existing_servers) = existing_servers {
+                            servers.retain(|server| !existing_servers.contains(server));
+                        }
+                        state.update(cx, |state, cx| {
+                            state.extend_project_server_plan(&servers);
+                            cx.notify();
+                        });
+                    }
+                    if servers.is_empty() {
+                        return;
+                    }
+
+                    app.start_planned_project_servers_prepared(
+                        &runtime,
+                        generation,
+                        &workspace_root,
+                        &servers,
+                        environment,
+                        cx,
+                    );
+                    app.sync_lsp_state(cx);
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
+    fn end_previous_project_session(
+        &mut self,
+        previous_root: Option<PathBuf>,
+        cx: &mut gpui::Context<crate::Core>,
+        handle: &tokio::runtime::Handle,
+    ) {
+        let Some(previous_root) = previous_root else {
+            return;
+        };
+
+        let stopped_clients = self
+            .helix_lsp_bridge_handle()
+            .map(|bridge| bridge.stop_workspace_servers(&mut self.editor, &previous_root))
+            .unwrap_or_default();
+
+        if let Some(state) = &self.lsp_state {
+            state.update(cx, |state, cx| {
+                state.clear_all_state();
+                cx.notify();
+            });
+        }
+        self.lsp_progress.clear();
+        self.prewarmed_lsp_startups
+            .retain(|(root, _, _)| root != &previous_root);
+
+        if let Some(manager) = self.project_lsp_manager_handle() {
+            let manager_root = previous_root.clone();
+            handle.spawn(async move {
+                manager.remove_project(&manager_root).await;
+            });
+        }
+
+        for client in stopped_clients {
+            handle.spawn(async move {
+                let _ = tokio::time::timeout(
+                    Duration::from_millis(500),
+                    client.wait_shutdown_flushed(),
+                )
+                .await;
+                drop(client);
+            });
+        }
+
+        info!(workspace_root = %previous_root.display(), "Ended previous project LSP session");
+    }
+
+    fn start_planned_project_servers_prepared(
+        &mut self,
+        handle: &tokio::runtime::Handle,
+        generation: u64,
+        workspace_root: &Path,
+        planned_servers: &[(String, String)],
+        environment: Result<Option<HashMap<String, String>>, String>,
+        cx: &mut gpui::Context<crate::Core>,
+    ) -> Vec<nucleotide_events::ServerStartResult> {
+        let mut results = Vec::new();
+        for (language_id, server_name) in planned_servers {
+            if !self
+                .project_lsp_supervisor
+                .is_current(generation, workspace_root)
+            {
+                break;
+            }
+            if let Some(state) = &self.lsp_state {
+                state.update(cx, |state, _cx| {
+                    state.update_project_server_lifecycle(
+                        language_id,
+                        server_name,
+                        ProjectServerLifecycle::Starting,
+                        None,
+                    );
+                });
+            }
+            match self.start_lsp_server_prepared(
+                workspace_root,
+                server_name,
+                language_id,
+                environment.clone(),
+            ) {
+                Ok(server_result) => {
+                    if let Some(state) = &self.lsp_state {
+                        state.update(cx, |state, _cx| {
+                            state.update_project_server_lifecycle(
+                                language_id,
+                                server_name,
+                                ProjectServerLifecycle::Initializing,
+                                None,
+                            );
+                        });
+                    }
+                    self.record_project_lsp_server_in_background(
+                        handle,
+                        workspace_root.to_path_buf(),
+                        server_result.clone(),
+                    );
+                    self.schedule_project_server_initialization_monitor(
+                        handle,
+                        generation,
+                        workspace_root.to_path_buf(),
+                        language_id.clone(),
+                        server_name.clone(),
+                        server_result.server_id,
+                        0,
+                        cx,
+                    );
+                    results.push(server_result);
+                }
+                Err(error) => {
+                    error!(
+                        %error,
+                        %server_name,
+                        %language_id,
+                        workspace_root = %workspace_root.display(),
+                        "Failed to start planned project language server"
+                    );
+                    if let Some(state) = &self.lsp_state {
+                        let error_message = error.to_string();
+                        state.update(cx, |state, _cx| {
+                            state.update_project_server_lifecycle(
+                                language_id,
+                                server_name,
+                                ProjectServerLifecycle::Failed {
+                                    error: error_message.clone(),
+                                },
+                                Some(error_message),
+                            );
+                        });
+                    }
+                    if project_lsp_error_is_retryable(&error)
+                        && self.project_lsp_supervisor.begin_retry(
+                            generation,
+                            language_id,
+                            server_name,
+                        )
+                    {
+                        self.schedule_project_server_retry(
+                            handle,
+                            generation,
+                            workspace_root.to_path_buf(),
+                            language_id.clone(),
+                            server_name.clone(),
+                            0,
+                            cx,
+                        );
+                    }
+                }
+            }
+        }
+        results
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn schedule_project_server_initialization_monitor(
+        &mut self,
+        handle: &tokio::runtime::Handle,
+        generation: u64,
+        workspace_root: PathBuf,
+        language_id: String,
+        server_name: String,
+        server_id: LanguageServerId,
+        retry_attempt: usize,
+        cx: &mut gpui::Context<crate::Core>,
+    ) {
+        let Some(client) = self.editor.language_servers.get_by_id(server_id).cloned() else {
+            return;
+        };
+        let runtime = handle.clone();
+        let initialization_timeout =
+            Duration::from_millis(self.config.gui.lsp.startup_timeout_ms.max(1_000));
+
+        cx.spawn(async move |this, cx| {
+            let initialized = runtime
+                .spawn(async move {
+                    tokio::time::timeout(initialization_timeout, async {
+                        while !client.is_initialized() {
+                            tokio::time::sleep(Duration::from_millis(25)).await;
+                        }
+                    })
+                    .await
+                    .is_ok()
+                })
+                .await
+                .unwrap_or(false);
+
+            if let Some(this) = this.upgrade() {
+                this.update(cx, move |app, cx| {
+                    if !app
+                        .project_lsp_supervisor
+                        .is_current(generation, &workspace_root)
+                    {
+                        return;
+                    }
+                    if app.editor.language_server_by_id(server_id).is_none() {
+                        return;
+                    }
+
+                    if initialized {
+                        app.project_lsp_supervisor.finish_retry(
+                            generation,
+                            &language_id,
+                            &server_name,
+                        );
+                        if let Some(state) = &app.lsp_state {
+                            state.update(cx, |state, cx| {
+                                state.update_project_server_lifecycle(
+                                    &language_id,
+                                    &server_name,
+                                    ProjectServerLifecycle::Running,
+                                    None,
+                                );
+                                state.update_server_status(server_id, ServerStatus::Running);
+                                cx.notify();
+                            });
+                        }
+                        if let Some(manager) = app.project_lsp_manager_handle() {
+                            let _ = manager.get_event_sender().send(
+                                nucleotide_events::ProjectLspEvent::ServerStartupCompleted {
+                                    workspace_root: workspace_root.clone(),
+                                    server_name: server_name.clone(),
+                                    server_id,
+                                    status: nucleotide_events::ServerStartupResult::Success,
+                                },
+                            );
+                        }
+                        app.sync_lsp_state(cx);
+                        return;
+                    }
+
+                    let error = format!(
+                        "{} initialization timed out after {}ms",
+                        server_name,
+                        initialization_timeout.as_millis()
+                    );
+                    if let Some(bridge) = app.helix_lsp_bridge_handle() {
+                        let _ = bridge.stop_server(&mut app.editor, server_id);
+                    }
+                    if let Some(manager) = app.project_lsp_manager_handle() {
+                        let _ = manager.get_event_sender().send(
+                            nucleotide_events::ProjectLspEvent::ServerStartupCompleted {
+                                workspace_root: workspace_root.clone(),
+                                server_name: server_name.clone(),
+                                server_id,
+                                status: nucleotide_events::ServerStartupResult::Timeout,
+                            },
+                        );
+                        runtime.spawn(async move {
+                            manager.remove_managed_server(server_id).await;
+                        });
+                    }
+                    if let Some(state) = &app.lsp_state {
+                        let status_error = error.clone();
+                        state.update(cx, |state, cx| {
+                            state.remove_server(server_id);
+                            state.update_project_server_lifecycle(
+                                &language_id,
+                                &server_name,
+                                ProjectServerLifecycle::Failed {
+                                    error: status_error.clone(),
+                                },
+                                Some(status_error),
+                            );
+                            cx.notify();
+                        });
+                    }
+
+                    let retry_registered = retry_attempt > 0
+                        || app.project_lsp_supervisor.begin_retry(
+                            generation,
+                            &language_id,
+                            &server_name,
+                        );
+                    if retry_registered {
+                        app.schedule_project_server_retry(
+                            &runtime,
+                            generation,
+                            workspace_root,
+                            language_id,
+                            server_name,
+                            retry_attempt,
+                            cx,
+                        );
+                    }
+                });
+            }
+        })
+        .detach();
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn schedule_project_server_retry(
+        &mut self,
+        handle: &tokio::runtime::Handle,
+        generation: u64,
+        workspace_root: PathBuf,
+        language_id: String,
+        server_name: String,
+        attempt: usize,
+        cx: &mut gpui::Context<crate::Core>,
+    ) {
+        const RETRY_DELAYS: [Duration; 3] = [
+            Duration::from_millis(250),
+            Duration::from_secs(1),
+            Duration::from_secs(5),
+        ];
+        let Some(delay) = RETRY_DELAYS.get(attempt).copied() else {
+            self.project_lsp_supervisor
+                .finish_retry(generation, &language_id, &server_name);
+            return;
+        };
+        let Some(bridge) = self.helix_lsp_bridge_handle() else {
+            self.project_lsp_supervisor
+                .finish_retry(generation, &language_id, &server_name);
+            return;
+        };
+        let runtime = handle.clone();
+        let timeout = Duration::from_millis(self.config.gui.lsp.startup_timeout_ms);
+        if let Some(state) = &self.lsp_state {
+            let status_language = language_id.clone();
+            let status_server = server_name.clone();
+            state.update(cx, |state, cx| {
+                let last_error = state
+                    .project_session
+                    .as_ref()
+                    .and_then(|session| {
+                        session.servers.iter().find(|server| {
+                            server.language_id == status_language
+                                && server.server_name == status_server
+                        })
+                    })
+                    .and_then(|server| server.last_error.clone());
+                state.update_project_server_lifecycle(
+                    &status_language,
+                    &status_server,
+                    ProjectServerLifecycle::RetryScheduled {
+                        attempt: attempt + 1,
+                        next_retry_at: Instant::now() + delay,
+                    },
+                    last_error,
+                );
+                cx.notify();
+            });
+        }
+
+        info!(
+            generation,
+            %server_name,
+            %language_id,
+            attempt = attempt + 1,
+            delay_ms = delay.as_millis(),
+            "Scheduled project language server retry"
+        );
+
+        cx.spawn(async move |this, cx| {
+            let prepare_root = workspace_root.clone();
+            let environment = runtime
+                .spawn(async move {
+                    tokio::time::sleep(delay).await;
+                    tokio::time::timeout(timeout, bridge.prepare_server_environment(&prepare_root))
+                        .await
+                        .map_err(|_| {
+                            format!(
+                                "environment preparation timed out after {}ms",
+                                timeout.as_millis()
+                            )
+                        })
+                        .and_then(|result| result)
+                })
+                .await
+                .unwrap_or_else(|error| Err(format!("environment task failed: {error}")));
+
+            if let Some(this) = this.upgrade() {
+                this.update(cx, move |app, cx| {
+                    if !app
+                        .project_lsp_supervisor
+                        .is_current(generation, &workspace_root)
+                    {
+                        return;
+                    }
+
+                    match app.start_lsp_server_prepared(
+                        &workspace_root,
+                        &server_name,
+                        &language_id,
+                        environment,
+                    ) {
+                        Ok(server_result) => {
+                            app.record_project_lsp_server_in_background(
+                                &runtime,
+                                workspace_root.clone(),
+                                server_result.clone(),
+                            );
+                            app.schedule_project_server_initialization_monitor(
+                                &runtime,
+                                generation,
+                                workspace_root,
+                                language_id.clone(),
+                                server_name.clone(),
+                                server_result.server_id,
+                                attempt + 1,
+                                cx,
+                            );
+                            if let Some(state) = &app.lsp_state {
+                                state.update(cx, |state, _cx| {
+                                    state.update_project_server_lifecycle(
+                                        &language_id,
+                                        &server_name,
+                                        ProjectServerLifecycle::Initializing,
+                                        None,
+                                    );
+                                });
+                            }
+                            app.sync_lsp_state(cx);
+                            cx.notify();
+                        }
+                        Err(error) if project_lsp_error_is_retryable(&error) => {
+                            app.schedule_project_server_retry(
+                                &runtime,
+                                generation,
+                                workspace_root,
+                                language_id,
+                                server_name,
+                                attempt + 1,
+                                cx,
+                            );
+                        }
+                        Err(error) => {
+                            app.project_lsp_supervisor.finish_retry(
+                                generation,
+                                &language_id,
+                                &server_name,
+                            );
+                            if let Some(state) = &app.lsp_state {
+                                let error_message = error.to_string();
+                                state.update(cx, |state, _cx| {
+                                    state.update_project_server_lifecycle(
+                                        &language_id,
+                                        &server_name,
+                                        ProjectServerLifecycle::Failed {
+                                            error: error_message.clone(),
+                                        },
+                                        Some(error_message),
+                                    );
+                                });
+                            }
+                            warn!(%error, %server_name, "Project language server retry stopped");
+                        }
+                    }
+                });
+            }
+        })
+        .detach();
     }
 
     fn schedule_lsp_server_start(
@@ -2446,6 +3370,8 @@ impl Application {
         cx: &mut gpui::Context<crate::Core>,
         handle: &tokio::runtime::Handle,
     ) {
+        let workspace_root = canonical_project_lsp_root(&workspace_root);
+        let generation = self.project_lsp_supervisor.generation;
         self.set_editor_status_feedback(
             cx,
             format!("Starting language server: {server_name}"),
@@ -2488,6 +3414,15 @@ impl Application {
 
             if let Some(this) = this.upgrade() {
                 this.update(cx, move |app, cx| {
+                    if !app
+                        .project_lsp_supervisor
+                        .allows_start(generation, &workspace_root)
+                    {
+                        if let Some(response) = response {
+                            let _ = response.send(Err(ProjectLspCommandError::StaleProjectSession));
+                        }
+                        return;
+                    }
                     let result = app.start_lsp_server_prepared(
                         &workspace_root,
                         &server_name,
@@ -2545,6 +3480,7 @@ impl Application {
         }
     }
 
+    #[allow(dead_code)]
     fn schedule_detect_and_start_project(
         &mut self,
         workspace_root: PathBuf,
@@ -2674,6 +3610,7 @@ impl Application {
         results
     }
 
+    #[allow(dead_code)]
     fn schedule_workspace_lsp_restart(
         &mut self,
         old_workspace_root: Option<PathBuf>,
@@ -2822,7 +3759,8 @@ impl Application {
                 server_name.clone(),
                 language_id.clone(),
             ),
-            ProjectLspCommand::DetectAndStartProject { .. }
+            ProjectLspCommand::OpenProjectSession { .. }
+            | ProjectLspCommand::DetectAndStartProject { .. }
             | ProjectLspCommand::StopServer { .. }
             | ProjectLspCommand::RestartServersForWorkspaceChange { .. }
             | ProjectLspCommand::GetProjectStatus { .. }
@@ -3031,12 +3969,14 @@ impl Application {
         use helix_lsp::lsp::notification::Notification as _;
         use helix_lsp::{Call, MethodCall, Notification};
 
-        // Best-effort to resolve a server name for per-server traffic logs
-        let server_name_for_log = self
-            .editor
-            .language_server_by_id(server_id)
-            .map(|ls| ls.name().to_string())
-            .unwrap_or_else(|| "unknown".to_string());
+        let Some(active_server) = self.editor.language_server_by_id(server_id) else {
+            debug!(
+                server_id = ?server_id,
+                "Ignoring language-server message from a closed project generation"
+            );
+            return;
+        };
+        let server_name_for_log = active_server.name().to_string();
 
         macro_rules! language_server {
             () => {
@@ -3535,11 +4475,17 @@ impl Application {
             );
 
             // Check for active language servers
-            let active_servers: Vec<(LanguageServerId, String)> = self
+            let active_servers: Vec<(LanguageServerId, String, bool)> = self
                 .editor
                 .language_servers
                 .iter_clients()
-                .map(|client| (client.id(), client.name().to_string()))
+                .map(|client| {
+                    (
+                        client.id(),
+                        client.name().to_string(),
+                        client.is_initialized(),
+                    )
+                })
                 .collect();
 
             nucleotide_logging::info!(
@@ -3557,7 +4503,7 @@ impl Application {
                     );
 
                     // Register all active servers
-                    for (id, name) in active_servers {
+                    for (id, name, initialized) in active_servers {
                         if !state.servers.contains_key(&id) {
                             nucleotide_logging::info!(
                                 server_id = ?id,
@@ -3565,7 +4511,14 @@ impl Application {
                                 "INITIAL_SYNC: Registering LSP server during initial sync"
                             );
                             state.register_server(id, name, None);
-                            state.update_server_status(id, ServerStatus::Running);
+                            state.update_server_status(
+                                id,
+                                if initialized {
+                                    ServerStatus::Running
+                                } else {
+                                    ServerStatus::Initializing
+                                },
+                            );
                         } else {
                             nucleotide_logging::warn!(
                                 server_id = ?id,
@@ -3626,6 +4579,19 @@ impl Application {
     pub fn sync_lsp_state(&self, cx: &mut gpui::App) {
         if let Some(lsp_state) = &self.lsp_state {
             let active_servers = self.active_servers();
+            let initialized_servers = self
+                .editor
+                .language_servers
+                .iter_clients()
+                .filter(|client| client.is_initialized())
+                .map(|client| client.id())
+                .collect::<HashSet<_>>();
+            let project_server_initialization = self
+                .editor
+                .language_servers
+                .iter_clients()
+                .map(|client| (client.name().to_string(), client.is_initialized()))
+                .collect::<HashMap<_, _>>();
             debug!(active_servers = ?active_servers, "Syncing LSP state");
 
             let progressing_servers = self.progressing_servers(&active_servers);
@@ -3652,7 +4618,31 @@ impl Application {
                     if !state.servers.contains_key(id) {
                         info!(server_id = ?id, server_name = %name, "Registering new LSP server");
                         state.register_server(*id, name.clone(), None);
-                        state.update_server_status(*id, ServerStatus::Running);
+                    }
+                    state.update_server_status(
+                        *id,
+                        if initialized_servers.contains(id) {
+                            ServerStatus::Running
+                        } else {
+                            ServerStatus::Initializing
+                        },
+                    );
+                }
+
+                if let Some(session) = &mut state.project_session {
+                    for server in &mut session.servers {
+                        if let Some(initialized) =
+                            project_server_initialization.get(&server.server_name)
+                        {
+                            server.lifecycle = if *initialized {
+                                ProjectServerLifecycle::Running
+                            } else {
+                                ProjectServerLifecycle::Initializing
+                            };
+                            if *initialized {
+                                server.last_error = None;
+                            }
+                        }
                     }
                 }
 
@@ -4911,11 +5901,7 @@ impl Application {
                         }
                         formatted
                     } else {
-                        editor_status
-                            .as_ref()
-                            .filter(|(msg, _)| !msg.is_empty())
-                            .map(|(msg, _)| msg.to_string())
-                            .unwrap_or_else(|| "Ready".to_string())
+                        "Indexing".to_string()
                     }
                 } else {
                     "Indexing".to_string()
@@ -4929,27 +5915,18 @@ impl Application {
             }
         };
 
-        let mut out = Vec::with_capacity(active.len());
+        let mut out = Vec::with_capacity(progressing.len());
         for (server_id, _name) in active {
-            let (state, message) = if progressing.contains(server_id) {
-                let msg = message_for_server(*server_id);
-                if msg == LSP_MSG_READY {
-                    (LspUiState::Idle, msg)
-                } else {
-                    (LspUiState::Activity(msg.clone()), msg)
-                }
-            } else {
-                (LspUiState::Idle, LSP_MSG_READY.to_string())
-            };
-
-            let token = Self::lsp_token_for_state(&state).to_string();
-            let title = Self::lsp_title_for_state(&state).to_string();
-            let key = Self::lsp_key_for_state(*server_id, &state);
+            if !progressing.contains(server_id) {
+                continue;
+            }
+            let message = message_for_server(*server_id);
+            let key = format!("{}-{}", server_id, LSP_TOKEN_ACTIVITY);
 
             let progress = nucleotide_lsp::LspProgress {
                 server_id: *server_id,
-                token,
-                title,
+                token: LSP_TOKEN_ACTIVITY.to_string(),
+                title: "Processing".to_string(),
                 message: Some(message),
                 percentage: None,
             };
@@ -5682,11 +6659,6 @@ impl Application {
             bridge: helix_bridge.clone(),
         });
 
-        let project_directory = self.project_directory.clone();
-        let workspace_backend = self.workspace_backend.clone();
-        let is_local = should_launch_lsp_on_local_host(&workspace_backend.identity());
-        let use_manager_detection = is_local && self.config.gui.lsp.project_lsp_startup;
-        let command_tx = self.project_lsp_command_tx.clone();
         let maintenance_wake = self.maintenance_wake.clone();
 
         handle.spawn(async move {
@@ -5698,63 +6670,10 @@ impl Application {
                 return;
             }
 
-            if let Some(project_dir) = &project_directory {
-                if use_manager_detection {
-                    info!(
-                        project_directory = %project_dir.display(),
-                        "Triggering project detection for automatic LSP server startup"
-                    );
-                    if let Err(error) = project_manager.detect_project(project_dir.clone()).await {
-                        warn!(
-                            %error,
-                            project_directory = %project_dir.display(),
-                            "Project detection failed - Helix file-based LSP startup remains available"
-                        );
-                    }
-                } else if is_local {
-                    info!(
-                        project_directory = %project_dir.display(),
-                        "Proactive project LSP startup disabled; using Helix file-based startup"
-                    );
-                }
-            } else {
-                warn!("No project directory set - LSP will use file-based mode");
-            }
-
-            if !is_local && let Some(project_dir) = project_directory {
-                let (project_type, language_servers) =
-                    detect_project_lsp_metadata_with_backend(&project_dir, workspace_backend).await;
-                project_manager
-                    .register_project(
-                        project_dir.clone(),
-                        project_type.clone(),
-                        language_servers.clone(),
-                    )
-                    .await;
-
-                if let Some(command_tx) = command_tx {
-                    for server_name in &language_servers {
-                        let language_id = project_server_language_id(&project_type, server_name);
-                        let _ = command_tx.send(ProjectLspCommand::LspServerStartupRequested {
-                            server_name: server_name.clone(),
-                            workspace_root: project_dir.clone(),
-                            language_id,
-                        });
-                    }
-                }
-
-                info!(
-                    project_directory = %project_dir.display(),
-                    project_type = ?project_type,
-                    language_servers = ?language_servers,
-                    "Remote project detection completed through workspace backend"
-                );
-            }
-
             if let Some(wake) = maintenance_wake {
                 wake.notify();
             }
-            info!("Project LSP system initialized successfully with project detection");
+            info!("Project LSP system initialized; workspace session owns detection and startup");
         });
     }
 
@@ -5763,6 +6682,20 @@ impl Application {
         &mut self,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         info!("Cleaning up project LSP system");
+
+        if let Some(workspace_root) = self.project_lsp_supervisor.active_root.take()
+            && let Some(bridge) = self.helix_lsp_bridge_handle()
+        {
+            let stopped = bridge.stop_workspace_servers(&mut self.editor, &workspace_root);
+            for client in stopped {
+                let _ = tokio::time::timeout(
+                    Duration::from_millis(500),
+                    client.wait_shutdown_flushed(),
+                )
+                .await;
+            }
+        }
+        self.lsp_progress.clear();
 
         if let Some(system) = self.project_lsp_system.take() {
             system.manager.stop().await?;
@@ -6203,6 +7136,7 @@ impl Application {
     #[allow(dead_code)]
     async fn handle_lsp_command(&mut self, command: ProjectLspCommand) {
         let span = match &command {
+            ProjectLspCommand::OpenProjectSession { span, .. } => span.clone(),
             ProjectLspCommand::DetectAndStartProject { span, .. } => span.clone(),
             ProjectLspCommand::StartServer { span, .. } => span.clone(),
             ProjectLspCommand::StopServer { span, .. } => span.clone(),
@@ -6217,6 +7151,11 @@ impl Application {
         let _guard = span.enter();
 
         match command {
+            ProjectLspCommand::OpenProjectSession { response, .. } => {
+                let _ = response.send(Err(ProjectLspCommandError::Internal(
+                    "OpenProjectSession requires the GPUI command dispatcher".to_string(),
+                )));
+            }
             ProjectLspCommand::StartServer {
                 workspace_root,
                 server_name,
@@ -6418,11 +7357,12 @@ impl Application {
             environment,
         ) {
             Ok(server_id) => {
+                self.notify_language_server_stream_added();
                 info!(
                     server_id = ?server_id,
                     server_name = %server_name,
                     language_id = %language_id,
-                    "Successfully started LSP server"
+                    "Language server process started; awaiting initialization"
                 );
 
                 // Ensure currently open documents of this language are tracked by the server
@@ -6431,6 +7371,12 @@ impl Application {
                 for (view, _focused) in self.editor.tree.views() {
                     let doc_id = view.doc;
                     if let Some(doc) = self.editor.document(doc_id) {
+                        if !doc
+                            .path()
+                            .is_some_and(|path| path.starts_with(workspace_root))
+                        {
+                            continue;
+                        }
                         let doc_lang: String = doc
                             .language_id()
                             .map(|s| s.to_ascii_lowercase())
@@ -7370,7 +8316,7 @@ impl Application {
             workspace_root = %project_root.display(),
             request = ?request,
         );
-        let command = ProjectLspCommand::DetectAndStartProject {
+        let command = ProjectLspCommand::OpenProjectSession {
             workspace_root: project_root.clone(),
             response: response_tx,
             span,
@@ -8481,6 +9427,7 @@ pub fn init_editor(
         project_lsp_command_tx: Some(project_lsp_command_tx),
         project_lsp_command_rx: Some(project_lsp_command_rx),
         project_lsp_initialization_attempted: false,
+        project_lsp_supervisor: ProjectLspSupervisor::default(),
         project_environment, // Already created above before LSP system initialization
         workspace_file_ops,
         project_env_overrides: HashMap::new(),
@@ -9663,6 +10610,223 @@ fn detect_project_lsp_metadata(
     (project_type, language_servers)
 }
 
+fn configured_project_servers(
+    editor: &Editor,
+    plan: &nucleotide_events::ProjectLspPlan,
+) -> Vec<(String, String)> {
+    let syntax_loader = editor.syn_loader.load();
+    let mut servers = Vec::new();
+    let mut seen = HashSet::new();
+
+    for language in &plan.languages {
+        let Some(language_config) = syntax_loader
+            .language_configs()
+            .find(|config| config.language_id == language.language_id)
+        else {
+            debug!(language_id = %language.language_id, "No effective language configuration for project plan");
+            continue;
+        };
+
+        for features in &language_config.language_servers {
+            let key = (language.language_id.clone(), features.name.clone());
+            if seen.insert(key.clone()) {
+                servers.push(key);
+            }
+        }
+    }
+    servers
+}
+
+async fn detect_project_lsp_plan_with_backend(
+    workspace_root: &Path,
+    workspace_backend: WorkspaceBackendHandle,
+) -> nucleotide_events::ProjectLspPlan {
+    let names = if matches!(workspace_backend.identity(), WorkspaceIdentity::Local) {
+        std::fs::read_dir(workspace_root)
+            .ok()
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .take(512)
+            .collect::<Vec<_>>()
+    } else {
+        workspace_backend
+            .list_dir(workspace_root)
+            .await
+            .map(|listing| {
+                listing
+                    .entries
+                    .into_iter()
+                    .take(512)
+                    .map(|entry| entry.name)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+
+    project_lsp_plan_from_names(&names)
+}
+
+fn project_lsp_plan_from_names(names: &[String]) -> nucleotide_events::ProjectLspPlan {
+    use nucleotide_events::{
+        PlannedProjectLanguage, ProjectLanguageEvidence, ProjectLspPlan, ProjectType,
+    };
+
+    let has = |name: &str| names.iter().any(|candidate| candidate == name);
+    let project_type = if has("Cargo.toml") {
+        ProjectType::Rust
+    } else if has("tsconfig.json") {
+        ProjectType::TypeScript
+    } else if has("package.json") {
+        ProjectType::JavaScript
+    } else if ["pyproject.toml", "requirements.txt", "setup.py", "Pipfile"]
+        .into_iter()
+        .any(has)
+    {
+        ProjectType::Python
+    } else if has("go.mod") || has("go.sum") {
+        ProjectType::Go
+    } else if has("CMakeLists.txt") {
+        ProjectType::Cpp
+    } else if has("Makefile") {
+        ProjectType::C
+    } else {
+        ProjectType::Unknown
+    };
+
+    let mut languages = Vec::new();
+    let mut add_language = |language_id: &str, evidence: ProjectLanguageEvidence| {
+        if !languages
+            .iter()
+            .any(|language: &PlannedProjectLanguage| language.language_id == language_id)
+        {
+            languages.push(PlannedProjectLanguage {
+                language_id: language_id.to_string(),
+                evidence,
+            });
+        }
+    };
+
+    match &project_type {
+        ProjectType::Rust => add_language("rust", ProjectLanguageEvidence::EagerProject),
+        ProjectType::TypeScript => {
+            add_language("typescript", ProjectLanguageEvidence::EagerProject)
+        }
+        ProjectType::JavaScript => {
+            add_language("javascript", ProjectLanguageEvidence::EagerProject)
+        }
+        ProjectType::Python => add_language("python", ProjectLanguageEvidence::EagerProject),
+        ProjectType::Go => add_language("go", ProjectLanguageEvidence::EagerProject),
+        ProjectType::C => add_language("c", ProjectLanguageEvidence::EagerProject),
+        ProjectType::Cpp => add_language("cpp", ProjectLanguageEvidence::EagerProject),
+        ProjectType::Mixed(types) => {
+            for project_type in types {
+                add_language(
+                    &primary_language_id_for_project_type(project_type),
+                    ProjectLanguageEvidence::EagerProject,
+                );
+            }
+        }
+        ProjectType::Other(name) => add_language(
+            &name.to_ascii_lowercase().replace(' ', "_"),
+            ProjectLanguageEvidence::EagerProject,
+        ),
+        ProjectType::Unknown => {}
+    }
+
+    if names.iter().any(|name| name.ends_with(".toml")) {
+        add_language("toml", ProjectLanguageEvidence::EagerManifest);
+    }
+    if names.iter().any(|name| name.ends_with(".json")) {
+        add_language("json", ProjectLanguageEvidence::EagerManifest);
+    }
+    if names
+        .iter()
+        .any(|name| name.ends_with(".yaml") || name.ends_with(".yml"))
+    {
+        add_language("yaml", ProjectLanguageEvidence::DiscoveredLanguage);
+    }
+
+    ProjectLspPlan {
+        project_type,
+        languages,
+    }
+}
+
+async fn discover_project_languages_with_backend(
+    workspace_root: &Path,
+    workspace_backend: WorkspaceBackendHandle,
+    existing_languages: &HashSet<String>,
+) -> Vec<String> {
+    const MAX_ENTRIES: usize = 512;
+    const MAX_DEPTH: usize = 4;
+
+    let mut queue = VecDeque::from([(workspace_root.to_path_buf(), 0usize)]);
+    let mut visited_entries = 0usize;
+    let mut languages = HashSet::new();
+
+    while let Some((directory, depth)) = queue.pop_front() {
+        if visited_entries >= MAX_ENTRIES {
+            break;
+        }
+        let Ok(listing) = workspace_backend.list_dir(&directory).await else {
+            continue;
+        };
+
+        for entry in listing.entries {
+            visited_entries += 1;
+            if visited_entries > MAX_ENTRIES {
+                break;
+            }
+
+            match entry.stat.kind {
+                FileKind::Directory if depth < MAX_DEPTH => {
+                    if !matches!(
+                        entry.name.as_str(),
+                        ".git" | ".cache" | "node_modules" | "target" | "vendor"
+                    ) {
+                        queue.push_back((entry.path, depth + 1));
+                    }
+                }
+                FileKind::File | FileKind::Symlink => {
+                    if let Some(language_id) = discovered_language_id_for_name(&entry.name)
+                        && !existing_languages.contains(language_id)
+                    {
+                        languages.insert(language_id.to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let mut languages = languages.into_iter().collect::<Vec<_>>();
+    languages.sort();
+    languages
+}
+
+fn discovered_language_id_for_name(name: &str) -> Option<&'static str> {
+    let extension = Path::new(name).extension()?.to_str()?.to_ascii_lowercase();
+    match extension.as_str() {
+        "rs" => Some("rust"),
+        "toml" => Some("toml"),
+        "go" => Some("go"),
+        "py" | "pyi" => Some("python"),
+        "ts" | "tsx" => Some("typescript"),
+        "js" | "jsx" | "mjs" | "cjs" => Some("javascript"),
+        "json" => Some("json"),
+        "yaml" | "yml" => Some("yaml"),
+        "c" | "h" => Some("c"),
+        "cc" | "cpp" | "cxx" | "hpp" | "hxx" => Some("cpp"),
+        "md" | "mdx" => Some("markdown"),
+        "sh" | "bash" => Some("bash"),
+        "lua" => Some("lua"),
+        "zig" => Some("zig"),
+        _ => None,
+    }
+}
+
 async fn detect_project_lsp_metadata_with_backend(
     workspace_root: &Path,
     workspace_backend: WorkspaceBackendHandle,
@@ -9928,13 +11092,14 @@ mod tests {
     use super::{
         Application, EditorInputBridge, LspCompletionTrigger, MaintenanceWake,
         NativeOpenFileOutcome, NativeSymbolItem, NativeSymbolTarget, PendingCompletionRequest,
-        RemoteLspLaunchProxyProvider, WorkspaceDocumentSaveHandler,
+        ProjectLspSupervisor, RemoteLspLaunchProxyProvider, WorkspaceDocumentSaveHandler,
         bridged_event_needs_gpui_context, buffer_text_matches_path, buffer_text_matches_string,
         buffer_word_completion_items, char_index_for_line_col, coalesce_bridged_events,
-        completion_context_for_trigger, current_dir_is_executable_dir, dedupe_completion_items,
-        detect_project_lsp_metadata, detect_project_type_from_workspace_backend,
-        detect_project_type_from_workspace_listing, diagnostic_picker_path_label,
-        diagnostic_severity_label, file_picker_current_directory,
+        completion_context_for_trigger, configured_project_servers, current_dir_is_executable_dir,
+        dedupe_completion_items, detect_project_lsp_metadata,
+        detect_project_type_from_workspace_backend, detect_project_type_from_workspace_listing,
+        diagnostic_picker_path_label, diagnostic_severity_label,
+        discover_project_languages_with_backend, file_picker_current_directory,
         home_requires_login_shell_capture, is_workspace_diagnostic_refresh_method,
         local_path_completion_context, lsp_completion_insert_text,
         lsp_completion_insert_text_format, lsp_completion_items_from_response,
@@ -9943,9 +11108,9 @@ mod tests {
         lsp_location_from_location, lsp_location_path_from_url, lsp_symbol_picker,
         native_open_file_with_backend, native_symbol_item_from_lsp, navigation_display_path,
         open_workspace_document, path_completion_items, path_completion_items_from_listing,
-        project_health_status, project_lsp_config, project_server_language_id,
-        remote_lsp_project_root_for_document, remote_lsp_root_uri_matches_document_workspace,
-        remote_native_file_uri, should_launch_lsp_on_local_host,
+        project_health_status, project_lsp_config, project_lsp_plan_from_names,
+        project_server_language_id, remote_lsp_project_root_for_document,
+        remote_lsp_root_uri_matches_document_workspace, remote_native_file_uri,
         should_stat_picker_root_with_backend, should_use_native_save_for_settings_file,
         should_use_workspace_syntax_symbol_fallback, startup_path_should_open_as_file,
         str_prefix_at_byte_limit, suppress_shadowed_buffer_word_completion_items,
@@ -11076,6 +12241,7 @@ mod tests {
                 project_lsp_command_tx: Some(project_lsp_command_tx),
                 project_lsp_command_rx: Some(project_lsp_command_rx),
                 project_lsp_initialization_attempted: true,
+                project_lsp_supervisor: ProjectLspSupervisor::default(),
                 project_environment: Arc::new(nucleotide_env::ProjectEnvironment::new(Some(
                     cli_env,
                 ))),
@@ -11135,6 +12301,19 @@ mod tests {
         app.update(cx, |app, cx| {
             app.drive_event_driven_maintenance(cx, handle, &wake);
         });
+    }
+
+    #[gpui::test]
+    async fn adding_language_server_stream_wakes_event_maintenance(cx: &mut gpui::TestAppContext) {
+        let app = new_test_application(cx);
+        let (wake, mut wake_rx) = MaintenanceWake::channel();
+
+        app.update(cx, |app, _cx| {
+            app.set_maintenance_wake(wake);
+            app.notify_language_server_stream_added();
+        });
+
+        assert!(wake_rx.try_recv().is_ok());
     }
 
     fn status_update_seen(
@@ -11235,6 +12414,83 @@ mod tests {
         lsp_state.read_with(cx, |state, _cx| {
             let server = state.servers.get(&server_id).expect("registered server");
             assert_eq!(server.status, nucleotide_lsp::ServerStatus::Running);
+        });
+    }
+
+    #[gpui::test]
+    async fn lsp_progress_entries_preserve_active_server_output_and_omit_idle_servers(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let app = new_test_application(cx);
+        let rust_analyzer_id: helix_lsp::LanguageServerId = KeyData::from_ffi(51).into();
+        let taplo_id: helix_lsp::LanguageServerId = KeyData::from_ffi(52).into();
+
+        app.update(cx, |app, _cx| {
+            app.lsp_progress.begin(
+                rust_analyzer_id,
+                lsp::NumberOrString::String("rustAnalyzer/cachePriming".to_string()),
+                lsp::WorkDoneProgressBegin {
+                    title: "Indexing".to_string(),
+                    cancellable: Some(true),
+                    message: None,
+                    percentage: Some(0),
+                },
+            );
+            app.lsp_progress.update(
+                rust_analyzer_id,
+                lsp::NumberOrString::String("rustAnalyzer/cachePriming".to_string()),
+                lsp::WorkDoneProgressReport {
+                    cancellable: Some(true),
+                    message: Some("723/724 (nucl)".to_string()),
+                    percentage: Some(99),
+                },
+            );
+
+            let entries = app.compute_progress_entries(
+                &[
+                    (rust_analyzer_id, "rust-analyzer".to_string()),
+                    (taplo_id, "taplo".to_string()),
+                ],
+                &[rust_analyzer_id],
+            );
+
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].1.server_id, rust_analyzer_id);
+            let message = entries[0].1.message.as_deref().unwrap();
+            assert!(message.contains("Indexing"));
+            assert!(message.contains("723/724 (nucl)"));
+            assert!(message.contains("99%"));
+        });
+    }
+
+    #[gpui::test]
+    async fn lsp_progress_report_without_begin_is_displayed(cx: &mut gpui::TestAppContext) {
+        let app = new_test_application(cx);
+        let rust_analyzer_id: helix_lsp::LanguageServerId = KeyData::from_ffi(53).into();
+        let token = lsp::NumberOrString::String("rustAnalyzer/cachePriming".to_string());
+
+        app.update(cx, |app, _cx| {
+            app.lsp_progress.create(rust_analyzer_id, token.clone());
+            app.lsp_progress.update(
+                rust_analyzer_id,
+                token,
+                lsp::WorkDoneProgressReport {
+                    cancellable: Some(true),
+                    message: Some("723/724 (nucl)".to_string()),
+                    percentage: Some(99),
+                },
+            );
+
+            let entries = app.compute_progress_entries(
+                &[(rust_analyzer_id, "rust-analyzer".to_string())],
+                &[rust_analyzer_id],
+            );
+
+            assert_eq!(entries.len(), 1);
+            let message = entries[0].1.message.as_deref().unwrap();
+            assert!(message.contains("cachePriming"));
+            assert!(message.contains("723/724 (nucl)"));
+            assert!(message.contains("99%"));
         });
     }
 
@@ -11701,17 +12957,6 @@ mod tests {
     }
 
     #[test]
-    fn lsp_process_launch_is_local_only_until_remote_spawn_exists() {
-        assert!(should_launch_lsp_on_local_host(&WorkspaceIdentity::Local));
-        assert!(!should_launch_lsp_on_local_host(
-            &WorkspaceIdentity::Remote(RemoteWorkspaceIdentity {
-                kind: RemoteWorkspaceKind::Wsl,
-                name: "Ubuntu".to_string(),
-            })
-        ));
-    }
-
-    #[test]
     fn project_lsp_settings_configure_the_real_manager() {
         let config = crate::config::LspConfig {
             project_lsp_startup: true,
@@ -11825,6 +13070,162 @@ mod tests {
             nucleotide_events::ProjectType::Unknown
         ));
         assert!(language_servers.is_empty());
+    }
+
+    #[test]
+    fn project_lsp_plan_starts_manifest_languages_without_open_documents() {
+        use nucleotide_events::ProjectLanguageEvidence;
+
+        let plan = project_lsp_plan_from_names(&[
+            "Cargo.toml".to_string(),
+            "rust-toolchain.toml".to_string(),
+        ]);
+
+        assert!(matches!(
+            plan.project_type,
+            nucleotide_events::ProjectType::Rust
+        ));
+        assert_eq!(plan.languages.len(), 2);
+        assert_eq!(plan.languages[0].language_id, "rust");
+        assert_eq!(
+            plan.languages[0].evidence,
+            ProjectLanguageEvidence::EagerProject
+        );
+        assert_eq!(plan.languages[1].language_id, "toml");
+        assert_eq!(
+            plan.languages[1].evidence,
+            ProjectLanguageEvidence::EagerManifest
+        );
+    }
+
+    #[gpui::test]
+    async fn project_lsp_plan_resolves_servers_from_effective_language_configuration(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let configuration: syntax::config::Configuration = toml::from_str(
+            r#"
+[language-server.rust-analyzer]
+command = "rust-analyzer"
+
+[language-server.taplo]
+command = "taplo"
+args = ["lsp", "stdio"]
+
+[[language]]
+name = "rust"
+scope = "source.rust"
+file-types = ["rs"]
+roots = ["Cargo.toml"]
+language-servers = ["rust-analyzer"]
+
+[[language]]
+name = "toml"
+scope = "source.toml"
+file-types = ["toml"]
+language-servers = ["taplo"]
+"#,
+        )
+        .unwrap();
+        let loader = syntax::Loader::new(configuration).unwrap();
+        let plan = project_lsp_plan_from_names(&["Cargo.toml".to_string()]);
+        let app = new_test_application(cx);
+
+        app.update(cx, |app, _cx| {
+            app.editor.syn_loader.store(Arc::new(loader));
+            assert_eq!(
+                configured_project_servers(&app.editor, &plan),
+                vec![
+                    ("rust".to_string(), "rust-analyzer".to_string()),
+                    ("toml".to_string(), "taplo".to_string()),
+                ]
+            );
+        });
+    }
+
+    #[test]
+    fn project_lsp_supervisor_makes_same_root_idempotent_and_rejects_stale_generations() {
+        let first_root = PathBuf::from("/workspace/first");
+        let second_root = PathBuf::from("/workspace/second");
+        let mut supervisor = ProjectLspSupervisor::default();
+
+        let first = supervisor.open_session(first_root.clone());
+        assert!(first.previous_root.is_none());
+        assert!(supervisor.is_current(first.generation, &first_root));
+
+        let repeated = supervisor.open_session(first_root.clone());
+        assert_eq!(repeated.generation, first.generation);
+
+        let second = supervisor.open_session(second_root.clone());
+        assert_eq!(second.previous_root.as_deref(), Some(first_root.as_path()));
+        assert!(second.generation > first.generation);
+        assert!(!supervisor.is_current(first.generation, &first_root));
+        assert!(supervisor.is_current(second.generation, &second_root));
+    }
+
+    #[test]
+    fn project_lsp_supervisor_coalesces_concurrent_session_requests() {
+        let root = PathBuf::from("/workspace/project");
+        let mut supervisor = ProjectLspSupervisor::default();
+        let (first_tx, first_rx) = tokio::sync::oneshot::channel();
+        let (second_tx, second_rx) = tokio::sync::oneshot::channel();
+
+        let transition = supervisor
+            .queue_session_open(root.clone(), first_tx)
+            .expect("first request starts the session");
+        assert!(
+            supervisor
+                .queue_session_open(root.clone(), second_tx)
+                .is_none()
+        );
+
+        let result = nucleotide_events::ProjectSessionResult {
+            generation: transition.generation,
+            plan: nucleotide_events::ProjectLspPlan {
+                project_type: nucleotide_events::ProjectType::Rust,
+                languages: Vec::new(),
+            },
+            language_servers: Vec::new(),
+            servers_started: Vec::new(),
+        };
+        supervisor.complete_session(transition.generation, Ok(result.clone()));
+
+        let (first, second) = TEST_RUNTIME.block_on(async {
+            (
+                first_rx.await.unwrap().unwrap(),
+                second_rx.await.unwrap().unwrap(),
+            )
+        });
+        assert_eq!(first.generation, transition.generation);
+        assert_eq!(second.generation, transition.generation);
+
+        let (cached_tx, cached_rx) = tokio::sync::oneshot::channel();
+        assert!(supervisor.queue_session_open(root, cached_tx).is_none());
+        let cached = TEST_RUNTIME.block_on(cached_rx).unwrap().unwrap();
+        assert_eq!(cached.generation, result.generation);
+    }
+
+    #[test]
+    fn project_lsp_inventory_discovers_nested_languages_before_document_open() {
+        let project = tempdir().unwrap();
+        fs::create_dir_all(project.path().join("services/api")).unwrap();
+        fs::write(
+            project.path().join("services/api/app.py"),
+            "print('ready')\n",
+        )
+        .unwrap();
+        fs::write(project.path().join("README.md"), "# Project\n").unwrap();
+        fs::write(project.path().join("src.rs"), "fn main() {}\n").unwrap();
+        let existing = HashSet::from(["rust".to_string()]);
+
+        let languages = TEST_RUNTIME.block_on(discover_project_languages_with_backend(
+            project.path(),
+            local_workspace_backend(),
+            &existing,
+        ));
+
+        assert!(languages.contains(&"python".to_string()));
+        assert!(languages.contains(&"markdown".to_string()));
+        assert!(!languages.contains(&"rust".to_string()));
     }
 
     #[test]

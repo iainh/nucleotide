@@ -26,7 +26,10 @@ pub use helix_lsp_bridge::{
     LspLaunchProxyProvider,
 };
 // Note: lsp_completion_trigger module only contains functions, no LspCompletionTrigger type
-pub use lsp_state::{LspProgress, LspState, ServerStatus};
+pub use lsp_state::{
+    LspProgress, LspState, PlannedServerStatus, ProjectEnvironmentSource, ProjectLspSessionStatus,
+    ProjectServerLifecycle, ServerStatus,
+};
 pub use lsp_status::LspStatus;
 pub use project_lsp_manager::{
     ManagedServer, ProjectDetector, ProjectInfo, ProjectLspConfig, ProjectLspError,

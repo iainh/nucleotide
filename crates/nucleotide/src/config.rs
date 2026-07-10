@@ -773,7 +773,7 @@ impl Default for FileTreeUiConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LspConfig {
     /// Enable project-based LSP startup (vs file-based)
-    #[serde(default)]
+    #[serde(default = "default_project_lsp_startup")]
     pub project_lsp_startup: bool,
 
     /// Timeout for LSP startup in milliseconds
@@ -785,10 +785,14 @@ fn default_lsp_startup_timeout() -> u64 {
     5000 // 5 seconds default timeout
 }
 
+fn default_project_lsp_startup() -> bool {
+    true
+}
+
 impl Default for LspConfig {
     fn default() -> Self {
         Self {
-            project_lsp_startup: false,
+            project_lsp_startup: default_project_lsp_startup(),
             startup_timeout_ms: default_lsp_startup_timeout(),
         }
     }
@@ -1662,7 +1666,7 @@ flatten_empty_directories = false
         );
         assert_eq!(config.remote.ssh.connect_timeout_secs, Some(30));
         assert!(config.remote.ssh.extra_args.is_empty());
-        assert!(!config.lsp.project_lsp_startup);
+        assert!(config.lsp.project_lsp_startup);
         assert!(!config.project_markers.enable_project_markers);
 
         for setting in [
@@ -2023,7 +2027,7 @@ startup_timeout_ms = 3000
         let config = GuiConfig::default();
 
         // Test default values
-        assert!(!config.lsp.project_lsp_startup);
+        assert!(config.lsp.project_lsp_startup);
         assert_eq!(config.lsp.startup_timeout_ms, 5000);
         assert_eq!(config.max_tabs, None);
         assert!(config.tab_bar.show);
