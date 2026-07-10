@@ -14922,10 +14922,7 @@ impl Render for Workspace {
                             .border_1()
                             .border_color(dd_tokens.border)
                             .rounded(ui_theme.tokens.sizes.radius_md)
-                            .shadow(vec![
-                                ui_theme.tokens.chrome.shadow_md.to_box_shadow(false),
-                                ui_theme.tokens.chrome.inset_highlight.to_box_shadow(true),
-                            ])
+                            .shadow(vec![ui_theme.tokens.chrome.shadow_md.to_box_shadow(false)])
                             .children(server_rows),
                     )
                     .position(point(px(x), px(y)))

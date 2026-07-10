@@ -83,10 +83,7 @@ impl Render for AboutWindow {
                 .border_1()
                 .border_color(tokens.chrome.border_strong)
                 .rounded_lg()
-                .shadow(vec![
-                    tokens.chrome.shadow_lg.to_box_shadow(false),
-                    tokens.chrome.inset_highlight.to_box_shadow(true),
-                ])
+                .shadow(vec![tokens.chrome.shadow_lg.to_box_shadow(false)])
                 .p_6()
                 .w(px(400.0))
                 .flex()

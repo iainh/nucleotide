@@ -880,7 +880,6 @@ impl TabBar {
             .flex_grow(1.0)
             .overflow_hidden()
             .bg(Self::empty_tab_bar_background(tokens))
-            .shadow(Self::empty_tab_bar_inset_shadows(tokens))
             .child("")
             .when(
                 end_drop_target_has_leading_border(forced_pin_state),
@@ -901,30 +900,6 @@ impl TabBar {
 
     fn empty_tab_bar_background(tokens: nucleotide_ui::tokens::DesignTokens) -> gpui::Hsla {
         tokens.tab_bar_tokens().container_background
-    }
-
-    fn empty_tab_bar_inset_shadows(
-        tokens: nucleotide_ui::tokens::DesignTokens,
-    ) -> Vec<gpui::BoxShadow> {
-        vec![
-            gpui::BoxShadow {
-                color: nucleotide_ui::tokens::utils::with_alpha(tokens.chrome.border_shadow, 0.52),
-                offset: gpui::point(px(1.0), px(1.0)),
-                blur_radius: px(3.0),
-                spread_radius: px(0.0),
-                inset: true,
-            },
-            gpui::BoxShadow {
-                color: nucleotide_ui::tokens::utils::with_alpha(
-                    tokens.chrome.border_highlight,
-                    0.20,
-                ),
-                offset: gpui::point(px(0.0), px(-1.0)),
-                blur_radius: px(0.0),
-                spread_radius: px(0.0),
-                inset: true,
-            },
-        ]
     }
 }
 
@@ -1080,22 +1055,15 @@ mod tests {
     }
 
     #[test]
-    fn empty_tab_bar_area_uses_tabbar_background_and_inset_depth() {
+    fn empty_tab_bar_area_uses_tabbar_background() {
         for tokens in [
             nucleotide_ui::DesignTokens::dark(),
             nucleotide_ui::DesignTokens::light(),
         ] {
-            let shadows = TabBar::empty_tab_bar_inset_shadows(tokens);
-
             assert_eq!(
                 TabBar::empty_tab_bar_background(tokens),
                 tokens.tab_bar_tokens().container_background,
                 "empty tabbar area should use the same background as the surrounding tabbar"
-            );
-            assert_eq!(shadows.len(), 2);
-            assert!(
-                shadows.iter().all(|shadow| shadow.inset),
-                "empty tabbar depth should be inset, not cast outward"
             );
         }
     }

@@ -577,10 +577,7 @@ impl Render for PromptView {
             .border_1()
             .border_color(self.style.modal_style.border)
             .rounded_md()
-            .shadow(vec![
-                ui_theme.tokens.chrome.shadow_lg.to_box_shadow(false),
-                ui_theme.tokens.chrome.inset_highlight.to_box_shadow(true),
-            ])
+            .shadow(vec![ui_theme.tokens.chrome.shadow_lg.to_box_shadow(false)])
             .font(font.clone())
             .text_size(px(ui_font_size))
             .track_focus(&self.focus_handle)

@@ -2159,10 +2159,7 @@ impl Render for CompletionView {
                             .border_1()
                             .border_color(tokens.chrome.popup_border)
                             .rounded(tokens.sizes.radius_md)
-                            .shadow(vec![
-                                tokens.chrome.shadow_md.to_box_shadow(false),
-                                tokens.chrome.inset_highlight.to_box_shadow(true),
-                            ])
+                            .shadow(vec![tokens.chrome.shadow_md.to_box_shadow(false)])
                             .py(tokens.sizes.space_1)
                             .px(tokens.sizes.space_1)
                             .child(
@@ -2350,10 +2347,7 @@ impl Render for CompletionView {
                                 .border_1()
                                 .border_color(tokens.chrome.popup_border)
                                 .rounded(tokens.sizes.radius_md)
-                                .shadow(vec![
-                                    tokens.chrome.shadow_md.to_box_shadow(false),
-                                    tokens.chrome.inset_highlight.to_box_shadow(true),
-                                ])
+                                .shadow(vec![tokens.chrome.shadow_md.to_box_shadow(false)])
                                 .text_size(tokens.sizes.text_base)
                                 .line_height(relative(1.35))
                                 .text_color(tokens.chrome.text_on_chrome)
