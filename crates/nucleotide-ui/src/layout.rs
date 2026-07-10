@@ -434,6 +434,9 @@ impl RenderOnce for Toolbar {
 pub struct StatusBar {
     id: ElementId,
     active: bool,
+    leading: Option<(Pixels, AnyElement)>,
+    content: Option<AnyElement>,
+    trailing: Option<AnyElement>,
     children: Vec<AnyElement>,
 }
 
@@ -442,12 +445,33 @@ impl StatusBar {
         Self {
             id: id.into(),
             active: true,
+            leading: None,
+            content: None,
+            trailing: None,
             children: Vec::new(),
         }
     }
 
     pub fn active(mut self, active: bool) -> Self {
         self.active = active;
+        self
+    }
+
+    /// Add a fixed-width region before the editor-aligned status content.
+    pub fn leading(mut self, width: Pixels, child: impl IntoElement) -> Self {
+        self.leading = Some((width, child.into_any_element()));
+        self
+    }
+
+    /// Add the flexible editor status region.
+    pub fn content(mut self, child: impl IntoElement) -> Self {
+        self.content = Some(child.into_any_element());
+        self
+    }
+
+    /// Add a fixed trailing utility region.
+    pub fn trailing(mut self, child: impl IntoElement) -> Self {
+        self.trailing = Some(child.into_any_element());
         self
     }
 }
@@ -468,22 +492,47 @@ impl RenderOnce for StatusBar {
             status.background_inactive
         };
 
-        div()
+        let zoned = self.leading.is_some() || self.content.is_some() || self.trailing.is_some();
+        let mut bar = div()
             .id(self.id)
             .flex()
             .flex_row()
             .items_center()
-            .justify_between()
-            .gap(tokens.sizes.space_3)
             .h(tokens.sizes.statusbar_height)
             .min_w(px(0.0))
-            .px(tokens.sizes.space_3)
             .bg(background)
             .border_t_1()
             .border_color(status.border)
             .text_size(tokens.sizes.text_sm)
-            .text_color(status.text_primary)
-            .children(self.children)
+            .text_color(status.text_primary);
+
+        if zoned {
+            if let Some((width, leading)) = self.leading {
+                bar = bar.child(
+                    div()
+                        .flex_none()
+                        .w(width)
+                        .h_full()
+                        .min_w(px(0.0))
+                        .overflow_hidden()
+                        .child(leading),
+                );
+            }
+            if let Some(content) = self.content {
+                bar = bar.child(div().flex_1().min_w_0().h_full().child(content));
+            }
+            if let Some(trailing) = self.trailing {
+                bar = bar.child(div().flex_none().h_full().child(trailing));
+            }
+        } else {
+            bar = bar
+                .justify_between()
+                .gap(tokens.sizes.space_3)
+                .px(tokens.sizes.space_3)
+                .children(self.children);
+        }
+
+        bar
     }
 }
 
@@ -552,6 +601,22 @@ mod tests {
         assert_eq!(layout.min_px(), 120.0);
         assert_eq!(layout.max_px(), 400.0);
         assert_eq!(layout.reset_px(), 320.0);
+    }
+
+    #[test]
+    fn status_bar_zones_preserve_fixed_edge_geometry() {
+        let status_bar = StatusBar::new("status-bar")
+            .leading(px(280.0), div())
+            .content(div())
+            .trailing(div());
+
+        assert_eq!(
+            status_bar.leading.as_ref().map(|(width, _)| *width),
+            Some(px(280.0))
+        );
+        assert!(status_bar.content.is_some());
+        assert!(status_bar.trailing.is_some());
+        assert!(status_bar.children.is_empty());
     }
 
     #[gpui::test]

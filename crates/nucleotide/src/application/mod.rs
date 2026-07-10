@@ -4579,6 +4579,21 @@ impl Application {
     pub fn sync_lsp_state(&self, cx: &mut gpui::App) {
         if let Some(lsp_state) = &self.lsp_state {
             let active_servers = self.active_servers();
+            let active_server_roots = self
+                .editor
+                .language_servers
+                .iter_clients()
+                .map(|client| {
+                    let root = client
+                        .root_uri()
+                        .map(|uri| uri.as_str().to_string())
+                        .or_else(|| {
+                            let root = client.root_path();
+                            (!root.as_os_str().is_empty()).then(|| root.display().to_string())
+                        });
+                    (client.id(), root)
+                })
+                .collect::<HashMap<_, _>>();
             let initialized_servers = self
                 .editor
                 .language_servers
@@ -4617,7 +4632,13 @@ impl Application {
                 for (id, name) in &active_servers {
                     if !state.servers.contains_key(id) {
                         info!(server_id = ?id, server_name = %name, "Registering new LSP server");
-                        state.register_server(*id, name.clone(), None);
+                        state.register_server(
+                            *id,
+                            name.clone(),
+                            active_server_roots.get(id).cloned().flatten(),
+                        );
+                    } else if let Some(server) = state.servers.get_mut(id) {
+                        server.root_uri = active_server_roots.get(id).cloned().flatten();
                     }
                     state.update_server_status(
                         *id,

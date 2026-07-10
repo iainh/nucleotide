@@ -66,7 +66,7 @@ mod styling_tests;
 
 pub use about_window::AboutWindow;
 pub use assets::Assets;
-pub use button::{Button, ButtonSize, ButtonVariant, IconPosition};
+pub use button::{Button, ButtonSize, ButtonVariant, IconPosition, TextTooltip};
 pub use checkbox::{Checkbox, CheckboxSize};
 pub use completion_docs::{
     DocumentationCache, DocumentationCacheConfig, DocumentationContent, DocumentationLoader,

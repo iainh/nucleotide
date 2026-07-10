@@ -27,8 +27,8 @@ pub use helix_lsp_bridge::{
 };
 // Note: lsp_completion_trigger module only contains functions, no LspCompletionTrigger type
 pub use lsp_state::{
-    LspProgress, LspState, PlannedServerStatus, ProjectEnvironmentSource, ProjectLspSessionStatus,
-    ProjectServerLifecycle, ServerStatus,
+    LspProgress, LspState, LspStatusKind, LspStatusSummary, PlannedServerStatus,
+    ProjectEnvironmentSource, ProjectLspSessionStatus, ProjectServerLifecycle, ServerStatus,
 };
 pub use lsp_status::LspStatus;
 pub use project_lsp_manager::{

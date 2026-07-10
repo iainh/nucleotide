@@ -12,6 +12,19 @@ use serde_json::Value as JsonValue;
 static LOGGER_STATE: Lazy<LoggerState> = Lazy::new(LoggerState::new);
 const LOG_FLUSH_INTERVAL: Duration = Duration::from_secs(1);
 
+pub fn is_enabled() -> bool {
+    LOGGER_STATE.enabled
+}
+
+pub fn log_directory() -> PathBuf {
+    std::env::current_dir()
+        .unwrap_or_default()
+        .join(LOGGER_STATE.inner.lock().map_or_else(
+            |_| PathBuf::from("logs").join("lsp"),
+            |inner| inner.dir.clone(),
+        ))
+}
+
 struct LoggerState {
     enabled: bool,
     inner: Mutex<Inner>,
