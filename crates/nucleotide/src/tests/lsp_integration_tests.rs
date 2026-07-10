@@ -5,45 +5,9 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 
-use crate::config::{Config as NucleotideConfig, GuiConfig, LspConfig};
 use nucleotide_events::{ProjectType, ServerHealthStatus};
 use nucleotide_lsp::{HelixLspBridge, ProjectLspConfig, ProjectLspManager};
-use nucleotide_lsp::{LspManager, LspStartupMode};
-
-/// Test helper to create a test configuration for LSP manager
-fn create_lsp_test_config(
-    project_lsp_startup: bool,
-    enable_fallback: bool,
-    timeout_ms: u64,
-) -> Arc<nucleotide_lsp::LspManagerConfig> {
-    Arc::new(nucleotide_lsp::LspManagerConfig {
-        project_lsp_startup,
-        startup_timeout_ms: timeout_ms,
-        enable_fallback,
-    })
-}
-
-/// Test helper to create a full nucleotide config (if needed for other tests)
-#[allow(dead_code)]
-fn create_test_config(
-    project_lsp_startup: bool,
-    enable_fallback: bool,
-    timeout_ms: u64,
-) -> Arc<NucleotideConfig> {
-    let mut gui_config = GuiConfig::default();
-    gui_config.lsp = LspConfig {
-        project_lsp_startup,
-        startup_timeout_ms: timeout_ms,
-        enable_fallback,
-    };
-
-    Arc::new(NucleotideConfig {
-        helix: helix_term::config::Config::default(),
-        gui: gui_config,
-    })
-}
 
 /// Test helper to create a temporary project directory
 fn create_test_project_dir() -> PathBuf {
@@ -142,71 +106,6 @@ async fn test_project_detection_rust() {
         .await
         .expect("Failed to stop ProjectLspManager");
     std::fs::remove_dir_all(&project_dir).ok();
-}
-
-#[tokio::test]
-async fn test_lsp_manager_startup_modes() {
-    // Test with project LSP startup enabled
-    let config = create_lsp_test_config(true, true, 5000);
-    let lsp_manager = LspManager::new(config.clone());
-
-    let project_dir = create_test_project_dir();
-    create_rust_project(&project_dir);
-
-    let file_path = project_dir.join("src").join("main.rs");
-
-    // Determine startup mode with project detected
-    let mode = lsp_manager.determine_startup_mode(Some(&file_path), Some(&project_dir));
-
-    match mode {
-        LspStartupMode::Project {
-            project_root,
-            timeout,
-        } => {
-            assert_eq!(project_root, project_dir);
-            assert_eq!(timeout, Duration::from_millis(5000));
-        }
-        _ => panic!("Expected project mode when project is detected"),
-    }
-
-    // Test with project LSP startup disabled
-    let config_disabled = create_lsp_test_config(false, true, 5000);
-    let lsp_manager_disabled = LspManager::new(config_disabled);
-
-    let mode_disabled =
-        lsp_manager_disabled.determine_startup_mode(Some(&file_path), Some(&project_dir));
-
-    match mode_disabled {
-        LspStartupMode::File {
-            file_path: detected_path,
-        } => {
-            assert_eq!(detected_path, file_path);
-        }
-        _ => panic!("Expected file mode when project LSP is disabled"),
-    }
-
-    // Cleanup
-    std::fs::remove_dir_all(&project_dir).ok();
-}
-
-#[tokio::test]
-async fn test_fallback_mechanism() {
-    let config = create_lsp_test_config(true, true, 5000);
-    let lsp_manager = LspManager::new(config);
-
-    // Test fallback when no project is detected
-    let file_path = PathBuf::from("/tmp/standalone_file.rs");
-
-    let mode = lsp_manager.determine_startup_mode(Some(&file_path), None);
-
-    match mode {
-        LspStartupMode::File {
-            file_path: detected_path,
-        } => {
-            assert_eq!(detected_path, file_path);
-        }
-        _ => panic!("Expected file mode when no project detected and fallback enabled"),
-    }
 }
 
 #[tokio::test]
@@ -336,62 +235,6 @@ async fn test_project_lsp_error_types() {
     assert!(internal_error.to_string().contains("Internal error"));
 }
 
-#[tokio::test]
-async fn test_config_hot_reload() {
-    // Test LspManager configuration updates
-    let initial_config = create_lsp_test_config(false, true, 5000);
-    let mut lsp_manager = LspManager::new(initial_config);
-
-    // Use a valid config: project_lsp_startup=true requires enable_fallback=true
-    let new_config = create_lsp_test_config(true, true, 3000);
-    let result = lsp_manager.update_config(new_config);
-
-    assert!(result.is_ok());
-
-    // Test that configuration changes are applied by checking behavior
-    let file_path = PathBuf::from("/test/file.rs");
-    let project_dir = PathBuf::from("/test/project");
-
-    let mode = lsp_manager.determine_startup_mode(Some(&file_path), Some(&project_dir));
-
-    // After update, should use project mode
-    match mode {
-        LspStartupMode::Project { .. } => {
-            // Configuration update was successful
-        }
-        _ => panic!("Expected project mode after configuration update"),
-    }
-}
-
-#[tokio::test]
-async fn test_config_hot_reload_rejects_invalid_config() {
-    // Test that invalid configs are rejected during hot reload
-    let initial_config = create_lsp_test_config(false, true, 5000);
-    let mut lsp_manager = LspManager::new(initial_config);
-
-    // Invalid config: project_lsp_startup=true without fallback enabled
-    let invalid_config = create_lsp_test_config(true, false, 3000);
-    let result = lsp_manager.update_config(invalid_config);
-
-    // Should fail validation
-    assert!(result.is_err());
-}
-
-#[tokio::test]
-async fn test_startup_statistics() {
-    let config = create_lsp_test_config(true, true, 5000);
-    let lsp_manager = LspManager::new(config);
-
-    // Initially, no startup attempts
-    let stats = lsp_manager.get_startup_stats();
-    assert_eq!(stats.total_attempts, 0);
-    assert_eq!(stats.successful_attempts, 0);
-    assert_eq!(stats.failed_attempts, 0);
-    assert_eq!(stats.skipped_attempts, 0);
-    assert_eq!(stats.project_mode_attempts, 0);
-    assert_eq!(stats.file_mode_attempts, 0);
-}
-
 /// Integration test that simulates the full workflow
 #[tokio::test]
 async fn test_integration_workflow() {
@@ -423,15 +266,6 @@ async fn test_integration_workflow() {
     let project = project_info.unwrap();
     assert!(matches!(project.project_type, ProjectType::Rust));
     assert!(!project.language_servers.is_empty());
-
-    // Test LspManager coordination
-    let config = create_lsp_test_config(true, true, 5000);
-    let lsp_manager = LspManager::new(config);
-
-    let file_path = project_dir.join("src").join("main.rs");
-    let mode = lsp_manager.determine_startup_mode(Some(&file_path), Some(&project_dir));
-
-    assert!(matches!(mode, LspStartupMode::Project { .. }));
 
     // Cleanup
     manager.stop().await.expect("Failed to stop manager");

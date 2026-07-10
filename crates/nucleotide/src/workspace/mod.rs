@@ -7632,48 +7632,6 @@ impl Workspace {
         info!("Document opened: {:?}", doc_id);
         self.ensure_document_in_order(doc_id);
 
-        // Start LSP for the newly opened document using the feature flag system
-        info!("Starting LSP for newly opened document using feature flag system");
-        let lsp_result = self
-            .core
-            .update(cx, |core, _| core.start_lsp_with_feature_flags(doc_id));
-
-        match lsp_result {
-            nucleotide_lsp::LspStartupResult::Success {
-                mode,
-                language_servers,
-                duration,
-            } => {
-                info!(
-                    doc_id = ?doc_id,
-                    mode = ?mode,
-                    language_servers = ?language_servers,
-                    duration_ms = duration.as_millis(),
-                    "LSP startup successful for newly opened document"
-                );
-            }
-            nucleotide_lsp::LspStartupResult::Failed {
-                mode,
-                error,
-                fallback_mode,
-            } => {
-                warn!(
-                    doc_id = ?doc_id,
-                    mode = ?mode,
-                    error = %error,
-                    fallback_mode = ?fallback_mode,
-                    "LSP startup failed for newly opened document"
-                );
-            }
-            nucleotide_lsp::LspStartupResult::Skipped { reason } => {
-                info!(
-                    doc_id = ?doc_id,
-                    reason = %reason,
-                    "LSP startup skipped for newly opened document"
-                );
-            }
-        }
-
         let remote_project_lsp_root = {
             let core = self.core.read(cx);
             let workspace_identity = core.workspace_backend.identity();
@@ -9371,46 +9329,6 @@ impl Workspace {
                         debug!("Document has {} language servers", lang_servers.len());
                         for ls in &lang_servers {
                             debug!("  Language server: {:?}", ls);
-                        }
-                    }
-
-                    // Use the new LSP manager with feature flag support
-                    debug!("Starting LSP for document using feature flag system");
-                    let lsp_result = core.start_lsp_with_feature_flags(doc_id);
-
-                    match lsp_result {
-                        nucleotide_lsp::LspStartupResult::Success {
-                            mode,
-                            language_servers,
-                            duration,
-                        } => {
-                            info!(
-                                mode = ?mode,
-                                language_servers = ?language_servers,
-                                duration_ms = duration.as_millis(),
-                                "LSP startup successful with feature flag system"
-                            );
-                        }
-                        nucleotide_lsp::LspStartupResult::Failed {
-                            mode,
-                            error,
-                            fallback_mode,
-                        } => {
-                            warn!(
-                                mode = ?mode,
-                                error = %error,
-                                fallback_mode = ?fallback_mode,
-                                "LSP startup failed"
-                            );
-
-                            // Fallback to existing mechanism as additional safety net
-                            helix_event::request_redraw();
-                        }
-                        nucleotide_lsp::LspStartupResult::Skipped { reason } => {
-                            debug!(
-                                reason = %reason,
-                                "LSP startup skipped"
-                            );
                         }
                     }
 

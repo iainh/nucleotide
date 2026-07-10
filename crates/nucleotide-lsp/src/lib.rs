@@ -1,7 +1,6 @@
 // ABOUTME: LSP integration layer for Nucleotide
 // ABOUTME: Manages language servers, diagnostics, and code intelligence features
 
-pub mod coordination_manager;
 pub mod document_manager;
 pub mod helix_lsp_bridge;
 pub mod lsp_completion_trigger;
@@ -21,9 +20,6 @@ pub mod stress_tests;
 #[cfg(test)]
 pub mod command_flow_test;
 
-pub use coordination_manager::{
-    LspError, LspManager, LspManagerConfig, LspStartupMode, LspStartupResult, LspStartupStats,
-};
 pub use document_manager::{DocumentManager, DocumentManagerMut};
 pub use helix_lsp_bridge::{
     EditorLspIntegration, EnvironmentProvider, HelixLspBridge, LspLaunchProxy,

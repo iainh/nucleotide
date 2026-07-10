@@ -472,8 +472,6 @@ fn quote_windows_command_arg(value: &std::ffi::OsStr) -> String {
     format!("\"{}\"", value.replace('"', "\\\""))
 }
 
-const REMOTE_LSP_PROCESS_LAUNCH_UNAVAILABLE: &str = "File-based local LSP startup is skipped for remote workspaces; project LSP startup uses the remote proxy";
-
 fn should_launch_lsp_on_local_host(identity: &WorkspaceIdentity) -> bool {
     matches!(identity, WorkspaceIdentity::Local)
 }
@@ -759,21 +757,6 @@ struct DiffResetWorkspaceReconcile {
     path: PathBuf,
     expected_text: Rope,
     workspace_backend: WorkspaceBackendHandle,
-}
-
-fn document_workspace_root(
-    workspace_identity: &WorkspaceIdentity,
-    project_directory: Option<&Path>,
-    document_path: &Path,
-) -> PathBuf {
-    let document_dir = document_path.parent().unwrap_or(document_path);
-    if matches!(workspace_identity, WorkspaceIdentity::Local) {
-        find_workspace_root_from(document_dir)
-    } else {
-        project_directory
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| document_dir.to_path_buf())
-    }
 }
 
 fn remote_lsp_project_root_for_document(
@@ -1402,7 +1385,6 @@ pub struct Application {
     pub event_bridge_rx: Option<event_bridge::BridgedEventReceiver>,
     pub config: crate::config::Config,
     pub helix_config_arc: Arc<ArcSwap<helix_term::config::Config>>,
-    pub lsp_manager: nucleotide_lsp::LspManager,
     pub project_lsp_manager: Arc<tokio::sync::RwLock<Option<ProjectLspManager>>>,
     pub helix_lsp_bridge: Arc<tokio::sync::RwLock<Option<HelixLspBridge>>>,
     pub project_lsp_command_tx:
@@ -2888,65 +2870,6 @@ impl Application {
         doc_manager.try_with_document_mut(doc_id, f)
     }
 
-    /// Start LSP for a document using the feature flag system
-    #[instrument(skip(self))]
-    pub fn start_lsp_with_feature_flags(
-        &mut self,
-        doc_id: DocumentId,
-    ) -> nucleotide_lsp::LspStartupResult {
-        let workspace_identity = self.workspace_backend.identity();
-        if !should_launch_lsp_on_local_host(&workspace_identity) {
-            info!(
-                doc_id = ?doc_id,
-                backend = ?workspace_identity,
-                reason = REMOTE_LSP_PROCESS_LAUNCH_UNAVAILABLE,
-                "Skipping local LSP startup for remote workspace"
-            );
-            return nucleotide_lsp::LspStartupResult::Skipped {
-                reason: REMOTE_LSP_PROCESS_LAUNCH_UNAVAILABLE.to_string(),
-            };
-        }
-
-        info!(
-            doc_id = ?doc_id,
-            project_lsp_enabled = self.config.gui.lsp.project_lsp_startup,
-            fallback_enabled = self.config.gui.lsp.enable_fallback,
-            timeout_ms = self.config.gui.lsp.startup_timeout_ms,
-            "Starting LSP with feature flag support"
-        );
-
-        self.lsp_manager
-            .start_lsp_for_document(doc_id, &mut self.editor)
-    }
-
-    /// Update LSP manager configuration (for hot-reloading)
-    #[instrument(skip(self))]
-    pub fn update_lsp_manager_config(&mut self) {
-        let lsp_config = Arc::new(nucleotide_lsp::LspManagerConfig {
-            project_lsp_startup: self.config.gui.lsp.project_lsp_startup,
-            startup_timeout_ms: self.config.gui.lsp.startup_timeout_ms,
-            enable_fallback: self.config.gui.lsp.enable_fallback,
-        });
-        match self.lsp_manager.update_config(lsp_config) {
-            Ok(()) => {
-                info!(
-                    project_lsp_enabled = self.config.gui.lsp.project_lsp_startup,
-                    fallback_enabled = self.config.gui.lsp.enable_fallback,
-                    timeout_ms = self.config.gui.lsp.startup_timeout_ms,
-                    "LSP manager configuration updated successfully"
-                );
-            }
-            Err(e) => {
-                error!(
-                    error = %e,
-                    "Failed to update LSP manager configuration - keeping previous config"
-                );
-                // Keep the previous configuration since the new one is invalid
-                self.editor
-                    .set_error(format!("Invalid LSP configuration: {}", e));
-            }
-        }
-    }
     pub fn create_sample_native_prompt(&self) -> crate::prompt::Prompt {
         crate::prompt::Prompt::native("Search:", "", |_input| {
             // For now, just show the input - we'll handle the actual search via a different mechanism
@@ -3970,7 +3893,6 @@ impl Application {
         );
         self.helix_config_arc.store(Arc::new(updated_helix_config));
 
-        self.update_lsp_manager_config();
         self.editor.refresh_config(&old_config);
         debug!(
             "After refresh_config, editor bufferline: {:?}",
@@ -4998,185 +4920,6 @@ impl Application {
         *self.helix_lsp_bridge.write().await = None;
 
         info!("ProjectLspManager cleanup completed");
-        Ok(())
-    }
-
-    /// Handle document opening with integrated project-based and file-based LSP startup
-    #[instrument(skip(self), fields(doc_id = ?doc_id))]
-    pub async fn handle_document_with_project_lsp(
-        &mut self,
-        doc_id: helix_view::DocumentId,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        debug!("Handling document with integrated LSP startup");
-
-        // Get document information
-        let (doc_path, _language_name) = if let Some(doc) = self.editor.document(doc_id) {
-            let doc_path = doc.path().map(|p| p.to_path_buf());
-            let language_name = doc.language_name().map(|s| s.to_string());
-            (doc_path, language_name)
-        } else {
-            warn!(doc_id = ?doc_id, "Document not found for LSP integration");
-            return Ok(());
-        };
-        let workspace_identity = self.workspace_backend.identity();
-
-        // Check if ProjectLspManager is available and project-based startup is enabled
-        if self.config.gui.lsp.project_lsp_startup
-            && let Some(bridge_ref) = self.helix_lsp_bridge.read().await.as_ref()
-        {
-            // Try to ensure document is tracked by any existing project servers
-            if let Some(doc_path_ref) = doc_path.as_ref() {
-                let workspace_root = document_workspace_root(
-                    &workspace_identity,
-                    self.project_directory.as_deref(),
-                    doc_path_ref,
-                );
-
-                if let Some(manager_ref) = self.project_lsp_manager_handle().await {
-                    // Check if we have managed servers for this workspace
-                    let managed_servers = manager_ref.get_managed_servers(&workspace_root).await;
-
-                    for managed_server in managed_servers {
-                        // Ensure the document is tracked by the language server
-                        if let Err(e) = bridge_ref.ensure_document_tracked(
-                            &mut self.editor,
-                            managed_server.server_id,
-                            doc_id,
-                        ) {
-                            // Use error handler for document tracking failure
-                            if let Err(recovery_error) = self
-                                .handle_project_lsp_error(Box::new(e), "document_tracking")
-                                .await
-                            {
-                                warn!(
-                                    error = %recovery_error,
-                                    "Failed to recover from document tracking error"
-                                );
-                            }
-                        } else {
-                            info!(
-                                server_id = ?managed_server.server_id,
-                                server_name = %managed_server.server_name,
-                                doc_path = %doc_path_ref.display(),
-                                "Document tracked with project LSP server"
-                            );
-                        }
-                    }
-                }
-            }
-        }
-
-        // Use existing LspManager for fallback or primary startup
-        // This handles both file-based startup and fallback scenarios
-        if !should_launch_lsp_on_local_host(&workspace_identity) {
-            info!(
-                doc_id = ?doc_id,
-                backend = ?workspace_identity,
-                reason = REMOTE_LSP_PROCESS_LAUNCH_UNAVAILABLE,
-                "Skipping file-based LSP startup for remote workspace"
-            );
-            return Ok(());
-        }
-
-        let startup_result = self
-            .lsp_manager
-            .start_lsp_for_document(doc_id, &mut self.editor);
-
-        match startup_result {
-            nucleotide_lsp::LspStartupResult::Success {
-                mode,
-                language_servers,
-                duration,
-            } => {
-                info!(
-                    doc_id = ?doc_id,
-                    mode = ?mode,
-                    language_servers = ?language_servers,
-                    duration_ms = duration.as_millis(),
-                    "LSP startup successful for document"
-                );
-
-                // If we have project-based servers, coordinate with them
-                if self.config.gui.lsp.project_lsp_startup
-                    && let Some(doc_path_ref) = doc_path.as_ref()
-                {
-                    let workspace_root = document_workspace_root(
-                        &workspace_identity,
-                        self.project_directory.as_deref(),
-                        doc_path_ref,
-                    );
-
-                    // Check if this startup should be coordinated with project servers
-                    if let Some(manager_ref) = self.project_lsp_manager_handle().await {
-                        let managed_servers =
-                            manager_ref.get_managed_servers(&workspace_root).await;
-                        if !managed_servers.is_empty() {
-                            info!(
-                                managed_server_count = managed_servers.len(),
-                                "Document LSP startup coordinated with project servers"
-                            );
-                        }
-                    }
-                }
-            }
-            nucleotide_lsp::LspStartupResult::Failed {
-                mode,
-                error,
-                fallback_mode,
-            } => {
-                warn!(
-                    doc_id = ?doc_id,
-                    mode = ?mode,
-                    error = %error,
-                    fallback_mode = ?fallback_mode,
-                    "LSP startup failed for document"
-                );
-
-                // If project-based startup failed, ensure fallback is working
-                if matches!(mode, nucleotide_lsp::LspStartupMode::Project { .. }) {
-                    warn!(
-                        "Project-based LSP startup failed - fallback should handle file-based startup"
-                    );
-                }
-            }
-            nucleotide_lsp::LspStartupResult::Skipped { reason } => {
-                debug!(
-                    doc_id = ?doc_id,
-                    reason = %reason,
-                    "LSP startup skipped for document"
-                );
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Update ProjectLspManager configuration at runtime
-    pub async fn update_project_lsp_config(
-        &mut self,
-        new_config: Arc<crate::config::Config>,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        info!("Updating ProjectLspManager configuration");
-
-        // Update the existing LspManager first
-        let lsp_config = Arc::new(nucleotide_lsp::LspManagerConfig {
-            project_lsp_startup: new_config.gui.lsp.project_lsp_startup,
-            startup_timeout_ms: new_config.gui.lsp.startup_timeout_ms,
-            enable_fallback: new_config.gui.lsp.enable_fallback,
-        });
-        if let Err(e) = self.lsp_manager.update_config(lsp_config) {
-            error!(error = %e, "Failed to update LspManager configuration");
-            return Err(Box::new(e));
-        }
-
-        // If ProjectLspManager is running, we'd need to recreate it with new config
-        // For now, log the configuration change
-        if self.project_lsp_manager.read().await.is_some() {
-            info!(
-                "ProjectLspManager configuration change detected - restart required for full effect"
-            );
-        }
-
         Ok(())
     }
 
@@ -8120,17 +7863,6 @@ pub fn init_editor(
         }
     }
 
-    // Create LSP manager with initial configuration (after ProjectEnvironment is ready)
-    let lsp_manager = nucleotide_lsp::LspManager::new(Arc::new(nucleotide_lsp::LspManagerConfig {
-        project_lsp_startup: gui_config.gui.lsp.project_lsp_startup,
-        startup_timeout_ms: gui_config.gui.lsp.startup_timeout_ms,
-        enable_fallback: gui_config.gui.lsp.enable_fallback,
-    }));
-
-    nucleotide_logging::info!(
-        "Application created with direct completion and LSP manager initialized"
-    );
-
     let file_op_runtime = tokio::runtime::Handle::try_current()
         .context("workspace file operations require an active Tokio runtime")?;
     let workspace_file_ops =
@@ -8150,7 +7882,6 @@ pub fn init_editor(
         event_bridge_rx: Some(bridge_rx),
         config: gui_config,
         helix_config_arc: config,
-        lsp_manager,
         project_lsp_manager: Arc::new(RwLock::new(None)), // Will be initialized after Application creation
         helix_lsp_bridge: Arc::new(RwLock::new(None)), // Will be initialized after Application creation
         project_lsp_command_tx: Some(project_lsp_command_tx),
@@ -9610,7 +9341,7 @@ mod tests {
         completion_context_for_trigger, current_dir_is_executable_dir, dedupe_completion_items,
         detect_project_lsp_metadata, detect_project_type_from_workspace_backend,
         detect_project_type_from_workspace_listing, diagnostic_picker_path_label,
-        diagnostic_severity_label, document_workspace_root, file_picker_current_directory,
+        diagnostic_severity_label, file_picker_current_directory,
         home_requires_login_shell_capture, is_workspace_diagnostic_refresh_method,
         local_path_completion_context, lsp_completion_insert_text,
         lsp_completion_insert_text_format, lsp_completion_items_from_response,
@@ -10671,12 +10402,6 @@ mod tests {
             let native_keymaps = Keymaps::default();
             let editor_input = EditorInputBridge::new(native_keymaps);
             let gui_config = test_gui_config();
-            let lsp_manager =
-                nucleotide_lsp::LspManager::new(Arc::new(nucleotide_lsp::LspManagerConfig {
-                    project_lsp_startup: gui_config.gui.lsp.project_lsp_startup,
-                    startup_timeout_ms: gui_config.gui.lsp.startup_timeout_ms,
-                    enable_fallback: gui_config.gui.lsp.enable_fallback,
-                }));
             let (project_lsp_command_tx, project_lsp_command_rx) =
                 tokio::sync::mpsc::unbounded_channel();
             let mut cli_env = HashMap::new();
@@ -10694,7 +10419,6 @@ mod tests {
                 event_bridge_rx: None,
                 config: gui_config,
                 helix_config_arc: helix_config,
-                lsp_manager,
                 project_lsp_manager: Arc::new(RwLock::new(None)),
                 helix_lsp_bridge: Arc::new(RwLock::new(None)),
                 project_lsp_command_tx: Some(project_lsp_command_tx),
@@ -11052,21 +10776,6 @@ mod tests {
                 name: "devbox".to_string(),
             })
         ));
-    }
-
-    #[test]
-    fn document_workspace_root_uses_project_directory_for_remote_workspaces() {
-        let identity = WorkspaceIdentity::Remote(RemoteWorkspaceIdentity {
-            kind: RemoteWorkspaceKind::Wsl,
-            name: "Ubuntu".to_string(),
-        });
-        let project_directory = Path::new("//wsl.localhost/Ubuntu/home/me/project");
-        let document_path =
-            Path::new("//wsl.localhost/Ubuntu/home/me/project/crates/app/src/main.rs");
-
-        let root = document_workspace_root(&identity, Some(project_directory), document_path);
-
-        assert_eq!(root, project_directory);
     }
 
     #[test]
