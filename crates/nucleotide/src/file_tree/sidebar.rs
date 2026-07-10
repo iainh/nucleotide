@@ -492,7 +492,15 @@ fn row_text_color(
     if row.is_selected {
         file_tree_tokens.item_text_selected
     } else if let Some(status) = git_status_for_display(row) {
-        git_status_color(status, theme)
+        match status {
+            VcsStatus::Deleted => theme.tokens.editor.vcs_deleted,
+            VcsStatus::Conflicted | VcsStatus::Unknown => theme.tokens.editor.error,
+            VcsStatus::Untracked
+            | VcsStatus::Modified
+            | VcsStatus::Added
+            | VcsStatus::Renamed
+            | VcsStatus::Clean => file_tree_tokens.item_text,
+        }
     } else if row.is_hidden {
         file_tree_tokens.item_text_hidden
     } else {
@@ -539,9 +547,6 @@ fn render_git_status_lane(
                     .flex()
                     .items_center()
                     .justify_center()
-                    .rounded(theme.tokens.sizes.radius_md)
-                    .border_1()
-                    .border_color(git_status_badge_border_color(theme))
                     .text_size(theme.tokens.sizes.text_xs)
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(git_status_color(status, theme))
@@ -581,10 +586,6 @@ fn git_status_color(status: VcsStatus, theme: &Theme) -> gpui::Hsla {
         VcsStatus::Conflicted | VcsStatus::Unknown => theme.tokens.editor.error,
         VcsStatus::Clean => theme.tokens.file_tree_tokens().item_text,
     }
-}
-
-fn git_status_badge_border_color(theme: &Theme) -> gpui::Hsla {
-    theme.tokens.chrome.border_default
 }
 
 fn project_tree_row_min_width(row: &ProjectTreeRow, density: FileTreeDisplayDensity) -> f32 {
@@ -845,7 +846,7 @@ mod tests {
     }
 
     #[test]
-    fn row_text_color_prioritizes_selection_over_git_status() {
+    fn row_text_color_keeps_routine_vcs_status_neutral() {
         let theme = Theme::from_tokens(nucleotide_ui::DesignTokens::dark());
         let file_tree_tokens = theme.tokens.file_tree_tokens();
         let mut entry = FileTreeEntry::new_file(
@@ -867,7 +868,20 @@ mod tests {
 
         assert_eq!(
             row_text_color(&row, &theme, file_tree_tokens),
-            theme.tokens.editor.vcs_modified
+            file_tree_tokens.item_text
+        );
+
+        let mut deleted = row.clone();
+        deleted.vcs_status = Some(VcsStatus::Deleted);
+        assert_eq!(
+            row_text_color(&deleted, &theme, file_tree_tokens),
+            theme.tokens.editor.vcs_deleted
+        );
+
+        deleted.vcs_status = Some(VcsStatus::Conflicted);
+        assert_eq!(
+            row_text_color(&deleted, &theme, file_tree_tokens),
+            theme.tokens.editor.error
         );
     }
 
@@ -905,16 +919,6 @@ mod tests {
         assert_eq!(
             chevron_color(&selected, file_tree_tokens),
             theme.tokens.file_tree_tokens().icon_color_selected
-        );
-    }
-
-    #[test]
-    fn git_status_badge_border_uses_theme_token() {
-        let theme = Theme::from_tokens(nucleotide_ui::DesignTokens::dark());
-
-        assert_eq!(
-            git_status_badge_border_color(&theme),
-            theme.tokens.chrome.border_default
         );
     }
 

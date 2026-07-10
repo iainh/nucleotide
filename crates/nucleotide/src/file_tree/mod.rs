@@ -10,7 +10,6 @@ pub mod view;
 pub mod watcher;
 
 pub use entry::{FileKind, FileTreeEntry};
-pub use icons::{get_file_icon, get_symlink_icon};
 // pub use project_header::{CompactProjectStatus, ProjectHeader, ProjectHeaderEvent};
 use sidebar::ProjectTreeContextMenuIntent;
 pub use tree::FileTree;

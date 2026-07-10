@@ -788,19 +788,23 @@ impl Tab {
 
     fn build_icon(
         file_path: Option<std::path::PathBuf>,
+        git_status: Option<VcsStatus>,
         diagnostic_severity: Option<DiagnosticSeverity>,
         tokens: nucleotide_ui::tokens::DesignTokens,
         cx: &mut App,
     ) -> gpui::AnyElement {
         let icon_color = Tab::content_icon_color(tokens);
+        let vcs_status = Tab::icon_vcs_status(git_status, diagnostic_severity);
         let icon = if let Some(ref path) = file_path {
             VcsIcon::from_path(path, false)
                 .size(tokens.sizes.text_lg.into())
                 .text_color(icon_color)
+                .vcs_status(vcs_status)
         } else {
             VcsIcon::scratch()
                 .size(tokens.sizes.text_lg.into())
                 .text_color(icon_color)
+                .vcs_status(vcs_status)
         };
         let theme = cx.global::<nucleotide_ui::Theme>();
 
@@ -933,18 +937,15 @@ impl Tab {
             .into_any_element()
     }
 
-    fn vcs_label_text_color(
-        text_color: gpui::Hsla,
+    fn icon_vcs_status(
         git_status: Option<VcsStatus>,
-        tokens: nucleotide_ui::tokens::DesignTokens,
-    ) -> gpui::Hsla {
-        match git_status {
-            Some(VcsStatus::Added | VcsStatus::Untracked) => tokens.editor.vcs_added,
-            Some(VcsStatus::Modified | VcsStatus::Renamed) => tokens.editor.vcs_modified,
-            Some(VcsStatus::Deleted) => tokens.editor.vcs_deleted,
-            Some(VcsStatus::Conflicted | VcsStatus::Unknown) => tokens.editor.error,
-            Some(VcsStatus::Clean) | None => text_color,
+        diagnostic_severity: Option<DiagnosticSeverity>,
+    ) -> Option<VcsStatus> {
+        if diagnostic_severity.is_some() {
+            return None;
         }
+
+        git_status.filter(|status| !matches!(status, VcsStatus::Clean))
     }
 
     fn build_label(
@@ -1172,7 +1173,6 @@ impl Tab {
             TabClosePosition::Right => (start_slot, end_slot),
         };
         let trailing_slot = div().flex_none().ml_auto().child(trailing_slot);
-        let label_text_color = Tab::vcs_label_text_color(text_color, git_status, tokens);
         let content_icon = Tab::content_icon_kind(is_readonly, show_file_icons);
         let readonly_diagnostic_severity = show_file_icons.then_some(diagnostic_severity).flatten();
 
@@ -1185,9 +1185,13 @@ impl Tab {
             .gap(tokens.sizes.space_2)
             .child(leading_slot)
             .when_some(content_icon, |row, content_icon| match content_icon {
-                TabContentIcon::File => {
-                    row.child(Tab::build_icon(file_path, diagnostic_severity, tokens, cx))
-                }
+                TabContentIcon::File => row.child(Tab::build_icon(
+                    file_path,
+                    git_status,
+                    diagnostic_severity,
+                    tokens,
+                    cx,
+                )),
                 TabContentIcon::Readonly => row.child(Tab::build_readonly_icon(
                     tokens,
                     readonly_diagnostic_severity,
@@ -1200,7 +1204,7 @@ impl Tab {
                 is_active,
                 is_preview,
                 is_deleted,
-                label_text_color,
+                text_color,
                 tokens,
             ))
             .child(trailing_slot)
@@ -1314,45 +1318,16 @@ mod tests {
     }
 
     #[test]
-    fn vcs_label_text_color_matches_zed_git_status_groups() {
-        let tokens = nucleotide_ui::DesignTokens::dark();
-        let text_color = tokens.tab_bar_tokens().tab_text_inactive;
-
+    fn tab_icon_prioritizes_diagnostics_over_vcs_status() {
+        assert_eq!(Tab::icon_vcs_status(None, None), None);
+        assert_eq!(Tab::icon_vcs_status(Some(VcsStatus::Clean), None), None);
         assert_eq!(
-            Tab::vcs_label_text_color(text_color, None, tokens),
-            text_color
+            Tab::icon_vcs_status(Some(VcsStatus::Modified), None),
+            Some(VcsStatus::Modified)
         );
         assert_eq!(
-            Tab::vcs_label_text_color(text_color, Some(VcsStatus::Clean), tokens),
-            text_color
-        );
-        assert_eq!(
-            Tab::vcs_label_text_color(text_color, Some(VcsStatus::Added), tokens),
-            tokens.editor.vcs_added
-        );
-        assert_eq!(
-            Tab::vcs_label_text_color(text_color, Some(VcsStatus::Untracked), tokens),
-            tokens.editor.vcs_added
-        );
-        assert_eq!(
-            Tab::vcs_label_text_color(text_color, Some(VcsStatus::Modified), tokens),
-            tokens.editor.vcs_modified
-        );
-        assert_eq!(
-            Tab::vcs_label_text_color(text_color, Some(VcsStatus::Renamed), tokens),
-            tokens.editor.vcs_modified
-        );
-        assert_eq!(
-            Tab::vcs_label_text_color(text_color, Some(VcsStatus::Deleted), tokens),
-            tokens.editor.vcs_deleted
-        );
-        assert_eq!(
-            Tab::vcs_label_text_color(text_color, Some(VcsStatus::Conflicted), tokens),
-            tokens.editor.error
-        );
-        assert_eq!(
-            Tab::vcs_label_text_color(text_color, Some(VcsStatus::Unknown), tokens),
-            tokens.editor.error
+            Tab::icon_vcs_status(Some(VcsStatus::Conflicted), Some(DiagnosticSeverity::Error)),
+            None
         );
     }
 }
