@@ -11,6 +11,11 @@ categories = ["editor"]
 repository = "https://github.com/helix-editor/helix"
 homepage = "https://helix-editor.com"
 
+[package.metadata.cargo-udeps.ignore]
+# Used by the integration tests in tests/path.rs; cargo-udeps does not
+# attribute this vendored workspace dev-dependency correctly.
+development = ["tempfile"]
+
 [dependencies]
 dunce = "1.0"
 etcetera = "0.11"

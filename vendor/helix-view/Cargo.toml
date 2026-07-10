@@ -10,6 +10,11 @@ categories = ["editor"]
 repository = "https://github.com/helix-editor/helix"
 homepage = "https://helix-editor.com"
 
+[package.metadata.cargo-udeps.ignore]
+# These are exercised by the feature-gated benchmark target below. They are
+# false positives when cargo-udeps checks every target in this workspace.
+development = ["criterion", "helix-tui"]
+
 [lib]
 # Skip libtest benchmark harness, the benches use criterion.
 # cargo bench -p helix-view --features bench
