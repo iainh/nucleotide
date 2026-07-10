@@ -8,6 +8,9 @@ on:
 permissions:
   contents: read
 
+env:
+  VPK_VERSION: '1.2.0'
+
 jobs:
   build-linux-remote-helpers:
     name: Build Linux remote helpers
@@ -76,7 +79,7 @@ jobs:
       - name: Install Velopack CLI
         shell: pwsh
         run: |
-          dotnet tool update -g vpk
+          dotnet tool update -g vpk --version $env:VPK_VERSION
           "$env:USERPROFILE\.dotnet\tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Cache cargo dependencies

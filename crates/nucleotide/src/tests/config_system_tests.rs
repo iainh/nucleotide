@@ -491,6 +491,7 @@ dark_theme = "custom_dark"
             project_markers: ProjectMarkersConfig::default(),
             file_ops: FileOpsConfig::default(),
             remote: crate::config::RemoteConfig::default(),
+            updates: crate::config::UpdatesConfig::default(),
         };
 
         // Serialize to TOML

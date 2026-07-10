@@ -119,6 +119,12 @@ pub mod help {
     actions!(help, [About, OpenTutorial, ThemeDebug, ComponentGallery,]);
 }
 
+pub mod updates {
+    use super::actions;
+
+    actions!(updates, [Check, Show, Download, Restart,]);
+}
+
 pub mod workspace {
     use super::actions;
 

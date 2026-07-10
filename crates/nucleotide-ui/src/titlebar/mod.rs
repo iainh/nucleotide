@@ -19,6 +19,8 @@ mod application_menu;
 
 pub use platform_titlebar::PlatformTitleBar;
 
+use gpui::prelude::FluentBuilder;
+
 #[cfg(target_os = "linux")]
 pub use linux_platform_detector::{LinuxPlatformInfo, get_platform_info, refresh_platform_info};
 #[cfg(target_os = "linux")]
@@ -26,11 +28,12 @@ pub use linux_titlebar::LinuxTitlebar;
 #[cfg(target_os = "linux")]
 pub use linux_window_controls::LinuxWindowControls;
 
-use gpui::{AppContext, Context, Entity, Hsla, IntoElement, Pixels, Render, Window};
+use gpui::{
+    AnyView, AppContext, Context, Entity, Hsla, IntoElement, ParentElement, Pixels, Render, Styled,
+    Window, div, px,
+};
 #[cfg(target_os = "windows")]
-use gpui::{InteractiveElement, WindowControlArea, px};
-#[cfg(not(target_os = "macos"))]
-use gpui::{ParentElement, Styled, div};
+use gpui::{InteractiveElement, WindowControlArea};
 
 #[cfg(target_os = "windows")]
 const WINDOWS_CONTROL_BUTTON_SIZE: f32 = 46.0;
@@ -44,6 +47,9 @@ const WINDOWS_CONTROL_HORIZONTAL_PADDING: f32 = 0.0;
 const WINDOWS_CONTROL_RIGHT_INSET: f32 = 0.0;
 #[cfg(target_os = "windows")]
 const WINDOWS_UI_FONT_FAMILY: &str = "Segoe UI Variable";
+
+const TITLEBAR_ACTION_LANE_WIDTH: f32 = 32.0;
+const TITLEBAR_ACTION_RIGHT_INSET: f32 = 8.0;
 
 #[cfg(target_os = "windows")]
 fn windows_caption_controls_width() -> f32 {
@@ -62,6 +68,7 @@ pub struct TitleBar {
     platform_titlebar: Entity<PlatformTitleBar>,
     filename: String,
     leading_sidebar_background: Option<platform_titlebar::TitleBarLeadingSidebarBackground>,
+    trailing_view: Option<AnyView>,
     #[cfg(not(target_os = "macos"))]
     application_menu: Option<Entity<application_menu::ApplicationMenu>>,
 }
@@ -87,6 +94,7 @@ impl TitleBar {
             platform_titlebar,
             filename: "Nucleotide".to_string(),
             leading_sidebar_background: None,
+            trailing_view: None,
             #[cfg(not(target_os = "macos"))]
             application_menu,
         }
@@ -125,6 +133,16 @@ impl TitleBar {
         }
 
         self.leading_sidebar_background = None;
+        true
+    }
+
+    /// Set an application-owned view in the title bar's fixed trailing action lane.
+    pub fn set_trailing_view(&mut self, trailing_view: Option<AnyView>) -> bool {
+        if self.trailing_view == trailing_view {
+            return false;
+        }
+
+        self.trailing_view = trailing_view;
         true
     }
 
@@ -173,6 +191,7 @@ impl Render for TitleBar {
                             .flex()
                             .flex_row()
                             .items_center()
+                            .pr(px(TITLEBAR_ACTION_LANE_WIDTH))
                             .overflow_hidden()
                             .child(menu.clone())
                             .child(
@@ -193,6 +212,20 @@ impl Render for TitleBar {
                                     .child(self.filename.clone()),
                             ),
                     )
+                    .when_some(self.trailing_view.clone(), |titlebar, trailing_view| {
+                        titlebar.child(
+                            div()
+                                .absolute()
+                                .top_0()
+                                .right(px(windows_caption_controls_width()))
+                                .w(px(TITLEBAR_ACTION_LANE_WIDTH))
+                                .h_full()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(trailing_view),
+                        )
+                    })
                     .child(
                         div()
                             .absolute()
@@ -214,14 +247,48 @@ impl Render for TitleBar {
                     .flex()
                     .flex_col()
                     .w_full()
-                    .child(titlebar_view)
+                    .child(div().relative().w_full().child(titlebar_view).when_some(
+                        self.trailing_view.clone(),
+                        |titlebar, trailing_view| {
+                            titlebar.child(
+                                div()
+                                    .absolute()
+                                    .top_0()
+                                    .right(px(TITLEBAR_ACTION_RIGHT_INSET))
+                                    .w(px(TITLEBAR_ACTION_LANE_WIDTH))
+                                    .h(TitleBar::height(window, cx))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(trailing_view),
+                            )
+                        },
+                    ))
                     .child(menu.clone())
                     .into_any_element();
             }
         }
 
-        // macOS (or fallback): just the platform titlebar
-        self.platform_titlebar.clone().into_any_element()
+        // macOS (or fallback): overlay application actions without affecting the centred title.
+        div()
+            .relative()
+            .w_full()
+            .child(self.platform_titlebar.clone())
+            .when_some(self.trailing_view.clone(), |titlebar, trailing_view| {
+                titlebar.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .right(px(TITLEBAR_ACTION_RIGHT_INSET))
+                        .w(px(TITLEBAR_ACTION_LANE_WIDTH))
+                        .h(TitleBar::height(window, cx))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(trailing_view),
+                )
+            })
+            .into_any_element()
     }
 }
 

@@ -80,6 +80,7 @@ use crate::tab::TabId;
 use crate::types::{
     EditorStatus, GlobalSearchLocation, HoverDocEntry, RegexSelectionAction, Severity,
 };
+use crate::updates::{UpdateController, UpdateControllerEvent, UpdateDialog};
 use crate::utils;
 use crate::{Core, Input, InputEvent};
 use nucleotide_env::EnvironmentOrigin;
@@ -702,16 +703,11 @@ fn statusbar_lsp_summary_for_state(
 
 fn should_render_app_titlebar(
     has_titlebar: bool,
-    show_file_tree: bool,
-    file_tree_width: f32,
-    translucent_sidebar_enabled: bool,
+    _show_file_tree: bool,
+    _file_tree_width: f32,
+    _translucent_sidebar_enabled: bool,
 ) -> bool {
     has_titlebar
-        && !should_extend_translucent_sidebar_into_status_bar(
-            show_file_tree,
-            file_tree_width,
-            translucent_sidebar_enabled,
-        )
 }
 
 fn file_tree_content_top_inset(translucent_sidebar_enabled: bool) -> Pixels {
@@ -1043,6 +1039,12 @@ pub struct Workspace {
     about_window: Entity<AboutWindow>,                // About dialog window
     theme_debug: Entity<nucleotide_ui::ThemeDebugView>, // Theme debug overlay
     component_gallery: Entity<nucleotide_ui::ComponentGallery>, // Interactive component gallery
+    update_controller: Entity<UpdateController>,
+    update_dialog: Entity<UpdateDialog>,
+    notified_update_version: Option<String>,
+    notified_ready_update_version: Option<String>,
+    update_restart_confirm_open: bool,
+    window_was_active: bool,
     // Pending file operation that expects a text input via prompt
     pending_file_op: Option<PendingFileOp>,
     // Defer a file tree refresh until after processing core events
@@ -5129,6 +5131,7 @@ impl Workspace {
         notifications: Entity<NotificationView>,
         info: Entity<InfoBoxView>,
         input_coordinator: Arc<InputCoordinator>,
+        update_controller: Entity<UpdateController>,
         cx: &mut Context<Self>,
     ) -> Self {
         let focus_handle = cx.focus_handle();
@@ -5186,6 +5189,25 @@ impl Workspace {
         cx.observe(&notifications, |_, _, cx| {
             cx.notify();
         })
+        .detach();
+
+        cx.observe(&update_controller, |workspace, controller, cx| {
+            let state = controller.read(cx).state().clone();
+            workspace.sync_update_notification(&state, cx);
+            cx.notify();
+        })
+        .detach();
+
+        cx.subscribe(
+            &update_controller,
+            |workspace, _controller, event: &UpdateControllerEvent, cx| {
+                if *event == UpdateControllerEvent::ApplyArmed {
+                    info!("Update helper is armed; shutting down for application update");
+                    quit(workspace.core.clone(), workspace.handle.clone(), cx);
+                    cx.quit();
+                }
+            },
+        )
         .detach();
 
         // Note: Window appearance observation needs to be set up after window creation
@@ -5261,6 +5283,7 @@ impl Workspace {
         let about_window = cx.new(AboutWindow::new);
         let theme_debug = cx.new(nucleotide_ui::ThemeDebugView::new);
         let component_gallery = cx.new(nucleotide_ui::ComponentGallery::new);
+        let update_dialog = cx.new(|cx| UpdateDialog::new(update_controller.clone(), cx));
 
         let doc_sidebar_scroll_handle = ScrollHandle::new();
         let doc_sidebar_scrollbar_state = ScrollbarState::new(doc_sidebar_scroll_handle.clone());
@@ -5339,6 +5362,12 @@ impl Workspace {
             about_window,
             theme_debug,
             component_gallery,
+            update_controller,
+            update_dialog,
+            notified_update_version: None,
+            notified_ready_update_version: None,
+            update_restart_confirm_open: false,
+            window_was_active: true,
             pending_file_op: None,
             needs_file_tree_refresh: false,
             delete_confirm_open: false,
@@ -5450,6 +5479,96 @@ impl Workspace {
 
     fn confirm_unsaved_close_from_dialog(&mut self, cx: &mut Context<Self>) {
         self.perform_pending_unsaved_close(cx);
+    }
+
+    fn request_update_restart(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.modal_layer.update(cx, |layer, cx| {
+            layer.hide_modal(window, cx);
+        });
+
+        let has_modified_buffers = self
+            .core
+            .read(cx)
+            .editor
+            .documents
+            .values()
+            .any(|document| document.is_modified());
+        if has_modified_buffers {
+            self.update_restart_confirm_open = true;
+            cx.notify();
+        } else {
+            self.prepare_and_arm_update_restart(cx);
+        }
+    }
+
+    fn update_restart_confirm_dialog(&self) -> ConfirmDialog {
+        ConfirmDialog::new(
+            "Save and Restart Nucleotide",
+            "Nucleotide has unsaved buffers. Save all buffers before restarting to install the update?",
+            "Save All and Restart",
+        )
+    }
+
+    fn handle_update_restart_confirm_event(
+        &mut self,
+        event: ConfirmDialogEvent,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            ConfirmDialogEvent::Cancelled => {
+                self.update_restart_confirm_open = false;
+                cx.notify();
+            }
+            ConfirmDialogEvent::Confirmed => self.prepare_and_arm_update_restart(cx),
+        }
+    }
+
+    fn prepare_and_arm_update_restart(&mut self, cx: &mut Context<Self>) {
+        self.update_restart_confirm_open = false;
+
+        if self
+            .core
+            .read(cx)
+            .editor
+            .documents
+            .values()
+            .any(|document| document.is_modified())
+        {
+            self.execute_raw_command("write-all", cx);
+        }
+
+        let handle = self.handle.clone();
+        let preparation = self.core.update(cx, |core, _cx| -> anyhow::Result<()> {
+            let _guard = handle.enter();
+            handle.block_on(core.editor.flush_writes())?;
+
+            let unsaved = core
+                .editor
+                .documents
+                .values()
+                .filter(|document| document.is_modified())
+                .count();
+            if unsaved > 0 {
+                anyhow::bail!("{unsaved} buffer(s) could not be saved");
+            }
+            Ok(())
+        });
+
+        match preparation {
+            Ok(()) => self
+                .update_controller
+                .update(cx, |controller, cx| controller.arm_apply_and_restart(cx)),
+            Err(error) => {
+                warn!(error = %error, "Update restart aborted because buffers were not saved");
+                self.push_editor_status_notification(
+                    EditorStatus {
+                        status: format!("Update restart cancelled: {error}"),
+                        severity: Severity::Error,
+                    },
+                    cx,
+                );
+            }
+        }
     }
 
     fn request_unsaved_close(
@@ -5570,7 +5689,15 @@ impl Workspace {
             return;
         }
 
-        if self.delete_confirm_open {
+        if self.update_restart_confirm_open {
+            let dialog = self.update_restart_confirm_dialog();
+            self.show_confirmation_dialog(
+                dialog,
+                window,
+                cx,
+                Workspace::handle_update_restart_confirm_event,
+            );
+        } else if self.delete_confirm_open {
             let dialog = self.delete_confirm_dialog(cx);
             self.show_confirmation_dialog(
                 dialog,
@@ -9822,6 +9949,41 @@ impl Workspace {
         });
     }
 
+    fn sync_update_notification(
+        &mut self,
+        state: &crate::updates::UpdateState,
+        cx: &mut Context<Self>,
+    ) {
+        let (version, title, message, ready) = match state {
+            crate::updates::UpdateState::Available(update) => (
+                &update.version,
+                "Update Available",
+                format!("Nucleotide {} is ready to download", update.version),
+                false,
+            ),
+            crate::updates::UpdateState::ReadyToRestart(update) => (
+                &update.version,
+                "Update Ready",
+                format!("Restart Nucleotide to install version {}", update.version),
+                true,
+            ),
+            _ => return,
+        };
+
+        let notified_version = if ready {
+            &mut self.notified_ready_update_version
+        } else {
+            &mut self.notified_update_version
+        };
+        if notified_version.as_deref() == Some(version) {
+            return;
+        }
+        *notified_version = Some(version.clone());
+        self.notifications.update(cx, |notifications, cx| {
+            notifications.push_success(title, message, cx);
+        });
+    }
+
     fn sync_current_editor_status_notification(&mut self, cx: &mut Context<Self>) {
         let Some(status) = self
             .core
@@ -13492,6 +13654,13 @@ impl Focusable for Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let window_is_active = window.is_window_active();
+        if window_is_active && !self.window_was_active {
+            self.update_controller
+                .update(cx, |controller, cx| controller.check_if_stale(cx));
+        }
+        self.window_was_active = window_is_active;
+
         // Close terminal panel when the shell process has exited
         if self.terminal_panel_visible
             && let Some(id) = self.terminal_id
@@ -13666,6 +13835,7 @@ impl Render for Workspace {
         )
         .then(|| self.titlebar.clone())
         .flatten();
+        let titlebar_visible = rendered_titlebar.is_some();
         let titlebar_sidebar_background =
             if native_sidebar_enabled && self.show_file_tree && self.file_tree_width > 0.0 {
                 let file_tree_tokens = cx.theme().tokens.file_tree_tokens().translucent_sidebar();
@@ -14059,6 +14229,45 @@ impl Render for Workspace {
                 workspace.modal_layer.update(cx, |layer, cx| {
                     layer.show_modal(about_window, window, cx);
                 });
+            },
+        ));
+
+        workspace_div = workspace_div.on_action(cx.listener(
+            move |workspace, _: &crate::actions::updates::Show, window, cx| {
+                let update_dialog = workspace.update_dialog.clone();
+                workspace.modal_layer.update(cx, |layer, cx| {
+                    layer.show_modal(update_dialog, window, cx);
+                });
+            },
+        ));
+
+        workspace_div = workspace_div.on_action(cx.listener(
+            move |workspace, _: &crate::actions::updates::Check, window, cx| {
+                workspace
+                    .update_controller
+                    .update(cx, |controller, cx| controller.check_now(cx));
+                let update_dialog = workspace.update_dialog.clone();
+                workspace.modal_layer.update(cx, |layer, cx| {
+                    layer.show_modal(update_dialog, window, cx);
+                });
+            },
+        ));
+
+        workspace_div = workspace_div.on_action(cx.listener(
+            move |workspace, _: &crate::actions::updates::Download, window, cx| {
+                workspace
+                    .update_controller
+                    .update(cx, |controller, cx| controller.download(cx));
+                let update_dialog = workspace.update_dialog.clone();
+                workspace.modal_layer.update(cx, |layer, cx| {
+                    layer.show_modal(update_dialog, window, cx);
+                });
+            },
+        ));
+
+        workspace_div = workspace_div.on_action(cx.listener(
+            move |workspace, _: &crate::actions::updates::Restart, window, cx| {
+                workspace.request_update_restart(window, cx);
             },
         ));
 
@@ -14681,7 +14890,8 @@ impl Render for Workspace {
                 let mut container = div().relative().w_full().h(content_max_h).min_h(px(0.0));
 
                 // Left file tree content
-                let file_tree_top_inset = file_tree_content_top_inset(native_sidebar_enabled);
+                let file_tree_top_inset =
+                    file_tree_content_top_inset(native_sidebar_enabled && !titlebar_visible);
                 let file_tree_tokens = {
                     let tokens = cx.theme().tokens.file_tree_tokens();
                     if native_sidebar_enabled {
@@ -17189,11 +17399,11 @@ mod tests {
     }
 
     #[test]
-    fn app_titlebar_is_hidden_only_for_visible_translucent_sidebar() {
+    fn app_titlebar_remains_visible_with_translucent_sidebar() {
         assert!(should_render_app_titlebar(true, false, 240.0, true));
         assert!(should_render_app_titlebar(true, true, 240.0, false));
         assert!(should_render_app_titlebar(true, true, 0.0, true));
-        assert!(!should_render_app_titlebar(true, true, 240.0, true));
+        assert!(should_render_app_titlebar(true, true, 240.0, true));
         assert!(!should_render_app_titlebar(false, true, 240.0, true));
     }
 

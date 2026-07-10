@@ -448,8 +448,6 @@ fn main() -> Result<()> {
             windows_single_instance::ClaimResult::Forwarded => return Ok(()),
         };
 
-    nucleotide::updates::spawn_background_update_check();
-
     let (platform_open_tx, platform_open_rx) =
         tokio::sync::mpsc::unbounded_channel::<ExternalOpenRequest>();
 
@@ -832,6 +830,7 @@ fn is_running_in_wsl() -> bool {
 }
 
 // Import actions from our centralized definitions
+use nucleotide::actions::updates::Check as CheckForUpdates;
 #[cfg(not(target_os = "windows"))]
 use nucleotide::actions::window::{Hide, HideOthers, ShowAll};
 #[cfg(target_os = "windows")]
@@ -876,6 +875,7 @@ fn default_app_menus() -> Vec<Menu> {
             disabled: false,
             items: vec![
                 MenuItem::action("About", About),
+                MenuItem::action("Check for Updates…", CheckForUpdates),
                 MenuItem::action("Settings...", OpenSettings),
                 MenuItem::action("Reload Configuration", ReloadConfiguration),
                 MenuItem::separator(),
@@ -1041,6 +1041,7 @@ fn windows_app_menus() -> Vec<Menu> {
         Menu::new("Help").items([
             MenuItem::action("Tutorial", OpenTutorial),
             MenuItem::separator(),
+            MenuItem::action("Check for Updates…", CheckForUpdates),
             MenuItem::action("About Nucleotide", About),
         ]),
     ]
@@ -1184,6 +1185,13 @@ fn gui_main(
 
             // Initialize preview tracker
             cx.set_global(nucleotide_core::preview_tracker::PreviewTracker::new());
+
+            let update_controller = cx.new(|cx| {
+                nucleotide::updates::UpdateController::new(config.gui.updates.clone(), cx)
+            });
+            cx.set_global(nucleotide::updates::UpdateControllerHandle(
+                update_controller.clone(),
+            ));
 
             if let Some(directwrite) = &config.gui.window.directwrite
                 && let Err(error) =
@@ -1397,6 +1405,7 @@ fn gui_main(
                         notifications,
                         info,
                         input_coordinator,
+                        update_controller.clone(),
                         cx,
                     );
 
@@ -1546,14 +1555,23 @@ fn gui_main(
                     should_create_custom_titlebar(window.window_decorations());
 
                 if should_create_titlebar {
-                    let titlebar =
-                        cx.new(|cx| nucleotide_ui::titlebar::TitleBar::new("titlebar", cx));
+                    let update_indicator = cx.new(|cx| {
+                        nucleotide::updates::UpdateIndicator::new(update_controller.clone(), cx)
+                    });
+                    let titlebar = cx.new(|cx| {
+                        let mut titlebar =
+                            nucleotide_ui::titlebar::TitleBar::new("titlebar", cx);
+                        titlebar.set_trailing_view(Some(update_indicator.into()));
+                        titlebar
+                    });
 
                     workspace.update(cx, |workspace, cx| {
                         workspace.set_titlebar(titlebar);
                         cx.notify();
                     });
                 }
+
+                update_controller.update(cx, |controller, cx| controller.start(cx));
 
                 if let Some(action_index) = initial_dock_action {
                     cx.defer(move |cx| {
