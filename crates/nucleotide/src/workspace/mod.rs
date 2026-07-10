@@ -943,7 +943,11 @@ pub struct Workspace {
     lsp_menu_open: bool,
     lsp_menu_pos: (f32, f32),
     document_order: Vec<helix_view::DocumentId>, // Ordered list of documents in opening order
-    input_coordinator: Arc<InputCoordinator>,    // Central input coordination system
+    tab_bar_document_generation: u64,
+    tab_bar_document_cache: Option<TabBarDocumentCache>,
+    tab_bar_document_cache_hits: u64,
+    tab_bar_document_cache_misses: u64,
+    input_coordinator: Arc<InputCoordinator>, // Central input coordination system
     current_project_root: Option<std::path::PathBuf>, // Track current project root for change detection
     initial_project_startup_pending: bool, // Defer project/LSP startup until after first render
     environment_badge: Option<EnvironmentBadge>,
@@ -1690,6 +1694,32 @@ struct UnsavedCloseConfirmation<T> {
 struct TabActivationDocument<T> {
     id: T,
     focused_at: std::time::Instant,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TabBarDocumentCacheKey {
+    project_directory: Option<PathBuf>,
+    show_file_icons: bool,
+    show_git_status: bool,
+    show_diagnostics: crate::config::TabDiagnosticsVisibility,
+    show_preview_tabs: bool,
+    workspace_is_local: bool,
+}
+
+struct TabBarDocumentCache {
+    generation: u64,
+    key: TabBarDocumentCacheKey,
+    documents: Arc<[crate::tab_bar::DocumentInfo]>,
+}
+
+fn cached_tab_bar_documents(
+    cache: Option<&TabBarDocumentCache>,
+    generation: u64,
+    key: &TabBarDocumentCacheKey,
+) -> Option<Arc<[crate::tab_bar::DocumentInfo]>> {
+    cache
+        .filter(|cache| cache.generation == generation && cache.key == *key)
+        .map(|cache| cache.documents.clone())
 }
 
 #[cfg(test)]
@@ -3731,6 +3761,49 @@ impl Workspace {
         }
     }
 
+    fn invalidate_tab_bar_documents(&mut self) {
+        self.tab_bar_document_generation = self.tab_bar_document_generation.wrapping_add(1);
+    }
+
+    fn invalidate_tab_bar_document_if_presentation_changed(
+        &mut self,
+        doc_id: DocumentId,
+        cx: &Context<Self>,
+    ) {
+        let Some(cache) = &self.tab_bar_document_cache else {
+            self.invalidate_tab_bar_documents();
+            return;
+        };
+        let Some(cached) = cache
+            .documents
+            .iter()
+            .find(|document| document.id == TabId::Document(doc_id))
+        else {
+            self.invalidate_tab_bar_documents();
+            return;
+        };
+        let current_preview = cache.key.show_preview_tabs
+            && cx
+                .try_global::<nucleotide_core::preview_tracker::PreviewTracker>()
+                .is_some_and(|tracker| tracker.is_preview_doc(doc_id));
+        let presentation_changed =
+            self.core
+                .read(cx)
+                .editor
+                .document(doc_id)
+                .is_none_or(|document| {
+                    cached.is_modified != document.is_modified()
+                        || cached.is_readonly != document.readonly
+                        || cached.path.as_deref() != document.path()
+                        || cached.focused_at != document.focused_at
+                        || cached.is_preview != current_preview
+                });
+
+        if presentation_changed {
+            self.invalidate_tab_bar_documents();
+        }
+    }
+
     fn image_tab_mut(&mut self, image_id: u64) -> Option<&mut ImageTab> {
         self.image_tabs.iter_mut().find(|tab| tab.id == image_id)
     }
@@ -3781,6 +3854,7 @@ impl Workspace {
             self.image_tabs.push(tab);
         }
 
+        self.invalidate_tab_bar_documents();
         self.allow_tab_bar_auto_scroll();
 
         if let Some(file_tree) = &self.file_tree {
@@ -3800,6 +3874,7 @@ impl Workspace {
         if let Some(tab) = self.image_tab_mut(image_id) {
             tab.focused_at = std::time::Instant::now();
             self.active_image_tab_id = Some(image_id);
+            self.invalidate_tab_bar_documents();
             self.allow_tab_bar_auto_scroll();
             cx.notify();
         }
@@ -4009,6 +4084,7 @@ impl Workspace {
 
         self.image_tabs.remove(index);
         self.pinned_documents.remove(&TabId::Image(image_id));
+        self.invalidate_tab_bar_documents();
 
         if self.active_image_tab_id == Some(image_id) {
             self.active_image_tab_id = None;
@@ -4123,14 +4199,15 @@ impl Workspace {
         self.close_tab_documents_with_force(doc_ids, true, cx);
     }
 
-    fn unregister_preview_document(&self, doc_id: DocumentId, cx: &mut Context<Self>) {
+    fn unregister_preview_document(&mut self, doc_id: DocumentId, cx: &mut Context<Self>) {
         if let Some(tracker) = cx.try_global::<nucleotide_core::preview_tracker::PreviewTracker>() {
             tracker.unregister_doc(doc_id);
+            self.invalidate_tab_bar_documents();
         }
     }
 
     fn unregister_preview_documents(
-        &self,
+        &mut self,
         doc_ids: impl IntoIterator<Item = DocumentId>,
         cx: &mut Context<Self>,
     ) {
@@ -4138,12 +4215,14 @@ impl Workspace {
             for doc_id in doc_ids {
                 tracker.unregister_doc(doc_id);
             }
+            self.invalidate_tab_bar_documents();
         }
     }
 
-    fn clear_preview_documents(&self, cx: &mut Context<Self>) {
+    fn clear_preview_documents(&mut self, cx: &mut Context<Self>) {
         if let Some(tracker) = cx.try_global::<nucleotide_core::preview_tracker::PreviewTracker>() {
             tracker.clear();
+            self.invalidate_tab_bar_documents();
         }
     }
 
@@ -4172,6 +4251,7 @@ impl Workspace {
     fn switch_to_tab_document(&mut self, doc_id: DocumentId, cx: &mut Context<Self>) {
         self.allow_tab_bar_auto_scroll();
         self.active_image_tab_id = None;
+        self.invalidate_tab_bar_documents();
         let handle = self.handle.clone();
         self.core.update(cx, |core, cx| {
             let _guard = handle.enter();
@@ -4206,6 +4286,7 @@ impl Workspace {
         };
 
         tracker.replace_with_doc(doc_id, view_id, ephemeral);
+        self.invalidate_tab_bar_documents();
     }
 
     fn enforce_max_tabs_to_target(
@@ -4536,6 +4617,7 @@ impl Workspace {
 
         if let Some(readonly) = toggled {
             nucleotide_logging::info!(?doc_id, readonly, "Toggled tab document read-only state");
+            self.invalidate_tab_bar_documents();
             cx.notify();
         }
     }
@@ -4546,6 +4628,7 @@ impl Workspace {
         } else {
             self.pinned_documents.insert(tab_id);
         }
+        self.invalidate_tab_bar_documents();
         cx.notify();
     }
 
@@ -4959,6 +5042,10 @@ impl Workspace {
             lsp_menu_open: false,
             lsp_menu_pos: (0.0, 0.0),
             document_order: Vec::new(),
+            tab_bar_document_generation: 0,
+            tab_bar_document_cache: None,
+            tab_bar_document_cache_hits: 0,
+            tab_bar_document_cache_misses: 0,
             input_coordinator,
             current_project_root: root_path_for_manager.clone(),
             initial_project_startup_pending: root_path_for_manager.is_some(),
@@ -7565,6 +7652,7 @@ impl Workspace {
         if should_unpreview_changed_document(is_preview, is_modified) {
             self.unregister_preview_document(doc_id, cx);
         }
+        self.invalidate_tab_bar_document_if_presentation_changed(doc_id, cx);
 
         let focused_doc_id = {
             let core = self.core.read(cx);
@@ -7658,6 +7746,7 @@ impl Workspace {
         doc_id: helix_view::DocumentId,
         cx: &mut Context<Self>,
     ) {
+        self.invalidate_tab_bar_documents();
         for view_id in self.document_view_ids(doc_id, cx) {
             if let Some(view) = self.view_manager.get_document_view(&view_id) {
                 view.update(cx, |view, _cx| {
@@ -7674,6 +7763,7 @@ impl Workspace {
         // New document opened - the view will be created automatically
         info!("Document opened: {:?}", doc_id);
         self.ensure_document_in_order(doc_id);
+        self.invalidate_tab_bar_documents();
 
         let remote_project_lsp_root = {
             let core = self.core.read(cx);
@@ -7725,6 +7815,7 @@ impl Workspace {
         info!("Document closed: {:?}", doc_id);
         self.document_order.retain(|candidate| *candidate != doc_id);
         self.pinned_documents.remove(&TabId::Document(doc_id));
+        self.invalidate_tab_bar_documents();
         self.unregister_preview_document(doc_id, cx);
         cx.notify();
     }
@@ -7732,6 +7823,7 @@ impl Workspace {
     fn handle_view_focused(&mut self, view_id: helix_view::ViewId, cx: &mut Context<Self>) {
         info!("View focused: {:?}", view_id);
         self.active_image_tab_id = None;
+        self.invalidate_tab_bar_documents();
         self.view_manager.handle_view_focused(view_id, cx);
 
         let focused_filename = self.current_filename(cx);
@@ -9774,147 +9866,168 @@ impl Workspace {
         let activate_on_close = core.config.gui.tabs.activate_on_close;
         let show_preview_tabs = core.config.gui.preview_tabs.enabled;
         let workspace_identity = core.workspace_backend.identity();
+        let tab_bar_cache_key = TabBarDocumentCacheKey {
+            project_directory: project_directory.clone(),
+            show_file_icons,
+            show_git_status,
+            show_diagnostics,
+            show_preview_tabs,
+            workspace_is_local: matches!(workspace_identity, WorkspaceIdentity::Local),
+        };
 
-        // Collect all current tab IDs
-        let current_doc_ids: std::collections::HashSet<_> =
-            editor.documents.keys().copied().collect();
-        let mut current_tab_ids: std::collections::HashSet<_> = editor
-            .documents
-            .keys()
-            .copied()
-            .map(TabId::Document)
-            .collect();
-        current_tab_ids.extend(self.image_tabs.iter().map(|tab| TabId::Image(tab.id)));
+        let cached_documents = cached_tab_bar_documents(
+            self.tab_bar_document_cache.as_ref(),
+            self.tab_bar_document_generation,
+            &tab_bar_cache_key,
+        );
 
-        // Release the core borrow early by ending the scope
+        let documents = if let Some(documents) = cached_documents {
+            self.tab_bar_document_cache_hits += 1;
+            documents
+        } else {
+            self.tab_bar_document_cache_misses += 1;
+            let current_doc_ids: std::collections::HashSet<_> =
+                editor.documents.keys().copied().collect();
+            let mut current_tab_ids: std::collections::HashSet<_> = editor
+                .documents
+                .keys()
+                .copied()
+                .map(TabId::Document)
+                .collect();
+            current_tab_ids.extend(self.image_tabs.iter().map(|tab| TabId::Image(tab.id)));
+            self.document_order
+                .retain(|doc_id| current_doc_ids.contains(doc_id));
+            self.pinned_documents
+                .retain(|tab_id| current_tab_ids.contains(tab_id));
+            for &doc_id in &current_doc_ids {
+                self.ensure_document_in_order(doc_id);
+            }
 
-        // Clean up order list - remove documents that no longer exist
-        self.document_order
-            .retain(|doc_id| current_doc_ids.contains(doc_id));
-        self.pinned_documents
-            .retain(|tab_id| current_tab_ids.contains(tab_id));
+            // Collect document information only when presentation state changed.
+            let mut documents = Vec::new();
+            let core = self.core.read(cx);
+            let editor = &core.editor;
+            // Build preview doc sets. The preview setting controls tab presentation,
+            // but already-open documents remain visible when previews are disabled.
+            let preview_tracker = cx
+                .try_global::<nucleotide_core::preview_tracker::PreviewTracker>()
+                .cloned();
+            let preview_docs: std::collections::HashSet<_> = preview_tracker
+                .as_ref()
+                .map(|t| t.preview_doc_ids())
+                .unwrap_or_default();
 
-        // Add any new documents to the end of the order list (rightmost position)
-        for &doc_id in &current_doc_ids {
-            self.ensure_document_in_order(doc_id);
-        }
+            // Iterate in our stable order, not HashMap order
+            for (order_index, &doc_id) in self.document_order.iter().enumerate() {
+                let is_preview = show_preview_tabs && preview_docs.contains(&doc_id);
 
-        // Now collect document information in the stable order. Ephemeral preview
-        // documents stay visible so they behave like Zed preview tabs.
-        let mut documents = Vec::new();
-        let core = self.core.read(cx);
-        let editor = &core.editor;
-        // Build preview doc sets. The preview setting controls tab presentation,
-        // but already-open documents remain visible when previews are disabled.
-        let preview_tracker = cx
-            .try_global::<nucleotide_core::preview_tracker::PreviewTracker>()
-            .cloned();
-        let preview_docs: std::collections::HashSet<_> = preview_tracker
-            .as_ref()
-            .map(|t| t.preview_doc_ids())
-            .unwrap_or_default();
-
-        // Iterate in our stable order, not HashMap order
-        for (order_index, &doc_id) in self.document_order.iter().enumerate() {
-            let is_preview = show_preview_tabs && preview_docs.contains(&doc_id);
-
-            if let Some(doc) = editor.documents.get(&doc_id) {
-                let path = doc.path().map(|p| p.to_path_buf());
-                let diagnostic_severity = if show_file_icons {
-                    match show_diagnostics {
-                        crate::config::TabDiagnosticsVisibility::Off => None,
-                        crate::config::TabDiagnosticsVisibility::Errors => doc
-                            .diagnostics()
-                            .iter()
-                            .any(|diagnostic| {
-                                matches!(
-                                    diagnostic.severity,
+                if let Some(doc) = editor.documents.get(&doc_id) {
+                    let path = doc.path().map(|p| p.to_path_buf());
+                    let diagnostic_severity = if show_file_icons {
+                        match show_diagnostics {
+                            crate::config::TabDiagnosticsVisibility::Off => None,
+                            crate::config::TabDiagnosticsVisibility::Errors => doc
+                                .diagnostics()
+                                .iter()
+                                .any(|diagnostic| {
+                                    matches!(
+                                        diagnostic.severity,
+                                        Some(helix_core::diagnostic::Severity::Error)
+                                    )
+                                })
+                                .then_some(helix_core::diagnostic::Severity::Error),
+                            crate::config::TabDiagnosticsVisibility::All => {
+                                if doc.diagnostics().iter().any(|diagnostic| {
+                                    matches!(
+                                        diagnostic.severity,
+                                        Some(helix_core::diagnostic::Severity::Error)
+                                    )
+                                }) {
                                     Some(helix_core::diagnostic::Severity::Error)
-                                )
-                            })
-                            .then_some(helix_core::diagnostic::Severity::Error),
-                        crate::config::TabDiagnosticsVisibility::All => {
-                            if doc.diagnostics().iter().any(|diagnostic| {
-                                matches!(
-                                    diagnostic.severity,
-                                    Some(helix_core::diagnostic::Severity::Error)
-                                )
-                            }) {
-                                Some(helix_core::diagnostic::Severity::Error)
-                            } else if doc.diagnostics().iter().any(|diagnostic| {
-                                matches!(
-                                    diagnostic.severity,
+                                } else if doc.diagnostics().iter().any(|diagnostic| {
+                                    matches!(
+                                        diagnostic.severity,
+                                        Some(helix_core::diagnostic::Severity::Warning)
+                                    )
+                                }) {
                                     Some(helix_core::diagnostic::Severity::Warning)
-                                )
-                            }) {
-                                Some(helix_core::diagnostic::Severity::Warning)
-                            } else {
-                                None
+                                } else {
+                                    None
+                                }
                             }
                         }
-                    }
-                } else {
-                    None
-                };
+                    } else {
+                        None
+                    };
 
+                    documents.push(DocumentInfo {
+                        id: TabId::Document(doc_id),
+                        is_deleted: is_deleted_document_path(path.as_deref(), &workspace_identity),
+                        path,
+                        is_modified: doc.is_modified(),
+                        is_readonly: doc.readonly,
+                        is_pinned: self.pinned_documents.contains(&TabId::Document(doc_id)),
+                        is_preview,
+                        focused_at: doc.focused_at,
+                        order: order_index, // Use position in Vec as order
+                        git_status: None,   // Will be filled in after releasing core borrow
+                        diagnostic_severity,
+                    });
+                }
+            }
+
+            let image_order_offset = documents.len();
+            for (index, tab) in self.image_tabs.iter().enumerate() {
                 documents.push(DocumentInfo {
-                    id: TabId::Document(doc_id),
-                    is_deleted: is_deleted_document_path(path.as_deref(), &workspace_identity),
-                    path,
-                    is_modified: doc.is_modified(),
-                    is_readonly: doc.readonly,
-                    is_pinned: self.pinned_documents.contains(&TabId::Document(doc_id)),
-                    is_preview,
-                    focused_at: doc.focused_at,
-                    order: order_index, // Use position in Vec as order
-                    git_status: None,   // Will be filled in after releasing core borrow
-                    diagnostic_severity,
+                    id: TabId::Image(tab.id),
+                    is_deleted: is_deleted_document_path(Some(&tab.path), &workspace_identity),
+                    path: Some(tab.path.clone()),
+                    is_modified: false,
+                    is_readonly: false,
+                    is_pinned: self.pinned_documents.contains(&TabId::Image(tab.id)),
+                    is_preview: false,
+                    focused_at: tab.focused_at,
+                    order: image_order_offset + index,
+                    git_status: None,
+                    diagnostic_severity: None,
                 });
             }
-        }
 
-        let image_order_offset = documents.len();
-        for (index, tab) in self.image_tabs.iter().enumerate() {
-            documents.push(DocumentInfo {
-                id: TabId::Image(tab.id),
-                is_deleted: is_deleted_document_path(Some(&tab.path), &workspace_identity),
-                path: Some(tab.path.clone()),
-                is_modified: false,
-                is_readonly: false,
-                is_pinned: self.pinned_documents.contains(&TabId::Image(tab.id)),
-                is_preview: false,
-                focused_at: tab.focused_at,
-                order: image_order_offset + index,
-                git_status: None,
-                diagnostic_severity: None,
-            });
-        }
+            // Ensure VCS service is monitoring the current project directory
+            if let Some(ref project_dir) = project_directory {
+                let workspace_backend = self.core.read(cx).workspace_backend.clone();
+                let vcs_handle = cx.global::<VcsServiceHandle>().service().clone();
+                vcs_handle.update(cx, |service, cx| {
+                    service.set_workspace_backend(workspace_backend);
+                    // Only start monitoring if we're not already monitoring this directory
+                    if service.root_path() != Some(project_dir.as_path()) {
+                        service.start_monitoring(project_dir.clone(), cx);
+                    }
+                    // Avoid forcing a refresh on every tab bar recompute; rely on
+                    // initial monitoring refresh and explicit triggers elsewhere.
+                });
+            }
 
-        // Ensure VCS service is monitoring the current project directory
-        if let Some(ref project_dir) = project_directory {
-            let workspace_backend = self.core.read(cx).workspace_backend.clone();
-            let vcs_handle = cx.global::<VcsServiceHandle>().service().clone();
-            vcs_handle.update(cx, |service, cx| {
-                service.set_workspace_backend(workspace_backend);
-                // Only start monitoring if we're not already monitoring this directory
-                if service.root_path() != Some(project_dir.as_path()) {
-                    service.start_monitoring(project_dir.clone(), cx);
-                }
-                // Avoid forcing a refresh on every tab bar recompute; rely on
-                // initial monitoring refresh and explicit triggers elsewhere.
-            });
-        }
-
-        if show_git_status {
-            // Update documents with VCS status using cached method
-            for doc_info in &mut documents {
-                if let Some(ref path) = doc_info.path {
-                    let status = cx.global::<VcsServiceHandle>().get_status_cached(path, cx);
-                    debug!(file = %path.display(), vcs_status = ?status, "VCS status for tab");
-                    doc_info.git_status = status;
+            if show_git_status {
+                // Update documents with VCS status using cached method
+                for doc_info in &mut documents {
+                    if let Some(ref path) = doc_info.path {
+                        let status = cx.global::<VcsServiceHandle>().get_status_cached(path, cx);
+                        debug!(file = %path.display(), vcs_status = ?status, "VCS status for tab");
+                        doc_info.git_status = status;
+                    }
                 }
             }
-        }
+
+            documents.sort_by_key(|document| (!document.is_pinned, document.order));
+            let documents: Arc<[DocumentInfo]> = Arc::from(documents);
+            self.tab_bar_document_cache = Some(TabBarDocumentCache {
+                generation: self.tab_bar_document_generation,
+                key: tab_bar_cache_key,
+                documents: documents.clone(),
+            });
+            documents
+        };
 
         let visible_doc_ids = documents.iter().map(|doc| doc.id).collect::<Vec<_>>();
         if should_scroll_active_tab(
@@ -9951,7 +10064,7 @@ impl Workspace {
         };
 
         // Create tab bar with callbacks
-        TabBar::new(
+        TabBar::new_shared(
             documents,
             active_doc_id,
             project_directory,
@@ -9983,6 +10096,7 @@ impl Workspace {
 
                         // Update document views to reflect the change
                         workspace.active_image_tab_id = None;
+                        workspace.invalidate_tab_bar_documents();
                         workspace.close_tab_context_menu();
                         workspace.allow_tab_bar_auto_scroll();
                         workspace.update_document_views(cx);
@@ -10637,6 +10751,7 @@ impl Workspace {
                 self.handle_project_tree_operation(*intent, path.clone(), *is_directory, cx);
             }
             FileTreeEvent::FileSystemChanged { path, kind } => {
+                self.invalidate_tab_bar_documents();
                 info!("File system change detected: {:?} - {:?}", path, kind);
                 // Tree updates and VCS refreshes are handled by the file tree at
                 // the debounced watcher batch boundary before this event is emitted.
@@ -10665,6 +10780,7 @@ impl Workspace {
                 repository_root,
                 affected_files,
             } => {
+                self.invalidate_tab_bar_documents();
                 info!(
                     "VCS status updated for repository: {:?} ({} files)",
                     repository_root,
@@ -11053,6 +11169,7 @@ impl Workspace {
     fn handle_vcs_service_event(&mut self, event: &VcsEvent, cx: &mut Context<Self>) {
         match event {
             VcsEvent::StatusUpdated { changes } => {
+                self.invalidate_tab_bar_documents();
                 debug!(
                     change_count = changes.len(),
                     "Workspace: VCS status updated"
@@ -11083,6 +11200,7 @@ impl Workspace {
                 current_head,
                 ..
             } => {
+                self.invalidate_tab_bar_documents();
                 debug!(
                     root_path = %root_path.display(),
                     current_head,
@@ -11120,6 +11238,7 @@ impl Workspace {
                 self.handle_document_closed(*doc_id, cx);
             }
             DocumentEvent::Saved { doc_id, path, .. } => {
+                self.invalidate_tab_bar_documents();
                 self.push_document_saved_notification(path.to_str(), cx);
                 self.update_specific_document_view(*doc_id, cx);
                 cx.notify();
@@ -16088,6 +16207,32 @@ mod tests {
 
     fn default_file_picker_config() -> helix_view::editor::FilePickerConfig {
         helix_view::editor::Config::default().file_picker
+    }
+
+    #[test]
+    fn tab_bar_document_cache_reuses_only_matching_presentations() {
+        let key = TabBarDocumentCacheKey {
+            project_directory: Some(PathBuf::from("/workspace")),
+            show_file_icons: true,
+            show_git_status: true,
+            show_diagnostics: crate::config::TabDiagnosticsVisibility::All,
+            show_preview_tabs: true,
+            workspace_is_local: true,
+        };
+        let documents: Arc<[crate::tab_bar::DocumentInfo]> = Arc::from(Vec::new());
+        let cache = TabBarDocumentCache {
+            generation: 7,
+            key: key.clone(),
+            documents: documents.clone(),
+        };
+
+        let reused = cached_tab_bar_documents(Some(&cache), 7, &key).expect("cache hit");
+        assert!(Arc::ptr_eq(&reused, &documents));
+        assert!(cached_tab_bar_documents(Some(&cache), 8, &key).is_none());
+
+        let mut changed_key = key;
+        changed_key.show_git_status = false;
+        assert!(cached_tab_bar_documents(Some(&cache), 7, &changed_key).is_none());
     }
 
     #[test]
