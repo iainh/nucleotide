@@ -170,7 +170,7 @@ struct TabStripOptions {
 #[derive(IntoElement)]
 pub struct TabBar {
     /// Document information for all open documents
-    documents: Vec<DocumentInfo>,
+    documents: Arc<[DocumentInfo]>,
     /// Currently active document ID
     active_doc_id: Option<TabId>,
     /// Project directory for relative paths
@@ -215,7 +215,24 @@ pub struct TabBar {
 
 impl TabBar {
     pub fn new(
-        documents: Vec<DocumentInfo>,
+        mut documents: Vec<DocumentInfo>,
+        active_doc_id: Option<TabId>,
+        project_directory: Option<PathBuf>,
+        on_tab_click: impl Fn(TabId, &mut Window, &mut App) + 'static,
+        on_tab_close: impl Fn(TabId, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        documents.sort_by_key(|doc| (!doc.is_pinned, doc.order));
+        Self::new_shared(
+            Arc::from(documents),
+            active_doc_id,
+            project_directory,
+            on_tab_click,
+            on_tab_close,
+        )
+    }
+
+    pub fn new_shared(
+        documents: Arc<[DocumentInfo]>,
         active_doc_id: Option<TabId>,
         project_directory: Option<PathBuf>,
         on_tab_click: impl Fn(TabId, &mut Window, &mut App) + 'static,
@@ -444,10 +461,9 @@ impl TabBar {
         }
     }
 
-    fn ordered_documents(&self) -> Vec<DocumentInfo> {
-        let mut documents = self.documents.clone();
-        documents.sort_by_key(|doc| (!doc.is_pinned, doc.order));
-        documents
+    #[cfg(test)]
+    fn ordered_documents(&self) -> &[DocumentInfo] {
+        &self.documents
     }
 
     fn should_render_separate_pinned_row(&self, documents: &[DocumentInfo]) -> bool {
@@ -458,7 +474,7 @@ impl TabBar {
 
 impl RenderOnce for TabBar {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let documents = self.ordered_documents();
+        let documents = self.documents.clone();
         let labels = self.document_labels(&documents);
 
         let theme = cx.theme();
