@@ -1082,13 +1082,15 @@ impl RemoteConnectionManagerView {
             .variant(ListItemVariant::Ghost)
             .spacing(ListItemSpacing::Default)
             .focusable(false)
+            .background(background)
+            .text_color(text_color)
+            .hover_background(if selected {
+                background
+            } else {
+                hover_background
+            })
             .with_listener(move |item| {
                 item.cursor_pointer()
-                    .bg(background)
-                    .text_color(text_color)
-                    .when(!selected, |item| {
-                        item.hover(move |item| item.bg(hover_background))
-                    })
                     .on_mouse_down(MouseButton::Left, click_listener)
             })
             .child(
@@ -1262,13 +1264,15 @@ impl RemoteConnectionManagerView {
             .variant(ListItemVariant::Ghost)
             .spacing(ListItemSpacing::Default)
             .focusable(false)
+            .background(background)
+            .text_color(text_color)
+            .hover_background(if selected {
+                background
+            } else {
+                hover_background
+            })
             .with_listener(move |item| {
                 item.cursor_pointer()
-                    .bg(background)
-                    .text_color(text_color)
-                    .when(!selected, |item| {
-                        item.hover(move |item| item.bg(hover_background))
-                    })
                     .on_mouse_down(MouseButton::Left, click_listener)
             })
             .start_slot(

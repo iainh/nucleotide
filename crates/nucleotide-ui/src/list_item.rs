@@ -8,7 +8,7 @@ use crate::{
 use gpui::prelude::FluentBuilder;
 use gpui::px;
 use gpui::{
-    AnyElement, App, ElementId, InteractiveElement, IntoElement, ParentElement, RenderOnce,
+    AnyElement, App, ElementId, Hsla, InteractiveElement, IntoElement, ParentElement, RenderOnce,
     SharedString, StatefulInteractiveElement, Styled, TextOverflow, Window, div,
 };
 use smallvec::SmallVec;
@@ -172,6 +172,9 @@ pub struct ListItem {
     tooltip: Option<SharedString>,
     class_names: Vec<SharedString>,
     focusable: bool,
+    background: Option<Hsla>,
+    text_color: Option<Hsla>,
+    hover_background: Option<Hsla>,
 }
 
 impl ListItem {
@@ -192,6 +195,9 @@ impl ListItem {
             tooltip: None,
             class_names: Vec::new(),
             focusable: true,
+            background: None,
+            text_color: None,
+            hover_background: None,
         }
     }
 
@@ -274,7 +280,28 @@ impl ListItem {
         self
     }
 
-    /// Add a GPUI event listener - this allows the ListItem to work with cx.listener() pattern
+    /// Override the resting background while retaining standard interaction styling.
+    pub fn background(mut self, background: Hsla) -> Self {
+        self.background = Some(background);
+        self
+    }
+
+    /// Override the resting and interactive foreground colour.
+    pub fn text_color(mut self, text_color: Hsla) -> Self {
+        self.text_color = Some(text_color);
+        self
+    }
+
+    /// Override the standard hover background without installing a second GPUI hover block.
+    pub fn hover_background(mut self, hover_background: Hsla) -> Self {
+        self.hover_background = Some(hover_background);
+        self
+    }
+
+    /// Add GPUI event hooks, allowing the ListItem to work with `cx.listener()`.
+    ///
+    /// Visual overrides should use the ListItem styling builders so the component
+    /// remains the sole owner of GPUI pseudo-state styles.
     pub fn with_listener<F>(mut self, listener_fn: F) -> Self
     where
         F: FnOnce(gpui::Stateful<gpui::Div>) -> gpui::Stateful<gpui::Div> + 'static,
@@ -439,6 +466,8 @@ impl RenderOnce for ListItem {
         // Check if animations should be enabled
         let enable_animations =
             animations_enabled(cx) && should_enable_animations(theme, current_state);
+        let background = self.background.unwrap_or(computed_style.background);
+        let foreground = self.text_color.unwrap_or(computed_style.foreground);
 
         let mut base = div()
             .id(self.id)
@@ -449,8 +478,8 @@ impl RenderOnce for ListItem {
             .py(computed_style.padding_y)
             .px(computed_style.padding_x)
             .text_overflow(self.overflow)
-            .bg(computed_style.background)
-            .text_color(computed_style.foreground)
+            .bg(background)
+            .text_color(foreground)
             .border_color(computed_style.border_color)
             .when(f32::from(computed_style.border_width) > 0.0, |el| {
                 el.border_1().border_color(computed_style.border_color)
@@ -471,16 +500,19 @@ impl RenderOnce for ListItem {
                 StyleVariant::from(self.variant).as_str(),
                 StyleSize::from(self.spacing).as_str(),
             );
+            let hover_background = self.hover_background.unwrap_or(hover_style.background);
+            let hover_foreground = self.text_color.unwrap_or(hover_style.foreground);
+            let active_foreground = self.text_color.unwrap_or(active_style.foreground);
 
             base = base
                 .hover(|this| {
-                    this.bg(hover_style.background)
-                        .text_color(hover_style.foreground)
+                    this.bg(hover_background)
+                        .text_color(hover_foreground)
                         .border_color(hover_style.border_color)
                 })
                 .active(|this| {
                     this.bg(active_style.background)
-                        .text_color(active_style.foreground)
+                        .text_color(active_foreground)
                         .border_color(active_style.border_color)
                 });
         }
@@ -530,6 +562,26 @@ impl RenderOnce for ListItem {
 mod tests {
     use super::*;
     use crate::{StyleSize, StyleState, StyleVariant, Theme};
+    use gpui::{Context, MouseButton, Render, TestAppContext};
+
+    struct CustomHoverListItemHarness;
+
+    impl Render for CustomHoverListItemHarness {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            ListItem::new("custom-hover-list-item")
+                .background(gpui::transparent_black())
+                .hover_background(gpui::hsla(0.0, 0.0, 0.2, 1.0))
+                .with_listener(|item| item.on_mouse_down(MouseButton::Left, |_, _, _| {}))
+                .child("Remote suggestion")
+        }
+    }
+
+    #[gpui::test]
+    fn custom_hover_listener_does_not_conflict_with_component_hover(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::init(cx, None));
+
+        let (_harness, _cx) = cx.add_window_view(|_, _| CustomHoverListItemHarness);
+    }
 
     #[test]
     fn test_list_item_creation() {
