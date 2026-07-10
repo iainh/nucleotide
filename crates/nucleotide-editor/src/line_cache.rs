@@ -147,20 +147,37 @@ struct LayoutStore {
 
 const SHAPED_LINE_CACHE_CAPACITY: usize = 512;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ShapedLineCacheStats {
+    pub hits: u64,
+    pub misses: u64,
+    pub evictions: u64,
+    pub invalidated_entries: u64,
+}
+
 #[derive(Default)]
 struct ShapedLineStore {
     lines: HashMap<ShapedLineKey, ShapedLine>,
     lru: VecDeque<ShapedLineKey>,
+    stats: ShapedLineCacheStats,
 }
 
 impl ShapedLineStore {
     fn clear(&mut self) {
+        self.stats.invalidated_entries = self
+            .stats
+            .invalidated_entries
+            .saturating_add(self.lines.len() as u64);
         self.lines.clear();
         self.lru.clear();
     }
 
     fn get(&mut self, key: &ShapedLineKey) -> Option<ShapedLine> {
-        let shaped_line = self.lines.get(key).cloned()?;
+        let Some(shaped_line) = self.lines.get(key).cloned() else {
+            self.stats.misses = self.stats.misses.saturating_add(1);
+            return None;
+        };
+        self.stats.hits = self.stats.hits.saturating_add(1);
         self.touch(key);
         Some(shaped_line)
     }
@@ -175,6 +192,7 @@ impl ShapedLineStore {
         while self.lines.len() >= SHAPED_LINE_CACHE_CAPACITY {
             if let Some(evicted) = self.lru.pop_front() {
                 self.lines.remove(&evicted);
+                self.stats.evictions = self.stats.evictions.saturating_add(1);
             } else {
                 break;
             }
@@ -195,6 +213,10 @@ impl ShapedLineStore {
     #[cfg(test)]
     fn len(&self) -> usize {
         self.lines.len()
+    }
+
+    fn stats(&self) -> ShapedLineCacheStats {
+        self.stats
     }
 }
 
@@ -226,6 +248,13 @@ impl LineLayoutCache {
         if let Ok(mut shaped) = self.shaped_lines.lock() {
             shaped.clear();
         }
+    }
+
+    pub fn shaped_line_cache_stats(&self) -> ShapedLineCacheStats {
+        self.shaped_lines
+            .lock()
+            .map(|shaped| shaped.stats())
+            .unwrap_or_default()
     }
 
     pub fn push(&self, layout: LineLayout) {
@@ -493,6 +522,32 @@ mod tests {
                 .is_none()
         );
         assert_eq!(cache.shaped_line_cache_len(), SHAPED_LINE_CACHE_CAPACITY);
+    }
+
+    #[test]
+    fn shaped_line_cache_tracks_reuse_and_targeted_invalidation() {
+        let cache = LineLayoutCache::new();
+        let key = create_test_shaped_line_key(1);
+
+        assert!(cache.get_shaped_line(&key).is_none());
+        cache.store_shaped_line(key.clone(), create_test_shaped_line());
+        assert!(cache.get_shaped_line(&key).is_some());
+
+        cache.clear();
+        assert!(cache.get_shaped_line(&key).is_some());
+        assert_eq!(cache.shaped_line_cache_stats().invalidated_entries, 0);
+
+        cache.clear_shaped_lines();
+        assert!(cache.get_shaped_line(&key).is_none());
+        assert_eq!(
+            cache.shaped_line_cache_stats(),
+            ShapedLineCacheStats {
+                hits: 2,
+                misses: 2,
+                evictions: 0,
+                invalidated_entries: 1,
+            }
+        );
     }
 
     #[test]
