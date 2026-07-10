@@ -1398,10 +1398,7 @@ impl Render for RemoteConnectionManagerView {
                 tokens.sizes.text_md,
                 tokens.sizes.text_lg,
                 tokens.sizes.text_sm,
-                vec![
-                    tokens.chrome.shadow_lg.to_box_shadow(false),
-                    tokens.chrome.inset_highlight.to_box_shadow(true),
-                ],
+                vec![tokens.chrome.shadow_lg.to_box_shadow(false)],
             )
         };
         let font = gpui::Font {

@@ -608,10 +608,7 @@ where
         .border_1()
         .border_color(tokens.chrome.popup_border)
         .rounded_md()
-        .shadow(vec![
-            tokens.chrome.shadow_md.to_box_shadow(false),
-            tokens.chrome.inset_highlight.to_box_shadow(true),
-        ])
+        .shadow(vec![tokens.chrome.shadow_md.to_box_shadow(false)])
         .max_h(px(list_state.max_height))
         .min_h(px(list_state.item_height * 3.0))
         .overflow_y_scroll()

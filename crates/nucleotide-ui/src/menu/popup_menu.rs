@@ -983,10 +983,7 @@ impl Render for PopupMenu {
             .border_1()
             .border_color(dropdown.border)
             .rounded(tokens.sizes.radius_md)
-            .shadow(vec![
-                tokens.chrome.shadow_md.to_box_shadow(false),
-                tokens.chrome.inset_highlight.to_box_shadow(true),
-            ])
+            .shadow(vec![tokens.chrome.shadow_md.to_box_shadow(false)])
             .child(
                 div()
                     .id("popup-menu-items")

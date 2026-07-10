@@ -326,10 +326,7 @@ impl Render for ConfirmDialogView {
                 .border_1()
                 .border_color(tokens.chrome.border_default)
                 .rounded(tokens.sizes.radius_lg)
-                .shadow(vec![
-                    tokens.chrome.shadow_lg.to_box_shadow(false),
-                    tokens.chrome.inset_highlight.to_box_shadow(true),
-                ])
+                .shadow(vec![tokens.chrome.shadow_lg.to_box_shadow(false)])
                 .w(self.dialog.width)
                 .p(tokens.sizes.space_4)
                 .flex()
