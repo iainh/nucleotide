@@ -7434,10 +7434,9 @@ impl Workspace {
     }
 
     fn handle_redraw(&mut self, cx: &mut Context<Self>) {
-        // Clear the shaped lines cache to force re-rendering with updated config
-        self.clear_shaped_lines_cache(cx);
-
-        // Minimal redraw - most updates now come through specific events
+        // Shaped lines are keyed by text and paint style, so ordinary redraws
+        // can reuse them. Font and theme changes invalidate the cache at their
+        // dedicated update sites.
         if let Some(view) = self
             .view_manager
             .focused_view_id()
