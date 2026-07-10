@@ -398,7 +398,7 @@ impl RenderOnce for Toolbar {
     fn render(self, _window: &mut gpui::Window, cx: &mut App) -> impl IntoElement {
         let tokens = &cx.global::<crate::Theme>().tokens;
         let height = if self.compact {
-            tokens.sizes.space_8
+            crate::DensityMetrics::for_density(crate::ControlDensity::Comfortable).row_height
         } else {
             tokens.sizes.space_10
         };

@@ -100,9 +100,10 @@ const TAB_SLOT_ICON_SIZE: f32 = 12.0;
 const TAB_MIN_WIDTH: f32 = 112.0;
 const TAB_MAX_WIDTH: f32 = 280.0;
 
-pub(crate) fn tab_container_height(tokens: nucleotide_ui::tokens::DesignTokens) -> gpui::Pixels {
+pub(crate) fn tab_container_height(_tokens: nucleotide_ui::tokens::DesignTokens) -> gpui::Pixels {
     // Zed tabs use DynamicSpacing::Base32 for the tab container height.
-    tokens.sizes.space_8
+    nucleotide_ui::DensityMetrics::for_density(nucleotide_ui::ControlDensity::Comfortable)
+        .row_height
 }
 
 /// Tab variant for different tab states

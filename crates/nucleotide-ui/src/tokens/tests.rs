@@ -3,7 +3,10 @@
 
 use crate::DesignTokens;
 use crate::styling::{ColorTheory, ContrastRatios};
-use crate::tokens::{ChromeTokens, ColorContext, EditorTokens, SizeTokens, TitleBarTokens};
+use crate::tokens::{
+    ChromeTokens, ColorContext, ControlDensity, DensityMetrics, EditorTokens, SizeTokens,
+    TitleBarTokens,
+};
 use nucleotide_appearance::{
     HelixThemeColors, NativeChromePalette, SystemAppearance, default_windows_accent_color,
 };
@@ -22,6 +25,26 @@ mod typography_token_tests {
         assert_eq!(tokens.text_md, gpui::px(13.0));
         assert_eq!(tokens.text_lg, gpui::px(14.0));
         assert_eq!(tokens.text_xl, gpui::px(15.0));
+    }
+}
+
+#[cfg(test)]
+mod density_token_tests {
+    use super::*;
+
+    #[test]
+    fn density_profiles_share_stable_chrome_metrics() {
+        let compact = DensityMetrics::for_density(ControlDensity::Compact);
+        let comfortable = DensityMetrics::for_density(ControlDensity::Comfortable);
+        let relaxed = DensityMetrics::for_density(ControlDensity::Relaxed);
+
+        assert_eq!(compact.row_height, gpui::px(28.0));
+        assert_eq!(comfortable.row_height, gpui::px(32.0));
+        assert_eq!(relaxed.row_height, gpui::px(36.0));
+        assert_eq!(comfortable.icon_size, gpui::px(16.0));
+        assert_eq!(comfortable.icon_slot, gpui::px(24.0));
+        assert!(compact.padding_x < comfortable.padding_x);
+        assert!(comfortable.padding_x < relaxed.padding_x);
     }
 }
 

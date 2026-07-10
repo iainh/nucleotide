@@ -7,6 +7,61 @@ use gpui::{Hsla, Pixels, hsla, px};
 use nucleotide_appearance::{HelixThemeColors, NativeChromePalette, hsla_from_rgb_u8};
 use nucleotide_logging::debug;
 
+/// Shared density presets for rows and compact chrome controls.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ControlDensity {
+    Compact,
+    #[default]
+    Comfortable,
+    Relaxed,
+}
+
+/// Common row and icon metrics for visually aligned application chrome.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DensityMetrics {
+    pub row_height: Pixels,
+    pub icon_size: Pixels,
+    pub icon_slot: Pixels,
+    pub gap: Pixels,
+    pub padding_x: Pixels,
+    pub radius: Pixels,
+    pub indent: Pixels,
+}
+
+impl DensityMetrics {
+    pub fn for_density(density: ControlDensity) -> Self {
+        match density {
+            ControlDensity::Compact => Self {
+                row_height: px(28.0),
+                icon_size: px(14.0),
+                icon_slot: px(20.0),
+                gap: px(4.0),
+                padding_x: px(4.0),
+                radius: px(4.0),
+                indent: px(14.0),
+            },
+            ControlDensity::Comfortable => Self {
+                row_height: px(32.0),
+                icon_size: px(16.0),
+                icon_slot: px(24.0),
+                gap: px(4.0),
+                padding_x: px(8.0),
+                radius: px(4.0),
+                indent: px(16.0),
+            },
+            ControlDensity::Relaxed => Self {
+                row_height: px(36.0),
+                icon_size: px(16.0),
+                icon_slot: px(24.0),
+                gap: px(8.0),
+                padding_x: px(12.0),
+                radius: px(6.0),
+                indent: px(20.0),
+            },
+        }
+    }
+}
+
 /// Base color palette - raw color definitions
 #[derive(Debug, Clone, Copy)]
 pub struct BaseColors {
@@ -175,6 +230,7 @@ pub struct SizeTokens {
 impl SizeTokens {
     #[allow(clippy::should_implement_trait)]
     pub fn default() -> Self {
+        let chrome_metrics = DensityMetrics::for_density(ControlDensity::Comfortable);
         Self {
             // Spacing scale
             space_0: px(0.0),
@@ -210,7 +266,7 @@ impl SizeTokens {
 
             // Component sizes
             titlebar_height: px(34.0),
-            statusbar_height: px(32.0),
+            statusbar_height: chrome_metrics.row_height,
         }
     }
 
