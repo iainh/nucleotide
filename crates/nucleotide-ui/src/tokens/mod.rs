@@ -225,6 +225,13 @@ pub struct SizeTokens {
     // Component sizes
     pub titlebar_height: Pixels,
     pub statusbar_height: Pixels,
+    pub statusbar_mode_width: Pixels,
+    pub statusbar_environment_width: Pixels,
+    pub statusbar_position_width: Pixels,
+    pub statusbar_lsp_width_wide: Pixels,
+    pub statusbar_lsp_width_medium: Pixels,
+    pub statusbar_lsp_width_compact: Pixels,
+    pub statusbar_utility_width: Pixels,
 }
 
 impl SizeTokens {
@@ -267,6 +274,13 @@ impl SizeTokens {
             // Component sizes
             titlebar_height: px(34.0),
             statusbar_height: chrome_metrics.row_height,
+            statusbar_mode_width: px(52.0),
+            statusbar_environment_width: px(32.0),
+            statusbar_position_width: px(88.0),
+            statusbar_lsp_width_wide: px(248.0),
+            statusbar_lsp_width_medium: px(184.0),
+            statusbar_lsp_width_compact: px(36.0),
+            statusbar_utility_width: chrome_metrics.row_height * 2.0,
         }
     }
 

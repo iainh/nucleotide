@@ -269,11 +269,17 @@ pub enum ButtonSlot {
 // Type alias for button click handler
 type ButtonClickHandler = Arc<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 
-struct ButtonTooltip {
+pub struct TextTooltip {
     text: SharedString,
 }
 
-impl Render for ButtonTooltip {
+impl TextTooltip {
+    pub fn new(text: impl Into<SharedString>) -> Self {
+        Self { text: text.into() }
+    }
+}
+
+impl Render for TextTooltip {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let tokens = cx.theme().tokens;
         let tooltip_tokens = tokens.tooltip_tokens();
@@ -309,6 +315,9 @@ pub struct Button {
     tooltip: Option<SharedString>,
     activate_on_mouse_down: bool,
     focus_handle: Option<FocusHandle>,
+    width: Option<Pixels>,
+    aria_label: Option<SharedString>,
+    content: Option<gpui::AnyElement>,
     slots: Vec<ButtonSlot>,
     class_names: Vec<SharedString>,
 }
@@ -338,6 +347,9 @@ impl Button {
             tooltip: None,
             activate_on_mouse_down: false,
             focus_handle: None,
+            width: None,
+            aria_label: None,
+            content: None,
             slots: Vec::new(),
             class_names: Vec::new(),
         }
@@ -359,6 +371,9 @@ impl Button {
             tooltip: None,
             activate_on_mouse_down: false,
             focus_handle: None,
+            width: None,
+            aria_label: None,
+            content: None,
             slots: Vec::new(),
             class_names: Vec::new(),
         }
@@ -438,6 +453,24 @@ impl Button {
     /// Include this button in GPUI focus traversal with a caller-owned handle.
     pub fn focus_handle(mut self, focus_handle: FocusHandle) -> Self {
         self.focus_handle = Some(focus_handle);
+        self
+    }
+
+    /// Constrain the button to a stable width.
+    pub fn width(mut self, width: Pixels) -> Self {
+        self.width = Some(width);
+        self
+    }
+
+    /// Provide a screen-reader label independent of visible button content.
+    pub fn aria_label(mut self, label: impl Into<SharedString>) -> Self {
+        self.aria_label = Some(label.into());
+        self
+    }
+
+    /// Replace the standard icon/label body with structured content.
+    pub fn content(mut self, content: impl IntoElement) -> Self {
+        self.content = Some(content.into_any_element());
         self
     }
 
@@ -807,7 +840,11 @@ impl RenderOnce for Button {
         let active_style =
             self.compute_style_from_tokens(&button_tokens, StyleState::Active, &theme.tokens);
         let metrics = button_metrics(self.size, &theme.tokens);
-        let icon_only = self.label.is_empty() && self.slots.is_empty() && self.icon_path.is_some();
+        let has_custom_content = self.content.is_some();
+        let icon_only = self.label.is_empty()
+            && self.slots.is_empty()
+            && !has_custom_content
+            && self.icon_path.is_some();
         let inset_shadow = theme.tokens.chrome.inset_shadow;
         let variant = self.variant;
         let activate_on_mouse_down = self.activate_on_mouse_down;
@@ -837,6 +874,8 @@ impl RenderOnce for Button {
                     .py(computed_style.padding_y)
                     .px(computed_style.padding_x)
             })
+            .when_some(self.width, |button, width| button.w(width))
+            .when_some(self.aria_label, |button, label| button.aria_label(label))
             .rounded(computed_style.border_radius)
             .text_size(computed_style.font_size)
             .line_height(relative(1.0))
@@ -961,23 +1000,27 @@ impl RenderOnce for Button {
             button = button.child("⟳").child(" ");
         }
 
-        // Render content slots first (most flexible)
-        for slot in self.slots.iter() {
-            button = match slot {
-                ButtonSlot::Text(text) => button.child(text.clone()),
-                ButtonSlot::Icon(icon_path) => {
-                    let icon_element = svg()
-                        .path(icon_path.to_string())
-                        .size(metrics.icon_size)
-                        .text_color(computed_style.foreground)
-                        .flex_shrink_0();
-                    button.child(icon_element)
-                }
-            };
+        if let Some(content) = self.content {
+            button = button.child(content);
+        } else {
+            // Render content slots first (most flexible)
+            for slot in self.slots.iter() {
+                button = match slot {
+                    ButtonSlot::Text(text) => button.child(text.clone()),
+                    ButtonSlot::Icon(icon_path) => {
+                        let icon_element = svg()
+                            .path(icon_path.to_string())
+                            .size(metrics.icon_size)
+                            .text_color(computed_style.foreground)
+                            .flex_shrink_0();
+                        button.child(icon_element)
+                    }
+                };
+            }
         }
 
         // Fall back to icon and label if no slots are used
-        if self.slots.is_empty() {
+        if self.slots.is_empty() && !has_custom_content {
             if let Some(icon_path) = self.icon_path {
                 let icon_element = svg()
                     .path(icon_path.to_string())
@@ -1006,12 +1049,7 @@ impl RenderOnce for Button {
         }
 
         button.when_some(self.tooltip, |button, tooltip| {
-            button.tooltip(move |_window, cx| {
-                cx.new(|_| ButtonTooltip {
-                    text: tooltip.clone(),
-                })
-                .into()
-            })
+            button.tooltip(move |_window, cx| cx.new(|_| TextTooltip::new(tooltip.clone())).into())
         })
     }
 }
@@ -1075,6 +1113,18 @@ mod tests {
         assert!(loading.loading);
         assert_eq!(loading.state, ButtonState::Loading);
         assert_eq!(focused.state, ButtonState::Focused);
+    }
+
+    #[test]
+    fn test_button_supports_stable_width_accessible_label_and_structured_content() {
+        let button = Button::new("status", "")
+            .width(px(184.0))
+            .aria_label("Language server status")
+            .content(div().child("rust-analyzer"));
+
+        assert_eq!(button.width, Some(px(184.0)));
+        assert_eq!(button.aria_label.as_deref(), Some("Language server status"));
+        assert!(button.content.is_some());
     }
 
     #[test]

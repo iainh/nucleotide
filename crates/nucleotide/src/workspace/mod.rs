@@ -51,12 +51,12 @@ use nucleotide_ui::scrollbar::{Scrollbar, ScrollbarState};
 use nucleotide_ui::{
     AboutWindow, Button, ButtonSize, ButtonVariant, ConfirmDialog, ConfirmDialogEvent,
     ConfirmDialogView, ContextMenuController, EditorPaneGrid, IndeterminateProgressIndicator,
-    MarkdownStyle, ModalLayer, PopupMenu, PopupMenuSurface, StateView, Tooltipped,
-    completion_menu_action_for_key, markdown_extended,
+    MarkdownStyle, ModalLayer, PopupMenu, PopupMenuSurface, StateView, StatusBar, TextTooltip,
+    Tooltipped, completion_menu_action_for_key, markdown_extended,
 };
 
 use crate::input_coordinator::{InputContext, InputCoordinator};
-use nucleotide_lsp::ServerStatus;
+use nucleotide_lsp::{LspStatusKind, LspStatusSummary, ServerStatus};
 
 use crate::application::{
     LspCompletionTrigger, find_workspace_root_from,
@@ -214,7 +214,6 @@ type TabBarSplitMenuHandler = fn(&mut Workspace, &mut Context<Workspace>);
 type TabBarNewMenuHandler = fn(&mut Workspace, &mut Context<Workspace>);
 
 const STATUSBAR_NOTIFICATION_MESSAGE_MAX_CHARS: usize = 64;
-const STATUSBAR_LSP_INDICATOR_MAX_CHARS: usize = 56;
 const STATUSBAR_BACKGROUND_ACTIVITY_MAX_CHARS: usize = 72;
 const IMAGE_ZOOM_STEP: f32 = 0.25;
 const IMAGE_ZOOM_MIN: f32 = 0.10;
@@ -242,6 +241,112 @@ struct BackgroundActivityId(u64);
 struct BackgroundActivity {
     id: BackgroundActivityId,
     message: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StatusBarDensity {
+    Wide,
+    Medium,
+    Compact,
+}
+
+impl StatusBarDensity {
+    fn for_viewport(viewport_width: f32) -> Self {
+        if viewport_width >= 1_100.0 {
+            Self::Wide
+        } else if viewport_width >= 760.0 {
+            Self::Medium
+        } else {
+            Self::Compact
+        }
+    }
+
+    fn lsp_width(self, sizes: &nucleotide_ui::tokens::SizeTokens) -> Pixels {
+        match self {
+            Self::Wide => sizes.statusbar_lsp_width_wide,
+            Self::Medium => sizes.statusbar_lsp_width_medium,
+            Self::Compact => sizes.statusbar_lsp_width_compact,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct StatusBarGeometry {
+    sidebar_width: Pixels,
+    mode_width: Pixels,
+    environment_width: Pixels,
+    position_width: Pixels,
+    lsp_width: Pixels,
+    utility_width: Pixels,
+}
+
+impl StatusBarGeometry {
+    fn new(
+        viewport_width: f32,
+        show_file_tree: bool,
+        file_tree_width: f32,
+        sizes: &nucleotide_ui::tokens::SizeTokens,
+    ) -> Self {
+        let density = StatusBarDensity::for_viewport(viewport_width);
+        Self {
+            sidebar_width: px(if show_file_tree { file_tree_width } else { 0.0 }),
+            mode_width: sizes.statusbar_mode_width,
+            environment_width: sizes.statusbar_environment_width,
+            position_width: sizes.statusbar_position_width,
+            lsp_width: density.lsp_width(sizes),
+            utility_width: sizes.statusbar_utility_width,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct StatusBarModel {
+    mode: helix_view::document::Mode,
+    mode_label: &'static str,
+    file_name: String,
+    position_text: String,
+    environment: Option<EnvironmentBadge>,
+    lsp: Option<LspStatusSummary>,
+    notification: Option<StatusBarNotification>,
+    background_activity: Option<String>,
+    density: StatusBarDensity,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct LspRestartTarget {
+    server_id: helix_lsp::LanguageServerId,
+    server_name: String,
+    language_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct LspRestartPlan {
+    workspace_root: PathBuf,
+    targets: Vec<LspRestartTarget>,
+}
+
+fn lsp_restart_plan(state: &nucleotide_lsp::LspState) -> Option<LspRestartPlan> {
+    let session = state.project_session.as_ref()?;
+    let targets = session
+        .servers
+        .iter()
+        .filter_map(|planned| {
+            let server = state
+                .servers
+                .values()
+                .find(|server| server.name == planned.server_name)?;
+            Some(LspRestartTarget {
+                server_id: server.id,
+                server_name: planned.server_name.clone(),
+                language_id: planned.language_id.clone(),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    (!targets.is_empty()).then(|| LspRestartPlan {
+        workspace_root: session.workspace_root.clone(),
+        targets,
+    })
 }
 
 fn latest_background_activity(activities: &[BackgroundActivity]) -> Option<&BackgroundActivity> {
@@ -329,6 +434,19 @@ fn shorten_statusbar_text(text: &str, max_chars: usize) -> String {
     let mut shortened: String = normalized.chars().take(max_chars - 1).collect();
     shortened.push('…');
     shortened
+}
+
+fn short_lsp_server_name(server_name: &str) -> String {
+    match server_name {
+        "rust-analyzer" => "rust".to_string(),
+        "typescript-language-server" => "ts".to_string(),
+        "java-language-server" => "java".to_string(),
+        name if name.chars().count() > 8 => {
+            let prefix = name.chars().take(6).collect::<String>();
+            format!("{prefix}…")
+        }
+        name => name.to_string(),
+    }
 }
 
 fn is_image_file_path(path: &Path) -> bool {
@@ -575,27 +693,11 @@ fn image_file_dimensions(path: &Path) -> Option<(u32, u32)> {
         .ok()
 }
 
-fn statusbar_lsp_indicator_for_state(
-    state: &mut nucleotide_lsp::LspState,
+fn statusbar_lsp_summary_for_state(
+    state: &nucleotide_lsp::LspState,
     preferred_server_id: Option<helix_lsp::LanguageServerId>,
-) -> Option<String> {
-    if !state.progress.is_empty() {
-        return state.get_lsp_indicator();
-    }
-
-    if let Some(pref_id) = preferred_server_id
-        && let Some(server) = state.servers.get(&pref_id).cloned()
-    {
-        let indicator = match server.status {
-            ServerStatus::Starting | ServerStatus::Initializing => {
-                state.get_spinner_frame().to_string()
-            }
-            _ => "LSP".to_string(),
-        };
-        return Some(format!("{indicator} {}", server.name));
-    }
-
-    state.get_lsp_indicator()
+) -> LspStatusSummary {
+    state.status_summary(preferred_server_id)
 }
 
 fn should_render_app_titlebar(
@@ -877,6 +979,11 @@ pub struct Workspace {
     notifications: Entity<NotificationView>,
     last_notified_editor_status: Option<EditorStatus>,
     focus_handle: FocusHandle,
+    statusbar_lsp_focus: FocusHandle,
+    statusbar_file_tree_focus: FocusHandle,
+    statusbar_terminal_focus: FocusHandle,
+    statusbar_lsp_restart_focus: FocusHandle,
+    statusbar_lsp_logs_focus: FocusHandle,
     file_tree: Option<Entity<FileTreeView>>,
     show_file_tree: bool,
     file_tree_width: f32,
@@ -3295,13 +3402,13 @@ impl Workspace {
         )
     }
 
-    /// Build the LSP indicator string, preferring active progress over the focused document server.
-    fn compute_statusbar_lsp_indicator(
+    /// Build structured LSP status, preferring active work over the focused document server.
+    fn compute_statusbar_lsp_summary(
         &self,
         cx: &mut Context<Self>,
         has_lsp_state: bool,
         preferred_server_id: Option<helix_lsp::LanguageServerId>,
-    ) -> Option<String> {
+    ) -> Option<LspStatusSummary> {
         if !has_lsp_state {
             return None;
         }
@@ -3311,9 +3418,28 @@ impl Workspace {
             core.lsp_state.clone()
         }?;
 
-        lsp_state_entity.update(cx, |state, _| {
-            statusbar_lsp_indicator_for_state(state, preferred_server_id)
-        })
+        Some(statusbar_lsp_summary_for_state(
+            lsp_state_entity.read(cx),
+            preferred_server_id,
+        ))
+    }
+
+    fn statusbar_model(&self, viewport_width: f32, cx: &mut Context<Self>) -> StatusBarModel {
+        let (mode, mode_label, file_name, position_text, has_lsp_state, preferred_server_id) =
+            self.statusbar_doc_info(cx);
+        StatusBarModel {
+            mode,
+            mode_label,
+            file_name,
+            position_text,
+            environment: self.environment_badge,
+            lsp: self.compute_statusbar_lsp_summary(cx, has_lsp_state, preferred_server_id),
+            notification: self.notifications.read(cx).status_bar_notification(),
+            background_activity: self
+                .current_background_activity()
+                .map(|activity| activity.message.clone()),
+            density: StatusBarDensity::for_viewport(viewport_width),
+        }
     }
 
     /// Standard divider element for the status bar.
@@ -3329,119 +3455,287 @@ impl Workspace {
             .into_any_element()
     }
 
-    fn statusbar_environment_badge(
+    fn statusbar_mode_item(
         &self,
+        model: &StatusBarModel,
+        geometry: StatusBarGeometry,
         status_bar_tokens: &nucleotide_ui::tokens::StatusBarTokens,
-    ) -> Option<gpui::AnyElement> {
-        let badge = self.environment_badge?;
-        let compact_metrics =
-            nucleotide_ui::DensityMetrics::for_density(nucleotide_ui::ControlDensity::Compact);
-        let badge_fg = status_bar_tokens.text_primary;
-        let badge_bg = nucleotide_ui::tokens::utils::with_alpha(badge_fg, 0.12);
-        let badge_border = nucleotide_ui::tokens::utils::with_alpha(badge_fg, 0.32);
-        let badge_text = format!("{} {}", badge.label(), badge.detail());
-
-        Some(
-            gpui::div()
-                .flex_none()
-                .flex()
-                .items_center()
-                .h(compact_metrics.icon_slot)
-                .px_2()
-                .rounded(gpui::px(5.0))
-                .border_1()
-                .border_color(badge_border)
-                .bg(badge_bg)
-                .text_size(gpui::px(11.0))
-                .text_color(badge_fg)
-                .child(badge_text)
-                .into_any_element(),
-        )
-    }
-
-    /// Build the main content row for the unified status bar.
-    #[allow(clippy::too_many_arguments)]
-    fn statusbar_main_content(
-        &self,
-        mode: helix_view::document::Mode,
-        mode_name: &'static str,
-        file_name: String,
-        position_text: String,
-        notification: Option<StatusBarNotification>,
-        background_activity: Option<String>,
-        lsp_indicator: Option<String>,
-        divider_color: gpui::Hsla,
-        status_bar_tokens: &nucleotide_ui::tokens::StatusBarTokens,
-        cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        use nucleotide_ui::{Button, ButtonSize, ButtonVariant, IconPosition};
-        let mode_color = match mode {
+        let mode_color = match model.mode {
             helix_view::document::Mode::Normal => status_bar_tokens.mode_normal,
             helix_view::document::Mode::Insert => status_bar_tokens.mode_insert,
             helix_view::document::Mode::Select => status_bar_tokens.mode_select,
         };
-        let mut row = gpui::div()
+        let mode_background = nucleotide_ui::tokens::utils::with_alpha(mode_color, 0.12);
+        let mode_border = nucleotide_ui::tokens::utils::with_alpha(mode_color, 0.28);
+
+        div()
+            .flex_none()
+            .w(geometry.mode_width)
+            .h_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                div()
+                    .min_w(px(44.0))
+                    .h(px(22.0))
+                    .px_2()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(5.0))
+                    .border_1()
+                    .border_color(mode_border)
+                    .bg(mode_background)
+                    .text_color(mode_color)
+                    .font_weight(FontWeight::MEDIUM)
+                    .child(model.mode_label),
+            )
+            .into_any_element()
+    }
+
+    fn statusbar_environment_badge(
+        &self,
+        badge: Option<EnvironmentBadge>,
+        geometry: StatusBarGeometry,
+        status_bar_tokens: &nucleotide_ui::tokens::StatusBarTokens,
+    ) -> gpui::AnyElement {
+        let mut slot = div()
+            .id("statusbar-environment")
+            .flex_none()
+            .w(geometry.environment_width)
+            .h_full()
+            .flex()
+            .items_center()
+            .justify_center();
+
+        if let Some(badge) = badge {
+            let tooltip_text = format!("Environment: {} {}", badge.label(), badge.detail());
+            let tooltip = tooltip_text.clone();
+            let icon_color = match badge {
+                EnvironmentBadge::Loading => status_bar_tokens.text_accent,
+                EnvironmentBadge::NativeFlake => status_bar_tokens.text_primary,
+            };
+            slot = slot
+                .aria_label(tooltip_text)
+                .tooltip(move |_window, cx| cx.new(|_| TextTooltip::new(tooltip.clone())).into())
+                .child(
+                    svg()
+                        .path("icons/code.svg")
+                        .size(px(14.0))
+                        .text_color(icon_color),
+                );
+        }
+
+        slot.into_any_element()
+    }
+
+    fn statusbar_lsp_item(
+        &self,
+        summary: Option<&LspStatusSummary>,
+        density: StatusBarDensity,
+        geometry: StatusBarGeometry,
+        status_bar_tokens: &nucleotide_ui::tokens::StatusBarTokens,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let unavailable = LspStatusSummary {
+            server_id: None,
+            server_name: "LSP".to_string(),
+            kind: LspStatusKind::Unavailable,
+            title: "No servers".to_string(),
+            message: None,
+            percentage: None,
+            server_count: 0,
+        };
+        let summary = summary.unwrap_or(&unavailable);
+        let full_text = summary.full_text();
+        let accessible_label = format!("Language server status: {full_text}");
+        let server_width = match density {
+            StatusBarDensity::Wide => px(88.0),
+            StatusBarDensity::Medium => px(62.0),
+            StatusBarDensity::Compact => px(0.0),
+        };
+        let server_name = match density {
+            StatusBarDensity::Wide => summary.server_name.clone(),
+            StatusBarDensity::Medium => short_lsp_server_name(&summary.server_name),
+            StatusBarDensity::Compact => String::new(),
+        };
+        let activity = summary
+            .message
+            .as_deref()
+            .filter(|message| !message.is_empty())
+            .unwrap_or(&summary.title)
+            .to_string();
+        let icon_color = match summary.kind {
+            LspStatusKind::Failed => cx.theme().tokens.notification_tokens().error_text,
+            LspStatusKind::Working | LspStatusKind::Starting => status_bar_tokens.text_accent,
+            LspStatusKind::Idle => status_bar_tokens.text_primary,
+            LspStatusKind::Unavailable => status_bar_tokens.text_secondary,
+        };
+
+        let state_icon = match summary.kind {
+            LspStatusKind::Working | LspStatusKind::Starting => {
+                IndeterminateProgressIndicator::new("statusbar-lsp-spinner")
+                    .size(13.0)
+                    .text_color(icon_color)
+                    .into_any_element()
+            }
+            LspStatusKind::Failed => svg()
+                .path("icons/circle-x.svg")
+                .size(px(13.0))
+                .text_color(icon_color)
+                .into_any_element(),
+            LspStatusKind::Idle => div().text_color(icon_color).child("●").into_any_element(),
+            LspStatusKind::Unavailable => {
+                div().text_color(icon_color).child("○").into_any_element()
+            }
+        };
+
+        let mut content = div()
+            .w_full()
+            .min_w_0()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_1()
+            .overflow_hidden()
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(14.0))
+                    .flex()
+                    .justify_center()
+                    .child(state_icon),
+            );
+
+        if density != StatusBarDensity::Compact {
+            let percentage = summary
+                .percentage
+                .map(|percentage| format!("{percentage:>3}%"))
+                .unwrap_or_default();
+            content = content
+                .child(
+                    div()
+                        .flex_none()
+                        .w(server_width)
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(server_name),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .text_color(status_bar_tokens.text_secondary)
+                        .child(activity),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .w(px(34.0))
+                        .flex()
+                        .justify_end()
+                        .text_color(status_bar_tokens.text_secondary)
+                        .child(percentage),
+                );
+        }
+
+        if density != StatusBarDensity::Compact {
+            content = content.child(
+                svg()
+                    .path("icons/chevron-up.svg")
+                    .size(px(12.0))
+                    .text_color(status_bar_tokens.text_secondary)
+                    .flex_shrink_0(),
+            );
+        }
+
+        Button::new("lsp-status-trigger", "")
+            .variant(ButtonVariant::Ghost)
+            .size(ButtonSize::ExtraSmall)
+            .width(geometry.lsp_width)
+            .content(content)
+            .tooltip(full_text)
+            .aria_label(accessible_label)
+            .focus_handle(self.statusbar_lsp_focus.clone())
+            .activate_on_mouse_down()
+            .on_click(
+                cx.listener(|this: &mut Workspace, ev: &gpui::ClickEvent, _window, cx| {
+                    this.lsp_menu_open = true;
+                    let position = ev.position();
+                    this.lsp_menu_pos = (f32::from(position.x), f32::from(position.y));
+                    cx.notify();
+                }),
+            )
+            .into_any_element()
+    }
+
+    /// Build the editor-aligned content lane for the unified status bar.
+    fn statusbar_main_content(
+        &self,
+        model: &StatusBarModel,
+        geometry: StatusBarGeometry,
+        divider_color: gpui::Hsla,
+        status_bar_tokens: &nucleotide_ui::tokens::StatusBarTokens,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let context = div()
+            .flex_none()
+            .h_full()
+            .flex()
+            .items_center()
+            .child(self.statusbar_environment_badge(model.environment, geometry, status_bar_tokens))
+            .child(
+                div()
+                    .flex_none()
+                    .w(geometry.position_width)
+                    .h_full()
+                    .px_3()
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .whitespace_nowrap()
+                    .text_color(status_bar_tokens.text_secondary)
+                    .child(model.position_text.clone()),
+            )
+            .child(self.statusbar_lsp_item(
+                model.lsp.as_ref(),
+                model.density,
+                geometry,
+                status_bar_tokens,
+                cx,
+            ));
+
+        div()
             .flex()
             .flex_1()
             .min_w_0()
             .flex_row()
             .items_center()
+            .h_full()
+            .child(self.statusbar_mode_item(model, geometry, status_bar_tokens))
             .child(
-                // Mode indicator
-                gpui::div()
-                    .flex_none()
-                    .child(mode_name)
-                    .min_w(gpui::px(50.0))
-                    .text_color(mode_color),
-            )
-            .child(self.statusbar_divider(divider_color))
-            .child(
-                // File name grows
-                self.statusbar_message_slot(
-                    file_name,
-                    notification,
-                    background_activity,
-                    status_bar_tokens,
-                    cx,
-                ),
-            )
-            .child(self.statusbar_divider(divider_color))
-            .child(
-                gpui::div()
-                    .flex_none()
-                    .child(position_text)
-                    .min_w(gpui::px(80.0)),
-            );
-
-        if let Some(environment_badge) = self.statusbar_environment_badge(status_bar_tokens) {
-            row = row
-                .child(self.statusbar_divider(divider_color))
-                .child(environment_badge);
-        }
-
-        if let Some(indicator) = lsp_indicator {
-            let shortened_indicator =
-                shorten_statusbar_text(&indicator, STATUSBAR_LSP_INDICATOR_MAX_CHARS);
-            row = row.child(self.statusbar_divider(divider_color)).child(
-                Button::new("lsp-status-trigger", shortened_indicator)
-                    .variant(ButtonVariant::Ghost)
-                    .size(ButtonSize::ExtraSmall)
-                    .tooltip("Show LSP Status")
-                    .activate_on_mouse_down()
-                    .icon("icons/chevron-up.svg")
-                    .icon_position(IconPosition::End)
-                    .on_click(cx.listener(
-                        |this: &mut Workspace, ev: &gpui::ClickEvent, _w, cx| {
-                            this.lsp_menu_open = true;
-                            let position = ev.position();
-                            this.lsp_menu_pos = (f32::from(position.x), f32::from(position.y));
-                            cx.notify();
-                        },
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .px_3()
+                    .child(self.statusbar_message_slot(
+                        model.file_name.clone(),
+                        model.notification.clone(),
+                        model.background_activity.clone(),
+                        status_bar_tokens,
+                        cx,
                     )),
-            );
-        }
-
-        row.into_any_element()
+            )
+            .child(self.statusbar_divider(divider_color))
+            .child(context)
+            .into_any_element()
     }
 
     fn statusbar_message_slot(
@@ -3468,13 +3762,6 @@ impl Workspace {
                     IndeterminateProgressIndicator::new("statusbar-background-activity")
                         .size(13.0)
                         .text_color(notification_tokens.info_text),
-                )
-                .child(
-                    gpui::div()
-                        .flex_none()
-                        .font_weight(FontWeight::BOLD)
-                        .text_color(notification_tokens.info_text)
-                        .child("WORKING"),
                 )
                 .child(
                     gpui::div()
@@ -3507,6 +3794,12 @@ impl Workspace {
             StatusBarNotificationSeverity::Warning => notification_tokens.warning_text,
             StatusBarNotificationSeverity::Error => notification_tokens.error_text,
         };
+        let status_symbol = match notification.severity {
+            StatusBarNotificationSeverity::Info => "i",
+            StatusBarNotificationSeverity::Success => "✓",
+            StatusBarNotificationSeverity::Warning => "!",
+            StatusBarNotificationSeverity::Error => "×",
+        };
         let message = shorten_statusbar_text(
             &notification.message,
             STATUSBAR_NOTIFICATION_MESSAGE_MAX_CHARS,
@@ -3522,9 +3815,12 @@ impl Workspace {
             .child(
                 gpui::div()
                     .flex_none()
+                    .w(px(14.0))
+                    .flex()
+                    .justify_center()
                     .font_weight(FontWeight::BOLD)
                     .text_color(label_color)
-                    .child(notification.label),
+                    .child(status_symbol),
             )
             .child(
                 gpui::div()
@@ -4984,6 +5280,11 @@ impl Workspace {
             notifications,
             last_notified_editor_status: None,
             focus_handle,
+            statusbar_lsp_focus: cx.focus_handle(),
+            statusbar_file_tree_focus: cx.focus_handle(),
+            statusbar_terminal_focus: cx.focus_handle(),
+            statusbar_lsp_restart_focus: cx.focus_handle(),
+            statusbar_lsp_logs_focus: cx.focus_handle(),
             file_tree,
             show_file_tree: true,
             file_tree_width: FILE_TREE_DEFAULT_WIDTH,
@@ -10455,182 +10756,114 @@ impl Workspace {
     }
 
     /// Render unified status bar with file tree toggle and status information
-    fn render_unified_status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        // Use hybrid color system with StatusBarTokens
-        let (status_bar_tokens, status_bar_height, text_size, translucent_file_tree_tokens) = {
+    fn render_unified_status_bar(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let (status_bar_tokens, translucent_file_tree_tokens, sizes) = {
             let ui_theme = cx.global::<nucleotide_ui::Theme>();
             (
                 ui_theme.tokens.status_bar_tokens(),
-                ui_theme.tokens.sizes.statusbar_height,
-                ui_theme.tokens.sizes.text_sm,
                 ui_theme.tokens.file_tree_tokens().translucent_sidebar(),
+                ui_theme.tokens.sizes,
             )
         };
-
-        // Use the hybrid chrome background colors for consistent visual hierarchy
-        let bg_color = status_bar_tokens.background_active; // Always use active for unified bar
-        let fg_color = status_bar_tokens.text_primary;
+        let viewport_width = f32::from(window.viewport_size().width);
+        let geometry = StatusBarGeometry::new(
+            viewport_width,
+            self.show_file_tree,
+            self.file_tree_width,
+            &sizes,
+        );
+        let model = self.statusbar_model(viewport_width, cx);
         let chrome_metrics =
             nucleotide_ui::DensityMetrics::for_density(nucleotide_ui::ControlDensity::Comfortable);
-
-        // Get current document info first (without LSP indicator to avoid borrow conflicts)
-        let (mode, mode_name, file_name, position_text, has_lsp_state, preferred_server_id) =
-            self.statusbar_doc_info(cx);
-
-        // Get LSP indicator separately to avoid borrowing conflicts
-        let lsp_indicator =
-            self.compute_statusbar_lsp_indicator(cx, has_lsp_state, preferred_server_id);
-        let notification = self.notifications.read(cx).status_bar_notification();
-        let background_activity = self
-            .current_background_activity()
-            .map(|activity| activity.message.clone());
-
-        // Use consistent border and divider colors from hybrid system
-        // Status bar border color
-        let border_color = status_bar_tokens.border;
         let divider_color = status_bar_tokens.border;
         let native_sidebar_enabled = macos_system_sidebar_enabled(&self.core.read(cx).config.gui);
-        let extend_translucent_sidebar = should_extend_translucent_sidebar_into_status_bar(
+        let sidebar_background = if should_extend_translucent_sidebar_into_status_bar(
             self.show_file_tree,
             self.file_tree_width,
             native_sidebar_enabled,
-        );
-        let status_bar_sidebar_tokens =
-            extend_translucent_sidebar.then_some(translucent_file_tree_tokens);
+        ) {
+            translucent_file_tree_tokens.background
+        } else {
+            status_bar_tokens.background_active
+        };
 
-        let mut status_bar = div()
-            // Use tokenized height to match titlebar sizing
-            .h(status_bar_height)
-            .min_h(status_bar_height)
-            .flex_shrink_0() // never compress the status bar vertically
-            .w_full()
-            .relative()
-            .when(!extend_translucent_sidebar, |status_bar| {
-                status_bar
-                    .bg(bg_color)
-                    .border_t_1()
-                    .border_color(border_color)
-            })
+        let leading =
+            div()
+                .size_full()
+                .bg(sidebar_background)
+                .when(self.show_file_tree, |leading| {
+                    leading
+                        .border_r_1()
+                        .border_color(translucent_file_tree_tokens.border)
+                });
+
+        let content =
+            self.statusbar_main_content(&model, geometry, divider_color, &status_bar_tokens, cx);
+
+        let workspace_entity = cx.entity().clone();
+        let file_tree_button = Button::icon_only("file-tree-toggle", "icons/folder-tree.svg")
+            .variant(ButtonVariant::Ghost)
+            .size(ButtonSize::ExtraSmall)
+            .tooltip("Toggle File Tree")
+            .aria_label("Toggle file tree")
+            .focus_handle(self.statusbar_file_tree_focus.clone())
+            .activate_on_mouse_down()
+            .on_click(move |_event, _window, app_cx| {
+                workspace_entity.update(app_cx, |workspace, cx| {
+                    workspace.show_file_tree = !workspace.show_file_tree;
+                    cx.notify();
+                });
+            });
+
+        let workspace_entity = cx.entity().clone();
+        let terminal_button = Button::icon_only("terminal-toggle", "icons/terminal.svg")
+            .variant(ButtonVariant::Ghost)
+            .size(ButtonSize::ExtraSmall)
+            .tooltip("Toggle Terminal")
+            .aria_label("Toggle terminal panel")
+            .focus_handle(self.statusbar_terminal_focus.clone())
+            .activate_on_mouse_down()
+            .on_click(move |_event, _window, app_cx| {
+                workspace_entity.update(app_cx, |workspace, cx| {
+                    workspace.toggle_terminal_panel(cx);
+                });
+            });
+
+        let utilities = div()
+            .w(geometry.utility_width)
+            .h_full()
             .flex()
             .flex_row()
             .items_center()
-            .text_size(text_size)
-            .text_color(fg_color);
-
-        if let Some(file_tree_tokens) = status_bar_sidebar_tokens {
-            status_bar = status_bar
-                .child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .left_0()
-                        .bottom_0()
-                        .w(px(self.file_tree_width))
-                        .bg(file_tree_tokens.background),
-                )
-                .child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .left(px(self.file_tree_width))
-                        .right_0()
-                        .bottom_0()
-                        .bg(bg_color)
-                        .border_t_1()
-                        .border_color(border_color),
-                );
-        }
-
-        status_bar
+            .border_l_1()
+            .border_color(divider_color)
             .child(
-                // Toggle button container - fixed width regardless of file tree state
                 div()
                     .w(chrome_metrics.row_height)
+                    .h_full()
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child({
-                        let workspace_entity = cx.entity().clone();
-                        Button::icon_only("file-tree-toggle", "icons/folder-tree.svg")
-                            .variant(ButtonVariant::Ghost)
-                            .size(ButtonSize::Small)
-                            .tooltip("Toggle File Tree")
-                            .activate_on_mouse_down()
-                            .on_click(move |_event, _window, app_cx| {
-                                workspace_entity.update(app_cx, |workspace, cx| {
-                                    workspace.show_file_tree = !workspace.show_file_tree;
-                                    cx.notify();
-                                });
-                            })
-                    }),
+                    .child(file_tree_button),
             )
             .child(
-                // Terminal toggle button to the right of file tree button
                 div()
                     .w(chrome_metrics.row_height)
+                    .h_full()
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child({
-                        let workspace_entity = cx.entity().clone();
-                        Button::icon_only("terminal-toggle", "icons/terminal.svg")
-                            .variant(ButtonVariant::Ghost)
-                            .size(ButtonSize::Small)
-                            .tooltip("Toggle Terminal")
-                            .activate_on_mouse_down()
-                            .on_click(move |_event, _window, app_cx| {
-                                workspace_entity.update(app_cx, |workspace, cx| {
-                                    workspace.toggle_terminal_panel(cx);
-                                });
-                            })
-                    }),
-            )
-            .when(self.show_file_tree, |status_bar| {
-                status_bar
-                    .child(
-                        // File tree width spacer (minus button width)
-                        div()
-                            .w(px(
-                                self.file_tree_width - f32::from(chrome_metrics.row_height)
-                            ))
-                            .h_full(),
-                    )
-                    .child(
-                        // Resize handle spacer
-                        div()
-                            .w(px(4.0)) // Resize handle width
-                            .h_full(),
-                    )
-            })
-            .child(
-                // Main status content - fills remaining space
-                self.statusbar_main_content(
-                    mode,
-                    mode_name,
-                    file_name,
-                    position_text,
-                    notification,
-                    background_activity,
-                    lsp_indicator,
-                    divider_color,
-                    &status_bar_tokens,
-                    cx,
-                ),
-            ) // .child({
-        //     // Project status indicator section - temporarily disabled
-        //     // let project_status_handle = nucleotide_project::project_status_service(cx);
-        //     // let project_info = project_status_handle.project_info(cx);
-        //
-        //     div()
-        //         .flex()
-        //         .flex_row()
-        //         .items_center()
-        //         .gap(ui_theme.tokens.sizes.space_2)
-        //         .child(
-        //             // Divider before project status
-        //             div().w(px(1.)).h(px(18.)).bg(divider_color).mx_2()
-        //         )
-        // }),
+                    .child(terminal_button),
+            );
+
+        StatusBar::new("workspace-status-bar")
+            .leading(geometry.sidebar_width, leading)
+            .content(content)
+            .trailing(utilities)
     }
 
     fn handle_file_tree_event(&mut self, event: &FileTreeEvent, cx: &mut Context<Self>) {
@@ -14582,7 +14815,7 @@ impl Render for Workspace {
                             .min_h(px(0.0)) // allow vertical shrink in flex column
                             .child(content_area),
                     )
-                    .child(self.render_unified_status_bar(cx)), // Unified bottom status bar pinned at bottom
+                    .child(self.render_unified_status_bar(window, cx)), // Unified bottom status bar pinned at bottom
             )
             // Add Linux client-side resize hitboxes so the window can be resized
             .map(|root| {
@@ -14713,6 +14946,7 @@ impl Render for Workspace {
                 use gpui::{Anchor, point};
                 let ui_theme = cx.global::<nucleotide_ui::Theme>();
                 let dd_tokens = ui_theme.tokens.dropdown_tokens();
+                let notification_tokens = ui_theme.tokens.notification_tokens();
 
                 // Snapshot LSP state
                 let server_rows: Vec<gpui::AnyElement> = {
@@ -14748,12 +14982,22 @@ impl Render for Workspace {
                         }
 
                         for server in servers {
-                            let status_text = match &server.status {
-                                ServerStatus::Starting => "Starting".to_string(),
-                                ServerStatus::Initializing => "Initializing".to_string(),
-                                ServerStatus::Running => "Running".to_string(),
-                                ServerStatus::Failed(e) => format!("Failed: {}", e),
-                                ServerStatus::Stopped => "Stopped".to_string(),
+                            let (status_text, status_color) = match &server.status {
+                                ServerStatus::Starting => {
+                                    ("Starting".to_string(), notification_tokens.info_text)
+                                }
+                                ServerStatus::Initializing => {
+                                    ("Initializing".to_string(), notification_tokens.info_text)
+                                }
+                                ServerStatus::Running => {
+                                    ("Running".to_string(), notification_tokens.success_text)
+                                }
+                                ServerStatus::Failed(_) => {
+                                    ("Failed".to_string(), notification_tokens.error_text)
+                                }
+                                ServerStatus::Stopped => {
+                                    ("Stopped".to_string(), dd_tokens.item_text_secondary)
+                                }
                             };
 
                             // Header row with server name and status
@@ -14762,11 +15006,65 @@ impl Render for Workspace {
                                     .w_full()
                                     .px(ui_theme.tokens.sizes.space_3)
                                     .py(ui_theme.tokens.sizes.space_2)
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .gap_3()
                                     .text_size(ui_theme.tokens.sizes.text_sm)
                                     .text_color(dd_tokens.item_text)
-                                    .child(format!("{} — {}", server.name, status_text))
+                                    .child(
+                                        div()
+                                            .min_w_0()
+                                            .overflow_hidden()
+                                            .whitespace_nowrap()
+                                            .text_ellipsis()
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .child(server.name.clone()),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_none()
+                                            .px_2()
+                                            .py_1()
+                                            .rounded(ui_theme.tokens.sizes.radius_sm)
+                                            .bg(nucleotide_ui::tokens::utils::with_alpha(
+                                                status_color,
+                                                0.12,
+                                            ))
+                                            .text_color(status_color)
+                                            .child(status_text),
+                                    )
                                     .into_any_element(),
                             );
+
+                            if let Some(root) = server.root_uri.as_deref() {
+                                rows.push(
+                                    div()
+                                        .w_full()
+                                        .px(ui_theme.tokens.sizes.space_3)
+                                        .pb(ui_theme.tokens.sizes.space_2)
+                                        .overflow_hidden()
+                                        .whitespace_nowrap()
+                                        .text_ellipsis()
+                                        .text_size(ui_theme.tokens.sizes.text_xs)
+                                        .text_color(dd_tokens.item_text_secondary)
+                                        .child(root.to_string())
+                                        .into_any_element(),
+                                );
+                            }
+
+                            if let ServerStatus::Failed(error) = &server.status {
+                                rows.push(
+                                    div()
+                                        .w_full()
+                                        .px(ui_theme.tokens.sizes.space_3)
+                                        .pb(ui_theme.tokens.sizes.space_2)
+                                        .text_size(ui_theme.tokens.sizes.text_xs)
+                                        .text_color(notification_tokens.error_text)
+                                        .child(error.clone())
+                                        .into_any_element(),
+                                );
+                            }
 
                             // Progress rows for this server, or Idle if none
                             let progress_items =
@@ -14794,16 +15092,36 @@ impl Render for Workspace {
                                         line.push_str(&format!(" ⋅ {}", msg));
                                     }
 
-                                    rows.push(
-                                        div()
-                                            .w_full()
-                                            .px(ui_theme.tokens.sizes.space_6)
-                                            .pb(ui_theme.tokens.sizes.space_1)
-                                            .text_size(ui_theme.tokens.sizes.text_sm)
-                                            .text_color(dd_tokens.item_text_secondary)
-                                            .child(line)
-                                            .into_any_element(),
-                                    );
+                                    let mut progress_row = div()
+                                        .w_full()
+                                        .px(ui_theme.tokens.sizes.space_6)
+                                        .pb(ui_theme.tokens.sizes.space_2)
+                                        .flex()
+                                        .flex_col()
+                                        .gap_1()
+                                        .text_size(ui_theme.tokens.sizes.text_sm)
+                                        .text_color(dd_tokens.item_text_secondary)
+                                        .child(line);
+                                    if let Some(percentage) = p.percentage {
+                                        progress_row = progress_row.child(
+                                            div()
+                                                .w_full()
+                                                .h(px(2.0))
+                                                .rounded(px(1.0))
+                                                .bg(dd_tokens.border)
+                                                .overflow_hidden()
+                                                .child(
+                                                    div()
+                                                        .h_full()
+                                                        .w(relative(
+                                                            percentage.min(100) as f32 / 100.0,
+                                                        ))
+                                                        .bg(notification_tokens.info_text),
+                                                ),
+                                        );
+                                    }
+
+                                    rows.push(progress_row.w_full().into_any_element());
                                 }
                             }
 
@@ -14833,6 +15151,106 @@ impl Render for Workspace {
                     }
                 };
 
+                let restart_plan = self
+                    .core
+                    .read(cx)
+                    .lsp_state
+                    .as_ref()
+                    .and_then(|state| lsp_restart_plan(state.read(cx)));
+                let command_sender = self.core.read(cx).get_project_lsp_command_sender();
+                let restart_enabled = restart_plan.is_some() && command_sender.is_some();
+                let restart_plan_for_click = restart_plan.clone();
+                let sender_for_click = command_sender.clone();
+                let restart_button = Button::new("lsp-restart-all", "Restart")
+                    .variant(ButtonVariant::Ghost)
+                    .size(ButtonSize::ExtraSmall)
+                    .icon("icons/rotate-ccw.svg")
+                    .tooltip("Restart project language servers")
+                    .aria_label("Restart project language servers")
+                    .focus_handle(self.statusbar_lsp_restart_focus.clone())
+                    .disabled(!restart_enabled)
+                    .on_click(cx.listener(move |this, _event, _window, cx| {
+                        let (Some(plan), Some(sender)) =
+                            (&restart_plan_for_click, &sender_for_click)
+                        else {
+                            return;
+                        };
+
+                        for target in &plan.targets {
+                            let (response, _response_rx) = tokio::sync::oneshot::channel();
+                            let _ = sender.send(nucleotide_events::ProjectLspCommand::StopServer {
+                                server_id: target.server_id,
+                                response,
+                                span: tracing::info_span!(
+                                    "statusbar_lsp_restart_stop",
+                                    server_name = %target.server_name
+                                ),
+                            });
+                            let _ = sender.send(
+                                nucleotide_events::ProjectLspCommand::LspServerStartupRequested {
+                                    workspace_root: plan.workspace_root.clone(),
+                                    server_name: target.server_name.clone(),
+                                    language_id: target.language_id.clone(),
+                                },
+                            );
+                        }
+
+                        this.push_editor_status_notification(
+                            EditorStatus {
+                                status: format!(
+                                    "Restarting {} language server{}",
+                                    plan.targets.len(),
+                                    if plan.targets.len() == 1 { "" } else { "s" }
+                                ),
+                                severity: Severity::Info,
+                            },
+                            cx,
+                        );
+                        this.lsp_menu_open = false;
+                        cx.notify();
+                    }));
+
+                let log_directory = crate::lsp_traffic_logger::log_directory();
+                let log_directory_text = log_directory.display().to_string();
+                let log_path_for_click = log_directory_text.clone();
+                let logs_enabled = crate::lsp_traffic_logger::is_enabled();
+                let logs_tooltip = if logs_enabled {
+                    format!("Copy LSP traffic log directory: {log_directory_text}")
+                } else {
+                    "Set NUCLEOTIDE_LSP_TRAFFIC=1 to record LSP traffic".to_string()
+                };
+                let logs_button = Button::new("lsp-copy-log-path", "Logs")
+                    .variant(ButtonVariant::Ghost)
+                    .size(ButtonSize::ExtraSmall)
+                    .icon("icons/file-text.svg")
+                    .tooltip(logs_tooltip)
+                    .aria_label("Copy LSP traffic log directory")
+                    .focus_handle(self.statusbar_lsp_logs_focus.clone())
+                    .disabled(!logs_enabled)
+                    .on_click(cx.listener(move |this, _event, _window, cx| {
+                        if Self::copy_to_clipboard_impl(&log_path_for_click) {
+                            this.push_editor_status_notification(
+                                EditorStatus {
+                                    status: "Copied LSP traffic log directory".to_string(),
+                                    severity: Severity::Info,
+                                },
+                                cx,
+                            );
+                        }
+                    }));
+
+                let footer = div()
+                    .w_full()
+                    .px(ui_theme.tokens.sizes.space_2)
+                    .py(ui_theme.tokens.sizes.space_2)
+                    .border_t_1()
+                    .border_color(dd_tokens.border)
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(restart_button)
+                    .child(logs_button);
+
                 let (x, y) = self.lsp_menu_pos;
 
                 container.child(
@@ -14845,7 +15263,8 @@ impl Render for Workspace {
                             .border_color(dd_tokens.border)
                             .rounded(ui_theme.tokens.sizes.radius_md)
                             .shadow(vec![ui_theme.tokens.chrome.shadow_md.to_box_shadow(false)])
-                            .children(server_rows),
+                            .children(server_rows)
+                            .child(footer),
                     )
                     .position(point(px(x), px(y)))
                     .anchor(Anchor::BottomLeft)
@@ -16659,7 +17078,7 @@ mod tests {
     }
 
     #[test]
-    fn statusbar_lsp_indicator_prefers_working_server_over_focused_server() {
+    fn statusbar_lsp_summary_prefers_working_server_over_focused_server() {
         let focused_server_id: helix_lsp::LanguageServerId = KeyData::from_ffi(1).into();
         let working_server_id: helix_lsp::LanguageServerId = KeyData::from_ffi(2).into();
         let mut state = nucleotide_lsp::LspState::new();
@@ -16674,16 +17093,15 @@ mod tests {
             percentage: None,
         });
 
-        let indicator = statusbar_lsp_indicator_for_state(&mut state, Some(focused_server_id))
-            .expect("lsp indicator");
+        let summary = statusbar_lsp_summary_for_state(&state, Some(focused_server_id));
 
-        assert!(indicator.contains("pyright"));
-        assert!(indicator.contains("indexing"));
-        assert!(!indicator.contains("rust-analyzer"));
+        assert_eq!(summary.server_name, "pyright");
+        assert_eq!(summary.kind, LspStatusKind::Working);
+        assert_eq!(summary.title, "indexing");
     }
 
     #[test]
-    fn statusbar_lsp_indicator_uses_focused_server_when_idle() {
+    fn statusbar_lsp_summary_uses_focused_server_when_idle() {
         let focused_server_id: helix_lsp::LanguageServerId = KeyData::from_ffi(3).into();
         let other_server_id: helix_lsp::LanguageServerId = KeyData::from_ffi(4).into();
         let mut state = nucleotide_lsp::LspState::new();
@@ -16693,10 +17111,81 @@ mod tests {
         state.register_server(other_server_id, "pyright".to_string(), None);
         state.update_server_status(other_server_id, nucleotide_lsp::ServerStatus::Running);
 
-        let indicator = statusbar_lsp_indicator_for_state(&mut state, Some(focused_server_id))
-            .expect("lsp indicator");
+        let summary = statusbar_lsp_summary_for_state(&state, Some(focused_server_id));
 
-        assert_eq!(indicator, "LSP rust-analyzer");
+        assert_eq!(summary.server_name, "rust-analyzer");
+        assert_eq!(summary.kind, LspStatusKind::Idle);
+        assert_eq!(summary.title, "Ready");
+    }
+
+    #[test]
+    fn lsp_restart_plan_uses_project_root_and_only_running_planned_servers() {
+        let rust_server_id: helix_lsp::LanguageServerId = KeyData::from_ffi(5).into();
+        let mut state = nucleotide_lsp::LspState::new();
+        state.begin_project_session(9, PathBuf::from("/workspace"));
+        state.set_project_server_plan(&[
+            ("rust".to_string(), "rust-analyzer".to_string()),
+            ("toml".to_string(), "taplo".to_string()),
+        ]);
+        state.register_server(rust_server_id, "rust-analyzer".to_string(), None);
+
+        let plan = lsp_restart_plan(&state).expect("restart plan");
+
+        assert_eq!(plan.workspace_root, PathBuf::from("/workspace"));
+        assert_eq!(
+            plan.targets,
+            vec![LspRestartTarget {
+                server_id: rust_server_id,
+                server_name: "rust-analyzer".to_string(),
+                language_id: "rust".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn statusbar_mode_offset_tracks_editor_edge() {
+        let sizes = nucleotide_ui::tokens::DesignTokens::light().sizes;
+        let open = StatusBarGeometry::new(1_200.0, true, 280.0, &sizes);
+        let closed = StatusBarGeometry::new(1_200.0, false, 280.0, &sizes);
+
+        assert_eq!(open.sidebar_width, px(280.0));
+        assert_eq!(closed.sidebar_width, px(0.0));
+    }
+
+    #[test]
+    fn statusbar_lsp_width_is_stable_within_each_breakpoint() {
+        let sizes = nucleotide_ui::tokens::DesignTokens::light().sizes;
+        let wide_idle = StatusBarGeometry::new(1_200.0, true, 240.0, &sizes);
+        let wide_working = StatusBarGeometry::new(1_500.0, false, 0.0, &sizes);
+        let medium = StatusBarGeometry::new(900.0, true, 320.0, &sizes);
+        let compact = StatusBarGeometry::new(700.0, false, 0.0, &sizes);
+
+        assert_eq!(wide_idle.lsp_width, wide_working.lsp_width);
+        assert_eq!(wide_idle.lsp_width, px(248.0));
+        assert_eq!(medium.lsp_width, px(184.0));
+        assert_eq!(compact.lsp_width, px(36.0));
+        assert_eq!(wide_idle.position_width, wide_working.position_width);
+        assert_eq!(wide_idle.utility_width, wide_working.utility_width);
+    }
+
+    #[test]
+    fn statusbar_breakpoints_follow_research_priority() {
+        assert_eq!(
+            StatusBarDensity::for_viewport(1_100.0),
+            StatusBarDensity::Wide
+        );
+        assert_eq!(
+            StatusBarDensity::for_viewport(1_099.0),
+            StatusBarDensity::Medium
+        );
+        assert_eq!(
+            StatusBarDensity::for_viewport(760.0),
+            StatusBarDensity::Medium
+        );
+        assert_eq!(
+            StatusBarDensity::for_viewport(759.0),
+            StatusBarDensity::Compact
+        );
     }
 
     #[test]

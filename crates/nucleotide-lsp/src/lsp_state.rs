@@ -22,6 +22,46 @@ pub struct LspProgress {
     pub percentage: Option<u32>,
 }
 
+/// Presentation-neutral activity state for compact status surfaces.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LspStatusKind {
+    Unavailable,
+    Idle,
+    Starting,
+    Working,
+    Failed,
+}
+
+/// Structured LSP status for status bars, tooltips, and menus.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LspStatusSummary {
+    pub server_id: Option<LanguageServerId>,
+    pub server_name: String,
+    pub kind: LspStatusKind,
+    pub title: String,
+    pub message: Option<String>,
+    pub percentage: Option<u32>,
+    pub server_count: usize,
+}
+
+impl LspStatusSummary {
+    pub fn full_text(&self) -> String {
+        let mut text = format!("{}: {}", self.server_name, self.title);
+        if let Some(percentage) = self.percentage {
+            text.push_str(&format!(" ({percentage}%)"));
+        }
+        if let Some(message) = self
+            .message
+            .as_deref()
+            .filter(|message| !message.is_empty())
+        {
+            text.push_str(" — ");
+            text.push_str(message);
+        }
+        text
+    }
+}
+
 /// Status of a language server
 #[derive(Clone, Debug, PartialEq)]
 pub enum ServerStatus {
@@ -424,6 +464,86 @@ impl LspState {
         !self.servers.is_empty()
     }
 
+    /// Build a structured status summary without coupling state to a UI layout.
+    pub fn status_summary(
+        &self,
+        preferred_server_id: Option<LanguageServerId>,
+    ) -> LspStatusSummary {
+        let server_count = self.servers.len();
+
+        if let Some(progress) = self.get_most_important_progress() {
+            let server_name = self
+                .servers
+                .get(&progress.server_id)
+                .map(|server| server.name.clone())
+                .unwrap_or_else(|| "LSP".to_string());
+            return LspStatusSummary {
+                server_id: Some(progress.server_id),
+                server_name,
+                kind: LspStatusKind::Working,
+                title: progress.title.clone(),
+                message: progress.message.clone(),
+                percentage: progress.percentage,
+                server_count,
+            };
+        }
+
+        let mut servers = self.servers.values().collect::<Vec<_>>();
+        servers.sort_by(|left, right| left.name.cmp(&right.name));
+
+        if let Some(server) = servers
+            .iter()
+            .copied()
+            .find(|server| matches!(server.status, ServerStatus::Failed(_)))
+        {
+            let message = match &server.status {
+                ServerStatus::Failed(error) => Some(error.clone()),
+                _ => None,
+            };
+            return LspStatusSummary {
+                server_id: Some(server.id),
+                server_name: server.name.clone(),
+                kind: LspStatusKind::Failed,
+                title: "Failed".to_string(),
+                message,
+                percentage: None,
+                server_count,
+            };
+        }
+
+        let preferred = preferred_server_id.and_then(|id| self.servers.get(&id));
+        let server = preferred.or_else(|| servers.first().copied());
+        let Some(server) = server else {
+            return LspStatusSummary {
+                server_id: None,
+                server_name: "LSP".to_string(),
+                kind: LspStatusKind::Unavailable,
+                title: "No servers".to_string(),
+                message: None,
+                percentage: None,
+                server_count,
+            };
+        };
+
+        let (kind, title, message) = match &server.status {
+            ServerStatus::Starting => (LspStatusKind::Starting, "Starting", None),
+            ServerStatus::Initializing => (LspStatusKind::Starting, "Initializing", None),
+            ServerStatus::Running => (LspStatusKind::Idle, "Ready", None),
+            ServerStatus::Stopped => (LspStatusKind::Unavailable, "Stopped", None),
+            ServerStatus::Failed(error) => (LspStatusKind::Failed, "Failed", Some(error.clone())),
+        };
+
+        LspStatusSummary {
+            server_id: Some(server.id),
+            server_name: server.name.clone(),
+            kind,
+            title: title.to_string(),
+            message,
+            percentage: None,
+            server_count,
+        }
+    }
+
     /// Get the appropriate LSP indicator with server name and progress messages (like Helix)
     /// Returns different variants based on available space and content priority
     pub fn get_lsp_indicator(&mut self) -> Option<String> {
@@ -701,5 +821,53 @@ mod tests {
         assert!(indicator.contains("Indexing"));
         assert!(indicator.contains("123/456 crates"));
         assert!(!indicator.contains("taplo"));
+    }
+
+    #[test]
+    fn structured_status_preserves_progress_details() {
+        let server_id = slotmap::KeyData::from_ffi(3).into();
+        let mut state = LspState::new();
+        state.register_server(server_id, "rust-analyzer".to_string(), None);
+        state.add_progress(LspProgress {
+            server_id,
+            token: "cache-priming".to_string(),
+            title: "Indexing".to_string(),
+            message: Some("723/724 (nucl)".to_string()),
+            percentage: Some(99),
+        });
+
+        let summary = state.status_summary(Some(server_id));
+
+        assert_eq!(summary.kind, LspStatusKind::Working);
+        assert_eq!(summary.server_name, "rust-analyzer");
+        assert_eq!(summary.title, "Indexing");
+        assert_eq!(summary.message.as_deref(), Some("723/724 (nucl)"));
+        assert_eq!(summary.percentage, Some(99));
+        assert_eq!(
+            summary.full_text(),
+            "rust-analyzer: Indexing (99%) — 723/724 (nucl)"
+        );
+    }
+
+    #[test]
+    fn structured_status_prioritizes_failure_and_preferred_idle_server() {
+        let rust_id = slotmap::KeyData::from_ffi(4).into();
+        let taplo_id = slotmap::KeyData::from_ffi(5).into();
+        let mut state = LspState::new();
+        state.register_server(rust_id, "rust-analyzer".to_string(), None);
+        state.update_server_status(rust_id, ServerStatus::Running);
+        state.register_server(taplo_id, "taplo".to_string(), None);
+        state.update_server_status(taplo_id, ServerStatus::Running);
+
+        let idle = state.status_summary(Some(rust_id));
+        assert_eq!(idle.kind, LspStatusKind::Idle);
+        assert_eq!(idle.server_name, "rust-analyzer");
+        assert_eq!(idle.title, "Ready");
+
+        state.update_server_status(taplo_id, ServerStatus::Failed("exited".to_string()));
+        let failed = state.status_summary(Some(rust_id));
+        assert_eq!(failed.kind, LspStatusKind::Failed);
+        assert_eq!(failed.server_name, "taplo");
+        assert_eq!(failed.message.as_deref(), Some("exited"));
     }
 }

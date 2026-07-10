@@ -294,6 +294,13 @@ mod titlebar_contrast_tests {
 
         assert_eq!(tokens.sizes.statusbar_height, gpui::px(32.0));
         assert!(tokens.sizes.statusbar_height < tokens.sizes.titlebar_height);
+        assert_eq!(tokens.sizes.statusbar_mode_width, gpui::px(52.0));
+        assert_eq!(tokens.sizes.statusbar_environment_width, gpui::px(32.0));
+        assert_eq!(tokens.sizes.statusbar_position_width, gpui::px(88.0));
+        assert_eq!(tokens.sizes.statusbar_lsp_width_wide, gpui::px(248.0));
+        assert_eq!(tokens.sizes.statusbar_lsp_width_medium, gpui::px(184.0));
+        assert_eq!(tokens.sizes.statusbar_lsp_width_compact, gpui::px(36.0));
+        assert_eq!(tokens.sizes.statusbar_utility_width, gpui::px(64.0));
     }
 }
 
