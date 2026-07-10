@@ -7547,7 +7547,12 @@ impl Workspace {
         cx.notify();
     }
 
-    fn handle_document_changed(&mut self, doc_id: helix_view::DocumentId, cx: &mut Context<Self>) {
+    fn handle_document_changed(
+        &mut self,
+        doc_id: helix_view::DocumentId,
+        line_change: &nucleotide_events::v2::document::DocumentLineChange,
+        cx: &mut Context<Self>,
+    ) {
         let is_modified = self
             .core
             .read(cx)
@@ -7576,9 +7581,42 @@ impl Workspace {
             self.update_completion_filter_auto(cx);
         }
 
-        // Document content changed - update specific document view
+        self.invalidate_document_view_metrics(doc_id, line_change, cx);
         self.update_specific_document_view(doc_id, cx);
         cx.notify();
+    }
+
+    fn document_view_ids(
+        &self,
+        doc_id: helix_view::DocumentId,
+        cx: &Context<Self>,
+    ) -> Vec<helix_view::ViewId> {
+        self.core
+            .read(cx)
+            .editor
+            .tree
+            .views()
+            .filter_map(|(view, _)| (view.doc == doc_id).then_some(view.id))
+            .collect()
+    }
+
+    fn invalidate_document_view_metrics(
+        &self,
+        doc_id: helix_view::DocumentId,
+        line_change: &nucleotide_events::v2::document::DocumentLineChange,
+        cx: &mut Context<Self>,
+    ) {
+        for view_id in self.document_view_ids(doc_id, cx) {
+            if let Some(view) = self.view_manager.get_document_view(&view_id) {
+                view.update(cx, |view, _cx| {
+                    view.invalidate_document_lines(
+                        doc_id,
+                        line_change.old_lines.clone(),
+                        line_change.new_lines.clone(),
+                    );
+                });
+            }
+        }
     }
 
     fn handle_selection_changed(
@@ -7620,7 +7658,13 @@ impl Workspace {
         doc_id: helix_view::DocumentId,
         cx: &mut Context<Self>,
     ) {
-        // LSP diagnostics changed - update specific document view
+        for view_id in self.document_view_ids(doc_id, cx) {
+            if let Some(view) = self.view_manager.get_document_view(&view_id) {
+                view.update(cx, |view, _cx| {
+                    view.invalidate_document_annotations(doc_id);
+                });
+            }
+        }
         nucleotide_logging::debug!(doc_id = ?doc_id, "DIAG: Workspace handling DiagnosticsChanged - updating view");
         self.update_specific_document_view(doc_id, cx);
         cx.notify();
@@ -10767,7 +10811,8 @@ impl Workspace {
                                     ?doc_id,
                                     "Reloaded clean remote document after external change"
                                 );
-                                workspace.handle_document_changed(doc_id, cx);
+                                // Document::apply dispatches the precise content
+                                // change through the Helix event bridge.
                             }
                             Ok(RemoteDocumentReloadApply::Dirty) => {
                                 workspace
@@ -11061,8 +11106,12 @@ impl Workspace {
         debug!(document_event = ?event, "Document domain event received");
 
         match event {
-            DocumentEvent::ContentChanged { doc_id, .. } => {
-                self.handle_document_changed(*doc_id, cx);
+            DocumentEvent::ContentChanged {
+                doc_id,
+                line_change,
+                ..
+            } => {
+                self.handle_document_changed(*doc_id, line_change, cx);
             }
             DocumentEvent::Opened { doc_id, .. } => {
                 self.handle_document_opened(*doc_id, cx);

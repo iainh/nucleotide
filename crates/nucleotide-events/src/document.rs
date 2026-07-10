@@ -2,7 +2,13 @@
 // ABOUTME: Immutable fact-based events following Domain-Driven Design principles
 
 use helix_view::DocumentId;
-use std::path::PathBuf;
+use std::{ops::Range, path::PathBuf};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocumentLineChange {
+    pub old_lines: Range<usize>,
+    pub new_lines: Range<usize>,
+}
 
 /// Document domain events - covers document lifecycle, content changes, and save operations
 /// Following event sourcing principles: all events are immutable facts about what has happened
@@ -13,6 +19,7 @@ pub enum Event {
         doc_id: DocumentId,
         revision: u64,
         change_summary: ChangeType,
+        line_change: DocumentLineChange,
     },
 
     /// Document opened successfully
@@ -109,6 +116,10 @@ mod tests {
                 doc_id: DocumentId::default(),
                 revision: 1,
                 change_summary: change_type,
+                line_change: DocumentLineChange {
+                    old_lines: 0..1,
+                    new_lines: 0..1,
+                },
             };
         }
     }

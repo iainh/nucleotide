@@ -116,6 +116,20 @@ impl EditorViewState {
         self.surface_metrics.line_cache().clear_shaped_lines();
     }
 
+    pub fn invalidate_document_lines(
+        &self,
+        document_id: DocumentId,
+        old_lines: std::ops::Range<usize>,
+        new_lines: std::ops::Range<usize>,
+    ) {
+        self.viewport
+            .invalidate_document_lines(document_id, old_lines, new_lines);
+    }
+
+    pub fn invalidate_document_annotations(&self, document_id: DocumentId) {
+        self.viewport.invalidate_document_annotations(document_id);
+    }
+
     pub fn request_cursor_reveal(&self, reveal: EditorCursorReveal) {
         self.viewport.request_cursor_reveal(reveal);
     }

@@ -2084,6 +2084,7 @@ impl Application {
             event_bridge::BridgedEvent::DocumentChanged {
                 doc_id,
                 change_summary,
+                line_change,
             } => {
                 // Extract actual document revision
                 let revision = if let Some(document) = self.editor.document_mut(*doc_id) {
@@ -2097,6 +2098,7 @@ impl Application {
                     doc_id: *doc_id,
                     revision,
                     change_summary: *change_summary,
+                    line_change: line_change.clone(),
                 }))
             }
 
@@ -9152,6 +9154,10 @@ mod tests {
             &event_bridge::BridgedEvent::DocumentChanged {
                 doc_id,
                 change_summary: nucleotide_events::v2::document::ChangeType::Insert,
+                line_change: nucleotide_events::v2::document::DocumentLineChange {
+                    old_lines: 0..1,
+                    new_lines: 0..1,
+                },
             }
         ));
         assert!(!bridged_event_needs_gpui_context(
