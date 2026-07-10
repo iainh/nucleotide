@@ -1414,12 +1414,12 @@ fn gui_main(
                     workspace
                 });
 
-                // Initialize ProjectLspManager for project detection and proactive LSP startup
+                // Project LSP initialization is driven by application maintenance.
                 // This must be done after workspace creation to ensure proper initialization
                 // NOTE: We cannot do this asynchronously here due to GPUI context limitations,
                 // so we'll trigger it in the Application itself during startup
                 nucleotide_logging::info!(
-                    "Workspace created - ProjectLspManager will be initialized automatically"
+                    "Workspace created - project LSP system will be initialized automatically"
                 );
 
                 // Spawn a task to handle file open requests from platform shell integrations.

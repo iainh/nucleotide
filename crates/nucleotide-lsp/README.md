@@ -8,7 +8,9 @@ This crate provides LSP integration, managing language servers and translating b
 
 ## Public API
 
-- **LSP management**: `LspManager`, `LspState`
+- **Project LSP lifecycle**: `ProjectLspManager`, `ProjectLspConfig`
+- **Helix integration**: `HelixLspBridge`
+- **UI state**: `LspState`
 - **Document management**: `DocumentManager`
 - **Server status**: `ServerStatus`, `LspStatus`
 

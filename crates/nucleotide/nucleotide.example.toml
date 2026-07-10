@@ -201,9 +201,6 @@ project_lsp_startup = false
 # Valid range: 1 to 60000.
 startup_timeout_ms = 5000
 
-# Fall back to file-based LSP startup if project detection fails. Default: true.
-enable_fallback = true
-
 [project_markers]
 # Use custom project markers for project detection. Default: false.
 enable_project_markers = false
