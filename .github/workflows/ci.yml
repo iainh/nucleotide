@@ -34,9 +34,14 @@ jobs:
           components: rustfmt
 
       - name: Install Zig
+        if: matrix.os != 'macos-latest'
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
         with:
           version: 0.15.2
+
+      - name: Install Nix for ARM64 macOS
+        if: matrix.os == 'macos-latest'
+        uses: DeterminateSystems/nix-installer-action@a7ad9c4f0c65208097f4d34f3cfa1913b80cce5c
       
       - name: Install system dependencies
         if: matrix.os == 'ubuntu-latest'
@@ -58,10 +63,20 @@ jobs:
         run: cargo fmt --all -- --check
       
       - name: Run tests
+        if: matrix.os != 'macos-latest'
         run: cargo test --all -- --skip tests::performance_tests --skip tests::integration_tests::tests::performance_tests
+
+      - name: Run tests on ARM64 macOS
+        if: matrix.os == 'macos-latest'
+        run: nix develop --command cargo test --all -- --skip tests::performance_tests --skip tests::integration_tests::tests::performance_tests
       
       - name: Build
+        if: matrix.os != 'macos-latest'
         run: cargo build --release
+
+      - name: Build on ARM64 macOS
+        if: matrix.os == 'macos-latest'
+        run: nix develop --command cargo build --release
 
   layering:
     name: Check Architecture Layering

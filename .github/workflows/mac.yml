@@ -41,9 +41,6 @@ jobs:
     name: Build macOS app
     runs-on: macos-latest
     needs: build-linux-remote-helpers
-    strategy:
-      matrix:
-        arch: [x86_64, aarch64]
     
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
@@ -64,12 +61,10 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
         with:
-          targets: ${{ matrix.arch == 'x86_64' && 'x86_64-apple-darwin' || 'aarch64-apple-darwin' }}
+          targets: aarch64-apple-darwin
 
-      - name: Install Zig
-        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
-        with:
-          version: 0.15.2
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@a7ad9c4f0c65208097f4d34f3cfa1913b80cce5c
       
       - name: Cache cargo dependencies
         uses: actions/cache@6f8efc29b200d32929f49075959781ed54ec270c
@@ -78,14 +73,12 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-${{ matrix.arch }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-aarch64-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-${{ matrix.arch }}-cargo-
+            ${{ runner.os }}-aarch64-cargo-
       
       - name: Build release binary
-        run: |
-          TARGET=${{ matrix.arch == 'x86_64' && 'x86_64-apple-darwin' || 'aarch64-apple-darwin' }}
-          cargo build --release --target $TARGET
+        run: nix develop --command cargo build --release --target aarch64-apple-darwin
       
       - name: Prepare runtime files
         run: |
@@ -111,10 +104,9 @@ jobs:
         run: |
           # Use the bundle script
           chmod +x scripts/bundle-mac.sh
-          TARGET=${{ matrix.arch == 'x86_64' && 'x86_64-apple-darwin' || 'aarch64-apple-darwin' }}
           NUCL_REMOTE_HELPER_DIR="target/remote-helpers" \
             NUCL_REQUIRE_REMOTE_HELPERS=1 \
-            NUCL_BINARY="target/$TARGET/release/nucl" \
+            NUCL_BINARY="target/aarch64-apple-darwin/release/nucl" \
             ./scripts/bundle-mac.sh
           
           # Verify the app bundle
@@ -137,17 +129,17 @@ jobs:
             exit 1
           fi
 
-          tar -czf Nucleotide-${{ matrix.arch }}.app.tar.gz Nucleotide.app
+          tar -czf Nucleotide-aarch64.app.tar.gz Nucleotide.app
 
       - name: Upload app bundle
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: nucleotide-macos-${{ matrix.arch }}
-          path: Nucleotide-${{ matrix.arch }}.app.tar.gz
+          name: nucleotide-macos-aarch64
+          path: Nucleotide-aarch64.app.tar.gz
           retention-days: 7
 
-  build-universal:
-    name: Build Universal macOS app
+  package:
+    name: Package ARM64 macOS app
     runs-on: macos-latest
     needs: build
     
@@ -155,12 +147,6 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           persist-credentials: false
-      
-      - name: Download x86_64 artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          name: nucleotide-macos-x86_64
-          path: x86_64
       
       - name: Download aarch64 artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
@@ -178,48 +164,16 @@ jobs:
           dotnet tool update -g vpk --version "${VPK_VERSION}"
           echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
 
-      - name: Extract apps
+      - name: Extract app
         run: |
-          tar -xzf x86_64/Nucleotide-x86_64.app.tar.gz
-          mv Nucleotide.app Nucleotide-x86_64.app
-
           tar -xzf aarch64/Nucleotide-aarch64.app.tar.gz
-          mv Nucleotide.app Nucleotide-aarch64.app
-      
-      - name: Create universal binary
-        run: |
-          # Debug: List extracted apps
-          echo "Listing current directory:"
-          ls -la
-          echo "Checking x86_64 app:"
-          ls -la Nucleotide-x86_64.app/Contents/MacOS/ || echo "x86_64 app not found"
-          echo "Checking aarch64 app:"
-          ls -la Nucleotide-aarch64.app/Contents/MacOS/ || echo "aarch64 app not found"
-          
-          # Verify the binary exists with correct name
-          echo "Verifying binaries exist:"
-          test -f Nucleotide-x86_64.app/Contents/MacOS/Nucleotide && echo "✓ x86_64 binary found" || echo "✗ x86_64 binary missing"
-          test -f Nucleotide-aarch64.app/Contents/MacOS/Nucleotide && echo "✓ aarch64 binary found" || echo "✗ aarch64 binary missing"
-          
-          # Create universal app
-          cp -r Nucleotide-aarch64.app Nucleotide-Universal.app
-          
-          # Create universal binary using lipo
-          lipo -create \
-            Nucleotide-x86_64.app/Contents/MacOS/Nucleotide \
-            Nucleotide-aarch64.app/Contents/MacOS/Nucleotide \
-            -output Nucleotide-Universal.app/Contents/MacOS/Nucleotide
-          test -x Nucleotide-Universal.app/Contents/MacOS/nucleotide-remote-linux-x86_64
-          test -x Nucleotide-Universal.app/Contents/MacOS/nucleotide-remote-linux-aarch64
-          
-          # Verify universal binary
-          echo "Universal binary created:"
-          file Nucleotide-Universal.app/Contents/MacOS/Nucleotide
-          lipo -info Nucleotide-Universal.app/Contents/MacOS/Nucleotide
+          test -f Nucleotide.app/Contents/MacOS/Nucleotide
+          test "$(lipo -archs Nucleotide.app/Contents/MacOS/Nucleotide)" = "arm64"
+          test -x Nucleotide.app/Contents/MacOS/nucleotide-remote-linux-x86_64
+          test -x Nucleotide.app/Contents/MacOS/nucleotide-remote-linux-aarch64
       
       - name: Build macOS Velopack package
         run: |
-          mv Nucleotide-Universal.app Nucleotide.app
           chmod +x scripts/package-velopack.sh
           NUCL_VELOPACK_PACK_DIR="Nucleotide.app" \
             NUCL_VELOPACK_OUTPUT_DIR="target/release/bundle/velopack-macos" \
@@ -234,7 +188,7 @@ jobs:
       - name: Upload Velopack package
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: nucleotide-macos-universal
+          name: nucleotide-macos-aarch64-velopack
           path: target/release/bundle/velopack-macos/*
           retention-days: 7
 
