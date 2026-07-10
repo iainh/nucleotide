@@ -85,6 +85,7 @@ pub mod test_support {
                     BridgedEvent::DocumentChanged {
                         doc_id,
                         change_summary: _,
+                        line_change: _,
                     } => TestUpdate::DocumentChanged { doc_id },
                     BridgedEvent::DiagnosticsChanged { doc_id } => {
                         TestUpdate::DiagnosticsChanged { doc_id }
@@ -128,6 +129,10 @@ pub mod test_support {
             .map(|_| BridgedEvent::DocumentChanged {
                 doc_id,
                 change_summary: nucleotide_events::v2::document::ChangeType::Insert,
+                line_change: nucleotide_events::v2::document::DocumentLineChange {
+                    old_lines: 0..1,
+                    new_lines: 0..1,
+                },
             })
             .collect()
     }

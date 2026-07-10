@@ -1284,23 +1284,11 @@ impl OverlayView {
                                                 action,
                                                 *ls_id,
                                             );
-                                            for doc_id in changed_documents {
-                                                let revision = core
-                                                    .editor
-                                                    .document_mut(doc_id)
-                                                    .map(|doc| doc.get_current_revision() as u64)
-                                                    .unwrap_or_default();
-                                                core_cx.emit(crate::Update::Event(
-                                                    crate::types::AppEvent::Document(
-                                                        nucleotide_events::v2::document::Event::ContentChanged {
-                                                            doc_id,
-                                                            revision,
-                                                            change_summary: nucleotide_events::v2::document::ChangeType::Bulk,
-                                                        },
-                                                    ),
-                                                ));
+                                            if !changed_documents.is_empty() {
+                                                // Document::apply dispatches the precise content
+                                                // change through the Helix event bridge.
+                                                core_cx.notify();
                                             }
-                                            core_cx.notify();
                                         });
                                     }
                                 // Check if it's a buffer picker item (DocumentId, Option<PathBuf>)

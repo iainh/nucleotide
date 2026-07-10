@@ -4,6 +4,7 @@
 use std::{
     collections::hash_map::DefaultHasher,
     hash::{Hash, Hasher},
+    ops::Range,
     time::Duration,
 };
 
@@ -76,6 +77,14 @@ struct EditorDocumentMetricsCacheKey {
 struct CachedEditorDocumentMetrics {
     key: EditorDocumentMetricsCacheKey,
     metrics: EditorDocumentMetrics,
+    line_metrics: Vec<Option<EditorLineMetrics>>,
+    pending_incremental_update: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct EditorLineMetrics {
+    visual_rows: usize,
+    content_columns: usize,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -103,6 +112,8 @@ pub struct EditorDocumentMetricsCacheStats {
     pub misses: u64,
     pub evictions: u64,
     pub full_visual_row_scans: u64,
+    pub incremental_updates: u64,
+    pub incremental_line_scans: u64,
 }
 
 impl EditorDocumentMetrics {
@@ -193,6 +204,33 @@ impl EditorDocumentMetrics {
 }
 
 impl EditorDocumentMetricsCache {
+    pub fn invalidate_document_lines(
+        &mut self,
+        document_id: DocumentId,
+        old_lines: Range<usize>,
+        new_lines: Range<usize>,
+    ) {
+        for cached in self
+            .entries
+            .iter_mut()
+            .filter(|cached| cached.key.document_id == document_id)
+        {
+            let old_start = old_lines.start.min(cached.line_metrics.len());
+            let old_end = old_lines.end.min(cached.line_metrics.len()).max(old_start);
+            let replacement_len = new_lines.end.saturating_sub(new_lines.start);
+            cached.line_metrics.splice(
+                old_start..old_end,
+                std::iter::repeat_n(None, replacement_len),
+            );
+            cached.pending_incremental_update = true;
+        }
+    }
+
+    pub fn invalidate_document_annotations(&mut self, document_id: DocumentId) {
+        self.entries
+            .retain(|cached| cached.key.document_id != document_id);
+    }
+
     pub fn resolve(
         &mut self,
         params: EditorDocumentMetricsCacheResolveParams<'_>,
@@ -216,7 +254,11 @@ impl EditorDocumentMetricsCache {
             text_format: EditorTextFormatCacheKey::from(&text_format),
         };
 
-        if let Some(index) = self.entries.iter().position(|cached| cached.key == key) {
+        if let Some(index) = self
+            .entries
+            .iter()
+            .position(|cached| cached.key == key && !cached.pending_incremental_update)
+        {
             self.stats.hits += 1;
             trace!(
                 document_id = ?params.document.id(),
@@ -233,7 +275,6 @@ impl EditorDocumentMetricsCache {
         }
 
         self.stats.misses += 1;
-        self.stats.full_visual_row_scans += 1;
         trace!(
             document_id = ?params.document.id(),
             document_version = params.document.version(),
@@ -244,17 +285,56 @@ impl EditorDocumentMetricsCache {
         );
 
         let annotations = params.view.text_annotations(params.document, params.theme);
-        let metrics = EditorDocumentMetrics::from_text_format_with_annotations(
+        if let Some(index) = self.entries.iter().position(|cached| {
+            cached.pending_incremental_update
+                && cached.line_metrics.len() == params.document.text().len_lines()
+                && metrics_layout_matches(&cached.key, &key)
+        }) {
+            let _timer = PerfTimer::new("EditorDocumentMetrics::incremental_line_scan")
+                .with_warn_threshold(DOCUMENT_METRICS_SCAN_WARN_THRESHOLD);
+            let mut cached = self.entries.remove(index);
+            let text = params.document.text().slice(..);
+            let mut scanned_lines = 0_u64;
+            for (line_idx, line_metrics) in cached.line_metrics.iter_mut().enumerate() {
+                if line_metrics.is_none() {
+                    *line_metrics = Some(editor_line_metrics(
+                        text,
+                        line_idx,
+                        &text_format,
+                        &annotations,
+                        viewport_columns,
+                    ));
+                    scanned_lines += 1;
+                }
+            }
+            let metrics =
+                editor_metrics_from_lines(&cached.line_metrics, viewport_columns, text_format);
+            cached.key = key;
+            cached.metrics = metrics.clone();
+            cached.pending_incremental_update = false;
+            self.entries.insert(0, cached);
+            self.stats.incremental_updates += 1;
+            self.stats.incremental_line_scans += scanned_lines;
+            return metrics;
+        }
+
+        self.stats.full_visual_row_scans += 1;
+        let _timer = PerfTimer::new("EditorDocumentMetrics::full_line_scan")
+            .with_warn_threshold(DOCUMENT_METRICS_SCAN_WARN_THRESHOLD);
+        let line_metrics = editor_line_metrics_for_document(
             params.document,
-            viewport_columns,
-            text_format,
+            &text_format,
             &annotations,
+            viewport_columns,
         );
+        let metrics = editor_metrics_from_lines(&line_metrics, viewport_columns, text_format);
         self.entries.insert(
             0,
             CachedEditorDocumentMetrics {
                 key,
                 metrics: metrics.clone(),
+                line_metrics,
+                pending_incremental_update: false,
             },
         );
         if self.entries.len() > DOCUMENT_METRICS_CACHE_CAPACITY {
@@ -267,6 +347,103 @@ impl EditorDocumentMetricsCache {
 
     pub fn stats(&self) -> EditorDocumentMetricsCacheStats {
         self.stats
+    }
+}
+
+fn metrics_layout_matches(
+    cached: &EditorDocumentMetricsCacheKey,
+    current: &EditorDocumentMetricsCacheKey,
+) -> bool {
+    cached.document_id == current.document_id
+        && cached.gutter_columns == current.gutter_columns
+        && cached.viewport_columns == current.viewport_columns
+        && cached.minimum_columns == current.minimum_columns
+        && cached.text_format == current.text_format
+}
+
+fn editor_line_metrics_for_document(
+    document: &Document,
+    text_format: &TextFormat,
+    annotations: &TextAnnotations<'_>,
+    viewport_columns: u16,
+) -> Vec<Option<EditorLineMetrics>> {
+    let text = document.text().slice(..);
+    (0..text.len_lines())
+        .map(|line_idx| {
+            Some(editor_line_metrics(
+                text,
+                line_idx,
+                text_format,
+                annotations,
+                viewport_columns,
+            ))
+        })
+        .collect()
+}
+
+fn editor_line_metrics(
+    text: RopeSlice<'_>,
+    line_idx: usize,
+    text_format: &TextFormat,
+    annotations: &TextAnnotations<'_>,
+    viewport_columns: u16,
+) -> EditorLineMetrics {
+    let line_start = text.line_to_char(line_idx);
+    let has_following_line = line_idx + 1 < text.len_lines();
+    let line_end = if has_following_line {
+        text.line_to_char(line_idx + 1)
+    } else {
+        text.len_chars()
+    };
+    let visual_end =
+        visual_offset_from_block(text, line_start, line_end, text_format, annotations).0;
+    let visual_rows = if has_following_line {
+        visual_end.row.max(1)
+    } else {
+        visual_end.row.saturating_add(1).max(1)
+    };
+    let content_columns = if text_format.soft_wrap {
+        usize::from(viewport_columns).max(1)
+    } else {
+        content_columns_for_line(text.slice(line_start..line_end), text_format)
+    };
+
+    EditorLineMetrics {
+        visual_rows,
+        content_columns,
+    }
+}
+
+fn editor_metrics_from_lines(
+    line_metrics: &[Option<EditorLineMetrics>],
+    viewport_columns: u16,
+    text_format: TextFormat,
+) -> EditorDocumentMetrics {
+    let viewport_columns_usize = usize::from(viewport_columns).max(1);
+    let visual_rows = line_metrics
+        .iter()
+        .flatten()
+        .map(|line| line.visual_rows)
+        .sum::<usize>()
+        .max(1);
+    let content_columns = if text_format.soft_wrap {
+        viewport_columns_usize
+    } else {
+        line_metrics
+            .iter()
+            .flatten()
+            .map(|line| line.content_columns)
+            .max()
+            .unwrap_or(viewport_columns_usize)
+            .max(viewport_columns_usize)
+    };
+
+    EditorDocumentMetrics {
+        viewport_columns,
+        content_columns,
+        soft_wrap: text_format.soft_wrap,
+        visual_rows,
+        text_format,
     }
 }
 
@@ -356,28 +533,40 @@ pub fn content_columns_for_text(
     for line_idx in 0..total_lines {
         let line_start = text.line_to_char(line_idx);
         let line_end = if line_idx + 1 < total_lines {
-            text.line_to_char(line_idx + 1).saturating_sub(1)
+            text.line_to_char(line_idx + 1)
         } else {
             text.len_chars()
         };
-        let line_end = line_end.max(line_start);
-        let mut visual_columns = 0;
-        for grapheme in text.slice(line_start..line_end).graphemes() {
-            if grapheme.len_chars() == 1 && grapheme.char(0) == '\t' {
-                visual_columns += tab_width_at(visual_columns, text_format.tab_width);
-            } else {
-                let width = if let Some(grapheme) = grapheme.as_str() {
-                    grapheme_width(grapheme)
-                } else {
-                    grapheme_width(&grapheme.to_string())
-                };
-                visual_columns += width;
-            }
-        }
-        max_columns = max_columns.max(visual_columns);
+        max_columns = max_columns.max(content_columns_for_line(
+            text.slice(line_start..line_end),
+            text_format,
+        ));
     }
 
     max_columns
+}
+
+fn content_columns_for_line(line: RopeSlice<'_>, text_format: &TextFormat) -> usize {
+    let mut visual_columns = 0;
+    for grapheme in line.graphemes() {
+        if grapheme.len_chars() == 1 {
+            match grapheme.char(0) {
+                '\t' => {
+                    visual_columns += tab_width_at(visual_columns, text_format.tab_width);
+                    continue;
+                }
+                '\n' | '\r' => continue,
+                _ => {}
+            }
+        }
+        let width = if let Some(grapheme) = grapheme.as_str() {
+            grapheme_width(grapheme)
+        } else {
+            grapheme_width(&grapheme.to_string())
+        };
+        visual_columns += width;
+    }
+    visual_columns
 }
 
 #[cfg(test)]
@@ -464,6 +653,53 @@ mod tests {
     }
 
     #[test]
+    fn per_line_metrics_match_full_document_scans() {
+        let cases = [
+            ("", TextFormat::default(), 8),
+            ("one\ntwo\nthree", TextFormat::default(), 8),
+            ("one\ntwo\nthree\n", TextFormat::default(), 8),
+            (
+                "abcdefghij\nx",
+                TextFormat {
+                    soft_wrap: true,
+                    viewport_width: 4,
+                    ..TextFormat::default()
+                },
+                4,
+            ),
+        ];
+
+        for (source, text_format, viewport_columns) in cases {
+            let text = Rope::from(source);
+            let annotations = TextAnnotations::default();
+            let line_metrics = (0..text.len_lines())
+                .map(|line_idx| {
+                    Some(editor_line_metrics(
+                        text.slice(..),
+                        line_idx,
+                        &text_format,
+                        &annotations,
+                        viewport_columns,
+                    ))
+                })
+                .collect::<Vec<_>>();
+            let metrics =
+                editor_metrics_from_lines(&line_metrics, viewport_columns, text_format.clone());
+
+            assert_eq!(
+                metrics.visual_rows,
+                visual_rows_for_text(text.slice(..), &text_format),
+                "visual row mismatch for {source:?}",
+            );
+            assert_eq!(
+                metrics.content_columns,
+                content_columns_for_text(text.slice(..), &text_format, viewport_columns),
+                "content width mismatch for {source:?}",
+            );
+        }
+    }
+
+    #[test]
     fn metrics_cache_reuses_matching_soft_wrap_layout() {
         let mut config = Config::default();
         config.soft_wrap.enable = Some(true);
@@ -501,6 +737,8 @@ mod tests {
                 misses: 1,
                 evictions: 0,
                 full_visual_row_scans: 1,
+                incremental_updates: 0,
+                incremental_line_scans: 0,
             }
         );
     }
@@ -561,6 +799,8 @@ mod tests {
                 misses: 2,
                 evictions: 0,
                 full_visual_row_scans: 2,
+                incremental_updates: 0,
+                incremental_line_scans: 0,
             }
         );
     }
@@ -594,6 +834,8 @@ mod tests {
                 misses: 5,
                 evictions: 1,
                 full_visual_row_scans: 5,
+                incremental_updates: 0,
+                incremental_line_scans: 0,
             }
         );
     }
@@ -641,6 +883,67 @@ mod tests {
                 misses: 2,
                 evictions: 0,
                 full_visual_row_scans: 2,
+                incremental_updates: 0,
+                incremental_line_scans: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn metrics_cache_rescans_only_changed_lines() {
+        let (mut document, view) =
+            test_document_with_config(Config::default(), "one\ntwo\nthree\n");
+        let mut cache = EditorDocumentMetricsCache::default();
+        let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(160.0), px(80.0)));
+        let gutter_columns = view.gutter_offset(&document);
+
+        cache.resolve(EditorDocumentMetricsCacheResolveParams {
+            document: &document,
+            view: &view,
+            theme: None,
+            bounds,
+            gutter_columns,
+            cell_width: px(8.0),
+            minimum_columns: 1,
+        });
+
+        let transaction = Transaction::change(
+            document.text(),
+            [(4, 4, Some("alpha\nbeta\n".into()))].into_iter(),
+        );
+        document.apply(&transaction, view.id);
+        cache.invalidate_document_lines(document.id(), 1..2, 1..4);
+
+        let incremental = cache.resolve(EditorDocumentMetricsCacheResolveParams {
+            document: &document,
+            view: &view,
+            theme: None,
+            bounds,
+            gutter_columns,
+            cell_width: px(8.0),
+            minimum_columns: 1,
+        });
+        let full = EditorDocumentMetrics::resolve_for_view(
+            &document,
+            &view,
+            None,
+            bounds,
+            gutter_columns,
+            px(8.0),
+            1,
+        );
+
+        assert_eq!(incremental.visual_rows, full.visual_rows);
+        assert_eq!(incremental.content_columns, full.content_columns);
+        assert_eq!(
+            cache.stats(),
+            EditorDocumentMetricsCacheStats {
+                hits: 0,
+                misses: 2,
+                evictions: 0,
+                full_visual_row_scans: 1,
+                incremental_updates: 1,
+                incremental_line_scans: 3,
             }
         );
     }

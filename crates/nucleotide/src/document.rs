@@ -168,6 +168,21 @@ impl DocumentView {
         self.editor_state.clear_shaped_lines_cache();
     }
 
+    pub fn invalidate_document_lines(
+        &self,
+        document_id: DocumentId,
+        old_lines: std::ops::Range<usize>,
+        new_lines: std::ops::Range<usize>,
+    ) {
+        self.editor_state
+            .invalidate_document_lines(document_id, old_lines, new_lines);
+    }
+
+    pub fn invalidate_document_annotations(&self, document_id: DocumentId) {
+        self.editor_state
+            .invalidate_document_annotations(document_id);
+    }
+
     pub fn request_cursor_reveal(&self) {
         self.editor_state
             .request_cursor_reveal(EditorCursorReveal::Scrolloff);

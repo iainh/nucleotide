@@ -1,9 +1,9 @@
 // ABOUTME: Event bridge between Helix's event system and GPUI's Update events
 // ABOUTME: Provides a channel-based system to forward Helix events to GPUI UI updates
 
-use helix_core::{ChangeSet, Operation};
+use helix_core::{Assoc, ChangeSet, Operation, Rope};
 use helix_view::DocumentId;
-use nucleotide_events::v2::document::ChangeType;
+use nucleotide_events::v2::document::{ChangeType, DocumentLineChange};
 use nucleotide_logging::{debug, info, instrument, trace, warn};
 use std::sync::OnceLock;
 use tokio::sync::mpsc;
@@ -14,6 +14,7 @@ pub enum BridgedEvent {
     DocumentChanged {
         doc_id: DocumentId,
         change_summary: ChangeType,
+        line_change: DocumentLineChange,
     },
     DiagnosticsChanged {
         doc_id: DocumentId,
@@ -114,6 +115,42 @@ fn analyze_change_type(changes: &ChangeSet) -> ChangeType {
     }
 }
 
+fn affected_line_range(text: &Rope, start: usize, end: usize) -> std::ops::Range<usize> {
+    let text_len = text.len_chars();
+    let line_count = text.len_lines().max(1);
+    let start_line = text.char_to_line(start.min(text_len));
+    let end_line = text.char_to_line(end.min(text_len));
+    start_line..end_line.saturating_add(1).min(line_count)
+}
+
+fn document_line_change(
+    old_text: &Rope,
+    new_text: &Rope,
+    changes: &ChangeSet,
+) -> DocumentLineChange {
+    let mut changed = changes.changes_iter();
+    let Some((first_start, first_end, _)) = changed.next() else {
+        return DocumentLineChange {
+            old_lines: 0..old_text.len_lines().max(1),
+            new_lines: 0..new_text.len_lines().max(1),
+        };
+    };
+
+    let mut old_start = first_start;
+    let mut old_end = first_end;
+    for (start, end, _) in changed {
+        old_start = old_start.min(start);
+        old_end = old_end.max(end);
+    }
+
+    let new_start = changes.map_pos(old_start, Assoc::Before);
+    let new_end = changes.map_pos(old_end, Assoc::After);
+    DocumentLineChange {
+        old_lines: affected_line_range(old_text, old_start, old_end),
+        new_lines: affected_line_range(new_text, new_start, new_end),
+    }
+}
+
 /// Register Helix event hooks that bridge to GPUI events
 #[instrument]
 pub fn register_event_hooks() {
@@ -138,6 +175,7 @@ pub fn register_event_hooks() {
 
         let doc_id = event.doc.id();
         let change_summary = analyze_change_type(event.changes);
+        let line_change = document_line_change(event.old_text, event.doc.text(), event.changes);
         debug!(
             doc_id = ?doc_id,
             change_type = ?change_summary,
@@ -146,6 +184,7 @@ pub fn register_event_hooks() {
         send_bridged_event(BridgedEvent::DocumentChanged {
             doc_id,
             change_summary,
+            line_change,
         });
         Ok(())
     });
@@ -277,4 +316,44 @@ pub type BridgedEventReceiver = mpsc::UnboundedReceiver<BridgedEvent>;
 /// Create a channel pair for bridged events
 pub fn create_bridge_channel() -> (mpsc::UnboundedSender<BridgedEvent>, BridgedEventReceiver) {
     mpsc::unbounded_channel()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use helix_core::Transaction;
+
+    #[test]
+    fn document_line_change_tracks_inserted_lines() {
+        let old_text = Rope::from("one\ntwo\nthree\n");
+        let transaction =
+            Transaction::change(&old_text, [(4, 4, Some("inserted\n".into()))].into_iter());
+        let mut new_text = old_text.clone();
+        assert!(transaction.apply(&mut new_text));
+
+        assert_eq!(
+            document_line_change(&old_text, &new_text, transaction.changes()),
+            DocumentLineChange {
+                old_lines: 1..2,
+                new_lines: 1..3,
+            }
+        );
+    }
+
+    #[test]
+    fn document_line_change_tracks_deleted_lines() {
+        let old_text = Rope::from("one\ntwo\nthree\n");
+        let transaction =
+            Transaction::change(&old_text, [(4, 8, None::<helix_core::Tendril>)].into_iter());
+        let mut new_text = old_text.clone();
+        assert!(transaction.apply(&mut new_text));
+
+        assert_eq!(
+            document_line_change(&old_text, &new_text, transaction.changes()),
+            DocumentLineChange {
+                old_lines: 1..3,
+                new_lines: 1..2,
+            }
+        );
+    }
 }
