@@ -609,9 +609,9 @@ fn statusbar_lsp_indicator_for_state(
             ServerStatus::Starting | ServerStatus::Initializing => {
                 state.get_spinner_frame().to_string()
             }
-            _ => "◉".to_string(),
+            _ => "LSP".to_string(),
         };
-        return Some(format!("{} {}", indicator, server.name));
+        return Some(format!("{indicator} {}", server.name));
     }
 
     state.get_lsp_indicator()
@@ -16833,7 +16833,7 @@ mod tests {
         let indicator = statusbar_lsp_indicator_for_state(&mut state, Some(focused_server_id))
             .expect("lsp indicator");
 
-        assert_eq!(indicator, "◉ rust-analyzer");
+        assert_eq!(indicator, "LSP rust-analyzer");
     }
 
     #[test]

@@ -7,6 +7,10 @@ use std::path::Path;
 use crate::{FileIcon, Theme};
 use nucleotide_types::VcsStatus;
 
+fn vcs_indicator_size(container_size: f32) -> f32 {
+    (container_size * 0.34).clamp(5.0, 6.0)
+}
+
 /// Combined file icon and VCS status indicator component
 ///
 /// This component replaces the pattern of manually combining FileIcon and VcsIndicator
@@ -113,87 +117,25 @@ impl VcsIcon {
         }
     }
 
-    /// Render the VCS status overlay
-    /// Now draws a pseudo-3D glossy sphere using layered elements:
-    /// - Base colored circle
-    /// - Soft outer shadow (bottom-right) for lift
-    /// - Two specular highlights (small/large) top-left for gloss
+    /// Render a compact, flat VCS status dot.
     fn render_vcs_overlay(&self, theme: &Theme) -> impl IntoElement {
         if !self.should_show_vcs_status() {
             return div();
         }
-        use crate::tokens::utils;
 
         let base_color = self
             .get_vcs_status_color(theme)
             .unwrap_or(theme.tokens.chrome.text_chrome_secondary);
-        let indicator_size = (self.container_size * 0.5).max(6.0); // 50% of container size, min 6px
+        let indicator_size = vcs_indicator_size(self.container_size);
 
-        let border_color = utils::darken(base_color, 0.15);
-        let tokens = &theme.tokens;
-        let shadow_color = utils::with_alpha(tokens.chrome.separator_color, 0.35);
-        let highlight_core = utils::with_alpha(tokens.chrome.text_on_chrome, 0.45);
-        let highlight_halo = utils::with_alpha(tokens.chrome.text_on_chrome, 0.14);
-
-        // Masking container for the sphere and highlights (prevents highlight bleed)
-        let mut container = div()
+        div()
             .absolute()
             .bottom(px(0.0))
-            .left(px(0.0))
+            .right(px(0.0))
             .w(px(indicator_size))
             .h(px(indicator_size))
             .rounded_full()
-            .overflow_hidden()
-            .shadow(vec![gpui::BoxShadow {
-                color: shadow_color,
-                offset: gpui::point(px(1.0), px(1.5)),
-                blur_radius: px(2.0),
-                spread_radius: px(0.0),
-                inset: false,
-            }]);
-
-        // Base filled circle with border
-        // Slight transparency for base fill to let background subtly show through
-        let base_fill = utils::with_alpha(base_color, 0.85);
-        let border_col = utils::with_alpha(border_color, 0.9);
-        container = container.child(
-            div()
-                .absolute()
-                .inset_0()
-                .rounded_full()
-                .bg(base_fill)
-                .border_1()
-                .border_color(border_col),
-        );
-
-        // Specular highlights (top-left) – use masking container as clipping
-        let offset = indicator_size * 0.14;
-        let halo_size = indicator_size * 0.52;
-        let core_size = indicator_size * 0.26;
-
-        container = container
-            .child(
-                div()
-                    .absolute()
-                    .top(px(offset))
-                    .left(px(offset))
-                    .w(px(halo_size))
-                    .h(px(halo_size))
-                    .rounded_full()
-                    .bg(highlight_halo),
-            )
-            .child(
-                div()
-                    .absolute()
-                    .top(px(offset + (halo_size - core_size) * 0.25))
-                    .left(px(offset + (halo_size - core_size) * 0.25))
-                    .w(px(core_size))
-                    .h(px(core_size))
-                    .rounded_full()
-                    .bg(highlight_core),
-            );
-
-        container
+            .bg(base_color)
     }
 
     /// Render this VcsIcon using a provided Theme (for contexts where the
@@ -298,18 +240,16 @@ impl IntoElement for VcsIcon {
                 _ => tokens.editor.text_secondary,
             };
 
-            let indicator_size = (container_size * 0.5).max(6.0);
+            let indicator_size = vcs_indicator_size(container_size);
 
             let overlay = div()
                 .absolute()
-                .bottom(px(0.0)) // Position at bottom edge
-                .left(px(0.0)) // Position at left edge (no negative offset)
+                .bottom(px(0.0))
+                .right(px(0.0))
                 .w(px(indicator_size))
                 .h(px(indicator_size))
                 .rounded_full()
-                .bg(fallback_color)
-                .border_1()
-                .border_color(tokens.chrome.border_shadow);
+                .bg(fallback_color);
 
             container = container.child(overlay);
         }
@@ -361,5 +301,12 @@ mod tests {
             Some(theme.tokens.editor.error)
         );
         assert_eq!(color_for(VcsStatus::Clean), None);
+    }
+
+    #[test]
+    fn vcs_indicator_stays_visually_compact() {
+        assert_eq!(vcs_indicator_size(12.0), 5.0);
+        assert_eq!(vcs_indicator_size(16.0), 5.44);
+        assert_eq!(vcs_indicator_size(24.0), 6.0);
     }
 }
