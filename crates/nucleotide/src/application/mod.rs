@@ -476,6 +476,14 @@ fn should_launch_lsp_on_local_host(identity: &WorkspaceIdentity) -> bool {
     matches!(identity, WorkspaceIdentity::Local)
 }
 
+fn project_lsp_config(config: &crate::config::LspConfig) -> nucleotide_lsp::ProjectLspConfig {
+    nucleotide_lsp::ProjectLspConfig {
+        enable_proactive_startup: config.project_lsp_startup,
+        startup_timeout: Duration::from_millis(config.startup_timeout_ms),
+        ..nucleotide_lsp::ProjectLspConfig::default()
+    }
+}
+
 fn should_stat_picker_root_with_backend(identity: &WorkspaceIdentity) -> bool {
     !matches!(identity, WorkspaceIdentity::Local)
 }
@@ -1373,6 +1381,11 @@ impl Wake for MaintenanceWakeTask {
     }
 }
 
+struct ProjectLspSystem {
+    manager: ProjectLspManager,
+    bridge: HelixLspBridge,
+}
+
 pub struct Application {
     pub editor: Editor,
     pub compositor: Compositor,
@@ -1385,22 +1398,18 @@ pub struct Application {
     pub event_bridge_rx: Option<event_bridge::BridgedEventReceiver>,
     pub config: crate::config::Config,
     pub helix_config_arc: Arc<ArcSwap<helix_term::config::Config>>,
-    pub project_lsp_manager: Arc<tokio::sync::RwLock<Option<ProjectLspManager>>>,
-    pub helix_lsp_bridge: Arc<tokio::sync::RwLock<Option<HelixLspBridge>>>,
+    project_lsp_system: Arc<tokio::sync::RwLock<Option<ProjectLspSystem>>>,
     pub project_lsp_command_tx:
         Option<tokio::sync::mpsc::UnboundedSender<nucleotide_events::ProjectLspCommand>>,
     pub project_lsp_command_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<nucleotide_events::ProjectLspCommand>>,
-    pub project_lsp_processor_started: Arc<std::sync::atomic::AtomicBool>,
-    pub project_lsp_system_initialized: Arc<std::sync::atomic::AtomicBool>,
+    project_lsp_initialization_attempted: bool,
     pub project_environment: Arc<ProjectEnvironment>,
     pub workspace_file_ops: WorkspaceFileOpHandler,
     project_env_overrides: HashMap<String, Option<String>>,
     prewarmed_lsp_startups: HashSet<(PathBuf, String, String)>,
     pub terminal_runtime: TerminalRuntimeHandle,
     maintenance_wake: Option<MaintenanceWake>,
-    // Counter for sync cycles to delay LSP startup until system is fully initialized
-    pub sync_cycle_counter: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1814,17 +1823,9 @@ impl Application {
 
         debug!("🔧 SYNC: Starting event-driven LSP command processing");
 
-        let cycle_count = self
-            .sync_cycle_counter
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            + 1;
-
-        if cycle_count == 1
-            && !self
-                .project_lsp_system_initialized
-                .load(std::sync::atomic::Ordering::Relaxed)
-        {
-            info!("🚀 INIT: Initializing LSP system at cycle 1");
+        if !self.project_lsp_initialization_attempted {
+            self.project_lsp_initialization_attempted = true;
+            info!("🚀 INIT: Initializing project LSP system");
             if let Err(e) = handle.block_on(self.initialize_project_lsp_system()) {
                 error!(error = %e, "Failed to initialize project LSP system");
             }
@@ -2814,7 +2815,7 @@ impl Application {
 
         // Then add project-specific information if available
         if let Some(lsp_state) = &self.lsp_state
-            && let Some(_manager_ref) = self.project_lsp_manager.read().await.as_ref()
+            && self.project_lsp_system.read().await.is_some()
         {
             lsp_state.update(cx, |_state, cx| {
                 // Add project-specific server information
@@ -4725,7 +4726,19 @@ impl Application {
     }
 
     async fn project_lsp_manager_handle(&self) -> Option<ProjectLspManager> {
-        self.project_lsp_manager.read().await.clone()
+        self.project_lsp_system
+            .read()
+            .await
+            .as_ref()
+            .map(|system| system.manager.clone())
+    }
+
+    async fn helix_lsp_bridge_handle(&self) -> Option<HelixLspBridge> {
+        self.project_lsp_system
+            .read()
+            .await
+            .as_ref()
+            .map(|system| system.bridge.clone())
     }
 
     async fn register_project_lsp_detection(
@@ -4771,36 +4784,15 @@ impl Application {
 
     /// Initialize the ProjectLspManager and HelixLspBridge  
     pub async fn initialize_project_lsp_system(&mut self) -> Result<(), anyhow::Error> {
-        // Check if already initialized
-        if self
-            .project_lsp_system_initialized
-            .load(std::sync::atomic::Ordering::Acquire)
-        {
+        if self.project_lsp_system.read().await.is_some() {
             debug!("Project LSP system already initialized, skipping");
             return Ok(());
         }
 
         info!("Initializing project LSP system");
-
-        // Check if managers already exist and only start event listener if needed
-        let manager_guard = self.project_lsp_manager.read().await;
-        if manager_guard.is_some() {
-            info!("ProjectLspManager already exists, attempting to start event listener");
-            drop(manager_guard);
-
-            // Event processing is now handled directly in the main event bridge loop
-
-            info!("Project LSP system initialized successfully with existing manager");
-            self.project_lsp_system_initialized
-                .store(true, std::sync::atomic::Ordering::Release);
-            return Ok(());
-        }
-        drop(manager_guard);
-
         info!("Creating new ProjectLspManager and HelixLspBridge");
 
-        // Create ProjectLspManager with default configuration
-        let project_lsp_config = nucleotide_lsp::ProjectLspConfig::default();
+        let project_lsp_config = project_lsp_config(&self.config.gui.lsp);
         let project_manager = nucleotide_lsp::ProjectLspManager::new(
             project_lsp_config,
             self.project_lsp_command_tx.clone(),
@@ -4821,64 +4813,46 @@ impl Application {
             env_provider,
             launch_proxy_provider,
         );
-        let helix_bridge_arc = std::sync::Arc::new(helix_bridge.clone());
-
-        // Set the bridge in the project manager
         project_manager
-            .set_helix_bridge(helix_bridge_arc.clone())
+            .set_helix_bridge(Arc::new(helix_bridge.clone()))
             .await;
 
-        // Store the managers in the Application FIRST so the event listener can access them
-        *self.project_lsp_manager.write().await = Some(project_manager);
-        *self.helix_lsp_bridge.write().await = Some(helix_bridge);
+        *self.project_lsp_system.write().await = Some(ProjectLspSystem {
+            manager: project_manager.clone(),
+            bridge: helix_bridge,
+        });
 
-        // Event processing is now handled directly in the main event bridge loop
-        // No separate event listener setup needed
-
-        // Now start the project manager and detect projects using the stored manager
         let project_directory = self.project_directory.clone();
         let workspace_backend = self.workspace_backend.clone();
-        let use_manager_detection = should_launch_lsp_on_local_host(&workspace_backend.identity());
-        {
-            let manager_guard = self.project_lsp_manager.read().await;
-            if let Some(ref manager) = *manager_guard {
-                // Start the project manager
-                manager.start().await?;
+        let is_local = should_launch_lsp_on_local_host(&workspace_backend.identity());
+        let use_manager_detection = is_local && self.config.gui.lsp.project_lsp_startup;
 
-                // Trigger project detection if we have a project directory
-                // Now it's safe to emit events - the listener is already subscribed
-                if let Some(project_dir) = &project_directory {
-                    info!(
+        project_manager.start().await?;
+
+        if let Some(project_dir) = &project_directory {
+            if use_manager_detection {
+                info!(
+                    project_directory = %project_dir.display(),
+                    "Triggering project detection for automatic LSP server startup"
+                );
+                if let Err(e) = project_manager.detect_project(project_dir.clone()).await {
+                    warn!(
+                        error = %e,
                         project_directory = %project_dir.display(),
-                        "Triggering project detection for automatic LSP server startup"
-                    );
-
-                    if use_manager_detection {
-                        if let Err(e) = manager.detect_project(project_dir.clone()).await {
-                            nucleotide_logging::warn!(
-                                error = %e,
-                                project_directory = %project_dir.display(),
-                                "Project detection failed - LSP servers may need to be started manually"
-                            );
-                        } else {
-                            info!("Project detection completed successfully");
-                        }
-                    } else {
-                        nucleotide_logging::warn!(
-                            project_directory = %project_dir.display(),
-                            backend = ?workspace_backend.identity(),
-                            "Skipping local ProjectLspManager detection for remote workspace"
-                        );
-                    }
-                } else {
-                    nucleotide_logging::warn!(
-                        "No project directory set - LSP will use file-based mode"
+                        "Project detection failed - Helix file-based LSP startup remains available"
                     );
                 }
+            } else if is_local {
+                info!(
+                    project_directory = %project_dir.display(),
+                    "Proactive project LSP startup disabled; using Helix file-based startup"
+                );
             }
+        } else {
+            warn!("No project directory set - LSP will use file-based mode");
         }
 
-        if !use_manager_detection && let Some(project_dir) = project_directory {
+        if !is_local && let Some(project_dir) = project_directory {
             let (project_type, language_servers) =
                 detect_project_lsp_metadata_with_backend(&project_dir, workspace_backend).await;
             self.register_project_lsp_detection(&project_dir, &project_type, &language_servers)
@@ -4898,301 +4872,20 @@ impl Application {
 
         info!("Project LSP system initialized successfully with project detection");
 
-        // Mark as initialized to prevent duplicate initialization
-        self.project_lsp_system_initialized
-            .store(true, std::sync::atomic::Ordering::Release);
-
         Ok(())
     }
 
-    // Removed redundant initialize_project_lsp_manager - functionality moved to initialize_project_lsp_system
-
-    /// Cleanup ProjectLspManager resources
-    pub async fn cleanup_project_lsp_manager(
+    /// Stop the project LSP manager and release its bridge.
+    pub async fn cleanup_project_lsp_system(
         &self,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        info!("Cleaning up ProjectLspManager");
+        info!("Cleaning up project LSP system");
 
-        if let Some(manager) = self.project_lsp_manager.write().await.take() {
-            manager.stop().await?;
+        if let Some(system) = self.project_lsp_system.write().await.take() {
+            system.manager.stop().await?;
         }
 
-        *self.helix_lsp_bridge.write().await = None;
-
-        info!("ProjectLspManager cleanup completed");
-        Ok(())
-    }
-
-    /// Handle errors from ProjectLspManager operations with appropriate recovery
-    #[instrument(skip(self))]
-    pub async fn handle_project_lsp_error(
-        &self,
-        error: Box<dyn std::error::Error + Send + Sync>,
-        operation: &str,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        error!(
-            error = %error,
-            operation = %operation,
-            "ProjectLspManager operation failed, attempting recovery"
-        );
-
-        match operation {
-            "initialize" => {
-                warn!(
-                    "ProjectLspManager initialization failed - continuing with file-based LSP only"
-                );
-                // Continue operation without project-based LSP
-                Ok(())
-            }
-            "project_detection" => {
-                warn!("Project detection failed - falling back to file-based LSP startup");
-                // Project detection failure doesn't prevent file-based LSP
-                Ok(())
-            }
-            "server_startup" => {
-                warn!("Project server startup failed - file-based fallback should handle this");
-                // Server startup failure is handled by the fallback system
-                Ok(())
-            }
-            "document_tracking" => {
-                // Document tracking failure is not critical - LSP can still work
-                warn!("Document tracking with project server failed - LSP should still function");
-                Ok(())
-            }
-            _ => {
-                // Unknown operation - propagate the error
-                error!(operation = %operation, "Unknown ProjectLspManager operation failed");
-                Err(error)
-            }
-        }
-    }
-
-    /// Validate ProjectLspManager state and attempt recovery if needed
-    #[instrument(skip(self))]
-    pub async fn validate_and_recover_project_lsp(
-        &self,
-    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-        info!("Validating ProjectLspManager state");
-
-        let manager_available = self.project_lsp_manager.read().await.is_some();
-        let bridge_available = self.helix_lsp_bridge.read().await.is_some();
-
-        match (manager_available, bridge_available) {
-            (true, true) => {
-                info!("ProjectLspManager and HelixLspBridge are both available");
-
-                // Additional health check could be performed here
-                // We could check if any projects are registered or servers are running
-                info!("ProjectLspManager health check passed");
-
-                Ok(true)
-            }
-            (true, false) => {
-                warn!(
-                    "ProjectLspManager available but HelixLspBridge missing - attempting recovery"
-                );
-
-                // Try to recreate the bridge and connect it to manager
-                if let Some(manager) = self.project_lsp_manager.write().await.take() {
-                    let event_sender = manager.get_event_sender();
-                    let env_provider =
-                        Arc::new(ProjectEnvironmentProvider::with_workspace_backend(
-                            self.project_environment.clone(),
-                            self.workspace_backend.clone(),
-                        ));
-                    let launch_proxy_provider =
-                        Arc::new(RemoteLspLaunchProxyProvider::from_config(&self.config));
-                    let bridge = HelixLspBridge::new_with_environment_and_launch_proxy(
-                        event_sender,
-                        env_provider,
-                        launch_proxy_provider,
-                    );
-
-                    // Connect the bridge to the manager in recovery
-                    manager.set_helix_bridge(Arc::new(bridge.clone())).await;
-
-                    // Store both back
-                    *self.helix_lsp_bridge.write().await = Some(bridge);
-                    *self.project_lsp_manager.write().await = Some(manager);
-
-                    info!(
-                        "HelixLspBridge recreated and connected to ProjectLspManager successfully"
-                    );
-                    Ok(true)
-                } else {
-                    error!("Failed to recreate HelixLspBridge - ProjectLspManager unavailable");
-                    Ok(false)
-                }
-            }
-            (false, true) => {
-                warn!("HelixLspBridge available but ProjectLspManager missing - cleaning up");
-
-                // Clean up orphaned bridge
-                *self.helix_lsp_bridge.write().await = None;
-
-                warn!("Cleaned up orphaned HelixLspBridge - project LSP disabled");
-                Ok(false)
-            }
-            (false, false) => {
-                info!(
-                    "ProjectLspManager and HelixLspBridge both unavailable - normal for file-based LSP only"
-                );
-                Ok(false)
-            }
-        }
-    }
-
-    /// Start language servers proactively for a workspace using ProjectLspManager
-    #[instrument(skip(self), fields(workspace_root = %workspace_root.display()))]
-    pub async fn start_project_servers(
-        &mut self,
-        workspace_root: PathBuf,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        info!("Starting project language servers proactively");
-
-        if !matches!(self.workspace_backend.identity(), WorkspaceIdentity::Local) {
-            let (project_type, language_servers) = detect_project_lsp_metadata_with_backend(
-                &workspace_root,
-                self.workspace_backend.clone(),
-            )
-            .await;
-            self.register_project_lsp_detection(&workspace_root, &project_type, &language_servers)
-                .await;
-            self.start_detected_project_servers(&workspace_root, &project_type, &language_servers)
-                .await;
-            return Ok(());
-        }
-
-        // Detect the project and get language server requirements
-        if let Some(manager_ref) = self.project_lsp_manager_handle().await {
-            if let Err(e) = manager_ref.detect_project(workspace_root.clone()).await {
-                // Use error handler for project detection failure
-                self.handle_project_lsp_error(Box::new(e), "project_detection")
-                    .await?;
-                return Ok(()); // Early return on detection failure
-            }
-
-            let project_info = manager_ref.get_project_info(&workspace_root).await;
-            if let Some(project) = project_info {
-                info!(
-                    project_type = ?project.project_type,
-                    language_servers = ?project.language_servers,
-                    "Project detected, starting language servers"
-                );
-
-                // Start each required language server using the bridge
-                if let Some(bridge_ref) = self.helix_lsp_bridge.read().await.as_ref() {
-                    for server_name in &project.language_servers {
-                        let language_id = match &project.project_type {
-                            nucleotide_events::ProjectType::Rust => "rust",
-                            nucleotide_events::ProjectType::TypeScript => "typescript",
-                            nucleotide_events::ProjectType::JavaScript => "javascript",
-                            nucleotide_events::ProjectType::Python => "python",
-                            nucleotide_events::ProjectType::Go => "go",
-                            nucleotide_events::ProjectType::C => "c",
-                            nucleotide_events::ProjectType::Cpp => "cpp",
-                            nucleotide_events::ProjectType::Mixed(_) => "mixed", // Not ideal, but temporary
-                            nucleotide_events::ProjectType::Other(name) => name.as_str(),
-                            nucleotide_events::ProjectType::Unknown => "unknown",
-                        };
-
-                        match bridge_ref
-                            .start_server(
-                                &mut self.editor,
-                                &workspace_root,
-                                server_name,
-                                language_id,
-                            )
-                            .await
-                        {
-                            Ok(server_id) => {
-                                manager_ref
-                                    .upsert_managed_server(
-                                        workspace_root.clone(),
-                                        server_name.clone(),
-                                        language_id.to_string(),
-                                        server_id,
-                                    )
-                                    .await;
-                                info!(
-                                    server_id = ?server_id,
-                                    server_name = %server_name,
-                                    workspace_root = %workspace_root.display(),
-                                    "Language server started proactively"
-                                );
-
-                                // After starting the server, ensure all open documents matching the language are tracked
-                                // This is important when servers start before or after docs open, ensuring didOpen is sent.
-                                // Build a list of doc IDs to track first to avoid immutable borrow conflicts
-                                let target_lang = language_id.to_ascii_lowercase();
-                                let mut docs_to_track: Vec<helix_view::DocumentId> = Vec::new();
-                                for (view, _focused) in self.editor.tree.views() {
-                                    let doc_id = view.doc;
-                                    if let Some(doc) = self.editor.document(doc_id) {
-                                        let doc_lang: String = doc
-                                            .language_id()
-                                            .map(|s| s.to_ascii_lowercase())
-                                            .or_else(|| {
-                                                doc.language_name().map(|s| s.to_ascii_lowercase())
-                                            })
-                                            .unwrap_or_default();
-                                        if doc_lang == target_lang {
-                                            docs_to_track.push(doc_id);
-                                        }
-                                    }
-                                }
-                                for doc_id in docs_to_track {
-                                    if let Err(e) = bridge_ref.ensure_document_tracked(
-                                        &mut self.editor,
-                                        server_id,
-                                        doc_id,
-                                    ) {
-                                        nucleotide_logging::warn!(
-                                            error = %e,
-                                            doc_id = ?doc_id,
-                                            server_id = ?server_id,
-                                            "Failed to ensure document tracking for started server"
-                                        );
-                                    } else {
-                                        nucleotide_logging::info!(
-                                            doc_id = ?doc_id,
-                                            server_id = ?server_id,
-                                            "Ensured document is tracked by newly started server"
-                                        );
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                // Use error handler for server startup failure
-                                if let Err(recovery_error) = self
-                                    .handle_project_lsp_error(Box::new(e), "server_startup")
-                                    .await
-                                {
-                                    warn!(
-                                        error = %recovery_error,
-                                        server_name = %server_name,
-                                        workspace_root = %workspace_root.display(),
-                                        "Failed to recover from server startup error"
-                                    );
-                                } else {
-                                    info!(
-                                        server_name = %server_name,
-                                        "Server startup failure handled by fallback system"
-                                    );
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    warn!("HelixLspBridge not available for proactive server startup");
-                }
-            } else {
-                warn!("No project information available after detection");
-            }
-        } else {
-            warn!("ProjectLspManager not initialized for proactive startup");
-        }
-
+        info!("Project LSP system cleanup completed");
         Ok(())
     }
 
@@ -5804,15 +5497,11 @@ impl Application {
             "Attempting to start LSP server with direct Editor access"
         );
 
-        // Get the HelixLspBridge
-        let bridge_guard = self.helix_lsp_bridge.read().await;
-        let bridge = bridge_guard.as_ref().ok_or_else(|| {
+        let bridge = self.helix_lsp_bridge_handle().await.ok_or_else(|| {
             ProjectLspCommandError::Internal("HelixLspBridge not initialized".to_string())
         })?;
 
-        // Use the HelixLspBridge to start the server with direct Editor access
-        // Add timeout to prevent hanging when server binary is not found
-        let server_start_timeout = tokio::time::Duration::from_secs(15); // Generous timeout for server startup
+        let server_start_timeout = Duration::from_millis(self.config.gui.lsp.startup_timeout_ms);
         match tokio::time::timeout(
             server_start_timeout,
             bridge.start_server(&mut self.editor, workspace_root, server_name, language_id),
@@ -5885,13 +5574,15 @@ impl Application {
                 error!(
                     server_name = %server_name,
                     language_id = %language_id,
-                    timeout_seconds = 15,
+                    timeout_ms = server_start_timeout.as_millis(),
                     "LSP server startup timed out - this usually indicates the server binary cannot be found in PATH"
                 );
 
                 Err(ProjectLspCommandError::ServerStartup(format!(
-                    "Timeout starting {} server after 15 seconds - check that {} is installed and in PATH",
-                    server_name, server_name
+                    "Timeout starting {} server after {}ms - check that {} is installed and in PATH",
+                    server_name,
+                    server_start_timeout.as_millis(),
+                    server_name
                 )))
             }
         }
@@ -5956,7 +5647,7 @@ impl Application {
             "Processing StopServer command"
         );
 
-        let bridge = self.helix_lsp_bridge.read().await.clone().ok_or_else(|| {
+        let bridge = self.helix_lsp_bridge_handle().await.ok_or_else(|| {
             ProjectLspCommandError::Internal("HelixLspBridge not initialized".to_string())
         })?;
 
@@ -6245,6 +5936,16 @@ impl Application {
         &mut self,
         workspace_root: &std::path::Path,
     ) -> Vec<nucleotide_events::ServerStartResult> {
+        if matches!(self.workspace_backend.identity(), WorkspaceIdentity::Local)
+            && !self.config.gui.lsp.project_lsp_startup
+        {
+            info!(
+                workspace_root = %workspace_root.display(),
+                "Proactive project LSP startup disabled; using Helix file-based startup"
+            );
+            return Vec::new();
+        }
+
         let (project_type, language_servers) = detect_project_lsp_metadata_with_backend(
             workspace_root,
             self.workspace_backend.clone(),
@@ -6326,7 +6027,7 @@ impl Application {
             "Processing EnsureDocumentTracked command"
         );
 
-        let bridge = self.helix_lsp_bridge.read().await.clone().ok_or_else(|| {
+        let bridge = self.helix_lsp_bridge_handle().await.ok_or_else(|| {
             ProjectLspCommandError::Internal("HelixLspBridge not initialized".to_string())
         })?;
 
@@ -7882,19 +7583,16 @@ pub fn init_editor(
         event_bridge_rx: Some(bridge_rx),
         config: gui_config,
         helix_config_arc: config,
-        project_lsp_manager: Arc::new(RwLock::new(None)), // Will be initialized after Application creation
-        helix_lsp_bridge: Arc::new(RwLock::new(None)), // Will be initialized after Application creation
+        project_lsp_system: Arc::new(RwLock::new(None)),
         project_lsp_command_tx: Some(project_lsp_command_tx),
         project_lsp_command_rx: Some(project_lsp_command_rx),
-        project_lsp_processor_started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        project_lsp_system_initialized: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        project_lsp_initialization_attempted: false,
         project_environment, // Already created above before LSP system initialization
         workspace_file_ops,
         project_env_overrides: HashMap::new(),
         prewarmed_lsp_startups: HashSet::new(),
         terminal_runtime,
         maintenance_wake: None,
-        sync_cycle_counter: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     })
 }
 
@@ -9350,13 +9048,13 @@ mod tests {
         lsp_location_from_location, lsp_location_path_from_url, lsp_symbol_picker,
         native_open_file_with_backend, native_symbol_item_from_lsp, navigation_display_path,
         open_workspace_document, path_completion_items, path_completion_items_from_listing,
-        project_health_status, project_server_language_id, remote_lsp_project_root_for_document,
-        remote_lsp_root_uri_matches_document_workspace, remote_native_file_uri,
-        should_launch_lsp_on_local_host, should_stat_picker_root_with_backend,
-        should_use_native_save_for_settings_file, should_use_workspace_syntax_symbol_fallback,
-        startup_path_should_open_as_file, str_prefix_at_byte_limit,
-        suppress_shadowed_buffer_word_completion_items, syntax_symbol_kind_from_capture_name,
-        workspace_diagnostic_refresh_reply,
+        project_health_status, project_lsp_config, project_server_language_id,
+        remote_lsp_project_root_for_document, remote_lsp_root_uri_matches_document_workspace,
+        remote_native_file_uri, should_launch_lsp_on_local_host,
+        should_stat_picker_root_with_backend, should_use_native_save_for_settings_file,
+        should_use_workspace_syntax_symbol_fallback, startup_path_should_open_as_file,
+        str_prefix_at_byte_limit, suppress_shadowed_buffer_word_completion_items,
+        syntax_symbol_kind_from_capture_name, workspace_diagnostic_refresh_reply,
     };
     use crate::test_utils::test_support::{
         TestUpdate, create_counting_channel, create_test_diagnostic_events,
@@ -9388,7 +9086,7 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::process::Command;
     use std::rc::Rc;
-    use std::sync::{Arc, LazyLock, atomic::Ordering};
+    use std::sync::{Arc, LazyLock};
     use std::time::Duration;
     use tempfile::tempdir;
     use tokio::sync::{RwLock, mpsc};
@@ -10419,12 +10117,10 @@ mod tests {
                 event_bridge_rx: None,
                 config: gui_config,
                 helix_config_arc: helix_config,
-                project_lsp_manager: Arc::new(RwLock::new(None)),
-                helix_lsp_bridge: Arc::new(RwLock::new(None)),
+                project_lsp_system: Arc::new(RwLock::new(None)),
                 project_lsp_command_tx: Some(project_lsp_command_tx),
                 project_lsp_command_rx: Some(project_lsp_command_rx),
-                project_lsp_processor_started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                project_lsp_system_initialized: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                project_lsp_initialization_attempted: true,
                 project_environment: Arc::new(nucleotide_env::ProjectEnvironment::new(Some(
                     cli_env,
                 ))),
@@ -10436,13 +10132,7 @@ mod tests {
                 prewarmed_lsp_startups: HashSet::new(),
                 terminal_runtime: crate::application::TerminalRuntimeHandle::new(),
                 maintenance_wake: None,
-                sync_cycle_counter: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             };
-
-            app.project_lsp_system_initialized
-                .store(true, Ordering::Release);
-            app.project_lsp_processor_started
-                .store(true, Ordering::Release);
             app.lsp_state = Some(cx.new(|_cx| nucleotide_lsp::LspState::new()));
             app
         })
@@ -11019,6 +10709,19 @@ mod tests {
                 name: "Ubuntu".to_string(),
             })
         ));
+    }
+
+    #[test]
+    fn project_lsp_settings_configure_the_real_manager() {
+        let config = crate::config::LspConfig {
+            project_lsp_startup: true,
+            startup_timeout_ms: 7_500,
+        };
+
+        let manager_config = project_lsp_config(&config);
+
+        assert!(manager_config.enable_proactive_startup);
+        assert_eq!(manager_config.startup_timeout, Duration::from_millis(7_500));
     }
 
     #[test]

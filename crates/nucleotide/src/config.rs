@@ -779,10 +779,6 @@ pub struct LspConfig {
     /// Timeout for LSP startup in milliseconds
     #[serde(default = "default_lsp_startup_timeout")]
     pub startup_timeout_ms: u64,
-
-    /// Enable graceful fallback to file-based startup on project detection failures
-    #[serde(default = "default_true")]
-    pub enable_fallback: bool,
 }
 
 fn default_lsp_startup_timeout() -> u64 {
@@ -794,7 +790,6 @@ impl Default for LspConfig {
         Self {
             project_lsp_startup: false,
             startup_timeout_ms: default_lsp_startup_timeout(),
-            enable_fallback: true,
         }
     }
 }
@@ -816,12 +811,6 @@ impl LspConfig {
             nucleotide_logging::warn!(
                 timeout_ms = self.startup_timeout_ms,
                 "LSP startup timeout is very low - may cause frequent failures"
-            );
-        }
-
-        if self.project_lsp_startup && !self.enable_fallback {
-            nucleotide_logging::warn!(
-                "Project LSP startup enabled without fallback - may cause LSP failures in non-project contexts"
             );
         }
 
@@ -1063,11 +1052,6 @@ impl Config {
         self.gui.lsp.startup_timeout_ms
     }
 
-    /// Check if fallback to file-based LSP startup is enabled
-    pub fn is_lsp_fallback_enabled(&self) -> bool {
-        self.gui.lsp.enable_fallback
-    }
-
     /// Check if project markers are enabled
     pub fn is_project_markers_enabled(&self) -> bool {
         self.gui.project_markers.enable_project_markers
@@ -1271,7 +1255,6 @@ fn load_gui_config(dir: &Path) -> anyhow::Result<GuiConfig> {
     nucleotide_logging::info!(
         project_lsp_startup = config.lsp.project_lsp_startup,
         lsp_startup_timeout_ms = config.lsp.startup_timeout_ms,
-        lsp_fallback_enabled = config.lsp.enable_fallback,
         project_markers_enabled = config.project_markers.enable_project_markers,
         project_detection_timeout_ms = config.project_markers.detection_timeout_ms,
         builtin_fallback_enabled = config.project_markers.enable_builtin_fallback,
@@ -1737,7 +1720,6 @@ flatten_empty_directories = false
             "[lsp]",
             "project_lsp_startup",
             "startup_timeout_ms",
-            "enable_fallback",
             "[project_markers]",
             "enable_project_markers",
             "detection_timeout_ms",
@@ -2028,14 +2010,12 @@ file_icons = false
 [lsp]
 project_lsp_startup = true
 startup_timeout_ms = 3000
-enable_fallback = false
 "#;
 
         let config: GuiConfig = toml::from_str(config_str).expect("Failed to parse LSP config");
 
         assert!(config.lsp.project_lsp_startup);
         assert_eq!(config.lsp.startup_timeout_ms, 3000);
-        assert!(!config.lsp.enable_fallback);
     }
 
     #[test]
@@ -2045,7 +2025,6 @@ enable_fallback = false
         // Test default values
         assert!(!config.lsp.project_lsp_startup);
         assert_eq!(config.lsp.startup_timeout_ms, 5000);
-        assert!(config.lsp.enable_fallback);
         assert_eq!(config.max_tabs, None);
         assert!(config.tab_bar.show);
         assert!(config.tab_bar.show_nav_history_buttons);
@@ -2101,7 +2080,6 @@ enable_fallback = false
         let mut gui_config = GuiConfig::default();
         gui_config.lsp.project_lsp_startup = true;
         gui_config.lsp.startup_timeout_ms = 2000;
-        gui_config.lsp.enable_fallback = false;
 
         let config = Config {
             helix: HelixConfig::default(),
@@ -2110,7 +2088,6 @@ enable_fallback = false
 
         assert!(config.is_project_lsp_startup_enabled());
         assert_eq!(config.lsp_startup_timeout_ms(), 2000);
-        assert!(!config.is_lsp_fallback_enabled());
     }
 
     #[test]
@@ -2128,7 +2105,6 @@ size = 14.0
 [lsp]
 project_lsp_startup = true
 startup_timeout_ms = 3000
-enable_fallback = true
 
 [theme]
 mode = "dark"
@@ -2144,7 +2120,6 @@ dark_theme = "monokai"
         // Test all LSP feature flag values
         assert!(gui_config.lsp.project_lsp_startup);
         assert_eq!(gui_config.lsp.startup_timeout_ms, 3000);
-        assert!(gui_config.lsp.enable_fallback);
 
         // Test convenience methods via full config
         let config = Config {
@@ -2154,7 +2129,6 @@ dark_theme = "monokai"
 
         assert!(config.is_project_lsp_startup_enabled());
         assert_eq!(config.lsp_startup_timeout_ms(), 3000);
-        assert!(config.is_lsp_fallback_enabled());
     }
 
     #[test]

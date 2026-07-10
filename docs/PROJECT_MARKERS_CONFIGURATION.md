@@ -494,7 +494,6 @@ The project markers system integrates seamlessly with nucleotide.toml LSP config
 # Enable project-based LSP startup
 project_lsp_startup = true
 startup_timeout_ms = 5000
-enable_fallback = true
 
 # Use project markers for detection
 use_project_markers = true
@@ -541,7 +540,6 @@ Update your `nucleotide.toml`:
 ```toml
 [lsp]
 project_lsp_startup = true
-enable_fallback = true  # Keep file-based as fallback during transition
 ```
 
 ### Step 2: Create Basic Project Markers
@@ -585,15 +583,8 @@ Common issues during migration:
 - **Missing detections**: Lower priority or add more markers
 - **Slow detection**: Add exclusion patterns or reduce max_depth
 
-### Step 4: Disable Fallback
-
-Once confident in your configuration:
-
-```toml
-[lsp]
-project_lsp_startup = true
-enable_fallback = false  # Full project-based mode
-```
+Helix file-based startup remains available when project detection does not
+produce a proactive server launch.
 
 ## Troubleshooting Guide
 
