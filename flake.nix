@@ -49,7 +49,9 @@
 
         # Dependency management following Helix patterns
         inherit (pkgs) lib stdenv;
-        zig = zig-overlay.packages.${system}."0.15.2";
+        # libghostty-vt-sys 0.2.0 requires Zig 0.15.2 exactly. Keep this
+        # binding explicit so `with pkgs` cannot silently select nixpkgs Zig.
+        zig_0_15_2 = zig-overlay.packages.${system}."0.15.2";
 
         # Keep Nix's cc wrapper so library paths and SDK flags are preserved,
         # while asking clang to use LLD's Darwin linker underneath.
@@ -141,7 +143,7 @@
           #!${pkgs.stdenv.shell}
           set -e
 
-          export PATH="${rustToolchain}/bin:${pkgs.pkg-config}/bin:${pkgs.git}/bin:$PATH"
+          export PATH="${zig_0_15_2}/bin:${rustToolchain}/bin:${pkgs.pkg-config}/bin:${pkgs.git}/bin:$PATH"
           export PKG_CONFIG_PATH="${pkgs.openssl.dev}/lib/pkgconfig"
           export OPENSSL_NO_VENDOR=1
           export HELIX_RUNTIME="${helixRuntime}"
@@ -458,6 +460,7 @@
           #!${pkgs.stdenv.shell}
           set -e
 
+          export PATH="${zig_0_15_2}/bin:$PATH"
           exec ./scripts/build-remote-helpers.sh "$@"
         '';
 
@@ -526,7 +529,7 @@
             # For running the application
             ripgrep
             tree-sitter
-            zig
+            zig_0_15_2
 
             # Build helpers
             buildScript
@@ -564,6 +567,9 @@
 
         } // darwinRustLinkerEnv) // {
           shellHook = ''
+            # Keep Ghostty's required Zig ahead of any host-level installation.
+            export PATH="${zig_0_15_2}/bin:$PATH"
+
             case "$NUCLEOTIDE_DOTNET_TOOL_PATH" in
               /*) ;;
               *) export NUCLEOTIDE_DOTNET_TOOL_PATH="$PWD/$NUCLEOTIDE_DOTNET_TOOL_PATH" ;;
