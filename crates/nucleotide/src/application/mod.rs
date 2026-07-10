@@ -29,17 +29,6 @@ impl TerminalRuntimeHandle {
 }
 pub use workspace_file_ops::WorkspaceFileOpHandler;
 
-use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
-    future::Future,
-    path::{Path, PathBuf},
-    pin::Pin,
-    sync::{Arc, Mutex},
-    task::{Context as TaskContext, Poll, Wake, Waker},
-    time::{Duration, Instant, SystemTime},
-};
-use tokio::sync::RwLock;
-
 use arc_swap::{ArcSwap, access::Map};
 use futures_util::{
     future::{BoxFuture, FutureExt},
@@ -72,6 +61,15 @@ use nucleotide_workspace::{
     remote_startup_workspace_root,
 };
 use slotmap::Key;
+use std::{
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
+    future::Future,
+    path::{Path, PathBuf},
+    pin::Pin,
+    sync::{Arc, Mutex},
+    task::{Context as TaskContext, Poll, Wake, Waker},
+    time::{Duration, Instant, SystemTime},
+};
 
 // Import our shell environment system
 use nucleotide_env::ProjectEnvironment;
@@ -523,6 +521,7 @@ fn workspace_diagnostic_refresh_reply(
         })
 }
 
+#[allow(dead_code)]
 fn str_prefix_at_byte_limit(value: &str, max_bytes: usize) -> &str {
     let limit = max_bytes.min(value.len());
     if value.is_char_boundary(limit) {
@@ -538,6 +537,7 @@ fn str_prefix_at_byte_limit(value: &str, max_bytes: usize) -> &str {
     &value[..boundary]
 }
 
+#[allow(dead_code)]
 fn byte_limited_preview(value: &str, max_bytes: usize) -> String {
     if value.len() <= max_bytes {
         return value.to_string();
@@ -967,6 +967,94 @@ fn apply_workspace_text_edits_with_backend(
     Ok(())
 }
 
+fn apply_workspace_text_edits_to_open_document(
+    editor: &mut Editor,
+    doc_id: DocumentId,
+    version: Option<i32>,
+    text_edits: Vec<lsp::TextEdit>,
+    offset_encoding: OffsetEncoding,
+) -> Result<(), ApplyEditErrorKind> {
+    if let Some(version) = version {
+        let doc = editor
+            .document(doc_id)
+            .ok_or_else(|| apply_edit_io_error(format!("document {doc_id:?} is not open")))?;
+        if version != doc.version() {
+            return Err(ApplyEditErrorKind::DocumentChanged);
+        }
+    }
+
+    let view_id = editor.get_synced_view_id(doc_id);
+    let tree = &mut editor.tree;
+    let documents = &mut editor.documents;
+    let view = tree.get_mut(view_id);
+    let doc = documents
+        .get_mut(&doc_id)
+        .ok_or_else(|| apply_edit_io_error(format!("document {doc_id:?} is not open")))?;
+    let transaction =
+        helix_lsp::util::generate_transaction_from_edits(doc.text(), text_edits, offset_encoding);
+    doc.apply(&transaction, view.id);
+    doc.append_changes_to_history(view);
+    Ok(())
+}
+
+fn lsp_workspace_edit_operations(
+    workspace_edit: lsp::WorkspaceEdit,
+) -> VecDeque<LspWorkspaceEditOperation> {
+    let mut operations = VecDeque::new();
+    if let Some(document_changes) = workspace_edit.document_changes {
+        match document_changes {
+            lsp::DocumentChanges::Edits(document_edits) => {
+                for document_edit in document_edits {
+                    operations.push_back(LspWorkspaceEditOperation::Text {
+                        uri: document_edit.text_document.uri,
+                        version: document_edit.text_document.version,
+                        edits: document_edit
+                            .edits
+                            .into_iter()
+                            .map(|edit| match edit {
+                                lsp::OneOf::Left(text_edit) => text_edit,
+                                lsp::OneOf::Right(annotated) => annotated.text_edit,
+                            })
+                            .collect(),
+                    });
+                }
+            }
+            lsp::DocumentChanges::Operations(document_operations) => {
+                for operation in document_operations {
+                    match operation {
+                        lsp::DocumentChangeOperation::Op(resource_op) => {
+                            operations.push_back(LspWorkspaceEditOperation::Resource(resource_op))
+                        }
+                        lsp::DocumentChangeOperation::Edit(document_edit) => {
+                            operations.push_back(LspWorkspaceEditOperation::Text {
+                                uri: document_edit.text_document.uri,
+                                version: document_edit.text_document.version,
+                                edits: document_edit
+                                    .edits
+                                    .into_iter()
+                                    .map(|edit| match edit {
+                                        lsp::OneOf::Left(text_edit) => text_edit,
+                                        lsp::OneOf::Right(annotated) => annotated.text_edit,
+                                    })
+                                    .collect(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    } else if let Some(changes) = workspace_edit.changes {
+        for (uri, edits) in changes {
+            operations.push_back(LspWorkspaceEditOperation::Text {
+                uri,
+                version: None,
+                edits,
+            });
+        }
+    }
+    operations
+}
+
 fn update_open_document_after_workspace_rename(
     editor: &mut Editor,
     old_path: &Path,
@@ -1386,6 +1474,38 @@ struct ProjectLspSystem {
     bridge: HelixLspBridge,
 }
 
+struct PendingLspWorkspaceEdit {
+    server_id: LanguageServerId,
+    request_id: helix_lsp::jsonrpc::Id,
+    offset_encoding: OffsetEncoding,
+    operations: VecDeque<LspWorkspaceEditOperation>,
+    operation_index: usize,
+    active: Option<BoxFuture<'static, Result<LspWorkspaceEditAsyncResult, ApplyEditErrorKind>>>,
+}
+
+enum LspWorkspaceEditOperation {
+    Text {
+        uri: lsp::Url,
+        version: Option<i32>,
+        edits: Vec<lsp::TextEdit>,
+    },
+    Resource(lsp::ResourceOp),
+}
+
+enum LspWorkspaceEditAsyncResult {
+    DocumentRead {
+        document_read: WorkspaceDocumentRead,
+        version: Option<i32>,
+        edits: Vec<lsp::TextEdit>,
+    },
+    ResourceCreated,
+    ResourceDeleted,
+    ResourceRenamed {
+        old_path: PathBuf,
+        stat: FileStat,
+    },
+}
+
 pub struct Application {
     pub editor: Editor,
     pub compositor: Compositor,
@@ -1398,7 +1518,7 @@ pub struct Application {
     pub event_bridge_rx: Option<event_bridge::BridgedEventReceiver>,
     pub config: crate::config::Config,
     pub helix_config_arc: Arc<ArcSwap<helix_term::config::Config>>,
-    project_lsp_system: Arc<tokio::sync::RwLock<Option<ProjectLspSystem>>>,
+    project_lsp_system: Option<ProjectLspSystem>,
     pub project_lsp_command_tx:
         Option<tokio::sync::mpsc::UnboundedSender<nucleotide_events::ProjectLspCommand>>,
     pub project_lsp_command_rx:
@@ -1408,6 +1528,7 @@ pub struct Application {
     pub workspace_file_ops: WorkspaceFileOpHandler,
     project_env_overrides: HashMap<String, Option<String>>,
     prewarmed_lsp_startups: HashSet<(PathBuf, String, String)>,
+    pending_lsp_workspace_edits: VecDeque<PendingLspWorkspaceEdit>,
     pub terminal_runtime: TerminalRuntimeHandle,
     maintenance_wake: Option<MaintenanceWake>,
 }
@@ -1826,9 +1947,7 @@ impl Application {
         if !self.project_lsp_initialization_attempted {
             self.project_lsp_initialization_attempted = true;
             info!("🚀 INIT: Initializing project LSP system");
-            if let Err(e) = handle.block_on(self.initialize_project_lsp_system()) {
-                error!(error = %e, "Failed to initialize project LSP system");
-            }
+            self.initialize_project_lsp_system(handle);
         }
 
         let mut commands_processed = 0;
@@ -1865,70 +1984,9 @@ impl Application {
             info!(
                 command_type = ?std::mem::discriminant(&lsp_command),
                 command_number = commands_processed,
-                "🔧 SYNC: Processing LSP command synchronously"
+                "Scheduling non-blocking LSP command"
             );
-
-            match &lsp_command {
-                nucleotide_events::ProjectLspCommand::LspServerStartupRequested {
-                    server_name,
-                    workspace_root,
-                    language_id,
-                } => {
-                    info!(
-                        server_name = %server_name,
-                        workspace_root = %workspace_root.display(),
-                        language_id = %language_id,
-                        "🚀 SYNC: Starting LSP server directly from sync processor"
-                    );
-                    self.set_editor_status_feedback(
-                        cx,
-                        format!("Starting language server: {server_name}"),
-                        crate::types::Severity::Info,
-                    );
-
-                    let result = handle.block_on(self.start_lsp_server_direct(
-                        workspace_root,
-                        server_name,
-                        language_id,
-                    ));
-
-                    match result {
-                        Ok(server_result) => {
-                            handle.block_on(
-                                self.record_project_lsp_server(workspace_root, &server_result),
-                            );
-                            info!(
-                                server_id = ?server_result.server_id,
-                                server_name = %server_result.server_name,
-                                workspace_root = %workspace_root.display(),
-                                "🚀 SYNC: LSP server started successfully"
-                            );
-                            self.set_editor_status_feedback(
-                                cx,
-                                format!("Language server started: {}", server_result.server_name),
-                                crate::types::Severity::Info,
-                            );
-                            self.sync_lsp_state(cx);
-                        }
-                        Err(e) => {
-                            error!(
-                                error = %e,
-                                server_name = %server_name,
-                                "🚀 SYNC: Failed to start LSP server"
-                            );
-                            self.set_editor_status_feedback(
-                                cx,
-                                format!("Failed to start language server {server_name}: {e}"),
-                                crate::types::Severity::Error,
-                            );
-                        }
-                    }
-                }
-                _ => {
-                    handle.block_on(self.handle_lsp_command(lsp_command));
-                    self.sync_lsp_state(cx);
-                }
-            }
+            self.dispatch_project_lsp_command(lsp_command, cx, handle);
 
             info!(
                 command_number = commands_processed,
@@ -1950,6 +2008,797 @@ impl Application {
         );
 
         commands_processed > 0
+    }
+
+    fn enqueue_lsp_workspace_edit(
+        &mut self,
+        server_id: LanguageServerId,
+        request_id: helix_lsp::jsonrpc::Id,
+        offset_encoding: OffsetEncoding,
+        workspace_edit: lsp::WorkspaceEdit,
+    ) {
+        self.pending_lsp_workspace_edits
+            .push_back(PendingLspWorkspaceEdit {
+                server_id,
+                request_id,
+                offset_encoding,
+                operations: lsp_workspace_edit_operations(workspace_edit),
+                operation_index: 0,
+                active: None,
+            });
+    }
+
+    fn reply_lsp_workspace_edit(
+        &self,
+        pending: PendingLspWorkspaceEdit,
+        result: Result<(), ApplyEditErrorKind>,
+    ) {
+        let reply = Ok(serde_json::json!({
+            "applied": result.is_ok(),
+            "failureReason": result
+                .as_ref()
+                .err()
+                .map(|error| format!("workspace edit failed: {error:?}")),
+            "failedChange": result.is_err().then_some(pending.operation_index),
+        }));
+        if let Some(language_server) = self.editor.language_server_by_id(pending.server_id)
+            && let Err(error) = language_server.reply(pending.request_id, reply)
+        {
+            error!(
+                server_id = ?pending.server_id,
+                %error,
+                "Failed to send deferred workspace edit reply"
+            );
+        }
+    }
+
+    fn poll_pending_lsp_workspace_edits(&mut self, task_cx: &mut TaskContext<'_>) -> bool {
+        let Some(mut pending) = self.pending_lsp_workspace_edits.pop_front() else {
+            return false;
+        };
+        let mut progressed = false;
+
+        for _ in 0..MAINTENANCE_LSP_COMMAND_BATCH {
+            if let Some(active) = pending.active.as_mut() {
+                match active.as_mut().poll(task_cx) {
+                    Poll::Pending => {
+                        self.pending_lsp_workspace_edits.push_front(pending);
+                        return progressed;
+                    }
+                    Poll::Ready(result) => {
+                        pending.active = None;
+                        progressed = true;
+                        match result {
+                            Ok(LspWorkspaceEditAsyncResult::DocumentRead {
+                                document_read,
+                                version,
+                                edits,
+                            }) => {
+                                let action = if self.editor.tree.views().count() == 0 {
+                                    helix_view::editor::Action::VerticalSplit
+                                } else {
+                                    helix_view::editor::Action::Load
+                                };
+                                let result = open_workspace_document_from_read(
+                                    &mut self.editor,
+                                    document_read,
+                                    action,
+                                )
+                                .map_err(|error| apply_edit_io_error(error.to_string()))
+                                .and_then(|doc_id| {
+                                    apply_workspace_text_edits_to_open_document(
+                                        &mut self.editor,
+                                        doc_id,
+                                        version,
+                                        edits,
+                                        pending.offset_encoding,
+                                    )
+                                });
+                                if let Err(error) = result {
+                                    self.reply_lsp_workspace_edit(pending, Err(error));
+                                    return true;
+                                }
+                            }
+                            Ok(LspWorkspaceEditAsyncResult::ResourceCreated)
+                            | Ok(LspWorkspaceEditAsyncResult::ResourceDeleted) => {}
+                            Ok(LspWorkspaceEditAsyncResult::ResourceRenamed { old_path, stat }) => {
+                                update_open_document_after_workspace_rename(
+                                    &mut self.editor,
+                                    &old_path,
+                                    &stat,
+                                )
+                            }
+                            Err(error) => {
+                                self.reply_lsp_workspace_edit(pending, Err(error));
+                                return true;
+                            }
+                        }
+                        pending.operation_index += 1;
+                        continue;
+                    }
+                }
+            }
+
+            let Some(operation) = pending.operations.pop_front() else {
+                self.reply_lsp_workspace_edit(pending, Ok(()));
+                return true;
+            };
+
+            let workspace_identity = self.workspace_backend.identity();
+            match operation {
+                LspWorkspaceEditOperation::Text {
+                    uri,
+                    version,
+                    edits,
+                } => {
+                    let path = match workspace_edit_path_from_url(
+                        &uri,
+                        self.project_directory.as_deref(),
+                        &workspace_identity,
+                    ) {
+                        Ok(path) => path,
+                        Err(error) => {
+                            self.reply_lsp_workspace_edit(pending, Err(error));
+                            return true;
+                        }
+                    };
+                    if let Some(doc_id) = self.editor.document_by_path(&path).map(Document::id) {
+                        match apply_workspace_text_edits_to_open_document(
+                            &mut self.editor,
+                            doc_id,
+                            version,
+                            edits,
+                            pending.offset_encoding,
+                        ) {
+                            Ok(()) => {
+                                pending.operation_index += 1;
+                                progressed = true;
+                            }
+                            Err(error) => {
+                                self.reply_lsp_workspace_edit(pending, Err(error));
+                                return true;
+                            }
+                        }
+                    } else {
+                        let backend = self.workspace_backend.clone();
+                        pending.active = Some(
+                            async move {
+                                let document_read = read_workspace_document(backend, path)
+                                    .await
+                                    .map_err(|error| apply_edit_io_error(error.to_string()))?;
+                                Ok(LspWorkspaceEditAsyncResult::DocumentRead {
+                                    document_read,
+                                    version,
+                                    edits,
+                                })
+                            }
+                            .boxed(),
+                        );
+                        progressed = true;
+                    }
+                }
+                LspWorkspaceEditOperation::Resource(resource_op) => {
+                    let backend = self.workspace_backend.clone();
+                    let project_directory = self.project_directory.clone();
+                    pending.active = Some(
+                        async move {
+                            match resource_op {
+                                lsp::ResourceOp::Create(op) => {
+                                    let path = workspace_edit_path_from_url(
+                                        &op.uri,
+                                        project_directory.as_deref(),
+                                        &backend.identity(),
+                                    )?;
+                                    let overwrite = op
+                                        .options
+                                        .as_ref()
+                                        .and_then(|options| options.overwrite)
+                                        .unwrap_or(false);
+                                    let ignore_if_exists = op
+                                        .options
+                                        .as_ref()
+                                        .and_then(|options| options.ignore_if_exists)
+                                        .unwrap_or(false);
+                                    let result = if overwrite {
+                                        backend
+                                            .write_file(
+                                                &path,
+                                                &[],
+                                                WriteOptions {
+                                                    create_parent_dirs: true,
+                                                    expected_modified: None,
+                                                },
+                                            )
+                                            .await
+                                            .map(|_| ())
+                                    } else {
+                                        backend.create_file(&path).await.map(|_| ())
+                                    };
+                                    match result {
+                                        Ok(()) => Ok(LspWorkspaceEditAsyncResult::ResourceCreated),
+                                        Err(error)
+                                            if ignore_if_exists
+                                                && workspace_error_has_io_kind(
+                                                    &error,
+                                                    std::io::ErrorKind::AlreadyExists,
+                                                ) =>
+                                        {
+                                            Ok(LspWorkspaceEditAsyncResult::ResourceCreated)
+                                        }
+                                        Err(error) => Err(workspace_error_to_apply_edit(error)),
+                                    }
+                                }
+                                lsp::ResourceOp::Delete(op) => {
+                                    let path = workspace_edit_path_from_url(
+                                        &op.uri,
+                                        project_directory.as_deref(),
+                                        &backend.identity(),
+                                    )?;
+                                    let ignore_if_not_exists = op
+                                        .options
+                                        .as_ref()
+                                        .and_then(|options| options.ignore_if_not_exists)
+                                        .unwrap_or(false);
+                                    match backend.delete_path(&path).await {
+                                        Ok(_) => Ok(LspWorkspaceEditAsyncResult::ResourceDeleted),
+                                        Err(error)
+                                            if ignore_if_not_exists
+                                                && workspace_error_has_io_kind(
+                                                    &error,
+                                                    std::io::ErrorKind::NotFound,
+                                                ) =>
+                                        {
+                                            Ok(LspWorkspaceEditAsyncResult::ResourceDeleted)
+                                        }
+                                        Err(error) => Err(workspace_error_to_apply_edit(error)),
+                                    }
+                                }
+                                lsp::ResourceOp::Rename(op) => {
+                                    let old_path = workspace_edit_path_from_url(
+                                        &op.old_uri,
+                                        project_directory.as_deref(),
+                                        &backend.identity(),
+                                    )?;
+                                    let new_path = workspace_edit_path_from_url(
+                                        &op.new_uri,
+                                        project_directory.as_deref(),
+                                        &backend.identity(),
+                                    )?;
+                                    let overwrite = op
+                                        .options
+                                        .as_ref()
+                                        .and_then(|options| options.overwrite)
+                                        .unwrap_or(false);
+                                    let ignore_if_exists = op
+                                        .options
+                                        .as_ref()
+                                        .and_then(|options| options.ignore_if_exists)
+                                        .unwrap_or(false);
+                                    if overwrite {
+                                        let _ = backend.delete_path(&new_path).await;
+                                    }
+                                    match backend.rename_path(&old_path, &new_path).await {
+                                        Ok(stat) => {
+                                            Ok(LspWorkspaceEditAsyncResult::ResourceRenamed {
+                                                old_path,
+                                                stat,
+                                            })
+                                        }
+                                        Err(error)
+                                            if ignore_if_exists
+                                                && workspace_error_has_io_kind(
+                                                    &error,
+                                                    std::io::ErrorKind::AlreadyExists,
+                                                ) =>
+                                        {
+                                            Ok(LspWorkspaceEditAsyncResult::ResourceCreated)
+                                        }
+                                        Err(error) => Err(workspace_error_to_apply_edit(error)),
+                                    }
+                                }
+                            }
+                        }
+                        .boxed(),
+                    );
+                    progressed = true;
+                }
+            }
+        }
+
+        self.pending_lsp_workspace_edits.push_front(pending);
+        progressed
+    }
+
+    fn dispatch_project_lsp_command(
+        &mut self,
+        command: ProjectLspCommand,
+        cx: &mut gpui::Context<crate::Core>,
+        handle: &tokio::runtime::Handle,
+    ) {
+        match command {
+            ProjectLspCommand::StartServer {
+                workspace_root,
+                server_name,
+                language_id,
+                response,
+                ..
+            } => self.schedule_lsp_server_start(
+                workspace_root,
+                server_name,
+                language_id,
+                Some(response),
+                cx,
+                handle,
+            ),
+            ProjectLspCommand::LspServerStartupRequested {
+                workspace_root,
+                server_name,
+                language_id,
+            } => self.schedule_lsp_server_start(
+                workspace_root,
+                server_name,
+                language_id,
+                None,
+                cx,
+                handle,
+            ),
+            ProjectLspCommand::EnsureDocumentTracked {
+                server_id,
+                doc_id,
+                response,
+                ..
+            } => {
+                let result = self.handle_ensure_document_tracked_command(server_id, doc_id);
+                let _ = response.send(result);
+                self.sync_lsp_state(cx);
+            }
+            ProjectLspCommand::StopServer {
+                server_id,
+                response,
+                ..
+            } => {
+                let result = self.handle_stop_server_command(server_id);
+                if result.is_ok()
+                    && let Some(manager) = self.project_lsp_manager_handle()
+                {
+                    handle.spawn(async move {
+                        manager.remove_managed_server(server_id).await;
+                    });
+                }
+                let _ = response.send(result);
+                self.sync_lsp_state(cx);
+            }
+            ProjectLspCommand::GetProjectStatus {
+                workspace_root,
+                response,
+                ..
+            } => {
+                let manager = self.project_lsp_manager_handle();
+                let workspace_backend = self.workspace_backend.clone();
+                handle.spawn(async move {
+                    let manager_state = if let Some(manager) = manager {
+                        Some((
+                            manager.get_project_info(&workspace_root).await,
+                            manager.get_managed_servers(&workspace_root).await,
+                        ))
+                    } else {
+                        None
+                    };
+                    let project_type = match manager_state
+                        .as_ref()
+                        .and_then(|(project_info, _)| project_info.as_ref())
+                    {
+                        Some(project) => project.project_type.clone(),
+                        None => {
+                            detect_project_type_from_workspace_with_backend(
+                                &workspace_root,
+                                workspace_backend,
+                            )
+                            .await
+                        }
+                    };
+                    let active_servers = manager_state
+                        .map(|(_, servers)| {
+                            servers
+                                .into_iter()
+                                .map(active_server_info_from_managed_server)
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+                    let health_status = project_health_status(&active_servers);
+                    let _ = response.send(Ok(nucleotide_events::ProjectStatus {
+                        project_type,
+                        active_servers,
+                        health_status,
+                    }));
+                });
+            }
+            ProjectLspCommand::DetectAndStartProject {
+                workspace_root,
+                response,
+                ..
+            } => self.schedule_detect_and_start_project(workspace_root, response, cx, handle),
+            ProjectLspCommand::RestartServersForWorkspaceChange {
+                old_workspace_root,
+                new_workspace_root,
+                response,
+                ..
+            } => self.schedule_workspace_lsp_restart(
+                old_workspace_root,
+                new_workspace_root,
+                response,
+                cx,
+                handle,
+            ),
+        }
+    }
+
+    fn schedule_lsp_server_start(
+        &mut self,
+        workspace_root: PathBuf,
+        server_name: String,
+        language_id: String,
+        response: Option<
+            tokio::sync::oneshot::Sender<
+                Result<nucleotide_events::ServerStartResult, ProjectLspCommandError>,
+            >,
+        >,
+        cx: &mut gpui::Context<crate::Core>,
+        handle: &tokio::runtime::Handle,
+    ) {
+        self.set_editor_status_feedback(
+            cx,
+            format!("Starting language server: {server_name}"),
+            crate::types::Severity::Info,
+        );
+        let Some(bridge) = self.helix_lsp_bridge_handle() else {
+            self.set_editor_status_feedback(
+                cx,
+                format!(
+                    "Failed to start language server {server_name}: HelixLspBridge not initialized"
+                ),
+                crate::types::Severity::Error,
+            );
+            if let Some(response) = response {
+                let _ = response.send(Err(ProjectLspCommandError::Internal(
+                    "HelixLspBridge not initialized".to_string(),
+                )));
+            }
+            return;
+        };
+        let timeout = Duration::from_millis(self.config.gui.lsp.startup_timeout_ms);
+        let runtime = handle.clone();
+
+        cx.spawn(async move |this, cx| {
+            let prepare_root = workspace_root.clone();
+            let preparation = runtime
+                .spawn(async move {
+                    tokio::time::timeout(timeout, bridge.prepare_server_environment(&prepare_root))
+                        .await
+                        .map_err(|_| {
+                            format!(
+                                "environment preparation timed out after {}ms",
+                                timeout.as_millis()
+                            )
+                        })
+                        .and_then(|result| result)
+                })
+                .await
+                .unwrap_or_else(|error| Err(format!("environment task failed: {error}")));
+
+            if let Some(this) = this.upgrade() {
+                this.update(cx, move |app, cx| {
+                    let result = app.start_lsp_server_prepared(
+                        &workspace_root,
+                        &server_name,
+                        &language_id,
+                        preparation,
+                    );
+                    match &result {
+                        Ok(server_result) => {
+                            app.record_project_lsp_server_in_background(
+                                &runtime,
+                                workspace_root.clone(),
+                                server_result.clone(),
+                            );
+                            app.set_editor_status_feedback(
+                                cx,
+                                format!("Language server started: {}", server_result.server_name),
+                                crate::types::Severity::Info,
+                            );
+                        }
+                        Err(error) => app.set_editor_status_feedback(
+                            cx,
+                            format!("Failed to start language server {server_name}: {error}"),
+                            crate::types::Severity::Error,
+                        ),
+                    }
+                    if let Some(response) = response {
+                        let _ = response.send(result);
+                    }
+                    app.sync_lsp_state(cx);
+                    cx.emit(crate::Update::Redraw);
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
+    fn record_project_lsp_server_in_background(
+        &self,
+        handle: &tokio::runtime::Handle,
+        workspace_root: PathBuf,
+        server_result: nucleotide_events::ServerStartResult,
+    ) {
+        if let Some(manager) = self.project_lsp_manager_handle() {
+            handle.spawn(async move {
+                manager
+                    .upsert_managed_server(
+                        workspace_root,
+                        server_result.server_name,
+                        server_result.language_id,
+                        server_result.server_id,
+                    )
+                    .await;
+            });
+        }
+    }
+
+    fn schedule_detect_and_start_project(
+        &mut self,
+        workspace_root: PathBuf,
+        response: tokio::sync::oneshot::Sender<
+            Result<nucleotide_events::ProjectDetectionResult, ProjectLspCommandError>,
+        >,
+        cx: &mut gpui::Context<crate::Core>,
+        handle: &tokio::runtime::Handle,
+    ) {
+        let manager = self.project_lsp_manager_handle();
+        let bridge = self.helix_lsp_bridge_handle();
+        let workspace_backend = self.workspace_backend.clone();
+        let timeout = Duration::from_millis(self.config.gui.lsp.startup_timeout_ms);
+        let runtime = handle.clone();
+
+        cx.spawn(async move |this, cx| {
+            let task_root = workspace_root.clone();
+            let preparation = runtime
+                .spawn(async move {
+                    let manager_project = if let Some(manager) = &manager {
+                        manager.get_project_info(&task_root).await
+                    } else {
+                        None
+                    };
+                    let (project_type, language_servers) = match manager_project {
+                        Some(project) => (project.project_type, project.language_servers),
+                        None => {
+                            let metadata = detect_project_lsp_metadata_with_backend(
+                                &task_root,
+                                workspace_backend,
+                            )
+                            .await;
+                            if let Some(manager) = &manager {
+                                manager
+                                    .register_project(
+                                        task_root.clone(),
+                                        metadata.0.clone(),
+                                        metadata.1.clone(),
+                                    )
+                                    .await;
+                            }
+                            metadata
+                        }
+                    };
+                    let environment = match bridge {
+                        Some(bridge) => tokio::time::timeout(
+                            timeout,
+                            bridge.prepare_server_environment(&task_root),
+                        )
+                        .await
+                        .map_err(|_| {
+                            format!(
+                                "environment preparation timed out after {}ms",
+                                timeout.as_millis()
+                            )
+                        })
+                        .and_then(|result| result),
+                        None => Err("HelixLspBridge not initialized".to_string()),
+                    };
+                    (project_type, language_servers, environment)
+                })
+                .await;
+
+            let Ok((project_type, language_servers, environment)) = preparation else {
+                let _ = response.send(Err(ProjectLspCommandError::Internal(
+                    "project detection task failed".to_string(),
+                )));
+                return;
+            };
+
+            if let Some(this) = this.upgrade() {
+                this.update(cx, move |app, cx| {
+                    let servers_started = app.start_detected_project_servers_prepared(
+                        &runtime,
+                        &workspace_root,
+                        &project_type,
+                        &language_servers,
+                        environment,
+                    );
+                    let _ = response.send(Ok(nucleotide_events::ProjectDetectionResult {
+                        project_type,
+                        language_servers,
+                        servers_started,
+                    }));
+                    app.sync_lsp_state(cx);
+                    cx.emit(crate::Update::Redraw);
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
+    fn start_detected_project_servers_prepared(
+        &mut self,
+        handle: &tokio::runtime::Handle,
+        workspace_root: &Path,
+        project_type: &nucleotide_events::ProjectType,
+        language_servers: &[String],
+        environment: Result<Option<HashMap<String, String>>, String>,
+    ) -> Vec<nucleotide_events::ServerStartResult> {
+        let mut results = Vec::new();
+        for server_name in language_servers {
+            let language_id = project_server_language_id(project_type, server_name);
+            match self.start_lsp_server_prepared(
+                workspace_root,
+                server_name,
+                &language_id,
+                environment.clone(),
+            ) {
+                Ok(server_result) => {
+                    self.record_project_lsp_server_in_background(
+                        handle,
+                        workspace_root.to_path_buf(),
+                        server_result.clone(),
+                    );
+                    results.push(server_result);
+                }
+                Err(error) => error!(
+                    %error,
+                    %server_name,
+                    workspace_root = %workspace_root.display(),
+                    "Failed to start detected language server"
+                ),
+            }
+        }
+        results
+    }
+
+    fn schedule_workspace_lsp_restart(
+        &mut self,
+        old_workspace_root: Option<PathBuf>,
+        new_workspace_root: PathBuf,
+        response: tokio::sync::oneshot::Sender<
+            Result<Vec<nucleotide_events::ServerStartResult>, ProjectLspCommandError>,
+        >,
+        cx: &mut gpui::Context<crate::Core>,
+        handle: &tokio::runtime::Handle,
+    ) {
+        let project_environment = self.project_environment.clone();
+        let workspace_backend = self.workspace_backend.clone();
+        let manager = self.project_lsp_manager_handle();
+        let runtime = handle.clone();
+
+        cx.spawn(async move |this, cx| {
+            let task_root = new_workspace_root.clone();
+            let preparation = runtime
+                .spawn(async move {
+                    if let Some(old_root) = &old_workspace_root
+                        && old_root != &task_root
+                    {
+                        project_environment.invalidate_directory_cache(old_root).await;
+                    }
+
+                    let env_timeout = Duration::from_secs(35);
+                    let env_backend = workspace_backend.clone();
+                    let environment = tokio::time::timeout(env_timeout, async {
+                        if !matches!(env_backend.identity(), WorkspaceIdentity::Local) {
+                            return env_backend
+                                .project_environment(&task_root)
+                                .await
+                                .map(|snapshot| {
+                                    (
+                                        snapshot.variables.into_iter().collect(),
+                                        snapshot.diagnostics,
+                                    )
+                                })
+                                .map_err(|error| error.to_string());
+                        }
+
+                        project_environment
+                            .get_environment_for_directory(&task_root)
+                            .await
+                            .map(|env| (env, Vec::new()))
+                            .map_err(|error| error.to_string())
+                    })
+                    .await
+                    .unwrap_or_else(|_| Ok((std::env::vars().collect(), Vec::new())));
+
+                    let (project_type, language_servers) =
+                        detect_project_lsp_metadata_with_backend(&task_root, workspace_backend)
+                            .await;
+                    if let Some(manager) = &manager {
+                        manager
+                            .register_project(
+                                task_root.clone(),
+                                project_type.clone(),
+                                language_servers.clone(),
+                            )
+                            .await;
+                    }
+                    (environment, project_type, language_servers)
+                })
+                .await;
+
+            let Ok((environment, project_type, language_servers)) = preparation else {
+                let _ = response.send(Err(ProjectLspCommandError::Internal(
+                    "workspace LSP preparation task failed".to_string(),
+                )));
+                return;
+            };
+
+            if let Some(this) = this.upgrade() {
+                this.update(cx, move |app, cx| {
+                    if classify_workspace_location(&new_workspace_root).is_remote() {
+                        debug!(
+                            workspace_root = %new_workspace_root.display(),
+                            "Skipping host Editor working directory update for remote workspace root"
+                        );
+                    } else if let Err(error) = app.editor.set_cwd(&new_workspace_root) {
+                        warn!(
+                            %error,
+                            workspace_root = %new_workspace_root.display(),
+                            "Failed to update Editor working directory"
+                        );
+                    }
+
+                    app.restore_project_environment_overrides();
+                    let lsp_environment = match environment {
+                        Ok((environment, diagnostics)) => {
+                            for diagnostic in diagnostics {
+                                warn!(
+                                    %diagnostic,
+                                    workspace_root = %new_workspace_root.display(),
+                                    "Project environment loaded with diagnostic"
+                                );
+                            }
+                            app.apply_project_environment_overrides(&environment);
+                            Ok(Some(environment))
+                        }
+                        Err(error) => {
+                            warn!(
+                                %error,
+                                workspace_root = %new_workspace_root.display(),
+                                "Failed to capture project environment"
+                            );
+                            Err(error)
+                        }
+                    };
+                    let results = app.start_detected_project_servers_prepared(
+                        &runtime,
+                        &new_workspace_root,
+                        &project_type,
+                        &language_servers,
+                        lsp_environment,
+                    );
+                    let _ = response.send(Ok(results));
+                    app.sync_lsp_state(cx);
+                    cx.emit(crate::Update::Redraw);
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
     }
 
     fn maybe_defer_lsp_start_for_environment(
@@ -2174,7 +3023,7 @@ impl Application {
 
     /// Handle language server message, adapted from Helix's implementation
     #[instrument(skip(self, call))]
-    pub async fn handle_language_server_message(
+    pub fn handle_language_server_message(
         &mut self,
         call: helix_lsp::Call,
         server_id: helix_lsp::LanguageServerId,
@@ -2543,6 +3392,18 @@ impl Application {
                         };
 
                         if is_initialized {
+                            if !matches!(
+                                self.workspace_backend.identity(),
+                                WorkspaceIdentity::Local
+                            ) {
+                                self.enqueue_lsp_workspace_edit(
+                                    server_id,
+                                    id,
+                                    offset_encoding,
+                                    params.edit,
+                                );
+                                return;
+                            }
                             let res = self.apply_lsp_workspace_edit(offset_encoding, &params.edit);
                             Ok(serde_json::json!({
                                 "applied": res.is_ok(),
@@ -2817,7 +3678,7 @@ impl Application {
 
         // Then add project-specific information if available
         if let Some(lsp_state) = &self.lsp_state
-            && self.project_lsp_system.read().await.is_some()
+            && self.project_lsp_system.is_some()
         {
             lsp_state.update(cx, |_state, cx| {
                 // Add project-specific server information
@@ -3726,7 +4587,13 @@ impl Application {
             progressed |= {
                 let _timer = PerfTimer::new("Application::poll_ready_editor_events")
                     .with_warn_threshold(MAINTENANCE_POLLER_WARN_THRESHOLD);
-                self.poll_ready_editor_events(cx, &handle, &mut task_cx)
+                self.poll_ready_editor_events(cx, &mut task_cx)
+            };
+
+            progressed |= {
+                let _timer = PerfTimer::new("Application::poll_pending_lsp_workspace_edits")
+                    .with_warn_threshold(MAINTENANCE_POLLER_WARN_THRESHOLD);
+                self.poll_pending_lsp_workspace_edits(&mut task_cx)
             };
 
             if progressed && turn_started.elapsed() >= MAINTENANCE_TURN_BUDGET {
@@ -3789,7 +4656,6 @@ impl Application {
         &mut self,
         event: helix_view::editor::EditorEvent,
         cx: &mut gpui::Context<crate::Core>,
-        handle: &tokio::runtime::Handle,
     ) -> bool {
         use helix_view::editor::EditorEvent;
         use nucleotide_events::v2::document::Event as DocumentEvent;
@@ -3830,9 +4696,8 @@ impl Application {
                     call_type = ?std::mem::discriminant(&call),
                     "Received EditorEvent::LanguageServerMessage"
                 );
-                handle.block_on(self.handle_language_server_message(call, id));
+                self.handle_language_server_message(call, id);
                 self.sync_lsp_state(cx);
-                cx.emit(crate::Update::Redraw);
                 cx.emit(crate::Update::Redraw);
             }
             EditorEvent::DebuggerEvent(event) => {
@@ -3849,7 +4714,6 @@ impl Application {
     fn poll_ready_editor_events(
         &mut self,
         cx: &mut gpui::Context<crate::Core>,
-        handle: &tokio::runtime::Handle,
         task_cx: &mut TaskContext<'_>,
     ) -> bool {
         let mut progressed = false;
@@ -3864,7 +4728,7 @@ impl Application {
             match poll {
                 Poll::Ready(event) => {
                     progressed = true;
-                    if !self.handle_editor_event_sync(event, cx, handle) {
+                    if !self.handle_editor_event_sync(event, cx) {
                         break;
                     }
                 }
@@ -4727,29 +5591,26 @@ impl Application {
         result
     }
 
-    async fn project_lsp_manager_handle(&self) -> Option<ProjectLspManager> {
+    fn project_lsp_manager_handle(&self) -> Option<ProjectLspManager> {
         self.project_lsp_system
-            .read()
-            .await
             .as_ref()
             .map(|system| system.manager.clone())
     }
 
-    async fn helix_lsp_bridge_handle(&self) -> Option<HelixLspBridge> {
+    fn helix_lsp_bridge_handle(&self) -> Option<HelixLspBridge> {
         self.project_lsp_system
-            .read()
-            .await
             .as_ref()
             .map(|system| system.bridge.clone())
     }
 
+    #[allow(dead_code)]
     async fn register_project_lsp_detection(
         &self,
         workspace_root: &Path,
         project_type: &nucleotide_events::ProjectType,
         language_servers: &[String],
     ) {
-        if let Some(manager) = self.project_lsp_manager_handle().await {
+        if let Some(manager) = self.project_lsp_manager_handle() {
             manager
                 .register_project(
                     workspace_root.to_path_buf(),
@@ -4760,12 +5621,13 @@ impl Application {
         }
     }
 
+    #[allow(dead_code)]
     async fn record_project_lsp_server(
         &self,
         workspace_root: &Path,
         server_result: &nucleotide_events::ServerStartResult,
     ) {
-        if let Some(manager) = self.project_lsp_manager_handle().await {
+        if let Some(manager) = self.project_lsp_manager_handle() {
             manager
                 .upsert_managed_server(
                     workspace_root.to_path_buf(),
@@ -4784,11 +5646,11 @@ impl Application {
         self.project_lsp_command_rx.take()
     }
 
-    /// Initialize the ProjectLspManager and HelixLspBridge  
-    pub async fn initialize_project_lsp_system(&mut self) -> Result<(), anyhow::Error> {
-        if self.project_lsp_system.read().await.is_some() {
+    /// Initialize the ProjectLspManager and HelixLspBridge without blocking GPUI.
+    pub fn initialize_project_lsp_system(&mut self, handle: &tokio::runtime::Handle) {
+        if self.project_lsp_system.is_some() {
             debug!("Project LSP system already initialized, skipping");
-            return Ok(());
+            return;
         }
 
         info!("Initializing project LSP system");
@@ -4815,75 +5677,94 @@ impl Application {
             env_provider,
             launch_proxy_provider,
         );
-        project_manager
-            .set_helix_bridge(Arc::new(helix_bridge.clone()))
-            .await;
-
-        *self.project_lsp_system.write().await = Some(ProjectLspSystem {
+        self.project_lsp_system = Some(ProjectLspSystem {
             manager: project_manager.clone(),
-            bridge: helix_bridge,
+            bridge: helix_bridge.clone(),
         });
 
         let project_directory = self.project_directory.clone();
         let workspace_backend = self.workspace_backend.clone();
         let is_local = should_launch_lsp_on_local_host(&workspace_backend.identity());
         let use_manager_detection = is_local && self.config.gui.lsp.project_lsp_startup;
+        let command_tx = self.project_lsp_command_tx.clone();
+        let maintenance_wake = self.maintenance_wake.clone();
 
-        project_manager.start().await?;
+        handle.spawn(async move {
+            project_manager
+                .set_helix_bridge(Arc::new(helix_bridge))
+                .await;
+            if let Err(error) = project_manager.start().await {
+                error!(%error, "Failed to start project LSP manager");
+                return;
+            }
 
-        if let Some(project_dir) = &project_directory {
-            if use_manager_detection {
-                info!(
-                    project_directory = %project_dir.display(),
-                    "Triggering project detection for automatic LSP server startup"
-                );
-                if let Err(e) = project_manager.detect_project(project_dir.clone()).await {
-                    warn!(
-                        error = %e,
+            if let Some(project_dir) = &project_directory {
+                if use_manager_detection {
+                    info!(
                         project_directory = %project_dir.display(),
-                        "Project detection failed - Helix file-based LSP startup remains available"
+                        "Triggering project detection for automatic LSP server startup"
+                    );
+                    if let Err(error) = project_manager.detect_project(project_dir.clone()).await {
+                        warn!(
+                            %error,
+                            project_directory = %project_dir.display(),
+                            "Project detection failed - Helix file-based LSP startup remains available"
+                        );
+                    }
+                } else if is_local {
+                    info!(
+                        project_directory = %project_dir.display(),
+                        "Proactive project LSP startup disabled; using Helix file-based startup"
                     );
                 }
-            } else if is_local {
+            } else {
+                warn!("No project directory set - LSP will use file-based mode");
+            }
+
+            if !is_local && let Some(project_dir) = project_directory {
+                let (project_type, language_servers) =
+                    detect_project_lsp_metadata_with_backend(&project_dir, workspace_backend).await;
+                project_manager
+                    .register_project(
+                        project_dir.clone(),
+                        project_type.clone(),
+                        language_servers.clone(),
+                    )
+                    .await;
+
+                if let Some(command_tx) = command_tx {
+                    for server_name in &language_servers {
+                        let language_id = project_server_language_id(&project_type, server_name);
+                        let _ = command_tx.send(ProjectLspCommand::LspServerStartupRequested {
+                            server_name: server_name.clone(),
+                            workspace_root: project_dir.clone(),
+                            language_id,
+                        });
+                    }
+                }
+
                 info!(
                     project_directory = %project_dir.display(),
-                    "Proactive project LSP startup disabled; using Helix file-based startup"
+                    project_type = ?project_type,
+                    language_servers = ?language_servers,
+                    "Remote project detection completed through workspace backend"
                 );
             }
-        } else {
-            warn!("No project directory set - LSP will use file-based mode");
-        }
 
-        if !is_local && let Some(project_dir) = project_directory {
-            let (project_type, language_servers) =
-                detect_project_lsp_metadata_with_backend(&project_dir, workspace_backend).await;
-            self.register_project_lsp_detection(&project_dir, &project_type, &language_servers)
-                .await;
-            let servers_started = self
-                .start_detected_project_servers(&project_dir, &project_type, &language_servers)
-                .await;
-
-            info!(
-                project_directory = %project_dir.display(),
-                project_type = ?project_type,
-                language_servers = ?language_servers,
-                servers_started = servers_started.len(),
-                "Remote project detection completed through workspace backend"
-            );
-        }
-
-        info!("Project LSP system initialized successfully with project detection");
-
-        Ok(())
+            if let Some(wake) = maintenance_wake {
+                wake.notify();
+            }
+            info!("Project LSP system initialized successfully with project detection");
+        });
     }
 
     /// Stop the project LSP manager and release its bridge.
     pub async fn cleanup_project_lsp_system(
-        &self,
+        &mut self,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         info!("Cleaning up project LSP system");
 
-        if let Some(system) = self.project_lsp_system.write().await.take() {
+        if let Some(system) = self.project_lsp_system.take() {
             system.manager.stop().await?;
         }
 
@@ -5319,6 +6200,7 @@ impl Application {
 
     /// Handle LSP commands that require direct Editor access
     #[instrument(skip(self, command), fields(command_type = ?std::mem::discriminant(&command)))]
+    #[allow(dead_code)]
     async fn handle_lsp_command(&mut self, command: ProjectLspCommand) {
         let span = match &command {
             ProjectLspCommand::DetectAndStartProject { span, .. } => span.clone(),
@@ -5379,7 +6261,7 @@ impl Application {
                 response,
                 ..
             } => {
-                let result = self.handle_stop_server_command(server_id).await;
+                let result = self.handle_stop_server_command(server_id);
 
                 if response.send(result).is_err() {
                     warn!("Failed to send StopServer response - receiver dropped");
@@ -5429,9 +6311,7 @@ impl Application {
                 response,
                 ..
             } => {
-                let result = self
-                    .handle_ensure_document_tracked_command(server_id, doc_id)
-                    .await;
+                let result = self.handle_ensure_document_tracked_command(server_id, doc_id);
 
                 if response.send(result).is_err() {
                     warn!("Failed to send EnsureDocumentTracked response - receiver dropped");
@@ -5491,26 +6371,53 @@ impl Application {
         server_name: &str,
         language_id: &str,
     ) -> Result<nucleotide_events::ServerStartResult, ProjectLspCommandError> {
-        use nucleotide_events::ServerStartResult;
-
         info!(
             server_name = %server_name,
             language_id = %language_id,
             "Attempting to start LSP server with direct Editor access"
         );
 
-        let bridge = self.helix_lsp_bridge_handle().await.ok_or_else(|| {
+        let bridge = self.helix_lsp_bridge_handle().ok_or_else(|| {
             ProjectLspCommandError::Internal("HelixLspBridge not initialized".to_string())
         })?;
 
         let server_start_timeout = Duration::from_millis(self.config.gui.lsp.startup_timeout_ms);
-        match tokio::time::timeout(
+        let environment = tokio::time::timeout(
             server_start_timeout,
-            bridge.start_server(&mut self.editor, workspace_root, server_name, language_id),
+            bridge.prepare_server_environment(workspace_root),
         )
         .await
-        {
-            Ok(Ok(server_id)) => {
+        .map_err(|_| {
+            ProjectLspCommandError::ServerStartup(format!(
+                "Timeout preparing {server_name} after {}ms",
+                server_start_timeout.as_millis()
+            ))
+        })?;
+
+        self.start_lsp_server_prepared(workspace_root, server_name, language_id, environment)
+    }
+
+    fn start_lsp_server_prepared(
+        &mut self,
+        workspace_root: &Path,
+        server_name: &str,
+        language_id: &str,
+        environment: Result<Option<HashMap<String, String>>, String>,
+    ) -> Result<nucleotide_events::ServerStartResult, ProjectLspCommandError> {
+        use nucleotide_events::ServerStartResult;
+
+        let bridge = self.helix_lsp_bridge_handle().ok_or_else(|| {
+            ProjectLspCommandError::Internal("HelixLspBridge not initialized".to_string())
+        })?;
+
+        match bridge.start_server_prepared(
+            &mut self.editor,
+            workspace_root,
+            server_name,
+            language_id,
+            environment,
+        ) {
+            Ok(server_id) => {
                 info!(
                     server_id = ?server_id,
                     server_name = %server_name,
@@ -5559,7 +6466,7 @@ impl Application {
                     language_id: language_id.to_string(),
                 })
             }
-            Ok(Err(e)) => {
+            Err(e) => {
                 error!(
                     error = %e,
                     server_name = %server_name,
@@ -5572,26 +6479,12 @@ impl Application {
                     server_name, e
                 )))
             }
-            Err(_timeout) => {
-                error!(
-                    server_name = %server_name,
-                    language_id = %language_id,
-                    timeout_ms = server_start_timeout.as_millis(),
-                    "LSP server startup timed out - this usually indicates the server binary cannot be found in PATH"
-                );
-
-                Err(ProjectLspCommandError::ServerStartup(format!(
-                    "Timeout starting {} server after {}ms - check that {} is installed and in PATH",
-                    server_name,
-                    server_start_timeout.as_millis(),
-                    server_name
-                )))
-            }
         }
     }
 
     /// Handle DetectAndStartProject command
     #[instrument(skip(self), fields(workspace_root = %workspace_root.display()))]
+    #[allow(dead_code)]
     async fn handle_detect_and_start_project_command(
         &mut self,
         workspace_root: &std::path::Path,
@@ -5603,7 +6496,7 @@ impl Application {
             "Processing DetectAndStartProject command"
         );
 
-        let manager_project_info = if let Some(manager) = self.project_lsp_manager_handle().await {
+        let manager_project_info = if let Some(manager) = self.project_lsp_manager_handle() {
             manager.get_project_info(workspace_root).await
         } else {
             None
@@ -5640,7 +6533,7 @@ impl Application {
 
     /// Handle StopServer command
     #[instrument(skip(self))]
-    async fn handle_stop_server_command(
+    fn handle_stop_server_command(
         &mut self,
         server_id: helix_lsp::LanguageServerId,
     ) -> Result<(), ProjectLspCommandError> {
@@ -5649,24 +6542,20 @@ impl Application {
             "Processing StopServer command"
         );
 
-        let bridge = self.helix_lsp_bridge_handle().await.ok_or_else(|| {
+        let bridge = self.helix_lsp_bridge_handle().ok_or_else(|| {
             ProjectLspCommandError::Internal("HelixLspBridge not initialized".to_string())
         })?;
 
         bridge
             .stop_server(&mut self.editor, server_id)
-            .await
             .map_err(|error| ProjectLspCommandError::Internal(error.to_string()))?;
-
-        if let Some(manager) = self.project_lsp_manager_handle().await {
-            manager.remove_managed_server(server_id).await;
-        }
 
         Ok(())
     }
 
     /// Handle GetProjectStatus command
     #[instrument(skip(self), fields(workspace_root = %workspace_root.display()))]
+    #[allow(dead_code)]
     async fn handle_get_project_status_command(
         &mut self,
         workspace_root: &std::path::Path,
@@ -5678,7 +6567,7 @@ impl Application {
             "Processing GetProjectStatus command"
         );
 
-        let manager_state = if let Some(manager) = self.project_lsp_manager_handle().await {
+        let manager_state = if let Some(manager) = self.project_lsp_manager_handle() {
             Some((
                 manager.get_project_info(workspace_root).await,
                 manager.get_managed_servers(workspace_root).await,
@@ -5762,6 +6651,7 @@ impl Application {
 
     /// Handle RestartServersForWorkspaceChange command
     #[instrument(skip(self))]
+    #[allow(dead_code)]
     async fn handle_restart_servers_for_workspace_change_command(
         &mut self,
         old_workspace_root: Option<&std::path::Path>,
@@ -5934,6 +6824,7 @@ impl Application {
     }
 
     /// Detect project type and start appropriate LSP servers
+    #[allow(dead_code)]
     async fn detect_and_start_project_servers(
         &mut self,
         workspace_root: &std::path::Path,
@@ -5959,6 +6850,7 @@ impl Application {
             .await
     }
 
+    #[allow(dead_code)]
     async fn start_detected_project_servers(
         &mut self,
         workspace_root: &std::path::Path,
@@ -6018,7 +6910,7 @@ impl Application {
         results
     }
 
-    async fn handle_ensure_document_tracked_command(
+    fn handle_ensure_document_tracked_command(
         &mut self,
         server_id: helix_lsp::LanguageServerId,
         doc_id: helix_view::DocumentId,
@@ -6029,7 +6921,7 @@ impl Application {
             "Processing EnsureDocumentTracked command"
         );
 
-        let bridge = self.helix_lsp_bridge_handle().await.ok_or_else(|| {
+        let bridge = self.helix_lsp_bridge_handle().ok_or_else(|| {
             ProjectLspCommandError::Internal("HelixLspBridge not initialized".to_string())
         })?;
 
@@ -7585,7 +8477,7 @@ pub fn init_editor(
         event_bridge_rx: Some(bridge_rx),
         config: gui_config,
         helix_config_arc: config,
-        project_lsp_system: Arc::new(RwLock::new(None)),
+        project_lsp_system: None,
         project_lsp_command_tx: Some(project_lsp_command_tx),
         project_lsp_command_rx: Some(project_lsp_command_rx),
         project_lsp_initialization_attempted: false,
@@ -7593,6 +8485,7 @@ pub fn init_editor(
         workspace_file_ops,
         project_env_overrides: HashMap::new(),
         prewarmed_lsp_startups: HashSet::new(),
+        pending_lsp_workspace_edits: VecDeque::new(),
         terminal_runtime,
         maintenance_wake: None,
     })
@@ -9091,7 +9984,7 @@ mod tests {
     use std::sync::{Arc, LazyLock};
     use std::time::Duration;
     use tempfile::tempdir;
-    use tokio::sync::{RwLock, mpsc};
+    use tokio::sync::mpsc;
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum CapturedUpdate {
@@ -9723,6 +10616,62 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn remote_workspace_edit_queue_polls_backend_without_blocking_gpui(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let temp = tempdir().unwrap();
+        fs::create_dir_all(temp.path().join("src")).unwrap();
+        fs::write(temp.path().join("src/main.rs"), "fn remote() {}\n").unwrap();
+        let display_root = PathBuf::from("ssh://me@example.com/home/me/project");
+        let display_path = display_root.join("src/main.rs");
+        let backend = path_mapped_workspace_backend(
+            Arc::new(RemoteIdentityLocalBackend),
+            WorkspacePathMapping::new(&display_root, temp.path()),
+        );
+        let app = new_test_application(cx);
+
+        app.update(cx, |app, _cx| {
+            app.project_directory = Some(display_root);
+            app.set_workspace_backend(backend);
+            app.enqueue_lsp_workspace_edit(
+                helix_lsp::LanguageServerId::default(),
+                helix_lsp::jsonrpc::Id::Num(1),
+                OffsetEncoding::Utf8,
+                lsp::WorkspaceEdit::new(HashMap::from([(
+                    lsp::Url::parse("file:///home/me/project/src/main.rs").unwrap(),
+                    vec![lsp::TextEdit::new(
+                        lsp::Range::new(lsp::Position::new(0, 3), lsp::Position::new(0, 9)),
+                        "queued".to_string(),
+                    )],
+                )])),
+            );
+        });
+
+        for _ in 0..100 {
+            let complete = app.update(cx, |app, _cx| {
+                let _runtime = TEST_RUNTIME.enter();
+                let waker = futures_util::task::noop_waker();
+                let mut task_cx = std::task::Context::from_waker(&waker);
+                app.poll_pending_lsp_workspace_edits(&mut task_cx);
+                app.pending_lsp_workspace_edits.is_empty()
+            });
+            if complete {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+
+        app.read_with(cx, |app, _cx| {
+            assert!(app.pending_lsp_workspace_edits.is_empty());
+            let doc = app
+                .editor
+                .document_by_path(&display_path)
+                .expect("queued edit opens document");
+            assert_eq!(doc.text(), "fn queued() {}\n");
+        });
+    }
+
+    #[gpui::test]
     async fn remote_workspace_edit_applies_resource_ops_through_backend(
         cx: &mut gpui::TestAppContext,
     ) {
@@ -10123,7 +11072,7 @@ mod tests {
                 event_bridge_rx: None,
                 config: gui_config,
                 helix_config_arc: helix_config,
-                project_lsp_system: Arc::new(RwLock::new(None)),
+                project_lsp_system: None,
                 project_lsp_command_tx: Some(project_lsp_command_tx),
                 project_lsp_command_rx: Some(project_lsp_command_rx),
                 project_lsp_initialization_attempted: true,
@@ -10136,6 +11085,7 @@ mod tests {
                 ),
                 project_env_overrides: HashMap::new(),
                 prewarmed_lsp_startups: HashSet::new(),
+                pending_lsp_workspace_edits: std::collections::VecDeque::new(),
                 terminal_runtime: crate::application::TerminalRuntimeHandle::new(),
                 maintenance_wake: None,
             };
@@ -10369,6 +11319,50 @@ mod tests {
             update,
             CapturedUpdate::StatusChanged(message, crate::types::Severity::Error)
                 if message.contains("Failed to start language server test-language-server")
+        )));
+    }
+
+    #[gpui::test]
+    async fn maintenance_schedules_lsp_start_without_waiting_for_completion(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let app = new_test_application(cx);
+        let updates = subscribe_application_updates(cx, &app);
+        let workspace_root = tempdir().expect("workspace root");
+        let workspace_path = workspace_root.path().to_path_buf();
+        let sender = app.update(cx, |app, _cx| {
+            app.initialize_project_lsp_system(TEST_RUNTIME.handle());
+            app.prewarmed_lsp_startups.insert((
+                workspace_path.clone(),
+                "test-language-server".to_string(),
+                "test".to_string(),
+            ));
+            app.project_lsp_command_tx
+                .clone()
+                .expect("project lsp command sender")
+        });
+
+        sender
+            .send(
+                nucleotide_events::ProjectLspCommand::LspServerStartupRequested {
+                    server_name: "test-language-server".to_string(),
+                    workspace_root: workspace_path,
+                    language_id: "test".to_string(),
+                },
+            )
+            .expect("startup command");
+
+        run_event_driven_maintenance(cx, &app);
+
+        assert!(status_update_seen(
+            &updates,
+            "Starting language server: test-language-server",
+            crate::types::Severity::Info,
+        ));
+        assert!(!updates.borrow().iter().any(|update| matches!(
+            update,
+            CapturedUpdate::StatusChanged(message, crate::types::Severity::Error)
+                if message.contains("test-language-server")
         )));
     }
 
