@@ -18,15 +18,6 @@ use crate::file_tree::{
     icons::chevron_icon,
 };
 
-pub const PROJECT_TREE_ROW_HEIGHT_PX: f32 = 30.0;
-pub const PROJECT_TREE_ROW_INDENT_PX: f32 = 16.0;
-const PROJECT_TREE_ICON_SIZE_PX: f32 = 16.0;
-const PROJECT_TREE_CHEVRON_SLOT_PX: f32 = 14.0;
-const PROJECT_TREE_ROW_RADIUS_PX: f32 = 4.0;
-const PROJECT_TREE_ROW_GAP_PX: f32 = 6.0;
-const PROJECT_TREE_ROW_PADDING_RIGHT_PX: f32 = 8.0;
-const PROJECT_TREE_GIT_STATUS_BADGE_PX: f32 = 22.0;
-const PROJECT_TREE_GIT_STATUS_LANE_PX: f32 = PROJECT_TREE_GIT_STATUS_BADGE_PX;
 const PROJECT_TREE_FILENAME_CHAR_WIDTH_PX: f32 = 8.0;
 
 #[derive(Clone, Copy)]
@@ -51,17 +42,21 @@ struct ProjectTreeDensityMetrics {
     row_gap_px: f32,
     row_radius_px: f32,
     padding_right_px: f32,
+    icon_size_px: f32,
+    icon_slot_px: f32,
 }
 
 impl ProjectTreeDensityMetrics {
     fn new(density: FileTreeDisplayDensity) -> Self {
-        let spacing_factor = density.spacing_factor();
+        let metrics = nucleotide_ui::DensityMetrics::for_density(density.control_density());
         Self {
-            row_height_px: density.row_height_px(),
-            indent_px: PROJECT_TREE_ROW_INDENT_PX * spacing_factor,
-            row_gap_px: PROJECT_TREE_ROW_GAP_PX * spacing_factor,
-            row_radius_px: PROJECT_TREE_ROW_RADIUS_PX * spacing_factor,
-            padding_right_px: PROJECT_TREE_ROW_PADDING_RIGHT_PX * spacing_factor,
+            row_height_px: f32::from(metrics.row_height),
+            indent_px: f32::from(metrics.indent),
+            row_gap_px: f32::from(metrics.gap),
+            row_radius_px: f32::from(metrics.radius),
+            padding_right_px: f32::from(metrics.padding_x),
+            icon_size_px: f32::from(metrics.icon_size),
+            icon_slot_px: f32::from(metrics.icon_slot),
         }
     }
 }
@@ -189,15 +184,17 @@ impl ProjectTreeDragPreview {
 impl Render for ProjectTreeDragPreview {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let tokens = &cx.theme().tokens;
+        let metrics =
+            nucleotide_ui::DensityMetrics::for_density(nucleotide_ui::ControlDensity::Comfortable);
         let preview_bg = nucleotide_ui::tokens::with_alpha(tokens.chrome.surface_overlay, 0.72);
 
         div().pl(self.position.x).pt(self.position.y).child(
             div()
-                .h(px(PROJECT_TREE_ROW_HEIGHT_PX))
-                .px(px(10.0))
+                .h(metrics.row_height)
+                .px(metrics.padding_x)
                 .flex()
                 .items_center()
-                .rounded(px(PROJECT_TREE_ROW_RADIUS_PX))
+                .rounded(metrics.radius)
                 .bg(preview_bg)
                 .text_color(tokens.chrome.text_on_chrome)
                 .text_size(px(13.0))
@@ -387,32 +384,39 @@ pub fn render_project_tree_row(
                             .text_color(file_tree_tokens.item_text)
                     })
                 })
-                .child(render_chevron_slot(&row, file_tree_tokens))
-                .child(render_icon(&row, theme, file_tree_tokens))
+                .child(render_chevron_slot(&row, file_tree_tokens, metrics))
+                .child(render_icon(&row, theme, file_tree_tokens, metrics))
                 .child(render_filename(&row, theme, file_tree_tokens))
-                .when_some(render_git_status_lane(&row, theme), |row, lane| {
+                .when_some(render_git_status_lane(&row, theme, metrics), |row, lane| {
                     row.child(lane)
                 }),
         )
         .into_any_element()
 }
 
-fn render_chevron_slot(row: &ProjectTreeRow, file_tree_tokens: FileTreeTokens) -> gpui::AnyElement {
+fn render_chevron_slot(
+    row: &ProjectTreeRow,
+    file_tree_tokens: FileTreeTokens,
+    metrics: ProjectTreeDensityMetrics,
+) -> gpui::AnyElement {
     div()
-        .w(px(PROJECT_TREE_CHEVRON_SLOT_PX))
-        .h(px(PROJECT_TREE_CHEVRON_SLOT_PX))
+        .size(px(metrics.icon_slot_px))
         .flex()
         .items_center()
         .justify_center()
         .when(row.is_directory(), |div| {
-            div.child(render_chevron(row, file_tree_tokens))
+            div.child(render_chevron(row, file_tree_tokens, metrics))
         })
         .into_any_element()
 }
 
-fn render_chevron(row: &ProjectTreeRow, file_tree_tokens: FileTreeTokens) -> impl IntoElement {
+fn render_chevron(
+    row: &ProjectTreeRow,
+    file_tree_tokens: FileTreeTokens,
+    metrics: ProjectTreeDensityMetrics,
+) -> impl IntoElement {
     chevron_icon(if row.is_expanded { "down" } else { "right" })
-        .size_3()
+        .size(px(metrics.icon_size_px))
         .text_color(chevron_color(row, file_tree_tokens))
 }
 
@@ -420,18 +424,19 @@ fn render_icon(
     row: &ProjectTreeRow,
     theme: &Theme,
     file_tree_tokens: FileTreeTokens,
+    metrics: ProjectTreeDensityMetrics,
 ) -> impl IntoElement {
     let icon_color = tree_icon_color(row, file_tree_tokens);
 
     let vcs_icon = match &row.kind {
         ProjectTreeRowKind::Directory { .. } => VcsIcon::directory(row.is_expanded)
-            .size(PROJECT_TREE_ICON_SIZE_PX)
+            .size(metrics.icon_size_px)
             .text_color(icon_color),
         ProjectTreeRowKind::File { extension } => VcsIcon::from_extension(extension.as_deref())
-            .size(PROJECT_TREE_ICON_SIZE_PX)
+            .size(metrics.icon_size_px)
             .text_color(icon_color),
         ProjectTreeRowKind::Symlink { target_exists, .. } => VcsIcon::symlink(*target_exists)
-            .size(PROJECT_TREE_ICON_SIZE_PX)
+            .size(metrics.icon_size_px)
             .text_color(if *target_exists {
                 icon_color
             } else {
@@ -513,20 +518,24 @@ fn chevron_color(row: &ProjectTreeRow, file_tree_tokens: FileTreeTokens) -> gpui
     }
 }
 
-fn render_git_status_lane(row: &ProjectTreeRow, theme: &Theme) -> Option<gpui::AnyElement> {
+fn render_git_status_lane(
+    row: &ProjectTreeRow,
+    theme: &Theme,
+    metrics: ProjectTreeDensityMetrics,
+) -> Option<gpui::AnyElement> {
     let status = git_status_for_display(row)?;
 
     Some(
         div()
             .ml_auto()
-            .w(px(PROJECT_TREE_GIT_STATUS_LANE_PX))
+            .w(px(metrics.icon_slot_px))
             .flex_shrink_0()
             .flex()
             .items_center()
             .justify_end()
             .child(
                 div()
-                    .size(px(PROJECT_TREE_GIT_STATUS_BADGE_PX))
+                    .size(px(metrics.icon_slot_px))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -617,12 +626,12 @@ fn project_tree_row_min_width_for(
 ) -> f32 {
     let metrics = ProjectTreeDensityMetrics::new(density);
     let indentation = depth as f32 * metrics.indent_px;
-    let fixed_width = PROJECT_TREE_CHEVRON_SLOT_PX
-        + PROJECT_TREE_ICON_SIZE_PX
+    let fixed_width = metrics.icon_slot_px
+        + metrics.icon_size_px
         + metrics.padding_right_px
         + metrics.row_gap_px * 2.0;
     let git_status_lane_width = if has_git_status_lane {
-        PROJECT_TREE_GIT_STATUS_LANE_PX + metrics.row_gap_px
+        metrics.icon_slot_px + metrics.row_gap_px
     } else {
         0.0
     };
@@ -754,11 +763,12 @@ mod tests {
     #[test]
     fn row_min_width_reserves_right_aligned_git_status_lane() {
         let width = project_tree_row_min_width_for(0, 0, true, FileTreeDisplayDensity::Default);
-        let expected = PROJECT_TREE_CHEVRON_SLOT_PX
-            + PROJECT_TREE_ICON_SIZE_PX
-            + PROJECT_TREE_ROW_PADDING_RIGHT_PX
-            + PROJECT_TREE_GIT_STATUS_LANE_PX
-            + PROJECT_TREE_ROW_GAP_PX * 3.0;
+        let metrics = ProjectTreeDensityMetrics::new(FileTreeDisplayDensity::Default);
+        let expected = metrics.icon_slot_px
+            + metrics.icon_size_px
+            + metrics.padding_right_px
+            + metrics.icon_slot_px
+            + metrics.row_gap_px * 3.0;
 
         assert_eq!(width, expected);
     }
@@ -766,10 +776,11 @@ mod tests {
     #[test]
     fn row_min_width_omits_git_status_lane_without_badge() {
         let width = project_tree_row_min_width_for(0, 0, false, FileTreeDisplayDensity::Default);
-        let expected = PROJECT_TREE_CHEVRON_SLOT_PX
-            + PROJECT_TREE_ICON_SIZE_PX
-            + PROJECT_TREE_ROW_PADDING_RIGHT_PX
-            + PROJECT_TREE_ROW_GAP_PX * 2.0;
+        let metrics = ProjectTreeDensityMetrics::new(FileTreeDisplayDensity::Default);
+        let expected = metrics.icon_slot_px
+            + metrics.icon_size_px
+            + metrics.padding_right_px
+            + metrics.row_gap_px * 2.0;
 
         assert_eq!(width, expected);
     }
@@ -780,12 +791,14 @@ mod tests {
         let default = ProjectTreeDensityMetrics::new(FileTreeDisplayDensity::Default);
         let relaxed = ProjectTreeDensityMetrics::new(FileTreeDisplayDensity::Relaxed);
 
-        assert_eq!(compact.row_height_px, 24.0);
-        assert_eq!(default.row_height_px, PROJECT_TREE_ROW_HEIGHT_PX);
+        assert_eq!(compact.row_height_px, 28.0);
+        assert_eq!(default.row_height_px, 32.0);
         assert_eq!(relaxed.row_height_px, 36.0);
-        assert_eq!(compact.row_gap_px, PROJECT_TREE_ROW_GAP_PX * 0.8);
-        assert_eq!(default.row_gap_px, PROJECT_TREE_ROW_GAP_PX);
-        assert_eq!(relaxed.row_gap_px, PROJECT_TREE_ROW_GAP_PX * 1.2);
+        assert_eq!(compact.row_gap_px, 4.0);
+        assert_eq!(default.row_gap_px, 4.0);
+        assert_eq!(relaxed.row_gap_px, 8.0);
+        assert_eq!(default.icon_size_px, 16.0);
+        assert_eq!(default.icon_slot_px, 24.0);
     }
 
     #[test]
@@ -1101,8 +1114,12 @@ mod tests {
     }
 
     #[test]
-    fn row_layout_uses_stable_zed_like_dimensions() {
-        assert_eq!(PROJECT_TREE_ROW_HEIGHT_PX, 30.0);
-        assert_eq!(PROJECT_TREE_ROW_INDENT_PX, 16.0);
+    fn row_layout_uses_shared_chrome_metrics() {
+        let metrics = ProjectTreeDensityMetrics::new(FileTreeDisplayDensity::Default);
+
+        assert_eq!(metrics.row_height_px, 32.0);
+        assert_eq!(metrics.indent_px, 16.0);
+        assert_eq!(metrics.icon_size_px, 16.0);
+        assert_eq!(metrics.icon_slot_px, 24.0);
     }
 }

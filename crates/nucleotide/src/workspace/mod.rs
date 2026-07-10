@@ -3338,10 +3338,12 @@ impl Workspace {
 
     /// Standard divider element for the status bar.
     fn statusbar_divider(&self, color: gpui::Hsla) -> gpui::AnyElement {
+        let metrics =
+            nucleotide_ui::DensityMetrics::for_density(nucleotide_ui::ControlDensity::Comfortable);
         gpui::div()
             .flex_none()
             .w(gpui::px(1.0))
-            .h(gpui::px(18.0))
+            .h(metrics.icon_size)
             .bg(color)
             .mx_2()
             .into_any_element()
@@ -3352,6 +3354,8 @@ impl Workspace {
         status_bar_tokens: &nucleotide_ui::tokens::StatusBarTokens,
     ) -> Option<gpui::AnyElement> {
         let badge = self.environment_badge?;
+        let compact_metrics =
+            nucleotide_ui::DensityMetrics::for_density(nucleotide_ui::ControlDensity::Compact);
         let badge_fg = status_bar_tokens.text_primary;
         let badge_bg = nucleotide_ui::tokens::utils::with_alpha(badge_fg, 0.12);
         let badge_border = nucleotide_ui::tokens::utils::with_alpha(badge_fg, 0.32);
@@ -3362,7 +3366,7 @@ impl Workspace {
                 .flex_none()
                 .flex()
                 .items_center()
-                .h(gpui::px(20.0))
+                .h(compact_metrics.icon_slot)
                 .px_2()
                 .rounded(gpui::px(5.0))
                 .border_1()
@@ -10539,6 +10543,8 @@ impl Workspace {
         // Use the hybrid chrome background colors for consistent visual hierarchy
         let bg_color = status_bar_tokens.background_active; // Always use active for unified bar
         let fg_color = status_bar_tokens.text_primary;
+        let chrome_metrics =
+            nucleotide_ui::DensityMetrics::for_density(nucleotide_ui::ControlDensity::Comfortable);
 
         // Get current document info first (without LSP indicator to avoid borrow conflicts)
         let (mode, mode_name, file_name, position_text, has_lsp_state, preferred_server_id) =
@@ -10612,7 +10618,7 @@ impl Workspace {
             .child(
                 // Toggle button container - fixed width regardless of file tree state
                 div()
-                    .w(px(32.0)) // Fixed width for button container
+                    .w(chrome_metrics.row_height)
                     .flex()
                     .items_center()
                     .justify_center()
@@ -10634,7 +10640,7 @@ impl Workspace {
             .child(
                 // Terminal toggle button to the right of file tree button
                 div()
-                    .w(px(32.0))
+                    .w(chrome_metrics.row_height)
                     .flex()
                     .items_center()
                     .justify_center()
@@ -10657,7 +10663,9 @@ impl Workspace {
                     .child(
                         // File tree width spacer (minus button width)
                         div()
-                            .w(px(self.file_tree_width - 32.0)) // File tree width minus button
+                            .w(px(
+                                self.file_tree_width - f32::from(chrome_metrics.row_height)
+                            ))
                             .h_full(),
                     )
                     .child(

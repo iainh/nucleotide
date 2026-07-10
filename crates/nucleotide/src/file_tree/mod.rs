@@ -142,19 +142,11 @@ pub enum FileTreeDisplayDensity {
 }
 
 impl FileTreeDisplayDensity {
-    pub fn spacing_factor(self) -> f32 {
+    pub fn control_density(self) -> nucleotide_ui::ControlDensity {
         match self {
-            Self::Compact => 0.8,
-            Self::Default => 1.0,
-            Self::Relaxed => 1.2,
-        }
-    }
-
-    pub fn row_height_px(self) -> f32 {
-        match self {
-            Self::Compact => 24.0,
-            Self::Default => 30.0,
-            Self::Relaxed => 36.0,
+            Self::Compact => nucleotide_ui::ControlDensity::Compact,
+            Self::Default => nucleotide_ui::ControlDensity::Comfortable,
+            Self::Relaxed => nucleotide_ui::ControlDensity::Relaxed,
         }
     }
 }

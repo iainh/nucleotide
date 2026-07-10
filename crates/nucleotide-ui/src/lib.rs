@@ -136,8 +136,9 @@ pub use terminal_keys::{
 pub use text_input::{TextInput, TextInputEvent, TextInputFocusStyle};
 pub use theme_debug::ThemeDebugView;
 pub use tokens::{
-    CheckboxTokens, ChromeTokens, ColorContext, CompletionIconTokens, DesignTokens, EditorTokens,
-    FileTreeTokens, ShadowToken, SizeTokens, StatusBarTokens, TabBarTokens, TitleBarTokens,
+    CheckboxTokens, ChromeTokens, ColorContext, CompletionIconTokens, ControlDensity,
+    DensityMetrics, DesignTokens, EditorTokens, FileTreeTokens, ShadowToken, SizeTokens,
+    StatusBarTokens, TabBarTokens, TitleBarTokens,
 };
 pub use traits::{
     Component, ComponentBuilder, ComponentFactory, ComponentState, ComponentStyles, Composable,
