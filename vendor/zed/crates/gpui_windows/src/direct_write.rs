@@ -4,7 +4,7 @@ use std::{
     mem::ManuallyDrop,
     sync::{
         LazyLock,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicU8, Ordering},
     },
 };
 
@@ -59,7 +59,8 @@ struct DirectWriteComponents {
 static DIRECT_WRITE_TEXT_RENDERING_PARAMS: LazyLock<
     RwLock<Option<DirectWriteTextRenderingParams>>,
 > = LazyLock::new(|| RwLock::new(None));
-static SYSTEM_SUBPIXEL_RENDERING: AtomicBool = AtomicBool::new(true);
+static SYSTEM_FONT_SMOOTHING_MODE: AtomicU8 =
+    AtomicU8::new(WindowsFontSmoothingMode::ClearType as u8);
 static CACHED_FORCE_GRAYSCALE_TEXT_RENDERING: LazyLock<RwLock<HashMap<Option<u64>, bool>>> =
     LazyLock::new(|| RwLock::new(HashMap::default()));
 
@@ -96,9 +97,21 @@ pub(crate) fn set_direct_write_text_rendering_params(
 }
 
 pub(crate) fn refresh_direct_write_system_settings() {
-    SYSTEM_SUBPIXEL_RENDERING.store(get_system_subpixel_rendering(), Ordering::Relaxed);
+    SYSTEM_FONT_SMOOTHING_MODE.store(get_system_font_smoothing().mode() as u8, Ordering::Relaxed);
     CACHED_FORCE_GRAYSCALE_TEXT_RENDERING.write().clear();
     DirectXRenderer::invalidate_font_info();
+}
+
+fn system_font_smoothing_mode() -> WindowsFontSmoothingMode {
+    match SYSTEM_FONT_SMOOTHING_MODE.load(Ordering::Relaxed) {
+        value if value == WindowsFontSmoothingMode::Aliased as u8 => {
+            WindowsFontSmoothingMode::Aliased
+        }
+        value if value == WindowsFontSmoothingMode::Grayscale as u8 => {
+            WindowsFontSmoothingMode::Grayscale
+        }
+        _ => WindowsFontSmoothingMode::ClearType,
+    }
 }
 
 pub(crate) fn monitor_from_display_id(display_id: Option<DisplayId>) -> Option<HMONITOR> {
@@ -155,10 +168,17 @@ pub(crate) fn resolve_direct_write_rendering_params(
         let rendering_mode_override = params.and_then(|params| params.rendering_mode);
         let rendering_mode = rendering_mode_override
             .map(direct_write_rendering_mode)
-            .unwrap_or(DWRITE_RENDERING_MODE1_DEFAULT);
-        let measuring_mode = rendering_mode_override
-            .map(direct_write_measuring_mode)
-            .unwrap_or(DWRITE_MEASURING_MODE_NATURAL);
+            .unwrap_or_else(|| {
+                // DirectWrite defaults carry the monitor and user's rendering
+                // preference. Font smoothing disabled is also documented as
+                // aliased text, rather than grayscale antialiasing.
+                if system_font_smoothing_mode() == WindowsFontSmoothingMode::Aliased {
+                    DWRITE_RENDERING_MODE1_ALIASED
+                } else {
+                    direct_write_rendering_mode1(defaults.GetRenderingMode())
+                }
+            });
+        let measuring_mode = direct_write_measuring_mode(rendering_mode);
 
         // IDWriteFactory3::CreateCustomRenderingParams explicitly accepts
         // DWRITE_RENDERING_MODE1_DEFAULT and DWRITE_GRID_FIT_MODE_DEFAULT as
@@ -221,17 +241,26 @@ fn direct_write_rendering_mode(rendering_mode: DirectWriteRenderingMode) -> DWRI
     }
 }
 
-fn direct_write_measuring_mode(rendering_mode: DirectWriteRenderingMode) -> DWRITE_MEASURING_MODE {
+fn direct_write_rendering_mode1(rendering_mode: DWRITE_RENDERING_MODE) -> DWRITE_RENDERING_MODE1 {
+    match rendering_mode {
+        DWRITE_RENDERING_MODE_ALIASED => DWRITE_RENDERING_MODE1_ALIASED,
+        DWRITE_RENDERING_MODE_GDI_CLASSIC => DWRITE_RENDERING_MODE1_GDI_CLASSIC,
+        DWRITE_RENDERING_MODE_GDI_NATURAL => DWRITE_RENDERING_MODE1_GDI_NATURAL,
+        DWRITE_RENDERING_MODE_NATURAL => DWRITE_RENDERING_MODE1_NATURAL,
+        DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC => DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC,
+        DWRITE_RENDERING_MODE_OUTLINE => DWRITE_RENDERING_MODE1_OUTLINE,
+        _ => DWRITE_RENDERING_MODE1_DEFAULT,
+    }
+}
+
+fn direct_write_measuring_mode(rendering_mode: DWRITE_RENDERING_MODE1) -> DWRITE_MEASURING_MODE {
     match rendering_mode {
         // DWRITE_RENDERING_MODE1 documents the GDI modes' matching measuring
         // modes. Other rendering modes use natural measuring.
         // https://learn.microsoft.com/windows/win32/api/dwrite_3/ne-dwrite_3-dwrite_rendering_mode1
-        DirectWriteRenderingMode::GdiClassic => DWRITE_MEASURING_MODE_GDI_CLASSIC,
-        DirectWriteRenderingMode::GdiNatural => DWRITE_MEASURING_MODE_GDI_NATURAL,
-        DirectWriteRenderingMode::Default
-        | DirectWriteRenderingMode::Aliased
-        | DirectWriteRenderingMode::Natural
-        | DirectWriteRenderingMode::NaturalSymmetric => DWRITE_MEASURING_MODE_NATURAL,
+        DWRITE_RENDERING_MODE1_GDI_CLASSIC => DWRITE_MEASURING_MODE_GDI_CLASSIC,
+        DWRITE_RENDERING_MODE1_GDI_NATURAL => DWRITE_MEASURING_MODE_GDI_NATURAL,
+        _ => DWRITE_MEASURING_MODE_NATURAL,
     }
 }
 
@@ -297,6 +326,7 @@ fn resolved_rendering_params_require_grayscale_text_rendering(
         .map(|params| unsafe {
             params.rendering_params.GetPixelGeometry() == DWRITE_PIXEL_GEOMETRY_FLAT
                 || params.rendering_params.GetClearTypeLevel() <= 0.0
+                || params.rendering_params.GetRenderingMode1() == DWRITE_RENDERING_MODE1_ALIASED
         })
         .unwrap_or(false);
     cached.insert(cache_key, force_grayscale);
@@ -617,10 +647,11 @@ impl PlatformTextSystem for DirectWriteTextSystem {
             return TextRenderingMode::Grayscale;
         }
 
-        if SYSTEM_SUBPIXEL_RENDERING.load(Ordering::Relaxed) {
-            TextRenderingMode::Subpixel
-        } else {
-            TextRenderingMode::Grayscale
+        match system_font_smoothing_mode() {
+            WindowsFontSmoothingMode::ClearType => TextRenderingMode::Subpixel,
+            WindowsFontSmoothingMode::Aliased | WindowsFontSmoothingMode::Grayscale => {
+                TextRenderingMode::Grayscale
+            }
         }
     }
 
@@ -2165,16 +2196,30 @@ fn get_name(string: IDWriteLocalizedStrings, locale: &HSTRING) -> Result<String>
     Ok(String::from_utf16_lossy(&name_vec[..name_length]))
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct WindowsFontSmoothing {
     enabled: bool,
     smoothing_type: u32,
 }
 
 impl WindowsFontSmoothing {
-    fn subpixel_rendering(self) -> bool {
-        self.enabled && self.smoothing_type == FE_FONTSMOOTHINGCLEARTYPE
+    fn mode(self) -> WindowsFontSmoothingMode {
+        if !self.enabled {
+            WindowsFontSmoothingMode::Aliased
+        } else if self.smoothing_type == FE_FONTSMOOTHINGCLEARTYPE {
+            WindowsFontSmoothingMode::ClearType
+        } else {
+            WindowsFontSmoothingMode::Grayscale
+        }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+enum WindowsFontSmoothingMode {
+    Aliased,
+    Grayscale,
+    ClearType,
 }
 
 fn get_system_font_smoothing() -> WindowsFontSmoothing {
@@ -2183,10 +2228,6 @@ fn get_system_font_smoothing() -> WindowsFontSmoothing {
         smoothing_type: system_parameters_info_uint(SPI_GETFONTSMOOTHINGTYPE)
             .unwrap_or(FE_FONTSMOOTHINGCLEARTYPE),
     }
-}
-
-fn get_system_subpixel_rendering() -> bool {
-    get_system_font_smoothing().subpixel_rendering()
 }
 
 fn system_parameters_info_uint(action: SYSTEM_PARAMETERS_INFO_ACTION) -> Option<u32> {
@@ -2288,7 +2329,38 @@ const DEFAULT_LOCALE_NAME: PCWSTR = windows::core::w!("en-US");
 
 #[cfg(test)]
 mod tests {
-    use crate::direct_write::ClusterAnalyzer;
+    use crate::direct_write::{ClusterAnalyzer, WindowsFontSmoothing, WindowsFontSmoothingMode};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        FE_FONTSMOOTHINGCLEARTYPE, FE_FONTSMOOTHINGSTANDARD,
+    };
+
+    #[test]
+    fn windows_font_smoothing_preserves_all_system_modes() {
+        assert_eq!(
+            WindowsFontSmoothing {
+                enabled: false,
+                smoothing_type: FE_FONTSMOOTHINGCLEARTYPE,
+            }
+            .mode(),
+            WindowsFontSmoothingMode::Aliased
+        );
+        assert_eq!(
+            WindowsFontSmoothing {
+                enabled: true,
+                smoothing_type: FE_FONTSMOOTHINGSTANDARD,
+            }
+            .mode(),
+            WindowsFontSmoothingMode::Grayscale
+        );
+        assert_eq!(
+            WindowsFontSmoothing {
+                enabled: true,
+                smoothing_type: FE_FONTSMOOTHINGCLEARTYPE,
+            }
+            .mode(),
+            WindowsFontSmoothingMode::ClearType
+        );
+    }
 
     #[test]
     fn test_cluster_map() {
