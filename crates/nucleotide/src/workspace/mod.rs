@@ -10944,11 +10944,12 @@ impl Workspace {
             nucleotide_ui::DensityMetrics::for_density(nucleotide_ui::ControlDensity::Comfortable);
         let divider_color = status_bar_tokens.border;
         let native_sidebar_enabled = macos_system_sidebar_enabled(&self.core.read(cx).config.gui);
-        let sidebar_background = if should_extend_translucent_sidebar_into_status_bar(
+        let extend_sidebar_into_status_bar = should_extend_translucent_sidebar_into_status_bar(
             self.show_file_tree,
             self.file_tree_width,
             native_sidebar_enabled,
-        ) {
+        );
+        let sidebar_background = if extend_sidebar_into_status_bar {
             translucent_file_tree_tokens.background
         } else {
             status_bar_tokens.background_active
@@ -10964,8 +10965,18 @@ impl Workspace {
                         .border_color(translucent_file_tree_tokens.border)
                 });
 
-        let content =
-            self.statusbar_main_content(&model, geometry, divider_color, &status_bar_tokens, cx);
+        let content = div()
+            .size_full()
+            .when(extend_sidebar_into_status_bar, |content| {
+                content.border_t_1().border_color(divider_color)
+            })
+            .child(self.statusbar_main_content(
+                &model,
+                geometry,
+                divider_color,
+                &status_bar_tokens,
+                cx,
+            ));
 
         let workspace_entity = cx.entity().clone();
         let file_tree_button = Button::icon_only("file-tree-toggle", "icons/folder-tree.svg")
@@ -11002,6 +11013,9 @@ impl Workspace {
             .flex()
             .flex_row()
             .items_center()
+            .when(extend_sidebar_into_status_bar, |utilities| {
+                utilities.border_t_1().border_color(divider_color)
+            })
             .border_l_1()
             .border_color(divider_color)
             .child(
@@ -11024,6 +11038,7 @@ impl Workspace {
             );
 
         StatusBar::new("workspace-status-bar")
+            .top_border(!extend_sidebar_into_status_bar)
             .leading(geometry.sidebar_width, leading)
             .content(content)
             .trailing(utilities)

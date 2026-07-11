@@ -284,6 +284,22 @@ impl SizeTokens {
         }
     }
 
+    /// Create metrics for chrome that follows the host platform's native UI.
+    ///
+    /// macOS unified title bars use a taller toolbar-like row than Nucleotide's
+    /// compact theme chrome. Keeping this here makes the platform geometry travel
+    /// with the system palette instead of leaking macOS constants into components.
+    pub fn native_chrome() -> Self {
+        let mut tokens = Self::default();
+
+        #[cfg(target_os = "macos")]
+        {
+            tokens.titlebar_height = px(52.0);
+        }
+
+        tokens
+    }
+
     /// Create size tokens whose text scale is centred on the configured UI font size.
     pub fn with_text_md(text_md: Pixels) -> Self {
         let mut tokens = Self::default();
@@ -1005,7 +1021,7 @@ impl DesignTokens {
         Self {
             editor,
             chrome,
-            sizes: SizeTokens::default(),
+            sizes: SizeTokens::native_chrome(),
         }
     }
 
@@ -1249,7 +1265,9 @@ impl FileTreeTokens {
 
     /// Return tokens tuned for a translucent native sidebar backdrop.
     pub fn translucent_sidebar(self) -> Self {
-        const BACKGROUND_ALPHA: f32 = 0.72;
+        // macOS source lists are strongly tinted materials. The blur should add
+        // depth, not make windows or wallpaper behind the app readable.
+        const BACKGROUND_ALPHA: f32 = 0.92;
         const HOVER_ALPHA: f32 = 0.42;
         const SELECTED_ALPHA: f32 = 0.82;
         const BORDER_ALPHA: f32 = 0.64;

@@ -247,40 +247,42 @@ impl NativeChromePalette {
             strong_shadow_alpha,
         ) = if is_dark {
             (
-                hsla_from_rgb_u8(30, 30, 30, 1.0),
+                hsla_from_rgb_u8(28, 28, 30, 1.0),
                 hsla_from_rgb_u8(44, 44, 46, 1.0),
-                hsla_from_rgb_u8(36, 36, 38, 1.0),
+                hsla_from_rgb_u8(39, 40, 43, 1.0),
                 hsla_from_rgb_u8(58, 58, 60, 1.0),
-                hsla_from_rgb_u8(44, 44, 46, 0.92),
-                hsla_from_rgb_u8(84, 84, 88, 0.58),
-                hsla_from_rgb_u8(99, 99, 102, 0.52),
+                hsla_from_rgb_u8(44, 44, 46, 0.90),
+                hsla_from_rgb_u8(84, 84, 88, 0.44),
+                hsla_from_rgb_u8(112, 112, 117, 0.42),
                 hsla_from_rgb_u8(245, 245, 247, 1.0),
-                0.76,
+                0.72,
                 0.40,
-                0.28,
-                0.42,
+                0.24,
+                0.38,
             )
         } else {
             (
-                hsla_from_rgb_u8(246, 246, 246, 1.0),
+                hsla_from_rgb_u8(247, 249, 252, 1.0),
                 hsla_from_rgb_u8(255, 255, 255, 1.0),
-                hsla_from_rgb_u8(248, 248, 248, 1.0),
+                // Finder's source-list material is a cool, quiet blue-grey rather
+                // than a second white content panel.
+                hsla_from_rgb_u8(224, 230, 239, 1.0),
                 hsla_from_rgb_u8(255, 255, 255, 1.0),
-                hsla_from_rgb_u8(250, 250, 250, 0.92),
-                hsla_from_rgb_u8(198, 198, 200, 0.72),
-                hsla_from_rgb_u8(174, 174, 178, 0.56),
+                hsla_from_rgb_u8(250, 251, 253, 0.90),
+                hsla_from_rgb_u8(60, 60, 67, 0.18),
+                hsla_from_rgb_u8(60, 60, 67, 0.24),
                 hsla_from_rgb_u8(28, 28, 30, 1.0),
-                0.70,
+                0.68,
                 0.34,
-                0.12,
-                0.20,
+                0.10,
+                0.18,
             )
         };
 
         let (mica_alpha, layer_alpha, dense_text_layer_alpha, elevated_alpha) = if is_dark {
-            (0.0, 0.58, 0.62, 0.72)
+            (0.84, 0.86, 0.90, 0.94)
         } else {
-            (0.0, 0.54, 0.58, 0.70)
+            (0.88, 0.86, 0.90, 0.94)
         };
 
         Self {
@@ -445,11 +447,18 @@ mod tests {
         assert!(light.layer_base.l > dark.layer_base.l);
         assert!(light.text.l < dark.text.l);
 
-        if cfg!(any(target_os = "windows", target_os = "macos")) {
+        if cfg!(target_os = "windows") {
             assert_eq!(light.mica_alpha, 0.0);
             assert_eq!(dark.mica_alpha, 0.0);
             assert!(light.layer_alpha < 1.0);
             assert!(dark.layer_alpha < 1.0);
+        } else if cfg!(target_os = "macos") {
+            assert!(light.mica_alpha >= 0.85);
+            assert!(dark.mica_alpha >= 0.80);
+            assert!(light.layer_alpha >= light.mica_alpha - 0.05);
+            assert!(dark.layer_alpha >= dark.mica_alpha - 0.05);
+            assert!(light.dense_text_layer_alpha > light.layer_alpha);
+            assert!(dark.dense_text_layer_alpha > dark.layer_alpha);
         } else {
             assert_eq!(light.mica_alpha, 1.0);
             assert_eq!(dark.mica_alpha, 1.0);
@@ -493,5 +502,9 @@ mod tests {
         assert_ne!(windows.layer_alpha, macos.layer_alpha);
         assert!(windows.layer_alpha < 1.0);
         assert!(macos.layer_alpha < 1.0);
+        assert!(macos.layer_alt_base.s > macos.layer_base.s);
+        assert!(macos.mica_alpha >= 0.85);
+        assert!(macos.layer_alpha >= 0.85);
+        assert!(macos.dense_text_layer_alpha > macos.layer_alpha);
     }
 }
