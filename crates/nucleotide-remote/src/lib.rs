@@ -13426,6 +13426,12 @@ mod tests {
             }),
             Vec::new(),
         )));
+        let first = completion_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("first completion");
+        assert_eq!(first.0, "stat");
+        assert!(matches!(first.1.unwrap().0, RemoteResponse::Stat(_)));
+
         input.push(v5_frames_bytes(v5_response_frames(
             read_stream,
             "fs.read",
@@ -13439,12 +13445,6 @@ mod tests {
             }),
             b"slow".to_vec(),
         )));
-
-        let first = completion_rx
-            .recv_timeout(Duration::from_secs(2))
-            .expect("first completion");
-        assert_eq!(first.0, "stat");
-        assert!(matches!(first.1.unwrap().0, RemoteResponse::Stat(_)));
         let second = completion_rx
             .recv_timeout(Duration::from_secs(2))
             .expect("second completion");
