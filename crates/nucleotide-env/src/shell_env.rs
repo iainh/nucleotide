@@ -1263,6 +1263,8 @@ async fn terminate_environment_child_process(
 fn kill_environment_process_group(process_id: u32) -> std::io::Result<()> {
     let status = Command::new("kill")
         .arg("-KILL")
+        // A negative PID targets a process group, so terminate option parsing first.
+        .arg("--")
         .arg(format!("-{process_id}"))
         .status()?;
 
