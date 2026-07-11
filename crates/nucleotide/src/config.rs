@@ -316,11 +316,14 @@ impl Default for WindowConfig {
 pub struct RemoteConfig {
     #[serde(default)]
     pub ssh: RemoteSshConfig,
+
+    #[serde(default)]
+    pub wsl: RemoteWslConfig,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum RemoteSshHelperInstall {
+pub enum RemoteHelperInstall {
     #[default]
     Auto,
     Never,
@@ -331,7 +334,7 @@ pub enum RemoteSshHelperInstall {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RemoteSshConfig {
     #[serde(default)]
-    pub helper_install: RemoteSshHelperInstall,
+    pub helper_install: RemoteHelperInstall,
 
     #[serde(default)]
     pub helper_path: Option<PathBuf>,
@@ -349,7 +352,7 @@ pub struct RemoteSshConfig {
 impl Default for RemoteSshConfig {
     fn default() -> Self {
         Self {
-            helper_install: RemoteSshHelperInstall::Auto,
+            helper_install: RemoteHelperInstall::Auto,
             helper_path: None,
             connect_timeout_secs: default_remote_ssh_connect_timeout_secs(),
             extra_args: Vec::new(),
@@ -358,11 +361,31 @@ impl Default for RemoteSshConfig {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RemoteWslConfig {
+    #[serde(default)]
+    pub helper_install: RemoteHelperInstall,
+
+    #[serde(default)]
+    pub helper_path: Option<PathBuf>,
+}
+
+impl Default for RemoteWslConfig {
+    fn default() -> Self {
+        Self {
+            helper_install: RemoteHelperInstall::Auto,
+            helper_path: None,
+        }
+    }
+}
+
 fn default_remote_ssh_connect_timeout_secs() -> Option<u64> {
     Some(nucleotide_remote::DEFAULT_SSH_CONNECT_TIMEOUT_SECS)
 }
 
-impl RemoteSshHelperInstall {
+pub type RemoteSshHelperInstall = RemoteHelperInstall;
+
+impl RemoteHelperInstall {
     fn to_backend_policy(self) -> nucleotide_remote::RemoteHelperInstallPolicy {
         match self {
             Self::Auto => nucleotide_remote::RemoteHelperInstallPolicy::Auto,
@@ -1090,8 +1113,10 @@ impl Config {
         &self,
     ) -> nucleotide_remote::RemoteWorkspaceBackendOptions {
         let ssh = &self.gui.remote.ssh;
+        let wsl = &self.gui.remote.wsl;
         let mut options = nucleotide_remote::RemoteWorkspaceBackendOptions {
             ssh_helper_install_policy: ssh.helper_install.to_backend_policy(),
+            wsl_helper_install_policy: wsl.helper_install.to_backend_policy(),
             ssh_connect_timeout_secs: ssh.connect_timeout_secs.filter(|timeout| *timeout > 0),
             ssh_extra_args: ssh
                 .extra_args
@@ -1104,8 +1129,15 @@ impl Config {
         if let Some(helper_path) = ssh.helper_path.as_ref()
             && !helper_path.as_os_str().is_empty()
         {
-            options.remote_helper_path = helper_path.clone();
-            options.remote_helper_path_is_override = true;
+            options.ssh_helper_path = Some(helper_path.clone());
+            options.ssh_helper_path_is_override = true;
+        }
+
+        if let Some(helper_path) = wsl.helper_path.as_ref()
+            && !helper_path.as_os_str().is_empty()
+        {
+            options.wsl_helper_path = Some(helper_path.clone());
+            options.wsl_helper_path_is_override = true;
         }
 
         if let Some(use_control_master) = ssh.use_control_master {
@@ -1676,6 +1708,11 @@ auto_download = true
         );
         assert_eq!(config.remote.ssh.connect_timeout_secs, Some(30));
         assert!(config.remote.ssh.extra_args.is_empty());
+        assert_eq!(
+            config.remote.wsl.helper_install,
+            RemoteSshHelperInstall::Auto
+        );
+        assert!(config.remote.wsl.helper_path.is_none());
         assert!(config.lsp.project_lsp_startup);
         assert!(!config.project_markers.enable_project_markers);
 
@@ -1731,6 +1768,7 @@ auto_download = true
             "connect_timeout_secs",
             "extra_args",
             "use_control_master",
+            "[remote.wsl]",
             "[lsp]",
             "project_lsp_startup",
             "startup_timeout_ms",
@@ -1775,10 +1813,12 @@ auto_download = true
             nucleotide_remote::RemoteHelperInstallPolicy::Never
         );
         assert_eq!(
-            options.remote_helper_path,
-            PathBuf::from("/opt/nucleotide/nucleotide-remote")
+            options.ssh_helper_path,
+            Some(PathBuf::from("/opt/nucleotide/nucleotide-remote"))
         );
-        assert!(options.remote_helper_path_is_override);
+        assert!(options.ssh_helper_path_is_override);
+        assert!(options.wsl_helper_path.is_none());
+        assert!(!options.wsl_helper_path_is_override);
         assert_eq!(options.ssh_connect_timeout_secs, Some(12));
         assert_eq!(
             options.ssh_extra_args,
@@ -1788,6 +1828,33 @@ auto_download = true
             ]
         );
         assert_eq!(options.ssh_control_path, None);
+    }
+
+    #[test]
+    fn remote_wsl_config_maps_to_backend_options() {
+        let config: GuiConfig = toml::from_str(
+            r#"
+            [remote.wsl]
+            helper_install = "upload"
+            helper_path = "/opt/nucleotide/nucleotide-remote"
+            "#,
+        )
+        .expect("remote WSL config parses");
+        let options = Config {
+            helix: HelixConfig::default(),
+            gui: config,
+        }
+        .remote_workspace_backend_options();
+
+        assert_eq!(
+            options.wsl_helper_install_policy,
+            nucleotide_remote::RemoteHelperInstallPolicy::Upload
+        );
+        assert_eq!(
+            options.wsl_helper_path,
+            Some(PathBuf::from("/opt/nucleotide/nucleotide-remote"))
+        );
+        assert!(options.wsl_helper_path_is_override);
     }
 
     #[test]

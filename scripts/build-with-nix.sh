@@ -13,8 +13,8 @@ nix build '.#runtime' --print-build-logs
 echo "Building binary..."
 nix develop --command cargo build --release
 
-# Build Linux SSH remote helpers for app/package bundling
-echo "Building SSH remote helpers..."
+# Build Linux SSH/WSL remote helpers for app/package bundling
+echo "Building Linux remote helpers..."
 nix develop --command build-remote-helpers
 
 # Create bundle if on macOS

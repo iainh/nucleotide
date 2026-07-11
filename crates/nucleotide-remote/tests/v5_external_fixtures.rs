@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 use futures::executor::block_on;
 use nucleotide_remote::{
     RemoteHelperInstallPolicy, RemoteWorkspaceBackendOptions,
@@ -113,17 +115,6 @@ fn path_fixture(directory: &Path, installer: fn(&Path)) -> (MutexGuard<'static, 
     (guard, path)
 }
 
-fn v5_options(helper: &Path) -> RemoteWorkspaceBackendOptions {
-    RemoteWorkspaceBackendOptions {
-        remote_helper_path: helper.to_path_buf(),
-        remote_helper_path_is_override: true,
-        ssh_helper_install_policy: RemoteHelperInstallPolicy::Never,
-        ssh_connect_timeout_secs: Some(1),
-        ssh_control_path: None,
-        ..RemoteWorkspaceBackendOptions::default()
-    }
-}
-
 fn wait_for_watch_batch(watch: &WorkspaceWatch) -> WorkspaceWatchBatch {
     let started = Instant::now();
     loop {
@@ -145,6 +136,7 @@ fn ssh_v5_fixture_exercises_watch_search_process_and_path_mapping() {
     let (_path_guard, _path_override) = path_fixture(&launcher_dir, install_fake_ssh);
 
     let helper = PathBuf::from(env!("CARGO_BIN_EXE_nucleotide-remote"));
+    let deployed_helper = temp.path().join("ssh-cache").join("nucleotide-remote");
     let workspace = temp.path().join("workspace");
     let src = workspace.join("src");
     std::fs::create_dir_all(&src).unwrap();
@@ -160,8 +152,21 @@ fn ssh_v5_fixture_exercises_watch_search_process_and_path_mapping() {
         },
         path: workspace.clone(),
     };
-    let connection = connect_workspace_backend_for_location(location, &v5_options(&helper))
+    let options = RemoteWorkspaceBackendOptions {
+        ssh_helper_path: Some(deployed_helper.clone()),
+        ssh_helper_path_is_override: true,
+        ssh_helper_install_policy: RemoteHelperInstallPolicy::Upload,
+        ssh_helper_upload_path: Some(helper),
+        ssh_connect_timeout_secs: Some(1),
+        ssh_control_path: None,
+        ..RemoteWorkspaceBackendOptions::default()
+    };
+    let connection = connect_workspace_backend_for_location(location, &options)
         .expect("ssh v5 fixture should connect through fake ssh");
+    assert!(
+        deployed_helper.is_file(),
+        "SSH helper should be uploaded before the service starts"
+    );
     assert_eq!(connection.hello.unwrap().workspace_root, workspace);
     let backend = connection.backend;
 
@@ -235,6 +240,7 @@ fn wsl_v5_fixture_exercises_path_mapping_and_watch_availability() {
     let (_path_guard, _path_override) = path_fixture(&launcher_dir, install_fake_wsl);
 
     let helper = PathBuf::from(env!("CARGO_BIN_EXE_nucleotide-remote"));
+    let deployed_helper = temp.path().join("wsl-cache").join("nucleotide-remote");
     let workspace = temp.path().join("workspace");
     std::fs::create_dir_all(workspace.join("src")).unwrap();
     std::fs::write(workspace.join("src").join("lib.rs"), "pub fn needle() {}\n").unwrap();
@@ -245,8 +251,20 @@ fn wsl_v5_fixture_exercises_path_mapping_and_watch_availability() {
         distro: "Ubuntu".to_string(),
         linux_path: workspace.clone(),
     };
-    let connection = connect_workspace_backend_for_location(location, &v5_options(&helper))
+    let options = RemoteWorkspaceBackendOptions {
+        wsl_helper_path: Some(deployed_helper.clone()),
+        wsl_helper_path_is_override: true,
+        wsl_helper_install_policy: RemoteHelperInstallPolicy::Upload,
+        ssh_helper_upload_path: Some(helper),
+        ssh_control_path: None,
+        ..RemoteWorkspaceBackendOptions::default()
+    };
+    let connection = connect_workspace_backend_for_location(location, &options)
         .expect("wsl v5 fixture should connect through fake wsl.exe");
+    assert!(
+        deployed_helper.is_file(),
+        "WSL helper should be uploaded before the service starts"
+    );
     assert_eq!(connection.hello.unwrap().workspace_root, workspace);
     let backend = connection.backend;
 
