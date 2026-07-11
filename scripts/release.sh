@@ -38,8 +38,8 @@ workspace_version() {
     in_workspace_package && /^\[/ { exit }
     in_workspace_package && /^version[[:space:]]*=[[:space:]]*"/ {
       line = $0
-      sub(/^[^\"]*\"/, "", line)
-      sub(/\".*$/, "", line)
+      sub(/^[^"]*"/, "", line)
+      sub(/".*$/, "", line)
       print line
       exit
     }
