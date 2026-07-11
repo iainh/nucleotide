@@ -1329,6 +1329,7 @@ impl RemoteConnectionManagerView {
     fn render_text_button<F>(
         &self,
         label: &'static str,
+        icon: &'static str,
         cx: &mut Context<Self>,
         listener: F,
     ) -> impl IntoElement
@@ -1339,6 +1340,7 @@ impl RemoteConnectionManagerView {
         Button::new(label, label)
             .variant(ButtonVariant::Secondary)
             .size(ButtonSize::Medium)
+            .icon(icon)
             .activate_on_mouse_down()
             .on_click(move |_event, _window, cx| {
                 manager.update(cx, |this, cx| {
@@ -1475,9 +1477,11 @@ impl Render for RemoteConnectionManagerView {
                     .gap_2()
                     .child(self.render_protocol_dropdown(window, cx))
                     .child(self.render_input_field())
-                    .child(self.render_text_button("Connect", cx, |this, cx| {
-                        this.connect(cx);
-                    })),
+                    .child(
+                        self.render_text_button("Connect", "icons/link.svg", cx, |this, cx| {
+                            this.connect(cx);
+                        }),
+                    ),
             )
             .child(
                 div()
@@ -1529,12 +1533,22 @@ impl Render for RemoteConnectionManagerView {
                             .flex()
                             .items_center()
                             .gap_2()
-                            .child(self.render_text_button("Cancel", cx, |this, cx| {
-                                this.cancel(cx);
-                            }))
-                            .child(self.render_text_button("Open", cx, |this, cx| {
-                                this.open_selected_workspace(cx);
-                            })),
+                            .child(self.render_text_button(
+                                "Cancel",
+                                "icons/circle-x.svg",
+                                cx,
+                                |this, cx| {
+                                    this.cancel(cx);
+                                },
+                            ))
+                            .child(self.render_text_button(
+                                "Open",
+                                "icons/folder-open.svg",
+                                cx,
+                                |this, cx| {
+                                    this.open_selected_workspace(cx);
+                                },
+                            )),
                     ),
             )
     }

@@ -300,6 +300,7 @@ impl Render for ConfirmDialogView {
         let cancel_button = Button::new("confirm-dialog-cancel", self.dialog.cancel_label.clone())
             .variant(ButtonVariant::Secondary)
             .size(ButtonSize::Small)
+            .icon("icons/circle-x.svg")
             .focus_handle(self.cancel_focus_handle.clone())
             .activate_on_mouse_down()
             .on_click(cx.listener(|view, _event, _window, cx| {
@@ -307,10 +308,16 @@ impl Render for ConfirmDialogView {
                 cx.stop_propagation();
             }));
 
+        let confirm_icon = if self.dialog.confirm_variant == ButtonVariant::Danger {
+            "icons/triangle-alert.svg"
+        } else {
+            "icons/square-check-big.svg"
+        };
         let confirm_button =
             Button::new("confirm-dialog-confirm", self.dialog.confirm_label.clone())
                 .variant(self.dialog.confirm_variant)
                 .size(ButtonSize::Small)
+                .icon(confirm_icon)
                 .focus_handle(self.confirm_focus_handle.clone())
                 .activate_on_mouse_down()
                 .on_click(cx.listener(|view, _event, _window, cx| {
