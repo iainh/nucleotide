@@ -298,7 +298,7 @@ pub struct WindowConfig {
     pub appearance_follows_theme: bool,
 
     /// Windows DirectWrite text rendering overrides.
-    #[serde(default = "default_window_directwrite_config")]
+    #[serde(default)]
     pub directwrite: Option<DirectWriteConfig>,
 }
 
@@ -307,19 +307,9 @@ impl Default for WindowConfig {
         Self {
             blur_dark_themes: false,
             appearance_follows_theme: true,
-            directwrite: default_window_directwrite_config(),
+            directwrite: None,
         }
     }
-}
-
-#[cfg(target_os = "windows")]
-fn default_window_directwrite_config() -> Option<DirectWriteConfig> {
-    Some(DirectWriteConfig::windows_fluent_default())
-}
-
-#[cfg(not(target_os = "windows"))]
-fn default_window_directwrite_config() -> Option<DirectWriteConfig> {
-    None
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -408,17 +398,6 @@ pub struct DirectWriteConfig {
 }
 
 impl DirectWriteConfig {
-    /// DirectWrite defaults tuned for crisp Windows UI text.
-    pub fn windows_fluent_default() -> Self {
-        Self {
-            gamma: Some(1.8),
-            enhanced_contrast: Some(0.75),
-            clear_type_level: Some(1.0),
-            pixel_geometry: Some(DirectWritePixelGeometry::Rgb),
-            rendering_mode: Some(DirectWriteRenderingMode::NaturalSymmetric),
-        }
-    }
-
     /// Convert this configuration into GPUI's DirectWrite rendering parameters.
     pub fn to_gpui_params(&self) -> gpui::DirectWriteTextRenderingParams {
         gpui::DirectWriteTextRenderingParams {
@@ -1663,28 +1642,12 @@ auto_download = true
     }
 
     #[test]
-    fn window_config_uses_tuned_windows_directwrite_defaults() {
+    fn window_config_uses_system_directwrite_defaults() {
         let window = WindowConfig::default();
+        let config: GuiConfig = toml::from_str("").expect("default GUI config should parse");
 
-        if cfg!(target_os = "windows") {
-            let directwrite = window
-                .directwrite
-                .expect("Windows should use tuned DirectWrite defaults");
-
-            assert_eq!(directwrite.gamma, Some(1.8));
-            assert_eq!(directwrite.enhanced_contrast, Some(0.75));
-            assert_eq!(directwrite.clear_type_level, Some(1.0));
-            assert_eq!(
-                directwrite.pixel_geometry,
-                Some(DirectWritePixelGeometry::Rgb)
-            );
-            assert_eq!(
-                directwrite.rendering_mode,
-                Some(DirectWriteRenderingMode::NaturalSymmetric)
-            );
-        } else {
-            assert_eq!(window.directwrite, None);
-        }
+        assert_eq!(window.directwrite, None);
+        assert_eq!(config.window.directwrite, None);
     }
 
     #[test]
