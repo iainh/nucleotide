@@ -43,7 +43,7 @@ The workflow performs these steps:
 2. Build the macOS universal application and Windows package input.
 3. Download each platform's previous published Velopack release so `vpk pack` can generate delta packages.
 4. Generate release notes from commits since the previous tag.
-5. Sign and notarize the macOS application and installer, then sign the Windows binaries and installer.
+5. Sign and notarize the macOS application and installer when Apple credentials are configured, and sign Windows binaries and installers when Windows signing secrets are configured. Otherwise, produce unsigned packages for that platform.
 6. Upload both Velopack channels into one draft GitHub release.
 7. Upload the Linux files, checksums and build-provenance attestations.
 8. Verify the feeds, full packages and installers, then publish the release.
@@ -56,22 +56,22 @@ Create a protected GitHub environment named `release`. Configure approval rules 
 
 | Secret | Purpose |
 | --- | --- |
-| `MACOS_BUILD_CERTIFICATE_BASE64` | Base64-encoded Developer ID Application `.p12` certificate |
-| `MACOS_INSTALLER_CERTIFICATE_BASE64` | Base64-encoded Developer ID Installer `.p12` certificate |
-| `MACOS_CERTIFICATE_PASSWORD` | Password for both macOS certificate files |
-| `MACOS_SIGN_APP_IDENTITY` | Developer ID Application identity without the team suffix |
-| `MACOS_SIGN_INSTALL_IDENTITY` | Developer ID Installer identity without the team suffix |
-| `APPLE_ID` | Apple account used for notarization |
-| `APPLE_APP_PASSWORD` | App-specific password used by `notarytool` |
-| `APPLE_TEAM_ID` | Apple Developer team identifier |
-| `WINDOWS_SIGNING_CERTIFICATE_BASE64` | Base64-encoded Authenticode `.pfx` certificate |
-| `WINDOWS_SIGNING_CERTIFICATE_PASSWORD` | Password for the Windows certificate |
+| `MACOS_BUILD_CERTIFICATE_BASE64` | Optional base64-encoded Developer ID Application `.p12` certificate |
+| `MACOS_INSTALLER_CERTIFICATE_BASE64` | Optional base64-encoded Developer ID Installer `.p12` certificate |
+| `MACOS_CERTIFICATE_PASSWORD` | Optional password for both macOS certificate files |
+| `MACOS_SIGN_APP_IDENTITY` | Optional Developer ID Application identity without the team suffix |
+| `MACOS_SIGN_INSTALL_IDENTITY` | Optional Developer ID Installer identity without the team suffix |
+| `APPLE_ID` | Optional Apple account used for notarization |
+| `APPLE_APP_PASSWORD` | Optional app-specific password used by `notarytool` |
+| `APPLE_TEAM_ID` | Optional Apple Developer team identifier |
+| `WINDOWS_SIGNING_CERTIFICATE_BASE64` | Optional base64-encoded Authenticode `.pfx` certificate |
+| `WINDOWS_SIGNING_CERTIFICATE_PASSWORD` | Optional password for the Windows certificate |
 
-The workflow imports certificates into temporary stores and removes them in an `always()` cleanup step. It pins the Velopack CLI to the same version as the Rust dependency.
+Configure all eight Apple signing and notarization secrets to produce signed and notarized macOS packages, or omit all eight to produce unsigned packages. Configure both Windows signing secrets to produce signed packages, or omit both to produce unsigned packages. A partial configuration for either platform fails the build. When configured, the workflow imports certificates into temporary stores and removes them in an `always()` cleanup step. It pins the Velopack CLI to the same version as the Rust dependency.
 
 ## Recover from a bad release
 
-Do not replace an already published package in place. Fix the problem, increment the application version and publish a new signed release. Clients will discover the newer version through the platform feed.
+Do not replace an already published package in place. Fix the problem, increment the application version and publish a new release. Clients will discover the newer version through the platform feed.
 
 If publication fails, leave the GitHub release as a draft while correcting the pipeline. A draft feed is not visible to installed clients.
 
