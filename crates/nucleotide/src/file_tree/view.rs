@@ -406,8 +406,6 @@ pub struct FileTreeView {
     horizontal_scroll_handle: ScrollHandle,
     /// Vertical scrollbar state for managing token-aware scrollbar UI
     vertical_scrollbar_state: ScrollbarState,
-    /// Horizontal scrollbar state for managing token-aware scrollbar UI
-    horizontal_scrollbar_state: ScrollbarState,
     /// Tokio runtime handle for async VCS operations
     _tokio_handle: Option<tokio::runtime::Handle>,
     /// File system watcher for detecting changes
@@ -457,7 +455,6 @@ impl FileTreeView {
         let scroll_handle = UniformListScrollHandle::new();
         let horizontal_scroll_handle = ScrollHandle::new();
         let vertical_scrollbar_state = ScrollbarState::new(scroll_handle.clone());
-        let horizontal_scrollbar_state = ScrollbarState::new(horizontal_scroll_handle.clone());
         let focus_handle = cx.focus_handle();
         if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>().cloned() {
             coord.set_file_tree_focus(focus_handle.clone());
@@ -471,7 +468,6 @@ impl FileTreeView {
             scroll_handle,
             horizontal_scroll_handle,
             vertical_scrollbar_state,
-            horizontal_scrollbar_state,
             _tokio_handle: None,
             file_watcher: None,
             workspace_backend,
@@ -528,7 +524,6 @@ impl FileTreeView {
         let scroll_handle = UniformListScrollHandle::new();
         let horizontal_scroll_handle = ScrollHandle::new();
         let vertical_scrollbar_state = ScrollbarState::new(scroll_handle.clone());
-        let horizontal_scrollbar_state = ScrollbarState::new(horizontal_scroll_handle.clone());
         let focus_handle = cx.focus_handle();
         if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>().cloned() {
             coord.set_file_tree_focus(focus_handle.clone());
@@ -542,7 +537,6 @@ impl FileTreeView {
             scroll_handle,
             horizontal_scroll_handle,
             vertical_scrollbar_state,
-            horizontal_scrollbar_state,
             _tokio_handle: tokio_handle,
             file_watcher: None,
             workspace_backend,
@@ -4099,20 +4093,6 @@ impl Render for FileTreeView {
                                             .right_0()
                                             .bottom_0()
                                             .w(SCROLLBAR_THICKNESS)
-                                            .child(scrollbar),
-                                    )
-                                },
-                            )
-                            .when_some(
-                                Scrollbar::horizontal(self.horizontal_scrollbar_state.clone()),
-                                |container, scrollbar| {
-                                    container.child(
-                                        div()
-                                            .absolute()
-                                            .left_0()
-                                            .right_0()
-                                            .bottom_0()
-                                            .h(SCROLLBAR_THICKNESS)
                                             .child(scrollbar),
                                     )
                                 },

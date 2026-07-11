@@ -108,12 +108,15 @@ impl Render for PlatformTitleBar {
 
         let titlebar_tokens = cx.global::<crate::Theme>().tokens.titlebar_tokens();
 
+        const MAC_UNIFIED_TITLEBAR_MIN_HEIGHT: f32 = 44.0;
         let height = titlebar_tokens.height;
+        let native_macos_titlebar = self.platform_style == PlatformStyle::Mac
+            && f32::from(height) >= MAC_UNIFIED_TITLEBAR_MIN_HEIGHT;
         #[cfg(debug_assertions)]
         debug!("TITLEBAR RENDER: Final titlebar height: {:?}", height);
 
-        // macOS traffic light padding
-        const MAC_TRAFFIC_LIGHT_PADDING: f32 = 71.0;
+        // Reserve the native traffic-light cluster plus Finder-like breathing room.
+        const MAC_TRAFFIC_LIGHT_PADDING: f32 = 82.0;
 
         // Set window insets based on decoration type only once to avoid per-frame calls
         if !self.inset_applied {
@@ -152,14 +155,18 @@ impl Render for PlatformTitleBar {
             .when(leading_sidebar_background.is_some(), |titlebar| {
                 titlebar.overflow_hidden()
             })
-            .when(self.platform_style != PlatformStyle::Windows, |titlebar| {
-                titlebar.border_b_1().border_color(titlebar_tokens.border)
-            })
+            .when(
+                self.platform_style != PlatformStyle::Windows
+                    && leading_sidebar_background.is_none(),
+                |titlebar| titlebar.border_b_1().border_color(titlebar_tokens.border),
+            )
             .map(|this| {
                 if window.is_fullscreen() {
                     this.pl_2()
-                } else if self.platform_style == PlatformStyle::Mac {
+                } else if native_macos_titlebar {
                     this.pl(px(MAC_TRAFFIC_LIGHT_PADDING))
+                } else if self.platform_style == PlatformStyle::Mac {
+                    this.pl(px(71.0))
                 } else {
                     this.pl_2()
                 }
@@ -208,6 +215,15 @@ impl Render for PlatformTitleBar {
                             .w(px(1.0))
                             .bg(sidebar.separator),
                     )
+                    .child(
+                        div()
+                            .absolute()
+                            .left(sidebar.width)
+                            .right_0()
+                            .bottom_0()
+                            .h(px(1.0))
+                            .bg(titlebar_tokens.border),
+                    )
             });
 
         title_bar
@@ -219,7 +235,8 @@ impl Render for PlatformTitleBar {
                     .w_full()
                     .h_full()
                     .items_center()
-                    .justify_center() // Center the content
+                    .when(native_macos_titlebar, |content| content.justify_start())
+                    .when(!native_macos_titlebar, |content| content.justify_center())
                     .relative() // For absolute positioning of window controls
                     .px_2()
                     .when(self.show_title, |content| {
@@ -233,7 +250,11 @@ impl Render for PlatformTitleBar {
                                 );
                                 div()
                                     .text_size(cx.global::<crate::Theme>().tokens.sizes.text_md) // Themed titlebar font size
-                                    .font_weight(gpui::FontWeight::MEDIUM) // Slightly bold for titlebar
+                                    .font_weight(if native_macos_titlebar {
+                                        gpui::FontWeight::SEMIBOLD
+                                    } else {
+                                        gpui::FontWeight::MEDIUM
+                                    })
                                     .text_color(titlebar_tokens.foreground)
                                     .child(self.title.clone())
                             }),

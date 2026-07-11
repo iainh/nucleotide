@@ -434,6 +434,7 @@ impl RenderOnce for Toolbar {
 pub struct StatusBar {
     id: ElementId,
     active: bool,
+    top_border: bool,
     leading: Option<(Pixels, AnyElement)>,
     content: Option<AnyElement>,
     trailing: Option<AnyElement>,
@@ -445,6 +446,7 @@ impl StatusBar {
         Self {
             id: id.into(),
             active: true,
+            top_border: true,
             leading: None,
             content: None,
             trailing: None,
@@ -454,6 +456,13 @@ impl StatusBar {
 
     pub fn active(mut self, active: bool) -> Self {
         self.active = active;
+        self
+    }
+
+    /// Control whether the status bar draws a border across its full width.
+    /// Disable this when a continuous sidebar supplies its own border geometry.
+    pub fn top_border(mut self, top_border: bool) -> Self {
+        self.top_border = top_border;
         self
     }
 
@@ -501,8 +510,9 @@ impl RenderOnce for StatusBar {
             .h(tokens.sizes.statusbar_height)
             .min_w(px(0.0))
             .bg(background)
-            .border_t_1()
-            .border_color(status.border)
+            .when(self.top_border, |bar| {
+                bar.border_t_1().border_color(status.border)
+            })
             .text_size(tokens.sizes.text_sm)
             .text_color(status.text_primary);
 
@@ -617,6 +627,10 @@ mod tests {
         assert!(status_bar.content.is_some());
         assert!(status_bar.trailing.is_some());
         assert!(status_bar.children.is_empty());
+        assert!(status_bar.top_border);
+
+        let seamless_status_bar = StatusBar::new("seamless-status-bar").top_border(false);
+        assert!(!seamless_status_bar.top_border);
     }
 
     #[gpui::test]

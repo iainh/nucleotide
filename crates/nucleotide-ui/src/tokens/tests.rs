@@ -287,6 +287,17 @@ mod titlebar_contrast_tests {
         );
     }
 
+    #[test]
+    fn native_chrome_uses_platform_titlebar_geometry() {
+        let sizes = SizeTokens::native_chrome();
+
+        #[cfg(target_os = "macos")]
+        assert_eq!(sizes.titlebar_height, gpui::px(52.0));
+
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(sizes.titlebar_height, SizeTokens::default().titlebar_height);
+    }
+
     /// Test that status bar height is intentionally compact and independent of titlebar height
     #[test]
     fn test_statusbar_height_is_compact() {

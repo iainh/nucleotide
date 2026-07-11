@@ -739,12 +739,23 @@ fn window_options(
 
     let window_background = config.window_background_appearance(is_dark_chrome);
 
+    #[cfg(target_os = "macos")]
+    let traffic_light_position =
+        if config.ui_chrome_style() == nucleotide_appearance::UiChromeStyle::System {
+            gpui::point(px(16.0), px(19.0))
+        } else {
+            gpui::point(px(9.0), px(9.0))
+        };
+
+    #[cfg(not(target_os = "macos"))]
+    let traffic_light_position = gpui::point(px(9.0), px(9.0));
+
     WindowOptions {
         app_id: Some("nucleotide".to_string()),
         titlebar: Some(TitlebarOptions {
-            title: None,                                                 // We'll render our own title
-            appears_transparent: true,                                   // Key for custom titlebar
-            traffic_light_position: Some(gpui::point(px(9.0), px(9.0))), // Required for macOS client decorations
+            title: None,               // We'll render our own title
+            appears_transparent: true, // Key for custom titlebar
+            traffic_light_position: Some(traffic_light_position),
         }),
         window_bounds: Some(WindowBounds::Windowed(gpui::Bounds {
             origin: gpui::point(px(100.0), px(100.0)),
