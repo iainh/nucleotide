@@ -329,16 +329,21 @@ pub fn expand_text_runs_for_display(
     display_map: &DisplayTextMap,
 ) -> Vec<TextRun> {
     let mut source_byte: usize = 0;
+    let mut display_byte: usize = 0;
     let mut display_runs = Vec::with_capacity(runs.len());
 
     for run in runs {
-        let source_run_start = source_byte;
-        let source_run_end = source_run_start.saturating_add(run.len);
+        let source_run_end = source_byte.saturating_add(run.len);
         source_byte = source_run_end;
 
-        let display_start = display_map.display_byte_for_source_byte(source_run_start);
         let display_end = display_map.display_byte_for_source_byte(source_run_end);
-        let display_len = display_end.saturating_sub(display_start);
+        // Include display-only bytes before this source range (for example a
+        // soft-wrap indent and wrap indicator) in the following run. Later
+        // decoration gives those bytes their own style, but retaining them
+        // here keeps every subsequent syntax and overlay boundary aligned
+        // with the displayed text.
+        let display_len = display_end.saturating_sub(display_byte);
+        display_byte = display_end;
         if display_len == 0 {
             continue;
         }
@@ -487,9 +492,9 @@ fn char_display_width(ch: char) -> usize {
 mod tests {
     use super::{
         DisplayLineText, DisplayLineTextBuilder, DisplayTextMap, DisplayWhitespace,
-        byte_offset_for_char_offset, floor_char_boundary, line_text_without_trailing_newline,
-        normalize_text_runs_for_display_text, shared_line_text_without_trailing_newline,
-        text_run_boundaries, visual_columns_for_text,
+        byte_offset_for_char_offset, expand_text_runs_for_display, floor_char_boundary,
+        line_text_without_trailing_newline, normalize_text_runs_for_display_text,
+        shared_line_text_without_trailing_newline, text_run_boundaries, visual_columns_for_text,
     };
     use gpui::{TextRun, black, font};
     use std::borrow::Cow;
@@ -595,11 +600,27 @@ mod tests {
     fn maps_text_run_lengths_to_expanded_display_bytes() {
         let text = DisplayLineText::from_source("a\tbc".to_string(), 4);
         let runs = vec![run(2), run(2)];
-        let display_runs = super::expand_text_runs_for_display(&runs, &text.map);
+        let display_runs = expand_text_runs_for_display(&runs, &text.map);
 
         assert_eq!(
             display_runs.iter().map(|run| run.len).collect::<Vec<_>>(),
             vec![4, 2]
+        );
+    }
+
+    #[test]
+    fn text_runs_include_virtual_prefix_before_wrapped_source() {
+        let text = DisplayLineText::from_source_with_prefix("↪ ", "comment".to_string(), 2, 4);
+        let runs = vec![run(3), run(4)];
+        let display_runs = expand_text_runs_for_display(&runs, &text.map);
+
+        assert_eq!(
+            display_runs.iter().map(|run| run.len).collect::<Vec<_>>(),
+            vec!["↪ com".len(), "ment".len()]
+        );
+        assert_eq!(
+            display_runs.iter().map(|run| run.len).sum::<usize>(),
+            text.display.len()
         );
     }
 
