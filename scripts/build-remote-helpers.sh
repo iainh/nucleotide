@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# ABOUTME: Builds Linux nucleotide-remote helper binaries for SSH auto-install
+# ABOUTME: Builds Linux nucleotide-remote helper binaries for SSH and WSL auto-install
 # ABOUTME: Produces the artifact names consumed by app and installer packaging
 
 set -euo pipefail

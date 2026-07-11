@@ -9,8 +9,8 @@ Nucleotide publishes Windows Velopack setup and update artifacts from CI.
 3. Launch Nucleotide from the Start Menu or desktop shortcut.
 
 The installer is built from the checked-in Velopack packaging script. It stages
-`nucl.exe`, `ghostty-vt.dll`, Linux SSH remote helpers, and the bundled Helix
-runtime, then runs `vpk pack`.
+`nucl.exe`, `ghostty-vt.dll`, Linux remote helpers for SSH and WSL, and the
+bundled Helix runtime, then runs `vpk pack`.
 
 Nucleotide detects that bundled runtime automatically when launched from the
 installed app directory.

@@ -35,7 +35,7 @@ The bundle script:
 
 - Builds `target/release/nucl` when it is missing
 - Copies the executable to `Nucleotide.app/Contents/MacOS/Nucleotide`
-- Copies Linux `nucleotide-remote` SSH helper artifacts from
+- Copies Linux `nucleotide-remote` helper artifacts from
   `target/remote-helpers` when present
 - Copies `crates/nucleotide/assets/nucleotide.icns` into app resources
 - Copies the Helix runtime into `Nucleotide.app/Contents/Resources/runtime`
@@ -121,7 +121,7 @@ rm -rf helix-temp
 
 Then run `./scripts/bundle-mac.sh` again.
 
-### SSH remote helpers not bundled
+### Linux remote helpers not bundled
 
 Build the Linux helper artifacts before bundling:
 

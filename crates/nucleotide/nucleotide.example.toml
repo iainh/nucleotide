@@ -202,6 +202,16 @@ extra_args = []
 # default, enabled on Unix and disabled elsewhere.
 # use_control_master = true
 
+[remote.wsl]
+# WSL uses the same bundled Linux helpers, version checks, and install modes as
+# SSH. "remote_download" requires the same download and checksum tools inside
+# the distro. Default: "auto".
+helper_install = "auto"
+
+# Helper path override inside the distro. Default: unset, which uses the same
+# versioned XDG cache layout as SSH.
+# helper_path = "/home/me/.local/bin/nucleotide-remote"
+
 [lsp]
 # Start language servers from detected project roots instead of individual
 # files. Default: true.

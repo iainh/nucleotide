@@ -143,33 +143,33 @@ refresh_remote_helpers_if_needed() {
     case "${REMOTE_HELPERS_AUTO_BUILD}" in
         1|true|yes|auto)
             if command -v cargo-zigbuild >/dev/null 2>&1; then
-                echo -e "${GREEN}Building SSH remote helpers...${NC}"
+                echo -e "${GREEN}Building Linux remote helpers...${NC}"
                 NUCL_REMOTE_HELPER_DIR="${REMOTE_HELPER_DIR}" ./scripts/build-remote-helpers.sh
                 return
             fi
 
             if command -v nix >/dev/null 2>&1; then
-                echo -e "${GREEN}Building SSH remote helpers with Nix...${NC}"
+                echo -e "${GREEN}Building Linux remote helpers with Nix...${NC}"
                 NUCL_REMOTE_HELPER_DIR="${REMOTE_HELPER_DIR}" nix develop -c build-remote-helpers
                 return
             fi
 
             if [ "${REMOTE_HELPERS_REQUIRED}" = "1" ]; then
-                echo -e "${RED}Error: SSH remote helpers are stale or missing, and cargo-zigbuild/Nix are not available${NC}"
+                echo -e "${RED}Error: Linux remote helpers are stale or missing, and cargo-zigbuild/Nix are not available${NC}"
                 echo "Install cargo-zigbuild or Nix, then rerun the bundle script."
                 exit 1
             fi
 
-            echo -e "${YELLOW}Warning: SSH remote helpers are stale or missing; skipping them because cargo-zigbuild/Nix are not available${NC}"
+            echo -e "${YELLOW}Warning: Linux remote helpers are stale or missing; skipping them because cargo-zigbuild/Nix are not available${NC}"
             REMOTE_HELPERS_CAN_COPY=0
             ;;
         0|false|no)
             if [ "${REMOTE_HELPERS_REQUIRED}" = "1" ]; then
-                echo -e "${RED}Error: SSH remote helpers are stale or missing and NUCL_BUILD_REMOTE_HELPERS=0${NC}"
+                echo -e "${RED}Error: Linux remote helpers are stale or missing and NUCL_BUILD_REMOTE_HELPERS=0${NC}"
                 exit 1
             fi
 
-            echo -e "${YELLOW}Warning: SSH remote helpers are stale or missing; skipping them because NUCL_BUILD_REMOTE_HELPERS=0${NC}"
+            echo -e "${YELLOW}Warning: Linux remote helpers are stale or missing; skipping them because NUCL_BUILD_REMOTE_HELPERS=0${NC}"
             REMOTE_HELPERS_CAN_COPY=0
             ;;
         *)
@@ -183,7 +183,7 @@ refresh_remote_helpers_if_needed() {
 refresh_remote_helpers_if_needed
 
 if [ "${REMOTE_HELPERS_CAN_COPY}" = "1" ] && [ -d "${REMOTE_HELPER_DIR}" ]; then
-    echo -e "${GREEN}Copying SSH remote helpers from ${REMOTE_HELPER_DIR}...${NC}"
+    echo -e "${GREEN}Copying Linux remote helpers from ${REMOTE_HELPER_DIR}...${NC}"
     for helper in "${REMOTE_HELPERS[@]}"; do
         helper_path="${REMOTE_HELPER_DIR}/${helper}"
         if [ -f "${helper_path}" ]; then
@@ -192,19 +192,19 @@ if [ "${REMOTE_HELPERS_CAN_COPY}" = "1" ] && [ -d "${REMOTE_HELPER_DIR}" ]; then
             REMOTE_HELPERS_COPIED=$((REMOTE_HELPERS_COPIED + 1))
             echo "  - ${helper}"
         elif [ "${REMOTE_HELPERS_REQUIRED}" = "1" ]; then
-            echo -e "${RED}Error: required SSH remote helper not found: ${helper_path}${NC}"
+            echo -e "${RED}Error: required Linux remote helper not found: ${helper_path}${NC}"
             exit 1
         fi
     done
 elif [ "${REMOTE_HELPERS_REQUIRED}" = "1" ]; then
-    echo -e "${RED}Error: required SSH remote helper directory not found: ${REMOTE_HELPER_DIR}${NC}"
+    echo -e "${RED}Error: required Linux remote helper directory not found: ${REMOTE_HELPER_DIR}${NC}"
     exit 1
 else
-    echo -e "${YELLOW}Warning: SSH remote helper directory not found at ${REMOTE_HELPER_DIR}${NC}"
+    echo -e "${YELLOW}Warning: Linux remote helper directory not found at ${REMOTE_HELPER_DIR}${NC}"
 fi
 
 if [ "${REMOTE_HELPERS_REQUIRED}" = "1" ] && [ "${REMOTE_HELPERS_COPIED}" -ne "${#REMOTE_HELPERS[@]}" ]; then
-    echo -e "${RED}Error: expected ${#REMOTE_HELPERS[@]} SSH remote helpers, copied ${REMOTE_HELPERS_COPIED}${NC}"
+    echo -e "${RED}Error: expected ${#REMOTE_HELPERS[@]} Linux remote helpers, copied ${REMOTE_HELPERS_COPIED}${NC}"
     exit 1
 fi
 

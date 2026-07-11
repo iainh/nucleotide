@@ -25,7 +25,7 @@ The Nix build system consists of:
 # Or step by step:
 nix develop                   # Enter dev shell
 cargo build --release         # Build binary
-build-remote-helpers          # Build SSH remote helper artifacts
+build-remote-helpers          # Build SSH/WSL remote helper artifacts
 make-macos-bundle            # Create .app bundle
 
 # Run the app

@@ -238,10 +238,10 @@ function Emit-RemoteHelperComponents {
 
   if (-not (Test-Path -LiteralPath $Directory -PathType Container)) {
     if ($Required) {
-      throw "Required SSH remote helper directory not found: $Directory"
+      throw "Required Linux remote helper directory not found: $Directory"
     }
 
-    Write-Warning "SSH remote helper directory not found: $Directory"
+    Write-Warning "Linux remote helper directory not found: $Directory"
     return $lines
   }
 
@@ -249,7 +249,7 @@ function Emit-RemoteHelperComponents {
     $helperPath = Join-Path $Directory $helperName
     if (-not (Test-Path -LiteralPath $helperPath -PathType Leaf)) {
       if ($Required) {
-        throw "Required SSH remote helper not found: $helperPath"
+        throw "Required Linux remote helper not found: $helperPath"
       }
 
       continue
