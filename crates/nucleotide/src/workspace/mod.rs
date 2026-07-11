@@ -438,6 +438,15 @@ fn shorten_statusbar_text(text: &str, max_chars: usize) -> String {
     shortened
 }
 
+fn statusbar_notification_icon(severity: StatusBarNotificationSeverity) -> &'static str {
+    match severity {
+        StatusBarNotificationSeverity::Info => "icons/info.svg",
+        StatusBarNotificationSeverity::Success => "icons/square-check-big.svg",
+        StatusBarNotificationSeverity::Warning => "icons/triangle-alert.svg",
+        StatusBarNotificationSeverity::Error => "icons/circle-x.svg",
+    }
+}
+
 fn short_lsp_server_name(server_name: &str) -> String {
     match server_name {
         "rust-analyzer" => "rust".to_string(),
@@ -3797,12 +3806,7 @@ impl Workspace {
             StatusBarNotificationSeverity::Warning => notification_tokens.warning_text,
             StatusBarNotificationSeverity::Error => notification_tokens.error_text,
         };
-        let status_symbol = match notification.severity {
-            StatusBarNotificationSeverity::Info => "i",
-            StatusBarNotificationSeverity::Success => "✓",
-            StatusBarNotificationSeverity::Warning => "!",
-            StatusBarNotificationSeverity::Error => "×",
-        };
+        let status_icon = statusbar_notification_icon(notification.severity);
         let message = shorten_statusbar_text(
             &notification.message,
             STATUSBAR_NOTIFICATION_MESSAGE_MAX_CHARS,
@@ -3816,14 +3820,11 @@ impl Workspace {
             .gap_2()
             .overflow_hidden()
             .child(
-                gpui::div()
-                    .flex_none()
-                    .w(px(14.0))
-                    .flex()
-                    .justify_center()
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(label_color)
-                    .child(status_symbol),
+                svg()
+                    .path(status_icon)
+                    .size(px(14.0))
+                    .flex_shrink_0()
+                    .text_color(label_color),
             )
             .child(
                 gpui::div()
@@ -14950,6 +14951,7 @@ impl Render for Workspace {
                     let handle = self.handle.clone();
                     use nucleotide_ui::button::Button;
                     let open_btn = Button::new("open-dir-btn", "Open a directory to view files")
+                        .icon("icons/folder-open.svg")
                         .activate_on_mouse_down()
                         .on_click(cx.listener(
                             move |_: &mut Workspace, _ev: &gpui::ClickEvent, _window, cx| {
@@ -17277,6 +17279,26 @@ mod tests {
     #[test]
     fn statusbar_text_shortening_counts_characters() {
         assert_eq!(shorten_statusbar_text("éééééé", 4), "ééé…");
+    }
+
+    #[test]
+    fn statusbar_notifications_use_lucide_icons() {
+        assert_eq!(
+            statusbar_notification_icon(StatusBarNotificationSeverity::Info),
+            "icons/info.svg"
+        );
+        assert_eq!(
+            statusbar_notification_icon(StatusBarNotificationSeverity::Success),
+            "icons/square-check-big.svg"
+        );
+        assert_eq!(
+            statusbar_notification_icon(StatusBarNotificationSeverity::Warning),
+            "icons/triangle-alert.svg"
+        );
+        assert_eq!(
+            statusbar_notification_icon(StatusBarNotificationSeverity::Error),
+            "icons/circle-x.svg"
+        );
     }
 
     #[test]

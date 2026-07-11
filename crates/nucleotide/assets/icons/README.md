@@ -12,6 +12,7 @@ Current Lucide-sourced additions:
 - `book-text.svg`
 - `circle-x.svg`
 - `columns-2.svg`
+- `download.svg`
 - `file-lock.svg`
 - `info.svg`
 - `lightbulb.svg`

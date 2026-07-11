@@ -20,6 +20,15 @@ enum DialogAction {
     Restart,
 }
 
+impl DialogAction {
+    fn icon(self) -> &'static str {
+        match self {
+            Self::Check | Self::Retry | Self::Restart => "icons/rotate-ccw.svg",
+            Self::Download => "icons/download.svg",
+        }
+    }
+}
+
 pub struct UpdateDialog {
     controller: Entity<UpdateController>,
     focus_handle: FocusHandle,
@@ -191,6 +200,7 @@ impl Render for UpdateDialog {
             Button::new("update-dialog-primary", action_label)
                 .variant(ButtonVariant::Primary)
                 .size(ButtonSize::Small)
+                .icon(action.icon())
                 .disabled(action_disabled)
                 .focus_handle(self.primary_focus_handle.clone())
                 .activate_on_mouse_down()
@@ -240,6 +250,7 @@ impl Render for UpdateDialog {
                             Button::new("update-dialog-close", "Later")
                                 .variant(ButtonVariant::Secondary)
                                 .size(ButtonSize::Small)
+                                .icon("icons/circle-x.svg")
                                 .focus_handle(self.close_focus_handle.clone())
                                 .activate_on_mouse_down()
                                 .on_click(cx.listener(|this, _event, _window, cx| {
@@ -288,5 +299,13 @@ mod tests {
     fn blank_release_notes_are_omitted() {
         assert_eq!(nonempty_notes("  \n"), None);
         assert_eq!(nonempty_notes("## Fixed"), Some("## Fixed".to_string()));
+    }
+
+    #[test]
+    fn update_actions_use_lucide_icons() {
+        assert_eq!(DialogAction::Check.icon(), "icons/rotate-ccw.svg");
+        assert_eq!(DialogAction::Download.icon(), "icons/download.svg");
+        assert_eq!(DialogAction::Retry.icon(), "icons/rotate-ccw.svg");
+        assert_eq!(DialogAction::Restart.icon(), "icons/rotate-ccw.svg");
     }
 }

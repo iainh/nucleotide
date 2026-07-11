@@ -116,15 +116,22 @@ impl ProjectHeader {
                                 )
                             })
                     )
-                    .child(
-                        Button::new("collapse-project-header", if self.collapsed { "▶" } else { "▼" })
+                    .child({
+                        let (icon, label) = if self.collapsed {
+                            ("icons/chevron-right.svg", "Expand project details")
+                        } else {
+                            ("icons/chevron-down.svg", "Collapse project details")
+                        };
+                        Button::icon_only("collapse-project-header", icon)
                             .variant(ButtonVariant::Ghost)
                             .size(ButtonSize::ExtraSmall)
+                            .tooltip(label)
+                            .aria_label(label)
                             .on_click(cx.listener(|header, _event, _window, cx| {
                                 header.collapsed = !header.collapsed;
                                 cx.notify();
                             }))
-                    )
+                    })
             )
             .when(!self.collapsed && self.show_lsp_status, |div| {
                 // Bottom row: LSP status (when expanded)
@@ -167,6 +174,7 @@ impl ProjectHeader {
                             Button::new("open-project-btn", "Open Project")
                                 .variant(ButtonVariant::Secondary)
                                 .size(ButtonSize::Small)
+                                .icon("icons/folder-open.svg")
                                 .on_click(cx.listener(|_header, _event, _window, cx| {
                                     // Emit event to open project directory picker
                                     cx.emit(ProjectHeaderEvent::OpenProjectRequested);
