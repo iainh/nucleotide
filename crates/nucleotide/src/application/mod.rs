@@ -58,8 +58,8 @@ use nucleotide_lsp::{
 use nucleotide_workspace::{
     DirectoryListing, FileKind, FileRead, FileStat, ProcessSpec, ReadOptions,
     WorkspaceBackendHandle, WorkspaceError, WorkspaceIdentity, WorkspaceLocation, WriteOptions,
-    classify_workspace_location, local_workspace_backend, posix_path_string,
-    remote_startup_workspace_root,
+    absolutize_workspace_path, classify_workspace_location, local_workspace_backend,
+    posix_path_string, remote_startup_workspace_root,
 };
 use slotmap::Key;
 use std::{
@@ -855,8 +855,16 @@ fn remote_lsp_file_url_path(uri: &lsp::Url) -> Option<PathBuf> {
     if has_non_local_file_authority(uri.as_str()) {
         return None;
     }
+    if file_url_path_has_windows_drive(uri.path()) {
+        return None;
+    }
 
     percent_decode_uri_path(uri.path()).map(PathBuf::from)
+}
+
+fn file_url_path_has_windows_drive(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    bytes.len() >= 3 && bytes[0] == b'/' && bytes[1].is_ascii_alphabetic() && bytes[2] == b':'
 }
 
 fn has_non_local_file_authority(uri: &str) -> bool {
@@ -6424,6 +6432,10 @@ fn lsp_location_from_location(
 }
 
 fn lsp_location_path_from_url(uri: lsp::Url) -> Result<PathBuf, String> {
+    if let Some(path) = remote_lsp_file_url_path(&uri) {
+        return Ok(path);
+    }
+
     match Uri::try_from(uri.clone()) {
         Ok(uri) => uri
             .as_path()
@@ -10443,9 +10455,7 @@ fn local_path_completion_context(
         if is_local_workspace {
             url.to_file_path().ok()?
         } else {
-            url.to_file_path()
-                .ok()
-                .or_else(|| remote_lsp_file_url_path(&url))?
+            remote_lsp_file_url_path(&url).or_else(|| url.to_file_path().ok())?
         }
     } else {
         PathBuf::from(matched_path)
@@ -10460,7 +10470,7 @@ fn local_path_completion_context(
     let path_is_remote = classify_workspace_location(&path).is_remote();
     let path = match parent_dir {
         Some(parent_dir) if path.is_relative() && !path_is_remote => {
-            parent_dir.join(path.as_path())
+            absolutize_workspace_path(parent_dir, path.as_path())
         }
         _ => path,
     };
@@ -10561,7 +10571,12 @@ fn local_path_documentation(
     } else {
         full_path.to_path_buf()
     };
-    format!("type: `{kind}`\nfull path: `{}`", full_path.display())
+    let full_path = if matches!(workspace_identity, WorkspaceIdentity::Local) {
+        full_path.display().to_string()
+    } else {
+        posix_path_string(&full_path)
+    };
+    format!("type: `{kind}`\nfull path: `{full_path}`")
 }
 
 fn dedupe_completion_items(items: &mut Vec<nucleotide_events::completion::CompletionItem>) {
@@ -11171,6 +11186,16 @@ mod tests {
     use std::time::Duration;
     use tempfile::tempdir;
     use tokio::sync::mpsc;
+
+    fn assert_same_path(actual: &Path, expected: &Path) {
+        let actual = actual
+            .canonicalize()
+            .unwrap_or_else(|_| actual.to_path_buf());
+        let expected = expected
+            .canonicalize()
+            .unwrap_or_else(|_| expected.to_path_buf());
+        assert_eq!(actual, expected);
+    }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum CapturedUpdate {
@@ -11957,7 +11982,7 @@ mod tests {
         .unwrap();
 
         let doc = editor.document(doc_id).unwrap();
-        assert_eq!(doc.path(), Some(display_path.as_path()));
+        assert_same_path(doc.path().unwrap(), &display_path);
         assert_eq!(doc.text(), "fn service_backed() {}\n");
         assert!(!display_path.exists());
 

@@ -91,7 +91,8 @@ use nucleotide_workspace::local_workspace_backend;
 use nucleotide_workspace::{
     FileKind, FileSearchQuery, FileSearchResult, FileStat, ProjectEnvironmentOrigin,
     ProjectEnvironmentSnapshot, ReadOptions, TextSearchQuery, TextSearchResult, WorkspaceBackend,
-    WorkspaceBackendHandle, WorkspaceIdentity, WorkspaceLocation, classify_workspace_location,
+    WorkspaceBackendHandle, WorkspaceIdentity, WorkspaceLocation, absolutize_workspace_path,
+    classify_workspace_location, posix_path_string,
 };
 use slotmap::KeyData;
 // (no direct Workspace v2 items used here)
@@ -15920,8 +15921,8 @@ fn file_picker_items_from_search_result(
         .files
         .into_iter()
         .map(|relative_path| {
-            let path = base_dir.join(&relative_path);
-            let label = relative_path.to_string_lossy().into_owned();
+            let path = absolutize_workspace_path(base_dir, &relative_path);
+            let label = posix_path_string(&relative_path);
             PickerItem {
                 label: label.into(),
                 sublabel: None,

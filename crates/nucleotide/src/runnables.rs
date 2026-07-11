@@ -551,7 +551,7 @@ fn source_from_location_link(location: &lsp::LocationLink) -> Option<SourceLocat
 }
 
 fn file_url_path(uri: &lsp::Url) -> Option<PathBuf> {
-    uri.to_file_path().ok().or_else(|| posix_file_url_path(uri))
+    posix_file_url_path(uri).or_else(|| uri.to_file_path().ok())
 }
 
 fn posix_file_url_path(uri: &lsp::Url) -> Option<PathBuf> {
@@ -561,8 +561,16 @@ fn posix_file_url_path(uri: &lsp::Url) -> Option<PathBuf> {
     if has_non_local_file_authority(uri.as_str()) {
         return None;
     }
+    if file_url_path_has_windows_drive(uri.path()) {
+        return None;
+    }
 
     percent_decode_uri_path(uri.path()).map(PathBuf::from)
+}
+
+fn file_url_path_has_windows_drive(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    bytes.len() >= 3 && bytes[0] == b'/' && bytes[1].is_ascii_alphabetic() && bytes[2] == b':'
 }
 
 fn has_non_local_file_authority(uri: &str) -> bool {
