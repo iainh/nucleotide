@@ -287,16 +287,41 @@ jobs:
           BUILD_CERTIFICATE_BASE64: ${{ secrets.MACOS_BUILD_CERTIFICATE_BASE64 }}
           INSTALLER_CERTIFICATE_BASE64: ${{ secrets.MACOS_INSTALLER_CERTIFICATE_BASE64 }}
           CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          SIGN_APP_IDENTITY: ${{ secrets.MACOS_SIGN_APP_IDENTITY }}
+          SIGN_INSTALL_IDENTITY: ${{ secrets.MACOS_SIGN_INSTALL_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          test -n "${BUILD_CERTIFICATE_BASE64}"
-          test -n "${INSTALLER_CERTIFICATE_BASE64}"
-          test -n "${CERTIFICATE_PASSWORD}"
-          test -n "${APPLE_ID}"
-          test -n "${APPLE_APP_PASSWORD}"
-          test -n "${APPLE_TEAM_ID}"
+          signing_variables=(
+            BUILD_CERTIFICATE_BASE64
+            INSTALLER_CERTIFICATE_BASE64
+            CERTIFICATE_PASSWORD
+            SIGN_APP_IDENTITY
+            SIGN_INSTALL_IDENTITY
+            APPLE_ID
+            APPLE_APP_PASSWORD
+            APPLE_TEAM_ID
+          )
+          configured_variables=()
+          missing_variables=()
+          for variable in "${signing_variables[@]}"; do
+            if [ -n "${!variable:-}" ]; then
+              configured_variables+=("${variable}")
+            else
+              missing_variables+=("${variable}")
+            fi
+          done
+
+          if [ "${#configured_variables[@]}" -eq 0 ]; then
+            echo "::warning::Apple signing and notarization secrets are not configured; producing unsigned macOS packages."
+            exit 0
+          fi
+          if [ "${#missing_variables[@]}" -ne 0 ]; then
+            printf 'Apple signing and notarization must be fully configured or fully omitted. Missing: %s\n' \
+              "${missing_variables[*]}" >&2
+            exit 1
+          fi
 
           keychain="${RUNNER_TEMP}/nucleotide-signing.keychain-db"
           build_certificate="${RUNNER_TEMP}/nucleotide-build.p12"
@@ -350,17 +375,27 @@ jobs:
           plutil -insert CFBundleShortVersionString -string 9000.0.0 "${smoke_app}/Contents/Info.plist"
 
           pack_smoke() {
-            vpk pack \
-              --packId org.spiralpoint.nucleotide.smoke.macos \
-              --packTitle NucleotideUpdateSmoke \
-              --packVersion "$1" \
-              --packDir "${smoke_app}" \
-              --mainExe NucleotideUpdateSmoke \
-              --outputDir "${smoke_output}" \
-              --channel smoke-macos \
-              --signAppIdentity "${SIGN_APP_IDENTITY}" \
-              --signInstallIdentity "${SIGN_INSTALL_IDENTITY}" \
-              --keychain "${NUCL_VELOPACK_KEYCHAIN}"
+            vpk_args=(
+              pack
+              --packId org.spiralpoint.nucleotide.smoke.macos
+              --packTitle NucleotideUpdateSmoke
+              --packVersion "$1"
+              --packDir "${smoke_app}"
+              --mainExe NucleotideUpdateSmoke
+              --outputDir "${smoke_output}"
+              --channel smoke-macos
+            )
+            if [ -n "${SIGN_APP_IDENTITY:-}" ]; then
+              vpk_args+=(--signAppIdentity "${SIGN_APP_IDENTITY}")
+            fi
+            if [ -n "${SIGN_INSTALL_IDENTITY:-}" ]; then
+              vpk_args+=(--signInstallIdentity "${SIGN_INSTALL_IDENTITY}")
+            fi
+            if [ -n "${NUCL_VELOPACK_KEYCHAIN:-}" ]; then
+              vpk_args+=(--keychain "${NUCL_VELOPACK_KEYCHAIN}")
+            fi
+
+            vpk "${vpk_args[@]}"
           }
 
           pack_smoke 9000.0.0
@@ -398,8 +433,6 @@ jobs:
           NUCL_VELOPACK_SIGN_INSTALL_IDENTITY: ${{ secrets.MACOS_SIGN_INSTALL_IDENTITY }}
           NUCL_VELOPACK_RELEASE_NOTES: release-notes.md
         run: |
-          test -n "${NUCL_VELOPACK_SIGN_APP_IDENTITY}"
-          test -n "${NUCL_VELOPACK_SIGN_INSTALL_IDENTITY}"
           chmod +x scripts/package-velopack.sh
           NUCL_VELOPACK_VERSION="${{ needs.prepare-release.outputs.version }}" \
             NUCL_VELOPACK_PACK_DIR="Nucleotide.app" \
@@ -498,11 +531,15 @@ jobs:
           SIGNING_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_BASE64 }}
           SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_PASSWORD }}
         run: |
-          if ([string]::IsNullOrWhiteSpace($env:SIGNING_CERTIFICATE_BASE64)) {
-            throw "WINDOWS_SIGNING_CERTIFICATE_BASE64 is required."
+          $hasCertificate = -not [string]::IsNullOrWhiteSpace($env:SIGNING_CERTIFICATE_BASE64)
+          $hasPassword = -not [string]::IsNullOrWhiteSpace($env:SIGNING_CERTIFICATE_PASSWORD)
+
+          if ($hasCertificate -ne $hasPassword) {
+            throw "WINDOWS_SIGNING_CERTIFICATE_BASE64 and WINDOWS_SIGNING_CERTIFICATE_PASSWORD must both be configured or both be omitted."
           }
-          if ([string]::IsNullOrWhiteSpace($env:SIGNING_CERTIFICATE_PASSWORD)) {
-            throw "WINDOWS_SIGNING_CERTIFICATE_PASSWORD is required."
+          if (-not $hasCertificate) {
+            Write-Warning "Windows signing secrets are not configured; producing unsigned Windows packages."
+            exit 0
           }
 
           $certificatePath = Join-Path $env:RUNNER_TEMP "nucleotide-signing.pfx"
@@ -591,16 +628,22 @@ jobs:
           Copy-Item target\release\nucleotide-update-smoke.exe $smokePack\NucleotideUpdateSmoke.exe
 
           function Pack-Smoke([string]$Version) {
-            & vpk pack `
-              --packId org.spiralpoint.nucleotide.smoke.windows `
-              --packTitle NucleotideUpdateSmoke `
-              --packVersion $Version `
-              --packDir $smokePack `
-              --mainExe NucleotideUpdateSmoke.exe `
-              --outputDir $smokeOutput `
-              --channel smoke-windows `
-              --shortcuts None `
-              --signParams $env:NUCL_WINDOWS_SIGN_PARAMS
+            $vpkArgs = @(
+              "pack",
+              "--packId", "org.spiralpoint.nucleotide.smoke.windows",
+              "--packTitle", "NucleotideUpdateSmoke",
+              "--packVersion", $Version,
+              "--packDir", $smokePack,
+              "--mainExe", "NucleotideUpdateSmoke.exe",
+              "--outputDir", $smokeOutput,
+              "--channel", "smoke-windows",
+              "--shortcuts", "None"
+            )
+            if ($env:NUCL_WINDOWS_SIGN_PARAMS) {
+              $vpkArgs += @("--signParams", $env:NUCL_WINDOWS_SIGN_PARAMS)
+            }
+
+            & vpk @vpkArgs
             if ($LASTEXITCODE -ne 0) {
               throw "Failed to package smoke-test version $Version."
             }
