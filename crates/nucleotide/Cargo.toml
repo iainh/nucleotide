@@ -15,7 +15,10 @@ default-run = "nucl"
 build = "build.rs"
 
 [features]
-default = ["git", "terminal-emulator"]
+# Keep local macOS builds independent of Xcode's optional Metal Toolchain.
+# Tagged releases disable this default and embed a precompiled Metal library.
+default = ["git", "runtime-shaders", "terminal-emulator"]
+runtime-shaders = ["gpui_platform/runtime_shaders"]
 terminal-emulator = ["terminal-emulator-core"]
 terminal-emulator-core = ["nucleotide-terminal/emulator", "nucleotide-terminal-view/emulator"]
 unicode-lines = ["helix-core/unicode-lines"]
