@@ -5065,7 +5065,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide"
-version = "0.1.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -5128,7 +5128,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-appearance"
-version = "0.1.0"
+version = "0.2.1"
 dependencies = [
  "gpui",
  "windows-sys 0.61.2",
@@ -5136,7 +5136,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-core"
-version = "0.1.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "gpui",
@@ -5155,7 +5155,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-editor"
-version = "0.1.0"
+version = "0.2.1"
 dependencies = [
  "arc-swap",
  "criterion",
@@ -5187,7 +5187,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-events"
-version = "0.1.0"
+version = "0.2.1"
 dependencies = [
  "helix-core",
  "helix-lsp",
@@ -5201,7 +5201,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-logging"
-version = "0.1.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "dirs",
@@ -5216,7 +5216,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-lsp"
-version = "0.1.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5240,7 +5240,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-lsp-proxy"
-version = "0.1.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5252,7 +5252,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-process"
-version = "0.1.0"
+version = "0.2.1"
 dependencies = [
  "tokio",
 ]
@@ -5278,7 +5278,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-remote"
-version = "0.1.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5301,7 +5301,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-terminal"
-version = "0.1.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "libghostty-vt",
@@ -5311,7 +5311,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-terminal-panel"
-version = "0.1.0"
+version = "0.2.1"
 dependencies = [
  "gpui",
  "nucleotide-events",
@@ -5321,7 +5321,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-terminal-view"
-version = "0.1.0"
+version = "0.2.1"
 dependencies = [
  "gpui",
  "nucleotide-events",
@@ -5333,7 +5333,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-types"
-version = "0.1.0"
+version = "0.2.1"
 dependencies = [
  "gpui",
  "helix-core",
@@ -5343,7 +5343,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-ui"
-version = "0.1.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "gpui",
@@ -5382,7 +5382,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-workspace"
-version = "0.1.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "futures",
