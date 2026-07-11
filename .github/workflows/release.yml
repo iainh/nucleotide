@@ -191,13 +191,21 @@ jobs:
         with:
           targets: aarch64-apple-darwin
 
+      - name: Install Metal Toolchain
+        run: |
+          if ! xcrun -sdk macosx metal --version >/dev/null 2>&1; then
+            xcodebuild -downloadComponent metalToolchain
+          fi
+          xcrun -sdk macosx metal --version
+
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@a7ad9c4f0c65208097f4d34f3cfa1913b80cce5c
       
-      - name: Build release
+      - name: Build release with precompiled Metal shaders
         run: |
           nix develop --command cargo build --release --target aarch64-apple-darwin \
-            --features update-smoke-test \
+            --no-default-features \
+            --features git,terminal-emulator,update-smoke-test \
             --bin nucl \
             --bin nucl-grammar \
             --bin nucleotide-update-smoke

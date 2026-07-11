@@ -40,7 +40,7 @@ homepage = "https://github.com/iainh/nucleotide"
 # GPUI and GPUI-adjacent dependencies. These are vendored from the pinned Zed
 # revision in `vendor/zed` so local platform fixes can be reviewed and upstreamed.
 gpui = { path = "vendor/zed/crates/gpui", package = "gpui", features = ["test-support"] }
-gpui_platform = { path = "vendor/zed/crates/gpui_platform", package = "gpui_platform", features = ["font-kit", "runtime_shaders", "wayland", "x11"] }
+gpui_platform = { path = "vendor/zed/crates/gpui_platform", package = "gpui_platform", features = ["font-kit", "wayland", "x11"] }
 
 # Helix dependencies - pinned to the upstream base revision that our vendored
 # Nucleotide-specific patches are replayed against.
