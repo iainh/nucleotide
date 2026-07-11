@@ -762,7 +762,10 @@ fn window_options(
             size: gpui::size(px(1200.0), px(800.0)),
         })),
         focus: true,
-        show: true,
+        // On Windows, showing the HWND during creation lets DWM display its shadow
+        // before GPUI has drawn the first frame. Keep it hidden until open_window
+        // has installed and painted the root view.
+        show: !cfg!(target_os = "windows"),
         kind: WindowKind::Normal,
         is_movable: true,
         is_resizable: true,
@@ -1213,7 +1216,7 @@ fn gui_main(
 
             let options = window_options(cx, &config, is_dark_chrome);
 
-            let _ = cx.open_window(options, |#[allow(unused)] window, cx| {
+            let window = cx.open_window(options, |#[allow(unused)] window, cx| {
                 let input = cx.new(|_| nucleotide::application::Input);
 
                 let input_1 = input.clone();
@@ -1593,6 +1596,25 @@ fn gui_main(
 
                 workspace
             });
+
+            #[cfg(target_os = "windows")]
+            match window {
+                Ok(window) => {
+                    // GPUI draws once before open_window returns. Revealing the HWND
+                    // here prevents DWM from composing a shadow-only startup frame.
+                    if let Err(error) = window.update(cx, |_, window, _cx| {
+                        window.activate_window();
+                    }) {
+                        warn!(error = %error, "Failed to show the startup window");
+                    }
+                }
+                Err(error) => error!(error = %error, "Failed to open the startup window"),
+            }
+
+            #[cfg(not(target_os = "windows"))]
+            if let Err(error) = window {
+                error!(error = %error, "Failed to open the startup window");
+            }
         }
     })
 }
