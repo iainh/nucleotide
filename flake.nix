@@ -77,6 +77,10 @@
         # libghostty-vt-sys 0.2.0 requires Zig 0.15.2 exactly. Keep this
         # binding explicit so `with pkgs` cannot silently select nixpkgs Zig.
         zig_0_15_2 = zig-overlay.packages.${system}."0.15.2";
+        ghosttyZigDeps = pkgs.callPackage "${ghostty}/build.zig.zon.nix" {
+          zig_0_15 = zig_0_15_2;
+          name = "ghostty-cache-libghostty-vt-sys-0.2.0";
+        };
 
         # Keep Nix's cc wrapper so library paths and SDK flags are preserved,
         # while asking clang to use LLD's Darwin linker underneath.
@@ -206,6 +210,7 @@
           buildInputs = allBuildInputs;
           HELIX_RUNTIME = "${helixRuntime}";
           GHOSTTY_SOURCE_DIR = "${ghostty}";
+          GHOSTTY_ZIG_SYSTEM_DIR = "${ghosttyZigDeps}";
           preBuild = ''
             export ZIG_GLOBAL_CACHE_DIR="$TMPDIR/zig-global-cache"
             export ZIG_LOCAL_CACHE_DIR="$TMPDIR/zig-local-cache"
