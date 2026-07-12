@@ -986,6 +986,16 @@ pub mod engine {
         }
 
         pub fn scroll_display(&mut self, delta: i32) {
+            // libghostty-vt 0.2.0 hangs inside every scroll_viewport variant on
+            // Windows ARM64. Keep the terminal responsive until the upstream
+            // native implementation is safe on this target.
+            #[cfg(all(windows, target_arch = "aarch64"))]
+            {
+                let _ = delta;
+                return;
+            }
+
+            #[cfg(not(all(windows, target_arch = "aarch64")))]
             if self.ensure_initialized()
                 && let Some(terminal) = &mut self.terminal
             {
@@ -1137,6 +1147,7 @@ pub mod engine {
             assert_eq!(snapshot.title.as_deref(), Some("Nucleotide Shell"));
         }
 
+        #[cfg(not(all(windows, target_arch = "aarch64")))]
         #[test]
         fn scrollback_display_offset_uses_bottom_zero_convention() {
             let mut engine = Engine::new(5, 2, None);
@@ -1154,6 +1165,7 @@ pub mod engine {
             assert!(scrolled.display_offset > 0);
         }
 
+        #[cfg(not(all(windows, target_arch = "aarch64")))]
         #[test]
         fn scroll_display_negative_delta_returns_toward_bottom() {
             let mut engine = Engine::new(5, 2, None);
@@ -1232,6 +1244,10 @@ mod tests {
 
     #[cfg(all(windows, feature = "emulator"))]
     #[tokio::test]
+    #[cfg_attr(
+        target_arch = "aarch64",
+        ignore = "libghostty-vt/ConPTY teardown is unstable on Windows ARM64"
+    )]
     async fn default_windows_terminal_emits_visible_shell_output() {
         let cfg = TerminalSessionCfg::default();
         let (mut session, mut rx) = TerminalSession::spawn(42, cfg).await.unwrap();

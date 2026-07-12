@@ -11204,6 +11204,7 @@ fn exec_terminal_proxy_process(
     }
 }
 
+#[cfg(any(unix, test))]
 fn login_shell_arg0(program: &Path) -> OsString {
     let name = program.file_name().unwrap_or(program.as_os_str());
     let mut arg0 = OsString::from("-");
@@ -11325,9 +11326,11 @@ mod tests {
     use nucleotide_workspace::RemoteWorkspaceKind;
     use std::collections::VecDeque;
     use std::io::Cursor;
+    #[cfg(unix)]
+    use std::sync::atomic::AtomicBool;
     use std::sync::{
         Arc, Condvar, Mutex as StdMutex,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicUsize, Ordering},
     };
 
     fn v5_client_input(frames: Vec<protocol_v5::Frame>) -> Vec<u8> {
@@ -11762,6 +11765,7 @@ mod tests {
             .collect()
     }
 
+    #[cfg(unix)]
     fn v5_data_for_channel(
         frames: &[protocol_v5::Frame],
         stream_id: u64,
@@ -11780,6 +11784,7 @@ mod tests {
         data
     }
 
+    #[cfg(unix)]
     fn find_v5_output_data_for_channel(
         output: &SharedWrite,
         stream_id: u64,
@@ -11802,6 +11807,7 @@ mod tests {
         data
     }
 
+    #[cfg(unix)]
     fn v5_first_data_channel_index(
         frames: &[protocol_v5::Frame],
         stream_id: u64,

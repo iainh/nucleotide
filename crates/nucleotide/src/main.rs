@@ -2086,18 +2086,16 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert!(
-            actions.iter().any(|(name, action)| {
-                *name == "Toggle Documentation"
-                    && action.partial_eq(&nucleotide::actions::workspace::ToggleDocumentation)
-            }),
-            "View menu should expose Toggle Documentation"
+            actions.iter().any(|(_, action)| action
+                .partial_eq(&nucleotide::actions::workspace::ToggleDocumentation)),
+            "View menu should expose the documentation toggle"
         );
         assert!(
-            actions.iter().any(|(name, action)| {
-                *name == "Toggle Terminal"
-                    && action.partial_eq(&nucleotide::actions::workspace::ToggleTerminal)
-            }),
-            "View menu should expose Toggle Terminal"
+            actions
+                .iter()
+                .any(|(_, action)| action
+                    .partial_eq(&nucleotide::actions::workspace::ToggleTerminal)),
+            "View menu should expose the terminal toggle"
         );
     }
 

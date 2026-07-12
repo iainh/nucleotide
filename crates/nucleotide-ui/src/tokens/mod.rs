@@ -290,14 +290,17 @@ impl SizeTokens {
     /// compact theme chrome. Keeping this here makes the platform geometry travel
     /// with the system palette instead of leaking macOS constants into components.
     pub fn native_chrome() -> Self {
-        let mut tokens = Self::default();
-
         #[cfg(target_os = "macos")]
         {
+            let mut tokens = Self::default();
             tokens.titlebar_height = px(52.0);
+            tokens
         }
 
-        tokens
+        #[cfg(not(target_os = "macos"))]
+        {
+            Self::default()
+        }
     }
 
     /// Create size tokens whose text scale is centred on the configured UI font size.
