@@ -9,7 +9,7 @@ homepage.workspace = true
 publish = false
 description = "GPUI rendering primitives for terminal grid in Nucleotide (Layer 4)"
 categories = ["text-editors", "gui"]
-rust-version = "1.95"
+rust-version.workspace = true
 
 [dependencies]
 nucleotide-events.workspace = true

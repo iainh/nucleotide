@@ -9,7 +9,7 @@ homepage.workspace = true
 publish = false
 description = "Core event bridges and capabilities for Nucleotide editor (Layer 3)"
 categories = ["text-editors", "gui"]
-rust-version = "1.95"
+rust-version.workspace = true
 
 [dependencies]
 # Lower layer dependencies

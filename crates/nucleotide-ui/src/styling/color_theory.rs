@@ -836,7 +836,7 @@ pub struct Oklab {
     pub b: f32,
 }
 
-/// OKLCH color (L, C, h [radians])
+/// OKLCH colour (`L`, `C`, and `h` in radians).
 #[derive(Debug, Clone, Copy)]
 #[allow(non_snake_case)]
 pub struct Oklch {

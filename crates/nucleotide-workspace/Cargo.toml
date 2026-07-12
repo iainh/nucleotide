@@ -9,7 +9,7 @@ homepage.workspace = true
 publish = false
 description = "Workspace backend abstractions for Nucleotide"
 categories = ["text-editors", "gui"]
-rust-version = "1.95"
+rust-version.workspace = true
 
 [dependencies]
 async-trait.workspace = true

@@ -1116,8 +1116,8 @@ mod tests {
         .show_close_button(TabCloseButtonVisibility::Always);
 
         let documents = tab_bar.ordered_documents();
-        let labels = tab_bar.document_labels(&documents);
-        let tabs = tab_bar.build_tabs(&documents, &labels, 0);
+        let labels = tab_bar.document_labels(documents);
+        let tabs = tab_bar.build_tabs(documents, &labels, 0);
 
         assert_eq!(tabs.len(), 1);
         assert_eq!(
@@ -1138,8 +1138,8 @@ mod tests {
         .close_position(TabClosePosition::Left);
 
         let documents = tab_bar.ordered_documents();
-        let labels = tab_bar.document_labels(&documents);
-        let tabs = tab_bar.build_tabs(&documents, &labels, 0);
+        let labels = tab_bar.document_labels(documents);
+        let tabs = tab_bar.build_tabs(documents, &labels, 0);
 
         assert_eq!(tabs.len(), 1);
         assert_eq!(tabs[0].close_position(), TabClosePosition::Left);
@@ -1156,8 +1156,8 @@ mod tests {
         );
 
         let documents = tab_bar.ordered_documents();
-        let labels = tab_bar.document_labels(&documents);
-        let tabs = tab_bar.build_tabs(&documents, &labels, 0);
+        let labels = tab_bar.document_labels(documents);
+        let tabs = tab_bar.build_tabs(documents, &labels, 0);
 
         assert_eq!(tabs.len(), 1);
         assert!(tabs[0].file_icons_visible());
@@ -1175,8 +1175,8 @@ mod tests {
         .file_icons(false);
 
         let documents = tab_bar.ordered_documents();
-        let labels = tab_bar.document_labels(&documents);
-        let tabs = tab_bar.build_tabs(&documents, &labels, 0);
+        let labels = tab_bar.document_labels(documents);
+        let tabs = tab_bar.build_tabs(documents, &labels, 0);
 
         assert_eq!(tabs.len(), 1);
         assert!(!tabs[0].file_icons_visible());
@@ -1196,8 +1196,8 @@ mod tests {
         );
 
         let documents = tab_bar.ordered_documents();
-        let labels = tab_bar.document_labels(&documents);
-        let tabs = tab_bar.build_tabs(&documents, &labels, 0);
+        let labels = tab_bar.document_labels(documents);
+        let tabs = tab_bar.build_tabs(documents, &labels, 0);
 
         assert_eq!(tabs.len(), 1);
         assert!(tabs[0].is_preview());
@@ -1215,8 +1215,8 @@ mod tests {
         .deemphasized(true);
 
         let documents = tab_bar.ordered_documents();
-        let labels = tab_bar.document_labels(&documents);
-        let tabs = tab_bar.build_tabs(&documents, &labels, 0);
+        let labels = tab_bar.document_labels(documents);
+        let tabs = tab_bar.build_tabs(documents, &labels, 0);
 
         assert_eq!(tabs.len(), 1);
         assert!(tabs[0].is_deemphasized());
@@ -1583,7 +1583,7 @@ mod tests {
             |_, _, _| {},
         );
 
-        let labels = tab_bar.document_labels(&tab_bar.ordered_documents());
+        let labels = tab_bar.document_labels(tab_bar.ordered_documents());
 
         assert_eq!(
             label_parts(&labels),

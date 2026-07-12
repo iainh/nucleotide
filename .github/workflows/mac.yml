@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-linux-remote-helpers:
     name: Build Linux remote helpers
@@ -25,7 +29,7 @@ jobs:
         uses: DeterminateSystems/magic-nix-cache-action@76aaf8814cdb385b86597c32b8c51b66b69b0839
 
       - name: Build Linux remote helpers
-        run: nix develop --command build-remote-helpers
+        run: nix develop .#ci --command build-remote-helpers
 
       - name: Upload Linux remote helpers
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -58,25 +62,21 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
         with:
+          toolchain: 1.95.0
           targets: aarch64-apple-darwin
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@a7ad9c4f0c65208097f4d34f3cfa1913b80cce5c
       
       - name: Cache cargo dependencies
-        uses: actions/cache@6f8efc29b200d32929f49075959781ed54ec270c
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-aarch64-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-aarch64-cargo-
+          key: macos-aarch64-release
+          cache-workspace-crates: true
       
       - name: Build release binary
         run: |
-          nix develop --command cargo build --release \
+          nix develop .#ci --command cargo build --release \
             --target aarch64-apple-darwin \
             -p nucleotide \
             --bin nucl \
@@ -100,7 +100,7 @@ jobs:
           rm -rf helix-temp
           
           echo "Runtime files prepared:"
-          ls -la runtime/ | head -20
+          find runtime -maxdepth 1 -mindepth 1 -print | head -20
       
       - name: Create macOS app bundle
         run: |

@@ -9,7 +9,7 @@ homepage.workspace = true
 publish = false
 description = "Remote workspace service for Nucleotide"
 categories = ["text-editors", "gui"]
-rust-version = "1.95"
+rust-version.workspace = true
 
 [dependencies]
 anyhow.workspace = true

@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     name: Build Linux binary
@@ -20,6 +24,8 @@ jobs:
       
       - name: Install Rust
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.95.0
 
       - name: Install Zig
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
@@ -48,20 +54,15 @@ jobs:
             libfontconfig1-dev
       
       - name: Cache cargo dependencies
-        uses: actions/cache@6f8efc29b200d32929f49075959781ed54ec270c
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
+          key: linux-release
+          cache-workspace-crates: true
       
       - name: Build release binary
         run: |
           cargo build --release -p nucleotide --bins -p nucleotide-remote
-          nix develop --command build-remote-helpers
+          nix develop .#ci --command build-remote-helpers
       
       - name: Prepare runtime files
         run: |
@@ -90,13 +91,14 @@ jobs:
           rm -rf helix-temp
           
           echo "Distribution structure created:"
-          ls -la dist/
-          ls -la dist/share/nucl/runtime/ | head -20
+          find dist -maxdepth 1 -mindepth 1 -print
+          find dist/share/nucl/runtime -maxdepth 1 -mindepth 1 -print | head -20
       
       - name: Test binary launch
         run: |
           # Set runtime path
-          export HELIX_RUNTIME="$(pwd)/dist/share/nucl/runtime"
+          HELIX_RUNTIME="$(pwd)/dist/share/nucl/runtime"
+          export HELIX_RUNTIME
           
           # Basic smoke test - check if binary runs and shows version
           ./dist/bin/nucl --version || true
@@ -106,11 +108,11 @@ jobs:
         run: |
           # Create tarball with proper structure
           cd dist
-          tar czf ../nucleotide-linux-x86_64.tar.gz *
+          tar czf ../nucleotide-linux-x86_64.tar.gz ./*
           cd ..
           
           echo "Distribution package created:"
-          ls -lh nucleotide-linux-x86_64.tar.gz
+          find nucleotide-linux-x86_64.tar.gz -maxdepth 0 -print
       
       - name: Upload distribution package
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -141,7 +143,7 @@ jobs:
           nix build .#runtime --print-build-logs
           
           # Build in Nix shell
-          nix develop --command cargo build --release
+          nix develop .#ci --command cargo build --release
           
           # Test the result
           if [ -f "target/release/nucl" ]; then
@@ -155,7 +157,7 @@ jobs:
       - name: Create Nix distribution
         run: |
           # Create distribution using Nix helper
-          nix develop --command make-linux-package
+          nix develop .#ci --command make-linux-package
           
           echo "Nix distribution package created:"
           ls -lh nucleotide-linux.tar.gz

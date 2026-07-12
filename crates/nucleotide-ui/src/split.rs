@@ -713,7 +713,7 @@ pub fn bottom_panel_split<C: IntoElement>(
 }
 
 /// A two-pane adjustable split with a draggable divider.
-/// Uses a fraction in [0,1] for the first pane size along the axis.
+/// Uses a fraction in `0..=1` for the first pane size along the axis.
 #[allow(clippy::too_many_arguments)]
 pub fn two_pane_split<A: IntoElement, B: IntoElement>(
     horizontal: bool,
