@@ -1,9 +1,15 @@
 #![cfg(windows)]
 
-use std::{env::set_current_dir, error::Error, path::Component};
+use std::{env::set_current_dir, error::Error, io, path::Component};
 
 use helix_stdx::path;
 use tempfile::Builder;
+
+const ERROR_PRIVILEGE_NOT_HELD: i32 = 1314;
+
+fn symlink_privilege_is_unavailable(error: &io::Error) -> bool {
+    error.raw_os_error() == Some(ERROR_PRIVILEGE_NOT_HELD)
+}
 
 // Paths on Windows are almost always case-insensitive.
 // Normalization should return the original path.
@@ -70,8 +76,24 @@ fn test_normalize_path() -> Result<(), Box<dyn Error>> {
         .to_owned();
 
     use std::os::windows;
-    windows::fs::symlink_dir(&dir1, &dir_link)?;
-    windows::fs::symlink_file(&orig_file, &link)?;
+    if let Err(error) = windows::fs::symlink_dir(&dir1, &dir_link) {
+        if symlink_privilege_is_unavailable(&error) {
+            eprintln!(
+                "skipping symlink normalization test: Windows symlink privilege is unavailable"
+            );
+            return Ok(());
+        }
+        return Err(error.into());
+    }
+    if let Err(error) = windows::fs::symlink_file(&orig_file, &link) {
+        if symlink_privilege_is_unavailable(&error) {
+            eprintln!(
+                "skipping symlink normalization test: Windows symlink privilege is unavailable"
+            );
+            return Ok(());
+        }
+        return Err(error.into());
+    }
 
     // root/link
     let path = link.strip_prefix(&tmp_prefix)?;
