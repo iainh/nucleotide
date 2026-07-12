@@ -1,4 +1,6 @@
-#![cfg(unix)]
+// These fixtures execute the host-built helper as though it were installed on a
+// remote Linux machine, so they are only valid when the host helper is Linux.
+#![cfg(target_os = "linux")]
 
 use futures::executor::block_on;
 use nucleotide_remote::{
