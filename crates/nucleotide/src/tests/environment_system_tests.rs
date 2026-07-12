@@ -430,14 +430,17 @@ mod caching_tests {
         // Invalidate cache for this directory
         project_env.invalidate_directory_cache(test_dir).await;
 
-        // Next load should re-execute shell (not be instant)
-        let start = Instant::now();
+        // Invalidation removes the entry so the next load repopulates it. Do
+        // not assert elapsed time here: a process-environment fallback is a
+        // valid successful reload and need not spawn a shell.
+        let cache_keys = project_env.get_cached_directories().await;
+        assert!(!cache_keys.contains(&test_dir.to_path_buf()));
+
         let refreshed_env = project_env.get_environment_for_directory(test_dir).await;
-        let duration = start.elapsed();
 
         assert!(refreshed_env.is_ok());
-        // Should take time since cache was invalidated
-        assert!(duration.as_millis() > 10); // Should not be instant
+        let cache_keys = project_env.get_cached_directories().await;
+        assert!(cache_keys.contains(&test_dir.to_path_buf()));
     }
 }
 

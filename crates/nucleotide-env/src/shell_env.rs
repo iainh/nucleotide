@@ -470,7 +470,32 @@ impl ProjectEnvironment {
                     errors.insert(directory.clone(), error.to_string());
                 }
 
-                Err(error)
+                // A shell is an enhancement to the process environment, not a
+                // prerequisite for opening a project. This is particularly
+                // important for GUI launches and constrained environments where
+                // `$SHELL` can point at an unavailable executable. Keep the
+                // diagnostic, but let child processes use the inherited baseline.
+                warn!(
+                    directory = %directory.display(),
+                    error = %error,
+                    "Falling back to the process environment after shell capture failed"
+                );
+
+                let mut fallback_env = baseline_env;
+                fallback_env.insert("ZED_ENVIRONMENT".to_string(), "worktree-shell".to_string());
+
+                let cached_env = CachedEnvironment {
+                    environment: fallback_env.clone(),
+                    origin: EnvironmentOrigin::Process,
+                    directory: directory.clone(),
+                    native_watch_state: None,
+                };
+                self.directory_environments
+                    .write()
+                    .await
+                    .insert(directory.clone(), cached_env);
+
+                Ok(fallback_env)
             }
         }
     }
