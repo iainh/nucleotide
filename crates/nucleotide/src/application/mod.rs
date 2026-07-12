@@ -11963,8 +11963,9 @@ mod tests {
     #[test]
     fn open_workspace_document_uses_backend_for_service_identity() {
         let temp = tempdir().unwrap();
-        let native_root = temp.path().join("native");
-        let display_root = temp.path().join("display");
+        let temp_root = temp.path().canonicalize().unwrap();
+        let native_root = temp_root.join("native");
+        let display_root = temp_root.join("display");
         let native_path = native_root.join("src").join("main.rs");
         fs::create_dir_all(native_path.parent().unwrap()).unwrap();
         fs::write(&native_path, "fn service_backed() {}\n").unwrap();
@@ -12190,21 +12191,21 @@ mod tests {
         cx: &mut gpui::TestAppContext,
     ) {
         let temp = tempdir().unwrap();
-        let project_native_root = temp.path().join("project");
-        let external_native_root = temp.path().join("cargo").join("git");
-        fs::create_dir_all(project_native_root.join("src")).unwrap();
-        fs::create_dir_all(&external_native_root).unwrap();
-        let external_native_path = external_native_root.join("lib.rs");
-        fs::write(&external_native_path, "zero\none\n").unwrap();
+        let temp_root = temp.path().canonicalize().unwrap();
+        let project_backing_root = temp_root.join("home").join("me").join("project");
+        let external_backing_root = temp_root.join("cargo").join("git");
+        fs::create_dir_all(project_backing_root.join("src")).unwrap();
+        fs::create_dir_all(&external_backing_root).unwrap();
+        fs::write(external_backing_root.join("lib.rs"), "zero\none\n").unwrap();
 
         let display_root = PathBuf::from("ssh://me@example.com/home/me/project");
-        let display_path = PathBuf::from(format!(
-            "ssh://me@example.com{}",
-            external_native_path.to_string_lossy()
-        ));
+        let display_path = PathBuf::from("ssh://me@example.com/cargo/git/lib.rs");
+        let external_native_path = PathBuf::from("/cargo/git/lib.rs");
         let backend = path_mapped_workspace_backend(
             Arc::new(RemoteIdentityLocalBackend),
-            WorkspacePathMapping::new(&display_root, &project_native_root),
+            // Map the simulated remote filesystem root onto the temporary local
+            // tree so this fixture remains valid on Windows hosts as well as Unix.
+            WorkspacePathMapping::new("ssh://me@example.com/", &temp_root),
         );
         let app = new_test_application(cx);
 
