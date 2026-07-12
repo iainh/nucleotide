@@ -98,7 +98,10 @@ mod macos_build {
 
     /// Locate the gpui crate directory relative to this crate.
     fn find_gpui_crate_dir() -> PathBuf {
-        gpui::GPUI_MANIFEST_DIR.into()
+        PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap())
+            .parent()
+            .expect("gpui_macos should be inside the Zed crates directory")
+            .join("gpui")
     }
 
     /// To enable runtime compilation, we need to "stitch" the shaders file with the generated header

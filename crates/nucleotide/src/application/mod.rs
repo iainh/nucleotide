@@ -10817,13 +10817,14 @@ async fn discover_project_languages_with_backend(
             }
 
             match entry.stat.kind {
-                FileKind::Directory if depth < MAX_DEPTH => {
-                    if !matches!(
-                        entry.name.as_str(),
-                        ".git" | ".cache" | "node_modules" | "target" | "vendor"
-                    ) {
-                        queue.push_back((entry.path, depth + 1));
-                    }
+                FileKind::Directory
+                    if depth < MAX_DEPTH
+                        && !matches!(
+                            entry.name.as_str(),
+                            ".git" | ".cache" | "node_modules" | "target" | "vendor"
+                        ) =>
+                {
+                    queue.push_back((entry.path, depth + 1));
                 }
                 FileKind::File | FileKind::Symlink => {
                     if let Some(language_id) = discovered_language_id_for_name(&entry.name)

@@ -9,7 +9,7 @@ homepage.workspace = true
 publish = false
 description = "Process spawning helpers for Nucleotide"
 categories = ["text-editors", "gui"]
-rust-version = "1.95"
+rust-version.workspace = true
 
 [dependencies]
 tokio = { workspace = true, optional = true, features = ["process"] }

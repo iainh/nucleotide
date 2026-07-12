@@ -496,12 +496,12 @@ fn build_visual_line(
     builder.push_prefix(&prefix_text, tab_width);
     for grapheme in line_graphemes {
         match (&grapheme.raw, grapheme.source) {
-            (Grapheme::Other { g }, GraphemeSource::VirtualText { highlight }) => {
+            (Grapheme::Other { g }, GraphemeSource::VirtualText { highlight })
                 if first_real.is_some_and(|real| {
                     grapheme.char_idx > real.char_idx || grapheme.visual_pos.col > prefix_visual_col
-                }) {
-                    builder.push_virtual(g, highlight, tab_width);
-                }
+                }) =>
+            {
+                builder.push_virtual(g, highlight, tab_width);
             }
             (Grapheme::Tab { .. }, GraphemeSource::Document { .. }) => {
                 builder.push_source_char('\t', tab_width);

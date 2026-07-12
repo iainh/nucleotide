@@ -2,6 +2,7 @@
 name = "nucleotide-vcs"
 version = "0.1.0"
 edition.workspace = true
+rust-version.workspace = true
 description = "Version control system integration for Nucleotide editor"
 license.workspace = true
 repository = "https://github.com/iainh/nucleotide"

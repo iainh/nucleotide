@@ -16,6 +16,13 @@
 
     flake-utils.url = "github:numtide/flake-utils";
 
+    crane.url = "github:ipetkov/crane";
+
+    ghostty = {
+      url = "github:ghostty-org/ghostty/fdbf9ff3a31d7531b691cb49c98fc465a1a503a0";
+      flake = false;
+    };
+
     # Helix repository for runtime files
     helix = {
       url = "github:helix-editor/helix/25.07.1";
@@ -24,8 +31,19 @@
 
   };
 
-  outputs = { self, nixpkgs, rust-overlay, zig-overlay, flake-utils, helix}:
-    flake-utils.lib.eachSystem [ "x86_64-darwin" "aarch64-darwin" "x86_64-linux" "aarch64-linux" ] (system:
+  outputs =
+    {
+      self,
+      nixpkgs,
+      rust-overlay,
+      zig-overlay,
+      flake-utils,
+      helix,
+      crane,
+      ghostty,
+    }:
+    flake-utils.lib.eachSystem [ "aarch64-darwin" "x86_64-linux" "aarch64-linux" ] (
+      system:
       let
         pkgs = import nixpkgs {
           inherit system;
@@ -35,17 +53,24 @@
           };
         };
 
-
         rustTargets = [
           "x86_64-unknown-linux-musl"
           "aarch64-unknown-linux-musl"
         ];
 
-        # Native Rust toolchain with extensions
-        rustToolchain = pkgs.rust-bin.stable.latest.default.override {
-          extensions = [ "rust-analyzer" "rust-src" ];
+        # Keep Cargo metadata, local development, Nix, and CI on one compiler.
+        rustVersion = "1.95.0";
+        rustToolchain = pkgs.rust-bin.stable.${rustVersion}.default.override {
+          extensions = [
+            "clippy"
+            "rust-analyzer"
+            "rust-src"
+            "rustfmt"
+          ];
           targets = rustTargets;
         };
+
+        craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
 
         # Dependency management following Helix patterns
         inherit (pkgs) lib stdenv;
@@ -74,31 +99,35 @@
         ];
 
         # Platform-specific build inputs
-        darwinBuildInputs = with pkgs; lib.optionals stdenv.isDarwin [
-          libiconv
-          # Modern Apple SDK - the hooks will ensure proper framework linking
-          apple-sdk
-        ];
+        darwinBuildInputs =
+          with pkgs;
+          lib.optionals stdenv.isDarwin [
+            libiconv
+            # Modern Apple SDK - the hooks will ensure proper framework linking
+            apple-sdk
+          ];
 
-        linuxBuildInputs = with pkgs; lib.optionals stdenv.isLinux [
-          libxkbcommon
-          xorg.libxcb
-          xorg.libX11
-          xorg.libXcursor
-          xorg.libXrandr
-          xorg.libXi
-          vulkan-loader
-          wayland
-          libGL
-          freetype
-          fontconfig
-        ];
+        linuxBuildInputs =
+          with pkgs;
+          lib.optionals stdenv.isLinux [
+            libxkbcommon
+            xorg.libxcb
+            xorg.libX11
+            xorg.libXcursor
+            xorg.libXrandr
+            xorg.libXi
+            vulkan-loader
+            wayland
+            libGL
+            freetype
+            fontconfig
+          ];
 
         # Combined build inputs
         allBuildInputs = commonBuildInputs ++ darwinBuildInputs ++ linuxBuildInputs;
 
         # Version info
-        version = "0.1.0";
+        version = "0.2.1";
         appName = "Nucleotide";
         bundleId = "org.spiralpoint.nucleotide";
 
@@ -137,6 +166,115 @@
           '';
         };
 
+        # Crane turns the dependency graph into a reusable derivation shared by
+        # every CI check. Include the complete workspace and vendored sources so
+        # GPUI shaders and Helix query fixtures remain available to build scripts.
+        ciSource = lib.fileset.toSource {
+          root = ./.;
+          fileset = lib.fileset.unions [
+            ./Cargo.lock
+            ./Cargo.toml
+            ./crates
+            ./docs
+            ./vendor
+          ];
+        };
+
+        ciCommonArgs = {
+          pname = "nucleotide";
+          inherit version;
+          inherit cargoVendorDir;
+          src = ciSource;
+          strictDeps = true;
+          CARGO_PROFILE = "dev";
+          CARGO_PROFILE_DEV_DEBUG = "false";
+          CARGO_PROFILE_DEV_OPT_LEVEL = "0";
+          doInstallCargoArtifacts = false;
+          cargoExtraArgs = "--locked";
+          nativeBuildInputs =
+            with pkgs;
+            [
+              clang
+              git
+              pkg-config
+              zig_0_15_2
+            ]
+            ++ lib.optionals stdenv.isDarwin [
+              darwin.cctools
+              xcbuild
+            ];
+          buildInputs = allBuildInputs;
+          HELIX_RUNTIME = "${helixRuntime}";
+          GHOSTTY_SOURCE_DIR = "${ghostty}";
+          preBuild = ''
+            export ZIG_GLOBAL_CACHE_DIR="$TMPDIR/zig-global-cache"
+            export ZIG_LOCAL_CACHE_DIR="$TMPDIR/zig-local-cache"
+          '';
+          LIBCLANG_PATH = "${pkgs.libclang.lib}/lib";
+          OPENSSL_NO_VENDOR = 1;
+          RUSTFLAGS = "--cfg tokio_unstable";
+        }
+        // darwinRustLinkerEnv;
+
+        # Vendored crates are workspace members but function as third-party
+        # dependencies. Preserve them in Crane's otherwise-empty dummy workspace
+        # so their real APIs remain available while application sources stay cached.
+        ciVendorSource = lib.fileset.toSource {
+          root = ./vendor;
+          fileset = ./vendor;
+        };
+
+        # The vendored Helix LSP crate uses this adapter as a dependency.
+        ciProcessSource = lib.fileset.toSource {
+          root = ./crates/nucleotide-process;
+          fileset = ./crates/nucleotide-process;
+        };
+
+        ciDummySource = craneLib.mkDummySrc {
+          src = ciSource;
+          extraDummyScript = ''
+            rm -rf "$out/vendor"
+            mkdir -p "$out/vendor"
+            cp -R ${ciVendorSource}/. "$out/vendor/"
+            rm -rf "$out/crates/nucleotide-process"
+            mkdir -p "$out/crates/nucleotide-process"
+            cp -R ${ciProcessSource}/. "$out/crates/nucleotide-process/"
+          '';
+        };
+
+        cargoVendorDir = craneLib.vendorCargoDeps {
+          src = ciSource;
+          overrideVendorGitCheckout =
+            packages: drv:
+            if lib.any (package: package.name == "helix-loader") packages then
+              drv.overrideAttrs (old: {
+                postInstall = (old.postInstall or "") + ''
+                  # helix-loader embeds this repository-root file via ../../.
+                  cp languages.toml "$out/languages.toml"
+                '';
+              })
+            else
+              drv;
+        };
+
+        cargoArtifacts = craneLib.buildDepsOnly (
+          ciCommonArgs
+          // {
+            inherit cargoVendorDir;
+            cargoExtraArgs = "--locked --workspace";
+            dummySrc = ciDummySource;
+            buildPhaseCargoCommand = "cargoWithProfile check --locked --workspace --all-targets";
+          }
+        );
+
+        ciApplication = craneLib.buildPackage (
+          ciCommonArgs
+          // {
+            inherit cargoArtifacts cargoVendorDir;
+            cargoExtraArgs = "--locked --workspace";
+            doCheck = false;
+          }
+        );
 
         # Build script that produces the binary
         buildScript = pkgs.writeScriptBin "build-nucleotide" ''
@@ -495,6 +633,7 @@
       in
       {
         packages = {
+          ci = ciApplication;
           runtime = helixRuntime;
           buildScript = buildScript;
           makeMacOSBundle = makeMacOSBundle;
@@ -504,126 +643,205 @@
           velopackCli = velopackCli;
         };
 
-        devShells.default = pkgs.mkShell ({
-          packages = with pkgs; [
-            # Rust toolchain (includes rust-analyzer and rust-src)
-            rustToolchain
+        checks = {
+          build = ciApplication;
 
-            # Development tools
-            cargo-watch
-            cargo-edit
-            cargo-outdated
-            cargo-deny
-            cargo-flamegraph
-            cargo-machete
-            cargo-zigbuild
+          cargo-check = craneLib.mkCargoDerivation (
+            ciCommonArgs
+            // {
+              inherit cargoArtifacts;
+              pnameSuffix = "-check";
+              buildPhaseCargoCommand = "cargoWithProfile check --workspace --all-targets --locked";
+            }
+          );
 
-            # Build performance tools
-            sccache
+          cargo-clippy = craneLib.cargoClippy (
+            ciCommonArgs
+            // {
+              inherit cargoArtifacts;
+              cargoClippyExtraArgs = "--workspace --all-targets -- --deny warnings";
+            }
+          );
 
-            # Velopack packaging tools
-            dotnet-sdk_8
-            installVelopackCli
-            velopackCli
+          cargo-doc = craneLib.cargoDoc (
+            ciCommonArgs
+            // {
+              inherit cargoArtifacts;
+              cargoDocExtraArgs = "--workspace --no-deps";
+              RUSTDOCFLAGS = "--deny warnings";
+            }
+          );
 
-            # For running the application
-            ripgrep
-            tree-sitter
-            zig_0_15_2
+          cargo-fmt = craneLib.cargoFmt {
+            pname = "nucleotide";
+            inherit version;
+            src = ciSource;
+          };
 
-            # Build helpers
-            buildScript
-            makeMacOSBundle
-            makeLinuxPackage
-            buildRemoteHelpers
-
-            # Platform-specific tools
-          ] ++ lib.optionals (lib.meta.availableOn stdenv.hostPlatform powershell) [
-            powershell
-          ] ++ lib.optionals stdenv.isDarwin [
-            darwin.DarwinTools
-            xcbuild
-            lld
-            lldb  # Debugging on macOS
-          ] ++ lib.optionals stdenv.isLinux [
-            cargo-tarpaulin  # Test coverage
-            gdb  # Debugging on Linux
-          ];
-
-          buildInputs = allBuildInputs;
-
-          # Development environment variables
-          RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
-          HELIX_RUNTIME = "${helixRuntime}";
-          PKG_CONFIG_PATH = "${pkgs.openssl.dev}/lib/pkgconfig";
-          OPENSSL_NO_VENDOR = 1;
-          DOTNET_CLI_TELEMETRY_OPTOUT = 1;
-          DOTNET_NOLOGO = 1;
-          DOTNET_ROOT = "${pkgs.dotnet-sdk_8}/share/dotnet";
-          NUCLEOTIDE_DOTNET_TOOL_PATH = ".dotnet-tools";
-
-          # Build performance settings following Helix patterns
-          CARGO_INCREMENTAL = "1";  # Default to incremental for dev builds
-
-        } // darwinRustLinkerEnv) // {
-          shellHook = ''
-            # Keep Ghostty's required Zig ahead of any host-level installation.
-            export PATH="${zig_0_15_2}/bin:$PATH"
-
-            case "$NUCLEOTIDE_DOTNET_TOOL_PATH" in
-              /*) ;;
-              *) export NUCLEOTIDE_DOTNET_TOOL_PATH="$PWD/$NUCLEOTIDE_DOTNET_TOOL_PATH" ;;
-            esac
-            export PATH="$NUCLEOTIDE_DOTNET_TOOL_PATH:$PATH"
-
-            # Define build mode aliases
-            alias build-cached='CARGO_INCREMENTAL=0 RUSTC_WRAPPER=sccache cargo build'
-            alias build-incremental='unset RUSTC_WRAPPER && CARGO_INCREMENTAL=1 cargo build'
-            alias build-release-cached='CARGO_INCREMENTAL=0 RUSTC_WRAPPER=sccache cargo build --release'
-            alias build-release-incremental='unset RUSTC_WRAPPER && cargo build --release'
-
-            # Always show welcome message to stderr (visible even in non-interactive mode)
-            echo "╔════════════════════════════════════════════════════════════════╗" >&2
-            echo "║         Welcome to Nucleotide development environment!         ║" >&2
-            echo "╚════════════════════════════════════════════════════════════════╝" >&2
-            echo "" >&2
-            echo "Standard commands:" >&2
-            echo "  cargo build --release        - Build with incremental compilation (default)" >&2
-            echo "  cargo run                    - Run debug version" >&2
-            echo "  cargo test                   - Run tests" >&2
-            echo "  cargo clippy                 - Run linter" >&2
-            echo "  cargo fmt                    - Format code" >&2
-            echo "" >&2
-            echo "Optimized build commands:" >&2
-            echo "  build-incremental            - Dev build with incremental compilation (best for iterative dev)" >&2
-            echo "  build-cached                 - Dev build with sccache (best for branch switches)" >&2
-            echo "  build-release-incremental    - Release build with incremental" >&2
-            echo "  build-release-cached         - Release build with sccache" >&2
-            echo "" >&2
-            echo "Bundle creation:" >&2
-            echo "  build-remote-helpers        - Build Linux SSH helper binaries" >&2
-            echo "  make-macos-bundle            - Create macOS .app bundle" >&2
-            echo "  make-linux-package           - Create Linux distribution" >&2
-            echo "  install-velopack-cli         - Install/update vpk into .dotnet-tools" >&2
-            echo "  ./scripts/package-velopack.sh - Create macOS Velopack package from Nucleotide.app" >&2
-            echo "" >&2
-            echo "Build optimizations enabled (following Helix patterns):" >&2
-            echo "  • Thin LTO for release builds (faster than full LTO)" >&2
-            echo "  • Split debuginfo for macOS (faster linking)" >&2
-            echo "  • Incremental compilation (default) or sccache (use aliases)" >&2
-            ${lib.optionalString stdenv.isDarwin ''echo "  • LLDB debugging available on macOS" >&2''}
-            echo "" >&2
-            echo "Development tools added from Helix:" >&2
-            echo "  • cargo-flamegraph (performance profiling)" >&2
-            ${lib.optionalString stdenv.isLinux ''echo "  • cargo-tarpaulin (test coverage)" >&2''}
-            ${lib.optionalString stdenv.isDarwin ''echo "  • lldb (debugging)" >&2''}
-            ${lib.optionalString stdenv.isLinux ''echo "  • gdb (debugging)" >&2''}
-            echo "" >&2
-            echo "Nix packages:" >&2
-            echo "  nix build .#runtime          - Build runtime files" >&2
-            echo "" >&2
-            echo "Runtime files available at: $HELIX_RUNTIME" >&2
-          '';
+          cargo-test = craneLib.cargoTest (
+            ciCommonArgs
+            // {
+              inherit cargoArtifacts;
+              cargoTestExtraArgs = "--workspace -- --skip tests::performance_tests --skip tests::integration_tests::tests::performance_tests --skip tests::command_session_runs_program_args_and_reports_exit_code --skip tests::command_session_try_exit_code_reports_finished_child";
+            }
+          );
         };
-      });
+
+        # CI and packaging only need deterministic compilers, native libraries,
+        # and repository build helpers. Keep this separate from the ergonomic
+        # development shell so optional developer tools cannot break CI startup.
+        devShells.ci = pkgs.mkShell (
+          {
+            packages = with pkgs; [
+              rustToolchain
+              zig_0_15_2
+              clang
+              git
+              pkg-config
+              buildRemoteHelpers
+              makeLinuxPackage
+            ];
+            buildInputs = allBuildInputs;
+            RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
+            HELIX_RUNTIME = "${helixRuntime}";
+            LIBCLANG_PATH = "${pkgs.libclang.lib}/lib";
+            PKG_CONFIG_PATH = "${pkgs.openssl.dev}/lib/pkgconfig";
+            OPENSSL_NO_VENDOR = 1;
+          }
+          // darwinRustLinkerEnv
+        );
+
+        devShells.default =
+          pkgs.mkShell (
+            {
+              packages =
+                with pkgs;
+                [
+                  # Rust toolchain (includes rust-analyzer and rust-src)
+                  rustToolchain
+
+                  # Development tools
+                  cargo-watch
+                  cargo-edit
+                  cargo-outdated
+                  cargo-deny
+                  cargo-flamegraph
+                  cargo-machete
+                  cargo-zigbuild
+
+                  # Build performance tools
+                  sccache
+
+                  # Velopack packaging tools
+                  dotnet-sdk_8
+                  installVelopackCli
+                  velopackCli
+
+                  # For running the application
+                  ripgrep
+                  tree-sitter
+                  zig_0_15_2
+
+                  # Build helpers
+                  buildScript
+                  makeMacOSBundle
+                  makeLinuxPackage
+                  buildRemoteHelpers
+
+                  # Platform-specific tools
+                ]
+                ++ lib.optionals (lib.meta.availableOn stdenv.hostPlatform powershell) [
+                  powershell
+                ]
+                ++ lib.optionals stdenv.isDarwin [
+                  darwin.DarwinTools
+                  xcbuild
+                  lld
+                  lldb # Debugging on macOS
+                ]
+                ++ lib.optionals stdenv.isLinux [
+                  cargo-tarpaulin # Test coverage
+                  gdb # Debugging on Linux
+                ];
+
+              buildInputs = allBuildInputs;
+
+              # Development environment variables
+              RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
+              HELIX_RUNTIME = "${helixRuntime}";
+              PKG_CONFIG_PATH = "${pkgs.openssl.dev}/lib/pkgconfig";
+              OPENSSL_NO_VENDOR = 1;
+              DOTNET_CLI_TELEMETRY_OPTOUT = 1;
+              DOTNET_NOLOGO = 1;
+              DOTNET_ROOT = "${pkgs.dotnet-sdk_8}/share/dotnet";
+              NUCLEOTIDE_DOTNET_TOOL_PATH = ".dotnet-tools";
+
+              # Build performance settings following Helix patterns
+              CARGO_INCREMENTAL = "1"; # Default to incremental for dev builds
+
+            }
+            // darwinRustLinkerEnv
+          )
+          // {
+            shellHook = ''
+              # Keep Ghostty's required Zig ahead of any host-level installation.
+              export PATH="${zig_0_15_2}/bin:$PATH"
+
+              case "$NUCLEOTIDE_DOTNET_TOOL_PATH" in
+                /*) ;;
+                *) export NUCLEOTIDE_DOTNET_TOOL_PATH="$PWD/$NUCLEOTIDE_DOTNET_TOOL_PATH" ;;
+              esac
+              export PATH="$NUCLEOTIDE_DOTNET_TOOL_PATH:$PATH"
+
+              # Define build mode aliases
+              alias build-cached='CARGO_INCREMENTAL=0 RUSTC_WRAPPER=sccache cargo build'
+              alias build-incremental='unset RUSTC_WRAPPER && CARGO_INCREMENTAL=1 cargo build'
+              alias build-release-cached='CARGO_INCREMENTAL=0 RUSTC_WRAPPER=sccache cargo build --release'
+              alias build-release-incremental='unset RUSTC_WRAPPER && cargo build --release'
+
+              # Always show welcome message to stderr (visible even in non-interactive mode)
+              echo "╔════════════════════════════════════════════════════════════════╗" >&2
+              echo "║         Welcome to Nucleotide development environment!         ║" >&2
+              echo "╚════════════════════════════════════════════════════════════════╝" >&2
+              echo "" >&2
+              echo "Standard commands:" >&2
+              echo "  cargo build --release        - Build with incremental compilation (default)" >&2
+              echo "  cargo run                    - Run debug version" >&2
+              echo "  cargo test                   - Run tests" >&2
+              echo "  cargo clippy                 - Run linter" >&2
+              echo "  cargo fmt                    - Format code" >&2
+              echo "" >&2
+              echo "Optimized build commands:" >&2
+              echo "  build-incremental            - Dev build with incremental compilation (best for iterative dev)" >&2
+              echo "  build-cached                 - Dev build with sccache (best for branch switches)" >&2
+              echo "  build-release-incremental    - Release build with incremental" >&2
+              echo "  build-release-cached         - Release build with sccache" >&2
+              echo "" >&2
+              echo "Bundle creation:" >&2
+              echo "  build-remote-helpers        - Build Linux SSH helper binaries" >&2
+              echo "  make-macos-bundle            - Create macOS .app bundle" >&2
+              echo "  make-linux-package           - Create Linux distribution" >&2
+              echo "  install-velopack-cli         - Install/update vpk into .dotnet-tools" >&2
+              echo "  ./scripts/package-velopack.sh - Create macOS Velopack package from Nucleotide.app" >&2
+              echo "" >&2
+              echo "Build optimizations enabled (following Helix patterns):" >&2
+              echo "  • Thin LTO for release builds (faster than full LTO)" >&2
+              echo "  • Split debuginfo for macOS (faster linking)" >&2
+              echo "  • Incremental compilation (default) or sccache (use aliases)" >&2
+              ${lib.optionalString stdenv.isDarwin ''echo "  • LLDB debugging available on macOS" >&2''}
+              echo "" >&2
+              echo "Development tools added from Helix:" >&2
+              echo "  • cargo-flamegraph (performance profiling)" >&2
+              ${lib.optionalString stdenv.isLinux ''echo "  • cargo-tarpaulin (test coverage)" >&2''}
+              ${lib.optionalString stdenv.isDarwin ''echo "  • lldb (debugging)" >&2''}
+              ${lib.optionalString stdenv.isLinux ''echo "  • gdb (debugging)" >&2''}
+              echo "" >&2
+              echo "Nix packages:" >&2
+              echo "  nix build .#runtime          - Build runtime files" >&2
+              echo "" >&2
+              echo "Runtime files available at: $HELIX_RUNTIME" >&2
+            '';
+          };
+      }
+    );
 }

@@ -2,6 +2,7 @@
 name = "nucleotide-lsp-proxy"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 readme = "README.md"
 publish = false
