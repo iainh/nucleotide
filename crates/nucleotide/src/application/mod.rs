@@ -11189,12 +11189,22 @@ mod tests {
     use tokio::sync::mpsc;
 
     fn assert_same_path(actual: &Path, expected: &Path) {
-        let actual = actual
-            .canonicalize()
-            .unwrap_or_else(|_| actual.to_path_buf());
-        let expected = expected
-            .canonicalize()
-            .unwrap_or_else(|_| expected.to_path_buf());
+        fn comparable_path(path: &Path) -> PathBuf {
+            let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+            #[cfg(windows)]
+            {
+                let text = path.to_string_lossy();
+                return text
+                    .strip_prefix(r"\\?\")
+                    .map(PathBuf::from)
+                    .unwrap_or(path);
+            }
+            #[cfg(not(windows))]
+            path
+        }
+
+        let actual = comparable_path(actual);
+        let expected = comparable_path(expected);
         assert_eq!(actual, expected);
     }
 
