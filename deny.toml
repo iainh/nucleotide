@@ -73,6 +73,10 @@ ignore = [
     # ttf-parser is pulled transitively through GPUI/fontdb/rustybuzz; no safe
     # upgrade exists yet, so update with GPUI/font stack.
     "RUSTSEC-2026-0192",
+    # rustybuzz is pulled transitively through GPUI/usvg. It is unmaintained
+    # and has no safe upgrade; remove this exception when GPUI updates its SVG
+    # rendering stack.
+    "RUSTSEC-2026-0206",
     # quick-xml 0.39 is pinned by Linux transitive crates wayland-scanner and
     # zbus_xml; update once those crates allow quick-xml >= 0.41.
     "RUSTSEC-2026-0194",
