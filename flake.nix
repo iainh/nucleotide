@@ -695,6 +695,7 @@
             packages = with pkgs; [
               rustToolchain
               zig_0_15_2
+              cargo-zigbuild
               clang
               git
               pkg-config
