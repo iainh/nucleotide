@@ -727,7 +727,7 @@
                   rustToolchain
 
                   # Development tools
-                  cargo-watch
+                  cargo-nextest
                   cargo-edit
                   cargo-outdated
                   cargo-deny
