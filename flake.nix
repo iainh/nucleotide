@@ -9,11 +9,6 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
-    zig-overlay = {
-      url = "github:mitchellh/zig-overlay";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
-
     flake-utils.url = "github:numtide/flake-utils";
 
     crane.url = "github:ipetkov/crane";
@@ -36,7 +31,6 @@
       self,
       nixpkgs,
       rust-overlay,
-      zig-overlay,
       flake-utils,
       helix,
       crane,
@@ -74,9 +68,11 @@
 
         # Dependency management following Helix patterns
         inherit (pkgs) lib stdenv;
-        # libghostty-vt-sys 0.2.0 requires Zig 0.15.2 exactly. Keep this
-        # binding explicit so `with pkgs` cannot silently select nixpkgs Zig.
-        zig_0_15_2 = zig-overlay.packages.${system}."0.15.2";
+        # libghostty-vt-sys 0.2.0 requires Zig 0.15.2 exactly. Use nixpkgs'
+        # patched package so Zig can locate Nix-provided libc headers.
+        zig_0_15_2 =
+          assert pkgs.zig_0_15.version == "0.15.2";
+          pkgs.zig_0_15;
         ghosttyZigDeps = pkgs.callPackage "${ghostty}/build.zig.zon.nix" {
           zig_0_15 = zig_0_15_2;
           name = "ghostty-cache-libghostty-vt-sys-0.2.0";
