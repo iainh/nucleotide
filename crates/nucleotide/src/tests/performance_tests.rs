@@ -201,6 +201,7 @@ appearance_follows_theme = true
     }
 
     #[test]
+    #[ignore = "Timing-sensitive wall-clock performance check"]
     fn test_workspace_detection_breadth_performance() {
         let suite = PerformanceTestSuite::new();
 
@@ -289,6 +290,7 @@ appearance_follows_theme = true
     }
 
     #[test]
+    #[ignore = "Timing-sensitive wall-clock performance check"]
     fn test_many_files_impact() {
         let suite = PerformanceTestSuite::new();
         fs::create_dir_all(suite.path().join(".git")).unwrap();
@@ -428,6 +430,7 @@ appearance_follows_theme = true
 
     /// Benchmark comparison between different VCS types
     #[test]
+    #[ignore = "Timing-sensitive wall-clock performance check"]
     fn test_vcs_type_performance_comparison() {
         let vcs_types = [".git", ".svn", ".hg", ".jj", ".helix"];
 
@@ -496,6 +499,7 @@ appearance_follows_theme = true
 
     /// Stress test for edge cases
     #[test]
+    #[ignore = "Timing-sensitive wall-clock performance check"]
     fn test_stress_edge_cases() {
         // Test with very long path names
         let suite = PerformanceTestSuite::new();

@@ -1273,6 +1273,9 @@ async fn terminate_environment_child_process(
     child: &mut tokio::process::Child,
     process_id: Option<u32>,
 ) -> Result<(), ShellEnvironmentError> {
+    #[cfg(not(unix))]
+    let _ = process_id;
+
     #[cfg(unix)]
     if let Some(process_id) = process_id
         && kill_environment_process_group(process_id).is_ok()
