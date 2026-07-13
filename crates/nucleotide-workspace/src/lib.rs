@@ -1441,12 +1441,12 @@ fn rebase_workspace_path(path: &Path, from_root: &Path, to_root: &Path) -> PathB
     if classify_workspace_location(from_root).is_remote()
         && let Some(relative_path) = strip_remote_workspace_prefix(path, from_root)
     {
-        return join_rebased_workspace_path(from_root, to_root, &relative_path);
+        return join_rebased_workspace_path(to_root, &relative_path);
     }
 
     match strip_workspace_prefix(path, from_root) {
         Ok(relative_path) if relative_path.as_os_str().is_empty() => to_root.to_path_buf(),
-        Ok(relative_path) => join_rebased_workspace_path(from_root, to_root, &relative_path),
+        Ok(relative_path) => join_rebased_workspace_path(to_root, &relative_path),
         Err(_) => path.to_path_buf(),
     }
 }
@@ -1477,15 +1477,13 @@ fn strip_workspace_prefix(
     path.strip_prefix(root).map(Path::to_path_buf)
 }
 
-fn join_rebased_workspace_path(from_root: &Path, to_root: &Path, relative_path: &Path) -> PathBuf {
+fn join_rebased_workspace_path(to_root: &Path, relative_path: &Path) -> PathBuf {
     if relative_path.as_os_str().is_empty() {
         return to_root.to_path_buf();
     }
 
     if classify_workspace_location(to_root).is_remote() {
         join_path_with_separator(to_root, relative_path, display_separator_for_root(to_root))
-    } else if classify_workspace_location(from_root).is_remote() {
-        to_root.join(relative_path)
     } else {
         to_root.join(relative_path)
     }
