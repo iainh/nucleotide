@@ -255,10 +255,10 @@ fn detect_window_capabilities(wm: WindowManager) -> (bool, bool) {
 
 fn detect_system_theme() -> Option<String> {
     // Check GTK theme preference
-    if let Ok(theme) = env::var("GTK_THEME") {
-        if let Some(variant) = theme_variant_from_name(&theme) {
-            return Some(variant);
-        }
+    if let Ok(theme) = env::var("GTK_THEME")
+        && let Some(variant) = theme_variant_from_name(&theme)
+    {
+        return Some(variant);
     }
 
     if let Some(variant) = detect_gsettings_theme() {
@@ -266,10 +266,10 @@ fn detect_system_theme() -> Option<String> {
     }
 
     // Check QT theme for KDE
-    if let Ok(theme) = env::var("QT_STYLE_OVERRIDE") {
-        if let Some(variant) = theme_variant_from_name(&theme) {
-            return Some(variant);
-        }
+    if let Ok(theme) = env::var("QT_STYLE_OVERRIDE")
+        && let Some(variant) = theme_variant_from_name(&theme)
+    {
+        return Some(variant);
     }
 
     None
