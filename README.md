@@ -46,14 +46,15 @@ when you need to update packaged runtime grammars.
 open Nucleotide.app
 ```
 
-### Velopack Installers
+### Velopack Packages
 
-Nucleotide publishes Velopack installers and update feeds for macOS and
-Windows. Download the platform setup package from a release, run it, then launch
-Nucleotide from Applications or the Start Menu.
+Nucleotide publishes Velopack installers and update feeds for macOS. On Windows,
+the only install artifact is a portable `*-Portable.zip` bundle; extract the
+entire bundle to a writable directory and launch `Nucleotide.exe`. The release
+also includes the feed and packages used by the in-app updater.
 
 Install Rust stable, Zig 0.15.2, the .NET 8 SDK, and the Velopack CLI before
-building a Windows installer locally.
+building a Windows portable package locally.
 
 ```powershell
 cargo build --release -p nucleotide --bins
