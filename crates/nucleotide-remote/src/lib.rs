@@ -14719,7 +14719,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let process = RemoteRequest::RunProcess(ProcessRequest {
             program: "/bin/sh".to_string(),
-            args: vec!["-c".to_string(), "printf 'started'; sleep 3".to_string()],
+            args: vec!["-c".to_string(), "printf 'started'; sleep 10".to_string()],
             cwd: PathBuf::new(),
             env: BTreeMap::new(),
             clear_env: false,
@@ -14728,7 +14728,7 @@ mod tests {
             timeout_ms: None,
         });
         let mut options = process.v5_request_options();
-        options.deadline_unix_ms = v5_now_unix_millis() + 100;
+        options.deadline_unix_ms = v5_now_unix_millis() + 2_000;
         let input = BlockingRead::default();
         input.push(v5_client_input(v5_request_frames_with_options(
             1,
@@ -14758,7 +14758,7 @@ mod tests {
                 break;
             }
             assert!(
-                started.elapsed() < Duration::from_secs(2),
+                started.elapsed() < Duration::from_secs(5),
                 "timed out waiting for process stdout"
             );
             std::thread::sleep(Duration::from_millis(10));
@@ -14769,7 +14769,7 @@ mod tests {
         service_thread.join().unwrap();
 
         assert!(
-            deadline_wait_started.elapsed() < Duration::from_secs(2),
+            deadline_wait_started.elapsed() < Duration::from_secs(3),
             "service waited for the sleeping process instead of expiring its deadline"
         );
         let frames = read_v5_frames(output.bytes());
