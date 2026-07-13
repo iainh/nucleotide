@@ -59,6 +59,10 @@ jobs:
         uses: DeterminateSystems/magic-nix-cache-action@76aaf8814cdb385b86597c32b8c51b66b69b0839
 
       - name: Cache Rust artifacts
+        # libghostty-vt-sys builds its Zig library for the detected host CPU on
+        # native builds. Reusing that artifact on another Windows runner can
+        # produce STATUS_ILLEGAL_INSTRUCTION before the Rust test harness starts.
+        if: runner.os != 'Windows'
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
         with:
           key: ${{ matrix.target }}
