@@ -6,6 +6,7 @@ pub mod lsp_stress_tests {
     // use std::collections::HashMap;
     use std::path::PathBuf;
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{Duration, Instant};
 
     use nucleotide_events::{ProjectType, ServerHealthStatus};
@@ -107,6 +108,8 @@ pub mod lsp_stress_tests {
     }
 
     /// Helper for creating test projects under load
+    static NEXT_STRESS_TEST_ID: AtomicU64 = AtomicU64::new(0);
+
     struct StressTestHelper {
         base_dir: PathBuf,
         project_counter: Arc<RwLock<usize>>,
@@ -114,8 +117,13 @@ pub mod lsp_stress_tests {
 
     impl StressTestHelper {
         fn new() -> Self {
+            let test_id = NEXT_STRESS_TEST_ID.fetch_add(1, Ordering::Relaxed);
             Self {
-                base_dir: std::env::temp_dir().join("nucleotide_stress_tests"),
+                base_dir: std::env::temp_dir().join(format!(
+                    "nucleotide_stress_tests_{}_{}",
+                    std::process::id(),
+                    test_id
+                )),
                 project_counter: Arc::new(RwLock::new(0)),
             }
         }
