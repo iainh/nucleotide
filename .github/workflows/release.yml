@@ -262,6 +262,7 @@ jobs:
           chmod +x scripts/bundle-mac.sh
           NUCL_REMOTE_HELPER_DIR="target/remote-helpers" \
             NUCL_REQUIRE_REMOTE_HELPERS=1 \
+            NUCL_PREBUILT_REMOTE_HELPERS=1 \
             NUCL_BINARY="target/aarch64-apple-darwin/release/nucl" \
             ./scripts/bundle-mac.sh
 

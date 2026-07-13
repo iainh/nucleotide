@@ -100,6 +100,7 @@ REMOTE_HELPERS=(
 REMOTE_HELPERS_COPIED=0
 REMOTE_HELPERS_CAN_COPY=1
 REMOTE_HELPERS_AUTO_BUILD="${NUCL_BUILD_REMOTE_HELPERS:-auto}"
+REMOTE_HELPERS_PREBUILT="${NUCL_PREBUILT_REMOTE_HELPERS:-0}"
 REMOTE_HELPER_SOURCE_PATHS=(
     "Cargo.toml"
     "Cargo.lock"
@@ -120,7 +121,26 @@ remote_helpers_need_rebuild() {
         if [ ! -f "${helper_path}" ]; then
             return 0
         fi
+    done
 
+    # Artifacts downloaded from another CI job can legitimately predate this
+    # checkout even though both jobs use the same commit. Once their presence
+    # is verified, trust their workflow provenance instead of file timestamps.
+    case "${REMOTE_HELPERS_PREBUILT}" in
+        1|true|yes)
+            return 1
+            ;;
+        0|false|no)
+            ;;
+        *)
+            echo -e "${RED}Error: invalid NUCL_PREBUILT_REMOTE_HELPERS value: ${REMOTE_HELPERS_PREBUILT}${NC}"
+            echo "Use 1, true, yes, 0, false, or no."
+            exit 1
+            ;;
+    esac
+
+    for helper in "${REMOTE_HELPERS[@]}"; do
+        local helper_path="${REMOTE_HELPER_DIR}/${helper}"
         for source_path in "${REMOTE_HELPER_SOURCE_PATHS[@]}"; do
             if [ ! -e "${source_path}" ]; then
                 continue
