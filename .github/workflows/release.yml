@@ -460,6 +460,13 @@ jobs:
           corrupt_result="${RUNNER_TEMP}/nucleotide-update-corrupt-result"
           "${HOME}/Applications/NucleotideUpdateSmoke.app/Contents/MacOS/NucleotideUpdateSmoke" \
             reject-corrupt "${source}" "${corrupt_result}" 9000.0.2
+          for _ in $(seq 1 90); do
+            if [ -f "${corrupt_result}" ]; then
+              break
+            fi
+            sleep 1
+          done
+          test -f "${corrupt_result}"
           test "$(cat "${corrupt_result}")" = rejected
 
       - name: Build macOS Velopack package
@@ -712,6 +719,12 @@ jobs:
           }
           $corruptResult = Join-Path $env:RUNNER_TEMP "nucleotide-update-corrupt-result"
           & $installedExe reject-corrupt $smokeOutput $corruptResult "9000.0.2"
+          for ($attempt = 0; $attempt -lt 90 -and -not (Test-Path $corruptResult); $attempt++) {
+            Start-Sleep -Seconds 1
+          }
+          if (-not (Test-Path $corruptResult)) {
+            throw "The corrupt-package update check did not produce a result."
+          }
           if ((Get-Content -Raw $corruptResult).Trim() -ne "rejected") {
             throw "The corrupt Velopack package was not rejected."
           }
