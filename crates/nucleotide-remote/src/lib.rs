@@ -25,7 +25,7 @@ use nucleotide_workspace::{
 };
 use prost::Message as ProstMessage;
 use regex::RegexBuilder;
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize, Serializer, de::DeserializeOwned};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::error::Error;
 use std::ffi::{OsStr, OsString};
@@ -1106,25 +1106,32 @@ impl RemoteResponse {
 enum V5RequestPayloadRef<'a> {
     Empty {},
     Path {
+        #[serde(serialize_with = "serialize_posix_path")]
         path: &'a PathBuf,
     },
     Paths {
+        #[serde(serialize_with = "serialize_posix_paths")]
         paths: &'a Vec<PathBuf>,
     },
     FindAncestor {
+        #[serde(serialize_with = "serialize_posix_path")]
         start: &'a PathBuf,
         file_name: &'a String,
         limit: usize,
     },
     Rename {
+        #[serde(serialize_with = "serialize_posix_path")]
         from: &'a PathBuf,
+        #[serde(serialize_with = "serialize_posix_path")]
         to: &'a PathBuf,
     },
     ReadFile {
+        #[serde(serialize_with = "serialize_posix_path")]
         path: &'a PathBuf,
         max_bytes: Option<u64>,
     },
     WriteFile {
+        #[serde(serialize_with = "serialize_posix_path")]
         path: &'a PathBuf,
         create_parent_dirs: bool,
         expected_modified_unix_millis: Option<i64>,
@@ -1133,9 +1140,11 @@ enum V5RequestPayloadRef<'a> {
     FileSearch(&'a FileSearchRequest),
     TextSearch(&'a TextSearchRequest),
     Root {
+        #[serde(serialize_with = "serialize_posix_path")]
         root: &'a PathBuf,
     },
     GitStatus {
+        #[serde(serialize_with = "serialize_posix_path")]
         root: &'a PathBuf,
         include_untracked: bool,
         limit: usize,
@@ -1145,6 +1154,7 @@ enum V5RequestPayloadRef<'a> {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct V5DirectoryListPayload {
+    #[serde(serialize_with = "serialize_posix_path")]
     path: PathBuf,
     #[serde(default)]
     known_generation: Option<u64>,
@@ -1154,6 +1164,7 @@ struct V5DirectoryListPayload {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct V5DirectoryListEntryPayload {
+    #[serde(serialize_with = "serialize_posix_path")]
     path: PathBuf,
     #[serde(default)]
     known_generation: Option<u64>,
@@ -1163,7 +1174,7 @@ struct V5DirectoryListEntryPayload {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct V5DirectoryListDirsPayload {
-    #[serde(default)]
+    #[serde(default, serialize_with = "serialize_posix_paths")]
     paths: Vec<PathBuf>,
     #[serde(default)]
     entries: Vec<V5DirectoryListEntryPayload>,
@@ -1171,16 +1182,19 @@ struct V5DirectoryListDirsPayload {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct V5PathPayload {
+    #[serde(serialize_with = "serialize_posix_path")]
     path: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct V5PathsPayload {
+    #[serde(serialize_with = "serialize_posix_paths")]
     paths: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct V5FindAncestorPayload {
+    #[serde(serialize_with = "serialize_posix_path")]
     start: PathBuf,
     file_name: String,
     limit: usize,
@@ -1188,18 +1202,22 @@ struct V5FindAncestorPayload {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct V5RenamePayload {
+    #[serde(serialize_with = "serialize_posix_path")]
     from: PathBuf,
+    #[serde(serialize_with = "serialize_posix_path")]
     to: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct V5ReadFilePayload {
+    #[serde(serialize_with = "serialize_posix_path")]
     path: PathBuf,
     max_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct V5WriteFilePayload {
+    #[serde(serialize_with = "serialize_posix_path")]
     path: PathBuf,
     create_parent_dirs: bool,
     expected_modified_unix_millis: Option<i64>,
@@ -1209,14 +1227,37 @@ struct V5WriteFilePayload {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct V5RootPayload {
+    #[serde(serialize_with = "serialize_posix_path")]
     root: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct V5GitStatusPayload {
+    #[serde(serialize_with = "serialize_posix_path")]
     root: PathBuf,
     include_untracked: bool,
     limit: usize,
+}
+
+fn serialize_posix_path<S, P>(path: &P, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+    P: AsRef<Path>,
+{
+    serializer.serialize_str(&posix_path_string(path.as_ref()))
+}
+
+fn serialize_posix_paths<S, P>(paths: &P, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+    P: AsRef<[PathBuf]>,
+{
+    paths
+        .as_ref()
+        .iter()
+        .map(posix_path_string)
+        .collect::<Vec<_>>()
+        .serialize(serializer)
 }
 
 fn encode_v5_payload(
@@ -3172,6 +3213,7 @@ pub struct WriteResultResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileSearchRequest {
+    #[serde(serialize_with = "serialize_posix_path")]
     pub root: PathBuf,
     pub pattern: Option<String>,
     pub limit: usize,
@@ -3183,6 +3225,7 @@ pub struct FileSearchRequest {
     pub git_exclude: bool,
     pub follow_links: bool,
     pub max_depth: Option<usize>,
+    #[serde(serialize_with = "serialize_posix_paths")]
     pub excluded_relative_prefixes: Vec<PathBuf>,
 }
 
@@ -3215,6 +3258,7 @@ pub struct FileSearchResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TextSearchRequest {
+    #[serde(serialize_with = "serialize_posix_path")]
     pub root: PathBuf,
     pub pattern: String,
     pub limit: usize,
@@ -3228,7 +3272,9 @@ pub struct TextSearchRequest {
     pub follow_links: bool,
     pub max_depth: Option<usize>,
     pub max_file_bytes: u64,
+    #[serde(serialize_with = "serialize_posix_paths")]
     pub excluded_relative_paths: Vec<PathBuf>,
+    #[serde(serialize_with = "serialize_posix_paths")]
     pub custom_ignore_filenames: Vec<PathBuf>,
 }
 
@@ -3329,6 +3375,7 @@ pub struct GitHeadResponse {
 pub struct ProcessRequest {
     pub program: String,
     pub args: Vec<String>,
+    #[serde(serialize_with = "serialize_posix_path")]
     pub cwd: PathBuf,
     pub env: BTreeMap<String, String>,
     pub clear_env: bool,
@@ -12047,6 +12094,49 @@ mod tests {
             let decoded = RemoteRequest::from_v5_method_payload(method, &payload).unwrap();
             assert_eq!(decoded, request, "{method}");
         }
+    }
+
+    #[test]
+    fn v5_request_payloads_serialize_remote_paths_with_posix_separators() {
+        let windows_style_path = PathBuf::from(r"\home\iheggie\projects");
+        let request = RemoteRequest::ListDir {
+            path: windows_style_path.clone(),
+        };
+        let (method, payload) = request.to_v5_method_payload().unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+
+        assert_eq!(method, "fs.list_dir");
+        assert_eq!(payload["path"], "/home/iheggie/projects");
+
+        let cached_payload = V5DirectoryListPayload {
+            path: windows_style_path.clone(),
+            known_generation: Some(1),
+            known_fingerprint: Some(2),
+        };
+        let payload = serde_json::to_value(cached_payload).unwrap();
+        assert_eq!(payload["path"], "/home/iheggie/projects");
+
+        let search = FileSearchRequest {
+            root: windows_style_path.clone(),
+            excluded_relative_prefixes: vec![PathBuf::from(r"target\generated")],
+            ..FileSearchRequest::default()
+        };
+        let payload = serde_json::to_value(search).unwrap();
+        assert_eq!(payload["root"], "/home/iheggie/projects");
+        assert_eq!(payload["excluded_relative_prefixes"][0], "target/generated");
+
+        let process = ProcessRequest {
+            program: "pwd".to_string(),
+            args: Vec::new(),
+            cwd: windows_style_path,
+            env: BTreeMap::new(),
+            clear_env: false,
+            inherit_project_environment: false,
+            max_output_bytes: None,
+            timeout_ms: None,
+        };
+        let payload = serde_json::to_value(process).unwrap();
+        assert_eq!(payload["cwd"], "/home/iheggie/projects");
     }
 
     #[test]
