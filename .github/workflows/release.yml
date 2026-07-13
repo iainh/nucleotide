@@ -694,8 +694,12 @@ jobs:
           if (-not $installer) {
             throw "Smoke-test installer was not created."
           }
-          & $installer.FullName --silent --installto $installDir
-          if ($LASTEXITCODE -ne 0) {
+          $installProcess = Start-Process `
+            -FilePath $installer.FullName `
+            -ArgumentList @("--silent", "--installto", $installDir) `
+            -Wait `
+            -PassThru
+          if ($installProcess.ExitCode -ne 0) {
             throw "Smoke-test installer failed."
           }
 
