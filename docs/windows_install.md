@@ -1,26 +1,29 @@
-# Windows Install
+# Windows Portable Install
 
-Nucleotide publishes Windows Velopack setup and update artifacts from CI.
+Nucleotide publishes a Windows Velopack portable bundle and update artifacts
+from CI. It does not publish a Windows setup executable or MSI.
 
 ## Install
 
-1. Download the Windows Velopack setup executable from the release.
-2. Run the installer.
-3. Launch Nucleotide from the Start Menu or desktop shortcut.
+1. Download the Windows `*-Portable.zip` bundle from the release.
+2. Extract the entire archive to a directory where your account has write
+   access.
+3. Launch `Nucleotide.exe` from the extracted directory.
 
-The installer is built from the checked-in Velopack packaging script. It stages
-`nucl.exe`, `ghostty-vt.dll`, Linux remote helpers for SSH and WSL, and the
-bundled Helix runtime, then runs `vpk pack`.
+Keep the extracted directory structure intact so Velopack can apply updates in
+place. The portable bundle is built from the checked-in Velopack packaging
+script. It stages `nucl.exe`, `ghostty-vt.dll`, Linux remote helpers for SSH and
+WSL, and the bundled Helix runtime, then runs `vpk pack --noInst`.
 
 Nucleotide detects that bundled runtime automatically when launched from the
-installed app directory.
+packaged app directory.
 
 Nucleotide sets a stable Windows AppUserModelID (`org.spiralpoint.nucleotide`)
 at startup so taskbar grouping and Jump Lists use the same identity across
-shortcuts and direct launches. When Nucleotide is already running, launching
-`nucl.exe` again with files, folders, or taskbar Jump List actions forwards that
-request to the running window instead of creating a second independent
-instance.
+user-created shortcuts and direct launches. When Nucleotide is already running,
+launching `nucl.exe` again with files, folders, or taskbar Jump List actions
+forwards that request to the running window instead of creating a second
+independent instance.
 
 When a project folder is opened, Nucleotide reports it to Windows Recent Items
 and updates the taskbar Jump List `Recent Folders` category. On Windows,
@@ -43,7 +46,7 @@ try {
 }
 ```
 
-Then build the Velopack package:
+Then build the portable Velopack package:
 
 ```powershell
 .\scripts\package-velopack.ps1 -RequireRemoteHelpers
@@ -61,6 +64,9 @@ Velopack output is written to:
 ```text
 target\release\bundle\velopack
 ```
+
+The output includes a `*-Portable.zip` bundle plus the packages and feed needed
+for updates. The packaging script rejects any generated `Setup.exe` or MSI.
 
 `setup-windows-runtime.cmd` copies the Helix runtime into
 `crates\nucleotide\runtime`, uses the supplied grammar-capable executable to

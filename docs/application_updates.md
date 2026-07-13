@@ -2,7 +2,7 @@
 
 Nucleotide uses Velopack to build, discover, download and apply application updates on macOS and Windows. The update controller is process-wide, so every window shows the same state and download progress.
 
-Linux archives remain manually installed. Source and portable builds report that managed updates are unavailable.
+Linux archives remain manually installed, and unpackaged development builds report that managed updates are unavailable. Windows Velopack portable bundles support managed updates after extraction.
 
 ## User experience
 
@@ -43,10 +43,10 @@ The workflow performs these steps:
 2. Build the macOS universal application and Windows package input.
 3. Download each platform's previous published Velopack release so `vpk pack` can generate delta packages.
 4. Generate release notes from commits since the previous tag.
-5. Sign and notarize the macOS application and installer when Apple credentials are configured, and sign Windows binaries and installers when Windows signing secrets are configured. Otherwise, produce unsigned packages for that platform.
+5. Sign and notarize the macOS application and installer when Apple credentials are configured, and sign the Windows binaries included in portable bundles when Windows signing secrets are configured. Otherwise, produce unsigned packages for that platform.
 6. Upload both Velopack channels into one draft GitHub release.
 7. Upload the Linux files, checksums and build-provenance attestations.
-8. Verify the feeds, full packages and installers, then publish the release.
+8. Verify the feeds, full packages, macOS installer and Windows portable bundle, then publish the release.
 
 The draft is the promotion boundary. Velopack clients cannot discover the release until every required asset passes verification and the workflow publishes it.
 

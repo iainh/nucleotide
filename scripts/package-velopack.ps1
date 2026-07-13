@@ -100,6 +100,10 @@ Remove-Item -LiteralPath $packPath -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Path $packPath -Force | Out-Null
 New-Item -ItemType Directory -Path $outputPath -Force | Out-Null
 
+Get-ChildItem -LiteralPath $outputPath -File -ErrorAction SilentlyContinue |
+  Where-Object { $_.Name -like "*Setup.exe" -or $_.Extension -eq ".msi" } |
+  Remove-Item -Force
+
 Copy-RequiredFile -Source $nuclExePath -Destination (Join-Path $packPath "nucl.exe")
 Copy-RequiredFile -Source $ghosttyDllPath -Destination (Join-Path $packPath "ghostty-vt.dll")
 Copy-Item -LiteralPath $runtimePath -Destination (Join-Path $packPath "runtime") -Recurse -Force
@@ -122,7 +126,8 @@ $vpkArgs = @(
   "--mainExe", "nucl.exe",
   "--outputDir", $outputPath,
   "--channel", $Channel,
-  "--icon", $iconPath
+  "--icon", $iconPath,
+  "--noInst"
 )
 
 if ($Runtime) {
@@ -140,6 +145,13 @@ if ($SignParams) {
 & vpk @vpkArgs
 if ($LASTEXITCODE -ne 0) {
   exit $LASTEXITCODE
+}
+
+if (-not (Get-ChildItem -LiteralPath $outputPath -Filter "*-Portable.zip" -File | Select-Object -First 1)) {
+  throw "Velopack Windows portable bundle was not created."
+}
+if (Get-ChildItem -LiteralPath $outputPath -File | Where-Object { $_.Name -like "*Setup.exe" -or $_.Extension -eq ".msi" }) {
+  throw "Velopack produced a non-portable Windows installer."
 }
 
 Write-Host "Velopack package files written to $outputPath"

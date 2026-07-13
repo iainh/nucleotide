@@ -654,8 +654,13 @@ jobs:
           if (-not (Get-ChildItem "target\release\bundle\velopack-windows" -Filter "*-full.nupkg" -File | Select-Object -First 1)) {
             throw "Velopack Windows full package was not created."
           }
-          if (-not (Get-ChildItem "target\release\bundle\velopack-windows" -Filter "*Setup.exe" -File | Select-Object -First 1)) {
-            throw "Velopack Windows setup executable was not created."
+          if (-not (Get-ChildItem "target\release\bundle\velopack-windows" -Filter "*-Portable.zip" -File | Select-Object -First 1)) {
+            throw "Velopack Windows portable bundle was not created."
+          }
+          $installers = Get-ChildItem "target\release\bundle\velopack-windows" -File |
+            Where-Object { $_.Name -like "*Setup.exe" -or $_.Extension -eq ".msi" }
+          if ($installers) {
+            throw "Velopack produced a non-portable Windows installer: $($installers.Name -join ', ')"
           }
 
       - name: Exercise a packaged Windows update
@@ -677,7 +682,8 @@ jobs:
               "--mainExe", "NucleotideUpdateSmoke.exe",
               "--outputDir", $smokeOutput,
               "--channel", "smoke-windows",
-              "--shortcuts", "None"
+              "--shortcuts", "None",
+              "--noInst"
             )
             if ($env:NUCL_WINDOWS_SIGN_PARAMS) {
               $vpkArgs += @("--signParams", $env:NUCL_WINDOWS_SIGN_PARAMS)
@@ -690,22 +696,22 @@ jobs:
           }
 
           Pack-Smoke "9000.0.0"
-          $installer = Get-ChildItem $smokeOutput -Filter "*Setup.exe" -File | Select-Object -First 1
-          if (-not $installer) {
-            throw "Smoke-test installer was not created."
+          $portable = Get-ChildItem $smokeOutput -Filter "*-Portable.zip" -File | Select-Object -First 1
+          if (-not $portable) {
+            throw "Smoke-test portable bundle was not created."
           }
-          $installProcess = Start-Process `
-            -FilePath $installer.FullName `
-            -ArgumentList @("--silent", "--installto", $installDir) `
-            -Wait `
-            -PassThru
-          if ($installProcess.ExitCode -ne 0) {
-            throw "Smoke-test installer failed."
+          if (Get-ChildItem $smokeOutput -Filter "*Setup.exe" -File | Select-Object -First 1) {
+            throw "Smoke-test packaging produced a non-portable installer."
+          }
+          Expand-Archive -LiteralPath $portable.FullName -DestinationPath $installDir
+
+          $installedExe = Join-Path $installDir "NucleotideUpdateSmoke.exe"
+          if (-not (Test-Path -LiteralPath $installedExe -PathType Leaf)) {
+            throw "Smoke-test portable launcher was not found after extraction."
           }
 
           Pack-Smoke "9000.0.1"
           $result = Join-Path $env:RUNNER_TEMP "nucleotide-update-smoke-result"
-          $installedExe = Join-Path $installDir "NucleotideUpdateSmoke.exe"
           & $installedExe apply $smokeOutput $result "9000.0.0" "9000.0.1"
           for ($attempt = 0; $attempt -lt 90 -and -not (Test-Path $result); $attempt++) {
             Start-Sleep -Seconds 1
