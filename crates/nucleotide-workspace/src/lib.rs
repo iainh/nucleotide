@@ -2,18 +2,21 @@
 // ABOUTME: Keeps editor-facing workspace services independent of transport details
 
 use async_trait::async_trait;
+use futures::{Stream, StreamExt};
 use ignore::WalkBuilder;
 use regex::RegexBuilder;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::process::{Child, Command, Stdio};
 use std::sync::{
     Arc, Mutex, Weak,
     atomic::{AtomicBool, AtomicU64, Ordering},
     mpsc,
 };
+use std::task::{Context, Poll};
 use std::time::{Duration, Instant, SystemTime};
 use thiserror::Error;
 
@@ -757,6 +760,127 @@ pub struct FileRead {
     pub truncated: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileReadMetadata {
+    pub path: PathBuf,
+    pub size: u64,
+    pub modified: Option<SystemTime>,
+    pub readonly: bool,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileReadEvent {
+    Chunk(Vec<u8>),
+    Complete(FileReadMetadata),
+}
+
+#[must_use = "dropping an event stream may cancel its producer"]
+pub struct WorkspaceEventStream<E> {
+    inner: Pin<Box<dyn Stream<Item = Result<E>> + Send + 'static>>,
+}
+
+impl<E> WorkspaceEventStream<E> {
+    pub fn new(stream: impl Stream<Item = Result<E>> + Send + 'static) -> Self {
+        Self {
+            inner: Box::pin(stream),
+        }
+    }
+
+    pub async fn next(&mut self) -> Option<Result<E>> {
+        self.inner.next().await
+    }
+}
+
+impl<E> Stream for WorkspaceEventStream<E> {
+    type Item = Result<E>;
+
+    fn poll_next(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.inner.as_mut().poll_next(context)
+    }
+}
+
+pub type FileReadStream = WorkspaceEventStream<FileReadEvent>;
+
+impl WorkspaceEventStream<FileReadEvent> {
+    pub fn from_file_read(read: FileRead) -> Self {
+        let FileRead {
+            path,
+            bytes,
+            size,
+            modified,
+            readonly,
+            truncated,
+        } = read;
+        let mut events = Vec::with_capacity(usize::from(!bytes.is_empty()) + 1);
+        if !bytes.is_empty() {
+            events.push(Ok(FileReadEvent::Chunk(bytes)));
+        }
+        events.push(Ok(FileReadEvent::Complete(FileReadMetadata {
+            path,
+            size,
+            modified,
+            readonly,
+            truncated,
+        })));
+        Self::new(futures::stream::iter(events))
+    }
+
+    pub async fn collect_file(mut self, request_path: &Path) -> Result<FileRead> {
+        let mut bytes = Vec::new();
+        let mut metadata = None;
+        while let Some(event) = self.next().await {
+            match event? {
+                FileReadEvent::Chunk(chunk) if metadata.is_none() => bytes.extend(chunk),
+                FileReadEvent::Chunk(_) => {
+                    return Err(file_stream_error(
+                        request_path,
+                        std::io::ErrorKind::InvalidData,
+                        "received file data after completion",
+                    ));
+                }
+                FileReadEvent::Complete(complete) if metadata.is_none() => {
+                    metadata = Some(complete);
+                }
+                FileReadEvent::Complete(_) => {
+                    return Err(file_stream_error(
+                        request_path,
+                        std::io::ErrorKind::InvalidData,
+                        "received duplicate file completion",
+                    ));
+                }
+            }
+        }
+        let metadata = metadata.ok_or_else(|| {
+            file_stream_error(
+                request_path,
+                std::io::ErrorKind::UnexpectedEof,
+                "file stream ended before completion",
+            )
+        })?;
+        Ok(FileRead {
+            path: metadata.path,
+            bytes,
+            size: metadata.size,
+            modified: metadata.modified,
+            readonly: metadata.readonly,
+            truncated: metadata.truncated,
+        })
+    }
+}
+
+fn file_stream_error(
+    path: &Path,
+    kind: std::io::ErrorKind,
+    message: &'static str,
+) -> WorkspaceError {
+    WorkspaceError::Io {
+        operation: "read file stream",
+        path: path.to_path_buf(),
+        source: std::io::Error::new(kind, message),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct WriteOptions {
     pub create_parent_dirs: bool,
@@ -1190,6 +1314,12 @@ pub trait WorkspaceBackend: Send + Sync {
 
     async fn read_file(&self, path: &Path, options: ReadOptions) -> Result<FileRead>;
 
+    async fn read_file_stream(&self, path: &Path, options: ReadOptions) -> Result<FileReadStream> {
+        self.read_file(path, options)
+            .await
+            .map(FileReadStream::from_file_read)
+    }
+
     async fn read_file_with_cancellation(
         &self,
         path: &Path,
@@ -1200,6 +1330,17 @@ pub trait WorkspaceBackend: Send + Sync {
         let result = self.read_file(path, options).await;
         cancellation.check_cancelled("read file", path)?;
         result
+    }
+
+    async fn read_file_stream_with_cancellation(
+        &self,
+        path: &Path,
+        options: ReadOptions,
+        cancellation: &WorkspaceCancellationToken,
+    ) -> Result<FileReadStream> {
+        self.read_file_with_cancellation(path, options, cancellation)
+            .await
+            .map(FileReadStream::from_file_read)
     }
 
     async fn write_file(
@@ -1356,6 +1497,19 @@ impl PathMappedWorkspaceBackend {
     fn map_file_read_to_display(&self, mut read: FileRead) -> FileRead {
         read.path = self.mapping.to_display_path(&read.path);
         read
+    }
+
+    fn map_file_read_stream_to_display(&self, stream: FileReadStream) -> FileReadStream {
+        let mapping = self.mapping.clone();
+        WorkspaceEventStream::new(StreamExt::map(stream, move |event| {
+            event.map(|event| match event {
+                FileReadEvent::Chunk(bytes) => FileReadEvent::Chunk(bytes),
+                FileReadEvent::Complete(mut metadata) => {
+                    metadata.path = mapping.to_display_path(&metadata.path);
+                    FileReadEvent::Complete(metadata)
+                }
+            })
+        }))
     }
 
     fn map_write_result_to_display(&self, mut result: WriteResult) -> WriteResult {
@@ -1681,6 +1835,14 @@ impl WorkspaceBackend for PathMappedWorkspaceBackend {
             .map(|read| self.map_file_read_to_display(read))
     }
 
+    async fn read_file_stream(&self, path: &Path, options: ReadOptions) -> Result<FileReadStream> {
+        let native_path = self.mapping.to_native_path(path);
+        self.inner
+            .read_file_stream(&native_path, options)
+            .await
+            .map(|stream| self.map_file_read_stream_to_display(stream))
+    }
+
     async fn read_file_with_cancellation(
         &self,
         path: &Path,
@@ -1692,6 +1854,19 @@ impl WorkspaceBackend for PathMappedWorkspaceBackend {
             .read_file_with_cancellation(&native_path, options, cancellation)
             .await
             .map(|read| self.map_file_read_to_display(read))
+    }
+
+    async fn read_file_stream_with_cancellation(
+        &self,
+        path: &Path,
+        options: ReadOptions,
+        cancellation: &WorkspaceCancellationToken,
+    ) -> Result<FileReadStream> {
+        let native_path = self.mapping.to_native_path(path);
+        self.inner
+            .read_file_stream_with_cancellation(&native_path, options, cancellation)
+            .await
+            .map(|stream| self.map_file_read_stream_to_display(stream))
     }
 
     async fn write_file(
@@ -4233,6 +4408,88 @@ mod tests {
             std::fs::read_to_string(native_path).unwrap(),
             "fn main() {}\n"
         );
+    }
+
+    #[test]
+    fn workspace_backend_handle_exposes_default_file_stream() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("streamed.txt");
+        fs::write(&path, "streamed contents").unwrap();
+        let backend: WorkspaceBackendHandle = local_workspace_backend();
+
+        let mut stream = block_on(backend.read_file_stream(&path, ReadOptions::default())).unwrap();
+        let chunk = block_on(stream.next()).unwrap().unwrap();
+        let complete = block_on(stream.next()).unwrap().unwrap();
+
+        assert_eq!(chunk, FileReadEvent::Chunk(b"streamed contents".to_vec()));
+        assert!(matches!(
+            complete,
+            FileReadEvent::Complete(FileReadMetadata {
+                path: completed_path,
+                size: 17,
+                truncated: false,
+                ..
+            }) if completed_path == path
+        ));
+        assert!(block_on(stream.next()).is_none());
+    }
+
+    #[test]
+    fn path_mapped_file_stream_maps_only_completion_metadata() {
+        let display_root = PathBuf::from("/remote/project");
+        let native_root = PathBuf::from("/native/project");
+        let native_path = native_root.join("asset.bin");
+        let bytes = vec![1, 2, 3, 4];
+        let allocation = bytes.as_ptr();
+        let stream = FileReadStream::from_file_read(FileRead {
+            path: native_path,
+            bytes,
+            size: 4,
+            modified: None,
+            readonly: false,
+            truncated: false,
+        });
+        let backend = PathMappedWorkspaceBackend::new(
+            local_workspace_backend(),
+            WorkspacePathMapping::new(display_root.clone(), native_root),
+        );
+
+        let mut stream = backend.map_file_read_stream_to_display(stream);
+        let chunk = block_on(stream.next()).unwrap().unwrap();
+        let complete = block_on(stream.next()).unwrap().unwrap();
+
+        match chunk {
+            FileReadEvent::Chunk(bytes) => {
+                assert_eq!(bytes, vec![1, 2, 3, 4]);
+                assert_eq!(bytes.as_ptr(), allocation);
+            }
+            FileReadEvent::Complete(_) => panic!("file stream completed before its chunk"),
+        }
+        assert!(matches!(
+            complete,
+            FileReadEvent::Complete(FileReadMetadata { path, .. })
+                if path == display_root.join("asset.bin")
+        ));
+    }
+
+    #[test]
+    fn file_stream_collection_rejects_missing_completion() {
+        let path = PathBuf::from("/remote/project/incomplete.bin");
+        let stream =
+            FileReadStream::new(futures::stream::iter(vec![Ok(FileReadEvent::Chunk(vec![
+                1, 2, 3,
+            ]))]));
+
+        let error = block_on(stream.collect_file(&path)).unwrap_err();
+
+        assert!(matches!(
+            error,
+            WorkspaceError::Io {
+                operation: "read file stream",
+                path: error_path,
+                source,
+            } if error_path == path && source.kind() == std::io::ErrorKind::UnexpectedEof
+        ));
     }
 
     #[test]
