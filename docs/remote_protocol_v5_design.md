@@ -1,6 +1,6 @@
 # Nucleotide remote protocol v5 design
 
-Status: implemented; post-v5 hardening updated 2026-07-13
+Status: implemented; post-v5 hardening updated 2026-07-14
 
 This document defines the implemented `nucleotide-remote` v5 workspace protocol around two protocol-level changes:
 
@@ -18,7 +18,7 @@ The implementation includes:
 - Concurrent odd/even streams, negotiated limits and capabilities, cancellation, deadlines, progress, partial results and per-stream compression.
 - Flow-controlled file, process and search data with lazy, shared-buffer DATA producers instead of eager per-frame copies.
 - Atomic reset and teardown that purge queued frames, flow state and request state before a terminal frame is sent.
-- Receive-window validation, decoded chunk limits, declared-length checks and cumulative request/response limits.
+- Receive-window validation, exact per-direction frame sequencing, decoded chunk limits, declared-length checks and cumulative request/response limits.
 - Connection-terminal client write failures that fail all waiters, invalidate caches and preserve typed ambiguous outcomes for mutations.
 - Server cancellation on peer loss and enforced shutdown-grace cancellation for queued and cooperative active work.
 - Count- and byte-bounded watch batches, explicit overflow/resync events and bounded client delivery.
@@ -106,7 +106,7 @@ offset  size  field
 Rules:
 
 - `control_len` and `body_len` describe this frame only, not the whole stream.
-- `frame_sequence` is monotonically increasing per direction for diagnostics and test assertions. Each peer owns the sequence numbers on frames it writes. It is not a retransmission mechanism.
+- `frame_sequence` starts at 1 and increments by exactly one per direction. Gaps, duplicates and regressions are connection protocol errors. Each peer owns the sequence numbers on frames it writes. It is not a retransmission mechanism.
 - Default maximum frame body is 64 KiB. Peers may negotiate up to 1 MiB for bulk streams.
 - Default maximum control message is 64 KiB. This prevents accidental unbounded metadata frames.
 - A receiver must close the connection with `FRAME_TOO_LARGE` if a peer exceeds negotiated limits.
@@ -705,7 +705,7 @@ The next integration work should:
 1. Expose cancel-on-drop, incremental file/search/process consumers and consumption-based receive credit above the transport.
 2. Restore desired watches after reconnect and require a generation resync before applying new deltas.
 3. Make the complete startup attempt cancellable and add safe browse-session handoff or bootstrap reuse.
-4. Add default client request/inactivity deadlines, a client heartbeat watchdog and inbound frame-sequence validation.
+4. Add default client request/inactivity deadlines and a client heartbeat watchdog.
 5. Expand loopback, Linux SSH and WSL fault/load fixtures, including stalled-peer memory and latency assertions.
 
 Multiplexing remains the foundation. Future encoding or daemon work should follow measured queue, latency and recovery results rather than replace the implemented v5 state machine.

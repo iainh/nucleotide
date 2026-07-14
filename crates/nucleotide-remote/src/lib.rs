@@ -4169,6 +4169,7 @@ where
         );
         let parts = io.into_parts();
         let limits = parts.limits;
+        let inbound_frame_sequence = parts.inbound_frame_sequence;
         let shared = Arc::new(RemoteWorkspaceV5Shared {
             session: Mutex::new(session),
             writer: Mutex::new(RemoteWorkspaceV5Writer {
@@ -4192,7 +4193,9 @@ where
         let reader_shared = Arc::downgrade(&shared);
         std::thread::Builder::new()
             .name("nucleotide-v5-client-reader".to_string())
-            .spawn(move || run_v5_client_reader(parts.reader, limits, reader_shared))
+            .spawn(move || {
+                run_v5_client_reader(parts.reader, limits, inbound_frame_sequence, reader_shared)
+            })
             .map_err(RemoteClientError::Io)?;
 
         Ok(Self {
@@ -4738,6 +4741,7 @@ where
 fn run_v5_client_reader<R, W>(
     mut reader: R,
     limits: protocol_v5::FrameLimits,
+    mut inbound_frame_sequence: protocol_v5::InboundFrameSequence,
     shared: Weak<RemoteWorkspaceV5Shared<W>>,
 ) where
     R: Read,
@@ -4747,7 +4751,7 @@ fn run_v5_client_reader<R, W>(
         if shared.strong_count() == 0 {
             break;
         }
-        match protocol_v5::read_frame_with_limits(&mut reader, limits) {
+        match inbound_frame_sequence.read_frame(&mut reader, limits) {
             Ok(Some(frame)) => {
                 let Some(shared) = shared.upgrade() else {
                     break;
@@ -6870,6 +6874,7 @@ where
         let parts = io.into_parts();
         let mut writer = parts.writer;
         let limits = parts.limits;
+        let mut inbound_frame_sequence = parts.inbound_frame_sequence;
         let mut next_frame_sequence = parts.next_frame_sequence;
         let mut requests = HashMap::<u64, V5ServiceRequest>::new();
         let (events_tx, events_rx) = mpsc::channel::<V5ServeEvent>();
@@ -6883,7 +6888,7 @@ where
             .spawn(move || {
                 let mut reader = parts.reader;
                 loop {
-                    let result = protocol_v5::read_frame_with_limits(&mut reader, limits);
+                    let result = inbound_frame_sequence.read_frame(&mut reader, limits);
                     let done = !matches!(result, Ok(Some(_)));
                     if reader_events.send(result).is_err() {
                         break;
@@ -13458,21 +13463,12 @@ mod tests {
     ) -> Vec<u8> {
         let mut hello = protocol_v5::ClientHello::nucleotide("test-client");
         hello.desired_settings = Some(settings);
-        let mut input = Vec::new();
-        protocol_v5::write_frame(
-            &mut input,
-            &protocol_v5::Frame::from_control(protocol_v5::FrameType::Hello, 0, &hello),
-        )
-        .unwrap();
-        protocol_v5::write_frame(
-            &mut input,
-            &protocol_v5::Frame::new(protocol_v5::FrameType::SettingsAck, 0),
-        )
-        .unwrap();
-        for frame in frames {
-            protocol_v5::write_frame(&mut input, &frame).unwrap();
-        }
-        input
+        let mut all_frames = vec![
+            protocol_v5::Frame::from_control(protocol_v5::FrameType::Hello, 0, &hello),
+            protocol_v5::Frame::new(protocol_v5::FrameType::SettingsAck, 0),
+        ];
+        all_frames.extend(frames);
+        encode_v5_sequenced_frames(all_frames)
     }
 
     fn v5_server_input(frames: Vec<protocol_v5::Frame>) -> Vec<u8> {
@@ -13496,18 +13492,18 @@ mod tests {
         let client = protocol_v5::ClientHello::nucleotide("test-client");
         let hello = protocol_v5::ServerHello::accept_client(&client, &info).unwrap();
         let settings = hello.accepted_settings.clone().unwrap();
+        let mut all_frames = vec![
+            protocol_v5::Frame::from_control(protocol_v5::FrameType::Hello, 0, &hello),
+            protocol_v5::Frame::from_control(protocol_v5::FrameType::Settings, 0, &settings),
+        ];
+        all_frames.extend(frames);
+        encode_v5_sequenced_frames(all_frames)
+    }
+
+    fn encode_v5_sequenced_frames(frames: Vec<protocol_v5::Frame>) -> Vec<u8> {
         let mut input = Vec::new();
-        protocol_v5::write_frame(
-            &mut input,
-            &protocol_v5::Frame::from_control(protocol_v5::FrameType::Hello, 0, &hello),
-        )
-        .unwrap();
-        protocol_v5::write_frame(
-            &mut input,
-            &protocol_v5::Frame::from_control(protocol_v5::FrameType::Settings, 0, &settings),
-        )
-        .unwrap();
-        for frame in frames {
+        for (index, mut frame) in frames.into_iter().enumerate() {
+            frame.frame_sequence = u64::try_from(index).unwrap() + 1;
             protocol_v5::write_frame(&mut input, &frame).unwrap();
         }
         input
@@ -14656,6 +14652,85 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    #[test]
+    fn v5_client_reader_rejects_frame_sequence_gap_after_handshake() {
+        let input = BlockingRead::default();
+        let output = SharedWrite::default();
+        input.push(v5_server_input(Vec::new()));
+        let client = Arc::new(
+            RemoteWorkspaceV5MultiplexedClient::connect(
+                protocol_v5::FramedIo::new(input.clone(), output.clone()),
+                protocol_v5::ClientHello::nucleotide("test-client"),
+            )
+            .unwrap(),
+        );
+
+        let request_client = Arc::clone(&client);
+        let request = std::thread::spawn(move || {
+            request_client.request(
+                RemoteRequest::Stat {
+                    path: PathBuf::from("pending.rs"),
+                },
+                Vec::new(),
+            )
+        });
+        wait_for_v5_request_stream(&output, "fs.stat");
+
+        let mut ping = protocol_v5::Frame::from_control(
+            protocol_v5::FrameType::Ping,
+            0,
+            &protocol_v5::PingPayload {
+                token: b"sequence-gap".to_vec(),
+            },
+        );
+        ping.frame_sequence = 4;
+        let mut bytes = Vec::new();
+        protocol_v5::write_frame(&mut bytes, &ping).unwrap();
+        input.push_raw(bytes);
+
+        let error = request.join().unwrap().unwrap_err();
+        let RemoteClientError::Io(error) = error else {
+            panic!("expected sequence I/O error, got {error:?}");
+        };
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("expected 3, got 4"));
+        assert!(client.shared.closed.load(Ordering::Acquire));
+        input.close();
+    }
+
+    #[test]
+    fn v5_concurrent_service_reader_rejects_frame_sequence_gap_after_handshake() {
+        let temp = tempfile::tempdir().unwrap();
+        let input = BlockingRead::default();
+        let output = SharedWrite::default();
+        input.push(v5_client_input(Vec::new()));
+        let service =
+            WorkspaceService::new(LocalWorkspaceBackend, temp.path().to_path_buf()).unwrap();
+        let info = protocol_v5::ServerHandshakeInfo::current(temp.path().display().to_string());
+        let service_input = input.clone();
+        let service_thread = std::thread::spawn(move || {
+            service.serve_v5_concurrent(protocol_v5::FramedIo::new(service_input, output), &info)
+        });
+
+        let mut ping = protocol_v5::Frame::from_control(
+            protocol_v5::FrameType::Ping,
+            0,
+            &protocol_v5::PingPayload {
+                token: b"sequence-gap".to_vec(),
+            },
+        );
+        ping.frame_sequence = 4;
+        let mut bytes = Vec::new();
+        protocol_v5::write_frame(&mut bytes, &ping).unwrap();
+        input.push_raw(bytes);
+
+        let error = service_thread.join().unwrap().unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("failed to read v5 protocol frame"));
+        assert!(message.contains("expected 3, got 4"), "{message}");
+        input.close();
     }
 
     #[test]
@@ -19466,14 +19541,32 @@ mod tests {
         state: Arc<(StdMutex<BlockingReadState>, Condvar)>,
     }
 
-    #[derive(Default)]
     struct BlockingReadState {
         bytes: VecDeque<u8>,
         closed: bool,
+        next_frame_sequence: u64,
+    }
+
+    impl Default for BlockingReadState {
+        fn default() -> Self {
+            Self {
+                bytes: VecDeque::new(),
+                closed: false,
+                next_frame_sequence: 1,
+            }
+        }
     }
 
     impl BlockingRead {
         fn push(&self, bytes: Vec<u8>) {
+            let (lock, cvar) = &*self.state;
+            let mut state = lock.lock().unwrap();
+            let bytes = sequence_blocking_read_frames(bytes, &mut state.next_frame_sequence);
+            state.bytes.extend(bytes);
+            cvar.notify_all();
+        }
+
+        fn push_raw(&self, bytes: Vec<u8>) {
             let (lock, cvar) = &*self.state;
             let mut state = lock.lock().unwrap();
             state.bytes.extend(bytes);
@@ -19486,6 +19579,33 @@ mod tests {
             state.closed = true;
             cvar.notify_all();
         }
+    }
+
+    fn sequence_blocking_read_frames(bytes: Vec<u8>, next_sequence: &mut u64) -> Vec<u8> {
+        let mut cursor = Cursor::new(bytes.as_slice());
+        let mut frames = Vec::new();
+        loop {
+            match protocol_v5::read_frame(&mut cursor) {
+                Ok(Some(frame)) => frames.push(frame),
+                Ok(None) => break,
+                Err(_) => return bytes,
+            }
+        }
+        if cursor.position() != bytes.len() as u64 || frames.is_empty() {
+            return bytes;
+        }
+
+        let mut encoded = Vec::with_capacity(bytes.len());
+        let mut candidate = *next_sequence;
+        for mut frame in frames {
+            frame.frame_sequence = candidate;
+            candidate = candidate
+                .checked_add(1)
+                .expect("test v5 peer frame sequence exhausted");
+            protocol_v5::write_frame(&mut encoded, &frame).unwrap();
+        }
+        *next_sequence = candidate;
+        encoded
     }
 
     impl Read for BlockingRead {
