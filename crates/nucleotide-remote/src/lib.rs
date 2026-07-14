@@ -79,6 +79,7 @@ const V5_MAX_ACCUMULATED_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 const V5_MAX_RAW_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 const V5_MAX_REQUEST_PAYLOAD_BYTES: usize = 4 * 1024 * 1024;
 const V5_MAX_REQUEST_BODY_BYTES: usize = 256 * 1024 * 1024;
+const V5_MAX_STREAMED_FILE_READ_BYTES: u64 = 256 * 1024 * 1024;
 const V5_REQUEST_CONNECTION_BYTE_BUDGET: usize =
     V5_MAX_REQUEST_PAYLOAD_BYTES + V5_MAX_REQUEST_BODY_BYTES;
 const V5_RESPONSE_CONNECTION_BYTE_BUDGET: usize = V5_MAX_ACCUMULATED_RESPONSE_BYTES;
@@ -12062,11 +12063,7 @@ where
         }
 
         let size = metadata.len();
-        let read_len = payload
-            .max_bytes
-            .unwrap_or(MAX_FRAME_BODY_LEN)
-            .min(MAX_FRAME_BODY_LEN)
-            .min(size);
+        let read_len = v5_streamed_file_read_limit(payload.max_bytes).min(size);
         let mut file = std::fs::File::open(&path).map_err(|source| {
             remote_error_from_workspace(WorkspaceError::Io {
                 operation: "open file",
@@ -12843,11 +12840,7 @@ where
             }
             RemoteRequest::ReadFile { path, max_bytes } => {
                 let path = self.resolve_read_path(&path)?;
-                let max_bytes = Some(
-                    max_bytes
-                        .unwrap_or(MAX_FRAME_BODY_LEN)
-                        .min(MAX_FRAME_BODY_LEN),
-                );
+                let max_bytes = Some(v5_streamed_file_read_limit(max_bytes));
                 let read = block_on(self.backend.read_file_with_cancellation(
                     &path,
                     ReadOptions { max_bytes },
@@ -15509,6 +15502,12 @@ where
             .map_err(remote_error_from_workspace)?;
     }
     Ok(())
+}
+
+fn v5_streamed_file_read_limit(requested: Option<u64>) -> u64 {
+    requested
+        .unwrap_or(V5_MAX_STREAMED_FILE_READ_BYTES)
+        .min(V5_MAX_STREAMED_FILE_READ_BYTES)
 }
 
 #[derive(Debug)]
@@ -25497,6 +25496,24 @@ mod tests {
             })
             .count();
         assert!(file_body_frames >= 2);
+    }
+
+    #[test]
+    fn v5_file_read_limit_is_independent_of_frame_body_limit() {
+        let above_frame_limit = MAX_FRAME_BODY_LEN + 123;
+
+        assert_eq!(
+            v5_streamed_file_read_limit(Some(above_frame_limit)),
+            above_frame_limit
+        );
+        assert_eq!(
+            v5_streamed_file_read_limit(None),
+            V5_MAX_STREAMED_FILE_READ_BYTES
+        );
+        assert_eq!(
+            v5_streamed_file_read_limit(Some(V5_MAX_STREAMED_FILE_READ_BYTES + 1)),
+            V5_MAX_STREAMED_FILE_READ_BYTES
+        );
     }
 
     #[test]
