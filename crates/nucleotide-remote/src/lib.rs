@@ -83,6 +83,17 @@ const V5_RESPONSE_CONNECTION_BYTE_BUDGET: usize = V5_MAX_ACCUMULATED_RESPONSE_BY
 const V5_CLIENT_WRITE_BATCH_FRAMES: usize = 64;
 const V5_SERVER_WRITE_BATCH_FRAMES: usize = 64;
 const V5_CHILD_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
+const V5_REQUEST_METADATA_DEADLINE: Duration = Duration::from_secs(60);
+const V5_REQUEST_METADATA_INACTIVITY: Duration = Duration::from_secs(30);
+const V5_REQUEST_MUTATION_DEADLINE: Duration = Duration::from_secs(120);
+const V5_REQUEST_MUTATION_INACTIVITY: Duration = Duration::from_secs(30);
+const V5_REQUEST_FILE_DEADLINE: Duration = Duration::from_secs(5 * 60);
+const V5_REQUEST_FILE_INACTIVITY: Duration = Duration::from_secs(60);
+const V5_REQUEST_SEARCH_DEADLINE: Duration = Duration::from_secs(10 * 60);
+const V5_REQUEST_SEARCH_INACTIVITY: Duration = Duration::from_secs(120);
+const V5_REQUEST_PROCESS_CANCELLATION_GRACE: Duration = Duration::from_secs(15);
+const V5_REQUEST_CONTROL_DEADLINE: Duration = Duration::from_secs(15);
+const V5_REQUEST_CONTROL_INACTIVITY: Duration = Duration::from_secs(10);
 const REMOTE_HELPER_TRANSFER_TIMEOUT: Duration = Duration::from_secs(120);
 const DEFAULT_SSH_CONTROL_PERSIST: &str = "10m";
 const DEFAULT_SSH_SERVER_ALIVE_INTERVAL_SECS: u32 = 15;
@@ -885,6 +896,100 @@ pub enum RemoteRequest {
     Shutdown,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteRequestDeadlineKind {
+    Absolute,
+    Inactivity,
+}
+
+impl fmt::Display for RemoteRequestDeadlineKind {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Absolute => formatter.write_str("absolute"),
+            Self::Inactivity => formatter.write_str("inactivity"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RemoteRequestContext {
+    pub created_at: Instant,
+    pub absolute_deadline: Option<Instant>,
+    pub deadline_unix_ms: u64,
+    pub inactivity_timeout: Option<Duration>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RemoteRequestDeadlinePolicy {
+    absolute_timeout: Option<Duration>,
+    inactivity_timeout: Option<Duration>,
+}
+
+impl RemoteRequestDeadlinePolicy {
+    const fn bounded(absolute_timeout: Duration, inactivity_timeout: Duration) -> Self {
+        Self {
+            absolute_timeout: Some(absolute_timeout),
+            inactivity_timeout: Some(inactivity_timeout),
+        }
+    }
+
+    const fn absolute_only(absolute_timeout: Duration) -> Self {
+        Self {
+            absolute_timeout: Some(absolute_timeout),
+            inactivity_timeout: None,
+        }
+    }
+
+    const fn unlimited() -> Self {
+        Self {
+            absolute_timeout: None,
+            inactivity_timeout: None,
+        }
+    }
+}
+
+impl RemoteRequestContext {
+    fn from_policy(policy: RemoteRequestDeadlinePolicy) -> Self {
+        Self::from_policy_at(policy, Instant::now(), v5_now_unix_millis())
+    }
+
+    fn from_policy_at(
+        policy: RemoteRequestDeadlinePolicy,
+        created_at: Instant,
+        now_unix_ms: u64,
+    ) -> Self {
+        let absolute_deadline = policy
+            .absolute_timeout
+            .and_then(|timeout| created_at.checked_add(timeout));
+        let deadline_unix_ms = absolute_deadline
+            .and(policy.absolute_timeout)
+            .map(|timeout| {
+                let timeout_ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
+                now_unix_ms.saturating_add(timeout_ms)
+            })
+            .unwrap_or(0);
+        Self {
+            created_at,
+            absolute_deadline,
+            deadline_unix_ms,
+            inactivity_timeout: policy.inactivity_timeout,
+        }
+    }
+
+    fn expired_at(self, now: Instant) -> Option<RemoteRequestDeadlineKind> {
+        self.absolute_deadline
+            .filter(|deadline| now >= *deadline)
+            .map(|_| RemoteRequestDeadlineKind::Absolute)
+    }
+}
+
+fn v5_watch_control_request_context() -> RemoteRequestContext {
+    RemoteRequestContext::from_policy(RemoteRequestDeadlinePolicy::bounded(
+        V5_REQUEST_CONTROL_DEADLINE,
+        V5_REQUEST_CONTROL_INACTIVITY,
+    ))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "method", content = "result", rename_all = "snake_case")]
 pub enum RemoteResponse {
@@ -993,6 +1098,64 @@ impl RemoteRequest {
                 options.priority = protocol_v5::Priority::UserInput;
             }
         }
+        options
+    }
+
+    fn v5_deadline_policy(&self) -> RemoteRequestDeadlinePolicy {
+        match self {
+            Self::Stat { .. }
+            | Self::ListDir { .. }
+            | Self::ListDirs { .. }
+            | Self::FindAncestorFile { .. }
+            | Self::GitHead { .. }
+            | Self::GitStatus { .. } => RemoteRequestDeadlinePolicy::bounded(
+                V5_REQUEST_METADATA_DEADLINE,
+                V5_REQUEST_METADATA_INACTIVITY,
+            ),
+            Self::CreateFile { .. }
+            | Self::CreateDir { .. }
+            | Self::RenamePath { .. }
+            | Self::DeletePath { .. }
+            | Self::CopyPath { .. }
+            | Self::ProjectEnvironment { .. } => RemoteRequestDeadlinePolicy::bounded(
+                V5_REQUEST_MUTATION_DEADLINE,
+                V5_REQUEST_MUTATION_INACTIVITY,
+            ),
+            Self::ReadFile { .. } | Self::WriteFile { .. } => RemoteRequestDeadlinePolicy::bounded(
+                V5_REQUEST_FILE_DEADLINE,
+                V5_REQUEST_FILE_INACTIVITY,
+            ),
+            Self::FileSearch(_) | Self::TextSearch(_) => RemoteRequestDeadlinePolicy::bounded(
+                V5_REQUEST_SEARCH_DEADLINE,
+                V5_REQUEST_SEARCH_INACTIVITY,
+            ),
+            Self::RunProcess(request) => request.timeout_ms.map_or_else(
+                RemoteRequestDeadlinePolicy::unlimited,
+                |timeout_ms| {
+                    RemoteRequestDeadlinePolicy::absolute_only(
+                        Duration::from_millis(timeout_ms)
+                            .checked_add(V5_REQUEST_PROCESS_CANCELLATION_GRACE)
+                            .unwrap_or(Duration::MAX),
+                    )
+                },
+            ),
+            Self::Shutdown => RemoteRequestDeadlinePolicy::bounded(
+                V5_REQUEST_CONTROL_DEADLINE,
+                V5_REQUEST_CONTROL_INACTIVITY,
+            ),
+        }
+    }
+
+    pub fn v5_request_context(&self) -> RemoteRequestContext {
+        RemoteRequestContext::from_policy(self.v5_deadline_policy())
+    }
+
+    fn v5_request_options_with_context(
+        &self,
+        context: RemoteRequestContext,
+    ) -> protocol_v5::RequestOptions {
+        let mut options = self.v5_request_options();
+        options.deadline_unix_ms = context.deadline_unix_ms;
         options
     }
 
@@ -3602,9 +3765,20 @@ pub enum RemoteClientError {
     Io(io::Error),
     Json(serde_json::Error),
     Disconnected,
-    TransportClosed { cause: String },
-    OutcomeUnknown { method: String, cause: String },
-    ResponseIncomplete { cause: String },
+    TransportClosed {
+        cause: String,
+    },
+    RequestDeadlineExceeded {
+        method: String,
+        kind: RemoteRequestDeadlineKind,
+    },
+    OutcomeUnknown {
+        method: String,
+        cause: String,
+    },
+    ResponseIncomplete {
+        cause: String,
+    },
     Protocol(String),
     Remote(RemoteError),
 }
@@ -3617,6 +3791,9 @@ impl fmt::Display for RemoteClientError {
             Self::Disconnected => formatter.write_str("remote service disconnected"),
             Self::TransportClosed { cause } => {
                 write!(formatter, "remote transport closed: {cause}")
+            }
+            Self::RequestDeadlineExceeded { method, kind } => {
+                write!(formatter, "remote {method} {kind} deadline exceeded")
             }
             Self::OutcomeUnknown { method, cause } => write!(
                 formatter,
@@ -3639,6 +3816,7 @@ impl Error for RemoteClientError {
             Self::Json(error) => Some(error),
             Self::Disconnected
             | Self::TransportClosed { .. }
+            | Self::RequestDeadlineExceeded { .. }
             | Self::OutcomeUnknown { .. }
             | Self::ResponseIncomplete { .. }
             | Self::Protocol(_)
@@ -3691,18 +3869,39 @@ impl<R: Read, W: Write> RemoteWorkspaceV5Client<R, W> {
         request: RemoteRequest,
         body: Vec<u8>,
     ) -> std::result::Result<(RemoteResponse, Vec<u8>), RemoteClientError> {
+        let context = request.v5_request_context();
+        self.request_with_context(request, body, context)
+    }
+
+    pub fn request_with_context(
+        &mut self,
+        request: RemoteRequest,
+        body: Vec<u8>,
+        context: RemoteRequestContext,
+    ) -> std::result::Result<(RemoteResponse, Vec<u8>), RemoteClientError> {
         let (method, payload) = request
             .to_v5_method_payload()
             .map_err(v5_method_error_to_client_error)?;
+        if let Some(kind) = context.expired_at(Instant::now()) {
+            return Err(RemoteClientError::RequestDeadlineExceeded {
+                method: method.to_string(),
+                kind,
+            });
+        }
         let stream_id = self.session.open_request_with_owned_payload_and_body(
             method,
-            request.v5_request_options(),
+            request.v5_request_options_with_context(context),
             payload,
             request.v5_body_channel(),
             body,
         )?;
         self.drain_outbound()?;
-        self.read_response(stream_id)
+        self.read_response(
+            stream_id,
+            method,
+            request.v5_request_options().idempotency != protocol_v5::Idempotency::ReadOnly
+                || matches!(request, RemoteRequest::Shutdown),
+        )
     }
 
     pub fn shutdown(&mut self) -> std::result::Result<(), RemoteClientError> {
@@ -3733,6 +3932,8 @@ impl<R: Read, W: Write> RemoteWorkspaceV5Client<R, W> {
     fn read_response(
         &mut self,
         stream_id: u64,
+        request_method: &'static str,
+        terminal_on_deadline: bool,
     ) -> std::result::Result<(RemoteResponse, Vec<u8>), RemoteClientError> {
         let mut method = None;
         let mut payload = Vec::new();
@@ -3819,6 +4020,21 @@ impl<R: Read, W: Write> RemoteWorkspaceV5Client<R, W> {
                 }
                 protocol_v5::StreamEvent::EndStream { .. } => {
                     if let Some(error) = final_error {
+                        if error.code == protocol_v5::RESET_DEADLINE_EXCEEDED {
+                            if terminal_on_deadline
+                                && (request_method == "session.shutdown" || method.is_none())
+                            {
+                                self.session.terminate();
+                                return Err(RemoteClientError::OutcomeUnknown {
+                                    method: request_method.to_string(),
+                                    cause: RemoteClientError::Remote(error).to_string(),
+                                });
+                            }
+                            return Err(RemoteClientError::RequestDeadlineExceeded {
+                                method: request_method.to_string(),
+                                kind: RemoteRequestDeadlineKind::Absolute,
+                            });
+                        }
                         return Err(RemoteClientError::Remote(error));
                     }
                     let method = method.ok_or_else(|| {
@@ -3839,6 +4055,21 @@ impl<R: Read, W: Write> RemoteWorkspaceV5Client<R, W> {
                 protocol_v5::StreamEvent::ResetStream {
                     code, diagnostic, ..
                 } => {
+                    if code == protocol_v5::RESET_DEADLINE_EXCEEDED {
+                        if terminal_on_deadline
+                            && (request_method == "session.shutdown" || method.is_none())
+                        {
+                            self.session.terminate();
+                            return Err(RemoteClientError::OutcomeUnknown {
+                                method: request_method.to_string(),
+                                cause: format!("v5 peer reset {request_method} after its deadline"),
+                            });
+                        }
+                        return Err(RemoteClientError::RequestDeadlineExceeded {
+                            method: request_method.to_string(),
+                            kind: RemoteRequestDeadlineKind::Absolute,
+                        });
+                    }
                     return Err(RemoteClientError::Remote(RemoteError {
                         code,
                         message: "v5 stream reset".to_string(),
@@ -3866,6 +4097,7 @@ struct RemoteWorkspaceV5Shared<W> {
     writer_wake: mpsc::SyncSender<()>,
     heartbeat: Mutex<V5ClientHeartbeat>,
     heartbeat_wake: mpsc::SyncSender<()>,
+    deadline_wake: mpsc::SyncSender<()>,
     transport_abort: Option<Arc<dyn V5TransportAbort>>,
     request_budget: V5ConnectionByteBudget,
     response_budget: V5ConnectionByteBudget,
@@ -3999,6 +4231,11 @@ impl V5ClientHeartbeat {
         Ok(V5ClientHeartbeatAction::QueuePing(token))
     }
 
+    fn peer_is_healthy_at(&self, now: Instant) -> bool {
+        self.ping.is_none()
+            && now.saturating_duration_since(self.last_peer_activity) < self.idle_ping_interval
+    }
+
     fn mark_ping_started(
         &mut self,
         frame: &protocol_v5::Frame,
@@ -4103,21 +4340,86 @@ type V5ResponseDelivery =
     std::result::Result<V5Budgeted<(RemoteResponse, Vec<u8>)>, RemoteClientError>;
 type V5RawResponseDelivery = std::result::Result<V5Budgeted<Vec<u8>>, RemoteClientError>;
 
+struct V5NormalizedDeadlineResult<T> {
+    result: std::result::Result<T, RemoteClientError>,
+    peer_deadline: bool,
+    terminal: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct V5RequestDeadline {
+    context: RemoteRequestContext,
+    last_progress_at: Instant,
+}
+
+impl V5RequestDeadline {
+    fn new(context: RemoteRequestContext, now: Instant) -> Self {
+        Self {
+            context,
+            last_progress_at: now,
+        }
+    }
+
+    fn next_expiry(self) -> Option<(Instant, RemoteRequestDeadlineKind)> {
+        let absolute = self
+            .context
+            .absolute_deadline
+            .map(|deadline| (deadline, RemoteRequestDeadlineKind::Absolute));
+        let inactivity = self.context.inactivity_timeout.and_then(|timeout| {
+            self.last_progress_at
+                .checked_add(timeout)
+                .map(|deadline| (deadline, RemoteRequestDeadlineKind::Inactivity))
+        });
+        match (absolute, inactivity) {
+            (Some(absolute), Some(inactivity)) => {
+                if absolute.0 <= inactivity.0 {
+                    Some(absolute)
+                } else {
+                    Some(inactivity)
+                }
+            }
+            (Some(deadline), None) | (None, Some(deadline)) => Some(deadline),
+            (None, None) => None,
+        }
+    }
+
+    fn expired_at(self, now: Instant) -> Option<RemoteRequestDeadlineKind> {
+        self.next_expiry()
+            .filter(|(deadline, _)| now >= *deadline)
+            .map(|(_, kind)| kind)
+    }
+
+    fn observe_progress(&mut self, now: Instant) {
+        if now > self.last_progress_at {
+            self.last_progress_at = now;
+        }
+    }
+}
+
 struct V5PendingResponse {
     sender: mpsc::Sender<V5ResponseDelivery>,
     accumulator: V5ResponseAccumulator,
     response_reservation: V5ByteReservation,
     method: &'static str,
     idempotency: protocol_v5::Idempotency,
+    terminal_on_deadline: bool,
+    deadline: V5RequestDeadline,
 }
 
 struct V5PendingRawResponse {
     sender: mpsc::Sender<V5RawResponseDelivery>,
     accumulator: V5RawResponseAccumulator,
     response_reservation: V5ByteReservation,
+    method: &'static str,
+    deadline: V5RequestDeadline,
 }
 
 impl V5PendingResponse {
+    fn deadline_is_connection_terminal(&self) -> bool {
+        self.terminal_on_deadline
+            && (self.method == "session.shutdown" || !self.accumulator.final_message_seen())
+    }
+
     fn failure_error(&self, error: RemoteClientError) -> RemoteClientError {
         if self.accumulator.final_message_seen() {
             disconnect_after_final_response_error(error)
@@ -4386,11 +4688,13 @@ where
         };
         let (writer_wake, writer_wakes) = mpsc::sync_channel(1);
         let (heartbeat_wake, heartbeat_wakes) = mpsc::sync_channel(1);
+        let (deadline_wake, deadline_wakes) = mpsc::sync_channel(1);
         let shared = Arc::new(RemoteWorkspaceV5Shared {
             session: Mutex::new(session),
             writer_wake,
             heartbeat: Mutex::new(V5ClientHeartbeat::new(&handshake.settings, Instant::now())),
             heartbeat_wake,
+            deadline_wake,
             transport_abort,
             request_budget: V5ConnectionByteBudget::new(V5_REQUEST_CONNECTION_BYTE_BUDGET),
             response_budget: V5ConnectionByteBudget::new(V5_RESPONSE_CONNECTION_BYTE_BUDGET),
@@ -4415,6 +4719,12 @@ where
         std::thread::Builder::new()
             .name("nucleotide-v5-client-heartbeat".to_string())
             .spawn(move || run_v5_client_heartbeat(heartbeat_wakes, heartbeat_shared))
+            .map_err(RemoteClientError::Io)?;
+
+        let deadline_shared = Arc::downgrade(&shared);
+        std::thread::Builder::new()
+            .name("nucleotide-v5-client-deadlines".to_string())
+            .spawn(move || run_v5_client_deadlines(deadline_wakes, deadline_shared))
             .map_err(RemoteClientError::Io)?;
 
         let reader_shared = Arc::downgrade(&shared);
@@ -4496,12 +4806,28 @@ where
         request: RemoteRequest,
         body: Vec<u8>,
     ) -> std::result::Result<(RemoteResponse, Vec<u8>), RemoteClientError> {
+        let context = request.v5_request_context();
+        self.request_with_context(request, body, context)
+    }
+
+    fn request_with_context(
+        &self,
+        request: RemoteRequest,
+        body: Vec<u8>,
+        context: RemoteRequestContext,
+    ) -> std::result::Result<(RemoteResponse, Vec<u8>), RemoteClientError> {
         if self.shared.closed.load(Ordering::SeqCst) {
             return Err(RemoteClientError::Disconnected);
         }
 
         let (method, payload) = self.v5_method_payload_with_directory_cache(&request)?;
-        let mut options = request.v5_request_options();
+        if let Some(kind) = context.expired_at(Instant::now()) {
+            return Err(RemoteClientError::RequestDeadlineExceeded {
+                method: method.to_string(),
+                kind,
+            });
+        }
+        let mut options = request.v5_request_options_with_context(context);
         if request.v5_prefers_zstd_compression()
             && self
                 .server_hello
@@ -4521,9 +4847,19 @@ where
         )?;
         let response_reservation = self.shared.response_budget.reservation();
         let (sender, receiver) = mpsc::channel();
+        let deadline = V5RequestDeadline::new(context, Instant::now());
 
         let stream_id = {
             let mut session = self.shared.session.lock().map_err(v5_client_lock_error)?;
+            if self.shared.closed.load(Ordering::Acquire) {
+                return Err(RemoteClientError::Disconnected);
+            }
+            if let Some(kind) = context.expired_at(Instant::now()) {
+                return Err(RemoteClientError::RequestDeadlineExceeded {
+                    method: method.to_string(),
+                    kind,
+                });
+            }
             let stream_id = session.open_request_with_owned_payload_and_body(
                 method,
                 options,
@@ -4537,6 +4873,9 @@ where
                 response_reservation,
                 method,
                 idempotency,
+                terminal_on_deadline: idempotency != protocol_v5::Idempotency::ReadOnly
+                    || matches!(request, RemoteRequest::Shutdown),
+                deadline,
             };
             let mut outbound_request_reservations = self
                 .shared
@@ -4562,6 +4901,7 @@ where
             waiters.insert(stream_id, pending);
             stream_id
         };
+        signal_v5_client_deadlines(&self.shared);
 
         if self.shared.closed.load(Ordering::SeqCst) {
             self.shared
@@ -4605,6 +4945,18 @@ where
         &self,
         request: WorkspaceWatchRequest,
     ) -> std::result::Result<Option<WorkspaceWatch>, RemoteClientError> {
+        let context = RemoteRequestContext::from_policy(RemoteRequestDeadlinePolicy::bounded(
+            V5_REQUEST_CONTROL_DEADLINE,
+            V5_REQUEST_CONTROL_INACTIVITY,
+        ));
+        self.start_watch_with_context(request, context)
+    }
+
+    fn start_watch_with_context(
+        &self,
+        request: WorkspaceWatchRequest,
+        context: RemoteRequestContext,
+    ) -> std::result::Result<Option<WorkspaceWatch>, RemoteClientError> {
         if !self
             .server_hello
             .capabilities
@@ -4618,7 +4970,7 @@ where
         v5_request.debounce_ms = request.debounce_ms;
         v5_request.max_events_per_batch = request.max_events_per_batch;
         let workspace_root = PathBuf::from(&self.server_hello.workspace_root);
-        let watch = self.start_v5_watch(v5_request)?;
+        let watch = self.start_v5_watch_with_context(v5_request, context)?;
         Ok(Some(workspace_watch_from_v5(watch, workspace_root)))
     }
 
@@ -4773,13 +5125,25 @@ where
         &self,
         request: protocol_v5::WatchStart,
     ) -> std::result::Result<RemoteWorkspaceV5Watch, RemoteClientError> {
-        let payload = self.request_v5_raw("watch.start", request.encode_to_vec())?;
+        let context = v5_watch_control_request_context();
+        self.start_v5_watch_with_context(request, context)
+    }
+
+    fn start_v5_watch_with_context(
+        &self,
+        request: protocol_v5::WatchStart,
+        context: RemoteRequestContext,
+    ) -> std::result::Result<RemoteWorkspaceV5Watch, RemoteClientError> {
+        let payload = self.request_v5_raw("watch.start", request.encode_to_vec(), context)?;
         let response =
             protocol_v5::WatchStartResponse::decode(payload.as_slice()).map_err(|error| {
                 RemoteClientError::Protocol(format!(
                     "invalid v5 watch.start response payload: {error}"
                 ))
             })?;
+        if self.shared.closed.load(Ordering::Acquire) {
+            return Err(RemoteClientError::Disconnected);
+        }
         let (sender, receiver) = mpsc::sync_channel(V5_WATCH_DELIVERY_CAPACITY);
         let overflowed = Arc::new(AtomicBool::new(false));
         let last_sequence = Arc::new(AtomicU64::new(0));
@@ -4819,6 +5183,10 @@ where
                 }
             }
         }
+        if self.shared.closed.load(Ordering::Acquire) {
+            self.remove_watch_sender(response.watch_id)?;
+            return Err(RemoteClientError::Disconnected);
+        }
         Ok(RemoteWorkspaceV5Watch {
             watch_id: response.watch_id,
             event_stream_id: response.event_stream_id,
@@ -4832,7 +5200,11 @@ where
         &self,
         request: protocol_v5::WatchUpdate,
     ) -> std::result::Result<protocol_v5::WatchUpdateResponse, RemoteClientError> {
-        let payload = self.request_v5_raw("watch.update", request.encode_to_vec())?;
+        let payload = self.request_v5_raw(
+            "watch.update",
+            request.encode_to_vec(),
+            v5_watch_control_request_context(),
+        )?;
         protocol_v5::WatchUpdateResponse::decode(payload.as_slice()).map_err(|error| {
             RemoteClientError::Protocol(format!(
                 "invalid v5 watch.update response payload: {error}"
@@ -4844,7 +5216,11 @@ where
         &self,
         request: protocol_v5::WatchResync,
     ) -> std::result::Result<protocol_v5::WatchResyncResponse, RemoteClientError> {
-        let payload = self.request_v5_raw("watch.resync", request.encode_to_vec())?;
+        let payload = self.request_v5_raw(
+            "watch.resync",
+            request.encode_to_vec(),
+            v5_watch_control_request_context(),
+        )?;
         protocol_v5::WatchResyncResponse::decode(payload.as_slice()).map_err(|error| {
             RemoteClientError::Protocol(format!(
                 "invalid v5 watch.resync response payload: {error}"
@@ -4856,6 +5232,7 @@ where
         let _payload = self.request_v5_raw(
             "watch.stop",
             protocol_v5::WatchStop { watch_id }.encode_to_vec(),
+            v5_watch_control_request_context(),
         )?;
         self.remove_watch_sender(watch_id)?;
         Ok(())
@@ -4887,9 +5264,17 @@ where
         &self,
         method: &'static str,
         payload: Vec<u8>,
+        context: RemoteRequestContext,
     ) -> std::result::Result<Vec<u8>, RemoteClientError> {
         if self.shared.closed.load(Ordering::SeqCst) {
             return Err(RemoteClientError::Disconnected);
+        }
+
+        if let Some(kind) = context.expired_at(Instant::now()) {
+            return Err(RemoteClientError::RequestDeadlineExceeded {
+                method: method.to_string(),
+                kind,
+            });
         }
 
         let request_reservation =
@@ -4898,10 +5283,20 @@ where
         let (sender, receiver) = mpsc::channel();
         let stream_id = {
             let mut session = self.shared.session.lock().map_err(v5_client_lock_error)?;
+            if self.shared.closed.load(Ordering::Acquire) {
+                return Err(RemoteClientError::Disconnected);
+            }
+            if let Some(kind) = context.expired_at(Instant::now()) {
+                return Err(RemoteClientError::RequestDeadlineExceeded {
+                    method: method.to_string(),
+                    kind,
+                });
+            }
             let stream_id = session.open_request_with_owned_payload_and_body(
                 method,
                 protocol_v5::RequestOptions {
                     priority: protocol_v5::Priority::VisibleFileTree,
+                    deadline_unix_ms: context.deadline_unix_ms,
                     ..protocol_v5::RequestOptions::default()
                 },
                 payload,
@@ -4912,6 +5307,8 @@ where
                 sender,
                 accumulator: V5RawResponseAccumulator::default(),
                 response_reservation,
+                method,
+                deadline: V5RequestDeadline::new(context, Instant::now()),
             };
             let mut outbound_request_reservations = self
                 .shared
@@ -4937,6 +5334,7 @@ where
             waiters.insert(stream_id, pending);
             stream_id
         };
+        signal_v5_client_deadlines(&self.shared);
 
         if self.shared.closed.load(Ordering::SeqCst) {
             self.shared
@@ -5002,6 +5400,13 @@ fn run_v5_client_reader<R, W>(
                 };
                 match event {
                     Ok(event) => {
+                        if let Some(stream_id) = v5_client_inbound_progress_stream(&event.routed)
+                            && let Err(error) =
+                                observe_v5_client_request_progress(&shared, stream_id, received_at)
+                        {
+                            fail_all_v5_waiters_for_error(&shared, &error);
+                            break;
+                        }
                         let heartbeat_result = shared
                             .heartbeat
                             .lock()
@@ -5093,6 +5498,10 @@ fn signal_v5_client_heartbeat<W>(shared: &RemoteWorkspaceV5Shared<W>) {
     let _ = shared.heartbeat_wake.try_send(());
 }
 
+fn signal_v5_client_deadlines<W>(shared: &RemoteWorkspaceV5Shared<W>) {
+    let _ = shared.deadline_wake.try_send(());
+}
+
 fn run_v5_client_heartbeat<W>(wakes: mpsc::Receiver<()>, shared: Weak<RemoteWorkspaceV5Shared<W>>) {
     loop {
         let Some(shared) = shared.upgrade() else {
@@ -5146,6 +5555,198 @@ fn run_v5_client_heartbeat<W>(wakes: mpsc::Receiver<()>, shared: Weak<RemoteWork
             }
         }
     }
+}
+
+fn run_v5_client_deadlines<W>(wakes: mpsc::Receiver<()>, shared: Weak<RemoteWorkspaceV5Shared<W>>)
+where
+    W: Write,
+{
+    loop {
+        let Some(shared) = shared.upgrade() else {
+            break;
+        };
+        if shared.closed.load(Ordering::Acquire) {
+            break;
+        }
+
+        let wait = match expire_v5_client_deadlines_at(&shared, Instant::now()) {
+            Ok(wait) => wait,
+            Err(error) => {
+                fail_all_v5_waiters_for_error(&shared, &error);
+                break;
+            }
+        };
+        if shared.closed.load(Ordering::Acquire) {
+            break;
+        }
+        drop(shared);
+
+        let wake = match wait {
+            Some(timeout) => wakes.recv_timeout(timeout),
+            None => match wakes.recv() {
+                Ok(()) => continue,
+                Err(_) => break,
+            },
+        };
+        match wake {
+            Ok(()) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+}
+
+fn expire_v5_client_deadlines_at<W>(
+    shared: &RemoteWorkspaceV5Shared<W>,
+    now: Instant,
+) -> std::result::Result<Option<Duration>, RemoteClientError>
+where
+    W: Write,
+{
+    if shared.closed.load(Ordering::Acquire) {
+        return Ok(None);
+    }
+    let heartbeat = shared.heartbeat.lock().map_err(v5_client_lock_error)?;
+    let peer_is_healthy = heartbeat.peer_is_healthy_at(now);
+
+    let (raw_expired, raw_close_claimed) = {
+        let raw_waiters = shared.raw_waiters.lock().map_err(v5_client_lock_error)?;
+        let raw_expired = raw_waiters
+            .values()
+            .any(|pending| pending.deadline.expired_at(now).is_some());
+        let close_claimed = raw_expired
+            && shared
+                .closed
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok();
+        (raw_expired, close_claimed)
+    };
+    if raw_expired {
+        drop(heartbeat);
+        if raw_close_claimed {
+            finish_v5_connection_close(shared, || {
+                RemoteClientError::Io(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "v5 watch control request deadline expired",
+                ))
+            });
+        }
+        return Ok(None);
+    }
+
+    let mut waiters = shared.waiters.lock().map_err(v5_client_lock_error)?;
+    let connection_terminal = waiters.values().any(|pending| {
+        pending.deadline.expired_at(now).is_some()
+            && (!peer_is_healthy || pending.deadline_is_connection_terminal())
+    });
+    let close_claimed = connection_terminal
+        && shared
+            .closed
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok();
+    let expired = if connection_terminal {
+        Vec::new()
+    } else {
+        let expired = waiters
+            .iter()
+            .filter_map(|(stream_id, pending)| {
+                pending
+                    .deadline
+                    .expired_at(now)
+                    .map(|kind| (*stream_id, kind))
+            })
+            .collect::<Vec<_>>();
+        expired
+            .into_iter()
+            .filter_map(|(stream_id, kind)| {
+                waiters
+                    .remove(&stream_id)
+                    .map(|pending| (stream_id, kind, pending))
+            })
+            .collect::<Vec<_>>()
+    };
+    drop(waiters);
+    drop(heartbeat);
+    if connection_terminal {
+        let cause = if !peer_is_healthy {
+            "v5 request deadline expired while peer health was unknown"
+        } else {
+            "v5 mutation request deadline expired"
+        };
+        if close_claimed {
+            finish_v5_connection_close(shared, || {
+                RemoteClientError::Io(io::Error::new(io::ErrorKind::TimedOut, cause))
+            });
+        }
+        return Ok(None);
+    }
+
+    for (stream_id, kind, pending) in expired {
+        let reset = match shared.session.lock() {
+            Ok(mut session) => session
+                .reset_stream(
+                    stream_id,
+                    protocol_v5::RESET_DEADLINE_EXCEEDED,
+                    format!("client {kind} deadline expired"),
+                )
+                .map_err(RemoteClientError::Io),
+            Err(error) => Err(v5_client_lock_error(error)),
+        };
+        match reset {
+            Ok(true) => {
+                if let Err(error) = wake_v5_client_writer(shared) {
+                    let pending_error = pending.failure_error(RemoteClientError::TransportClosed {
+                        cause: error.to_string(),
+                    });
+                    let _ = pending.sender.send(Err(pending_error));
+                    fail_all_v5_waiters_for_error(shared, &error);
+                    return Ok(None);
+                }
+            }
+            Ok(false) => release_v5_outbound_request_reservation(shared, stream_id),
+            Err(error) => {
+                let pending_error = pending.failure_error(RemoteClientError::TransportClosed {
+                    cause: error.to_string(),
+                });
+                let _ = pending.sender.send(Err(pending_error));
+                fail_all_v5_waiters_for_error(shared, &error);
+                return Ok(None);
+            }
+        }
+        let error = RemoteClientError::RequestDeadlineExceeded {
+            method: pending.method.to_string(),
+            kind,
+        };
+        let _ = pending.sender.send(Err(error));
+    }
+
+    next_v5_client_deadline_wait(shared, Instant::now())
+}
+
+fn next_v5_client_deadline_wait<W>(
+    shared: &RemoteWorkspaceV5Shared<W>,
+    now: Instant,
+) -> std::result::Result<Option<Duration>, RemoteClientError> {
+    let response_deadline = shared
+        .waiters
+        .lock()
+        .map_err(v5_client_lock_error)?
+        .values()
+        .filter_map(|pending| pending.deadline.next_expiry().map(|(deadline, _)| deadline))
+        .min();
+    let raw_deadline = shared
+        .raw_waiters
+        .lock()
+        .map_err(v5_client_lock_error)?
+        .values()
+        .filter_map(|pending| pending.deadline.next_expiry().map(|(deadline, _)| deadline))
+        .min();
+    Ok(match (response_deadline, raw_deadline) {
+        (Some(response), Some(raw)) => Some(response.min(raw).saturating_duration_since(now)),
+        (Some(deadline), None) | (None, Some(deadline)) => {
+            Some(deadline.saturating_duration_since(now))
+        }
+        (None, None) => None,
+    })
 }
 
 fn wake_v5_client_writer<W>(
@@ -5240,6 +5841,16 @@ where
                     .mark_ping_started(&frame, Instant::now())?;
                 signal_v5_client_heartbeat(shared);
             }
+            let request_frame = frame.stream_id != 0
+                && matches!(
+                    frame.frame_type,
+                    protocol_v5::FrameType::Headers
+                        | protocol_v5::FrameType::Data
+                        | protocol_v5::FrameType::EndStream
+                );
+            // Only a completed physical write advances inactivity. Mutation deadlines are
+            // conservatively connection-terminal because reset and write can race at the
+            // transport boundary.
             frame.frame_sequence = writer.next_frame_sequence;
             writer.next_frame_sequence =
                 writer.next_frame_sequence.checked_add(1).ok_or_else(|| {
@@ -5253,6 +5864,9 @@ where
                     .lock()
                     .map_err(v5_client_lock_error)?
                     .observe_frame_written(&frame);
+            }
+            if request_frame {
+                observe_v5_client_request_progress(shared, frame.stream_id, Instant::now())?;
             }
             if matches!(
                 frame.frame_type,
@@ -5271,6 +5885,52 @@ where
     }
 }
 
+fn v5_client_inbound_progress_stream(routed: &protocol_v5::RoutedFrame) -> Option<u64> {
+    match routed {
+        protocol_v5::RoutedFrame::WindowUpdate { stream_id, .. }
+        | protocol_v5::RoutedFrame::Headers { stream_id, .. }
+        | protocol_v5::RoutedFrame::Data { stream_id, .. }
+        | protocol_v5::RoutedFrame::EndStream { stream_id, .. }
+        | protocol_v5::RoutedFrame::ResetStream { stream_id, .. }
+            if *stream_id != 0 =>
+        {
+            Some(*stream_id)
+        }
+        protocol_v5::RoutedFrame::ConnectionControl { .. }
+        | protocol_v5::RoutedFrame::WindowUpdate { .. }
+        | protocol_v5::RoutedFrame::Headers { .. }
+        | protocol_v5::RoutedFrame::Data { .. }
+        | protocol_v5::RoutedFrame::EndStream { .. }
+        | protocol_v5::RoutedFrame::RejectedStream { .. }
+        | protocol_v5::RoutedFrame::ResetStream { .. } => None,
+    }
+}
+
+fn observe_v5_client_request_progress<W>(
+    shared: &RemoteWorkspaceV5Shared<W>,
+    stream_id: u64,
+    now: Instant,
+) -> std::result::Result<(), RemoteClientError> {
+    if let Some(pending) = shared
+        .waiters
+        .lock()
+        .map_err(v5_client_lock_error)?
+        .get_mut(&stream_id)
+    {
+        pending.deadline.observe_progress(now);
+        return Ok(());
+    }
+    if let Some(pending) = shared
+        .raw_waiters
+        .lock()
+        .map_err(v5_client_lock_error)?
+        .get_mut(&stream_id)
+    {
+        pending.deadline.observe_progress(now);
+    }
+    Ok(())
+}
+
 fn release_v5_outbound_request_reservation<W>(shared: &RemoteWorkspaceV5Shared<W>, stream_id: u64) {
     shared
         .outbound_request_reservations
@@ -5286,6 +5946,9 @@ fn handle_v5_client_stream_event<W>(
 where
     W: Write,
 {
+    if shared.closed.load(Ordering::Acquire) {
+        return false;
+    }
     let stream_id = event.stream_id();
     if matches!(&event, protocol_v5::StreamEvent::ResetStream { .. }) {
         release_v5_outbound_request_reservation(shared, stream_id);
@@ -5296,6 +5959,9 @@ where
             Ok(waiters) => waiters,
             Err(_) => return false,
         };
+        if shared.closed.load(Ordering::Acquire) {
+            return false;
+        }
         let result = if let Some(pending) = waiters.get_mut(&stream_id) {
             pending.accumulator.observe_with_reservation(
                 event.take().expect("event should be available"),
@@ -5308,12 +5974,23 @@ where
     };
 
     if let Some((Some(pending), result)) = completed_response {
+        let normalized = normalize_v5_response_deadline(&pending, result);
+        let result = normalized.result;
         let accepted = result.is_ok();
-        if !accepted {
+        if !accepted && !normalized.peer_deadline {
             reset_v5_client_stream_after_local_error(shared, stream_id);
         }
         let result = result.map(|value| V5Budgeted::new(value, pending.response_reservation));
         let _ = pending.sender.send(result);
+        if normalized.terminal {
+            fail_all_v5_waiters(shared, || {
+                RemoteClientError::Io(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "v5 peer expired an ambiguous mutation request",
+                ))
+            });
+            return false;
+        }
         return accepted;
     }
     if event.is_none() {
@@ -5325,6 +6002,9 @@ where
             Ok(waiters) => waiters,
             Err(_) => return false,
         };
+        if shared.closed.load(Ordering::Acquire) {
+            return false;
+        }
         let result = if let Some(pending) = raw_waiters.get_mut(&stream_id) {
             pending.accumulator.observe_with_reservation(
                 event.take().expect("event should be available"),
@@ -5337,18 +6017,91 @@ where
     };
 
     if let Some((Some(pending), result)) = completed_raw {
+        let normalized = normalize_v5_raw_response_deadline(&pending, result);
+        let result = normalized.result;
         let accepted = result.is_ok();
-        if !accepted {
+        if !accepted && !normalized.peer_deadline {
             reset_v5_client_stream_after_local_error(shared, stream_id);
         }
         let result = result.map(|value| V5Budgeted::new(value, pending.response_reservation));
         let _ = pending.sender.send(result);
+        if normalized.terminal {
+            fail_all_v5_waiters(shared, || {
+                RemoteClientError::Io(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "v5 peer expired a watch control request",
+                ))
+            });
+            return false;
+        }
         return accepted;
     }
     if let Some(event) = event {
         handle_v5_client_watch_event(shared, event);
     }
     true
+}
+
+fn normalize_v5_response_deadline(
+    pending: &V5PendingResponse,
+    result: std::result::Result<(RemoteResponse, Vec<u8>), RemoteClientError>,
+) -> V5NormalizedDeadlineResult<(RemoteResponse, Vec<u8>)> {
+    match result {
+        Err(RemoteClientError::Remote(error))
+            if error.code == protocol_v5::RESET_DEADLINE_EXCEEDED =>
+        {
+            if pending.deadline_is_connection_terminal() {
+                let cause = RemoteClientError::Remote(error).to_string();
+                V5NormalizedDeadlineResult {
+                    result: Err(RemoteClientError::OutcomeUnknown {
+                        method: pending.method.to_string(),
+                        cause,
+                    }),
+                    peer_deadline: true,
+                    terminal: true,
+                }
+            } else {
+                V5NormalizedDeadlineResult {
+                    result: Err(RemoteClientError::RequestDeadlineExceeded {
+                        method: pending.method.to_string(),
+                        kind: RemoteRequestDeadlineKind::Absolute,
+                    }),
+                    peer_deadline: true,
+                    terminal: false,
+                }
+            }
+        }
+        result => V5NormalizedDeadlineResult {
+            result,
+            peer_deadline: false,
+            terminal: false,
+        },
+    }
+}
+
+fn normalize_v5_raw_response_deadline(
+    pending: &V5PendingRawResponse,
+    result: std::result::Result<Vec<u8>, RemoteClientError>,
+) -> V5NormalizedDeadlineResult<Vec<u8>> {
+    match result {
+        Err(RemoteClientError::Remote(error))
+            if error.code == protocol_v5::RESET_DEADLINE_EXCEEDED =>
+        {
+            V5NormalizedDeadlineResult {
+                result: Err(RemoteClientError::Io(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!("v5 peer expired {}", pending.method),
+                ))),
+                peer_deadline: true,
+                terminal: true,
+            }
+        }
+        result => V5NormalizedDeadlineResult {
+            result,
+            peer_deadline: false,
+            terminal: false,
+        },
+    }
 }
 
 fn reset_v5_client_stream_after_local_error<W>(shared: &RemoteWorkspaceV5Shared<W>, stream_id: u64)
@@ -5394,8 +6147,16 @@ where
     {
         return;
     }
+    finish_v5_connection_close(shared, make_error);
+}
+
+fn finish_v5_connection_close<W, F>(shared: &RemoteWorkspaceV5Shared<W>, make_error: F)
+where
+    F: Fn() -> RemoteClientError,
+{
     let _ = shared.writer_wake.try_send(());
     let _ = shared.heartbeat_wake.try_send(());
+    let _ = shared.deadline_wake.try_send(());
     shared
         .session
         .lock()
@@ -5473,6 +6234,12 @@ fn fail_all_v5_waiters_for_error<W>(
         RemoteClientError::TransportClosed { cause } => {
             fail_all_v5_waiters(shared, || RemoteClientError::TransportClosed {
                 cause: cause.clone(),
+            });
+        }
+        RemoteClientError::RequestDeadlineExceeded { method, kind } => {
+            fail_all_v5_waiters(shared, || RemoteClientError::RequestDeadlineExceeded {
+                method: method.clone(),
+                kind: *kind,
             });
         }
         RemoteClientError::OutcomeUnknown { method, cause } => {
@@ -6000,6 +6767,15 @@ pub trait RemoteWorkspaceProtocolClient: Send + Sync {
         body: Vec<u8>,
     ) -> std::result::Result<(RemoteResponse, Vec<u8>), RemoteClientError>;
 
+    fn request_with_context(
+        &self,
+        request: RemoteRequest,
+        body: Vec<u8>,
+        _context: RemoteRequestContext,
+    ) -> std::result::Result<(RemoteResponse, Vec<u8>), RemoteClientError> {
+        self.request(request, body)
+    }
+
     fn shutdown(&self) -> std::result::Result<(), RemoteClientError>;
 
     /// Closes the current transport without performing protocol I/O or waiting for the peer.
@@ -6010,6 +6786,14 @@ pub trait RemoteWorkspaceProtocolClient: Send + Sync {
         _request: WorkspaceWatchRequest,
     ) -> std::result::Result<Option<WorkspaceWatch>, RemoteClientError> {
         Ok(None)
+    }
+
+    fn start_watch_with_context(
+        &self,
+        request: WorkspaceWatchRequest,
+        _context: RemoteRequestContext,
+    ) -> std::result::Result<Option<WorkspaceWatch>, RemoteClientError> {
+        self.start_watch(request)
     }
 
     fn update_watch(
@@ -6140,6 +6924,26 @@ where
         *current = Some(Arc::clone(&reconnected));
         Ok(reconnected)
     }
+
+    fn discard_if_current(&self, stale: &Arc<C>) -> std::result::Result<(), RemoteClientError> {
+        let _gate = self.reconnect_gate.lock().map_err(|_| {
+            RemoteClientError::Protocol("remote reconnect gate is poisoned".to_string())
+        })?;
+        let mut current = self.client.lock().map_err(|_| {
+            RemoteClientError::Protocol("remote reconnect client lock is poisoned".to_string())
+        })?;
+        if current
+            .as_ref()
+            .is_some_and(|client| Arc::ptr_eq(client, stale))
+        {
+            let stale = current.take();
+            drop(current);
+            if let Some(stale) = stale {
+                stale.close();
+            }
+        }
+        Ok(())
+    }
 }
 
 impl<C> RemoteWorkspaceProtocolClient for ReconnectingRemoteWorkspaceProtocolClient<C>
@@ -6151,6 +6955,16 @@ where
         request: RemoteRequest,
         body: Vec<u8>,
     ) -> std::result::Result<(RemoteResponse, Vec<u8>), RemoteClientError> {
+        let context = request.v5_request_context();
+        self.request_with_context(request, body, context)
+    }
+
+    fn request_with_context(
+        &self,
+        request: RemoteRequest,
+        body: Vec<u8>,
+        context: RemoteRequestContext,
+    ) -> std::result::Result<(RemoteResponse, Vec<u8>), RemoteClientError> {
         let method = request.v5_method();
         let idempotency = request.v5_request_options().idempotency;
         let retry_allowed = request.v5_retry_after_reconnect_allowed();
@@ -6158,7 +6972,7 @@ where
         let retry_body = retry_allowed.then(|| body.clone());
         let client = self.current_client()?;
 
-        match client.request(request, body) {
+        match client.request_with_context(request, body, context) {
             Ok(response) => Ok(response),
             Err(error) if remote_client_error_requires_reconnect(&error) => {
                 let retry_safe =
@@ -6171,7 +6985,26 @@ where
                         error = %error,
                         "Retrying read-only v5 remote request after reconnect"
                     );
-                    return recovery?.request(retry_request, retry_body);
+                    let retry_client = recovery?;
+                    if let Some(kind) = context.expired_at(Instant::now()) {
+                        return Err(RemoteClientError::RequestDeadlineExceeded {
+                            method: method.to_string(),
+                            kind,
+                        });
+                    }
+                    let result =
+                        retry_client.request_with_context(retry_request, retry_body, context);
+                    if let Err(retry_error) = &result
+                        && remote_client_error_requires_reconnect(retry_error)
+                        && let Err(close_error) = self.discard_if_current(&retry_client)
+                    {
+                        tracing::warn!(
+                            error = %close_error,
+                            retry_error = %retry_error,
+                            "Failed to invalidate v5 transport after replay failure"
+                        );
+                    }
+                    return result;
                 }
 
                 if let Err(reconnect_error) = recovery {
@@ -6222,15 +7055,41 @@ where
         &self,
         request: WorkspaceWatchRequest,
     ) -> std::result::Result<Option<WorkspaceWatch>, RemoteClientError> {
+        self.start_watch_with_context(request, v5_watch_control_request_context())
+    }
+
+    fn start_watch_with_context(
+        &self,
+        request: WorkspaceWatchRequest,
+        context: RemoteRequestContext,
+    ) -> std::result::Result<Option<WorkspaceWatch>, RemoteClientError> {
         let client = self.current_client()?;
-        match client.start_watch(request.clone()) {
+        match client.start_watch_with_context(request.clone(), context) {
             Ok(watch) => Ok(watch),
             Err(error) if remote_client_error_requires_reconnect(&error) => {
                 tracing::warn!(
                     error = %error,
                     "Retrying v5 watch.start after reconnect"
                 );
-                self.reconnect_if_current(&client)?.start_watch(request)
+                let retry_client = self.reconnect_if_current(&client)?;
+                if let Some(kind) = context.expired_at(Instant::now()) {
+                    return Err(RemoteClientError::RequestDeadlineExceeded {
+                        method: "watch.start".to_string(),
+                        kind,
+                    });
+                }
+                let result = retry_client.start_watch_with_context(request, context);
+                if let Err(retry_error) = &result
+                    && remote_client_error_requires_reconnect(retry_error)
+                    && let Err(close_error) = self.discard_if_current(&retry_client)
+                {
+                    tracing::warn!(
+                        error = %close_error,
+                        retry_error = %retry_error,
+                        "Failed to invalidate v5 transport after watch.start replay failure"
+                    );
+                }
+                result
             }
             Err(error) => Err(error),
         }
@@ -6281,6 +7140,7 @@ fn remote_client_error_allows_reconnect_retry(error: &RemoteClientError) -> bool
         RemoteClientError::Disconnected | RemoteClientError::TransportClosed { .. } => true,
         RemoteClientError::Io(_) => true,
         RemoteClientError::Json(_)
+        | RemoteClientError::RequestDeadlineExceeded { .. }
         | RemoteClientError::OutcomeUnknown { .. }
         | RemoteClientError::ResponseIncomplete { .. }
         | RemoteClientError::Protocol(_)
@@ -7405,7 +8265,8 @@ where
                                 task_pools.mark_finished(task_class);
                             }
                             active_cancellations.remove(&completion.stream_id);
-                            active_deadlines.remove(&completion.stream_id);
+                            let deadline_unix_ms =
+                                active_deadlines.remove(&completion.stream_id).unwrap_or(0);
                             active_streams.remove(&completion.stream_id);
                             if canceled_streams.remove(&completion.stream_id) {
                                 tracing::debug!(
@@ -7413,6 +8274,16 @@ where
                                     method = %completion.method,
                                     "Suppressing v5 response for canceled stream"
                                 );
+                            } else if v5_deadline_expired(deadline_unix_ms) {
+                                session
+                                    .reset_stream(
+                                        completion.stream_id,
+                                        protocol_v5::RESET_DEADLINE_EXCEEDED,
+                                        "request deadline expired before response delivery",
+                                    )
+                                    .context(
+                                        "failed to reset v5 request that completed after deadline",
+                                    )?;
                             } else {
                                 shutdown |=
                                     self.apply_v5_service_terminal(&mut session, completion)?;
@@ -7580,6 +8451,18 @@ where
                                                     )
                                                 },
                                             )?;
+                                            if v5_deadline_expired(request.deadline_unix_ms) {
+                                                session
+                                                    .reset_stream(
+                                                        stream_id,
+                                                        protocol_v5::RESET_DEADLINE_EXCEEDED,
+                                                        "request deadline expired",
+                                                    )
+                                                    .context(
+                                                        "failed to reset expired v5 request stream",
+                                                    )?;
+                                                continue;
+                                            }
                                             if let Some(should_shutdown) = self
                                                 .handle_v5_control_request(
                                                     &mut session,
@@ -7607,18 +8490,6 @@ where
                                                         protocol_v5::RESET_CANCELLED,
                                                         format!("superseded by stream {stream_id}"),
                                                     )?;
-                                                }
-                                                if v5_deadline_expired(request.deadline_unix_ms) {
-                                                    session
-                                                        .reset_stream(
-                                                            stream_id,
-                                                            protocol_v5::RESET_DEADLINE_EXCEEDED,
-                                                            "request deadline expired",
-                                                        )
-                                                        .context(
-                                                            "failed to reset expired v5 request stream",
-                                                        )?;
-                                                    continue;
                                                 }
                                                 let deadline_unix_ms = request.deadline_unix_ms;
                                                 if task_pools.can_start(&request) {
@@ -7847,6 +8718,16 @@ where
                     (stream_id, request)
                 }
             };
+        if v5_deadline_expired(request.deadline_unix_ms) {
+            session
+                .reset_stream(
+                    stream_id,
+                    protocol_v5::RESET_DEADLINE_EXCEEDED,
+                    "request deadline expired",
+                )
+                .context("failed to reset expired v5 request stream")?;
+            return Ok((false, true));
+        }
         if let Some(should_shutdown) =
             self.handle_v5_control_request(session, watches, stream_id, &request)?
         {
@@ -13941,10 +14822,27 @@ mod tests {
     where
         M: ProstMessage,
     {
+        v5_protobuf_request_frames_with_options(
+            stream_id,
+            method,
+            payload,
+            protocol_v5::RequestOptions::default(),
+        )
+    }
+
+    fn v5_protobuf_request_frames_with_options<M>(
+        stream_id: u64,
+        method: &str,
+        payload: &M,
+        options: protocol_v5::RequestOptions,
+    ) -> Vec<protocol_v5::Frame>
+    where
+        M: ProstMessage,
+    {
         let headers = protocol_v5::Frame::from_control(
             protocol_v5::FrameType::Headers,
             stream_id,
-            &protocol_v5::StreamEnvelope::request(stream_id, method),
+            &protocol_v5::StreamEnvelope::request_with_options(stream_id, method, &options),
         );
         let payload = protocol_v5::stream_data_frame(
             stream_id,
@@ -13989,6 +14887,15 @@ mod tests {
         let mut cursor = Cursor::new(bytes);
         let mut frames = Vec::new();
         while let Some(frame) = protocol_v5::read_frame(&mut cursor).unwrap() {
+            frames.push(frame);
+        }
+        frames
+    }
+
+    fn read_v5_complete_frames(bytes: Vec<u8>) -> Vec<protocol_v5::Frame> {
+        let mut cursor = Cursor::new(bytes);
+        let mut frames = Vec::new();
+        while let Ok(Some(frame)) = protocol_v5::read_frame(&mut cursor) {
             frames.push(frame);
         }
         frames
@@ -14694,6 +15601,263 @@ mod tests {
     }
 
     #[test]
+    fn v5_request_deadline_policy_covers_every_method() {
+        let metadata = (
+            Some(V5_REQUEST_METADATA_DEADLINE),
+            Some(V5_REQUEST_METADATA_INACTIVITY),
+        );
+        let mutation = (
+            Some(V5_REQUEST_MUTATION_DEADLINE),
+            Some(V5_REQUEST_MUTATION_INACTIVITY),
+        );
+        let file = (
+            Some(V5_REQUEST_FILE_DEADLINE),
+            Some(V5_REQUEST_FILE_INACTIVITY),
+        );
+        let search = (
+            Some(V5_REQUEST_SEARCH_DEADLINE),
+            Some(V5_REQUEST_SEARCH_INACTIVITY),
+        );
+        let control = (
+            Some(V5_REQUEST_CONTROL_DEADLINE),
+            Some(V5_REQUEST_CONTROL_INACTIVITY),
+        );
+        let requests = vec![
+            (RemoteRequest::Stat { path: "a".into() }, metadata),
+            (RemoteRequest::ListDir { path: "a".into() }, metadata),
+            (
+                RemoteRequest::ListDirs {
+                    paths: vec!["a".into()],
+                },
+                metadata,
+            ),
+            (
+                RemoteRequest::FindAncestorFile {
+                    start: "a".into(),
+                    file_name: "Cargo.toml".to_string(),
+                    limit: 8,
+                },
+                metadata,
+            ),
+            (RemoteRequest::CreateFile { path: "a".into() }, mutation),
+            (RemoteRequest::CreateDir { path: "a".into() }, mutation),
+            (
+                RemoteRequest::RenamePath {
+                    from: "a".into(),
+                    to: "b".into(),
+                },
+                mutation,
+            ),
+            (RemoteRequest::DeletePath { path: "a".into() }, mutation),
+            (
+                RemoteRequest::CopyPath {
+                    from: "a".into(),
+                    to: "b".into(),
+                },
+                mutation,
+            ),
+            (
+                RemoteRequest::ReadFile {
+                    path: "a".into(),
+                    max_bytes: None,
+                },
+                file,
+            ),
+            (
+                RemoteRequest::WriteFile {
+                    path: "a".into(),
+                    create_parent_dirs: false,
+                    expected_modified_unix_millis: None,
+                    expected_modified_unix_nanos: None,
+                },
+                file,
+            ),
+            (
+                RemoteRequest::FileSearch(FileSearchRequest::default()),
+                search,
+            ),
+            (
+                RemoteRequest::TextSearch(TextSearchRequest {
+                    pattern: "needle".to_string(),
+                    ..TextSearchRequest::default()
+                }),
+                search,
+            ),
+            (
+                RemoteRequest::ProjectEnvironment { root: "a".into() },
+                mutation,
+            ),
+            (RemoteRequest::GitHead { root: "a".into() }, metadata),
+            (
+                RemoteRequest::GitStatus {
+                    root: "a".into(),
+                    include_untracked: true,
+                    limit: 10,
+                },
+                metadata,
+            ),
+            (RemoteRequest::Shutdown, control),
+        ];
+        let created_at = Instant::now();
+        let now_unix_ms = 1_000_000;
+
+        for (request, (absolute_timeout, inactivity_timeout)) in requests {
+            let policy = request.v5_deadline_policy();
+            assert_eq!(policy.absolute_timeout, absolute_timeout, "{request:?}");
+            assert_eq!(policy.inactivity_timeout, inactivity_timeout, "{request:?}");
+            let context = RemoteRequestContext::from_policy_at(policy, created_at, now_unix_ms);
+            assert_eq!(
+                context.absolute_deadline,
+                absolute_timeout.map(|timeout| created_at + timeout),
+                "{request:?}"
+            );
+            assert_eq!(
+                context.inactivity_timeout, inactivity_timeout,
+                "{request:?}"
+            );
+            assert_eq!(
+                request
+                    .v5_request_options_with_context(context)
+                    .deadline_unix_ms,
+                now_unix_ms + u64::try_from(absolute_timeout.unwrap().as_millis()).unwrap(),
+                "{request:?}"
+            );
+        }
+
+        let bounded_process = RemoteRequest::RunProcess(ProcessRequest {
+            program: "sleep".to_string(),
+            args: Vec::new(),
+            cwd: PathBuf::new(),
+            env: BTreeMap::new(),
+            clear_env: false,
+            inherit_project_environment: false,
+            max_output_bytes: None,
+            timeout_ms: Some(2_500),
+        });
+        let bounded_policy = bounded_process.v5_deadline_policy();
+        assert_eq!(
+            bounded_policy.absolute_timeout,
+            Some(Duration::from_millis(2_500) + V5_REQUEST_PROCESS_CANCELLATION_GRACE)
+        );
+        assert_eq!(bounded_policy.inactivity_timeout, None);
+
+        let unlimited_process = RemoteRequest::RunProcess(ProcessRequest {
+            program: "server".to_string(),
+            args: Vec::new(),
+            cwd: PathBuf::new(),
+            env: BTreeMap::new(),
+            clear_env: false,
+            inherit_project_environment: false,
+            max_output_bytes: None,
+            timeout_ms: None,
+        });
+        let unlimited = RemoteRequestContext::from_policy_at(
+            unlimited_process.v5_deadline_policy(),
+            created_at,
+            now_unix_ms,
+        );
+        assert_eq!(unlimited.absolute_deadline, None);
+        assert_eq!(unlimited.deadline_unix_ms, 0);
+        assert_eq!(unlimited.inactivity_timeout, None);
+
+        let watch_control = v5_watch_control_request_context();
+        assert_eq!(
+            watch_control.absolute_deadline,
+            watch_control
+                .created_at
+                .checked_add(V5_REQUEST_CONTROL_DEADLINE)
+        );
+        assert_eq!(
+            watch_control.inactivity_timeout,
+            Some(V5_REQUEST_CONTROL_INACTIVITY)
+        );
+        assert_ne!(watch_control.deadline_unix_ms, 0);
+    }
+
+    #[test]
+    fn v5_request_progress_extends_only_inactivity() {
+        let started = Instant::now();
+        let context = RemoteRequestContext::from_policy_at(
+            RemoteRequestDeadlinePolicy::bounded(Duration::from_secs(60), Duration::from_secs(30)),
+            started,
+            1_000,
+        );
+        let mut deadline = V5RequestDeadline::new(context, started);
+
+        assert_eq!(
+            deadline.next_expiry(),
+            Some((
+                started + Duration::from_secs(30),
+                RemoteRequestDeadlineKind::Inactivity
+            ))
+        );
+        deadline.observe_progress(started + Duration::from_secs(20));
+        assert_eq!(
+            deadline.next_expiry(),
+            Some((
+                started + Duration::from_secs(50),
+                RemoteRequestDeadlineKind::Inactivity
+            ))
+        );
+        deadline.observe_progress(started + Duration::from_secs(50));
+        assert_eq!(
+            deadline.next_expiry(),
+            Some((
+                started + Duration::from_secs(60),
+                RemoteRequestDeadlineKind::Absolute
+            ))
+        );
+        assert_eq!(
+            deadline.expired_at(started + Duration::from_secs(60)),
+            Some(RemoteRequestDeadlineKind::Absolute)
+        );
+    }
+
+    #[test]
+    fn v5_inbound_request_progress_is_stream_scoped() {
+        let targeted = [
+            protocol_v5::RoutedFrame::WindowUpdate {
+                stream_id: 7,
+                credit_bytes: 1,
+            },
+            protocol_v5::RoutedFrame::Headers {
+                stream_id: 7,
+                role: protocol_v5::MessageRole::Progress,
+                method: "fs.stat".to_string(),
+            },
+            protocol_v5::RoutedFrame::Data {
+                stream_id: 7,
+                flow_control_len: 1,
+            },
+            protocol_v5::RoutedFrame::EndStream {
+                stream_id: 7,
+                state: protocol_v5::StreamState::Closed,
+            },
+            protocol_v5::RoutedFrame::ResetStream {
+                stream_id: 7,
+                known: true,
+            },
+        ];
+        for routed in targeted {
+            assert_eq!(v5_client_inbound_progress_stream(&routed), Some(7));
+        }
+
+        let unrelated = [
+            protocol_v5::RoutedFrame::ConnectionControl {
+                frame_type: protocol_v5::FrameType::Ping,
+            },
+            protocol_v5::RoutedFrame::WindowUpdate {
+                stream_id: 0,
+                credit_bytes: 1,
+            },
+            protocol_v5::RoutedFrame::RejectedStream { stream_id: 7 },
+        ];
+        for routed in unrelated {
+            assert_eq!(v5_client_inbound_progress_stream(&routed), None);
+        }
+    }
+
+    #[test]
     fn v5_client_heartbeat_queues_once_and_correlates_exact_pong() {
         let started = Instant::now();
         let mut heartbeat = v5_test_client_heartbeat(started);
@@ -15012,6 +16176,181 @@ mod tests {
     }
 
     #[test]
+    fn reconnecting_client_reuses_exact_context_for_safe_replay() {
+        let contexts = Arc::new(StdMutex::new(Vec::new()));
+        let closes = Arc::new(AtomicUsize::new(0));
+        let initial = ContextRecordingProtocolClient::new(
+            Arc::clone(&contexts),
+            [ContextProtocolOutcome::Disconnected],
+            Arc::clone(&closes),
+        );
+        let reconnect_contexts = Arc::clone(&contexts);
+        let reconnect_closes = Arc::clone(&closes);
+        let client = ReconnectingRemoteWorkspaceProtocolClient::new(initial, move || {
+            Ok(ContextRecordingProtocolClient::new(
+                Arc::clone(&reconnect_contexts),
+                [ContextProtocolOutcome::Ok(
+                    RemoteResponse::FindAncestorFile(None),
+                )],
+                Arc::clone(&reconnect_closes),
+            ))
+        });
+
+        let response = client
+            .request(
+                RemoteRequest::Stat {
+                    path: PathBuf::from("src/lib.rs"),
+                },
+                Vec::new(),
+            )
+            .unwrap();
+
+        assert_eq!(
+            response,
+            (RemoteResponse::FindAncestorFile(None), Vec::new())
+        );
+        let contexts = contexts.lock().unwrap();
+        assert_eq!(contexts.len(), 2);
+        assert_eq!(contexts[0], contexts[1]);
+        assert_ne!(contexts[0].deadline_unix_ms, 0);
+        assert_eq!(closes.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn reconnecting_client_does_not_replay_after_original_deadline_expires() {
+        let contexts = Arc::new(StdMutex::new(Vec::new()));
+        let closes = Arc::new(AtomicUsize::new(0));
+        let reconnects = Arc::new(AtomicUsize::new(0));
+        let initial = ContextRecordingProtocolClient::new(
+            Arc::clone(&contexts),
+            [ContextProtocolOutcome::Disconnected],
+            Arc::clone(&closes),
+        );
+        let reconnect_contexts = Arc::clone(&contexts);
+        let reconnect_closes = Arc::clone(&closes);
+        let reconnect_count = Arc::clone(&reconnects);
+        let client = ReconnectingRemoteWorkspaceProtocolClient::new(initial, move || {
+            reconnect_count.fetch_add(1, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(40));
+            Ok(ContextRecordingProtocolClient::new(
+                Arc::clone(&reconnect_contexts),
+                [ContextProtocolOutcome::Ok(
+                    RemoteResponse::FindAncestorFile(None),
+                )],
+                Arc::clone(&reconnect_closes),
+            ))
+        });
+        let context = RemoteRequestContext::from_policy(
+            RemoteRequestDeadlinePolicy::absolute_only(Duration::from_millis(20)),
+        );
+
+        let error = client
+            .request_with_context(
+                RemoteRequest::Stat {
+                    path: PathBuf::from("src/lib.rs"),
+                },
+                Vec::new(),
+                context,
+            )
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            RemoteClientError::RequestDeadlineExceeded {
+                ref method,
+                kind: RemoteRequestDeadlineKind::Absolute,
+            } if method == "fs.stat"
+        ));
+        assert_eq!(contexts.lock().unwrap().as_slice(), &[context]);
+        assert_eq!(reconnects.load(Ordering::SeqCst), 1);
+        assert_eq!(closes.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn reconnecting_client_does_not_reconnect_stream_local_deadline() {
+        let contexts = Arc::new(StdMutex::new(Vec::new()));
+        let closes = Arc::new(AtomicUsize::new(0));
+        let reconnects = Arc::new(AtomicUsize::new(0));
+        let initial = ContextRecordingProtocolClient::new(
+            Arc::clone(&contexts),
+            [ContextProtocolOutcome::Deadline],
+            Arc::clone(&closes),
+        );
+        let reconnect_count = Arc::clone(&reconnects);
+        let reconnect_contexts = Arc::clone(&contexts);
+        let reconnect_closes = Arc::clone(&closes);
+        let client = ReconnectingRemoteWorkspaceProtocolClient::new(initial, move || {
+            reconnect_count.fetch_add(1, Ordering::SeqCst);
+            Ok(ContextRecordingProtocolClient::new(
+                Arc::clone(&reconnect_contexts),
+                [ContextProtocolOutcome::Ok(
+                    RemoteResponse::FindAncestorFile(None),
+                )],
+                Arc::clone(&reconnect_closes),
+            ))
+        });
+
+        let error = client
+            .request(
+                RemoteRequest::Stat {
+                    path: PathBuf::from("src/lib.rs"),
+                },
+                Vec::new(),
+            )
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            RemoteClientError::RequestDeadlineExceeded {
+                kind: RemoteRequestDeadlineKind::Inactivity,
+                ..
+            }
+        ));
+        assert_eq!(contexts.lock().unwrap().len(), 1);
+        assert_eq!(reconnects.load(Ordering::SeqCst), 0);
+        assert_eq!(closes.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn reconnecting_client_invalidates_failed_replay_without_third_attempt() {
+        let contexts = Arc::new(StdMutex::new(Vec::new()));
+        let closes = Arc::new(AtomicUsize::new(0));
+        let reconnects = Arc::new(AtomicUsize::new(0));
+        let initial = ContextRecordingProtocolClient::new(
+            Arc::clone(&contexts),
+            [ContextProtocolOutcome::Disconnected],
+            Arc::clone(&closes),
+        );
+        let reconnect_count = Arc::clone(&reconnects);
+        let reconnect_contexts = Arc::clone(&contexts);
+        let reconnect_closes = Arc::clone(&closes);
+        let client = ReconnectingRemoteWorkspaceProtocolClient::new(initial, move || {
+            reconnect_count.fetch_add(1, Ordering::SeqCst);
+            Ok(ContextRecordingProtocolClient::new(
+                Arc::clone(&reconnect_contexts),
+                [ContextProtocolOutcome::Disconnected],
+                Arc::clone(&reconnect_closes),
+            ))
+        });
+
+        let error = client
+            .request(
+                RemoteRequest::Stat {
+                    path: PathBuf::from("src/lib.rs"),
+                },
+                Vec::new(),
+            )
+            .unwrap_err();
+
+        assert!(matches!(error, RemoteClientError::Disconnected));
+        let contexts = contexts.lock().unwrap();
+        assert_eq!(contexts.len(), 2);
+        assert_eq!(contexts[0], contexts[1]);
+        assert_eq!(reconnects.load(Ordering::SeqCst), 1);
+        assert_eq!(closes.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
     fn reconnecting_client_heals_but_does_not_retry_mutation_after_disconnect() {
         let calls = Arc::new(StdMutex::new(Vec::new()));
         let reconnects = Arc::new(AtomicUsize::new(0));
@@ -15148,6 +16487,52 @@ mod tests {
 
         assert!(watch.is_none());
         assert_eq!(starts.load(Ordering::SeqCst), 2);
+        assert_eq!(reconnects.load(Ordering::SeqCst), 1);
+        assert_eq!(closes.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn reconnecting_client_does_not_replay_watch_start_after_original_deadline_expires() {
+        let starts = Arc::new(AtomicUsize::new(0));
+        let closes = Arc::new(AtomicUsize::new(0));
+        let reconnects = Arc::new(AtomicUsize::new(0));
+        let initial = WatchProtocolClient {
+            starts: Arc::clone(&starts),
+            closes: Arc::clone(&closes),
+            fail_start: true,
+        };
+        let reconnect_starts = Arc::clone(&starts);
+        let reconnect_closes = Arc::clone(&closes);
+        let reconnect_count = Arc::clone(&reconnects);
+        let client = ReconnectingRemoteWorkspaceProtocolClient::new(initial, move || {
+            reconnect_count.fetch_add(1, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(40));
+            Ok(WatchProtocolClient {
+                starts: Arc::clone(&reconnect_starts),
+                closes: Arc::clone(&reconnect_closes),
+                fail_start: false,
+            })
+        });
+        let context = RemoteRequestContext::from_policy(
+            RemoteRequestDeadlinePolicy::absolute_only(Duration::from_millis(20)),
+        );
+
+        let error = match client.start_watch_with_context(
+            WorkspaceWatchRequest::expanded_dirs([PathBuf::from("src")]),
+            context,
+        ) {
+            Ok(_) => panic!("watch.start replay should not outlive its original deadline"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(
+            error,
+            RemoteClientError::RequestDeadlineExceeded {
+                ref method,
+                kind: RemoteRequestDeadlineKind::Absolute,
+            } if method == "watch.start"
+        ));
+        assert_eq!(starts.load(Ordering::SeqCst), 1);
         assert_eq!(reconnects.load(Ordering::SeqCst), 1);
         assert_eq!(closes.load(Ordering::SeqCst), 1);
     }
@@ -15972,6 +17357,11 @@ mod tests {
             response_reservation: response_budget.reservation(),
             method: "fs.stat",
             idempotency: protocol_v5::Idempotency::ReadOnly,
+            terminal_on_deadline: false,
+            deadline: V5RequestDeadline::new(
+                RemoteRequestContext::from_policy(RemoteRequestDeadlinePolicy::unlimited()),
+                Instant::now(),
+            ),
         };
 
         let error = pending.failure_error(RemoteClientError::Disconnected);
@@ -15990,6 +17380,11 @@ mod tests {
             response_reservation: response_budget.reservation(),
             method: "fs.write",
             idempotency: protocol_v5::Idempotency::Mutation,
+            terminal_on_deadline: true,
+            deadline: V5RequestDeadline::new(
+                RemoteRequestContext::from_policy(RemoteRequestDeadlinePolicy::unlimited()),
+                Instant::now(),
+            ),
         };
 
         let error = pending.failure_error(RemoteClientError::Disconnected);
@@ -16012,6 +17407,11 @@ mod tests {
             response_reservation: response_budget.reservation(),
             method: "fs.stat",
             idempotency: protocol_v5::Idempotency::ReadOnly,
+            terminal_on_deadline: false,
+            deadline: V5RequestDeadline::new(
+                RemoteRequestContext::from_policy(RemoteRequestDeadlinePolicy::unlimited()),
+                Instant::now(),
+            ),
         };
         pending.accumulator.method = Some("fs.stat".to_string());
 
@@ -16033,6 +17433,11 @@ mod tests {
             sender,
             accumulator: V5RawResponseAccumulator::default(),
             response_reservation: response_budget.reservation(),
+            method: "watch.start",
+            deadline: V5RequestDeadline::new(
+                RemoteRequestContext::from_policy(RemoteRequestDeadlinePolicy::unlimited()),
+                Instant::now(),
+            ),
         };
         pending.accumulator.final_error = Some(RemoteError {
             code: "UNAVAILABLE".to_string(),
@@ -16048,6 +17453,118 @@ mod tests {
         ));
         assert!(!remote_client_error_allows_reconnect_retry(&error));
         assert!(remote_client_error_requires_reconnect(&error));
+    }
+
+    #[test]
+    fn peer_deadline_maps_reads_mutations_and_watch_controls_safely() {
+        fn deadline_error() -> RemoteClientError {
+            RemoteClientError::Remote(RemoteError {
+                code: protocol_v5::RESET_DEADLINE_EXCEEDED.to_string(),
+                message: "deadline expired".to_string(),
+                diagnostic: None,
+            })
+        }
+
+        let response_budget = V5ConnectionByteBudget::new(1);
+        let (sender, _receiver) = mpsc::channel();
+        let read = V5PendingResponse {
+            sender,
+            accumulator: V5ResponseAccumulator::default(),
+            response_reservation: response_budget.reservation(),
+            method: "fs.stat",
+            idempotency: protocol_v5::Idempotency::ReadOnly,
+            terminal_on_deadline: false,
+            deadline: V5RequestDeadline::new(
+                RemoteRequestContext::from_policy(RemoteRequestDeadlinePolicy::unlimited()),
+                Instant::now(),
+            ),
+        };
+        let normalized = normalize_v5_response_deadline(&read, Err(deadline_error()));
+        assert!(matches!(
+            normalized.result,
+            Err(RemoteClientError::RequestDeadlineExceeded {
+                kind: RemoteRequestDeadlineKind::Absolute,
+                ..
+            })
+        ));
+        assert!(normalized.peer_deadline);
+        assert!(!normalized.terminal);
+
+        let (sender, _receiver) = mpsc::channel();
+        let mut mutation = V5PendingResponse {
+            sender,
+            accumulator: V5ResponseAccumulator::default(),
+            response_reservation: response_budget.reservation(),
+            method: "fs.write",
+            idempotency: protocol_v5::Idempotency::Mutation,
+            terminal_on_deadline: true,
+            deadline: V5RequestDeadline::new(
+                RemoteRequestContext::from_policy(RemoteRequestDeadlinePolicy::unlimited()),
+                Instant::now(),
+            ),
+        };
+        let normalized = normalize_v5_response_deadline(&mutation, Err(deadline_error()));
+        assert!(matches!(
+            normalized.result,
+            Err(RemoteClientError::OutcomeUnknown { ref method, .. }) if method == "fs.write"
+        ));
+        assert!(normalized.peer_deadline);
+        assert!(normalized.terminal);
+
+        mutation.accumulator.method = Some("fs.write".to_string());
+        let normalized = normalize_v5_response_deadline(&mutation, Err(deadline_error()));
+        assert!(matches!(
+            normalized.result,
+            Err(RemoteClientError::RequestDeadlineExceeded {
+                kind: RemoteRequestDeadlineKind::Absolute,
+                ..
+            })
+        ));
+        assert!(normalized.peer_deadline);
+        assert!(!normalized.terminal);
+
+        let (sender, _receiver) = mpsc::channel();
+        let mut shutdown = V5PendingResponse {
+            sender,
+            accumulator: V5ResponseAccumulator::default(),
+            response_reservation: response_budget.reservation(),
+            method: "session.shutdown",
+            idempotency: protocol_v5::Idempotency::Mutation,
+            terminal_on_deadline: true,
+            deadline: V5RequestDeadline::new(
+                RemoteRequestContext::from_policy(RemoteRequestDeadlinePolicy::unlimited()),
+                Instant::now(),
+            ),
+        };
+        shutdown.accumulator.method = Some("session.shutdown".to_string());
+        assert!(shutdown.deadline_is_connection_terminal());
+        let normalized = normalize_v5_response_deadline(&shutdown, Err(deadline_error()));
+        assert!(matches!(
+            normalized.result,
+            Err(RemoteClientError::OutcomeUnknown { ref method, .. })
+                if method == "session.shutdown"
+        ));
+        assert!(normalized.peer_deadline);
+        assert!(normalized.terminal);
+
+        let (sender, _receiver) = mpsc::channel();
+        let raw = V5PendingRawResponse {
+            sender,
+            accumulator: V5RawResponseAccumulator::default(),
+            response_reservation: response_budget.reservation(),
+            method: "watch.start",
+            deadline: V5RequestDeadline::new(
+                RemoteRequestContext::from_policy(RemoteRequestDeadlinePolicy::unlimited()),
+                Instant::now(),
+            ),
+        };
+        let normalized = normalize_v5_raw_response_deadline(&raw, Err(deadline_error()));
+        assert!(matches!(
+            normalized.result,
+            Err(RemoteClientError::Io(ref error)) if error.kind() == io::ErrorKind::TimedOut
+        ));
+        assert!(normalized.peer_deadline);
+        assert!(normalized.terminal);
     }
 
     #[test]
@@ -16271,6 +17788,116 @@ mod tests {
     }
 
     #[test]
+    fn v5_client_does_not_open_request_after_deadline_while_waiting_for_session() {
+        let input = BlockingRead::default();
+        let output = SharedWrite::default();
+        input.push(v5_server_input(Vec::new()));
+        let client = Arc::new(
+            RemoteWorkspaceV5MultiplexedClient::connect(
+                protocol_v5::FramedIo::new(input.clone(), output.clone()),
+                protocol_v5::ClientHello::nucleotide("test-client"),
+            )
+            .unwrap(),
+        );
+        let context = RemoteRequestContext::from_policy(
+            RemoteRequestDeadlinePolicy::absolute_only(Duration::from_secs(2)),
+        );
+        let session = client.shared.session.lock().unwrap();
+        let request_client = Arc::clone(&client);
+        let worker = std::thread::spawn(move || {
+            request_client.request_with_context(
+                RemoteRequest::Stat {
+                    path: PathBuf::from("late.rs"),
+                },
+                Vec::new(),
+                context,
+            )
+        });
+
+        let started = Instant::now();
+        while client.shared.request_budget.used() == 0 {
+            assert!(
+                started.elapsed() < Duration::from_secs(1),
+                "request did not reach the session lock before its deadline"
+            );
+            std::thread::yield_now();
+        }
+        std::thread::sleep(
+            context
+                .absolute_deadline
+                .unwrap()
+                .saturating_duration_since(Instant::now())
+                + Duration::from_millis(10),
+        );
+        drop(session);
+
+        let error = worker.join().unwrap().unwrap_err();
+        assert!(matches!(
+            error,
+            RemoteClientError::RequestDeadlineExceeded {
+                ref method,
+                kind: RemoteRequestDeadlineKind::Absolute,
+            } if method == "fs.stat"
+        ));
+        assert!(find_v5_request_stream(&output, "fs.stat").is_none());
+        assert_eq!(client.shared.request_budget.used(), 0);
+        client.close();
+        input.close();
+    }
+
+    #[test]
+    fn v5_client_does_not_open_watch_control_after_deadline_while_waiting_for_session() {
+        let input = BlockingRead::default();
+        let output = SharedWrite::default();
+        input.push(v5_server_input(Vec::new()));
+        let client = Arc::new(
+            RemoteWorkspaceV5MultiplexedClient::connect(
+                protocol_v5::FramedIo::new(input.clone(), output.clone()),
+                protocol_v5::ClientHello::nucleotide("test-client"),
+            )
+            .unwrap(),
+        );
+        let context = RemoteRequestContext::from_policy(
+            RemoteRequestDeadlinePolicy::absolute_only(Duration::from_secs(2)),
+        );
+        let session = client.shared.session.lock().unwrap();
+        let request_client = Arc::clone(&client);
+        let worker = std::thread::spawn(move || {
+            request_client.request_v5_raw("watch.stop", vec![1, 2, 3], context)
+        });
+
+        let started = Instant::now();
+        while client.shared.request_budget.used() == 0 {
+            assert!(
+                started.elapsed() < Duration::from_secs(1),
+                "watch control did not reach the session lock before its deadline"
+            );
+            std::thread::yield_now();
+        }
+        std::thread::sleep(
+            context
+                .absolute_deadline
+                .unwrap()
+                .saturating_duration_since(Instant::now())
+                + Duration::from_millis(10),
+        );
+        drop(session);
+
+        let error = worker.join().unwrap().unwrap_err();
+        assert!(matches!(
+            error,
+            RemoteClientError::RequestDeadlineExceeded {
+                ref method,
+                kind: RemoteRequestDeadlineKind::Absolute,
+            } if method == "watch.stop"
+        ));
+        assert!(find_v5_request_stream(&output, "watch.stop").is_none());
+        assert_eq!(client.shared.request_budget.used(), 0);
+        client.close();
+        input.close();
+    }
+
+    #[test]
     fn v5_early_response_keeps_request_body_reserved_until_outbound_end_is_written() {
         let input = BlockingRead::default();
         let output = SharedWrite::default();
@@ -16368,8 +17995,13 @@ mod tests {
             + protocol_v5::DEFAULT_MAX_FRAME_BODY_LEN as usize;
         let payload = vec![9; payload_len];
         let request_client = Arc::clone(&client);
-        let worker =
-            std::thread::spawn(move || request_client.request_v5_raw("watch.resync", payload));
+        let worker = std::thread::spawn(move || {
+            request_client.request_v5_raw(
+                "watch.resync",
+                payload,
+                v5_watch_control_request_context(),
+            )
+        });
 
         let stream_id = wait_for_v5_request_stream(&output, "watch.resync");
         assert_eq!(client.shared.request_budget.used(), payload_len);
@@ -16513,7 +18145,13 @@ mod tests {
             assert!(poisoned.is_err());
 
             let failed = if raw {
-                client.request_v5_raw("watch.stop", vec![1, 2, 3]).is_err()
+                client
+                    .request_v5_raw(
+                        "watch.stop",
+                        vec![1, 2, 3],
+                        v5_watch_control_request_context(),
+                    )
+                    .is_err()
             } else {
                 client
                     .request(
@@ -16656,6 +18294,534 @@ mod tests {
                 && frame.frame_type == protocol_v5::FrameType::WindowUpdate
         }));
         client.close();
+        input.close();
+    }
+
+    #[test]
+    fn v5_client_inactivity_is_stream_targeted_and_read_timeout_is_local() {
+        let input = BlockingRead::default();
+        let output = SharedWrite::default();
+        input.push(v5_server_input(Vec::new()));
+        let client = Arc::new(
+            RemoteWorkspaceV5MultiplexedClient::connect(
+                protocol_v5::FramedIo::new(input.clone(), output.clone()),
+                protocol_v5::ClientHello::nucleotide("test-client"),
+            )
+            .unwrap(),
+        );
+        let context = RemoteRequestContext::from_policy_at(
+            RemoteRequestDeadlinePolicy::bounded(
+                Duration::from_secs(60 * 60),
+                Duration::from_secs(30),
+            ),
+            Instant::now(),
+            v5_now_unix_millis(),
+        );
+
+        let first_client = Arc::clone(&client);
+        let (first_sender, first_receiver) = mpsc::channel();
+        let first = std::thread::spawn(move || {
+            let result = first_client.request_with_context(
+                RemoteRequest::Stat {
+                    path: PathBuf::from("stalled.rs"),
+                },
+                Vec::new(),
+                context,
+            );
+            first_sender.send(result).unwrap();
+        });
+        let first_stream = wait_for_v5_request_stream(&output, "fs.stat");
+        wait_for_v5_stream_frame(&output, first_stream, protocol_v5::FrameType::EndStream);
+
+        let second_client = Arc::clone(&client);
+        let (second_sender, second_receiver) = mpsc::channel();
+        let second = std::thread::spawn(move || {
+            let result = second_client.request_with_context(
+                RemoteRequest::Stat {
+                    path: PathBuf::from("healthy.rs"),
+                },
+                Vec::new(),
+                context,
+            );
+            second_sender.send(result).unwrap();
+        });
+        let second_stream = wait_for_v5_request_stream_after(&output, "fs.stat", first_stream);
+        wait_for_v5_stream_frame(&output, second_stream, protocol_v5::FrameType::EndStream);
+
+        let recent = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
+        {
+            let mut waiters = client.shared.waiters.lock().unwrap();
+            waiters
+                .get_mut(&first_stream)
+                .unwrap()
+                .deadline
+                .last_progress_at = recent;
+            waiters
+                .get_mut(&second_stream)
+                .unwrap()
+                .deadline
+                .last_progress_at = recent;
+        }
+        let after_sequence = read_v5_complete_frames(output.bytes())
+            .into_iter()
+            .map(|frame| frame.frame_sequence)
+            .max()
+            .unwrap_or(0);
+        let ping = protocol_v5::PingPayload {
+            token: b"deadline-progress-barrier".to_vec(),
+        };
+        input.push(v5_frames_bytes(vec![
+            protocol_v5::window_update_frame(second_stream, 1).unwrap(),
+            protocol_v5::Frame::from_control(protocol_v5::FrameType::Ping, 0, &ping),
+        ]));
+        let _ = wait_for_v5_connection_frame_after(
+            &output,
+            protocol_v5::FrameType::Pong,
+            after_sequence,
+        );
+
+        {
+            let waiters = client.shared.waiters.lock().unwrap();
+            assert_eq!(
+                waiters
+                    .get(&first_stream)
+                    .unwrap()
+                    .deadline
+                    .last_progress_at,
+                recent,
+                "another stream and heartbeat traffic must not refresh the stalled request"
+            );
+            assert!(
+                waiters
+                    .get(&second_stream)
+                    .unwrap()
+                    .deadline
+                    .last_progress_at
+                    > recent,
+                "same-stream WINDOW_UPDATE should refresh inactivity"
+            );
+        }
+
+        let expired_at = Instant::now().checked_sub(Duration::from_secs(31)).unwrap();
+        {
+            let mut waiters = client.shared.waiters.lock().unwrap();
+            let pending = waiters.get_mut(&first_stream).unwrap();
+            pending.accumulator.method = Some("fs.stat".to_string());
+            pending.deadline.last_progress_at = expired_at;
+        }
+        signal_v5_client_deadlines(&client.shared);
+
+        let error = first_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("deadline watchdog should finish the stalled read")
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            RemoteClientError::RequestDeadlineExceeded {
+                ref method,
+                kind: RemoteRequestDeadlineKind::Inactivity,
+            } if method == "fs.stat"
+        ));
+        wait_for_v5_stream_frame(&output, first_stream, protocol_v5::FrameType::ResetStream);
+        let resets = read_v5_complete_frames(output.bytes())
+            .into_iter()
+            .filter(|frame| {
+                frame.stream_id == first_stream
+                    && frame.frame_type == protocol_v5::FrameType::ResetStream
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(resets.len(), 1);
+        assert_eq!(
+            resets[0]
+                .decode_control::<protocol_v5::ResetStream>()
+                .unwrap()
+                .code,
+            protocol_v5::RESET_DEADLINE_EXCEEDED
+        );
+        assert!(!client.shared.closed.load(Ordering::Acquire));
+        assert!(
+            client
+                .shared
+                .waiters
+                .lock()
+                .unwrap()
+                .contains_key(&second_stream)
+        );
+
+        let response = RemoteResponse::Stat(FileStatResponse {
+            path: PathBuf::from("healthy.rs"),
+            kind: RemoteFileKind::File,
+            size: 7,
+            modified_unix_millis: None,
+            modified_unix_nanos: None,
+            readonly: false,
+        });
+        input.push(v5_frames_bytes(v5_response_frames(
+            second_stream,
+            "fs.stat",
+            response.clone(),
+            Vec::new(),
+        )));
+        assert_eq!(
+            second_receiver
+                .recv_timeout(Duration::from_secs(2))
+                .expect("second stream should remain usable")
+                .unwrap(),
+            (response, Vec::new())
+        );
+
+        first.join().unwrap();
+        second.join().unwrap();
+        client.close();
+        input.close();
+    }
+
+    #[test]
+    fn v5_client_mutation_deadline_is_terminal_and_outcome_unknown() {
+        let input = BlockingRead::default();
+        let output = SharedWrite::default();
+        let abort_calls = Arc::new(AtomicUsize::new(0));
+        let abort: Arc<dyn V5TransportAbort> = Arc::new(CountingTransportAbort {
+            calls: Arc::clone(&abort_calls),
+        });
+        input.push(v5_server_input(Vec::new()));
+        let client = Arc::new(
+            RemoteWorkspaceV5MultiplexedClient::connect_with_transport_abort(
+                protocol_v5::FramedIo::new(input.clone(), output.clone()),
+                protocol_v5::ClientHello::nucleotide("test-client"),
+                Some(abort),
+            )
+            .unwrap(),
+        );
+        let context = RemoteRequestContext::from_policy_at(
+            RemoteRequestDeadlinePolicy::bounded(
+                Duration::from_secs(60 * 60),
+                Duration::from_secs(30),
+            ),
+            Instant::now(),
+            v5_now_unix_millis(),
+        );
+        let request_client = Arc::clone(&client);
+        let (result_sender, result_receiver) = mpsc::channel();
+        let request = std::thread::spawn(move || {
+            let result = request_client.request_with_context(
+                RemoteRequest::CreateDir {
+                    path: PathBuf::from("possibly-created"),
+                },
+                Vec::new(),
+                context,
+            );
+            result_sender.send(result).unwrap();
+        });
+        let stream_id = wait_for_v5_request_stream(&output, "fs.create_dir");
+        wait_for_v5_stream_frame(&output, stream_id, protocol_v5::FrameType::EndStream);
+        {
+            let mut waiters = client.shared.waiters.lock().unwrap();
+            let pending = waiters.get_mut(&stream_id).unwrap();
+            pending.deadline.last_progress_at =
+                Instant::now().checked_sub(Duration::from_secs(31)).unwrap();
+        }
+        {
+            let mut heartbeat = client.shared.heartbeat.lock().unwrap();
+            heartbeat.last_peer_activity = Instant::now();
+            heartbeat.ping = None;
+        }
+        signal_v5_client_deadlines(&client.shared);
+
+        let error = result_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("mutation deadline should finish the request")
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            RemoteClientError::OutcomeUnknown { ref method, .. }
+                if method == "fs.create_dir"
+        ));
+        assert!(client.shared.closed.load(Ordering::Acquire));
+        assert_eq!(abort_calls.load(Ordering::Acquire), 1);
+        assert!(client.shared.waiters.lock().unwrap().is_empty());
+        assert!(
+            client
+                .shared
+                .outbound_request_reservations
+                .lock()
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(client.shared.request_budget.used(), 0);
+        assert_eq!(client.shared.response_budget.used(), 0);
+
+        client.close();
+        assert_eq!(abort_calls.load(Ordering::Acquire), 1);
+        request.join().unwrap();
+        input.close();
+    }
+
+    #[test]
+    fn v5_client_final_metadata_wins_race_with_mutation_deadline() {
+        let input = BlockingRead::default();
+        let output = SharedWrite::default();
+        input.push(v5_server_input(Vec::new()));
+        let client = Arc::new(
+            RemoteWorkspaceV5MultiplexedClient::connect(
+                protocol_v5::FramedIo::new(input.clone(), output.clone()),
+                protocol_v5::ClientHello::nucleotide("test-client"),
+            )
+            .unwrap(),
+        );
+        let context = RemoteRequestContext::from_policy_at(
+            RemoteRequestDeadlinePolicy::bounded(
+                Duration::from_secs(60 * 60),
+                Duration::from_secs(30),
+            ),
+            Instant::now(),
+            v5_now_unix_millis(),
+        );
+        let request_client = Arc::clone(&client);
+        let (result_sender, result_receiver) = mpsc::channel();
+        let request = std::thread::spawn(move || {
+            let result = request_client.request_with_context(
+                RemoteRequest::CreateDir {
+                    path: PathBuf::from("created-before-deadline"),
+                },
+                Vec::new(),
+                context,
+            );
+            result_sender.send(result).unwrap();
+        });
+        let stream_id = wait_for_v5_request_stream(&output, "fs.create_dir");
+        wait_for_v5_stream_frame(&output, stream_id, protocol_v5::FrameType::EndStream);
+        {
+            let mut waiters = client.shared.waiters.lock().unwrap();
+            waiters
+                .get_mut(&stream_id)
+                .unwrap()
+                .deadline
+                .last_progress_at = Instant::now().checked_sub(Duration::from_secs(31)).unwrap();
+        }
+
+        let mut heartbeat = client.shared.heartbeat.lock().unwrap();
+        heartbeat.last_peer_activity = Instant::now();
+        heartbeat.ping = None;
+        let expiry_client = Arc::clone(&client);
+        let expiry = std::thread::spawn(move || {
+            expire_v5_client_deadlines_at(&expiry_client.shared, Instant::now()).unwrap()
+        });
+        assert!(handle_v5_client_stream_event(
+            &client.shared,
+            protocol_v5::StreamEvent::Headers {
+                stream_id,
+                role: protocol_v5::MessageRole::FinalResponse,
+                priority: protocol_v5::Priority::UserInput,
+                envelope: protocol_v5::StreamEnvelope::response(
+                    stream_id,
+                    "fs.create_dir",
+                    protocol_v5::MessageRole::FinalResponse,
+                    true,
+                ),
+            },
+        ));
+        drop(heartbeat);
+        expiry.join().unwrap();
+
+        let error = result_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("deadline should finish the mutation after final metadata")
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            RemoteClientError::RequestDeadlineExceeded {
+                ref method,
+                kind: RemoteRequestDeadlineKind::Inactivity,
+            } if method == "fs.create_dir"
+        ));
+        assert!(!client.shared.closed.load(Ordering::Acquire));
+        wait_for_v5_stream_frame(&output, stream_id, protocol_v5::FrameType::ResetStream);
+
+        client.close();
+        request.join().unwrap();
+        input.close();
+    }
+
+    #[test]
+    fn v5_client_unknown_peer_deadline_fails_every_waiter() {
+        let input = BlockingRead::default();
+        let output = SharedWrite::default();
+        let abort_calls = Arc::new(AtomicUsize::new(0));
+        let abort: Arc<dyn V5TransportAbort> = Arc::new(CountingTransportAbort {
+            calls: Arc::clone(&abort_calls),
+        });
+        input.push(v5_server_input(Vec::new()));
+        let client = Arc::new(
+            RemoteWorkspaceV5MultiplexedClient::connect_with_transport_abort(
+                protocol_v5::FramedIo::new(input.clone(), output.clone()),
+                protocol_v5::ClientHello::nucleotide("test-client"),
+                Some(abort),
+            )
+            .unwrap(),
+        );
+        let context = RemoteRequestContext::from_policy_at(
+            RemoteRequestDeadlinePolicy::bounded(
+                Duration::from_secs(60 * 60),
+                Duration::from_secs(30),
+            ),
+            Instant::now(),
+            v5_now_unix_millis(),
+        );
+        let first_client = Arc::clone(&client);
+        let (first_sender, first_receiver) = mpsc::channel();
+        let first = std::thread::spawn(move || {
+            let result = first_client.request_with_context(
+                RemoteRequest::Stat {
+                    path: PathBuf::from("stalled.rs"),
+                },
+                Vec::new(),
+                context,
+            );
+            first_sender.send(result).unwrap();
+        });
+        let first_stream = wait_for_v5_request_stream(&output, "fs.stat");
+        wait_for_v5_stream_frame(&output, first_stream, protocol_v5::FrameType::EndStream);
+
+        let second_client = Arc::clone(&client);
+        let (second_sender, second_receiver) = mpsc::channel();
+        let second = std::thread::spawn(move || {
+            let result = second_client.request_with_context(
+                RemoteRequest::Stat {
+                    path: PathBuf::from("also-failed.rs"),
+                },
+                Vec::new(),
+                context,
+            );
+            second_sender.send(result).unwrap();
+        });
+        let second_stream = wait_for_v5_request_stream_after(&output, "fs.stat", first_stream);
+        wait_for_v5_stream_frame(&output, second_stream, protocol_v5::FrameType::EndStream);
+
+        client
+            .shared
+            .waiters
+            .lock()
+            .unwrap()
+            .get_mut(&first_stream)
+            .unwrap()
+            .deadline
+            .last_progress_at = Instant::now().checked_sub(Duration::from_secs(31)).unwrap();
+        {
+            let mut heartbeat = client.shared.heartbeat.lock().unwrap();
+            heartbeat.last_peer_activity = Instant::now()
+                .checked_sub(heartbeat.idle_ping_interval + Duration::from_millis(1))
+                .unwrap();
+            heartbeat.ping = None;
+        }
+        signal_v5_client_deadlines(&client.shared);
+
+        for receiver in [&first_receiver, &second_receiver] {
+            let error = receiver
+                .recv_timeout(Duration::from_secs(2))
+                .expect("unknown peer expiry should fail every waiter")
+                .unwrap_err();
+            let RemoteClientError::Io(error) = error else {
+                panic!("expected terminal peer-health timeout, got {error:?}");
+            };
+            assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        }
+        assert!(client.shared.closed.load(Ordering::Acquire));
+        assert_eq!(abort_calls.load(Ordering::Acquire), 1);
+        assert!(client.shared.waiters.lock().unwrap().is_empty());
+        assert!(
+            client
+                .shared
+                .outbound_request_reservations
+                .lock()
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(client.shared.request_budget.used(), 0);
+        assert_eq!(client.shared.response_budget.used(), 0);
+
+        first.join().unwrap();
+        second.join().unwrap();
+        input.close();
+    }
+
+    #[test]
+    fn v5_client_watch_control_deadline_is_connection_terminal() {
+        let input = BlockingRead::default();
+        let output = SharedWrite::default();
+        let abort_calls = Arc::new(AtomicUsize::new(0));
+        let abort: Arc<dyn V5TransportAbort> = Arc::new(CountingTransportAbort {
+            calls: Arc::clone(&abort_calls),
+        });
+        input.push(v5_server_input(Vec::new()));
+        let client = Arc::new(
+            RemoteWorkspaceV5MultiplexedClient::connect_with_transport_abort(
+                protocol_v5::FramedIo::new(input.clone(), output.clone()),
+                protocol_v5::ClientHello::nucleotide("test-client"),
+                Some(abort),
+            )
+            .unwrap(),
+        );
+        let context = RemoteRequestContext::from_policy_at(
+            RemoteRequestDeadlinePolicy::bounded(
+                Duration::from_secs(60 * 60),
+                Duration::from_secs(30),
+            ),
+            Instant::now(),
+            v5_now_unix_millis(),
+        );
+        let request_client = Arc::clone(&client);
+        let (result_sender, result_receiver) = mpsc::channel();
+        let request = std::thread::spawn(move || {
+            let result = request_client.request_v5_raw(
+                "watch.resync",
+                protocol_v5::WatchResync {
+                    watch_id: 7,
+                    roots: vec![".".to_string()],
+                }
+                .encode_to_vec(),
+                context,
+            );
+            result_sender.send(result).unwrap();
+        });
+        let stream_id = wait_for_v5_request_stream(&output, "watch.resync");
+        wait_for_v5_stream_frame(&output, stream_id, protocol_v5::FrameType::EndStream);
+        client
+            .shared
+            .raw_waiters
+            .lock()
+            .unwrap()
+            .get_mut(&stream_id)
+            .unwrap()
+            .deadline
+            .last_progress_at = Instant::now().checked_sub(Duration::from_secs(31)).unwrap();
+        signal_v5_client_deadlines(&client.shared);
+
+        let error = result_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("watch control deadline should finish the request")
+            .unwrap_err();
+        let RemoteClientError::Io(error) = error else {
+            panic!("expected terminal watch timeout, got {error:?}");
+        };
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(client.shared.closed.load(Ordering::Acquire));
+        assert_eq!(abort_calls.load(Ordering::Acquire), 1);
+        assert!(client.shared.raw_waiters.lock().unwrap().is_empty());
+        assert!(
+            client
+                .shared
+                .outbound_request_reservations
+                .lock()
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(client.shared.request_budget.used(), 0);
+        assert_eq!(client.shared.response_budget.used(), 0);
+
+        client.close();
+        assert_eq!(abort_calls.load(Ordering::Acquire), 1);
+        request.join().unwrap();
         input.close();
     }
 
@@ -16846,6 +19012,7 @@ mod tests {
             .decode_control::<protocol_v5::StreamEnvelope>()
             .unwrap();
         assert_eq!(envelope.method, "fs.write");
+        assert_ne!(envelope.deadline_unix_ms, 0);
         assert_eq!(
             envelope.request_idempotency().unwrap(),
             protocol_v5::Idempotency::Mutation
@@ -16951,6 +19118,72 @@ mod tests {
         assert_eq!(error.code, "NOT_FOUND");
         assert_eq!(error.message, "missing");
         assert_eq!(error.diagnostic.as_deref(), Some("stat failed"));
+    }
+
+    #[test]
+    fn v5_sync_client_keeps_connection_after_mutation_deadline_with_final_metadata() {
+        let final_metadata = protocol_v5::Frame::from_control(
+            protocol_v5::FrameType::Headers,
+            1,
+            &protocol_v5::StreamEnvelope::response(
+                1,
+                "fs.create_dir",
+                protocol_v5::MessageRole::FinalResponse,
+                true,
+            ),
+        );
+        let reset = protocol_v5::reset_stream_frame(
+            1,
+            protocol_v5::RESET_DEADLINE_EXCEEDED,
+            "response delivery deadline expired",
+        );
+        let healthy_response = RemoteResponse::Stat(FileStatResponse {
+            path: PathBuf::from("healthy.rs"),
+            kind: RemoteFileKind::File,
+            size: 1,
+            modified_unix_millis: None,
+            modified_unix_nanos: None,
+            readonly: false,
+        });
+        let mut response_frames = vec![final_metadata, reset];
+        response_frames.extend(v5_response_frames(
+            3,
+            "fs.stat",
+            healthy_response.clone(),
+            Vec::new(),
+        ));
+        let input = v5_server_input(response_frames);
+        let mut client = RemoteWorkspaceV5Client::connect(
+            protocol_v5::FramedIo::new(Cursor::new(input), Vec::new()),
+            protocol_v5::ClientHello::nucleotide("test-client"),
+        )
+        .unwrap();
+
+        let error = client
+            .request(
+                RemoteRequest::CreateDir {
+                    path: PathBuf::from("possibly-created"),
+                },
+                Vec::new(),
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            RemoteClientError::RequestDeadlineExceeded {
+                ref method,
+                kind: RemoteRequestDeadlineKind::Absolute,
+            } if method == "fs.create_dir"
+        ));
+
+        let response = client
+            .request(
+                RemoteRequest::Stat {
+                    path: PathBuf::from("healthy.rs"),
+                },
+                Vec::new(),
+            )
+            .unwrap();
+        assert_eq!(response, (healthy_response, Vec::new()));
     }
 
     #[test]
@@ -18340,6 +20573,47 @@ mod tests {
     }
 
     #[test]
+    fn v5_service_rejects_expired_watch_start_before_registering_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let start = protocol_v5::WatchStart::expanded_dirs(["."]);
+        let options = protocol_v5::RequestOptions {
+            deadline_unix_ms: v5_now_unix_millis().saturating_sub(1),
+            ..protocol_v5::RequestOptions::default()
+        };
+        let input = v5_client_input(v5_protobuf_request_frames_with_options(
+            1,
+            "watch.start",
+            &start,
+            options,
+        ));
+        let service =
+            WorkspaceService::new(LocalWorkspaceBackend, temp.path().to_path_buf()).unwrap();
+        let mut io = protocol_v5::FramedIo::new(Cursor::new(input), Vec::new());
+
+        service
+            .serve_v5(
+                &mut io,
+                &protocol_v5::ServerHandshakeInfo::current(temp.path().display().to_string()),
+            )
+            .unwrap();
+        let (_, output) = io.into_inner();
+        let frames = read_v5_frames(output);
+        let reset = frames
+            .iter()
+            .find(|frame| {
+                frame.stream_id == 1 && frame.frame_type == protocol_v5::FrameType::ResetStream
+            })
+            .expect("expired watch.start should be reset")
+            .decode_control::<protocol_v5::ResetStream>()
+            .unwrap();
+
+        assert_eq!(reset.code, protocol_v5::RESET_DEADLINE_EXCEEDED);
+        assert!(!frames.iter().any(|frame| {
+            frame.stream_id != 0 && frame.frame_type == protocol_v5::FrameType::Headers
+        }));
+    }
+
+    #[test]
     fn v5_service_watch_update_and_stop_manage_event_stream() {
         let temp = tempfile::tempdir().unwrap();
         let start = protocol_v5::WatchStart::expanded_dirs(["."]);
@@ -18605,6 +20879,50 @@ mod tests {
             batch.events[0].kind,
             protocol_v5::WatchChangeKind::Modified as i32
         );
+    }
+
+    #[test]
+    fn v5_concurrent_service_rejects_expired_watch_start_before_registering_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let start = protocol_v5::WatchStart::expanded_dirs(["."]);
+        let options = protocol_v5::RequestOptions {
+            deadline_unix_ms: v5_now_unix_millis().saturating_sub(1),
+            ..protocol_v5::RequestOptions::default()
+        };
+        let input = BlockingRead::default();
+        input.push(v5_client_input(v5_protobuf_request_frames_with_options(
+            1,
+            "watch.start",
+            &start,
+            options,
+        )));
+        let output = SharedWrite::default();
+        let service =
+            WorkspaceService::new(LocalWorkspaceBackend, temp.path().to_path_buf()).unwrap();
+        let service_thread = spawn_v5_concurrent_service(
+            service,
+            &input,
+            &output,
+            protocol_v5::ServerHandshakeInfo::current(temp.path().display().to_string()),
+        );
+
+        wait_for_v5_stream_frame(&output, 1, protocol_v5::FrameType::ResetStream);
+        input.close();
+        service_thread.join().unwrap();
+        let frames = read_v5_frames(output.bytes());
+        let reset = frames
+            .iter()
+            .find(|frame| {
+                frame.stream_id == 1 && frame.frame_type == protocol_v5::FrameType::ResetStream
+            })
+            .expect("expired watch.start should be reset")
+            .decode_control::<protocol_v5::ResetStream>()
+            .unwrap();
+
+        assert_eq!(reset.code, protocol_v5::RESET_DEADLINE_EXCEEDED);
+        assert!(!frames.iter().any(|frame| {
+            frame.stream_id != 0 && frame.frame_type == protocol_v5::FrameType::Headers
+        }));
     }
 
     #[test]
@@ -20242,6 +22560,77 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    enum ContextProtocolOutcome {
+        Ok(RemoteResponse),
+        Disconnected,
+        Deadline,
+    }
+
+    struct ContextRecordingProtocolClient {
+        contexts: Arc<StdMutex<Vec<RemoteRequestContext>>>,
+        outcomes: StdMutex<VecDeque<ContextProtocolOutcome>>,
+        closes: Arc<AtomicUsize>,
+    }
+
+    impl ContextRecordingProtocolClient {
+        fn new(
+            contexts: Arc<StdMutex<Vec<RemoteRequestContext>>>,
+            outcomes: impl IntoIterator<Item = ContextProtocolOutcome>,
+            closes: Arc<AtomicUsize>,
+        ) -> Self {
+            Self {
+                contexts,
+                outcomes: StdMutex::new(outcomes.into_iter().collect()),
+                closes,
+            }
+        }
+    }
+
+    impl RemoteWorkspaceProtocolClient for ContextRecordingProtocolClient {
+        fn request(
+            &self,
+            request: RemoteRequest,
+            body: Vec<u8>,
+        ) -> std::result::Result<(RemoteResponse, Vec<u8>), RemoteClientError> {
+            let context = request.v5_request_context();
+            self.request_with_context(request, body, context)
+        }
+
+        fn request_with_context(
+            &self,
+            request: RemoteRequest,
+            _body: Vec<u8>,
+            context: RemoteRequestContext,
+        ) -> std::result::Result<(RemoteResponse, Vec<u8>), RemoteClientError> {
+            self.contexts.lock().unwrap().push(context);
+            match self
+                .outcomes
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("context protocol outcome")
+            {
+                ContextProtocolOutcome::Ok(response) => Ok((response, Vec::new())),
+                ContextProtocolOutcome::Disconnected => Err(RemoteClientError::Disconnected),
+                ContextProtocolOutcome::Deadline => {
+                    Err(RemoteClientError::RequestDeadlineExceeded {
+                        method: request.v5_method().to_string(),
+                        kind: RemoteRequestDeadlineKind::Inactivity,
+                    })
+                }
+            }
+        }
+
+        fn shutdown(&self) -> std::result::Result<(), RemoteClientError> {
+            Ok(())
+        }
+
+        fn close(&self) {
+            self.closes.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
     struct LifecycleProtocolClient {
         closes: Arc<AtomicUsize>,
         shutdowns: Arc<AtomicUsize>,
@@ -20715,12 +23104,15 @@ mod tests {
     ) -> protocol_v5::Frame {
         let started = Instant::now();
         loop {
-            if let Some(frame) = read_v5_frames(output.bytes()).into_iter().find(|frame| {
-                frame.stream_id == 0
+            let bytes = output.bytes();
+            let mut cursor = Cursor::new(bytes);
+            while let Ok(Some(frame)) = protocol_v5::read_frame(&mut cursor) {
+                if frame.stream_id == 0
                     && frame.frame_type == expected_frame_type
                     && frame.frame_sequence > after_sequence
-            }) {
-                return frame;
+                {
+                    return frame;
+                }
             }
             assert!(
                 started.elapsed() < timeout,
