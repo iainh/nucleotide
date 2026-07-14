@@ -443,6 +443,7 @@ What:
 
 - Small files may return metadata plus one `DATA` frame.
 - Larger files stream `DATA` chunks.
+- A read may stream up to the 256 MiB method limit unless the caller requests a smaller prefix; the per-frame body limit controls chunking and never truncates the complete response.
 - The final response includes bytes sent, content length if known, mtime, executable bit, file type and optional checksum.
 - The client may cancel once it has enough preview data or after a newer read supersedes it.
 - The server checks cancellation before and immediately after each bounded read and before and after each output enqueue. A chunk read concurrently with cancellation is discarded before emission.
