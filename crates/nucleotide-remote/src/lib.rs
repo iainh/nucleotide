@@ -1811,7 +1811,6 @@ pub struct RemoteWorkspaceBackendOptions {
     pub ssh_connect_timeout_secs: Option<u64>,
     pub ssh_extra_args: Vec<OsString>,
     pub ssh_control_path: Option<PathBuf>,
-    pub startup_timeout: Duration,
     pub use_local_service: bool,
 }
 
@@ -1835,7 +1834,6 @@ impl Default for RemoteWorkspaceBackendOptions {
             ssh_control_path: default_ssh_control_master_enabled()
                 .then(default_ssh_control_path)
                 .flatten(),
-            startup_timeout: DEFAULT_REMOTE_STARTUP_TIMEOUT,
             use_local_service: false,
         }
     }
@@ -2065,7 +2063,8 @@ pub fn remote_startup_deadline_was_exceeded(error: &anyhow::Error) -> bool {
 #[derive(Clone, Debug)]
 pub struct RemoteStartupContext {
     cancellation: WorkspaceCancellationToken,
-    deadline: Instant,
+    started: Instant,
+    timeout: Duration,
 }
 
 impl RemoteStartupContext {
@@ -2074,13 +2073,10 @@ impl RemoteStartupContext {
     }
 
     pub fn with_cancellation(cancellation: WorkspaceCancellationToken, timeout: Duration) -> Self {
-        let started = Instant::now();
-        let deadline = started
-            .checked_add(timeout)
-            .unwrap_or_else(|| started + DEFAULT_REMOTE_STARTUP_TIMEOUT);
         Self {
             cancellation,
-            deadline,
+            started: Instant::now(),
+            timeout,
         }
     }
 
@@ -2095,7 +2091,7 @@ impl RemoteStartupContext {
     pub fn check(&self) -> Result<()> {
         if self.cancellation.is_cancelled() {
             Err(RemoteStartupCancelled.into())
-        } else if Instant::now() >= self.deadline {
+        } else if self.started.elapsed() >= self.timeout {
             Err(RemoteStartupDeadlineExceeded.into())
         } else {
             Ok(())
@@ -2104,7 +2100,7 @@ impl RemoteStartupContext {
 
     pub fn remaining(&self) -> Result<Duration> {
         self.check()?;
-        Ok(self.deadline.saturating_duration_since(Instant::now()))
+        Ok(self.timeout.saturating_sub(self.started.elapsed()))
     }
 
     pub fn cap_timeout(&self, stage_timeout: Duration) -> Result<Duration> {
@@ -2160,7 +2156,7 @@ impl<'a> RemoteHelperManager<'a> {
         Self {
             options,
             progress: None,
-            startup: RemoteStartupContext::new(options.startup_timeout),
+            startup: RemoteStartupContext::new(DEFAULT_REMOTE_STARTUP_TIMEOUT),
         }
     }
 
@@ -2171,7 +2167,7 @@ impl<'a> RemoteHelperManager<'a> {
         Self {
             options,
             progress: Some(progress),
-            startup: RemoteStartupContext::new(options.startup_timeout),
+            startup: RemoteStartupContext::new(DEFAULT_REMOTE_STARTUP_TIMEOUT),
         }
     }
 
@@ -3053,7 +3049,7 @@ pub fn connect_workspace_backend_for_location(
     location: WorkspaceLocation,
     options: &RemoteWorkspaceBackendOptions,
 ) -> Result<WorkspaceBackendConnection> {
-    let startup = RemoteStartupContext::new(options.startup_timeout);
+    let startup = RemoteStartupContext::new(DEFAULT_REMOTE_STARTUP_TIMEOUT);
     connect_workspace_backend_for_location_with_optional_progress(location, options, None, &startup)
 }
 
@@ -3062,7 +3058,7 @@ pub fn connect_workspace_backend_for_location_with_progress(
     options: &RemoteWorkspaceBackendOptions,
     progress: &dyn Fn(RemoteDeploymentProgress),
 ) -> Result<WorkspaceBackendConnection> {
-    let startup = RemoteStartupContext::new(options.startup_timeout);
+    let startup = RemoteStartupContext::new(DEFAULT_REMOTE_STARTUP_TIMEOUT);
     connect_workspace_backend_for_location_with_optional_progress(
         location,
         options,
@@ -3077,8 +3073,10 @@ pub fn connect_workspace_backend_for_location_with_progress_and_cancellation(
     progress: &dyn Fn(RemoteDeploymentProgress),
     cancellation: &WorkspaceCancellationToken,
 ) -> Result<WorkspaceBackendConnection> {
-    let startup =
-        RemoteStartupContext::with_cancellation(cancellation.clone(), options.startup_timeout);
+    let startup = RemoteStartupContext::with_cancellation(
+        cancellation.clone(),
+        DEFAULT_REMOTE_STARTUP_TIMEOUT,
+    );
     connect_workspace_backend_for_location_with_progress_and_startup_context(
         location, options, progress, &startup,
     )
@@ -19124,6 +19122,13 @@ mod tests {
         completed_attempt.disarm();
         drop(completed_attempt);
         assert!(completed_context.check().is_ok());
+    }
+
+    #[test]
+    fn startup_context_preserves_large_timeout_without_shortening() {
+        let startup = RemoteStartupContext::new(Duration::MAX);
+
+        assert!(startup.remaining().unwrap() > DEFAULT_REMOTE_STARTUP_TIMEOUT);
     }
 
     #[test]

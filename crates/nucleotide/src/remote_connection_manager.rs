@@ -617,7 +617,7 @@ impl RemoteConnectionManagerView {
 
         let Some((generation, startup_context)) = self
             .connection_attempt
-            .begin(self.backend_options.startup_timeout)
+            .begin(nucleotide_remote::DEFAULT_REMOTE_STARTUP_TIMEOUT)
         else {
             return;
         };
