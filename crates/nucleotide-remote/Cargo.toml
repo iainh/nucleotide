@@ -25,6 +25,7 @@ prost.workspace = true
 regex.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+sha2 = "0.10"
 tempfile.workspace = true
 tokio.workspace = true
 tracing.workspace = true

@@ -32,7 +32,7 @@ use nucleotide_workspace::{
     classify_workspace_location, ssh_display_path, wsl_display_path,
 };
 
-use crate::application::workspace_backend_for_project_directory_with_progress;
+use crate::application::workspace_backend_for_project_directory_with_options_and_progress;
 use crate::file_tree::icons::chevron_icon;
 use crate::remote_connections::{RemoteConnectionStore, target_to_string, valid_connection_name};
 
@@ -196,11 +196,56 @@ enum RemoteManagerTaskEvent {
     },
 }
 
+#[derive(Debug, Default)]
+struct ConnectionAttemptState {
+    generation: u64,
+    active: bool,
+}
+
+impl ConnectionAttemptState {
+    fn begin(&mut self) -> Option<u64> {
+        if self.active {
+            return None;
+        }
+
+        self.generation = self.generation.wrapping_add(1).max(1);
+        self.active = true;
+        Some(self.generation)
+    }
+
+    fn invalidate(&mut self) {
+        self.generation = self.generation.wrapping_add(1).max(1);
+        self.active = false;
+    }
+
+    fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    fn is_current(&self, generation: u64) -> bool {
+        self.generation == generation
+    }
+
+    fn is_active(&self, generation: u64) -> bool {
+        self.active && self.is_current(generation)
+    }
+
+    fn finish(&mut self, generation: u64) -> bool {
+        if !self.is_active(generation) {
+            return false;
+        }
+
+        self.active = false;
+        true
+    }
+}
+
 pub struct RemoteConnectionManagerView {
     focus_handle: FocusHandle,
     save_connection_focus_handle: FocusHandle,
     core: gpui::WeakEntity<crate::Core>,
     handle: tokio::runtime::Handle,
+    backend_options: nucleotide_remote::RemoteWorkspaceBackendOptions,
 
     protocol: RemoteConnectionProtocol,
     protocol_menu_open: bool,
@@ -219,8 +264,7 @@ pub struct RemoteConnectionManagerView {
     directory_scroll_handle: ScrollHandle,
     directory_scrollbar_state: ScrollbarState,
     status: Option<EditorStatus>,
-    connection_generation: u64,
-    connecting: bool,
+    connection_attempt: ConnectionAttemptState,
     save_on_open: bool,
 }
 
@@ -240,6 +284,7 @@ impl RemoteConnectionManagerView {
     pub fn new(
         core: gpui::WeakEntity<crate::Core>,
         handle: tokio::runtime::Handle,
+        backend_options: nucleotide_remote::RemoteWorkspaceBackendOptions,
         cx: &mut Context<Self>,
     ) -> Self {
         let server_input_view = Self::new_server_input(cx);
@@ -250,11 +295,12 @@ impl RemoteConnectionManagerView {
         let directory_scroll_handle = ScrollHandle::new();
         let directory_scrollbar_state = ScrollbarState::new(directory_scroll_handle.clone());
 
-        Self {
+        let view = Self {
             focus_handle,
             save_connection_focus_handle,
             core,
             handle,
+            backend_options,
             protocol: RemoteConnectionProtocol::Ssh,
             protocol_menu_open: false,
             protocol_menu: None,
@@ -271,10 +317,40 @@ impl RemoteConnectionManagerView {
             directory_scroll_handle,
             directory_scrollbar_state,
             status: None,
-            connection_generation: 0,
-            connecting: false,
+            connection_attempt: ConnectionAttemptState::default(),
             save_on_open: false,
-        }
+        };
+        view.load_wsl_distribution_suggestions(cx);
+        view
+    }
+
+    fn invalidate_connection_attempt(&mut self) {
+        self.connection_attempt.invalidate();
+    }
+
+    fn load_wsl_distribution_suggestions(&self, cx: &mut Context<Self>) {
+        let task = self.handle.spawn_blocking(wsl_distributions);
+        cx.spawn(async move |this, cx| {
+            let distributions = match task.await {
+                Ok(distributions) => distributions,
+                Err(error) => {
+                    nucleotide_logging::warn!(
+                        error = %error,
+                        "WSL distribution discovery task failed"
+                    );
+                    return;
+                }
+            };
+
+            _ = this.update(cx, |view, cx| {
+                view.suggestions = with_wsl_distribution_suggestions(
+                    std::mem::take(&mut view.suggestions),
+                    distributions,
+                );
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn filtered_suggestions(&self) -> Vec<RemoteServerSuggestion> {
@@ -315,6 +391,7 @@ impl RemoteConnectionManagerView {
 
     fn set_protocol(&mut self, protocol: RemoteConnectionProtocol, cx: &mut Context<Self>) {
         if self.protocol != protocol {
+            self.invalidate_connection_attempt();
             self.protocol = protocol;
             self.close_protocol_menu(cx);
             self.suggestion_selection = 0;
@@ -345,6 +422,7 @@ impl RemoteConnectionManagerView {
     ) {
         match event {
             TextInputEvent::Changed(value) => {
+                self.invalidate_connection_attempt();
                 self.server_input = value.to_string();
                 self.suggestion_selection = 0;
                 self.accepted_suggestion = false;
@@ -447,6 +525,7 @@ impl RemoteConnectionManagerView {
     }
 
     fn apply_suggestion(&mut self, suggestion: RemoteServerSuggestion, cx: &mut Context<Self>) {
+        self.invalidate_connection_attempt();
         self.protocol = suggestion.protocol;
         self.set_server_input(suggestion.insert_text, cx);
         self.suggestion_selection = 0;
@@ -521,16 +600,16 @@ impl RemoteConnectionManagerView {
             }
         };
 
-        self.connection_generation = self.connection_generation.wrapping_add(1).max(1);
-        let generation = self.connection_generation;
-        self.connecting = true;
+        let Some(generation) = self.connection_attempt.begin() else {
+            return;
+        };
         self.status = Some(EditorStatus {
             status: "Connecting to remote target".to_string(),
             severity: Severity::Info,
         });
         self.browse_session = None;
 
-        let options = nucleotide_remote::RemoteWorkspaceBackendOptions::from_environment();
+        let options = self.backend_options.clone();
         let handle = self.handle.clone();
         let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
         let progress_tx = event_tx.clone();
@@ -563,7 +642,7 @@ impl RemoteConnectionManagerView {
                         generation: event_generation,
                         message,
                     } => {
-                        if view.connection_generation == event_generation {
+                        if view.connection_attempt.is_active(event_generation) {
                             view.status = Some(EditorStatus {
                                 status: message,
                                 severity: Severity::Info,
@@ -576,11 +655,10 @@ impl RemoteConnectionManagerView {
                         generation: event_generation,
                         result,
                     } => {
-                        if view.connection_generation != event_generation {
+                        if !view.connection_attempt.finish(event_generation) {
                             return true;
                         }
 
-                        view.connecting = false;
                         match result {
                             Ok(connection) => {
                                 let root = remote_directory_root_from_listing(
@@ -728,7 +806,7 @@ impl RemoteConnectionManagerView {
             return;
         };
         let backend = session.backend.clone();
-        let generation = self.connection_generation;
+        let generation = self.connection_attempt.generation();
 
         let Some(node) = remote_tree_node_mut(&mut session.root, &path) else {
             return;
@@ -743,7 +821,6 @@ impl RemoteConnectionManagerView {
         }
 
         node.loading = true;
-        self.connecting = true;
         self.status = Some(EditorStatus {
             status: format!("Loading {}", path.display()),
             severity: Severity::Info,
@@ -754,11 +831,10 @@ impl RemoteConnectionManagerView {
         cx.spawn(async move |this, cx| {
             let listing = backend.list_dir(&path_for_listing).await;
             _ = this.update(cx, |view, cx| {
-                if view.connection_generation != generation {
+                if !view.connection_attempt.is_current(generation) {
                     return;
                 }
 
-                view.connecting = false;
                 match listing {
                     Ok(listing) => {
                         if let Some(session) = &mut view.browse_session
@@ -812,8 +888,12 @@ impl RemoteConnectionManagerView {
 
         if let Some(core) = self.core.upgrade() {
             let target = target_to_string(&path);
+            let options = self.backend_options.clone();
             core.update(cx, |_core, cx| {
-                cx.emit(crate::Update::OpenRemote(target));
+                cx.emit(crate::Update::OpenRemoteWithOptions {
+                    input: target,
+                    options,
+                });
             });
         }
 
@@ -833,7 +913,7 @@ impl RemoteConnectionManagerView {
     }
 
     fn cancel(&mut self, cx: &mut Context<Self>) {
-        self.connection_generation = self.connection_generation.wrapping_add(1).max(1);
+        self.invalidate_connection_attempt();
         cx.emit(DismissEvent);
     }
 
@@ -1579,10 +1659,13 @@ fn connect_browse_session(
     };
 
     progress("Starting remote browse session".to_string());
-    let backend =
-        workspace_backend_for_project_directory_with_progress(Some(&display_home), &|p| {
+    let backend = workspace_backend_for_project_directory_with_options_and_progress(
+        Some(&display_home),
+        &options,
+        &|p| {
             progress(p.message());
-        })?;
+        },
+    )?;
 
     progress("Loading remote home directory".to_string());
     let listing = futures_executor::block_on(backend.list_dir(&display_home)).map_err(|error| {
@@ -1614,10 +1697,17 @@ fn resolve_ssh_home(
     };
     let command =
         nucleotide_remote::ssh_non_tty_remote_command(ssh_target, "printf '%s\\n' \"$HOME\"");
-    let output = command
-        .command()
-        .output()
-        .with_context(|| format!("failed to run {}", command.display_context()))?;
+    let mut process = command.command();
+    process.stdin(std::process::Stdio::null());
+    let output = nucleotide_process::output_with_limits(
+        &mut process,
+        nucleotide_process::OutputLimits::new(
+            nucleotide_remote::REMOTE_STARTUP_PROBE_TIMEOUT,
+            nucleotide_remote::REMOTE_STARTUP_OUTPUT_LIMIT,
+            nucleotide_remote::REMOTE_STARTUP_OUTPUT_LIMIT,
+        ),
+    )
+    .with_context(|| format!("failed to run {}", command.display_context()))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -1640,17 +1730,25 @@ fn resolve_ssh_home(
 }
 
 fn resolve_wsl_home(distro: &str) -> Result<PathBuf> {
-    let output = nucleotide_process::command("wsl.exe")
-        .args([
-            OsString::from("--distribution"),
-            OsString::from(distro),
-            OsString::from("--exec"),
-            OsString::from("sh"),
-            OsString::from("-lc"),
-            OsString::from("printf '%s\\n' \"$HOME\""),
-        ])
-        .output()
-        .with_context(|| "failed to run wsl.exe for home directory discovery")?;
+    let mut command = nucleotide_process::command("wsl.exe");
+    command.args([
+        OsString::from("--distribution"),
+        OsString::from(distro),
+        OsString::from("--exec"),
+        OsString::from("sh"),
+        OsString::from("-lc"),
+        OsString::from("printf '%s\\n' \"$HOME\""),
+    ]);
+    command.stdin(std::process::Stdio::null());
+    let output = nucleotide_process::output_with_limits(
+        &mut command,
+        nucleotide_process::OutputLimits::new(
+            nucleotide_remote::REMOTE_STARTUP_PROBE_TIMEOUT,
+            nucleotide_remote::REMOTE_STARTUP_OUTPUT_LIMIT,
+            nucleotide_remote::REMOTE_STARTUP_OUTPUT_LIMIT,
+        ),
+    )
+    .with_context(|| "failed to run wsl.exe for home directory discovery")?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -1698,8 +1796,15 @@ fn load_remote_server_suggestions() -> Vec<RemoteServerSuggestion> {
             .into_iter()
             .map(|host| ssh_host_suggestion(host, RemoteSuggestionSource::KnownHost)),
     );
+    dedupe_suggestions(suggestions)
+}
+
+fn with_wsl_distribution_suggestions(
+    mut suggestions: Vec<RemoteServerSuggestion>,
+    distributions: Vec<String>,
+) -> Vec<RemoteServerSuggestion> {
     suggestions.extend(
-        wsl_distributions()
+        distributions
             .into_iter()
             .map(|distro| RemoteServerSuggestion {
                 protocol: RemoteConnectionProtocol::Wsl,
@@ -1710,7 +1815,6 @@ fn load_remote_server_suggestions() -> Vec<RemoteServerSuggestion> {
                 target_path: None,
             }),
     );
-
     dedupe_suggestions(suggestions)
 }
 
@@ -1807,15 +1911,33 @@ fn known_hosts() -> Vec<String> {
         .unwrap_or_default()
 }
 
+#[cfg(target_os = "windows")]
 fn wsl_distributions() -> Vec<String> {
-    let output = nucleotide_process::command("wsl.exe")
-        .args([OsString::from("--list"), OsString::from("--quiet")])
-        .output();
+    use std::time::Duration;
 
-    match output {
-        Ok(output) if output.status.success() => parse_wsl_distribution_list(&output.stdout),
-        _ => Vec::new(),
-    }
+    const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(3);
+
+    let mut command = nucleotide_process::command("wsl.exe");
+    command
+        .args([OsString::from("--list"), OsString::from("--quiet")])
+        .stdin(std::process::Stdio::null());
+    nucleotide_process::output_with_limits(
+        &mut command,
+        nucleotide_process::OutputLimits::new(
+            DISCOVERY_TIMEOUT,
+            nucleotide_remote::REMOTE_STARTUP_OUTPUT_LIMIT,
+            nucleotide_remote::REMOTE_STARTUP_OUTPUT_LIMIT,
+        ),
+    )
+    .ok()
+    .filter(|output| output.status.success())
+    .map(|output| parse_wsl_distribution_list(&output.stdout))
+    .unwrap_or_default()
+}
+
+#[cfg(not(target_os = "windows"))]
+fn wsl_distributions() -> Vec<String> {
+    Vec::new()
 }
 
 fn parse_ssh_server_input(input: &str) -> Option<SshWorkspaceTarget> {
@@ -1926,6 +2048,7 @@ fn normalize_known_host(value: &str) -> Option<String> {
     Some(value.to_string())
 }
 
+#[cfg(any(target_os = "windows", test))]
 fn parse_wsl_distribution_list(stdout: &[u8]) -> Vec<String> {
     decode_wsl_stdout(stdout)
         .lines()
@@ -1947,12 +2070,19 @@ fn decode_wsl_stdout(stdout: &[u8]) -> String {
                 .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
                 .collect::<Vec<_>>();
             if let Ok(decoded) = String::from_utf16(&units) {
-                return decoded.replace('\r', "");
+                return decoded
+                    .strip_prefix('\u{feff}')
+                    .unwrap_or(&decoded)
+                    .replace('\r', "");
             }
         }
     }
 
-    String::from_utf8_lossy(stdout).replace(['\0', '\r'], "")
+    let decoded = String::from_utf8_lossy(stdout);
+    decoded
+        .strip_prefix('\u{feff}')
+        .unwrap_or(&decoded)
+        .replace(['\0', '\r'], "")
 }
 
 fn remote_directory_root_from_listing(
@@ -2136,6 +2266,52 @@ mod tests {
     use nucleotide_workspace::{DirectoryEntry, FileStat};
 
     #[test]
+    fn connection_attempt_state_rejects_duplicates_and_stale_completion() {
+        let mut state = ConnectionAttemptState::default();
+
+        let first = state.begin().expect("first attempt should start");
+        assert_eq!(state.begin(), None);
+
+        state.invalidate();
+        let replacement = state.begin().expect("replacement attempt should start");
+        assert_ne!(replacement, first);
+        assert!(!state.finish(first));
+        assert!(state.is_active(replacement));
+        assert!(state.finish(replacement));
+        assert!(!state.is_active(replacement));
+    }
+
+    #[test]
+    fn wsl_distributions_merge_without_blocking_suggestion_loading() {
+        let initial = vec![ssh_host_suggestion(
+            "devbox".to_string(),
+            RemoteSuggestionSource::SshConfig,
+        )];
+
+        let suggestions = with_wsl_distribution_suggestions(
+            initial,
+            vec![
+                "Ubuntu".to_string(),
+                "Ubuntu".to_string(),
+                "Debian".to_string(),
+            ],
+        );
+
+        assert_eq!(
+            suggestions
+                .iter()
+                .filter(|suggestion| suggestion.protocol == RemoteConnectionProtocol::Wsl)
+                .map(|suggestion| suggestion.insert_text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Debian", "Ubuntu"]
+        );
+        assert!(suggestions.iter().any(|suggestion| {
+            suggestion.protocol == RemoteConnectionProtocol::Ssh
+                && suggestion.insert_text == "devbox"
+        }));
+    }
+
+    #[test]
     fn ssh_config_alias_parser_skips_wildcards_and_negations() {
         let aliases = parse_ssh_config_aliases(
             r#"
@@ -2170,6 +2346,19 @@ mod tests {
         let distros = parse_wsl_distribution_list(&output);
 
         assert_eq!(distros, vec!["Debian", "Ubuntu-24.04"]);
+    }
+
+    #[test]
+    fn wsl_distribution_parser_strips_utf16_le_bom() {
+        let output = "\u{feff}Ubuntu-24.04\r\nDebian\r\n"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>();
+
+        let distros = parse_wsl_distribution_list(&output);
+
+        assert_eq!(distros, vec!["Debian", "Ubuntu-24.04"]);
+        assert!(distros.iter().all(|distro| !distro.starts_with('\u{feff}')));
     }
 
     #[test]

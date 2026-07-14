@@ -104,6 +104,10 @@ pub enum Update {
     OpenFile(std::path::PathBuf),
     OpenDirectory(std::path::PathBuf),
     OpenRemote(String),
+    OpenRemoteWithOptions {
+        input: String,
+        options: nucleotide_remote::RemoteWorkspaceBackendOptions,
+    },
     SelectionChanged {
         doc_id: helix_view::DocumentId,
         view_id: helix_view::ViewId,
@@ -156,6 +160,9 @@ impl std::fmt::Debug for Update {
                 write!(f, "FileTreeSearchSubmitted({query:?})")
             }
             Update::OpenRemote(input) => write!(f, "OpenRemote({input:?})"),
+            Update::OpenRemoteWithOptions { input, .. } => {
+                write!(f, "OpenRemoteWithOptions({input:?})")
+            }
             Update::RegexSelectionSubmitted { action, regex } => {
                 write!(f, "RegexSelectionSubmitted({action:?}, {regex:?})")
             }

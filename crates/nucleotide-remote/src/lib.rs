@@ -2,6 +2,7 @@
 // ABOUTME: Keeps WSL, SSH, and local service transports on one request model
 
 pub mod protocol_v5;
+mod v5_budget;
 
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
@@ -26,26 +27,30 @@ use nucleotide_workspace::{
 use prost::Message as ProstMessage;
 use regex::RegexBuilder;
 use serde::{Deserialize, Serialize, Serializer, de::DeserializeOwned};
+use sha2::{Digest as _, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::error::Error;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::hash::{Hash, Hasher};
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Seek, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicBool, Ordering},
+    Arc, Mutex, Weak,
+    atomic::{AtomicBool, AtomicU64, Ordering},
     mpsc,
 };
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncWriteExt;
+use v5_budget::{V5Budgeted, V5ByteReservation, V5ConnectionByteBudget};
 
 pub const PROTOCOL_VERSION: u32 = protocol_v5::PROTOCOL_MAJOR;
 pub const FRAME_VERSION: u16 = protocol_v5::FRAME_HEADER_VERSION;
 pub const MAX_FRAME_BODY_LEN: u64 = protocol_v5::MAX_NEGOTIATED_FRAME_BODY_LEN as u64;
 pub const DEFAULT_SSH_CONNECT_TIMEOUT_SECS: u64 = 30;
+pub const REMOTE_STARTUP_PROBE_TIMEOUT: Duration = Duration::from_secs(30);
+pub const REMOTE_STARTUP_OUTPUT_LIMIT: usize = 64 * 1024;
 const REMOTE_REQUEST_SLOW_LOG_MS: u64 = 500;
 const REMOTE_TRANSPORT_WAIT_SLOW_LOG_MS: u64 = 100;
 const REMOTE_QUEUE_SLOW_LOG_MS: u64 = 100;
@@ -57,7 +62,31 @@ const V5_FILE_BODY_WORKER_LIMIT: usize = 8;
 const V5_SEARCH_WORKER_LIMIT: usize = 2;
 const V5_GIT_ENV_WORKER_LIMIT: usize = 4;
 const V5_PROCESS_WORKER_LIMIT: usize = 4;
+const V5_DEFAULT_WATCH_EVENTS_PER_BATCH: usize = 500;
+const V5_MAX_WATCH_EVENTS_PER_BATCH: usize = 4_096;
+const V5_WATCH_BATCH_PAYLOAD_BUDGET: usize = 48 * 1024;
+const V5_WATCH_DELIVERY_CAPACITY: usize = 64;
+const V5_WATCH_BACKLOG_LIMIT: usize = 64;
+const V5_SERVE_OUTPUT_EVENT_CAPACITY: usize = 64;
+const V5_SERVE_OUTPUT_EVENT_MAX_RETAINED_BYTES: usize = 64 * 1024;
+const V5_SERVE_COMPLETION_BYTE_BUDGET: usize = 64 * 1024 * 1024;
+const V5_SERVE_SCHEDULER_BACKLOG_LIMIT: usize = 64;
+const V5_SERVE_INBOUND_EVENT_CAPACITY: usize = 8;
+const V5_NATIVE_WATCH_EVENT_CAPACITY: usize = 256;
+const V5_MAX_ACCUMULATED_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
+const V5_MAX_RAW_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+const V5_MAX_REQUEST_PAYLOAD_BYTES: usize = 4 * 1024 * 1024;
+const V5_MAX_REQUEST_BODY_BYTES: usize = 256 * 1024 * 1024;
+const V5_REQUEST_CONNECTION_BYTE_BUDGET: usize =
+    V5_MAX_REQUEST_PAYLOAD_BYTES + V5_MAX_REQUEST_BODY_BYTES;
+const V5_RESPONSE_CONNECTION_BYTE_BUDGET: usize = V5_MAX_ACCUMULATED_RESPONSE_BYTES;
+const V5_CLIENT_WRITE_BATCH_FRAMES: usize = 64;
+const V5_SERVER_WRITE_BATCH_FRAMES: usize = 64;
+const V5_CHILD_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
+const REMOTE_HELPER_TRANSFER_TIMEOUT: Duration = Duration::from_secs(120);
 const DEFAULT_SSH_CONTROL_PERSIST: &str = "10m";
+const DEFAULT_SSH_SERVER_ALIVE_INTERVAL_SECS: u32 = 15;
+const DEFAULT_SSH_SERVER_ALIVE_COUNT_MAX: u32 = 3;
 const DEFAULT_RELEASE_TAG_PREFIX: &str = "v";
 const RELEASE_CHECKSUMS_ASSET: &str = "SHA256SUMS";
 
@@ -524,6 +553,14 @@ fn append_ssh_connection_args(args: &mut Vec<OsString>, target: &SshTarget) {
     args.push(OsString::from("ConnectionAttempts=1"));
     args.push(OsString::from("-o"));
     args.push(OsString::from("StrictHostKeyChecking=accept-new"));
+    args.push(OsString::from("-o"));
+    args.push(OsString::from(format!(
+        "ServerAliveInterval={DEFAULT_SSH_SERVER_ALIVE_INTERVAL_SECS}"
+    )));
+    args.push(OsString::from("-o"));
+    args.push(OsString::from(format!(
+        "ServerAliveCountMax={DEFAULT_SSH_SERVER_ALIVE_COUNT_MAX}"
+    )));
 
     if let Some(timeout_secs) = target.connect_timeout_secs {
         args.push(OsString::from("-o"));
@@ -613,14 +650,96 @@ fn terminal_env_entry_is_valid(key: &str, value: &str) -> bool {
     !key.is_empty() && !key.contains('=') && !key.contains('\0') && !value.contains('\0')
 }
 
+trait V5TransportAbort: Send + Sync {
+    fn abort(&self);
+}
+
+struct ChildProcessV5Control {
+    child: Mutex<Option<Child>>,
+    child_id: u32,
+    abort_started: AtomicBool,
+    reaped: Arc<AtomicBool>,
+}
+
+impl ChildProcessV5Control {
+    fn new(child: Child) -> Self {
+        let child_id = child.id();
+        Self {
+            child: Mutex::new(Some(child)),
+            child_id,
+            abort_started: AtomicBool::new(false),
+            reaped: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    fn child_id(&self) -> u32 {
+        self.child_id
+    }
+
+    fn abort_child(&self) {
+        if self
+            .abort_started
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+
+        let mut child = self
+            .child
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        let Some(mut child) = child.take() else {
+            self.reaped.store(true, Ordering::Release);
+            return;
+        };
+
+        // Killing is a prompt, non-waiting syscall. Reaping can block, so leave that to a
+        // detached thread and never make transport close wait for child teardown.
+        let _ = child.kill();
+        let reaped = Arc::clone(&self.reaped);
+        if std::thread::Builder::new()
+            .name("nucleotide-v5-child-reaper".to_string())
+            .spawn(move || {
+                let _ = child.wait();
+                reaped.store(true, Ordering::Release);
+            })
+            .is_err()
+        {
+            tracing::warn!(
+                child_id = self.child_id,
+                "Failed to start v5 child reaper after terminating remote service"
+            );
+        }
+    }
+
+    #[cfg(test)]
+    fn was_reaped(&self) -> bool {
+        self.reaped.load(Ordering::Acquire)
+    }
+}
+
+impl V5TransportAbort for ChildProcessV5Control {
+    fn abort(&self) {
+        self.abort_child();
+    }
+}
+
+impl Drop for ChildProcessV5Control {
+    fn drop(&mut self) {
+        self.abort_child();
+    }
+}
+
 pub struct ChildProcessV5Writer {
-    child: Child,
     writer: ChildStdin,
+    control: Arc<ChildProcessV5Control>,
 }
 
 impl ChildProcessV5Writer {
     pub fn child_id(&self) -> u32 {
-        self.child.id()
+        self.control.child_id()
     }
 }
 
@@ -636,16 +755,16 @@ impl Write for ChildProcessV5Writer {
 
 impl Drop for ChildProcessV5Writer {
     fn drop(&mut self) {
-        if matches!(self.child.try_wait(), Ok(None)) {
-            let _ = self.child.kill();
-            let _ = self.child.wait();
-        }
+        self.control.abort();
     }
 }
 
 fn spawn_child_process_v5_io(
     spec: &RemoteServiceCommand,
-) -> io::Result<protocol_v5::FramedIo<ChildStdout, ChildProcessV5Writer>> {
+) -> io::Result<(
+    protocol_v5::FramedIo<ChildStdout, ChildProcessV5Writer>,
+    Arc<ChildProcessV5Control>,
+)> {
     let mut command = spec.command();
     command
         .stdin(Stdio::piped())
@@ -660,10 +779,17 @@ fn spawn_child_process_v5_io(
         .stdout
         .take()
         .ok_or_else(|| io::Error::other("remote service child did not expose stdout"))?;
+    let control = Arc::new(ChildProcessV5Control::new(child));
 
-    Ok(protocol_v5::FramedIo::new(
-        reader,
-        ChildProcessV5Writer { child, writer },
+    Ok((
+        protocol_v5::FramedIo::new(
+            reader,
+            ChildProcessV5Writer {
+                writer,
+                control: Arc::clone(&control),
+            },
+        ),
+        control,
     ))
 }
 
@@ -841,26 +967,31 @@ impl RemoteRequest {
             | Self::DeletePath { .. }
             | Self::CopyPath { .. } => {
                 options.idempotency = protocol_v5::Idempotency::Mutation;
-                options.priority = protocol_v5::Priority::ForegroundDocument;
+                options.priority = protocol_v5::Priority::UserInput;
             }
             Self::RunProcess(_) => {
                 options.idempotency = protocol_v5::Idempotency::Process;
                 options.priority = protocol_v5::Priority::LspSupport;
             }
             Self::FileSearch(_) | Self::TextSearch(_) => {
-                options.priority = protocol_v5::Priority::ForegroundDocument;
+                options.priority = protocol_v5::Priority::Background;
                 options.cancellation_group = self.v5_method().to_string();
             }
             Self::ListDir { .. } | Self::ListDirs { .. } => {
                 options.priority = protocol_v5::Priority::VisibleFileTree;
             }
-            Self::Stat { .. }
-            | Self::FindAncestorFile { .. }
-            | Self::ReadFile { .. }
-            | Self::ProjectEnvironment { .. }
-            | Self::GitHead { .. }
-            | Self::GitStatus { .. }
-            | Self::Shutdown => {}
+            Self::Stat { .. } | Self::ReadFile { .. } => {
+                options.priority = protocol_v5::Priority::ForegroundDocument;
+            }
+            Self::FindAncestorFile { .. } | Self::ProjectEnvironment { .. } => {
+                options.priority = protocol_v5::Priority::LspSupport;
+            }
+            Self::GitHead { .. } | Self::GitStatus { .. } => {
+                options.priority = protocol_v5::Priority::Background;
+            }
+            Self::Shutdown => {
+                options.priority = protocol_v5::Priority::UserInput;
+            }
         }
         options
     }
@@ -2068,40 +2199,33 @@ impl<'a> RemoteHelperManager<'a> {
                 .map(|duration| duration.as_nanos())
                 .unwrap_or_default()
         );
-        let script = concat!(
-            "set -eu\n",
-            "dir=$1\n",
-            "tmp=$2\n",
-            "final=$3\n",
-            "mkdir -p \"$dir\"\n",
-            "chmod 700 \"$dir\"\n",
-            "cat > \"$tmp\"\n",
-            "chmod 755 \"$tmp\"\n",
-            "mv -f \"$tmp\" \"$final\"\n",
-        );
-        let remote_command = format!(
-            "sh -lc {} sh {} {} {}",
-            quote_posix_shell(script),
-            quote_posix_shell(&helper_dir),
-            quote_posix_shell(&tmp_path),
-            quote_posix_shell(&helper_path)
-        );
-        let spec = transport.command(remote_command);
-        let local_file = std::fs::File::open(local_helper)
+        let mut local_file = std::fs::File::open(local_helper)
             .with_context(|| format!("failed to open {}", local_helper.display()))?;
-        let output = spec
-            .command()
-            .stdin(Stdio::from(local_file))
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .with_context(|| {
-                format!(
-                    "failed to run helper upload command for {}: {}",
-                    transport.description(),
-                    spec.display_context()
-                )
-            })?;
+        let expected_sha256 = sha256_reader(&mut local_file)
+            .with_context(|| format!("failed to hash {}", local_helper.display()))?;
+        local_file
+            .rewind()
+            .with_context(|| format!("failed to rewind {}", local_helper.display()))?;
+        let remote_command =
+            remote_helper_upload_command(&helper_dir, &tmp_path, &helper_path, &expected_sha256);
+        let spec = transport.command(remote_command);
+        let mut command = spec.command();
+        command.stdin(Stdio::from(local_file));
+        let output = nucleotide_process::output_with_limits(
+            &mut command,
+            nucleotide_process::OutputLimits::new(
+                REMOTE_HELPER_TRANSFER_TIMEOUT,
+                REMOTE_STARTUP_OUTPUT_LIMIT,
+                REMOTE_STARTUP_OUTPUT_LIMIT,
+            ),
+        )
+        .with_context(|| {
+            format!(
+                "failed to run helper upload command for {}: {}",
+                transport.description(),
+                spec.display_context()
+            )
+        })?;
 
         if output.status.success() {
             Ok(())
@@ -2141,18 +2265,23 @@ impl<'a> RemoteHelperManager<'a> {
             checksums_url,
             asset_name,
         );
-        let output = transport
-            .command(remote_command)
-            .command()
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .with_context(|| {
-                format!(
-                    "failed to run helper download command for {}",
-                    transport.description()
-                )
-            })?;
+        let spec = transport.command(remote_command);
+        let mut command = spec.command();
+        command.stdin(Stdio::null());
+        let output = nucleotide_process::output_with_limits(
+            &mut command,
+            nucleotide_process::OutputLimits::new(
+                REMOTE_HELPER_TRANSFER_TIMEOUT,
+                REMOTE_STARTUP_OUTPUT_LIMIT,
+                REMOTE_STARTUP_OUTPUT_LIMIT,
+            ),
+        )
+        .with_context(|| {
+            format!(
+                "failed to run helper download command for {}",
+                transport.description()
+            )
+        })?;
 
         if output.status.success() {
             Ok(())
@@ -2173,7 +2302,17 @@ impl<'a> RemoteHelperManager<'a> {
         remote_command: &str,
     ) -> Result<String> {
         let spec = transport.command(remote_command.to_string());
-        let output = spec.command().output().with_context(|| {
+        let mut command = spec.command();
+        command.stdin(Stdio::null());
+        let output = nucleotide_process::output_with_limits(
+            &mut command,
+            nucleotide_process::OutputLimits::new(
+                REMOTE_STARTUP_PROBE_TIMEOUT,
+                REMOTE_STARTUP_OUTPUT_LIMIT,
+                REMOTE_STARTUP_OUTPUT_LIMIT,
+            ),
+        )
+        .with_context(|| {
             format!(
                 "failed to run command on {} while {label}: {}",
                 transport.description(),
@@ -2906,6 +3045,66 @@ fn posix_parent(path: &str) -> String {
     }
 }
 
+fn sha256_reader(reader: &mut impl Read) -> io::Result<String> {
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            return Ok(format!("{:x}", hasher.finalize()));
+        }
+        hasher.update(&buffer[..read]);
+    }
+}
+
+fn remote_helper_upload_command(
+    helper_dir: &str,
+    tmp_path: &str,
+    helper_path: &str,
+    expected_sha256: &str,
+) -> String {
+    let script = concat!(
+        "set -eu\n",
+        "dir=$1\n",
+        "tmp=$2\n",
+        "final=$3\n",
+        "expected=$4\n",
+        "hash_file() {\n",
+        "  file=$1\n",
+        "  if command -v sha256sum >/dev/null 2>&1; then\n",
+        "    sha256sum \"$file\" | awk '{print $1}'\n",
+        "  elif command -v shasum >/dev/null 2>&1; then\n",
+        "    shasum -a 256 \"$file\" | awk '{print $1}'\n",
+        "  else\n",
+        "    echo \"neither sha256sum nor shasum is available for helper verification\" >&2\n",
+        "    return 127\n",
+        "  fi\n",
+        "}\n",
+        "cleanup() { rm -f \"$tmp\"; }\n",
+        "trap cleanup EXIT\n",
+        "trap \"exit 1\" INT TERM HUP\n",
+        "mkdir -p \"$dir\"\n",
+        "chmod 700 \"$dir\"\n",
+        "cat > \"$tmp\"\n",
+        "actual=$(hash_file \"$tmp\")\n",
+        "if [ \"$expected\" != \"$actual\" ]; then\n",
+        "  echo \"checksum mismatch for uploaded helper\" >&2\n",
+        "  exit 1\n",
+        "fi\n",
+        "chmod 755 \"$tmp\"\n",
+        "mv -f \"$tmp\" \"$final\"\n",
+    );
+
+    format!(
+        "sh -lc {} sh {} {} {} {}",
+        quote_posix_shell(script),
+        quote_posix_shell(helper_dir),
+        quote_posix_shell(tmp_path),
+        quote_posix_shell(helper_path),
+        quote_posix_shell(expected_sha256)
+    )
+}
+
 fn remote_helper_download_command(
     helper_dir: &str,
     tmp_path: &str,
@@ -2947,7 +3146,8 @@ fn remote_helper_download_command(
         "  fi\n",
         "}\n",
         "cleanup() { rm -f \"$tmp\" \"$sums\"; }\n",
-        "trap cleanup EXIT INT TERM HUP\n",
+        "trap cleanup EXIT\n",
+        "trap \"exit 1\" INT TERM HUP\n",
         "mkdir -p \"$dir\"\n",
         "chmod 700 \"$dir\"\n",
         "rm -f \"$tmp\" \"$sums\"\n",
@@ -3402,6 +3602,9 @@ pub enum RemoteClientError {
     Io(io::Error),
     Json(serde_json::Error),
     Disconnected,
+    TransportClosed { cause: String },
+    OutcomeUnknown { method: String, cause: String },
+    ResponseIncomplete { cause: String },
     Protocol(String),
     Remote(RemoteError),
 }
@@ -3412,6 +3615,17 @@ impl fmt::Display for RemoteClientError {
             Self::Io(error) => write!(formatter, "remote transport I/O failed: {error}"),
             Self::Json(error) => write!(formatter, "remote protocol JSON failed: {error}"),
             Self::Disconnected => formatter.write_str("remote service disconnected"),
+            Self::TransportClosed { cause } => {
+                write!(formatter, "remote transport closed: {cause}")
+            }
+            Self::OutcomeUnknown { method, cause } => write!(
+                formatter,
+                "remote {method} outcome is unknown after transport failure: {cause}"
+            ),
+            Self::ResponseIncomplete { cause } => write!(
+                formatter,
+                "remote response was incomplete when the transport closed: {cause}"
+            ),
             Self::Protocol(message) => write!(formatter, "remote protocol error: {message}"),
             Self::Remote(error) => write!(formatter, "remote service error: {}", error.message),
         }
@@ -3423,7 +3637,12 @@ impl Error for RemoteClientError {
         match self {
             Self::Io(error) => Some(error),
             Self::Json(error) => Some(error),
-            Self::Disconnected | Self::Protocol(_) | Self::Remote(_) => None,
+            Self::Disconnected
+            | Self::TransportClosed { .. }
+            | Self::OutcomeUnknown { .. }
+            | Self::ResponseIncomplete { .. }
+            | Self::Protocol(_)
+            | Self::Remote(_) => None,
         }
     }
 }
@@ -3475,12 +3694,12 @@ impl<R: Read, W: Write> RemoteWorkspaceV5Client<R, W> {
         let (method, payload) = request
             .to_v5_method_payload()
             .map_err(v5_method_error_to_client_error)?;
-        let stream_id = self.session.open_request_with_payload_and_body(
+        let stream_id = self.session.open_request_with_owned_payload_and_body(
             method,
             request.v5_request_options(),
-            &payload,
+            payload,
             request.v5_body_channel(),
-            &body,
+            body,
         )?;
         self.drain_outbound()?;
         self.read_response(stream_id)
@@ -3502,7 +3721,11 @@ impl<R: Read, W: Write> RemoteWorkspaceV5Client<R, W> {
 
     fn drain_outbound(&mut self) -> std::result::Result<(), RemoteClientError> {
         while let Some(frame) = self.session.pop_next_frame()? {
+            let stream_id = frame.stream_id;
+            let frame_type = frame.frame_type;
             self.io.write_frame(frame)?;
+            self.session
+                .observe_frame_parts_written(stream_id, frame_type);
         }
         Ok(())
     }
@@ -3518,6 +3741,7 @@ impl<R: Read, W: Write> RemoteWorkspaceV5Client<R, W> {
         let mut stderr = Vec::new();
         let mut search_partials = V5SearchResponsePartials::default();
         let mut final_error = None;
+        let mut received_bytes = 0_usize;
 
         loop {
             let frame = self
@@ -3563,17 +3787,36 @@ impl<R: Read, W: Write> RemoteWorkspaceV5Client<R, W> {
                 } => {
                     search_partials.begin_partial(envelope.method)?;
                 }
-                protocol_v5::StreamEvent::Data { channel, body, .. } => match channel {
-                    protocol_v5::DataChannel::Unspecified => payload.extend(body),
-                    protocol_v5::DataChannel::SearchPayload => {
-                        search_partials.push_search_payload(body);
+                protocol_v5::StreamEvent::Data { channel, body, .. } => {
+                    let Some(total) = received_bytes.checked_add(body.len()) else {
+                        return Err(RemoteClientError::Protocol(
+                            "v5 response decoded byte count overflowed".to_string(),
+                        ));
+                    };
+                    if total > V5_MAX_ACCUMULATED_RESPONSE_BYTES {
+                        self.session.reset_stream(
+                            stream_id,
+                            protocol_v5::RESET_RESOURCE_EXHAUSTED,
+                            "client response decoded byte limit exceeded",
+                        )?;
+                        self.drain_outbound()?;
+                        return Err(RemoteClientError::Protocol(format!(
+                            "v5 response exceeds decoded byte limit of {V5_MAX_ACCUMULATED_RESPONSE_BYTES}"
+                        )));
                     }
-                    protocol_v5::DataChannel::FileBody | protocol_v5::DataChannel::Stdin => {
-                        file_body.extend(body)
+                    received_bytes = total;
+                    match channel {
+                        protocol_v5::DataChannel::Unspecified => payload.extend(body),
+                        protocol_v5::DataChannel::SearchPayload => {
+                            search_partials.push_search_payload(body);
+                        }
+                        protocol_v5::DataChannel::FileBody | protocol_v5::DataChannel::Stdin => {
+                            file_body.extend(body)
+                        }
+                        protocol_v5::DataChannel::Stdout => stdout.extend(body),
+                        protocol_v5::DataChannel::Stderr => stderr.extend(body),
                     }
-                    protocol_v5::DataChannel::Stdout => stdout.extend(body),
-                    protocol_v5::DataChannel::Stderr => stderr.extend(body),
-                },
+                }
                 protocol_v5::StreamEvent::EndStream { .. } => {
                     if let Some(error) = final_error {
                         return Err(RemoteClientError::Remote(error));
@@ -3621,13 +3864,24 @@ pub struct RemoteWorkspaceV5MultiplexedClient<R, W> {
 struct RemoteWorkspaceV5Shared<W> {
     session: Mutex<protocol_v5::ProtocolSession>,
     writer: Mutex<RemoteWorkspaceV5Writer<W>>,
+    transport_abort: Option<Arc<dyn V5TransportAbort>>,
+    request_budget: V5ConnectionByteBudget,
+    response_budget: V5ConnectionByteBudget,
+    outbound_request_reservations: Mutex<HashMap<u64, V5ByteReservation>>,
     waiters: Mutex<HashMap<u64, V5PendingResponse>>,
     raw_waiters: Mutex<HashMap<u64, V5PendingRawResponse>>,
-    watch_batches: Mutex<HashMap<u64, mpsc::Sender<protocol_v5::WatchBatch>>>,
+    watch_batches: Mutex<HashMap<u64, V5WatchDelivery>>,
     watch_backlog: Mutex<HashMap<u64, VecDeque<protocol_v5::WatchBatch>>>,
     watch_stream_by_id: Mutex<HashMap<u64, u64>>,
     directory_cache: Mutex<HashMap<PathBuf, DirectoryListingResponse>>,
     closed: AtomicBool,
+}
+
+#[derive(Clone)]
+struct V5WatchDelivery {
+    sender: mpsc::SyncSender<protocol_v5::WatchBatch>,
+    overflowed: Arc<AtomicBool>,
+    last_sequence: Arc<AtomicU64>,
 }
 
 struct RemoteWorkspaceV5Writer<W> {
@@ -3636,14 +3890,22 @@ struct RemoteWorkspaceV5Writer<W> {
     next_frame_sequence: u64,
 }
 
+type V5ResponseDelivery =
+    std::result::Result<V5Budgeted<(RemoteResponse, Vec<u8>)>, RemoteClientError>;
+type V5RawResponseDelivery = std::result::Result<V5Budgeted<Vec<u8>>, RemoteClientError>;
+
 struct V5PendingResponse {
-    sender: mpsc::Sender<std::result::Result<(RemoteResponse, Vec<u8>), RemoteClientError>>,
+    sender: mpsc::Sender<V5ResponseDelivery>,
     accumulator: V5ResponseAccumulator,
+    response_reservation: V5ByteReservation,
+    method: &'static str,
+    idempotency: protocol_v5::Idempotency,
 }
 
 struct V5PendingRawResponse {
-    sender: mpsc::Sender<std::result::Result<Vec<u8>, RemoteClientError>>,
+    sender: mpsc::Sender<V5RawResponseDelivery>,
     accumulator: V5RawResponseAccumulator,
+    response_reservation: V5ByteReservation,
 }
 
 impl V5PendingResponse {
@@ -3651,7 +3913,17 @@ impl V5PendingResponse {
         if self.accumulator.final_message_seen() {
             disconnect_after_final_response_error(error)
         } else {
-            error
+            let error = transport_closed_before_final_error(error);
+            if self.idempotency != protocol_v5::Idempotency::ReadOnly
+                && remote_client_error_allows_reconnect_retry(&error)
+            {
+                RemoteClientError::OutcomeUnknown {
+                    method: self.method.to_string(),
+                    cause: error.to_string(),
+                }
+            } else {
+                error
+            }
         }
     }
 }
@@ -3661,9 +3933,37 @@ impl V5PendingRawResponse {
         if self.accumulator.final_message_seen() {
             disconnect_after_final_response_error(error)
         } else {
-            error
+            transport_closed_before_final_error(error)
         }
     }
+}
+
+fn reserve_v5_client_request_bytes(
+    budget: &V5ConnectionByteBudget,
+    method: &str,
+    payload_bytes: usize,
+    body_bytes: usize,
+) -> std::result::Result<V5ByteReservation, RemoteClientError> {
+    if payload_bytes > V5_MAX_REQUEST_PAYLOAD_BYTES {
+        return Err(RemoteClientError::Protocol(format!(
+            "v5 {method} request payload exceeds decoded byte limit {V5_MAX_REQUEST_PAYLOAD_BYTES}"
+        )));
+    }
+    if body_bytes > V5_MAX_REQUEST_BODY_BYTES {
+        return Err(RemoteClientError::Protocol(format!(
+            "v5 {method} request body exceeds decoded byte limit {V5_MAX_REQUEST_BODY_BYTES}"
+        )));
+    }
+    let retained_bytes = payload_bytes.checked_add(body_bytes).ok_or_else(|| {
+        RemoteClientError::Protocol(format!("v5 {method} request decoded byte count overflowed"))
+    })?;
+    let mut reservation = budget.reservation();
+    reservation.try_grow(retained_bytes).map_err(|error| {
+        RemoteClientError::Protocol(format!(
+            "v5 {method} request exceeds connection retained-byte budget: {error}"
+        ))
+    })?;
+    Ok(reservation)
 }
 
 #[derive(Default)]
@@ -3675,6 +3975,7 @@ struct V5ResponseAccumulator {
     stderr: Vec<u8>,
     search_partials: V5SearchResponsePartials,
     final_error: Option<RemoteError>,
+    received_bytes: usize,
 }
 
 #[derive(Default)]
@@ -3789,28 +4090,58 @@ struct V5RawResponseAccumulator {
     payload: Vec<u8>,
     final_seen: bool,
     final_error: Option<RemoteError>,
+    received_bytes: usize,
 }
 
 pub struct RemoteWorkspaceV5Watch {
     pub watch_id: u64,
     pub event_stream_id: u64,
     receiver: mpsc::Receiver<protocol_v5::WatchBatch>,
+    overflowed: Arc<AtomicBool>,
+    last_sequence: Arc<AtomicU64>,
 }
 
 impl RemoteWorkspaceV5Watch {
     pub fn recv(&self) -> std::result::Result<protocol_v5::WatchBatch, mpsc::RecvError> {
-        self.receiver.recv()
+        if let Some(batch) = self.take_overflow_batch() {
+            return Ok(batch);
+        }
+        let batch = self.receiver.recv()?;
+        Ok(self.take_overflow_batch().unwrap_or(batch))
     }
 
     pub fn recv_timeout(
         &self,
         timeout: Duration,
     ) -> std::result::Result<protocol_v5::WatchBatch, mpsc::RecvTimeoutError> {
-        self.receiver.recv_timeout(timeout)
+        if let Some(batch) = self.take_overflow_batch() {
+            return Ok(batch);
+        }
+        let batch = self.receiver.recv_timeout(timeout)?;
+        Ok(self.take_overflow_batch().unwrap_or(batch))
     }
 
     pub fn try_recv(&self) -> std::result::Result<protocol_v5::WatchBatch, mpsc::TryRecvError> {
-        self.receiver.try_recv()
+        if let Some(batch) = self.take_overflow_batch() {
+            return Ok(batch);
+        }
+        let batch = self.receiver.try_recv()?;
+        Ok(self.take_overflow_batch().unwrap_or(batch))
+    }
+
+    fn take_overflow_batch(&self) -> Option<protocol_v5::WatchBatch> {
+        if !self.overflowed.swap(false, Ordering::AcqRel) {
+            return None;
+        }
+        while self.receiver.try_recv().is_ok() {}
+        Some(protocol_v5::WatchBatch {
+            watch_id: self.watch_id,
+            sequence: self.last_sequence.load(Ordering::Acquire),
+            directory_generations: Vec::new(),
+            events: Vec::new(),
+            overflow: true,
+            resync_required: true,
+        })
     }
 }
 
@@ -3820,8 +4151,16 @@ where
     W: Write + Send + 'static,
 {
     pub fn connect(
+        io: protocol_v5::FramedIo<R, W>,
+        client_hello: protocol_v5::ClientHello,
+    ) -> std::result::Result<Self, RemoteClientError> {
+        Self::connect_with_transport_abort(io, client_hello, None)
+    }
+
+    fn connect_with_transport_abort(
         mut io: protocol_v5::FramedIo<R, W>,
         client_hello: protocol_v5::ClientHello,
+        transport_abort: Option<Arc<dyn V5TransportAbort>>,
     ) -> std::result::Result<Self, RemoteClientError> {
         let handshake = protocol_v5::client_handshake(&mut io, client_hello)?;
         let session = protocol_v5::ProtocolSession::new(
@@ -3837,6 +4176,10 @@ where
                 limits,
                 next_frame_sequence: parts.next_frame_sequence,
             }),
+            transport_abort,
+            request_budget: V5ConnectionByteBudget::new(V5_REQUEST_CONNECTION_BYTE_BUDGET),
+            response_budget: V5ConnectionByteBudget::new(V5_RESPONSE_CONNECTION_BYTE_BUDGET),
+            outbound_request_reservations: Mutex::new(HashMap::new()),
             waiters: Mutex::new(HashMap::new()),
             raw_waiters: Mutex::new(HashMap::new()),
             watch_batches: Mutex::new(HashMap::new()),
@@ -3846,7 +4189,7 @@ where
             closed: AtomicBool::new(false),
         });
 
-        let reader_shared = Arc::clone(&shared);
+        let reader_shared = Arc::downgrade(&shared);
         std::thread::Builder::new()
             .name("nucleotide-v5-client-reader".to_string())
             .spawn(move || run_v5_client_reader(parts.reader, limits, reader_shared))
@@ -3862,6 +4205,55 @@ where
     pub fn server_hello(&self) -> &protocol_v5::ServerHello {
         &self.server_hello
     }
+}
+
+fn connect_child_process_v5_client(
+    io: protocol_v5::FramedIo<ChildStdout, ChildProcessV5Writer>,
+    control: Arc<ChildProcessV5Control>,
+    client_hello: protocol_v5::ClientHello,
+) -> std::result::Result<RemoteWorkspaceV5ChildClient, RemoteClientError> {
+    connect_child_process_v5_client_with_timeout(
+        io,
+        control,
+        client_hello,
+        V5_CHILD_HANDSHAKE_TIMEOUT,
+    )
+}
+
+fn connect_child_process_v5_client_with_timeout(
+    io: protocol_v5::FramedIo<ChildStdout, ChildProcessV5Writer>,
+    control: Arc<ChildProcessV5Control>,
+    client_hello: protocol_v5::ClientHello,
+    timeout: Duration,
+) -> std::result::Result<RemoteWorkspaceV5ChildClient, RemoteClientError> {
+    let (watchdog_cancel, watchdog_receiver) = mpsc::channel();
+    let watchdog_control = Arc::clone(&control);
+    let watchdog = std::thread::Builder::new()
+        .name("nucleotide-v5-handshake-watchdog".to_string())
+        .spawn(move || {
+            if matches!(
+                watchdog_receiver.recv_timeout(timeout),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ) {
+                tracing::warn!(
+                    child_id = watchdog_control.child_id(),
+                    timeout_ms = timeout.as_millis() as u64,
+                    "Terminating remote service after v5 handshake timeout"
+                );
+                watchdog_control.abort();
+            }
+        })
+        .map_err(RemoteClientError::Io)?;
+
+    let abort: Arc<dyn V5TransportAbort> = control;
+    let result = RemoteWorkspaceV5MultiplexedClient::connect_with_transport_abort(
+        io,
+        client_hello,
+        Some(abort),
+    );
+    let _ = watchdog_cancel.send(());
+    let _ = watchdog.join();
+    result
 }
 
 impl<R, W> RemoteWorkspaceProtocolClient for RemoteWorkspaceV5MultiplexedClient<R, W>
@@ -3889,29 +4281,55 @@ where
         {
             options.content_encoding = protocol_v5::ContentEncoding::Zstd;
         }
+        let idempotency = options.idempotency;
         let body_channel = request.v5_body_channel();
+        let request_reservation = reserve_v5_client_request_bytes(
+            &self.shared.request_budget,
+            method,
+            payload.len(),
+            body.len(),
+        )?;
+        let response_reservation = self.shared.response_budget.reservation();
         let (sender, receiver) = mpsc::channel();
 
         let stream_id = {
             let mut session = self.shared.session.lock().map_err(v5_client_lock_error)?;
-            let stream_id = session.open_request_with_payload_and_body(
+            let stream_id = session.open_request_with_owned_payload_and_body(
                 method,
                 options,
-                &payload,
+                payload,
                 body_channel,
-                &body,
+                body,
             )?;
-            self.shared
-                .waiters
+            let pending = V5PendingResponse {
+                sender,
+                accumulator: V5ResponseAccumulator::default(),
+                response_reservation,
+                method,
+                idempotency,
+            };
+            let mut outbound_request_reservations = self
+                .shared
+                .outbound_request_reservations
                 .lock()
-                .map_err(v5_client_lock_error)?
-                .insert(
-                    stream_id,
-                    V5PendingResponse {
-                        sender,
-                        accumulator: V5ResponseAccumulator::default(),
-                    },
-                );
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            outbound_request_reservations.insert(stream_id, request_reservation);
+            drop(outbound_request_reservations);
+            let mut waiters = match self.shared.waiters.lock() {
+                Ok(waiters) => waiters,
+                Err(error) => {
+                    let error = v5_client_lock_error(error);
+                    let reset_result = session.reset_stream(
+                        stream_id,
+                        protocol_v5::RESET_CANCELLED,
+                        "client could not register response waiter",
+                    );
+                    release_v5_outbound_request_reservation(&self.shared, stream_id);
+                    reset_result?;
+                    return Err(error);
+                }
+            };
+            waiters.insert(stream_id, pending);
             stream_id
         };
 
@@ -3925,17 +4343,16 @@ where
         }
 
         if let Err(error) = self.drain_outbound() {
-            self.shared
-                .waiters
-                .lock()
-                .map_err(v5_client_lock_error)?
-                .remove(&stream_id);
-            return Err(error);
+            return receiver
+                .recv()
+                .unwrap_or(Err(error))
+                .map(V5Budgeted::into_inner);
         }
 
         let (response, body) = receiver
             .recv()
-            .map_err(|_| RemoteClientError::Disconnected)??;
+            .map_err(|_| RemoteClientError::Disconnected)??
+            .into_inner();
         let response = self.apply_v5_directory_cache(&request, response)?;
         Ok((response, body))
     }
@@ -3948,6 +4365,10 @@ where
                 "unexpected shutdown response: {other:?}"
             ))),
         }
+    }
+
+    fn close(&self) {
+        fail_all_v5_waiters(&self.shared, || RemoteClientError::Disconnected);
     }
 
     fn start_watch(
@@ -4107,6 +4528,12 @@ where
             listing = apply_directory_listing_delta(cache_key, base, listing, delta)?;
         }
         if listing.complete && listing.generation.is_some() {
+            if !cache.contains_key(cache_key)
+                && cache.len() >= V5_DIRECTORY_DELTA_CACHE_LIMIT
+                && let Some(evicted) = cache.keys().next().cloned()
+            {
+                cache.remove(&evicted);
+            }
             cache.insert(cache_key.to_path_buf(), listing.clone());
         }
         Ok(listing)
@@ -4123,13 +4550,20 @@ where
                     "invalid v5 watch.start response payload: {error}"
                 ))
             })?;
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = mpsc::sync_channel(V5_WATCH_DELIVERY_CAPACITY);
+        let overflowed = Arc::new(AtomicBool::new(false));
+        let last_sequence = Arc::new(AtomicU64::new(0));
+        let delivery = V5WatchDelivery {
+            sender: sender.clone(),
+            overflowed: Arc::clone(&overflowed),
+            last_sequence: Arc::clone(&last_sequence),
+        };
         {
             self.shared
                 .watch_batches
                 .lock()
                 .map_err(v5_client_lock_error)?
-                .insert(response.event_stream_id, sender.clone());
+                .insert(response.event_stream_id, delivery);
             self.shared
                 .watch_stream_by_id
                 .lock()
@@ -4144,8 +4578,14 @@ where
             .remove(&response.event_stream_id)
         {
             for batch in backlog {
-                if sender.send(batch).is_err() {
-                    break;
+                last_sequence.store(batch.sequence, Ordering::Release);
+                match sender.try_send(batch) {
+                    Ok(()) => {}
+                    Err(mpsc::TrySendError::Full(_)) => {
+                        overflowed.store(true, Ordering::Release);
+                        break;
+                    }
+                    Err(mpsc::TrySendError::Disconnected(_)) => break,
                 }
             }
         }
@@ -4153,6 +4593,8 @@ where
             watch_id: response.watch_id,
             event_stream_id: response.event_stream_id,
             receiver,
+            overflowed,
+            last_sequence,
         })
     }
 
@@ -4220,30 +4662,49 @@ where
             return Err(RemoteClientError::Disconnected);
         }
 
+        let request_reservation =
+            reserve_v5_client_request_bytes(&self.shared.request_budget, method, payload.len(), 0)?;
+        let response_reservation = self.shared.response_budget.reservation();
         let (sender, receiver) = mpsc::channel();
         let stream_id = {
             let mut session = self.shared.session.lock().map_err(v5_client_lock_error)?;
-            let stream_id = session.open_request_with_payload_and_body(
+            let stream_id = session.open_request_with_owned_payload_and_body(
                 method,
                 protocol_v5::RequestOptions {
                     priority: protocol_v5::Priority::VisibleFileTree,
                     ..protocol_v5::RequestOptions::default()
                 },
-                &payload,
+                payload,
                 protocol_v5::DataChannel::Unspecified,
-                &[],
+                Vec::new(),
             )?;
-            self.shared
-                .raw_waiters
+            let pending = V5PendingRawResponse {
+                sender,
+                accumulator: V5RawResponseAccumulator::default(),
+                response_reservation,
+            };
+            let mut outbound_request_reservations = self
+                .shared
+                .outbound_request_reservations
                 .lock()
-                .map_err(v5_client_lock_error)?
-                .insert(
-                    stream_id,
-                    V5PendingRawResponse {
-                        sender,
-                        accumulator: V5RawResponseAccumulator::default(),
-                    },
-                );
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            outbound_request_reservations.insert(stream_id, request_reservation);
+            drop(outbound_request_reservations);
+            let mut waiters = match self.shared.raw_waiters.lock() {
+                Ok(waiters) => waiters,
+                Err(error) => {
+                    let error = v5_client_lock_error(error);
+                    let reset_result = session.reset_stream(
+                        stream_id,
+                        protocol_v5::RESET_CANCELLED,
+                        "client could not register raw response waiter",
+                    );
+                    release_v5_outbound_request_reservation(&self.shared, stream_id);
+                    reset_result?;
+                    return Err(error);
+                }
+            };
+            waiters.insert(stream_id, pending);
             stream_id
         };
 
@@ -4257,53 +4718,40 @@ where
         }
 
         if let Err(error) = self.drain_outbound() {
-            self.shared
-                .raw_waiters
-                .lock()
-                .map_err(v5_client_lock_error)?
-                .remove(&stream_id);
-            return Err(error);
+            return receiver
+                .recv()
+                .unwrap_or(Err(error))
+                .map(V5Budgeted::into_inner);
         }
 
         receiver
             .recv()
             .map_err(|_| RemoteClientError::Disconnected)?
+            .map(V5Budgeted::into_inner)
     }
 
     fn drain_outbound(&self) -> std::result::Result<(), RemoteClientError> {
-        let mut frames = Vec::new();
-        {
-            let mut session = self.shared.session.lock().map_err(v5_client_lock_error)?;
-            while let Some(frame) = session.pop_next_frame()? {
-                frames.push(frame);
-            }
-        }
-
-        let mut writer = self.shared.writer.lock().map_err(v5_client_lock_error)?;
-        for mut frame in frames {
-            frame.frame_sequence = writer.next_frame_sequence;
-            writer.next_frame_sequence =
-                writer.next_frame_sequence.checked_add(1).ok_or_else(|| {
-                    RemoteClientError::Protocol("v5 frame sequence exhausted".to_string())
-                })?;
-            let limits = writer.limits;
-            protocol_v5::write_frame_with_limits(&mut writer.writer, &frame, limits)?;
-        }
-        Ok(())
+        drain_v5_client_outbound(&self.shared)
     }
 }
 
 fn run_v5_client_reader<R, W>(
     mut reader: R,
     limits: protocol_v5::FrameLimits,
-    shared: Arc<RemoteWorkspaceV5Shared<W>>,
+    shared: Weak<RemoteWorkspaceV5Shared<W>>,
 ) where
     R: Read,
     W: Write,
 {
     loop {
+        if shared.strong_count() == 0 {
+            break;
+        }
         match protocol_v5::read_frame_with_limits(&mut reader, limits) {
             Ok(Some(frame)) => {
+                let Some(shared) = shared.upgrade() else {
+                    break;
+                };
                 let event = {
                     let mut session = match shared.session.lock() {
                         Ok(session) => session,
@@ -4321,10 +4769,13 @@ fn run_v5_client_reader<R, W>(
                 match event {
                     Ok(event) => {
                         let data_credit = event.data_credit();
-                        if let Some(stream_event) = event.stream_event {
-                            handle_v5_client_stream_event(&shared, stream_event);
-                        }
-                        if let Some((stream_id, credit_bytes)) = data_credit {
+                        let acknowledge_data = event
+                            .stream_event
+                            .map(|stream_event| {
+                                handle_v5_client_stream_event(&shared, stream_event)
+                            })
+                            .unwrap_or(true);
+                        if acknowledge_data && let Some((stream_id, credit_bytes)) = data_credit {
                             let result = shared
                                 .session
                                 .lock()
@@ -4345,12 +4796,10 @@ fn run_v5_client_reader<R, W>(
                             }
                         }
                         if let Err(error) = drain_v5_client_outbound(&shared) {
-                            let message = error.to_string();
-                            fail_all_v5_waiters(&shared, || {
-                                RemoteClientError::Protocol(format!(
-                                    "failed to write v5 flow-control update: {message}"
-                                ))
-                            });
+                            tracing::warn!(
+                                error = %error,
+                                "Closing v5 client after flow-control write failed"
+                            );
                             break;
                         }
                     }
@@ -4366,15 +4815,19 @@ fn run_v5_client_reader<R, W>(
                 }
             }
             Ok(None) => {
-                fail_all_v5_waiters(&shared, || RemoteClientError::Disconnected);
+                if let Some(shared) = shared.upgrade() {
+                    fail_all_v5_waiters(&shared, || RemoteClientError::Disconnected);
+                }
                 break;
             }
             Err(error) => {
                 let kind = error.kind();
                 let message = error.to_string();
-                fail_all_v5_waiters(&shared, || {
-                    RemoteClientError::Io(io::Error::new(kind, message.clone()))
-                });
+                if let Some(shared) = shared.upgrade() {
+                    fail_all_v5_waiters(&shared, || {
+                        RemoteClientError::Io(io::Error::new(kind, message.clone()))
+                    });
+                }
                 break;
             }
         }
@@ -4387,42 +4840,109 @@ fn drain_v5_client_outbound<W>(
 where
     W: Write,
 {
-    let mut frames = Vec::new();
-    {
-        let mut session = shared.session.lock().map_err(v5_client_lock_error)?;
-        while let Some(frame) = session.pop_next_frame()? {
-            frames.push(frame);
-        }
-    }
+    let result = (|| {
+        loop {
+            if shared.closed.load(Ordering::Acquire) {
+                return Err(RemoteClientError::Disconnected);
+            }
 
-    let mut writer = shared.writer.lock().map_err(v5_client_lock_error)?;
-    for mut frame in frames {
-        frame.frame_sequence = writer.next_frame_sequence;
-        writer.next_frame_sequence =
-            writer.next_frame_sequence.checked_add(1).ok_or_else(|| {
-                RemoteClientError::Protocol("v5 frame sequence exhausted".to_string())
-            })?;
-        let limits = writer.limits;
-        protocol_v5::write_frame_with_limits(&mut writer.writer, &frame, limits)?;
+            // Holding the writer while extracting preserves scheduler order across concurrent
+            // drainers. Keep extraction bounded, then revalidate each frame immediately before
+            // its unflushed write so a RESET can invalidate the rest of the batch.
+            let mut writer = shared.writer.lock().map_err(v5_client_lock_error)?;
+            let frames = {
+                let mut session = shared.session.lock().map_err(v5_client_lock_error)?;
+                let mut frames = Vec::with_capacity(V5_CLIENT_WRITE_BATCH_FRAMES);
+                for _ in 0..V5_CLIENT_WRITE_BATCH_FRAMES {
+                    let Some(frame) = session.pop_next_frame()? else {
+                        break;
+                    };
+                    frames.push(frame);
+                }
+                frames
+            };
+            if frames.is_empty() {
+                return Ok(());
+            }
+
+            let mut wrote_frame = false;
+            for mut frame in frames {
+                let should_write = {
+                    let mut session = shared.session.lock().map_err(v5_client_lock_error)?;
+                    let should_write = session.should_write_frame(&frame);
+                    if !should_write {
+                        session.discard_unwritten_frame(&frame)?;
+                    }
+                    should_write
+                };
+                if !should_write || shared.closed.load(Ordering::Acquire) {
+                    continue;
+                }
+
+                frame.frame_sequence = writer.next_frame_sequence;
+                writer.next_frame_sequence =
+                    writer.next_frame_sequence.checked_add(1).ok_or_else(|| {
+                        RemoteClientError::Protocol("v5 frame sequence exhausted".to_string())
+                    })?;
+                let limits = writer.limits;
+                protocol_v5::write_frame_unflushed_with_limits(&mut writer.writer, &frame, limits)?;
+                {
+                    shared
+                        .session
+                        .lock()
+                        .map_err(v5_client_lock_error)?
+                        .observe_frame_written(&frame);
+                }
+                if matches!(
+                    frame.frame_type,
+                    protocol_v5::FrameType::EndStream | protocol_v5::FrameType::ResetStream
+                ) {
+                    release_v5_outbound_request_reservation(shared, frame.stream_id);
+                }
+                wrote_frame = true;
+            }
+            if wrote_frame {
+                writer.writer.flush()?;
+            }
+        }
+    })();
+
+    if let Err(error) = &result {
+        fail_all_v5_waiters_for_error(shared, error);
     }
-    Ok(())
+    result
+}
+
+fn release_v5_outbound_request_reservation<W>(shared: &RemoteWorkspaceV5Shared<W>, stream_id: u64) {
+    shared
+        .outbound_request_reservations
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(&stream_id);
 }
 
 fn handle_v5_client_stream_event<W>(
     shared: &RemoteWorkspaceV5Shared<W>,
     event: protocol_v5::StreamEvent,
-) {
+) -> bool
+where
+    W: Write,
+{
     let stream_id = event.stream_id();
+    if matches!(&event, protocol_v5::StreamEvent::ResetStream { .. }) {
+        release_v5_outbound_request_reservation(shared, stream_id);
+    }
     let mut event = Some(event);
     let completed_response = {
         let mut waiters = match shared.waiters.lock() {
             Ok(waiters) => waiters,
-            Err(_) => return,
+            Err(_) => return false,
         };
         let result = if let Some(pending) = waiters.get_mut(&stream_id) {
-            pending
-                .accumulator
-                .observe(event.take().expect("event should be available"))
+            pending.accumulator.observe_with_reservation(
+                event.take().expect("event should be available"),
+                &mut pending.response_reservation,
+            )
         } else {
             None
         };
@@ -4430,22 +4950,28 @@ fn handle_v5_client_stream_event<W>(
     };
 
     if let Some((Some(pending), result)) = completed_response {
+        let accepted = result.is_ok();
+        if !accepted {
+            reset_v5_client_stream_after_local_error(shared, stream_id);
+        }
+        let result = result.map(|value| V5Budgeted::new(value, pending.response_reservation));
         let _ = pending.sender.send(result);
-        return;
+        return accepted;
     }
     if event.is_none() {
-        return;
+        return true;
     }
 
     let completed_raw = {
         let mut raw_waiters = match shared.raw_waiters.lock() {
             Ok(waiters) => waiters,
-            Err(_) => return,
+            Err(_) => return false,
         };
         let result = if let Some(pending) = raw_waiters.get_mut(&stream_id) {
-            pending
-                .accumulator
-                .observe(event.take().expect("event should be available"))
+            pending.accumulator.observe_with_reservation(
+                event.take().expect("event should be available"),
+                &mut pending.response_reservation,
+            )
         } else {
             None
         };
@@ -4453,11 +4979,49 @@ fn handle_v5_client_stream_event<W>(
     };
 
     if let Some((Some(pending), result)) = completed_raw {
+        let accepted = result.is_ok();
+        if !accepted {
+            reset_v5_client_stream_after_local_error(shared, stream_id);
+        }
+        let result = result.map(|value| V5Budgeted::new(value, pending.response_reservation));
         let _ = pending.sender.send(result);
-        return;
+        return accepted;
     }
     if let Some(event) = event {
         handle_v5_client_watch_event(shared, event);
+    }
+    true
+}
+
+fn reset_v5_client_stream_after_local_error<W>(shared: &RemoteWorkspaceV5Shared<W>, stream_id: u64)
+where
+    W: Write,
+{
+    let reset_queued = shared
+        .session
+        .lock()
+        .map_err(v5_client_lock_error)
+        .and_then(|mut session| {
+            session
+                .reset_stream(
+                    stream_id,
+                    protocol_v5::RESET_RESOURCE_EXHAUSTED,
+                    "client rejected response stream",
+                )
+                .map_err(RemoteClientError::Io)
+        });
+    match reset_queued {
+        Ok(true) => {
+            let _ = drain_v5_client_outbound(shared);
+        }
+        Ok(false) => {
+            // A response END can close the logical stream before a flow-blocked request body
+            // reaches the wire. `reset_stream` purges that non-tombstoned scheduler state but
+            // cannot queue another terminal frame for the already-closed stream, so no writer
+            // observation remains to release the retained request bytes.
+            release_v5_outbound_request_reservation(shared, stream_id);
+        }
+        Err(error) => fail_all_v5_waiters_for_error(shared, &error),
     }
 }
 
@@ -4465,10 +5029,29 @@ fn fail_all_v5_waiters<W, F>(shared: &RemoteWorkspaceV5Shared<W>, make_error: F)
 where
     F: Fn() -> RemoteClientError,
 {
-    shared.closed.store(true, Ordering::SeqCst);
+    if shared
+        .closed
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+    shared
+        .session
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .terminate();
+    shared
+        .outbound_request_reservations
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clear();
+    if let Some(abort) = &shared.transport_abort {
+        abort.abort();
+    }
     let waiters = match shared.waiters.lock() {
         Ok(mut waiters) => std::mem::take(&mut *waiters),
-        Err(_) => return,
+        Err(poisoned) => std::mem::take(&mut *poisoned.into_inner()),
     };
     for (_, pending) in waiters {
         let error = pending.failure_error(make_error());
@@ -4476,23 +5059,79 @@ where
     }
     let raw_waiters = match shared.raw_waiters.lock() {
         Ok(mut raw_waiters) => std::mem::take(&mut *raw_waiters),
-        Err(_) => return,
+        Err(poisoned) => std::mem::take(&mut *poisoned.into_inner()),
     };
     for (_, pending) in raw_waiters {
         let error = pending.failure_error(make_error());
         let _ = pending.sender.send(Err(error));
     }
-    if let Ok(mut watch_batches) = shared.watch_batches.lock() {
-        watch_batches.clear();
-    }
-    if let Ok(mut watch_backlog) = shared.watch_backlog.lock() {
-        watch_backlog.clear();
-    }
-    if let Ok(mut watch_stream_by_id) = shared.watch_stream_by_id.lock() {
-        watch_stream_by_id.clear();
-    }
-    if let Ok(mut directory_cache) = shared.directory_cache.lock() {
-        directory_cache.clear();
+    shared
+        .watch_batches
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clear();
+    shared
+        .watch_backlog
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clear();
+    shared
+        .watch_stream_by_id
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clear();
+    shared
+        .directory_cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clear();
+}
+
+fn fail_all_v5_waiters_for_error<W>(
+    shared: &RemoteWorkspaceV5Shared<W>,
+    error: &RemoteClientError,
+) {
+    match error {
+        RemoteClientError::Io(error) => {
+            let kind = error.kind();
+            let message = error.to_string();
+            fail_all_v5_waiters(shared, || {
+                RemoteClientError::Io(io::Error::new(kind, message.clone()))
+            });
+        }
+        RemoteClientError::Json(error) => {
+            let message = error.to_string();
+            fail_all_v5_waiters(shared, || {
+                RemoteClientError::Protocol(format!(
+                    "v5 transport closed after JSON error: {message}"
+                ))
+            });
+        }
+        RemoteClientError::Disconnected => {
+            fail_all_v5_waiters(shared, || RemoteClientError::Disconnected);
+        }
+        RemoteClientError::TransportClosed { cause } => {
+            fail_all_v5_waiters(shared, || RemoteClientError::TransportClosed {
+                cause: cause.clone(),
+            });
+        }
+        RemoteClientError::OutcomeUnknown { method, cause } => {
+            fail_all_v5_waiters(shared, || RemoteClientError::OutcomeUnknown {
+                method: method.clone(),
+                cause: cause.clone(),
+            });
+        }
+        RemoteClientError::ResponseIncomplete { cause } => {
+            fail_all_v5_waiters(shared, || RemoteClientError::ResponseIncomplete {
+                cause: cause.clone(),
+            });
+        }
+        RemoteClientError::Protocol(message) => {
+            fail_all_v5_waiters(shared, || RemoteClientError::Protocol(message.clone()));
+        }
+        RemoteClientError::Remote(error) => {
+            fail_all_v5_waiters(shared, || RemoteClientError::Remote(error.clone()));
+        }
     }
 }
 
@@ -4501,9 +5140,26 @@ impl V5ResponseAccumulator {
         self.method.is_some() || self.final_error.is_some()
     }
 
+    #[cfg(test)]
     fn observe(
         &mut self,
         event: protocol_v5::StreamEvent,
+    ) -> Option<std::result::Result<(RemoteResponse, Vec<u8>), RemoteClientError>> {
+        self.observe_inner(event, None)
+    }
+
+    fn observe_with_reservation(
+        &mut self,
+        event: protocol_v5::StreamEvent,
+        reservation: &mut V5ByteReservation,
+    ) -> Option<std::result::Result<(RemoteResponse, Vec<u8>), RemoteClientError>> {
+        self.observe_inner(event, Some(reservation))
+    }
+
+    fn observe_inner(
+        &mut self,
+        event: protocol_v5::StreamEvent,
+        reservation: Option<&mut V5ByteReservation>,
     ) -> Option<std::result::Result<(RemoteResponse, Vec<u8>), RemoteClientError>> {
         match event {
             protocol_v5::StreamEvent::Headers {
@@ -4541,6 +5197,24 @@ impl V5ResponseAccumulator {
                 Err(error) => Some(Err(error)),
             },
             protocol_v5::StreamEvent::Data { channel, body, .. } => {
+                let Some(received_bytes) = self.received_bytes.checked_add(body.len()) else {
+                    return Some(Err(RemoteClientError::Protocol(
+                        "v5 response decoded byte count overflowed".to_string(),
+                    )));
+                };
+                if received_bytes > V5_MAX_ACCUMULATED_RESPONSE_BYTES {
+                    return Some(Err(RemoteClientError::Protocol(format!(
+                        "v5 response exceeds decoded byte limit of {V5_MAX_ACCUMULATED_RESPONSE_BYTES}"
+                    ))));
+                }
+                if let Some(reservation) = reservation
+                    && let Err(error) = reservation.try_grow(body.len())
+                {
+                    return Some(Err(RemoteClientError::Protocol(format!(
+                        "v5 response exceeds connection retained-byte budget: {error}"
+                    ))));
+                }
+                self.received_bytes = received_bytes;
                 match channel {
                     protocol_v5::DataChannel::Unspecified => self.payload.extend(body),
                     protocol_v5::DataChannel::SearchPayload => {
@@ -4596,9 +5270,26 @@ impl V5RawResponseAccumulator {
         self.final_seen || self.final_error.is_some()
     }
 
+    #[cfg(test)]
     fn observe(
         &mut self,
         event: protocol_v5::StreamEvent,
+    ) -> Option<std::result::Result<Vec<u8>, RemoteClientError>> {
+        self.observe_inner(event, None)
+    }
+
+    fn observe_with_reservation(
+        &mut self,
+        event: protocol_v5::StreamEvent,
+        reservation: &mut V5ByteReservation,
+    ) -> Option<std::result::Result<Vec<u8>, RemoteClientError>> {
+        self.observe_inner(event, Some(reservation))
+    }
+
+    fn observe_inner(
+        &mut self,
+        event: protocol_v5::StreamEvent,
+        reservation: Option<&mut V5ByteReservation>,
     ) -> Option<std::result::Result<Vec<u8>, RemoteClientError>> {
         match event {
             protocol_v5::StreamEvent::Headers {
@@ -4620,8 +5311,18 @@ impl V5RawResponseAccumulator {
                 None
             }
             protocol_v5::StreamEvent::Data { channel, body, .. } => {
+                let Some(received_bytes) = self.received_bytes.checked_add(body.len()) else {
+                    return Some(Err(RemoteClientError::Protocol(
+                        "v5 raw response decoded byte count overflowed".to_string(),
+                    )));
+                };
+                if received_bytes > V5_MAX_RAW_RESPONSE_BYTES {
+                    return Some(Err(RemoteClientError::Protocol(format!(
+                        "v5 raw response exceeds decoded byte limit of {V5_MAX_RAW_RESPONSE_BYTES}"
+                    ))));
+                }
                 match channel {
-                    protocol_v5::DataChannel::Unspecified => self.payload.extend(body),
+                    protocol_v5::DataChannel::Unspecified => {}
                     protocol_v5::DataChannel::SearchPayload => {}
                     protocol_v5::DataChannel::FileBody
                     | protocol_v5::DataChannel::Stdin
@@ -4632,6 +5333,17 @@ impl V5RawResponseAccumulator {
                         ))));
                     }
                 }
+                if channel == protocol_v5::DataChannel::Unspecified {
+                    if let Some(reservation) = reservation
+                        && let Err(error) = reservation.try_grow(body.len())
+                    {
+                        return Some(Err(RemoteClientError::Protocol(format!(
+                            "v5 raw response exceeds connection retained-byte budget: {error}"
+                        ))));
+                    }
+                    self.payload.extend(body);
+                }
+                self.received_bytes = received_bytes;
                 None
             }
             protocol_v5::StreamEvent::EndStream { stream_id } => {
@@ -4666,6 +5378,7 @@ fn handle_v5_client_watch_event<W>(
             stream_id,
             role: protocol_v5::MessageRole::Event,
             envelope,
+            ..
         } => {
             let Some(protocol_v5::stream_envelope::Message::Event(event)) = envelope.message else {
                 return;
@@ -4701,27 +5414,56 @@ fn send_or_backlog_v5_watch_batch<W>(
 ) {
     invalidate_v5_directory_cache_after_watch_batch(shared, &batch);
 
-    let sender = match shared.watch_batches.lock() {
+    let delivery = match shared.watch_batches.lock() {
         Ok(watch_batches) => watch_batches.get(&stream_id).cloned(),
         Err(_) => return,
     };
-    if let Some(sender) = sender {
-        if sender.send(batch).is_ok() {
+    if let Some(delivery) = delivery {
+        delivery
+            .last_sequence
+            .store(batch.sequence, Ordering::Release);
+        if delivery.overflowed.load(Ordering::Acquire) {
+            clear_v5_directory_cache(shared);
             return;
         }
-        if let Ok(mut watch_batches) = shared.watch_batches.lock() {
-            watch_batches.remove(&stream_id);
+        match delivery.sender.try_send(batch) {
+            Ok(()) => return,
+            Err(mpsc::TrySendError::Full(_)) => {
+                delivery.overflowed.store(true, Ordering::Release);
+                clear_v5_directory_cache(shared);
+                return;
+            }
+            Err(mpsc::TrySendError::Disconnected(_)) => {
+                if let Ok(mut watch_batches) = shared.watch_batches.lock() {
+                    watch_batches.remove(&stream_id);
+                }
+                return;
+            }
         }
-        return;
     }
 
-    const WATCH_BACKLOG_LIMIT: usize = 1024;
     let Ok(mut watch_backlog) = shared.watch_backlog.lock() else {
         return;
     };
     let backlog = watch_backlog.entry(stream_id).or_default();
-    if backlog.len() >= WATCH_BACKLOG_LIMIT {
-        backlog.pop_front();
+    if let Some(overflow) = backlog
+        .back_mut()
+        .filter(|batch| batch.overflow && batch.resync_required)
+    {
+        overflow.sequence = batch.sequence;
+        return;
+    }
+    if backlog.len() >= V5_WATCH_BACKLOG_LIMIT {
+        let mut overflow = batch;
+        overflow.directory_generations.clear();
+        overflow.events.clear();
+        overflow.overflow = true;
+        overflow.resync_required = true;
+        backlog.clear();
+        backlog.push_back(overflow);
+        drop(watch_backlog);
+        clear_v5_directory_cache(shared);
+        return;
     }
     backlog.push_back(batch);
 }
@@ -4733,6 +5475,10 @@ fn invalidate_v5_directory_cache_after_watch_batch<W>(
     if !batch.overflow && !batch.resync_required {
         return;
     }
+    clear_v5_directory_cache(shared);
+}
+
+fn clear_v5_directory_cache<W>(shared: &RemoteWorkspaceV5Shared<W>) {
     if let Ok(mut directory_cache) = shared.directory_cache.lock() {
         directory_cache.clear();
     }
@@ -4793,7 +5539,7 @@ fn workspace_watch_from_v5(
     watch: RemoteWorkspaceV5Watch,
     workspace_root: PathBuf,
 ) -> WorkspaceWatch {
-    let (sender, receiver) = mpsc::channel();
+    let (sender, receiver) = mpsc::sync_channel(V5_WATCH_DELIVERY_CAPACITY);
     let watch_id = watch.watch_id;
     let event_stream_id = watch.event_stream_id;
     std::thread::Builder::new()
@@ -4896,6 +5642,9 @@ pub trait RemoteWorkspaceProtocolClient: Send + Sync {
 
     fn shutdown(&self) -> std::result::Result<(), RemoteClientError>;
 
+    /// Closes the current transport without performing protocol I/O or waiting for the peer.
+    fn close(&self) {}
+
     fn start_watch(
         &self,
         _request: WorkspaceWatchRequest,
@@ -4921,8 +5670,10 @@ type ReconnectFactory<C> =
     dyn Fn() -> std::result::Result<C, RemoteClientError> + Send + Sync + 'static;
 
 pub struct ReconnectingRemoteWorkspaceProtocolClient<C: RemoteWorkspaceProtocolClient> {
-    client: Mutex<Arc<C>>,
+    client: Mutex<Option<Arc<C>>>,
+    reconnect_gate: Mutex<()>,
     reconnect: Arc<ReconnectFactory<C>>,
+    closed: AtomicBool,
 }
 
 impl<C> ReconnectingRemoteWorkspaceProtocolClient<C>
@@ -4934,33 +5685,99 @@ where
         reconnect: impl Fn() -> std::result::Result<C, RemoteClientError> + Send + Sync + 'static,
     ) -> Self {
         Self {
-            client: Mutex::new(Arc::new(client)),
+            client: Mutex::new(Some(Arc::new(client))),
+            reconnect_gate: Mutex::new(()),
             reconnect: Arc::new(reconnect),
+            closed: AtomicBool::new(false),
         }
     }
 
     fn current_client(&self) -> std::result::Result<Arc<C>, RemoteClientError> {
-        self.client
+        if self.closed.load(Ordering::Acquire) {
+            return Err(RemoteClientError::Disconnected);
+        }
+        if let Some(client) = self
+            .client
             .lock()
             .map_err(|_| {
                 RemoteClientError::Protocol("remote reconnect client lock is poisoned".to_string())
-            })
-            .map(|client| Arc::clone(&client))
+            })?
+            .as_ref()
+        {
+            return Ok(Arc::clone(client));
+        }
+
+        let _gate = self.reconnect_gate.lock().map_err(|_| {
+            RemoteClientError::Protocol("remote reconnect gate is poisoned".to_string())
+        })?;
+        if self.closed.load(Ordering::Acquire) {
+            return Err(RemoteClientError::Disconnected);
+        }
+        let current = self.client.lock().map_err(|_| {
+            RemoteClientError::Protocol("remote reconnect client lock is poisoned".to_string())
+        })?;
+        if let Some(client) = current.as_ref() {
+            return Ok(Arc::clone(client));
+        }
+        drop(current);
+
+        let reconnected = Arc::new((self.reconnect)()?);
+        if self.closed.load(Ordering::Acquire) {
+            reconnected.close();
+            return Err(RemoteClientError::Disconnected);
+        }
+        let mut current = self.client.lock().map_err(|_| {
+            RemoteClientError::Protocol("remote reconnect client lock is poisoned".to_string())
+        })?;
+        if self.closed.load(Ordering::Acquire) {
+            drop(current);
+            reconnected.close();
+            return Err(RemoteClientError::Disconnected);
+        }
+        *current = Some(Arc::clone(&reconnected));
+        Ok(reconnected)
     }
 
     fn reconnect_if_current(
         &self,
         stale: &Arc<C>,
     ) -> std::result::Result<Arc<C>, RemoteClientError> {
+        let _gate = self.reconnect_gate.lock().map_err(|_| {
+            RemoteClientError::Protocol("remote reconnect gate is poisoned".to_string())
+        })?;
+        if self.closed.load(Ordering::Acquire) {
+            return Err(RemoteClientError::Disconnected);
+        }
         let mut current = self.client.lock().map_err(|_| {
             RemoteClientError::Protocol("remote reconnect client lock is poisoned".to_string())
         })?;
-        if !Arc::ptr_eq(&current, stale) {
-            return Ok(Arc::clone(&current));
+        if let Some(client) = current.as_ref()
+            && !Arc::ptr_eq(client, stale)
+        {
+            return Ok(Arc::clone(client));
         }
 
+        // Clear and physically close the stale transport before reconnecting. The factory runs
+        // outside the client lock so a concurrent nonblocking close never waits for startup.
+        let stale_client = current.take();
+        drop(current);
+        if let Some(stale_client) = stale_client {
+            stale_client.close();
+        }
         let reconnected = Arc::new((self.reconnect)()?);
-        *current = Arc::clone(&reconnected);
+        if self.closed.load(Ordering::Acquire) {
+            reconnected.close();
+            return Err(RemoteClientError::Disconnected);
+        }
+        let mut current = self.client.lock().map_err(|_| {
+            RemoteClientError::Protocol("remote reconnect client lock is poisoned".to_string())
+        })?;
+        if self.closed.load(Ordering::Acquire) {
+            drop(current);
+            reconnected.close();
+            return Err(RemoteClientError::Disconnected);
+        }
+        *current = Some(Arc::clone(&reconnected));
         Ok(reconnected)
     }
 }
@@ -4974,6 +5791,8 @@ where
         request: RemoteRequest,
         body: Vec<u8>,
     ) -> std::result::Result<(RemoteResponse, Vec<u8>), RemoteClientError> {
+        let method = request.v5_method();
+        let idempotency = request.v5_request_options().idempotency;
         let retry_allowed = request.v5_retry_after_reconnect_allowed();
         let retry_request = retry_allowed.then(|| request.clone());
         let retry_body = retry_allowed.then(|| body.clone());
@@ -4981,15 +5800,37 @@ where
 
         match client.request(request, body) {
             Ok(response) => Ok(response),
-            Err(error) if retry_allowed && remote_client_error_allows_reconnect_retry(&error) => {
-                let retry_request = retry_request.expect("retry request recorded");
-                let retry_body = retry_body.expect("retry body recorded");
-                tracing::warn!(
-                    error = %error,
-                    "Retrying read-only v5 remote request after reconnect"
-                );
-                let client = self.reconnect_if_current(&client)?;
-                client.request(retry_request, retry_body)
+            Err(error) if remote_client_error_requires_reconnect(&error) => {
+                let retry_safe =
+                    retry_allowed && remote_client_error_allows_reconnect_retry(&error);
+                let recovery = self.reconnect_if_current(&client);
+                if retry_safe {
+                    let retry_request = retry_request.expect("retry request recorded");
+                    let retry_body = retry_body.expect("retry body recorded");
+                    tracing::warn!(
+                        error = %error,
+                        "Retrying read-only v5 remote request after reconnect"
+                    );
+                    return recovery?.request(retry_request, retry_body);
+                }
+
+                if let Err(reconnect_error) = recovery {
+                    tracing::warn!(
+                        error = %reconnect_error,
+                        original_error = %error,
+                        "Failed to heal v5 transport after request failure"
+                    );
+                }
+                if idempotency != protocol_v5::Idempotency::ReadOnly
+                    && !matches!(error, RemoteClientError::OutcomeUnknown { .. })
+                {
+                    Err(RemoteClientError::OutcomeUnknown {
+                        method: method.to_string(),
+                        cause: error.to_string(),
+                    })
+                } else {
+                    Err(error)
+                }
             }
             Err(error) => Err(error),
         }
@@ -4999,11 +5840,40 @@ where
         self.current_client()?.shutdown()
     }
 
+    fn close(&self) {
+        if self
+            .closed
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+        let current = self
+            .client
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        if let Some(current) = current {
+            current.close();
+        }
+    }
+
     fn start_watch(
         &self,
         request: WorkspaceWatchRequest,
     ) -> std::result::Result<Option<WorkspaceWatch>, RemoteClientError> {
-        self.current_client()?.start_watch(request)
+        let client = self.current_client()?;
+        match client.start_watch(request.clone()) {
+            Ok(watch) => Ok(watch),
+            Err(error) if remote_client_error_requires_reconnect(&error) => {
+                tracing::warn!(
+                    error = %error,
+                    "Retrying v5 watch.start after reconnect"
+                );
+                self.reconnect_if_current(&client)?.start_watch(request)
+            }
+            Err(error) => Err(error),
+        }
     }
 
     fn update_watch(
@@ -5012,38 +5882,79 @@ where
         add_roots: Vec<PathBuf>,
         remove_roots: Vec<PathBuf>,
     ) -> std::result::Result<Option<WorkspaceWatchUpdate>, RemoteClientError> {
-        self.current_client()?
-            .update_watch(watch_id, add_roots, remove_roots)
+        let client = self.current_client()?;
+        match client.update_watch(watch_id, add_roots, remove_roots) {
+            Err(error) if remote_client_error_requires_reconnect(&error) => {
+                if let Err(reconnect_error) = self.reconnect_if_current(&client) {
+                    tracing::warn!(
+                        error = %reconnect_error,
+                        original_error = %error,
+                        "Failed to heal v5 transport after watch.update failure"
+                    );
+                }
+                Err(error)
+            }
+            result => result,
+        }
     }
 
     fn stop_watch(&self, watch_id: u64) -> std::result::Result<(), RemoteClientError> {
-        self.current_client()?.stop_watch(watch_id)
+        let client = self.current_client()?;
+        match client.stop_watch(watch_id) {
+            Err(error) if remote_client_error_requires_reconnect(&error) => {
+                if let Err(reconnect_error) = self.reconnect_if_current(&client) {
+                    tracing::warn!(
+                        error = %reconnect_error,
+                        original_error = %error,
+                        "Failed to heal v5 transport after watch.stop failure"
+                    );
+                }
+                Err(error)
+            }
+            result => result,
+        }
     }
 }
 
 fn remote_client_error_allows_reconnect_retry(error: &RemoteClientError) -> bool {
     match error {
-        RemoteClientError::Disconnected => true,
-        RemoteClientError::Io(error) => matches!(
-            error.kind(),
-            io::ErrorKind::BrokenPipe
-                | io::ErrorKind::ConnectionAborted
-                | io::ErrorKind::ConnectionReset
-                | io::ErrorKind::UnexpectedEof
-        ),
+        RemoteClientError::Disconnected | RemoteClientError::TransportClosed { .. } => true,
+        RemoteClientError::Io(_) => true,
         RemoteClientError::Json(_)
+        | RemoteClientError::OutcomeUnknown { .. }
+        | RemoteClientError::ResponseIncomplete { .. }
         | RemoteClientError::Protocol(_)
         | RemoteClientError::Remote(_) => false,
     }
 }
 
+fn remote_client_error_requires_reconnect(error: &RemoteClientError) -> bool {
+    remote_client_error_allows_reconnect_retry(error)
+        || matches!(
+            error,
+            RemoteClientError::Io(_)
+                | RemoteClientError::OutcomeUnknown { .. }
+                | RemoteClientError::ResponseIncomplete { .. }
+        )
+}
+
+fn transport_closed_before_final_error(error: RemoteClientError) -> RemoteClientError {
+    match error {
+        RemoteClientError::Json(_) | RemoteClientError::Protocol(_) => {
+            RemoteClientError::TransportClosed {
+                cause: error.to_string(),
+            }
+        }
+        error => error,
+    }
+}
+
 fn disconnect_after_final_response_error(error: RemoteClientError) -> RemoteClientError {
-    if remote_client_error_allows_reconnect_retry(&error) {
-        RemoteClientError::Protocol(format!(
-            "v5 connection closed after final response before END_STREAM: {error}"
-        ))
-    } else {
-        error
+    match error {
+        RemoteClientError::Remote(_) | RemoteClientError::ResponseIncomplete { .. } => error,
+        error => RemoteClientError::ResponseIncomplete {
+            cause: error.to_string(),
+        },
     }
 }
 
@@ -5250,7 +6161,7 @@ where
     C: RemoteWorkspaceProtocolClient,
 {
     fn drop(&mut self) {
-        let _ = self.client.shutdown();
+        self.client.close();
     }
 }
 
@@ -5271,19 +6182,19 @@ fn spawn_child_process_workspace_v5_backend(
         command = %command.display_context(),
         "Starting v5 remote workspace service process"
     );
-    let io = spawn_child_process_v5_io(command).with_context(|| {
+    let (io, control) = spawn_child_process_v5_io(command).with_context(|| {
         format!(
             "failed to start v5 remote workspace service: {}",
             command.display_context()
         )
     })?;
     let client_hello = protocol_v5::ClientHello::nucleotide(env!("CARGO_PKG_VERSION"));
-    let client = RemoteWorkspaceV5MultiplexedClient::connect(io, client_hello).with_context(|| {
-        format!(
-            "failed to connect to v5 remote workspace service after starting {}; verify the helper speaks protocol v5",
-            command.display_context()
-        )
-    })?;
+    let client = connect_child_process_v5_client(io, control, client_hello).with_context(|| {
+            format!(
+                "failed to connect to v5 remote workspace service after starting {}; verify the helper speaks protocol v5",
+                command.display_context()
+            )
+        })?;
     let hello = hello_response_from_v5_server_hello(client.server_hello());
     let reconnect_command = command.clone();
     let reconnect_identity = identity.clone();
@@ -5295,9 +6206,9 @@ fn spawn_child_process_workspace_v5_backend(
                 command = %reconnect_command.display_context(),
                 "Reconnecting v5 remote workspace service process"
             );
-            let io = spawn_child_process_v5_io(&reconnect_command)?;
+            let (io, control) = spawn_child_process_v5_io(&reconnect_command)?;
             let client_hello = protocol_v5::ClientHello::nucleotide(env!("CARGO_PKG_VERSION"));
-            RemoteWorkspaceV5MultiplexedClient::connect(io, client_hello)
+            connect_child_process_v5_client(io, control, client_hello)
         });
     let backend =
         RemoteWorkspaceBackendImpl::from_protocol_client(identity.clone(), reconnecting_client);
@@ -5902,6 +6813,7 @@ where
             protocol_v5::StreamInitiator::Server,
             &handshake.settings,
         );
+        let request_budget = V5ConnectionByteBudget::new(V5_REQUEST_CONNECTION_BYTE_BUDGET);
         let mut requests = HashMap::<u64, V5ServiceRequest>::new();
         let mut watches = V5WatchRegistry::default();
 
@@ -5914,15 +6826,17 @@ where
                 .context("failed to route v5 protocol frame")?;
             let data_credit = event.data_credit();
             let mut shutdown = false;
+            let mut acknowledge_data = true;
             if let Some(stream_event) = event.stream_event {
-                shutdown = self.handle_v5_stream_event(
+                (shutdown, acknowledge_data) = self.handle_v5_stream_event(
                     &mut session,
                     &mut requests,
+                    &request_budget,
                     &mut watches,
                     stream_event,
                 )?;
             }
-            if let Some((stream_id, credit_bytes)) = data_credit {
+            if acknowledge_data && let Some((stream_id, credit_bytes)) = data_credit {
                 session
                     .acknowledge_data(stream_id, credit_bytes)
                     .context("failed to queue v5 data window update")?;
@@ -5952,13 +6866,17 @@ where
             protocol_v5::StreamInitiator::Server,
             &handshake.settings,
         );
+        let request_budget = V5ConnectionByteBudget::new(V5_REQUEST_CONNECTION_BYTE_BUDGET);
         let parts = io.into_parts();
         let mut writer = parts.writer;
         let limits = parts.limits;
         let mut next_frame_sequence = parts.next_frame_sequence;
         let mut requests = HashMap::<u64, V5ServiceRequest>::new();
         let (events_tx, events_rx) = mpsc::channel::<V5ServeEvent>();
-        let reader_tx = events_tx.clone();
+        let (inbound_tx, inbound_rx) =
+            mpsc::sync_channel::<V5InboundEvent>(V5_SERVE_INBOUND_EVENT_CAPACITY);
+        let inbound_events = V5InboundSender::new(inbound_tx, events_tx.clone());
+        let reader_events = inbound_events.clone();
 
         std::thread::Builder::new()
             .name("nucleotide-v5-reader".to_string())
@@ -5967,7 +6885,7 @@ where
                 loop {
                     let result = protocol_v5::read_frame_with_limits(&mut reader, limits);
                     let done = !matches!(result, Ok(Some(_)));
-                    if reader_tx.send(V5ServeEvent::Inbound(result)).is_err() {
+                    if reader_events.send(result).is_err() {
                         break;
                     }
                     if done {
@@ -5978,6 +6896,12 @@ where
             .context("failed to spawn v5 service reader")?;
 
         std::thread::scope(|scope| -> Result<()> {
+            let (output_tx, output_rx) =
+                mpsc::sync_channel::<V5ServeOutputEvent>(V5_SERVE_OUTPUT_EVENT_CAPACITY);
+            let output_events = V5ServeOutputSender::new(output_tx, events_tx.clone());
+            let (native_watch_tx, native_watch_rx) =
+                mpsc::sync_channel::<V5NativeWatchEvent>(V5_NATIVE_WATCH_EVENT_CAPACITY);
+            let native_watch_events = V5NativeWatchSender::new(native_watch_tx, events_tx.clone());
             let mut inbound_closed = false;
             let mut active_workers = 0_usize;
             let mut task_pools = V5ServiceTaskPools::default();
@@ -5986,8 +6910,11 @@ where
             let mut active_cancellations = HashMap::<u64, Arc<AtomicBool>>::new();
             let mut active_deadlines = HashMap::<u64, u64>::new();
             let mut canceled_streams = HashSet::<u64>::new();
-            let mut watches = V5WatchRegistry::with_native_events(events_tx.clone());
+            let mut watches = V5WatchRegistry::with_native_events(native_watch_events.clone());
             let mut shutdown = false;
+            let shutdown_grace =
+                Duration::from_millis(u64::from(handshake.settings.shutdown_grace_ms));
+            let mut shutdown_started: Option<Instant> = None;
             let idle_ping_interval =
                 Duration::from_millis(u64::from(handshake.settings.idle_ping_interval_ms));
             let ping_timeout = Duration::from_millis(u64::from(handshake.settings.ping_timeout_ms));
@@ -5999,6 +6926,7 @@ where
                 ($stream_id:expr, $request:expr) => {{
                     let stream_id = $stream_id;
                     let request = $request;
+                    let priority = request.priority;
                     let deadline_unix_ms = request.deadline_unix_ms;
                     let task_class = task_pools.mark_started(&request.method);
                     active_workers += 1;
@@ -6009,15 +6937,19 @@ where
                     if deadline_unix_ms != 0 {
                         active_deadlines.insert(stream_id, deadline_unix_ms);
                     }
-                    let completion_tx = events_tx.clone();
+                    let worker_output_events = output_events.clone();
                     scope.spawn(move || {
                         let completion = self.execute_v5_request(
                             stream_id,
                             request,
-                            Some(completion_tx.clone()),
+                            Some(worker_output_events.clone()),
                             Some(cancellation),
                         );
-                        let _ = completion_tx.send(V5ServeEvent::Completed(completion));
+                        let _ = self.enqueue_v5_service_completion(
+                            completion,
+                            priority,
+                            &worker_output_events,
+                        );
                     });
                 }};
             }
@@ -6037,6 +6969,96 @@ where
                         }
                         start_v5_service_worker!(stream_id, request);
                     }
+                }};
+            }
+
+            macro_rules! apply_v5_output_event {
+                ($event:expr) => {{
+                    let output_event = $event;
+                    match output_event {
+                        V5ServeOutputEvent::StreamData {
+                            stream_id,
+                            channel,
+                            body,
+                            priority,
+                        } => {
+                            if active_streams.contains(&stream_id)
+                                && !canceled_streams.contains(&stream_id)
+                            {
+                                session
+                                    .send_owned_data(stream_id, channel, body, priority)
+                                    .context("failed to queue v5 streamed response data")?;
+                            }
+                        }
+                        V5ServeOutputEvent::PartialResponse {
+                            stream_id,
+                            method,
+                            payload,
+                            priority,
+                        } => {
+                            if active_streams.contains(&stream_id)
+                                && !canceled_streams.contains(&stream_id)
+                            {
+                                session
+                                    .send_response_with_priority(
+                                        stream_id,
+                                        method,
+                                        protocol_v5::MessageRole::PartialResult,
+                                        false,
+                                        priority,
+                                    )
+                                    .context("failed to queue v5 partial response headers")?;
+                                session
+                                    .send_owned_data(
+                                        stream_id,
+                                        protocol_v5::DataChannel::SearchPayload,
+                                        payload,
+                                        priority,
+                                    )
+                                    .context("failed to queue v5 partial response payload")?;
+                            }
+                        }
+                        V5ServeOutputEvent::Progress {
+                            stream_id,
+                            method,
+                            progress,
+                        } => {
+                            if active_streams.contains(&stream_id)
+                                && !canceled_streams.contains(&stream_id)
+                            {
+                                let priority = session
+                                    .stream_priority(stream_id)
+                                    .unwrap_or(protocol_v5::Priority::Background);
+                                session
+                                    .send_progress_with_priority(
+                                        stream_id, method, progress, priority,
+                                    )
+                                    .context("failed to queue v5 progress response")?;
+                            }
+                        }
+                        V5ServeOutputEvent::Completed(completion) => {
+                            active_workers = active_workers.saturating_sub(1);
+                            if let Some(task_class) =
+                                active_task_classes.remove(&completion.stream_id)
+                            {
+                                task_pools.mark_finished(task_class);
+                            }
+                            active_cancellations.remove(&completion.stream_id);
+                            active_deadlines.remove(&completion.stream_id);
+                            active_streams.remove(&completion.stream_id);
+                            if canceled_streams.remove(&completion.stream_id) {
+                                tracing::debug!(
+                                    stream_id = completion.stream_id,
+                                    method = %completion.method,
+                                    "Suppressing v5 response for canceled stream"
+                                );
+                            } else {
+                                shutdown |=
+                                    self.apply_v5_service_terminal(&mut session, completion)?;
+                            }
+                        }
+                    }
+                    output_events.mark_delivered();
                 }};
             }
 
@@ -6064,6 +7086,14 @@ where
                         Ok(event) => Some(event),
                         Err(mpsc::RecvTimeoutError::Timeout) => None,
                         Err(mpsc::RecvTimeoutError::Disconnected) => {
+                            cancel_all_v5_service_work(
+                                &mut requests,
+                                &mut task_pools,
+                                &active_cancellations,
+                                &mut active_deadlines,
+                                &mut canceled_streams,
+                                &mut watches,
+                            );
                             return Err(anyhow::anyhow!("v5 service event channel closed"));
                         }
                     }
@@ -6072,6 +7102,14 @@ where
                         Ok(event) => Some(event),
                         Err(mpsc::RecvTimeoutError::Timeout) => None,
                         Err(mpsc::RecvTimeoutError::Disconnected) => {
+                            cancel_all_v5_service_work(
+                                &mut requests,
+                                &mut task_pools,
+                                &active_cancellations,
+                                &mut active_deadlines,
+                                &mut canceled_streams,
+                                &mut watches,
+                            );
                             return Err(anyhow::anyhow!("v5 service event channel closed"));
                         }
                     }
@@ -6080,20 +7118,55 @@ where
                         Ok(event) => Some(event),
                         Err(mpsc::RecvTimeoutError::Timeout) => None,
                         Err(mpsc::RecvTimeoutError::Disconnected) => {
+                            cancel_all_v5_service_work(
+                                &mut requests,
+                                &mut task_pools,
+                                &active_cancellations,
+                                &mut active_deadlines,
+                                &mut canceled_streams,
+                                &mut watches,
+                            );
                             return Err(anyhow::anyhow!("v5 service event channel closed"));
                         }
                     }
                 };
+                let event = event.and_then(|event| match event {
+                    V5ServeEvent::Inbound => {
+                        inbound_events.clear_ready();
+                        match inbound_rx.try_recv() {
+                            Ok(inbound) => {
+                                let _ = inbound_events.signal_ready();
+                                Some(V5ServeLoopEvent::Inbound(inbound))
+                            }
+                            Err(mpsc::TryRecvError::Empty) => None,
+                            Err(mpsc::TryRecvError::Disconnected) => {
+                                Some(V5ServeLoopEvent::Inbound(Ok(None)))
+                            }
+                        }
+                    }
+                    event => Some(V5ServeLoopEvent::Wake(event)),
+                });
 
                 if let Some(event) = event {
                     last_activity = Instant::now();
                     match event {
-                        V5ServeEvent::Inbound(Ok(Some(frame))) => {
+                        V5ServeLoopEvent::Inbound(Ok(Some(frame))) => {
                             let frame_type = frame.frame_type;
                             let frame_control = frame.control.clone();
-                            let event = session
-                                .receive_frame(frame)
-                                .context("failed to route v5 protocol frame")?;
+                            let event = match session.receive_frame(frame) {
+                                Ok(event) => event,
+                                Err(error) => {
+                                    cancel_all_v5_service_work(
+                                        &mut requests,
+                                        &mut task_pools,
+                                        &active_cancellations,
+                                        &mut active_deadlines,
+                                        &mut canceled_streams,
+                                        &mut watches,
+                                    );
+                                    return Err(error).context("failed to route v5 protocol frame");
+                                }
+                            };
                             let data_credit = event.data_credit();
                             if frame_type == protocol_v5::FrameType::Pong
                                 && outstanding_ping
@@ -6102,6 +7175,7 @@ where
                             {
                                 outstanding_ping = None;
                             }
+                            let mut acknowledge_data = true;
                             if let Some(stream_event) = event.stream_event {
                                 if let protocol_v5::StreamEvent::ResetStream { stream_id, .. } =
                                     &stream_event
@@ -6118,179 +7192,261 @@ where
                                         active_deadlines.remove(stream_id);
                                         canceled_streams.insert(*stream_id);
                                     }
-                                } else if let Some((stream_id, request)) =
-                                    self.queue_v5_stream_event(&mut requests, stream_event)?
-                                {
-                                    if let Some(should_shutdown) = self.handle_v5_control_request(
-                                        &mut session,
-                                        &mut watches,
-                                        stream_id,
-                                        &request,
+                                } else {
+                                    match self.queue_v5_stream_event(
+                                        &mut requests,
+                                        &request_budget,
+                                        stream_event,
                                     )? {
-                                        shutdown |= should_shutdown;
-                                    } else {
-                                        if request.supersedes_stream_id != 0 {
-                                            let mut cancellation_state =
-                                                V5ServiceCancellationState {
-                                                    task_pools: &mut task_pools,
-                                                    active_cancellations: &active_cancellations,
-                                                    active_deadlines: &mut active_deadlines,
-                                                    canceled_streams: &mut canceled_streams,
-                                                };
-                                            reset_v5_service_stream(
-                                                &mut session,
-                                                &mut requests,
-                                                &mut cancellation_state,
-                                                request.supersedes_stream_id,
-                                                protocol_v5::RESET_CANCELLED,
-                                                format!("superseded by stream {stream_id}"),
-                                            )?;
-                                        }
-                                        if v5_deadline_expired(request.deadline_unix_ms) {
+                                        V5QueuedStreamEvent::Pending => {}
+                                        V5QueuedStreamEvent::Rejected {
+                                            stream_id,
+                                            code,
+                                            diagnostic,
+                                        } => {
                                             session
-                                                .reset_stream(
-                                                    stream_id,
-                                                    protocol_v5::RESET_DEADLINE_EXCEEDED,
-                                                    "request deadline expired",
-                                                )
+                                                .reset_stream(stream_id, code, diagnostic)
                                                 .context(
-                                                    "failed to reset expired v5 request stream",
+                                                    "failed to reset rejected v5 request stream",
                                                 )?;
-                                            continue;
+                                            acknowledge_data = false;
                                         }
-                                        let deadline_unix_ms = request.deadline_unix_ms;
-                                        if task_pools.can_start(&request) {
-                                            start_v5_service_worker!(stream_id, request);
-                                        } else {
-                                            if deadline_unix_ms != 0 {
-                                                tracing::trace!(
+                                        V5QueuedStreamEvent::Complete { stream_id } => {
+                                            let request = requests.remove(&stream_id).with_context(
+                                                || {
+                                                    format!(
+                                                        "completed v5 request stream {stream_id} was not queued"
+                                                    )
+                                                },
+                                            )?;
+                                            if let Some(should_shutdown) = self
+                                                .handle_v5_control_request(
+                                                    &mut session,
+                                                    &mut watches,
                                                     stream_id,
-                                                    deadline_unix_ms,
-                                                    method = %request.method,
-                                                    "Queueing v5 request behind bounded task pool"
-                                                );
+                                                    &request,
+                                                )?
+                                            {
+                                                shutdown |= should_shutdown;
+                                            } else {
+                                                if request.supersedes_stream_id != 0 {
+                                                    let mut cancellation_state =
+                                                        V5ServiceCancellationState {
+                                                            task_pools: &mut task_pools,
+                                                            active_cancellations:
+                                                                &active_cancellations,
+                                                            active_deadlines: &mut active_deadlines,
+                                                            canceled_streams: &mut canceled_streams,
+                                                        };
+                                                    reset_v5_service_stream(
+                                                        &mut session,
+                                                        &mut requests,
+                                                        &mut cancellation_state,
+                                                        request.supersedes_stream_id,
+                                                        protocol_v5::RESET_CANCELLED,
+                                                        format!("superseded by stream {stream_id}"),
+                                                    )?;
+                                                }
+                                                if v5_deadline_expired(request.deadline_unix_ms) {
+                                                    session
+                                                        .reset_stream(
+                                                            stream_id,
+                                                            protocol_v5::RESET_DEADLINE_EXCEEDED,
+                                                            "request deadline expired",
+                                                        )
+                                                        .context(
+                                                            "failed to reset expired v5 request stream",
+                                                        )?;
+                                                    continue;
+                                                }
+                                                let deadline_unix_ms = request.deadline_unix_ms;
+                                                if task_pools.can_start(&request) {
+                                                    start_v5_service_worker!(stream_id, request);
+                                                } else {
+                                                    if deadline_unix_ms != 0 {
+                                                        tracing::trace!(
+                                                            stream_id,
+                                                            deadline_unix_ms,
+                                                            method = %request.method,
+                                                            "Queueing v5 request behind bounded task pool"
+                                                        );
+                                                    }
+                                                    task_pools.enqueue(stream_id, request);
+                                                }
                                             }
-                                            task_pools.enqueue(stream_id, request);
                                         }
                                     }
                                 }
                             }
-                            if let Some((stream_id, credit_bytes)) = data_credit {
+                            if acknowledge_data && let Some((stream_id, credit_bytes)) = data_credit
+                            {
                                 session
                                     .acknowledge_data(stream_id, credit_bytes)
                                     .context("failed to queue v5 data window update")?;
                             }
                         }
-                        V5ServeEvent::Inbound(Ok(None)) => {
+                        V5ServeLoopEvent::Inbound(Ok(None)) => {
                             inbound_closed = true;
+                            cancel_all_v5_service_work(
+                                &mut requests,
+                                &mut task_pools,
+                                &active_cancellations,
+                                &mut active_deadlines,
+                                &mut canceled_streams,
+                                &mut watches,
+                            );
                         }
-                        V5ServeEvent::Inbound(Err(error)) => {
+                        V5ServeLoopEvent::Inbound(Err(error)) => {
+                            cancel_all_v5_service_work(
+                                &mut requests,
+                                &mut task_pools,
+                                &active_cancellations,
+                                &mut active_deadlines,
+                                &mut canceled_streams,
+                                &mut watches,
+                            );
                             return Err(error).context("failed to read v5 protocol frame");
                         }
-                        V5ServeEvent::Completed(completion) => {
-                            active_workers = active_workers.saturating_sub(1);
-                            active_streams.remove(&completion.stream_id);
-                            if let Some(task_class) =
-                                active_task_classes.remove(&completion.stream_id)
-                            {
-                                task_pools.mark_finished(task_class);
-                            }
-                            active_cancellations.remove(&completion.stream_id);
-                            active_deadlines.remove(&completion.stream_id);
-                            if canceled_streams.remove(&completion.stream_id) {
-                                tracing::debug!(
-                                    stream_id = completion.stream_id,
-                                    method = %completion.method,
-                                    "Suppressing v5 response for canceled stream"
-                                );
-                            } else {
-                                shutdown |= self.apply_v5_completion(&mut session, completion)?;
-                            }
-                        }
-                        V5ServeEvent::StreamData {
-                            stream_id,
-                            channel,
-                            body,
-                            priority,
-                        } => {
-                            if active_streams.contains(&stream_id)
-                                && !canceled_streams.contains(&stream_id)
-                            {
-                                session
-                                    .send_data(stream_id, channel, &body, priority)
-                                    .context("failed to queue v5 streamed response data")?;
+                        V5ServeLoopEvent::Wake(V5ServeEvent::Output) => {
+                            output_events.clear_ready();
+                            if session.queued_len() < V5_SERVE_SCHEDULER_BACKLOG_LIMIT {
+                                match output_rx.try_recv() {
+                                    Ok(output_event) => {
+                                        let _ = output_events.signal_ready();
+                                        apply_v5_output_event!(output_event);
+                                    }
+                                    Err(mpsc::TryRecvError::Empty) => {}
+                                    Err(mpsc::TryRecvError::Disconnected) => {
+                                        if active_workers > 0 {
+                                            cancel_all_v5_service_work(
+                                                &mut requests,
+                                                &mut task_pools,
+                                                &active_cancellations,
+                                                &mut active_deadlines,
+                                                &mut canceled_streams,
+                                                &mut watches,
+                                            );
+                                            return Err(anyhow::anyhow!(
+                                                "v5 service output event channel closed"
+                                            ));
+                                        }
+                                    }
+                                }
                             }
                         }
-                        V5ServeEvent::PartialResponse {
-                            stream_id,
-                            method,
-                            payload,
-                            priority,
-                        } => {
-                            if active_streams.contains(&stream_id)
-                                && !canceled_streams.contains(&stream_id)
-                            {
-                                session
-                                    .send_response(
-                                        stream_id,
-                                        method,
-                                        protocol_v5::MessageRole::PartialResult,
-                                        false,
-                                    )
-                                    .context("failed to queue v5 partial response headers")?;
-                                session
-                                    .send_data(
-                                        stream_id,
-                                        protocol_v5::DataChannel::SearchPayload,
-                                        &payload,
-                                        priority,
-                                    )
-                                    .context("failed to queue v5 partial response payload")?;
+                        V5ServeLoopEvent::Wake(V5ServeEvent::NativeWatch) => {
+                            native_watch_events.clear_ready();
+                            for watch_id in native_watch_events.take_overflowed_watch_ids() {
+                                watches.record_native_overflow(watch_id);
+                            }
+                            match native_watch_rx.try_recv() {
+                                Ok(event) => {
+                                    let _ = native_watch_events.signal_ready();
+                                    watches.record_native_event(
+                                        event.watch_id,
+                                        event.result,
+                                        &self.workspace_root,
+                                    )?;
+                                }
+                                Err(mpsc::TryRecvError::Empty) => {}
+                                Err(mpsc::TryRecvError::Disconnected) => {
+                                    tracing::debug!(
+                                        "Native v5 watch event queue closed; using polling fallback"
+                                    );
+                                }
                             }
                         }
-                        V5ServeEvent::Progress {
-                            stream_id,
-                            method,
-                            progress,
-                        } => {
-                            if active_streams.contains(&stream_id)
-                                && !canceled_streams.contains(&stream_id)
-                            {
-                                session
-                                    .send_progress(stream_id, method, progress)
-                                    .context("failed to queue v5 progress response")?;
-                            }
-                        }
-                        V5ServeEvent::NativeWatch { watch_id, result } => {
-                            watches.record_native_event(watch_id, result, &self.workspace_root)?;
-                        }
+                        V5ServeLoopEvent::Wake(V5ServeEvent::Inbound) => {}
                     }
                 }
 
-                expire_v5_service_deadlines(
+                if inbound_closed {
+                    continue;
+                }
+
+                if shutdown && shutdown_started.is_none() {
+                    shutdown_started = Some(Instant::now());
+                }
+                if shutdown_started.is_some_and(|started| started.elapsed() >= shutdown_grace) {
+                    cancel_all_v5_service_work(
+                        &mut requests,
+                        &mut task_pools,
+                        &active_cancellations,
+                        &mut active_deadlines,
+                        &mut canceled_streams,
+                        &mut watches,
+                    );
+                }
+
+                if let Err(error) = expire_v5_service_deadlines(
                     &mut session,
                     &mut requests,
                     &mut task_pools,
                     &active_cancellations,
                     &mut active_deadlines,
                     &mut canceled_streams,
-                )?;
+                ) {
+                    cancel_all_v5_service_work(
+                        &mut requests,
+                        &mut task_pools,
+                        &active_cancellations,
+                        &mut active_deadlines,
+                        &mut canceled_streams,
+                        &mut watches,
+                    );
+                    return Err(error);
+                }
                 drain_v5_service_task_queue!();
-                drive_v5_idle_ping(
+                if let Err(error) = drive_v5_idle_ping(
                     &mut session,
                     &mut last_activity,
                     &mut outstanding_ping,
                     &mut next_ping_id,
                     idle_ping_interval,
                     ping_timeout,
-                )?;
-                self.poll_v5_watches(&mut session, &mut watches)?;
-                self.drain_v5_session_writer(
+                ) {
+                    cancel_all_v5_service_work(
+                        &mut requests,
+                        &mut task_pools,
+                        &active_cancellations,
+                        &mut active_deadlines,
+                        &mut canceled_streams,
+                        &mut watches,
+                    );
+                    return Err(error);
+                }
+                if let Err(error) = self.poll_v5_watches(&mut session, &mut watches) {
+                    cancel_all_v5_service_work(
+                        &mut requests,
+                        &mut task_pools,
+                        &active_cancellations,
+                        &mut active_deadlines,
+                        &mut canceled_streams,
+                        &mut watches,
+                    );
+                    return Err(error);
+                }
+                if let Err(error) = self.drain_v5_session_writer(
                     &mut session,
                     &mut writer,
                     limits,
                     &mut next_frame_sequence,
-                )?;
+                ) {
+                    cancel_all_v5_service_work(
+                        &mut requests,
+                        &mut task_pools,
+                        &active_cancellations,
+                        &mut active_deadlines,
+                        &mut canceled_streams,
+                        &mut watches,
+                    );
+                    return Err(error);
+                }
+                if session.queued_len() < V5_SERVE_SCHEDULER_BACKLOG_LIMIT
+                    && output_events.has_pending_output()
+                {
+                    let _ = output_events.signal_ready();
+                }
             }
 
             self.drain_v5_session_writer(
@@ -6306,33 +7462,57 @@ where
         &self,
         session: &mut protocol_v5::ProtocolSession,
         requests: &mut HashMap<u64, V5ServiceRequest>,
+        request_budget: &V5ConnectionByteBudget,
         watches: &mut V5WatchRegistry,
         event: protocol_v5::StreamEvent,
-    ) -> Result<bool> {
-        let Some((stream_id, request)) = self.queue_v5_stream_event(requests, event)? else {
-            return Ok(false);
-        };
+    ) -> Result<(bool, bool)> {
+        let (stream_id, request) =
+            match self.queue_v5_stream_event(requests, request_budget, event)? {
+                V5QueuedStreamEvent::Pending => return Ok((false, true)),
+                V5QueuedStreamEvent::Rejected {
+                    stream_id,
+                    code,
+                    diagnostic,
+                } => {
+                    session
+                        .reset_stream(stream_id, code, diagnostic)
+                        .context("failed to reset rejected v5 request stream")?;
+                    return Ok((false, false));
+                }
+                V5QueuedStreamEvent::Complete { stream_id } => {
+                    let request = requests.remove(&stream_id).with_context(|| {
+                        format!("completed v5 request stream {stream_id} was not queued")
+                    })?;
+                    (stream_id, request)
+                }
+            };
         if let Some(should_shutdown) =
             self.handle_v5_control_request(session, watches, stream_id, &request)?
         {
-            return Ok(should_shutdown);
+            return Ok((should_shutdown, true));
         }
         self.complete_v5_request(session, stream_id, request)
+            .map(|shutdown| (shutdown, true))
     }
 
     fn queue_v5_stream_event(
         &self,
         requests: &mut HashMap<u64, V5ServiceRequest>,
+        request_budget: &V5ConnectionByteBudget,
         event: protocol_v5::StreamEvent,
-    ) -> Result<Option<(u64, V5ServiceRequest)>> {
+    ) -> Result<V5QueuedStreamEvent> {
         match event {
             protocol_v5::StreamEvent::Headers {
                 stream_id,
                 role: protocol_v5::MessageRole::Request,
+                priority,
                 envelope,
             } => {
-                requests.insert(stream_id, V5ServiceRequest::from_envelope(envelope));
-                Ok(None)
+                requests.insert(
+                    stream_id,
+                    V5ServiceRequest::from_envelope(envelope, priority, request_budget),
+                );
+                Ok(V5QueuedStreamEvent::Pending)
             }
             protocol_v5::StreamEvent::Data {
                 stream_id,
@@ -6343,20 +7523,32 @@ where
                 let request = requests
                     .get_mut(&stream_id)
                     .with_context(|| format!("received v5 DATA for unknown stream {stream_id}"))?;
-                self.append_v5_request_data(request, channel, body);
-                Ok(None)
+                if let Some(error) = self.append_v5_request_data(request, channel, body) {
+                    requests.remove(&stream_id);
+                    let code = if error.code == "resource_exhausted" {
+                        protocol_v5::RESET_RESOURCE_EXHAUSTED
+                    } else {
+                        protocol_v5::RESET_UNAVAILABLE
+                    };
+                    return Ok(V5QueuedStreamEvent::Rejected {
+                        stream_id,
+                        code,
+                        diagnostic: error.message,
+                    });
+                }
+                Ok(V5QueuedStreamEvent::Pending)
             }
             protocol_v5::StreamEvent::EndStream { stream_id } => {
-                let Some(request) = requests.remove(&stream_id) else {
-                    return Ok(None);
-                };
-                Ok(Some((stream_id, request)))
+                if !requests.contains_key(&stream_id) {
+                    return Ok(V5QueuedStreamEvent::Pending);
+                }
+                Ok(V5QueuedStreamEvent::Complete { stream_id })
             }
             protocol_v5::StreamEvent::ResetStream { stream_id, .. } => {
                 requests.remove(&stream_id);
-                Ok(None)
+                Ok(V5QueuedStreamEvent::Pending)
             }
-            protocol_v5::StreamEvent::Headers { .. } => Ok(None),
+            protocol_v5::StreamEvent::Headers { .. } => Ok(V5QueuedStreamEvent::Pending),
         }
     }
 
@@ -6365,21 +7557,26 @@ where
         request: &mut V5ServiceRequest,
         channel: protocol_v5::DataChannel,
         body: Vec<u8>,
-    ) {
+    ) -> Option<RemoteError> {
         if request.early_error.is_some() {
-            return;
+            return None;
         }
-        if request.method == "fs.write"
+        let streamed_file_body = request.method == "fs.write"
             && channel == protocol_v5::DataChannel::FileBody
-            && matches!(self.backend.identity(), WorkspaceIdentity::Local)
-        {
+            && matches!(self.backend.identity(), WorkspaceIdentity::Local);
+        if let Err(error) = request.reserve_data(channel, body.len(), !streamed_file_body) {
+            request.streamed_write = None;
+            return Some(error);
+        }
+        if streamed_file_body {
             if let Err(error) = self.append_v5_streaming_write_data(request, &body) {
                 request.streamed_write = None;
-                request.early_error = Some(error);
+                return Some(error);
             }
         } else {
             request.append_data(channel, body);
         }
+        None
     }
 
     fn append_v5_streaming_write_data(
@@ -6511,6 +7708,7 @@ where
             event_stream_id,
             accepted_roots.clone(),
             start.debounce_ms,
+            start.max_events_per_batch,
             &self.workspace_root,
         );
 
@@ -6648,7 +7846,7 @@ where
                 )
                 .context("failed to close v5 watch event stream")?;
         }
-        self.send_v5_raw_response(session, stream_id, &request.method, &[])
+        self.send_v5_raw_response(session, stream_id, &request.method, Vec::new())
     }
 
     fn poll_v5_watches(
@@ -6668,7 +7866,7 @@ where
         &self,
         stream_id: u64,
         mut request: V5ServiceRequest,
-        stream_events: Option<mpsc::Sender<V5ServeEvent>>,
+        stream_events: Option<V5ServeOutputSender>,
         cancellation: Option<Arc<AtomicBool>>,
     ) -> V5ServiceCompletion {
         let method = request.method.clone();
@@ -7031,7 +8229,7 @@ where
         &self,
         stream_id: u64,
         request: &V5ServiceRequest,
-        stream_events: mpsc::Sender<V5ServeEvent>,
+        stream_events: V5ServeOutputSender,
     ) -> std::result::Result<ServiceOutcome, RemoteError> {
         let payload: V5ReadFilePayload = decode_v5_payload(&request.method, &request.payload)
             .map_err(v5_method_error_to_remote_error)?;
@@ -7078,11 +8276,11 @@ where
             }
             remaining = remaining.saturating_sub(read as u64);
             stream_events
-                .send(V5ServeEvent::StreamData {
+                .send(V5ServeOutputEvent::StreamData {
                     stream_id,
                     channel: protocol_v5::DataChannel::FileBody,
                     body: buffer[..read].to_vec(),
-                    priority: protocol_v5::Priority::ForegroundDocument,
+                    priority: request.priority,
                 })
                 .map_err(|_| RemoteError {
                     code: "unavailable".to_string(),
@@ -7128,15 +8326,21 @@ where
         &self,
         stream_id: u64,
         request: &V5ServiceRequest,
-        stream_events: mpsc::Sender<V5ServeEvent>,
+        stream_events: V5ServeOutputSender,
         cancellation: Option<Arc<AtomicBool>>,
     ) -> std::result::Result<ServiceOutcome, RemoteError> {
         let payload: ProcessRequest = decode_v5_payload(&request.method, &request.payload)
             .map_err(v5_method_error_to_remote_error)?;
         let spec =
             self.process_spec_from_request(payload, request.body.clone(), cancellation.as_ref())?;
-        let output = v5_run_local_streaming_process(spec, stream_id, stream_events, cancellation)
-            .map_err(remote_error_from_workspace)?;
+        let output = v5_run_local_streaming_process(
+            spec,
+            stream_id,
+            request.priority,
+            stream_events,
+            cancellation,
+        )
+        .map_err(remote_error_from_workspace)?;
         Ok(ServiceOutcome::continue_response(
             RemoteResponse::RunProcess(v5_streamed_process_output_response(&output)),
             Vec::new(),
@@ -7147,9 +8351,10 @@ where
         &self,
         stream_id: u64,
         request: &V5ServiceRequest,
-        stream_events: mpsc::Sender<V5ServeEvent>,
+        stream_events: V5ServeOutputSender,
         cancellation: Option<Arc<AtomicBool>>,
     ) -> std::result::Result<ServiceOutcome, RemoteError> {
+        let priority = request.priority;
         let request: FileSearchRequest = decode_v5_payload(&request.method, &request.payload)
             .map_err(v5_method_error_to_remote_error)?;
         let query = FileSearchQuery {
@@ -7166,8 +8371,13 @@ where
             max_depth: request.max_depth,
             excluded_relative_prefixes: request.excluded_relative_prefixes,
         };
-        let result =
-            v5_streaming_file_search(query, stream_id, stream_events, cancellation.as_ref())?;
+        let result = v5_streaming_file_search(
+            query,
+            stream_id,
+            priority,
+            stream_events,
+            cancellation.as_ref(),
+        )?;
         Ok(ServiceOutcome::continue_response(
             RemoteResponse::FileSearch(file_search_response(result)),
             Vec::new(),
@@ -7178,9 +8388,10 @@ where
         &self,
         stream_id: u64,
         request: &V5ServiceRequest,
-        stream_events: mpsc::Sender<V5ServeEvent>,
+        stream_events: V5ServeOutputSender,
         cancellation: Option<Arc<AtomicBool>>,
     ) -> std::result::Result<ServiceOutcome, RemoteError> {
+        let priority = request.priority;
         let request: TextSearchRequest = decode_v5_payload(&request.method, &request.payload)
             .map_err(v5_method_error_to_remote_error)?;
         let query = TextSearchQuery {
@@ -7200,8 +8411,13 @@ where
             excluded_relative_paths: request.excluded_relative_paths,
             custom_ignore_filenames: request.custom_ignore_filenames,
         };
-        let result =
-            v5_streaming_text_search(query, stream_id, stream_events, cancellation.as_ref())?;
+        let result = v5_streaming_text_search(
+            query,
+            stream_id,
+            priority,
+            stream_events,
+            cancellation.as_ref(),
+        )?;
         Ok(ServiceOutcome::continue_response(
             RemoteResponse::TextSearch(text_search_response(result)),
             Vec::new(),
@@ -7249,6 +8465,201 @@ where
         }
     }
 
+    fn enqueue_v5_service_completion(
+        &self,
+        completion: V5ServiceCompletion,
+        priority: protocol_v5::Priority,
+        output_events: &V5ServeOutputSender,
+    ) -> std::result::Result<(), V5ServeQueueError> {
+        let V5ServiceCompletion {
+            stream_id,
+            method,
+            result,
+        } = completion;
+        let terminal_result = match result {
+            Ok(ServiceOutcome::Continue { response, body }) => {
+                match self.enqueue_v5_service_response(
+                    output_events,
+                    stream_id,
+                    *response,
+                    body,
+                    priority,
+                ) {
+                    Ok(()) => Ok(V5ServiceTerminalOutcome::Continue),
+                    Err(error) => Err(error),
+                }
+            }
+            Ok(ServiceOutcome::Shutdown) => self
+                .enqueue_v5_service_response(
+                    output_events,
+                    stream_id,
+                    RemoteResponse::Shutdown,
+                    Vec::new(),
+                    priority,
+                )
+                .map(|()| V5ServiceTerminalOutcome::Shutdown),
+            Err(error) => Err(error),
+        };
+        output_events.send(V5ServeOutputEvent::Completed(V5ServiceTerminal {
+            stream_id,
+            method: v5_bounded_terminal_string(method, 256),
+            result: terminal_result.map_err(v5_bound_terminal_error),
+        }))
+    }
+
+    fn enqueue_v5_service_response(
+        &self,
+        output_events: &V5ServeOutputSender,
+        stream_id: u64,
+        response: RemoteResponse,
+        body: Vec<u8>,
+        priority: protocol_v5::Priority,
+    ) -> std::result::Result<(), RemoteError> {
+        let payload_bytes = v5_serialized_response_len(&response)?;
+        let retained_bytes = payload_bytes
+            .checked_add(body.capacity())
+            .ok_or_else(v5_response_size_overflow_error)?;
+        let _reservation = output_events.reserve_completion_bytes(retained_bytes)?;
+
+        v5_serialize_response_to_output(output_events, stream_id, &response, priority)?;
+        self.enqueue_v5_service_body(output_events, stream_id, &response, body, priority)
+    }
+
+    fn enqueue_v5_service_body(
+        &self,
+        output_events: &V5ServeOutputSender,
+        stream_id: u64,
+        response: &RemoteResponse,
+        body: Vec<u8>,
+        priority: protocol_v5::Priority,
+    ) -> std::result::Result<(), RemoteError> {
+        if body.is_empty() {
+            return Ok(());
+        }
+
+        match response {
+            RemoteResponse::ReadFile(_) => self
+                .enqueue_v5_service_data(
+                    output_events,
+                    stream_id,
+                    protocol_v5::DataChannel::FileBody,
+                    &body,
+                    priority,
+                )
+                .map_err(v5_queue_error_to_remote_error),
+            RemoteResponse::RunProcess(process) => {
+                let total_len = process
+                    .stdout_len
+                    .checked_add(process.stderr_len)
+                    .ok_or_else(v5_response_size_overflow_error)?;
+                if total_len > body.len() {
+                    return Err(RemoteError {
+                        code: "invalid_response".to_string(),
+                        message: "process output body is shorter than declared lengths".to_string(),
+                        diagnostic: Some(format!(
+                            "stdout_len={} stderr_len={} body_len={}",
+                            process.stdout_len,
+                            process.stderr_len,
+                            body.len()
+                        )),
+                    });
+                }
+                if process.stdout_len != 0 {
+                    self.enqueue_v5_service_data(
+                        output_events,
+                        stream_id,
+                        protocol_v5::DataChannel::Stdout,
+                        &body[..process.stdout_len],
+                        priority,
+                    )
+                    .map_err(v5_queue_error_to_remote_error)?;
+                }
+                if process.stderr_len != 0 {
+                    self.enqueue_v5_service_data(
+                        output_events,
+                        stream_id,
+                        protocol_v5::DataChannel::Stderr,
+                        &body[process.stdout_len..total_len],
+                        priority,
+                    )
+                    .map_err(v5_queue_error_to_remote_error)?;
+                }
+                Ok(())
+            }
+            _ => self
+                .enqueue_v5_service_data(
+                    output_events,
+                    stream_id,
+                    protocol_v5::DataChannel::Unspecified,
+                    &body,
+                    priority,
+                )
+                .map_err(v5_queue_error_to_remote_error),
+        }
+    }
+
+    fn enqueue_v5_service_data(
+        &self,
+        output_events: &V5ServeOutputSender,
+        stream_id: u64,
+        channel: protocol_v5::DataChannel,
+        body: &[u8],
+        priority: protocol_v5::Priority,
+    ) -> std::result::Result<(), V5ServeQueueError> {
+        for chunk in body.chunks(V5_SERVE_OUTPUT_EVENT_MAX_RETAINED_BYTES) {
+            output_events.send(V5ServeOutputEvent::StreamData {
+                stream_id,
+                channel,
+                body: chunk.to_vec(),
+                priority,
+            })?;
+        }
+        Ok(())
+    }
+
+    fn apply_v5_service_terminal(
+        &self,
+        session: &mut protocol_v5::ProtocolSession,
+        completion: V5ServiceTerminal,
+    ) -> Result<bool> {
+        match completion.result {
+            Ok(outcome) => {
+                let priority = session
+                    .stream_priority(completion.stream_id)
+                    .unwrap_or(protocol_v5::Priority::Background);
+                session
+                    .send_response_with_priority(
+                        completion.stream_id,
+                        completion.method,
+                        protocol_v5::MessageRole::FinalResponse,
+                        true,
+                        priority,
+                    )
+                    .context("failed to queue v5 final response")?;
+                session
+                    .finish_stream(completion.stream_id, priority)
+                    .context("failed to queue v5 end stream")?;
+                if matches!(outcome, V5ServiceTerminalOutcome::Shutdown) {
+                    session
+                        .send_goaway("OK", "session shutdown")
+                        .context("failed to queue v5 goaway after shutdown")?;
+                    Ok(true)
+                } else {
+                    Ok(false)
+                }
+            }
+            Err(error) => {
+                self.send_v5_remote_error(
+                    session,
+                    completion.stream_id,
+                    &completion.method,
+                    error,
+                )?;
+                Ok(false)
+            }
+        }
+    }
+
     fn send_v5_response(
         &self,
         session: &mut protocol_v5::ProtocolSession,
@@ -7257,15 +8668,18 @@ where
         response: RemoteResponse,
         body: Vec<u8>,
     ) -> Result<()> {
+        let priority = session
+            .stream_priority(stream_id)
+            .unwrap_or(protocol_v5::Priority::Background);
         let payload = response
             .to_v5_payload()
             .context("failed to encode v5 response payload")?;
         session
-            .send_data(
+            .send_owned_data(
                 stream_id,
                 protocol_v5::DataChannel::Unspecified,
-                &payload,
-                protocol_v5::Priority::Background,
+                payload,
+                priority,
             )
             .context("failed to queue v5 response payload")?;
         for (channel, body) in v5_response_body_chunks(&response, body).map_err(|error| {
@@ -7281,24 +8695,20 @@ where
             )
         })? {
             session
-                .send_data(
-                    stream_id,
-                    channel,
-                    &body,
-                    protocol_v5::Priority::ForegroundDocument,
-                )
+                .send_owned_data(stream_id, channel, body, priority)
                 .context("failed to queue v5 response body")?;
         }
         session
-            .send_response(
+            .send_response_with_priority(
                 stream_id,
                 method,
                 protocol_v5::MessageRole::FinalResponse,
                 true,
+                priority,
             )
             .context("failed to queue v5 final response")?;
         session
-            .finish_stream(stream_id, protocol_v5::Priority::Background)
+            .finish_stream(stream_id, priority)
             .context("failed to queue v5 end stream")?;
         Ok(())
     }
@@ -7314,7 +8724,7 @@ where
         M: ProstMessage,
     {
         let payload = response.encode_to_vec();
-        self.send_v5_raw_response(session, stream_id, method, &payload)
+        self.send_v5_raw_response(session, stream_id, method, payload)
     }
 
     fn send_v5_raw_response(
@@ -7322,28 +8732,32 @@ where
         session: &mut protocol_v5::ProtocolSession,
         stream_id: u64,
         method: &str,
-        payload: &[u8],
+        payload: Vec<u8>,
     ) -> Result<()> {
+        let priority = session
+            .stream_priority(stream_id)
+            .unwrap_or(protocol_v5::Priority::VisibleFileTree);
         if !payload.is_empty() {
             session
-                .send_data(
+                .send_owned_data(
                     stream_id,
                     protocol_v5::DataChannel::Unspecified,
                     payload,
-                    protocol_v5::Priority::VisibleFileTree,
+                    priority,
                 )
                 .context("failed to queue v5 response payload")?;
         }
         session
-            .send_response(
+            .send_response_with_priority(
                 stream_id,
                 method,
                 protocol_v5::MessageRole::FinalResponse,
                 true,
+                priority,
             )
             .context("failed to queue v5 final response")?;
         session
-            .finish_stream(stream_id, protocol_v5::Priority::VisibleFileTree)
+            .finish_stream(stream_id, priority)
             .context("failed to queue v5 end stream")?;
         Ok(())
     }
@@ -7355,8 +8769,11 @@ where
         method: &str,
         error: RemoteError,
     ) -> Result<()> {
+        let priority = session
+            .stream_priority(stream_id)
+            .unwrap_or(protocol_v5::Priority::Background);
         session
-            .send_error(
+            .send_error_with_priority(
                 stream_id,
                 method,
                 protocol_v5::ErrorHeader {
@@ -7366,10 +8783,11 @@ where
                     details: error.diagnostic.unwrap_or_default(),
                     remote_errno: 0,
                 },
+                priority,
             )
             .context("failed to queue v5 error response")?;
         session
-            .finish_stream(stream_id, protocol_v5::Priority::Background)
+            .finish_stream(stream_id, priority)
             .context("failed to queue v5 error end stream")?;
         Ok(())
     }
@@ -7379,10 +8797,24 @@ where
         session: &mut protocol_v5::ProtocolSession,
         io: &mut protocol_v5::FramedIo<R, W>,
     ) -> Result<()> {
-        while let Some(frame) = session.pop_next_frame().context("failed to pop v5 frame")? {
-            io.write_frame(frame).context("failed to write v5 frame")?;
+        loop {
+            let mut frames = Vec::with_capacity(V5_SERVER_WRITE_BATCH_FRAMES);
+            for _ in 0..V5_SERVER_WRITE_BATCH_FRAMES {
+                let Some(frame) = session.pop_next_frame().context("failed to pop v5 frame")?
+                else {
+                    break;
+                };
+                frames.push(frame);
+            }
+            if frames.is_empty() {
+                return Ok(());
+            }
+            io.write_frame_batch(&mut frames)
+                .context("failed to write v5 frame batch")?;
+            for frame in &frames {
+                session.observe_frame_written(frame);
+            }
         }
-        Ok(())
     }
 
     fn drain_v5_session_writer<W: Write>(
@@ -7392,15 +8824,28 @@ where
         limits: protocol_v5::FrameLimits,
         next_frame_sequence: &mut u64,
     ) -> Result<()> {
-        while let Some(mut frame) = session.pop_next_frame().context("failed to pop v5 frame")? {
-            frame.frame_sequence = *next_frame_sequence;
-            *next_frame_sequence = next_frame_sequence
-                .checked_add(1)
-                .context("v5 frame sequence exhausted")?;
-            protocol_v5::write_frame_with_limits(writer, &frame, limits)
-                .context("failed to write v5 frame")?;
+        loop {
+            let mut frames = Vec::with_capacity(V5_SERVER_WRITE_BATCH_FRAMES);
+            for _ in 0..V5_SERVER_WRITE_BATCH_FRAMES {
+                let Some(mut frame) = session.pop_next_frame().context("failed to pop v5 frame")?
+                else {
+                    break;
+                };
+                frame.frame_sequence = *next_frame_sequence;
+                *next_frame_sequence = next_frame_sequence
+                    .checked_add(1)
+                    .context("v5 frame sequence exhausted")?;
+                frames.push(frame);
+            }
+            if frames.is_empty() {
+                return Ok(());
+            }
+            protocol_v5::write_frame_batch_with_limits(writer, &frames, limits)
+                .context("failed to write v5 frame batch")?;
+            for frame in &frames {
+                session.observe_frame_written(frame);
+            }
         }
-        Ok(())
     }
 
     fn execute(
@@ -7851,9 +9296,29 @@ struct V5ServiceCompletion {
     result: std::result::Result<ServiceOutcome, RemoteError>,
 }
 
+struct V5ServiceTerminal {
+    stream_id: u64,
+    method: String,
+    result: std::result::Result<V5ServiceTerminalOutcome, RemoteError>,
+}
+
+enum V5ServiceTerminalOutcome {
+    Continue,
+    Shutdown,
+}
+
 enum V5ServeEvent {
-    Inbound(io::Result<Option<protocol_v5::Frame>>),
-    Completed(V5ServiceCompletion),
+    Inbound,
+    Output,
+    NativeWatch,
+}
+
+enum V5ServeLoopEvent {
+    Inbound(V5InboundEvent),
+    Wake(V5ServeEvent),
+}
+
+enum V5ServeOutputEvent {
     StreamData {
         stream_id: u64,
         channel: protocol_v5::DataChannel,
@@ -7871,17 +9336,444 @@ enum V5ServeEvent {
         method: String,
         progress: protocol_v5::Progress,
     },
-    NativeWatch {
-        watch_id: u64,
-        result: notify::Result<notify::Event>,
+    Completed(V5ServiceTerminal),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum V5ServeQueueError {
+    Closed,
+    EventTooLarge { retained_bytes: usize, max: usize },
+}
+
+#[derive(Clone)]
+struct V5ServeOutputSender {
+    sender: mpsc::SyncSender<V5ServeOutputEvent>,
+    ready_events: mpsc::Sender<V5ServeEvent>,
+    ready: Arc<AtomicBool>,
+    pending_count: Arc<AtomicU64>,
+    completion_budget: V5ConnectionByteBudget,
+}
+
+impl V5ServeOutputSender {
+    fn new(
+        sender: mpsc::SyncSender<V5ServeOutputEvent>,
+        ready_events: mpsc::Sender<V5ServeEvent>,
+    ) -> Self {
+        Self {
+            sender,
+            ready_events,
+            ready: Arc::new(AtomicBool::new(false)),
+            pending_count: Arc::new(AtomicU64::new(0)),
+            completion_budget: V5ConnectionByteBudget::new(V5_SERVE_COMPLETION_BYTE_BUDGET),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_completion_budget(
+        sender: mpsc::SyncSender<V5ServeOutputEvent>,
+        ready_events: mpsc::Sender<V5ServeEvent>,
+        completion_budget: V5ConnectionByteBudget,
+    ) -> Self {
+        Self {
+            sender,
+            ready_events,
+            ready: Arc::new(AtomicBool::new(false)),
+            pending_count: Arc::new(AtomicU64::new(0)),
+            completion_budget,
+        }
+    }
+
+    fn reserve_completion_bytes(
+        &self,
+        retained_bytes: usize,
+    ) -> std::result::Result<V5ByteReservation, RemoteError> {
+        let mut reservation = self.completion_budget.reservation();
+        reservation
+            .try_grow(retained_bytes)
+            .map_err(|error| RemoteError {
+                code: "resource_exhausted".to_string(),
+                message: "v5 service completions exceed the connection memory budget".to_string(),
+                diagnostic: Some(error.to_string()),
+            })?;
+        Ok(reservation)
+    }
+
+    fn send(&self, event: V5ServeOutputEvent) -> std::result::Result<(), V5ServeQueueError> {
+        let retained_bytes = event.retained_bytes();
+        if retained_bytes > V5_SERVE_OUTPUT_EVENT_MAX_RETAINED_BYTES {
+            return Err(V5ServeQueueError::EventTooLarge {
+                retained_bytes,
+                max: V5_SERVE_OUTPUT_EVENT_MAX_RETAINED_BYTES,
+            });
+        }
+        self.pending_count.fetch_add(1, Ordering::AcqRel);
+        if self.sender.send(event).is_err() {
+            self.mark_delivered();
+            return Err(V5ServeQueueError::Closed);
+        }
+        self.signal_ready()
+    }
+
+    fn signal_ready(&self) -> std::result::Result<(), V5ServeQueueError> {
+        if !self.ready.swap(true, Ordering::AcqRel)
+            && self.ready_events.send(V5ServeEvent::Output).is_err()
+        {
+            self.ready.store(false, Ordering::Release);
+            return Err(V5ServeQueueError::Closed);
+        }
+        Ok(())
+    }
+
+    fn clear_ready(&self) {
+        self.ready.store(false, Ordering::Release);
+    }
+
+    fn has_pending_output(&self) -> bool {
+        self.pending_count.load(Ordering::Acquire) != 0
+    }
+
+    fn mark_delivered(&self) {
+        self.pending_count.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+#[derive(Default)]
+struct V5SerializedByteCounter {
+    bytes: usize,
+}
+
+impl Write for V5SerializedByteCounter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.bytes = self.bytes.checked_add(bytes.len()).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "v5 serialized response length overflowed usize",
+            )
+        })?;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn v5_serialized_response_len(
+    response: &RemoteResponse,
+) -> std::result::Result<usize, RemoteError> {
+    let mut counter = V5SerializedByteCounter::default();
+    serde_json::to_writer(&mut counter, response).map_err(|error| RemoteError {
+        code: "internal".to_string(),
+        message: "failed to size v5 response payload".to_string(),
+        diagnostic: Some(error.to_string()),
+    })?;
+    Ok(counter.bytes)
+}
+
+struct V5SerializedResponseWriter<'a> {
+    output_events: &'a V5ServeOutputSender,
+    stream_id: u64,
+    priority: protocol_v5::Priority,
+    buffer: Vec<u8>,
+    queue_error: Option<V5ServeQueueError>,
+}
+
+impl<'a> V5SerializedResponseWriter<'a> {
+    fn new(
+        output_events: &'a V5ServeOutputSender,
+        stream_id: u64,
+        priority: protocol_v5::Priority,
+    ) -> Self {
+        Self {
+            output_events,
+            stream_id,
+            priority,
+            buffer: Vec::with_capacity(V5_SERVE_OUTPUT_EVENT_MAX_RETAINED_BYTES),
+            queue_error: None,
+        }
+    }
+
+    fn flush_chunk(&mut self) -> io::Result<()> {
+        if self.buffer.is_empty() {
+            return Ok(());
+        }
+        let body = std::mem::replace(
+            &mut self.buffer,
+            Vec::with_capacity(V5_SERVE_OUTPUT_EVENT_MAX_RETAINED_BYTES),
+        );
+        self.output_events
+            .send(V5ServeOutputEvent::StreamData {
+                stream_id: self.stream_id,
+                channel: protocol_v5::DataChannel::Unspecified,
+                body,
+                priority: self.priority,
+            })
+            .map_err(|error| {
+                self.queue_error = Some(error);
+                io::Error::other("v5 service output queue rejected serialized response data")
+            })
+    }
+}
+
+impl Write for V5SerializedResponseWriter<'_> {
+    fn write(&mut self, mut bytes: &[u8]) -> io::Result<usize> {
+        let written = bytes.len();
+        while !bytes.is_empty() {
+            let available =
+                V5_SERVE_OUTPUT_EVENT_MAX_RETAINED_BYTES.saturating_sub(self.buffer.len());
+            let take = available.min(bytes.len());
+            self.buffer.extend_from_slice(&bytes[..take]);
+            bytes = &bytes[take..];
+            if self.buffer.len() == V5_SERVE_OUTPUT_EVENT_MAX_RETAINED_BYTES {
+                self.flush_chunk()?;
+            }
+        }
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn v5_serialize_response_to_output(
+    output_events: &V5ServeOutputSender,
+    stream_id: u64,
+    response: &RemoteResponse,
+    priority: protocol_v5::Priority,
+) -> std::result::Result<(), RemoteError> {
+    let mut writer = V5SerializedResponseWriter::new(output_events, stream_id, priority);
+    if let Err(error) = serde_json::to_writer(&mut writer, response) {
+        if let Some(queue_error) = writer.queue_error {
+            return Err(v5_queue_error_to_remote_error(queue_error));
+        }
+        return Err(RemoteError {
+            code: "internal".to_string(),
+            message: "failed to encode v5 response payload".to_string(),
+            diagnostic: Some(error.to_string()),
+        });
+    }
+    writer.flush_chunk().map_err(|error| {
+        writer.queue_error.map_or_else(
+            || RemoteError {
+                code: "internal".to_string(),
+                message: "failed to buffer v5 response payload".to_string(),
+                diagnostic: Some(error.to_string()),
+            },
+            v5_queue_error_to_remote_error,
+        )
+    })
+}
+
+fn v5_response_size_overflow_error() -> RemoteError {
+    RemoteError {
+        code: "resource_exhausted".to_string(),
+        message: "v5 response size overflowed the server byte counter".to_string(),
+        diagnostic: None,
+    }
+}
+
+impl V5ServeOutputEvent {
+    fn retained_bytes(&self) -> usize {
+        match self {
+            Self::StreamData { body, .. } => body.capacity(),
+            Self::PartialResponse {
+                method, payload, ..
+            } => method.capacity().saturating_add(payload.capacity()),
+            Self::Progress {
+                method, progress, ..
+            } => method
+                .capacity()
+                .saturating_add(progress.message.capacity()),
+            Self::Completed(completion) => {
+                let result_bytes = match &completion.result {
+                    Ok(_) => 0,
+                    Err(error) => error
+                        .code
+                        .capacity()
+                        .saturating_add(error.message.capacity())
+                        .saturating_add(
+                            error
+                                .diagnostic
+                                .as_ref()
+                                .map_or(0, |diagnostic| diagnostic.capacity()),
+                        ),
+                };
+                completion.method.capacity().saturating_add(result_bytes)
+            }
+        }
+    }
+}
+
+fn v5_queue_error_to_remote_error(error: V5ServeQueueError) -> RemoteError {
+    match error {
+        V5ServeQueueError::Closed => RemoteError {
+            code: "unavailable".to_string(),
+            message: "v5 service output queue closed".to_string(),
+            diagnostic: None,
+        },
+        V5ServeQueueError::EventTooLarge {
+            retained_bytes,
+            max,
+        } => RemoteError {
+            code: "resource_exhausted".to_string(),
+            message: "v5 service output event exceeds its memory budget".to_string(),
+            diagnostic: Some(format!("retained_bytes={retained_bytes} max={max}")),
+        },
+    }
+}
+
+fn v5_bound_terminal_error(mut error: RemoteError) -> RemoteError {
+    error.code = v5_bounded_terminal_string(error.code, 256);
+    error.message = v5_bounded_terminal_string(error.message, 16 * 1024);
+    error.diagnostic = error
+        .diagnostic
+        .map(|diagnostic| v5_bounded_terminal_string(diagnostic, 32 * 1024));
+    error
+}
+
+fn v5_bounded_terminal_string(mut value: String, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value;
+    }
+    let mut boundary = max_bytes;
+    while boundary > 0 && !value.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    value.truncate(boundary);
+    value
+}
+
+type V5InboundEvent = io::Result<Option<protocol_v5::Frame>>;
+
+#[derive(Clone)]
+struct V5InboundSender {
+    sender: mpsc::SyncSender<V5InboundEvent>,
+    ready_events: mpsc::Sender<V5ServeEvent>,
+    ready: Arc<AtomicBool>,
+}
+
+impl V5InboundSender {
+    fn new(
+        sender: mpsc::SyncSender<V5InboundEvent>,
+        ready_events: mpsc::Sender<V5ServeEvent>,
+    ) -> Self {
+        Self {
+            sender,
+            ready_events,
+            ready: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    fn send(&self, event: V5InboundEvent) -> std::result::Result<(), V5ServeQueueError> {
+        self.sender
+            .send(event)
+            .map_err(|_| V5ServeQueueError::Closed)?;
+        self.signal_ready()
+    }
+
+    fn signal_ready(&self) -> std::result::Result<(), V5ServeQueueError> {
+        if !self.ready.swap(true, Ordering::AcqRel)
+            && self.ready_events.send(V5ServeEvent::Inbound).is_err()
+        {
+            self.ready.store(false, Ordering::Release);
+            return Err(V5ServeQueueError::Closed);
+        }
+        Ok(())
+    }
+
+    fn clear_ready(&self) {
+        self.ready.store(false, Ordering::Release);
+    }
+}
+
+struct V5NativeWatchEvent {
+    watch_id: u64,
+    result: notify::Result<notify::Event>,
+}
+
+#[derive(Clone)]
+struct V5NativeWatchSender {
+    sender: mpsc::SyncSender<V5NativeWatchEvent>,
+    ready_events: mpsc::Sender<V5ServeEvent>,
+    ready: Arc<AtomicBool>,
+    overflowed_watch_ids: Arc<Mutex<HashSet<u64>>>,
+}
+
+impl V5NativeWatchSender {
+    fn new(
+        sender: mpsc::SyncSender<V5NativeWatchEvent>,
+        ready_events: mpsc::Sender<V5ServeEvent>,
+    ) -> Self {
+        Self {
+            sender,
+            ready_events,
+            ready: Arc::new(AtomicBool::new(false)),
+            overflowed_watch_ids: Arc::new(Mutex::new(HashSet::new())),
+        }
+    }
+
+    fn send(&self, event: V5NativeWatchEvent) -> std::result::Result<(), V5ServeQueueError> {
+        match self.sender.try_send(event) {
+            Ok(()) => self.signal_ready(),
+            Err(mpsc::TrySendError::Full(event)) => {
+                self.overflowed_watch_ids
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(event.watch_id);
+                self.signal_ready()
+            }
+            Err(mpsc::TrySendError::Disconnected(_)) => Err(V5ServeQueueError::Closed),
+        }
+    }
+
+    fn signal_ready(&self) -> std::result::Result<(), V5ServeQueueError> {
+        if !self.ready.swap(true, Ordering::AcqRel)
+            && self.ready_events.send(V5ServeEvent::NativeWatch).is_err()
+        {
+            self.ready.store(false, Ordering::Release);
+            return Err(V5ServeQueueError::Closed);
+        }
+        Ok(())
+    }
+
+    fn clear_ready(&self) {
+        self.ready.store(false, Ordering::Release);
+    }
+
+    fn take_overflowed_watch_ids(&self) -> Vec<u64> {
+        let mut overflowed = self
+            .overflowed_watch_ids
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut watch_ids = overflowed.drain().collect::<Vec<_>>();
+        watch_ids.sort_unstable();
+        watch_ids
+    }
+}
+
+#[derive(Debug)]
+enum V5QueuedStreamEvent {
+    Pending,
+    Complete {
+        stream_id: u64,
+    },
+    Rejected {
+        stream_id: u64,
+        code: &'static str,
+        diagnostic: String,
     },
 }
 
 #[derive(Debug)]
 struct V5ServiceRequest {
     method: String,
+    priority: protocol_v5::Priority,
     payload: Vec<u8>,
     body: Vec<u8>,
+    retained_bytes: V5ByteReservation,
+    received_payload_bytes: usize,
+    received_body_bytes: usize,
     deadline_unix_ms: u64,
     supersedes_stream_id: u64,
     streamed_write: Option<V5StreamingWrite>,
@@ -7889,11 +9781,19 @@ struct V5ServiceRequest {
 }
 
 impl V5ServiceRequest {
-    fn from_envelope(envelope: protocol_v5::StreamEnvelope) -> Self {
+    fn from_envelope(
+        envelope: protocol_v5::StreamEnvelope,
+        priority: protocol_v5::Priority,
+        budget: &V5ConnectionByteBudget,
+    ) -> Self {
         Self {
             method: envelope.method,
+            priority,
             payload: Vec::new(),
             body: Vec::new(),
+            retained_bytes: budget.reservation(),
+            received_payload_bytes: 0,
+            received_body_bytes: 0,
             deadline_unix_ms: envelope.deadline_unix_ms,
             supersedes_stream_id: envelope.supersedes_stream_id,
             streamed_write: None,
@@ -7911,6 +9811,55 @@ impl V5ServiceRequest {
             | protocol_v5::DataChannel::Stdout
             | protocol_v5::DataChannel::Stderr => self.body.extend(bytes),
         }
+    }
+
+    fn reserve_data(
+        &mut self,
+        channel: protocol_v5::DataChannel,
+        bytes: usize,
+        retained: bool,
+    ) -> std::result::Result<(), RemoteError> {
+        let (received, limit, label) = match channel {
+            protocol_v5::DataChannel::Unspecified | protocol_v5::DataChannel::SearchPayload => (
+                &mut self.received_payload_bytes,
+                V5_MAX_REQUEST_PAYLOAD_BYTES,
+                "payload",
+            ),
+            protocol_v5::DataChannel::FileBody
+            | protocol_v5::DataChannel::Stdin
+            | protocol_v5::DataChannel::Stdout
+            | protocol_v5::DataChannel::Stderr => (
+                &mut self.received_body_bytes,
+                V5_MAX_REQUEST_BODY_BYTES,
+                "body",
+            ),
+        };
+        let Some(total) = received.checked_add(bytes) else {
+            return Err(v5_request_size_error(&self.method, label, limit));
+        };
+        if total > limit {
+            return Err(v5_request_size_error(&self.method, label, limit));
+        }
+        if retained && let Err(error) = self.retained_bytes.try_grow(bytes) {
+            return Err(RemoteError {
+                code: "resource_exhausted".to_string(),
+                message: format!(
+                    "v5 {} request exceeds connection retained-byte budget: {error}",
+                    self.method
+                ),
+                diagnostic: None,
+            });
+        }
+        *received = total;
+        Ok(())
+    }
+}
+
+fn v5_request_size_error(method: &str, label: &str, limit: usize) -> RemoteError {
+    RemoteError {
+        code: "resource_exhausted".to_string(),
+        message: format!("v5 {method} request {label} exceeds decoded byte limit {limit}"),
+        diagnostic: None,
     }
 }
 
@@ -8002,6 +9951,10 @@ impl V5ServiceTaskPools {
         true
     }
 
+    fn clear_pending(&mut self) {
+        self.pending.clear();
+    }
+
     fn expired_pending_streams(&self, now_unix_ms: u64) -> Vec<u64> {
         self.pending
             .iter()
@@ -8016,7 +9969,10 @@ impl V5ServiceTaskPools {
         let index = self
             .pending
             .iter()
-            .position(|(_, request)| self.can_start(request))?;
+            .enumerate()
+            .filter(|(_, (_, request))| self.can_start(request))
+            .min_by_key(|(index, (_, request))| (request.priority.as_u8(), *index))
+            .map(|(index, _)| index)?;
         self.pending.remove(index)
     }
 }
@@ -8030,6 +9986,24 @@ fn v5_now_unix_millis() -> u64 {
 
 fn v5_deadline_expired(deadline_unix_ms: u64) -> bool {
     deadline_unix_ms != 0 && deadline_unix_ms <= v5_now_unix_millis()
+}
+
+fn cancel_all_v5_service_work(
+    requests: &mut HashMap<u64, V5ServiceRequest>,
+    task_pools: &mut V5ServiceTaskPools,
+    active_cancellations: &HashMap<u64, Arc<AtomicBool>>,
+    active_deadlines: &mut HashMap<u64, u64>,
+    canceled_streams: &mut HashSet<u64>,
+    watches: &mut V5WatchRegistry,
+) {
+    requests.clear();
+    task_pools.clear_pending();
+    for (stream_id, cancellation) in active_cancellations {
+        cancellation.store(true, Ordering::Relaxed);
+        canceled_streams.insert(*stream_id);
+    }
+    active_deadlines.clear();
+    watches.subscriptions.clear();
 }
 
 fn v5_ping_wait_timeout(
@@ -8178,7 +10152,7 @@ struct V5WatchRegistry {
     next_watch_id: u64,
     subscriptions: HashMap<u64, V5WatchSubscription>,
     generations: protocol_v5::WatchGenerationTracker,
-    native_events: Option<mpsc::Sender<V5ServeEvent>>,
+    native_events: Option<V5NativeWatchSender>,
 }
 
 struct V5WatchStartStatus {
@@ -8208,7 +10182,7 @@ struct V5WatchPendingBatch {
 }
 
 impl V5WatchRegistry {
-    fn with_native_events(native_events: mpsc::Sender<V5ServeEvent>) -> Self {
+    fn with_native_events(native_events: V5NativeWatchSender) -> Self {
         Self {
             native_events: Some(native_events),
             ..Self::default()
@@ -8245,12 +10219,14 @@ impl V5WatchRegistry {
         event_stream_id: u64,
         roots: Vec<String>,
         debounce_ms: u32,
+        max_events_per_batch: u32,
         workspace_root: &Path,
     ) -> V5WatchStartStatus {
         let mut subscription = V5WatchSubscription::new(
             watch_id,
             event_stream_id,
             debounce_ms,
+            max_events_per_batch,
             self.native_events.clone(),
         );
         for root in roots {
@@ -8324,6 +10300,12 @@ impl V5WatchRegistry {
         Ok(())
     }
 
+    fn record_native_overflow(&mut self, watch_id: u64) {
+        if let Some(subscription) = self.subscriptions.get_mut(&watch_id) {
+            subscription.record_native_overflow();
+        }
+    }
+
     fn poll_due(&mut self, workspace_root: &Path) -> Result<Vec<(u64, protocol_v5::WatchBatch)>> {
         let now = Instant::now();
         let mut pending = Vec::new();
@@ -8353,9 +10335,9 @@ struct V5NativeWatch {
 }
 
 impl V5NativeWatch {
-    fn new(watch_id: u64, events: mpsc::Sender<V5ServeEvent>) -> notify::Result<Self> {
+    fn new(watch_id: u64, events: V5NativeWatchSender) -> notify::Result<Self> {
         let watcher = notify::recommended_watcher(move |result| {
-            let _ = events.send(V5ServeEvent::NativeWatch { watch_id, result });
+            let _ = events.send(V5NativeWatchEvent { watch_id, result });
         })?;
         Ok(Self {
             watcher,
@@ -8420,6 +10402,8 @@ struct V5WatchSubscription {
     native: Option<V5NativeWatch>,
     pending_changed_directories: BTreeSet<String>,
     pending_events: Vec<protocol_v5::WatchChange>,
+    max_events_per_batch: usize,
+    pending_event_bytes: usize,
     pending_overflow: bool,
     pending_resync_required: bool,
 }
@@ -8429,7 +10413,8 @@ impl V5WatchSubscription {
         watch_id: u64,
         event_stream_id: u64,
         debounce_ms: u32,
-        native_events: Option<mpsc::Sender<V5ServeEvent>>,
+        max_events_per_batch: u32,
+        native_events: Option<V5NativeWatchSender>,
     ) -> Self {
         let poll_interval = v5_watch_poll_interval(debounce_ms);
         let native = native_events.and_then(|events| match V5NativeWatch::new(watch_id, events) {
@@ -8451,6 +10436,8 @@ impl V5WatchSubscription {
             native,
             pending_changed_directories: BTreeSet::new(),
             pending_events: Vec::new(),
+            max_events_per_batch: v5_watch_event_limit(max_events_per_batch),
+            pending_event_bytes: 0,
             pending_overflow: false,
             pending_resync_required: false,
         }
@@ -8580,6 +10567,15 @@ impl V5WatchSubscription {
         }
     }
 
+    fn record_native_overflow(&mut self) {
+        tracing::debug!(
+            watch_id = self.watch_id,
+            "Native v5 watch event queue overflowed; requesting client reconciliation"
+        );
+        self.mark_overflow();
+        self.schedule_emit();
+    }
+
     fn record_notify_event(&mut self, event: notify::Event, workspace_root: &Path) {
         if self.roots.is_empty() {
             return;
@@ -8597,7 +10593,7 @@ impl V5WatchSubscription {
             self.record_changed_watch_parent(&old_path);
             self.record_changed_watch_path(&new_path);
             self.record_changed_watch_parent(&new_path);
-            self.pending_events.push(protocol_v5::WatchChange::renamed(
+            self.record_watch_change(protocol_v5::WatchChange::renamed(
                 old_path, new_path, is_dir,
             ));
             self.schedule_emit();
@@ -8627,9 +10623,32 @@ impl V5WatchSubscription {
                     protocol_v5::WatchChange::modified(relative_path, is_dir)
                 }
             };
-            self.pending_events.push(change);
+            self.record_watch_change(change);
         }
         self.schedule_emit();
+    }
+
+    fn record_watch_change(&mut self, change: protocol_v5::WatchChange) {
+        if self.pending_overflow {
+            return;
+        }
+        let encoded_len = change.encoded_len().saturating_add(10);
+        if self.pending_events.len() >= self.max_events_per_batch
+            || self.pending_event_bytes.saturating_add(encoded_len) > V5_WATCH_BATCH_PAYLOAD_BUDGET
+        {
+            self.mark_overflow();
+            return;
+        }
+        self.pending_event_bytes = self.pending_event_bytes.saturating_add(encoded_len);
+        self.pending_events.push(change);
+    }
+
+    fn mark_overflow(&mut self) {
+        self.pending_events.clear();
+        self.pending_changed_directories.clear();
+        self.pending_event_bytes = 0;
+        self.pending_overflow = true;
+        self.pending_resync_required = true;
     }
 
     fn record_changed_watch_path(&mut self, path: &str) {
@@ -8677,6 +10696,7 @@ impl V5WatchSubscription {
             self.next_emit = None;
             changed_directories.append(&mut self.pending_changed_directories);
             events.append(&mut self.pending_events);
+            self.pending_event_bytes = 0;
             overflow = self.pending_overflow;
             resync_required = self.pending_resync_required;
             self.pending_overflow = false;
@@ -8690,6 +10710,16 @@ impl V5WatchSubscription {
                 changed_directories.insert(root.clone());
                 events.push(protocol_v5::WatchChange::modified(root, true));
             }
+        }
+
+        if events.len() > self.max_events_per_batch
+            || v5_watch_batch_payload_len(&changed_directories, &events)
+                > V5_WATCH_BATCH_PAYLOAD_BUDGET
+        {
+            changed_directories.clear();
+            events.clear();
+            overflow = true;
+            resync_required = true;
         }
 
         if changed_directories.is_empty() && events.is_empty() && !overflow && !resync_required {
@@ -8709,6 +10739,30 @@ impl V5WatchSubscription {
 
 fn v5_watch_poll_interval(debounce_ms: u32) -> Duration {
     Duration::from_millis(u64::from(debounce_ms.clamp(50, 60_000)))
+}
+
+fn v5_watch_event_limit(requested: u32) -> usize {
+    let requested = usize::try_from(requested).unwrap_or(V5_MAX_WATCH_EVENTS_PER_BATCH);
+    if requested == 0 {
+        V5_DEFAULT_WATCH_EVENTS_PER_BATCH
+    } else {
+        requested.min(V5_MAX_WATCH_EVENTS_PER_BATCH)
+    }
+}
+
+fn v5_watch_batch_payload_len(
+    changed_directories: &BTreeSet<String>,
+    events: &[protocol_v5::WatchChange],
+) -> usize {
+    let generations = changed_directories
+        .iter()
+        .map(|path| path.len().saturating_add(32))
+        .sum::<usize>();
+    let events = events
+        .iter()
+        .map(|event| event.encoded_len().saturating_add(10))
+        .sum::<usize>();
+    64_usize.saturating_add(generations).saturating_add(events)
 }
 
 fn v5_watch_root_path(workspace_root: &Path, root: &str) -> PathBuf {
@@ -8880,7 +10934,8 @@ fn v5_response_body_chunks(
 fn v5_streaming_file_search(
     query: FileSearchQuery,
     stream_id: u64,
-    stream_events: mpsc::Sender<V5ServeEvent>,
+    priority: protocol_v5::Priority,
+    stream_events: V5ServeOutputSender,
     cancellation: Option<&Arc<AtomicBool>>,
 ) -> std::result::Result<FileSearchResult, RemoteError> {
     let pattern = query
@@ -8959,6 +11014,7 @@ fn v5_streaming_file_search(
             v5_send_file_search_partial(
                 stream_id,
                 &query.root,
+                priority,
                 &stream_events,
                 std::mem::take(&mut partial_files),
             )?;
@@ -8985,7 +11041,8 @@ fn v5_streaming_file_search(
 fn v5_send_file_search_partial(
     stream_id: u64,
     root: &Path,
-    stream_events: &mpsc::Sender<V5ServeEvent>,
+    priority: protocol_v5::Priority,
+    stream_events: &V5ServeOutputSender,
     files: Vec<PathBuf>,
 ) -> std::result::Result<(), RemoteError> {
     if files.is_empty() {
@@ -8999,11 +11056,11 @@ fn v5_send_file_search_partial(
     .to_v5_payload()
     .map_err(v5_method_error_to_remote_error)?;
     stream_events
-        .send(V5ServeEvent::PartialResponse {
+        .send(V5ServeOutputEvent::PartialResponse {
             stream_id,
             method: "search.files".to_string(),
             payload,
-            priority: protocol_v5::Priority::Background,
+            priority,
         })
         .map_err(|_| RemoteError {
             code: "unavailable".to_string(),
@@ -9015,7 +11072,8 @@ fn v5_send_file_search_partial(
 fn v5_streaming_text_search(
     query: TextSearchQuery,
     stream_id: u64,
-    stream_events: mpsc::Sender<V5ServeEvent>,
+    priority: protocol_v5::Priority,
+    stream_events: V5ServeOutputSender,
     cancellation: Option<&Arc<AtomicBool>>,
 ) -> std::result::Result<TextSearchResult, RemoteError> {
     let case_insensitive = query.smart_case && !query.pattern.chars().any(char::is_uppercase);
@@ -9119,6 +11177,7 @@ fn v5_streaming_text_search(
                     v5_send_text_search_partial(
                         stream_id,
                         &query.root,
+                        priority,
                         &stream_events,
                         std::mem::take(&mut partial_matches),
                     )?;
@@ -9147,7 +11206,8 @@ fn v5_streaming_text_search(
 fn v5_send_text_search_partial(
     stream_id: u64,
     root: &Path,
-    stream_events: &mpsc::Sender<V5ServeEvent>,
+    priority: protocol_v5::Priority,
+    stream_events: &V5ServeOutputSender,
     matches: Vec<TextSearchMatch>,
 ) -> std::result::Result<(), RemoteError> {
     if matches.is_empty() {
@@ -9161,11 +11221,11 @@ fn v5_send_text_search_partial(
     .to_v5_payload()
     .map_err(v5_method_error_to_remote_error)?;
     stream_events
-        .send(V5ServeEvent::PartialResponse {
+        .send(V5ServeOutputEvent::PartialResponse {
             stream_id,
             method: "search.text".to_string(),
             payload,
-            priority: protocol_v5::Priority::Background,
+            priority,
         })
         .map_err(|_| RemoteError {
             code: "unavailable".to_string(),
@@ -9180,11 +11240,11 @@ fn v5_send_search_progress(
     message: &str,
     completed: u64,
     total: u64,
-    stream_events: &mpsc::Sender<V5ServeEvent>,
+    stream_events: &V5ServeOutputSender,
     root: &Path,
 ) -> std::result::Result<(), RemoteError> {
     stream_events
-        .send(V5ServeEvent::Progress {
+        .send(V5ServeOutputEvent::Progress {
             stream_id,
             method: method.to_string(),
             progress: protocol_v5::Progress {
@@ -9676,7 +11736,8 @@ fn v5_process_output_limit(max_output_bytes: Option<usize>) -> usize {
 fn v5_run_local_streaming_process(
     spec: ProcessSpec,
     stream_id: u64,
-    stream_events: mpsc::Sender<V5ServeEvent>,
+    priority: protocol_v5::Priority,
+    stream_events: V5ServeOutputSender,
     cancellation: Option<Arc<AtomicBool>>,
 ) -> std::result::Result<V5StreamedProcessOutput, WorkspaceError> {
     let cwd = spec.cwd.clone();
@@ -9730,10 +11791,10 @@ fn v5_run_local_streaming_process(
 
     let stdout_events = stream_events.clone();
     let stdout_thread = std::thread::spawn(move || {
-        v5_stream_process_stdout(stdout, output_limit, stream_id, stdout_events)
+        v5_stream_process_stdout(stdout, output_limit, stream_id, priority, stdout_events)
     });
     let stderr_thread = std::thread::spawn(move || {
-        v5_stream_process_stderr(stderr, output_limit, stream_id, stream_events)
+        v5_stream_process_stderr(stderr, output_limit, stream_id, priority, stream_events)
     });
     let input = spec.stdin;
     let stdin_thread = stdin.take().map(|mut stdin| {
@@ -9776,13 +11837,15 @@ fn v5_stream_process_stdout(
     reader: ChildStdout,
     limit: usize,
     stream_id: u64,
-    stream_events: mpsc::Sender<V5ServeEvent>,
+    priority: protocol_v5::Priority,
+    stream_events: V5ServeOutputSender,
 ) -> io::Result<V5StreamedProcessPipe> {
     v5_read_limited_process_pipe(
         reader,
         limit,
         stream_id,
         protocol_v5::DataChannel::Stdout,
+        priority,
         stream_events,
     )
 }
@@ -9791,13 +11854,15 @@ fn v5_stream_process_stderr(
     reader: ChildStderr,
     limit: usize,
     stream_id: u64,
-    stream_events: mpsc::Sender<V5ServeEvent>,
+    priority: protocol_v5::Priority,
+    stream_events: V5ServeOutputSender,
 ) -> io::Result<V5StreamedProcessPipe> {
     v5_read_limited_process_pipe(
         reader,
         limit,
         stream_id,
         protocol_v5::DataChannel::Stderr,
+        priority,
         stream_events,
     )
 }
@@ -9807,7 +11872,8 @@ fn v5_read_limited_process_pipe<R: Read>(
     limit: usize,
     stream_id: u64,
     channel: protocol_v5::DataChannel,
-    stream_events: mpsc::Sender<V5ServeEvent>,
+    priority: protocol_v5::Priority,
+    stream_events: V5ServeOutputSender,
 ) -> io::Result<V5StreamedProcessPipe> {
     let mut len = 0_usize;
     let mut truncated = false;
@@ -9823,11 +11889,11 @@ fn v5_read_limited_process_pipe<R: Read>(
         let retained = remaining.min(read);
         if retained > 0 {
             stream_events
-                .send(V5ServeEvent::StreamData {
+                .send(V5ServeOutputEvent::StreamData {
                     stream_id,
                     channel,
                     body: buffer[..retained].to_vec(),
-                    priority: protocol_v5::Priority::LspSupport,
+                    priority,
                 })
                 .map_err(|_| {
                     io::Error::new(
@@ -11365,6 +13431,8 @@ mod tests {
         assert_arg_pair(args, "-o", "NumberOfPasswordPrompts=0");
         assert_arg_pair(args, "-o", "ConnectionAttempts=1");
         assert_arg_pair(args, "-o", "StrictHostKeyChecking=accept-new");
+        assert_arg_pair(args, "-o", "ServerAliveInterval=15");
+        assert_arg_pair(args, "-o", "ServerAliveCountMax=3");
     }
 
     fn ssh_target_separator_index(args: &[OsString]) -> usize {
@@ -11548,6 +13616,36 @@ mod tests {
             frames.push(frame);
         }
         frames
+    }
+
+    fn assert_v5_data_channel_priority(
+        frames: &[protocol_v5::Frame],
+        stream_id: u64,
+        channel: protocol_v5::DataChannel,
+        priority: protocol_v5::Priority,
+    ) {
+        let matching_frames = frames
+            .iter()
+            .filter(|frame| {
+                if frame.stream_id != stream_id || frame.frame_type != protocol_v5::FrameType::Data
+                {
+                    return false;
+                }
+                let envelope = frame.decode_control::<protocol_v5::DataEnvelope>().unwrap();
+                protocol_v5::DataChannel::try_from(envelope.channel).unwrap() == channel
+            })
+            .collect::<Vec<_>>();
+
+        assert!(
+            !matching_frames.is_empty(),
+            "expected {channel:?} DATA on stream {stream_id}"
+        );
+        assert!(
+            matching_frames
+                .iter()
+                .all(|frame| frame.priority == priority.as_u8()),
+            "{channel:?} DATA did not preserve {priority:?} priority"
+        );
     }
 
     fn v5_response_frames(
@@ -12152,10 +14250,7 @@ mod tests {
             write_options.idempotency,
             protocol_v5::Idempotency::Mutation
         );
-        assert_eq!(
-            write_options.priority,
-            protocol_v5::Priority::ForegroundDocument
-        );
+        assert_eq!(write_options.priority, protocol_v5::Priority::UserInput);
         assert_eq!(write.v5_body_channel(), protocol_v5::DataChannel::FileBody);
         assert!(!write.v5_retry_after_reconnect_allowed());
 
@@ -12173,16 +14268,35 @@ mod tests {
             ..TextSearchRequest::default()
         });
         let search_options = search.v5_request_options();
-        assert_eq!(
-            search_options.priority,
-            protocol_v5::Priority::ForegroundDocument
-        );
+        assert_eq!(search_options.priority, protocol_v5::Priority::Background);
         assert_eq!(search_options.cancellation_group, "search.text");
         assert_eq!(
             search.v5_body_channel(),
             protocol_v5::DataChannel::SearchPayload
         );
         assert!(search.v5_retry_after_reconnect_allowed());
+
+        let read = RemoteRequest::ReadFile {
+            path: PathBuf::from("src/lib.rs"),
+            max_bytes: None,
+        };
+        assert_eq!(
+            read.v5_request_options().priority,
+            protocol_v5::Priority::ForegroundDocument
+        );
+
+        let environment = RemoteRequest::ProjectEnvironment {
+            root: PathBuf::from("."),
+        };
+        assert_eq!(
+            environment.v5_request_options().priority,
+            protocol_v5::Priority::LspSupport
+        );
+
+        assert_eq!(
+            RemoteRequest::Shutdown.v5_request_options().priority,
+            protocol_v5::Priority::UserInput
+        );
 
         let process = RemoteRequest::RunProcess(ProcessRequest {
             program: "cat".to_string(),
@@ -12201,6 +14315,40 @@ mod tests {
         assert_eq!(process.v5_body_channel(), protocol_v5::DataChannel::Stdin);
         assert!(!process.v5_retry_after_reconnect_allowed());
         assert!(!RemoteRequest::Shutdown.v5_retry_after_reconnect_allowed());
+    }
+
+    #[test]
+    fn v5_service_preserves_request_priority_on_response_frames() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("visible.txt"), b"visible").unwrap();
+        let request = RemoteRequest::Stat {
+            path: PathBuf::from("visible.txt"),
+        };
+        let mut options = request.v5_request_options();
+        options.priority = protocol_v5::Priority::UserInput;
+        let input = v5_client_input(v5_request_frames_with_options(1, &request, &[], options));
+        let service =
+            WorkspaceService::new(LocalWorkspaceBackend, temp.path().to_path_buf()).unwrap();
+        let mut io = protocol_v5::FramedIo::new(Cursor::new(input), Vec::new());
+
+        service
+            .serve_v5(
+                &mut io,
+                &protocol_v5::ServerHandshakeInfo::current(temp.path().display().to_string()),
+            )
+            .unwrap();
+        let (_, output) = io.into_inner();
+        let response_frames = read_v5_frames(output)
+            .into_iter()
+            .filter(|frame| frame.stream_id == 1)
+            .collect::<Vec<_>>();
+
+        assert!(!response_frames.is_empty());
+        assert!(
+            response_frames
+                .iter()
+                .all(|frame| { frame.priority == protocol_v5::Priority::UserInput.as_u8() })
+        );
     }
 
     #[test]
@@ -12235,15 +14383,16 @@ mod tests {
     }
 
     #[test]
-    fn reconnecting_client_does_not_retry_mutation_after_disconnect() {
+    fn reconnecting_client_heals_but_does_not_retry_mutation_after_disconnect() {
         let calls = Arc::new(StdMutex::new(Vec::new()));
         let reconnects = Arc::new(AtomicUsize::new(0));
         let initial = FakeProtocolClient::new(calls.clone(), [FakeProtocolOutcome::Disconnected]);
+        let reconnect_calls = calls.clone();
         let reconnect_count = reconnects.clone();
         let client = ReconnectingRemoteWorkspaceProtocolClient::new(initial, move || {
             reconnect_count.fetch_add(1, Ordering::SeqCst);
             Ok(FakeProtocolClient::new(
-                Arc::new(StdMutex::new(Vec::new())),
+                reconnect_calls.clone(),
                 [FakeProtocolOutcome::Ok(RemoteResponse::FindAncestorFile(
                     None,
                 ))],
@@ -12259,10 +14408,18 @@ mod tests {
         let error = client
             .request(request.clone(), b"body".to_vec())
             .unwrap_err();
+        let next_request = RemoteRequest::Stat {
+            path: PathBuf::from("src/lib.rs"),
+        };
+        let (response, _) = client.request(next_request.clone(), Vec::new()).unwrap();
 
-        assert!(matches!(error, RemoteClientError::Disconnected));
-        assert_eq!(reconnects.load(Ordering::SeqCst), 0);
-        assert_eq!(calls.lock().unwrap().as_slice(), &[request]);
+        let RemoteClientError::OutcomeUnknown { method, .. } = error else {
+            panic!("expected unknown mutation outcome");
+        };
+        assert_eq!(method, "fs.write");
+        assert_eq!(response, RemoteResponse::FindAncestorFile(None));
+        assert_eq!(reconnects.load(Ordering::SeqCst), 1);
+        assert_eq!(calls.lock().unwrap().as_slice(), &[request, next_request]);
     }
 
     #[test]
@@ -12295,11 +14452,503 @@ mod tests {
     }
 
     #[test]
+    fn reconnecting_client_replays_safe_reads_after_any_terminal_io_kind() {
+        for kind in [
+            io::ErrorKind::TimedOut,
+            io::ErrorKind::ConnectionRefused,
+            io::ErrorKind::NotConnected,
+            io::ErrorKind::WriteZero,
+            io::ErrorKind::Other,
+        ] {
+            let calls = Arc::new(StdMutex::new(Vec::new()));
+            let reconnects = Arc::new(AtomicUsize::new(0));
+            let initial =
+                FakeProtocolClient::new(Arc::clone(&calls), [FakeProtocolOutcome::Io(kind)]);
+            let reconnect_calls = Arc::clone(&calls);
+            let reconnect_count = Arc::clone(&reconnects);
+            let client = ReconnectingRemoteWorkspaceProtocolClient::new(initial, move || {
+                reconnect_count.fetch_add(1, Ordering::SeqCst);
+                Ok(FakeProtocolClient::new(
+                    Arc::clone(&reconnect_calls),
+                    [FakeProtocolOutcome::Ok(RemoteResponse::FindAncestorFile(
+                        None,
+                    ))],
+                ))
+            });
+            let request = RemoteRequest::Stat {
+                path: PathBuf::from("src/lib.rs"),
+            };
+
+            let (response, _) = client.request(request.clone(), Vec::new()).unwrap();
+
+            assert_eq!(response, RemoteResponse::FindAncestorFile(None), "{kind:?}");
+            assert_eq!(reconnects.load(Ordering::SeqCst), 1, "{kind:?}");
+            assert_eq!(
+                calls.lock().unwrap().as_slice(),
+                &[request.clone(), request],
+                "{kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn reconnecting_client_retries_watch_start_after_transport_healing() {
+        let starts = Arc::new(AtomicUsize::new(0));
+        let closes = Arc::new(AtomicUsize::new(0));
+        let reconnects = Arc::new(AtomicUsize::new(0));
+        let initial = WatchProtocolClient {
+            starts: Arc::clone(&starts),
+            closes: Arc::clone(&closes),
+            fail_start: true,
+        };
+        let reconnect_starts = Arc::clone(&starts);
+        let reconnect_closes = Arc::clone(&closes);
+        let reconnect_count = Arc::clone(&reconnects);
+        let client = ReconnectingRemoteWorkspaceProtocolClient::new(initial, move || {
+            reconnect_count.fetch_add(1, Ordering::SeqCst);
+            Ok(WatchProtocolClient {
+                starts: Arc::clone(&reconnect_starts),
+                closes: Arc::clone(&reconnect_closes),
+                fail_start: false,
+            })
+        });
+
+        let watch = client
+            .start_watch(WorkspaceWatchRequest::expanded_dirs([PathBuf::from("src")]))
+            .unwrap();
+
+        assert!(watch.is_none());
+        assert_eq!(starts.load(Ordering::SeqCst), 2);
+        assert_eq!(reconnects.load(Ordering::SeqCst), 1);
+        assert_eq!(closes.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn reconnecting_client_heals_watch_control_failures_without_replaying_them() {
+        for failed_operation in [WatchControlFailure::Update, WatchControlFailure::Stop] {
+            let updates = Arc::new(AtomicUsize::new(0));
+            let stops = Arc::new(AtomicUsize::new(0));
+            let closes = Arc::new(AtomicUsize::new(0));
+            let reconnects = Arc::new(AtomicUsize::new(0));
+            let initial = WatchControlProtocolClient {
+                updates: Arc::clone(&updates),
+                stops: Arc::clone(&stops),
+                closes: Arc::clone(&closes),
+                failed_operation: Some(failed_operation),
+            };
+            let reconnect_updates = Arc::clone(&updates);
+            let reconnect_stops = Arc::clone(&stops);
+            let reconnect_closes = Arc::clone(&closes);
+            let reconnect_count = Arc::clone(&reconnects);
+            let client = ReconnectingRemoteWorkspaceProtocolClient::new(initial, move || {
+                reconnect_count.fetch_add(1, Ordering::SeqCst);
+                Ok(WatchControlProtocolClient {
+                    updates: Arc::clone(&reconnect_updates),
+                    stops: Arc::clone(&reconnect_stops),
+                    closes: Arc::clone(&reconnect_closes),
+                    failed_operation: None,
+                })
+            });
+
+            let error = match failed_operation {
+                WatchControlFailure::Update => client
+                    .update_watch(7, vec![PathBuf::from("src")], Vec::new())
+                    .unwrap_err(),
+                WatchControlFailure::Stop => client.stop_watch(7).unwrap_err(),
+            };
+            assert!(matches!(error, RemoteClientError::Io(_)));
+            assert_eq!(reconnects.load(Ordering::SeqCst), 1);
+            assert_eq!(closes.load(Ordering::SeqCst), 1);
+
+            // The failed connection-scoped mutation is not replayed, while the healed transport
+            // is immediately available to the next watch control operation.
+            client
+                .update_watch(8, vec![PathBuf::from("tests")], Vec::new())
+                .unwrap();
+            client.stop_watch(8).unwrap();
+            assert_eq!(
+                updates.load(Ordering::SeqCst),
+                usize::from(failed_operation == WatchControlFailure::Update) + 1
+            );
+            assert_eq!(
+                stops.load(Ordering::SeqCst),
+                usize::from(failed_operation == WatchControlFailure::Stop) + 1
+            );
+        }
+    }
+
+    #[test]
+    fn backend_drop_and_reconnecting_close_are_nonblocking_and_do_not_reconnect() {
+        let backend_closes = Arc::new(AtomicUsize::new(0));
+        let backend_shutdowns = Arc::new(AtomicUsize::new(0));
+        let backend = RemoteWorkspaceBackendImpl::from_protocol_client(
+            loopback_identity(),
+            LifecycleProtocolClient {
+                closes: Arc::clone(&backend_closes),
+                shutdowns: Arc::clone(&backend_shutdowns),
+            },
+        );
+
+        let started = Instant::now();
+        drop(backend);
+
+        assert!(started.elapsed() < Duration::from_millis(250));
+        assert_eq!(backend_closes.load(Ordering::SeqCst), 1);
+        assert_eq!(backend_shutdowns.load(Ordering::SeqCst), 0);
+
+        let reconnect_closes = Arc::new(AtomicUsize::new(0));
+        let reconnect_shutdowns = Arc::new(AtomicUsize::new(0));
+        let reconnects = Arc::new(AtomicUsize::new(0));
+        let reconnect_count = Arc::clone(&reconnects);
+        let client = ReconnectingRemoteWorkspaceProtocolClient::new(
+            LifecycleProtocolClient {
+                closes: Arc::clone(&reconnect_closes),
+                shutdowns: Arc::clone(&reconnect_shutdowns),
+            },
+            move || {
+                reconnect_count.fetch_add(1, Ordering::SeqCst);
+                Ok(LifecycleProtocolClient {
+                    closes: Arc::new(AtomicUsize::new(0)),
+                    shutdowns: Arc::new(AtomicUsize::new(0)),
+                })
+            },
+        );
+
+        client.close();
+
+        assert_eq!(reconnects.load(Ordering::SeqCst), 0);
+        assert_eq!(reconnect_closes.load(Ordering::SeqCst), 1);
+        assert!(matches!(
+            client.request(
+                RemoteRequest::Stat {
+                    path: PathBuf::from("src/lib.rs")
+                },
+                Vec::new()
+            ),
+            Err(RemoteClientError::Disconnected)
+        ));
+        assert_eq!(reconnects.load(Ordering::SeqCst), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn child_handshake_watchdog_physically_aborts_and_reaps_silent_helper() {
+        let command = RemoteServiceCommand {
+            program: OsString::from("/bin/sleep"),
+            args: vec![OsString::from("60")],
+            current_dir: None,
+        };
+        let (io, control) = spawn_child_process_v5_io(&command).unwrap();
+
+        let result = connect_child_process_v5_client_with_timeout(
+            io,
+            Arc::clone(&control),
+            protocol_v5::ClientHello::nucleotide("test-client"),
+            Duration::from_millis(50),
+        );
+
+        assert!(result.is_err());
+        let started = Instant::now();
+        while !control.was_reaped() {
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "timed out waiting for silent v5 child to be reaped"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn v5_writer_failures_close_transport_and_fail_every_waiter() {
+        enum Failure {
+            AfterBytes(usize),
+            AfterFlushes(usize),
+        }
+
+        let second_request = RemoteRequest::Stat {
+            path: PathBuf::from("second.rs"),
+        };
+        let second_frames = v5_request_frames(3, &second_request, &[]);
+        let first_frame_len = protocol_v5::FRAME_HEADER_LEN
+            + second_frames[0].control.len()
+            + second_frames[0].body.len();
+        let partial_data_body =
+            first_frame_len + protocol_v5::FRAME_HEADER_LEN + second_frames[1].control.len() + 1;
+        assert!(second_frames[1].body.len() > 1);
+
+        let failures = [
+            ("before header", Failure::AfterBytes(0)),
+            ("inside header", Failure::AfterBytes(7)),
+            (
+                "inside headers control",
+                Failure::AfterBytes(protocol_v5::FRAME_HEADER_LEN + 1),
+            ),
+            ("inside data body", Failure::AfterBytes(partial_data_body)),
+            ("data flush", Failure::AfterFlushes(0)),
+        ];
+
+        for (label, failure) in failures {
+            let input = BlockingRead::default();
+            let writer = FaultInjectingWrite::default();
+            let output = writer.output();
+            input.push(v5_server_input(Vec::new()));
+            let client = Arc::new(
+                RemoteWorkspaceV5MultiplexedClient::connect(
+                    protocol_v5::FramedIo::new(input.clone(), writer.clone()),
+                    protocol_v5::ClientHello::nucleotide("test-client"),
+                )
+                .unwrap(),
+            );
+
+            let first_client = Arc::clone(&client);
+            let first = std::thread::spawn(move || {
+                first_client.request(
+                    RemoteRequest::Stat {
+                        path: PathBuf::from("first.rs"),
+                    },
+                    Vec::new(),
+                )
+            });
+            wait_for_v5_request_stream(&output, "fs.stat");
+
+            let (watch_sender, watch_receiver) = mpsc::sync_channel(1);
+            client.shared.watch_batches.lock().unwrap().insert(
+                2,
+                V5WatchDelivery {
+                    sender: watch_sender,
+                    overflowed: Arc::new(AtomicBool::new(false)),
+                    last_sequence: Arc::new(AtomicU64::new(0)),
+                },
+            );
+            client
+                .shared
+                .watch_stream_by_id
+                .lock()
+                .unwrap()
+                .insert(1, 2);
+
+            match failure {
+                Failure::AfterBytes(bytes) => writer.fail_after_bytes(bytes),
+                Failure::AfterFlushes(flushes) => writer.fail_after_flushes(flushes),
+            }
+            let second_error = client
+                .request(second_request.clone(), Vec::new())
+                .unwrap_err();
+            let first_error = first.join().unwrap().unwrap_err();
+
+            for error in [first_error, second_error] {
+                let RemoteClientError::Io(error) = error else {
+                    panic!("{label}: expected I/O failure, got {error:?}");
+                };
+                assert_eq!(error.kind(), io::ErrorKind::BrokenPipe, "{label}");
+            }
+            assert!(client.shared.closed.load(Ordering::Acquire), "{label}");
+            assert_eq!(client.shared.request_budget.used(), 0, "{label}");
+            assert!(
+                client
+                    .shared
+                    .outbound_request_reservations
+                    .lock()
+                    .unwrap()
+                    .is_empty(),
+                "{label}"
+            );
+            assert!(client.shared.waiters.lock().unwrap().is_empty(), "{label}");
+            assert!(
+                client.shared.raw_waiters.lock().unwrap().is_empty(),
+                "{label}"
+            );
+            assert!(
+                client.shared.watch_batches.lock().unwrap().is_empty(),
+                "{label}"
+            );
+            assert!(
+                client.shared.watch_stream_by_id.lock().unwrap().is_empty(),
+                "{label}"
+            );
+            assert!(matches!(
+                watch_receiver.try_recv(),
+                Err(mpsc::TryRecvError::Disconnected)
+            ));
+
+            let bytes_after_failure = output.bytes().len();
+            assert!(matches!(
+                client.request(
+                    RemoteRequest::Stat {
+                        path: PathBuf::from("third.rs"),
+                    },
+                    Vec::new()
+                ),
+                Err(RemoteClientError::Disconnected)
+            ));
+            assert_eq!(output.bytes().len(), bytes_after_failure, "{label}");
+            input.close();
+        }
+    }
+
+    #[test]
+    fn v5_close_aborts_transport_without_waiting_for_blocked_writer() {
+        let input = BlockingRead::default();
+        let writer = PausingWrite::default();
+        let abort_calls = Arc::new(AtomicUsize::new(0));
+        let abort: Arc<dyn V5TransportAbort> = Arc::new(ReleasingTransportAbort {
+            writer: writer.clone(),
+            calls: Arc::clone(&abort_calls),
+        });
+        input.push(v5_server_input(Vec::new()));
+        let client = Arc::new(
+            RemoteWorkspaceV5MultiplexedClient::connect_with_transport_abort(
+                protocol_v5::FramedIo::new(input.clone(), writer.clone()),
+                protocol_v5::ClientHello::nucleotide("test-client"),
+                Some(abort),
+            )
+            .unwrap(),
+        );
+        writer.pause_next_write();
+        let request_client = Arc::clone(&client);
+        let request = std::thread::spawn(move || {
+            request_client.request(
+                RemoteRequest::Stat {
+                    path: PathBuf::from("blocked.rs"),
+                },
+                Vec::new(),
+            )
+        });
+        writer.wait_until_paused();
+        assert!(client.shared.request_budget.used() > 0);
+        assert!(
+            !client
+                .shared
+                .outbound_request_reservations
+                .lock()
+                .unwrap()
+                .is_empty()
+        );
+
+        let started = Instant::now();
+        client.close();
+
+        assert!(started.elapsed() < Duration::from_millis(250));
+        client.close();
+        assert_eq!(abort_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(client.shared.request_budget.used(), 0);
+        assert!(
+            client
+                .shared
+                .outbound_request_reservations
+                .lock()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(matches!(
+            request.join().unwrap(),
+            Err(RemoteClientError::Disconnected)
+        ));
+        input.close();
+    }
+
+    #[test]
+    fn v5_writer_revalidates_extracted_frames_after_local_reset() {
+        let input = BlockingRead::default();
+        let writer = PausingWrite::default();
+        input.push(v5_server_input(Vec::new()));
+        let client = Arc::new(
+            RemoteWorkspaceV5MultiplexedClient::connect(
+                protocol_v5::FramedIo::new(input.clone(), writer.clone()),
+                protocol_v5::ClientHello::nucleotide("test-client"),
+            )
+            .unwrap(),
+        );
+        writer.pause_next_write();
+        let request_client = Arc::clone(&client);
+        let request = std::thread::spawn(move || {
+            request_client.request(
+                RemoteRequest::Stat {
+                    path: PathBuf::from("stale.rs"),
+                },
+                Vec::new(),
+            )
+        });
+        writer.wait_until_paused();
+        assert!(client.shared.request_budget.used() > 0);
+        assert!(
+            client
+                .shared
+                .outbound_request_reservations
+                .lock()
+                .unwrap()
+                .contains_key(&1)
+        );
+        assert!(
+            client
+                .shared
+                .session
+                .lock()
+                .unwrap()
+                .reset_stream(1, protocol_v5::RESET_CANCELLED, "test reset")
+                .unwrap()
+        );
+        writer.release();
+        let started = Instant::now();
+        loop {
+            let bytes = writer.bytes();
+            let mut cursor = Cursor::new(bytes);
+            let mut reset_seen = false;
+            while let Ok(Some(frame)) = protocol_v5::read_frame(&mut cursor) {
+                reset_seen |=
+                    frame.stream_id == 1 && frame.frame_type == protocol_v5::FrameType::ResetStream;
+            }
+            if reset_seen {
+                break;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "timed out waiting for locally reset v5 stream"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        wait_for_v5_outbound_request_reservation_release(&client.shared, 1);
+        assert_eq!(client.shared.request_budget.used(), 0);
+
+        let stream_frames = read_v5_frames(writer.bytes())
+            .into_iter()
+            .filter(|frame| frame.stream_id == 1)
+            .collect::<Vec<_>>();
+        assert!(
+            stream_frames
+                .iter()
+                .any(|frame| frame.frame_type == protocol_v5::FrameType::Headers)
+        );
+        assert!(
+            stream_frames
+                .iter()
+                .any(|frame| frame.frame_type == protocol_v5::FrameType::ResetStream)
+        );
+        assert!(stream_frames.iter().all(|frame| {
+            !matches!(
+                frame.frame_type,
+                protocol_v5::FrameType::Data | protocol_v5::FrameType::EndStream
+            )
+        }));
+
+        client.close();
+        assert!(matches!(
+            request.join().unwrap(),
+            Err(RemoteClientError::Disconnected)
+        ));
+        input.close();
+    }
+
+    #[test]
     fn pending_response_disconnect_before_final_response_remains_retryable() {
         let (sender, _receiver) = mpsc::channel();
+        let response_budget = V5ConnectionByteBudget::new(1);
         let pending = V5PendingResponse {
             sender,
             accumulator: V5ResponseAccumulator::default(),
+            response_reservation: response_budget.reservation(),
+            method: "fs.stat",
+            idempotency: protocol_v5::Idempotency::ReadOnly,
         };
 
         let error = pending.failure_error(RemoteClientError::Disconnected);
@@ -12309,29 +14958,58 @@ mod tests {
     }
 
     #[test]
+    fn pending_mutation_disconnect_reports_unknown_outcome() {
+        let (sender, _receiver) = mpsc::channel();
+        let response_budget = V5ConnectionByteBudget::new(1);
+        let pending = V5PendingResponse {
+            sender,
+            accumulator: V5ResponseAccumulator::default(),
+            response_reservation: response_budget.reservation(),
+            method: "fs.write",
+            idempotency: protocol_v5::Idempotency::Mutation,
+        };
+
+        let error = pending.failure_error(RemoteClientError::Disconnected);
+
+        assert!(matches!(
+            error,
+            RemoteClientError::OutcomeUnknown { ref method, .. } if method == "fs.write"
+        ));
+        assert!(!remote_client_error_allows_reconnect_retry(&error));
+        assert!(remote_client_error_requires_reconnect(&error));
+    }
+
+    #[test]
     fn pending_response_disconnect_after_final_response_is_not_retryable() {
         let (sender, _receiver) = mpsc::channel();
+        let response_budget = V5ConnectionByteBudget::new(1);
         let mut pending = V5PendingResponse {
             sender,
             accumulator: V5ResponseAccumulator::default(),
+            response_reservation: response_budget.reservation(),
+            method: "fs.stat",
+            idempotency: protocol_v5::Idempotency::ReadOnly,
         };
         pending.accumulator.method = Some("fs.stat".to_string());
 
         let error = pending.failure_error(RemoteClientError::Disconnected);
 
-        let RemoteClientError::Protocol(message) = &error else {
-            panic!("expected protocol error, got {error:?}");
-        };
-        assert!(message.contains("after final response"));
+        assert!(matches!(
+            error,
+            RemoteClientError::ResponseIncomplete { .. }
+        ));
         assert!(!remote_client_error_allows_reconnect_retry(&error));
+        assert!(remote_client_error_requires_reconnect(&error));
     }
 
     #[test]
     fn pending_raw_response_disconnect_after_final_error_is_not_retryable() {
         let (sender, _receiver) = mpsc::channel();
+        let response_budget = V5ConnectionByteBudget::new(1);
         let mut pending = V5PendingRawResponse {
             sender,
             accumulator: V5RawResponseAccumulator::default(),
+            response_reservation: response_budget.reservation(),
         };
         pending.accumulator.final_error = Some(RemoteError {
             code: "UNAVAILABLE".to_string(),
@@ -12341,17 +15019,26 @@ mod tests {
 
         let error = pending.failure_error(RemoteClientError::Disconnected);
 
-        assert!(matches!(error, RemoteClientError::Protocol(_)));
+        assert!(matches!(
+            error,
+            RemoteClientError::ResponseIncomplete { .. }
+        ));
         assert!(!remote_client_error_allows_reconnect_retry(&error));
+        assert!(remote_client_error_requires_reconnect(&error));
     }
 
     #[test]
     fn v5_service_task_pools_bound_classes_and_skip_blocked_front() {
         fn request(method: &str) -> V5ServiceRequest {
+            let budget = V5ConnectionByteBudget::new(V5_REQUEST_CONNECTION_BYTE_BUDGET);
             V5ServiceRequest {
                 method: method.to_string(),
+                priority: protocol_v5::Priority::Background,
                 payload: Vec::new(),
                 body: Vec::new(),
+                retained_bytes: budget.reservation(),
+                received_payload_bytes: 0,
+                received_body_bytes: 0,
                 deadline_unix_ms: 0,
                 supersedes_stream_id: 0,
                 streamed_write: None,
@@ -12387,6 +15074,569 @@ mod tests {
         assert_eq!(pools.expired_pending_streams(now_unix_ms), vec![5]);
         assert!(pools.remove_pending(5));
         assert!(!pools.has_pending());
+
+        pools.enqueue(7, request("fs.stat"));
+        let mut urgent = request("fs.stat");
+        urgent.priority = protocol_v5::Priority::UserInput;
+        pools.enqueue(9, urgent);
+        assert_eq!(pools.pop_next_startable().unwrap().0, 9);
+        assert_eq!(pools.pop_next_startable().unwrap().0, 7);
+    }
+
+    #[test]
+    fn v5_service_request_rejects_aggregate_decoded_data_over_limit() {
+        let budget = V5ConnectionByteBudget::new(V5_REQUEST_CONNECTION_BYTE_BUDGET);
+        let mut request = V5ServiceRequest::from_envelope(
+            protocol_v5::StreamEnvelope::request(1, "search.text"),
+            protocol_v5::Priority::Background,
+            &budget,
+        );
+        request.received_payload_bytes = V5_MAX_REQUEST_PAYLOAD_BYTES;
+
+        let error = request
+            .reserve_data(protocol_v5::DataChannel::SearchPayload, 1, true)
+            .unwrap_err();
+
+        assert_eq!(error.code, "resource_exhausted");
+        assert!(
+            error
+                .message
+                .contains("request payload exceeds decoded byte limit")
+        );
+    }
+
+    #[test]
+    fn v5_service_requests_compete_for_connection_budget_and_release_on_drop() {
+        let budget = V5ConnectionByteBudget::new(10);
+        let mut first = V5ServiceRequest::from_envelope(
+            protocol_v5::StreamEnvelope::request(1, "fs.stat"),
+            protocol_v5::Priority::Background,
+            &budget,
+        );
+        let mut second = V5ServiceRequest::from_envelope(
+            protocol_v5::StreamEnvelope::request(3, "fs.stat"),
+            protocol_v5::Priority::Background,
+            &budget,
+        );
+
+        first
+            .reserve_data(protocol_v5::DataChannel::Unspecified, 6, true)
+            .unwrap();
+        let error = second
+            .reserve_data(protocol_v5::DataChannel::Unspecified, 5, true)
+            .unwrap_err();
+        assert_eq!(error.code, "resource_exhausted");
+        assert_eq!(budget.used(), 6);
+
+        drop(first);
+        second
+            .reserve_data(protocol_v5::DataChannel::Unspecified, 5, true)
+            .unwrap();
+        assert_eq!(budget.used(), 5);
+    }
+
+    #[test]
+    fn v5_streamed_file_body_counts_stream_limit_without_retaining_connection_budget() {
+        let budget = V5ConnectionByteBudget::new(1);
+        let mut request = V5ServiceRequest::from_envelope(
+            protocol_v5::StreamEnvelope::request(1, "fs.write"),
+            protocol_v5::Priority::Background,
+            &budget,
+        );
+
+        request
+            .reserve_data(protocol_v5::DataChannel::FileBody, 1024, false)
+            .unwrap();
+
+        assert_eq!(request.received_body_bytes, 1024);
+        assert_eq!(budget.used(), 0);
+    }
+
+    #[test]
+    fn v5_client_responses_compete_for_connection_budget_and_release_on_drop() {
+        let budget = V5ConnectionByteBudget::new(10);
+        let mut first_reservation = budget.reservation();
+        let mut second_reservation = budget.reservation();
+        let mut first = V5ResponseAccumulator::default();
+        let mut second = V5ResponseAccumulator::default();
+
+        assert!(
+            first
+                .observe_with_reservation(
+                    protocol_v5::StreamEvent::Data {
+                        stream_id: 1,
+                        channel: protocol_v5::DataChannel::FileBody,
+                        uncompressed_len: 6,
+                        body: vec![0; 6],
+                    },
+                    &mut first_reservation,
+                )
+                .is_none()
+        );
+        let error = second
+            .observe_with_reservation(
+                protocol_v5::StreamEvent::Data {
+                    stream_id: 3,
+                    channel: protocol_v5::DataChannel::FileBody,
+                    uncompressed_len: 5,
+                    body: vec![0; 5],
+                },
+                &mut second_reservation,
+            )
+            .expect("connection budget should reject the second response")
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("connection retained-byte budget")
+        );
+        assert_eq!(budget.used(), 6);
+
+        drop(first_reservation);
+        assert!(
+            second
+                .observe_with_reservation(
+                    protocol_v5::StreamEvent::Data {
+                        stream_id: 3,
+                        channel: protocol_v5::DataChannel::FileBody,
+                        uncompressed_len: 5,
+                        body: vec![0; 5],
+                    },
+                    &mut second_reservation,
+                )
+                .is_none()
+        );
+        assert_eq!(budget.used(), 5);
+    }
+
+    #[test]
+    fn v5_client_requests_share_budget_validate_stream_limits_and_release() {
+        let budget = V5ConnectionByteBudget::new(10);
+        let first = reserve_v5_client_request_bytes(&budget, "fs.write", 4, 2).unwrap();
+        let error = reserve_v5_client_request_bytes(&budget, "fs.write", 3, 2).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("connection retained-byte budget")
+        );
+        assert_eq!(budget.used(), 6);
+
+        drop(first);
+        let second = reserve_v5_client_request_bytes(&budget, "fs.write", 3, 2).unwrap();
+        assert_eq!(budget.used(), 5);
+        drop(second);
+        assert_eq!(budget.used(), 0);
+
+        let normal_budget = V5ConnectionByteBudget::new(V5_REQUEST_CONNECTION_BYTE_BUDGET);
+        let payload_error = reserve_v5_client_request_bytes(
+            &normal_budget,
+            "fs.stat",
+            V5_MAX_REQUEST_PAYLOAD_BYTES + 1,
+            0,
+        )
+        .unwrap_err();
+        assert!(payload_error.to_string().contains("request payload"));
+        let body_error = reserve_v5_client_request_bytes(
+            &normal_budget,
+            "fs.write",
+            0,
+            V5_MAX_REQUEST_BODY_BYTES + 1,
+        )
+        .unwrap_err();
+        assert!(body_error.to_string().contains("request body"));
+        assert_eq!(normal_budget.used(), 0);
+    }
+
+    #[test]
+    fn v5_early_response_keeps_request_body_reserved_until_outbound_end_is_written() {
+        let input = BlockingRead::default();
+        let output = SharedWrite::default();
+        input.push(v5_server_input(Vec::new()));
+        let client = Arc::new(
+            RemoteWorkspaceV5MultiplexedClient::connect(
+                protocol_v5::FramedIo::new(input.clone(), output.clone()),
+                protocol_v5::ClientHello::nucleotide("test-client"),
+            )
+            .unwrap(),
+        );
+        let request = RemoteRequest::WriteFile {
+            path: PathBuf::from("large.txt"),
+            create_parent_dirs: false,
+            expected_modified_unix_millis: None,
+            expected_modified_unix_nanos: None,
+        };
+        let body_len = protocol_v5::DEFAULT_STREAM_WINDOW as usize
+            + protocol_v5::DEFAULT_MAX_FRAME_BODY_LEN as usize;
+        let body = vec![7; body_len];
+        let (_, encoded_payload) = request.to_v5_method_payload().unwrap();
+        let retained_bytes = encoded_payload.len() + body_len;
+        let request_client = Arc::clone(&client);
+        let request_for_thread = request.clone();
+        let worker = std::thread::spawn(move || request_client.request(request_for_thread, body));
+
+        let stream_id = wait_for_v5_request_stream(&output, "fs.write");
+        assert_eq!(client.shared.request_budget.used(), retained_bytes);
+        assert!(
+            client
+                .shared
+                .outbound_request_reservations
+                .lock()
+                .unwrap()
+                .contains_key(&stream_id)
+        );
+
+        let response = RemoteResponse::WriteFile(WriteResultResponse {
+            path: PathBuf::from("large.txt"),
+            size: body_len as u64,
+            modified_unix_millis: None,
+            modified_unix_nanos: None,
+        });
+        input.push(v5_frames_bytes(v5_response_frames(
+            stream_id,
+            "fs.write",
+            response.clone(),
+            Vec::new(),
+        )));
+        assert_eq!(worker.join().unwrap().unwrap(), (response, Vec::new()));
+
+        let stream_frames = {
+            let _writer = client.shared.writer.lock().unwrap();
+            read_v5_frames(output.bytes())
+                .into_iter()
+                .filter(|frame| frame.stream_id == stream_id)
+                .collect::<Vec<_>>()
+        };
+        assert!(
+            stream_frames
+                .iter()
+                .all(|frame| { frame.frame_type != protocol_v5::FrameType::EndStream })
+        );
+        assert_eq!(client.shared.request_budget.used(), retained_bytes);
+        assert!(
+            client
+                .shared
+                .outbound_request_reservations
+                .lock()
+                .unwrap()
+                .contains_key(&stream_id)
+        );
+
+        input.push(v5_frames_bytes(vec![
+            protocol_v5::window_update_frame(stream_id, retained_bytes as u64).unwrap(),
+        ]));
+        wait_for_v5_stream_frame(&output, stream_id, protocol_v5::FrameType::EndStream);
+        wait_for_v5_outbound_request_reservation_release(&client.shared, stream_id);
+        assert_eq!(client.shared.request_budget.used(), 0);
+
+        client.close();
+        input.close();
+    }
+
+    #[test]
+    fn v5_early_raw_response_keeps_request_payload_reserved_until_outbound_end_is_written() {
+        let input = BlockingRead::default();
+        let output = SharedWrite::default();
+        input.push(v5_server_input(Vec::new()));
+        let client = Arc::new(
+            RemoteWorkspaceV5MultiplexedClient::connect(
+                protocol_v5::FramedIo::new(input.clone(), output.clone()),
+                protocol_v5::ClientHello::nucleotide("test-client"),
+            )
+            .unwrap(),
+        );
+        let payload_len = protocol_v5::DEFAULT_STREAM_WINDOW as usize
+            + protocol_v5::DEFAULT_MAX_FRAME_BODY_LEN as usize;
+        let payload = vec![9; payload_len];
+        let request_client = Arc::clone(&client);
+        let worker =
+            std::thread::spawn(move || request_client.request_v5_raw("watch.resync", payload));
+
+        let stream_id = wait_for_v5_request_stream(&output, "watch.resync");
+        assert_eq!(client.shared.request_budget.used(), payload_len);
+        input.push(v5_frames_bytes(v5_raw_response_frames(
+            stream_id,
+            "watch.resync",
+            vec![1, 2, 3],
+        )));
+        assert_eq!(worker.join().unwrap().unwrap(), vec![1, 2, 3]);
+
+        assert_eq!(client.shared.request_budget.used(), payload_len);
+        assert!(
+            client
+                .shared
+                .outbound_request_reservations
+                .lock()
+                .unwrap()
+                .contains_key(&stream_id)
+        );
+        input.push(v5_frames_bytes(vec![
+            protocol_v5::window_update_frame(stream_id, payload_len as u64).unwrap(),
+        ]));
+        wait_for_v5_stream_frame(&output, stream_id, protocol_v5::FrameType::EndStream);
+        wait_for_v5_outbound_request_reservation_release(&client.shared, stream_id);
+        assert_eq!(client.shared.request_budget.used(), 0);
+
+        client.close();
+        input.close();
+    }
+
+    #[test]
+    fn v5_malformed_early_end_releases_purged_request_reservation() {
+        let input = BlockingRead::default();
+        let output = SharedWrite::default();
+        input.push(v5_server_input(Vec::new()));
+        let client = Arc::new(
+            RemoteWorkspaceV5MultiplexedClient::connect(
+                protocol_v5::FramedIo::new(input.clone(), output.clone()),
+                protocol_v5::ClientHello::nucleotide("test-client"),
+            )
+            .unwrap(),
+        );
+        let request = RemoteRequest::WriteFile {
+            path: PathBuf::from("malformed.txt"),
+            create_parent_dirs: false,
+            expected_modified_unix_millis: None,
+            expected_modified_unix_nanos: None,
+        };
+        let body_len = protocol_v5::DEFAULT_STREAM_WINDOW as usize
+            + protocol_v5::DEFAULT_MAX_FRAME_BODY_LEN as usize;
+        let request_client = Arc::clone(&client);
+        let worker = std::thread::spawn(move || request_client.request(request, vec![5; body_len]));
+
+        let stream_id = wait_for_v5_request_stream(&output, "fs.write");
+        assert!(client.shared.request_budget.used() >= body_len);
+        assert!(
+            client
+                .shared
+                .outbound_request_reservations
+                .lock()
+                .unwrap()
+                .contains_key(&stream_id)
+        );
+
+        input.push(v5_frames_bytes(vec![protocol_v5::Frame::new(
+            protocol_v5::FrameType::EndStream,
+            stream_id,
+        )]));
+        let error = worker.join().unwrap().unwrap_err();
+        assert!(error.to_string().contains("ended without final response"));
+        wait_for_v5_outbound_request_reservation_release(&client.shared, stream_id);
+        assert_eq!(client.shared.request_budget.used(), 0);
+        assert_eq!(client.shared.session.lock().unwrap().queued_len(), 0);
+
+        client.close();
+        input.close();
+    }
+
+    #[test]
+    fn v5_incoming_reset_releases_flow_blocked_request_reservation() {
+        let input = BlockingRead::default();
+        let output = SharedWrite::default();
+        input.push(v5_server_input(Vec::new()));
+        let client = Arc::new(
+            RemoteWorkspaceV5MultiplexedClient::connect(
+                protocol_v5::FramedIo::new(input.clone(), output.clone()),
+                protocol_v5::ClientHello::nucleotide("test-client"),
+            )
+            .unwrap(),
+        );
+        let request = RemoteRequest::WriteFile {
+            path: PathBuf::from("cancelled.txt"),
+            create_parent_dirs: false,
+            expected_modified_unix_millis: None,
+            expected_modified_unix_nanos: None,
+        };
+        let body_len = protocol_v5::DEFAULT_STREAM_WINDOW as usize
+            + protocol_v5::DEFAULT_MAX_FRAME_BODY_LEN as usize;
+        let body = vec![3; body_len];
+        let request_client = Arc::clone(&client);
+        let worker = std::thread::spawn(move || request_client.request(request, body));
+
+        let stream_id = wait_for_v5_request_stream(&output, "fs.write");
+        assert!(client.shared.request_budget.used() >= body_len);
+        input.push(v5_frames_bytes(vec![protocol_v5::reset_stream_frame(
+            stream_id,
+            protocol_v5::RESET_CANCELLED,
+            "peer cancelled request",
+        )]));
+
+        let error = worker.join().unwrap().unwrap_err();
+        assert!(matches!(error, RemoteClientError::Remote(_)));
+        wait_for_v5_outbound_request_reservation_release(&client.shared, stream_id);
+        assert_eq!(client.shared.request_budget.used(), 0);
+
+        client.close();
+        input.close();
+    }
+
+    #[test]
+    fn v5_waiter_registration_failure_rolls_back_request_reservation() {
+        for raw in [false, true] {
+            let input = BlockingRead::default();
+            let output = SharedWrite::default();
+            input.push(v5_server_input(Vec::new()));
+            let client = RemoteWorkspaceV5MultiplexedClient::connect(
+                protocol_v5::FramedIo::new(input.clone(), output),
+                protocol_v5::ClientHello::nucleotide("test-client"),
+            )
+            .unwrap();
+
+            let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if raw {
+                    let _guard = client.shared.raw_waiters.lock().unwrap();
+                    panic!("poison raw v5 waiters");
+                } else {
+                    let _guard = client.shared.waiters.lock().unwrap();
+                    panic!("poison v5 waiters");
+                }
+            }));
+            assert!(poisoned.is_err());
+
+            let failed = if raw {
+                client.request_v5_raw("watch.stop", vec![1, 2, 3]).is_err()
+            } else {
+                client
+                    .request(
+                        RemoteRequest::Stat {
+                            path: PathBuf::from("poisoned.rs"),
+                        },
+                        Vec::new(),
+                    )
+                    .is_err()
+            };
+            assert!(failed);
+            assert_eq!(client.shared.request_budget.used(), 0);
+            assert!(
+                client
+                    .shared
+                    .outbound_request_reservations
+                    .lock()
+                    .unwrap()
+                    .is_empty()
+            );
+
+            client.close();
+            input.close();
+        }
+    }
+
+    #[test]
+    fn v5_client_accumulators_reject_aggregate_decoded_data_over_limit() {
+        let mut response = V5ResponseAccumulator {
+            received_bytes: V5_MAX_ACCUMULATED_RESPONSE_BYTES,
+            ..V5ResponseAccumulator::default()
+        };
+        let response_error = response
+            .observe(protocol_v5::StreamEvent::Data {
+                stream_id: 1,
+                channel: protocol_v5::DataChannel::FileBody,
+                uncompressed_len: 1,
+                body: vec![0],
+            })
+            .expect("response limit should finish with an error")
+            .unwrap_err();
+        assert!(response_error.to_string().contains("decoded byte limit"));
+
+        let mut raw = V5RawResponseAccumulator {
+            received_bytes: V5_MAX_RAW_RESPONSE_BYTES,
+            ..V5RawResponseAccumulator::default()
+        };
+        let raw_error = raw
+            .observe(protocol_v5::StreamEvent::Data {
+                stream_id: 3,
+                channel: protocol_v5::DataChannel::Unspecified,
+                uncompressed_len: 1,
+                body: vec![0],
+            })
+            .expect("raw response limit should finish with an error")
+            .unwrap_err();
+        assert!(raw_error.to_string().contains("decoded byte limit"));
+    }
+
+    #[test]
+    fn v5_over_limit_stream_resets_without_credit_or_harming_another_stream() {
+        let input = BlockingRead::default();
+        let output = SharedWrite::default();
+        input.push(v5_server_input(Vec::new()));
+        let client = Arc::new(
+            RemoteWorkspaceV5MultiplexedClient::connect(
+                protocol_v5::FramedIo::new(input.clone(), output.clone()),
+                protocol_v5::ClientHello::nucleotide("test-client"),
+            )
+            .unwrap(),
+        );
+
+        let first_client = Arc::clone(&client);
+        let first = std::thread::spawn(move || {
+            first_client.request(
+                RemoteRequest::Stat {
+                    path: PathBuf::from("oversized.rs"),
+                },
+                Vec::new(),
+            )
+        });
+        let first_stream = wait_for_v5_request_stream(&output, "fs.stat");
+
+        let second_client = Arc::clone(&client);
+        let second = std::thread::spawn(move || {
+            second_client.request(
+                RemoteRequest::Stat {
+                    path: PathBuf::from("healthy.rs"),
+                },
+                Vec::new(),
+            )
+        });
+        let second_stream = wait_for_v5_request_stream_after(&output, "fs.stat", first_stream);
+        client
+            .shared
+            .waiters
+            .lock()
+            .unwrap()
+            .get_mut(&first_stream)
+            .unwrap()
+            .accumulator
+            .received_bytes = V5_MAX_ACCUMULATED_RESPONSE_BYTES;
+
+        let mut frames = vec![
+            protocol_v5::stream_data_frame(
+                first_stream,
+                vec![0],
+                protocol_v5::DataFrameOptions::new(protocol_v5::DataChannel::FileBody),
+            )
+            .unwrap(),
+        ];
+        frames.extend(v5_response_frames(
+            second_stream,
+            "fs.stat",
+            RemoteResponse::Stat(FileStatResponse {
+                path: PathBuf::from("healthy.rs"),
+                kind: RemoteFileKind::File,
+                size: 1,
+                modified_unix_millis: None,
+                modified_unix_nanos: None,
+                readonly: false,
+            }),
+            Vec::new(),
+        ));
+        input.push(v5_frames_bytes(frames));
+
+        let first_error = first.join().unwrap().unwrap_err();
+        let (second_response, _) = second.join().unwrap().unwrap();
+
+        assert!(first_error.to_string().contains("decoded byte limit"));
+        assert!(matches!(second_response, RemoteResponse::Stat(_)));
+        assert!(!client.shared.closed.load(Ordering::Acquire));
+        let outbound = read_v5_frames(output.bytes());
+        assert!(outbound.iter().any(|frame| {
+            frame.stream_id == first_stream
+                && frame.frame_type == protocol_v5::FrameType::ResetStream
+        }));
+        assert!(!outbound.iter().any(|frame| {
+            frame.stream_id == first_stream
+                && frame.frame_type == protocol_v5::FrameType::WindowUpdate
+        }));
+        client.close();
+        input.close();
     }
 
     #[test]
@@ -12406,6 +15656,7 @@ mod tests {
                 .observe(protocol_v5::StreamEvent::Headers {
                     stream_id: 1,
                     role: protocol_v5::MessageRole::PartialResult,
+                    priority: protocol_v5::Priority::Background,
                     envelope: protocol_v5::StreamEnvelope::response(
                         1,
                         "search.files",
@@ -12448,6 +15699,7 @@ mod tests {
                 .observe(protocol_v5::StreamEvent::Headers {
                     stream_id: 1,
                     role: protocol_v5::MessageRole::FinalResponse,
+                    priority: protocol_v5::Priority::Background,
                     envelope: protocol_v5::StreamEnvelope::response(
                         1,
                         "search.files",
@@ -12555,6 +15807,10 @@ mod tests {
         let (actual_response, actual_body) = client
             .request(request.clone(), b"new body".to_vec())
             .unwrap();
+        assert_eq!(
+            client.session.stream_tombstone(1),
+            Some(protocol_v5::StreamTombstone::Closed)
+        );
         let (_, output) = client.into_inner();
         let frames = read_v5_frames(output);
 
@@ -12880,6 +16136,83 @@ mod tests {
         assert_eq!(received.sequence, batch.sequence);
         assert_eq!(received.directory_generations[0].path, ".");
         assert_eq!(received.events[0].path, ".");
+        input.close();
+    }
+
+    #[test]
+    fn v5_multiplexed_client_collapses_slow_watch_consumer_to_resync() {
+        let input = BlockingRead::default();
+        let output = SharedWrite::default();
+        input.push(v5_server_input(Vec::new()));
+        let client = Arc::new(
+            RemoteWorkspaceV5MultiplexedClient::connect(
+                protocol_v5::FramedIo::new(input.clone(), output.clone()),
+                protocol_v5::ClientHello::nucleotide("test-client"),
+            )
+            .unwrap(),
+        );
+
+        let watch_client = Arc::clone(&client);
+        let watch_thread = std::thread::spawn(move || {
+            watch_client.start_v5_watch(protocol_v5::WatchStart::expanded_dirs(["."]))
+        });
+        let request_stream = wait_for_v5_request_stream(&output, "watch.start");
+        let response = protocol_v5::WatchStartResponse {
+            watch_id: 7,
+            event_stream_id: 2,
+            backend: "poll".to_string(),
+            recursive_coverage: protocol_v5::RecursiveCoverage::None as i32,
+            degraded: true,
+            requires_reconciliation: true,
+            accepted_roots: vec![".".to_string()],
+            degraded_roots: Vec::new(),
+            unsupported_roots: Vec::new(),
+        };
+        let mut frames = vec![v5_watch_event_open_frame(2, 7)];
+        frames.extend(v5_raw_response_frames(
+            request_stream,
+            "watch.start",
+            response.encode_to_vec(),
+        ));
+        input.push(v5_frames_bytes(frames));
+        let watch = watch_thread
+            .join()
+            .unwrap()
+            .expect("watch.start should succeed");
+
+        let batches = (1..=V5_WATCH_DELIVERY_CAPACITY + 1)
+            .map(|sequence| protocol_v5::WatchBatch {
+                watch_id: 7,
+                sequence: sequence as u64,
+                directory_generations: Vec::new(),
+                events: vec![protocol_v5::WatchChange::modified(
+                    format!("file-{sequence}"),
+                    false,
+                )],
+                overflow: false,
+                resync_required: false,
+            })
+            .map(|batch| protocol_v5::watch_batch_frame(2, batch).unwrap())
+            .collect::<Vec<_>>();
+        input.push(v5_frames_bytes(batches));
+
+        let started = Instant::now();
+        while !watch.overflowed.load(Ordering::Acquire) {
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "timed out waiting for local watch overflow"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let overflow = watch
+            .recv_timeout(Duration::from_secs(2))
+            .expect("local overflow should produce a resync batch");
+
+        assert_eq!(overflow.watch_id, 7);
+        assert_eq!(overflow.sequence, (V5_WATCH_DELIVERY_CAPACITY + 1) as u64);
+        assert!(overflow.overflow);
+        assert!(overflow.resync_required);
+        assert!(overflow.events.is_empty());
         input.close();
     }
 
@@ -13344,7 +16677,7 @@ mod tests {
             }
         }
         assert!(connection_credit >= 11);
-        assert_eq!(connection_credit, stream_credit);
+        assert!(stream_credit <= connection_credit);
         input.close();
     }
 
@@ -14087,7 +17420,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let mut watches = V5WatchRegistry::default();
         let watch_id = watches.allocate_watch_id().unwrap();
-        let status = watches.start(watch_id, 2, vec![".".to_string()], 50, temp.path());
+        let status = watches.start(watch_id, 2, vec![".".to_string()], 50, 500, temp.path());
         assert_eq!(status.backend, "poll");
         assert!(status.degraded);
 
@@ -14118,13 +17451,16 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         std::fs::create_dir(temp.path().join("src")).unwrap();
         let (events_tx, _events_rx) = mpsc::channel();
-        let mut watches = V5WatchRegistry::with_native_events(events_tx);
+        let (native_tx, _native_rx) = mpsc::sync_channel(V5_NATIVE_WATCH_EVENT_CAPACITY);
+        let mut watches =
+            V5WatchRegistry::with_native_events(V5NativeWatchSender::new(native_tx, events_tx));
         let watch_id = watches.allocate_watch_id().unwrap();
         watches.start(
             watch_id,
             2,
             vec![".".to_string(), "src".to_string()],
             50,
+            500,
             temp.path(),
         );
 
@@ -14148,6 +17484,41 @@ mod tests {
             protocol_v5::WatchChangeKind::Created as i32
         );
         assert!(!batch.events[0].is_dir);
+    }
+
+    #[test]
+    fn v5_watch_registry_collapses_event_overflow_to_resync() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut watches = V5WatchRegistry::default();
+        let watch_id = watches.allocate_watch_id().unwrap();
+        watches.start(watch_id, 2, vec![".".to_string()], 50, 2, temp.path());
+
+        let event = notify::Event::new(notify::EventKind::Create(notify::event::CreateKind::File))
+            .add_path(temp.path().join("one.txt"))
+            .add_path(temp.path().join("two.txt"))
+            .add_path(temp.path().join("three.txt"));
+        watches
+            .record_native_event(watch_id, Ok(event), temp.path())
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(60));
+
+        let batches = watches.poll_due(temp.path()).unwrap();
+        assert_eq!(batches.len(), 1);
+        let (_, batch) = &batches[0];
+        assert!(batch.overflow);
+        assert!(batch.resync_required);
+        assert!(batch.events.is_empty());
+        assert!(batch.directory_generations.is_empty());
+    }
+
+    #[test]
+    fn v5_watch_event_limit_defaults_and_has_a_hard_cap() {
+        assert_eq!(v5_watch_event_limit(0), V5_DEFAULT_WATCH_EVENTS_PER_BATCH);
+        assert_eq!(v5_watch_event_limit(7), 7);
+        assert_eq!(
+            v5_watch_event_limit(u32::MAX),
+            V5_MAX_WATCH_EVENTS_PER_BATCH
+        );
     }
 
     #[test]
@@ -14225,17 +17596,27 @@ mod tests {
             path: PathBuf::from("large.txt"),
             max_bytes: None,
         };
-        let input = v5_client_input(v5_request_frames(1, &read, &[]));
+        let mut options = read.v5_request_options();
+        options.priority = protocol_v5::Priority::UserInput;
+        let input = BlockingRead::default();
+        input.push(v5_client_input(v5_request_frames_with_options(
+            1,
+            &read,
+            &[],
+            options,
+        )));
         let output = SharedWrite::default();
         let service =
             WorkspaceService::new(LocalWorkspaceBackend, temp.path().to_path_buf()).unwrap();
-
-        service
-            .serve_v5_concurrent(
-                protocol_v5::FramedIo::new(Cursor::new(input), output.clone()),
-                &protocol_v5::ServerHandshakeInfo::current(temp.path().display().to_string()),
-            )
-            .unwrap();
+        let service_thread = spawn_v5_concurrent_service(
+            service,
+            &input,
+            &output,
+            protocol_v5::ServerHandshakeInfo::current(temp.path().display().to_string()),
+        );
+        wait_for_v5_stream_frame(&output, 1, protocol_v5::FrameType::EndStream);
+        input.close();
+        service_thread.join().unwrap();
 
         let frames = read_v5_frames(output.bytes());
         let (response, read_body, error) = decode_v5_service_response(&frames, 1);
@@ -14246,6 +17627,12 @@ mod tests {
         assert_eq!(read_response.size, body.len() as u64);
         assert!(!read_response.truncated);
         assert_eq!(read_body, body);
+        assert_v5_data_channel_priority(
+            &frames,
+            1,
+            protocol_v5::DataChannel::FileBody,
+            protocol_v5::Priority::UserInput,
+        );
 
         let first_file_body_index = frames
             .iter()
@@ -14316,17 +17703,20 @@ mod tests {
             .unwrap(),
             protocol_v5::Frame::new(protocol_v5::FrameType::EndStream, 1),
         ];
-        let input = v5_client_input(frames);
+        let input = BlockingRead::default();
+        input.push(v5_client_input(frames));
         let output = SharedWrite::default();
         let service =
             WorkspaceService::new(LocalWorkspaceBackend, temp.path().to_path_buf()).unwrap();
-
-        service
-            .serve_v5_concurrent(
-                protocol_v5::FramedIo::new(Cursor::new(input), output.clone()),
-                &protocol_v5::ServerHandshakeInfo::current(temp.path().display().to_string()),
-            )
-            .unwrap();
+        let service_thread = spawn_v5_concurrent_service(
+            service,
+            &input,
+            &output,
+            protocol_v5::ServerHandshakeInfo::current(temp.path().display().to_string()),
+        );
+        wait_for_v5_stream_frame(&output, 1, protocol_v5::FrameType::EndStream);
+        input.close();
+        service_thread.join().unwrap();
 
         let frames = read_v5_frames(output.bytes());
         let (response, body, error) = decode_v5_service_response(&frames, 1);
@@ -14448,6 +17838,267 @@ mod tests {
     }
 
     #[test]
+    fn v5_server_output_queue_backpressures_without_blocking_control_events() {
+        let (control_tx, control_rx) = mpsc::channel();
+        let (output_tx, output_rx) = mpsc::sync_channel(1);
+        let output_events = V5ServeOutputSender::new(output_tx, control_tx.clone());
+        let output = |byte| V5ServeOutputEvent::StreamData {
+            stream_id: 7,
+            channel: protocol_v5::DataChannel::Stdout,
+            body: vec![byte],
+            priority: protocol_v5::Priority::LspSupport,
+        };
+
+        output_events.send(output(1)).unwrap();
+        assert!(matches!(
+            control_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            V5ServeEvent::Output
+        ));
+        output_events.clear_ready();
+
+        let blocked_sender = output_events.clone();
+        let (started_tx, started_rx) = mpsc::sync_channel(0);
+        let (finished_tx, finished_rx) = mpsc::sync_channel(0);
+        let producer = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            let result = blocked_sender.send(output(2));
+            finished_tx.send(result).unwrap();
+        });
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+
+        control_tx.send(V5ServeEvent::NativeWatch).unwrap();
+        assert!(matches!(
+            control_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            V5ServeEvent::NativeWatch
+        ));
+        assert!(matches!(
+            finished_rx.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+
+        let first = output_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(matches!(
+            first,
+            V5ServeOutputEvent::StreamData { stream_id: 7, .. }
+        ));
+        output_events.mark_delivered();
+        finished_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .unwrap();
+        let second = output_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(matches!(
+            second,
+            V5ServeOutputEvent::StreamData { stream_id: 7, .. }
+        ));
+        output_events.mark_delivered();
+        producer.join().unwrap();
+    }
+
+    #[test]
+    fn v5_server_output_queue_rejects_events_over_the_byte_budget() {
+        let (control_tx, control_rx) = mpsc::channel();
+        let (output_tx, output_rx) = mpsc::sync_channel(V5_SERVE_OUTPUT_EVENT_CAPACITY);
+        let output_events = V5ServeOutputSender::new(output_tx, control_tx);
+        let retained_bytes = V5_SERVE_OUTPUT_EVENT_MAX_RETAINED_BYTES + 1;
+
+        let error = output_events
+            .send(V5ServeOutputEvent::StreamData {
+                stream_id: 9,
+                channel: protocol_v5::DataChannel::FileBody,
+                body: vec![0; retained_bytes],
+                priority: protocol_v5::Priority::ForegroundDocument,
+            })
+            .unwrap_err();
+
+        assert_eq!(
+            error,
+            V5ServeQueueError::EventTooLarge {
+                retained_bytes,
+                max: V5_SERVE_OUTPUT_EVENT_MAX_RETAINED_BYTES,
+            }
+        );
+        assert!(matches!(
+            output_rx.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+        assert!(matches!(
+            control_rx.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+        assert!(!output_events.has_pending_output());
+    }
+
+    #[test]
+    fn v5_service_completion_serializes_large_payloads_in_bounded_chunks() {
+        let temp = tempfile::tempdir().unwrap();
+        let service =
+            WorkspaceService::new(LocalWorkspaceBackend, temp.path().to_path_buf()).unwrap();
+        let response = RemoteResponse::FileSearch(FileSearchResponse {
+            root: PathBuf::from("."),
+            files: (0..4_096)
+                .map(|index| PathBuf::from(format!("src/nested/module_{index:04}.rs")))
+                .collect(),
+            truncated: false,
+        });
+        let expected_payload = response.to_v5_payload().unwrap();
+        assert!(expected_payload.len() > V5_SERVE_OUTPUT_EVENT_MAX_RETAINED_BYTES);
+
+        let (control_tx, _control_rx) = mpsc::channel();
+        let (output_tx, output_rx) = mpsc::sync_channel(8);
+        let output_events = V5ServeOutputSender::new(output_tx, control_tx);
+        service
+            .enqueue_v5_service_completion(
+                V5ServiceCompletion {
+                    stream_id: 7,
+                    method: "search.files".to_string(),
+                    result: Ok(ServiceOutcome::continue_response(response, Vec::new())),
+                },
+                protocol_v5::Priority::LspSupport,
+                &output_events,
+            )
+            .unwrap();
+
+        let mut chunks = 0;
+        let mut actual_payload = Vec::new();
+        let mut completed = false;
+        for event in output_rx.try_iter() {
+            match event {
+                V5ServeOutputEvent::StreamData {
+                    stream_id,
+                    channel,
+                    body,
+                    priority,
+                } => {
+                    assert_eq!(stream_id, 7);
+                    assert_eq!(channel, protocol_v5::DataChannel::Unspecified);
+                    assert_eq!(priority, protocol_v5::Priority::LspSupport);
+                    assert!(body.capacity() <= V5_SERVE_OUTPUT_EVENT_MAX_RETAINED_BYTES);
+                    chunks += 1;
+                    actual_payload.extend(body);
+                }
+                V5ServeOutputEvent::Completed(completion) => {
+                    assert_eq!(completion.stream_id, 7);
+                    assert!(matches!(
+                        completion.result,
+                        Ok(V5ServiceTerminalOutcome::Continue)
+                    ));
+                    completed = true;
+                }
+                other => panic!(
+                    "unexpected service output event: {:?}",
+                    other.retained_bytes()
+                ),
+            }
+        }
+
+        assert!(chunks > 1);
+        assert!(completed);
+        assert_eq!(actual_payload, expected_payload);
+        assert_eq!(output_events.completion_budget.used(), 0);
+    }
+
+    #[test]
+    fn v5_service_completion_budget_is_held_while_output_is_backpressured() {
+        let temp = tempfile::tempdir().unwrap();
+        let service =
+            WorkspaceService::new(LocalWorkspaceBackend, temp.path().to_path_buf()).unwrap();
+        let response = RemoteResponse::Shutdown;
+        let payload_len = response.to_v5_payload().unwrap().len();
+        let budget = V5ConnectionByteBudget::new(payload_len);
+        let (control_tx, _control_rx) = mpsc::channel();
+        let (output_tx, output_rx) = mpsc::sync_channel(0);
+        let output_events =
+            V5ServeOutputSender::with_completion_budget(output_tx, control_tx, budget.clone());
+        let worker_output = output_events.clone();
+        let worker = std::thread::spawn(move || {
+            service.enqueue_v5_service_completion(
+                V5ServiceCompletion {
+                    stream_id: 9,
+                    method: "session.shutdown".to_string(),
+                    result: Ok(ServiceOutcome::Shutdown),
+                },
+                protocol_v5::Priority::UserInput,
+                &worker_output,
+            )
+        });
+
+        let started = Instant::now();
+        while budget.used() == 0 {
+            assert!(
+                started.elapsed() < Duration::from_secs(1),
+                "completion did not reserve its encoded bytes"
+            );
+            std::thread::yield_now();
+        }
+        let error = output_events.reserve_completion_bytes(1).unwrap_err();
+        assert_eq!(error.code, "resource_exhausted");
+
+        assert!(matches!(
+            output_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            V5ServeOutputEvent::StreamData { stream_id: 9, .. }
+        ));
+        assert!(matches!(
+            output_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            V5ServeOutputEvent::Completed(V5ServiceTerminal {
+                stream_id: 9,
+                result: Ok(V5ServiceTerminalOutcome::Shutdown),
+                ..
+            })
+        ));
+        worker.join().unwrap().unwrap();
+        assert_eq!(budget.used(), 0);
+    }
+
+    #[test]
+    fn v5_native_watch_queue_overflow_requests_explicit_resync() {
+        let (control_tx, control_rx) = mpsc::channel();
+        let (native_tx, native_rx) = mpsc::sync_channel(1);
+        let native_events = V5NativeWatchSender::new(native_tx, control_tx);
+
+        native_events
+            .send(V5NativeWatchEvent {
+                watch_id: 11,
+                result: Ok(notify::Event::new(notify::EventKind::Any)),
+            })
+            .unwrap();
+        assert!(matches!(
+            control_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            V5ServeEvent::NativeWatch
+        ));
+        native_events.clear_ready();
+        native_events
+            .send(V5NativeWatchEvent {
+                watch_id: 11,
+                result: Ok(notify::Event::new(notify::EventKind::Any)),
+            })
+            .unwrap();
+        assert!(matches!(
+            control_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            V5ServeEvent::NativeWatch
+        ));
+        assert_eq!(native_events.take_overflowed_watch_ids(), vec![11]);
+        assert_eq!(
+            native_rx
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap()
+                .watch_id,
+            11
+        );
+
+        let mut subscription = V5WatchSubscription::new(11, 3, 50, 100, None);
+        subscription.roots.insert(".".to_string());
+        subscription
+            .pending_events
+            .push(protocol_v5::WatchChange::modified("src/lib.rs", false));
+        subscription.record_native_overflow();
+        assert!(subscription.pending_events.is_empty());
+        assert!(subscription.pending_overflow);
+        assert!(subscription.pending_resync_required);
+        assert!(subscription.next_emit.is_some());
+    }
+
+    #[test]
     fn v5_concurrent_service_streams_file_search_partial_results() {
         let temp = tempfile::tempdir().unwrap();
         let src = temp.path().join("src");
@@ -14462,19 +18113,35 @@ mod tests {
             hidden: true,
             ..FileSearchRequest::default()
         });
-        let input = v5_client_input(v5_request_frames(1, &search, &[]));
+        let mut options = search.v5_request_options();
+        options.priority = protocol_v5::Priority::UserInput;
+        let input = BlockingRead::default();
+        input.push(v5_client_input(v5_request_frames_with_options(
+            1,
+            &search,
+            &[],
+            options,
+        )));
         let output = SharedWrite::default();
         let service =
             WorkspaceService::new(LocalWorkspaceBackend, temp.path().to_path_buf()).unwrap();
-
-        service
-            .serve_v5_concurrent(
-                protocol_v5::FramedIo::new(Cursor::new(input), output.clone()),
-                &protocol_v5::ServerHandshakeInfo::current(temp.path().display().to_string()),
-            )
-            .unwrap();
+        let service_thread = spawn_v5_concurrent_service(
+            service,
+            &input,
+            &output,
+            protocol_v5::ServerHandshakeInfo::current(temp.path().display().to_string()),
+        );
+        wait_for_v5_stream_frame(&output, 1, protocol_v5::FrameType::EndStream);
+        input.close();
+        service_thread.join().unwrap();
 
         let frames = read_v5_frames(output.bytes());
+        assert_v5_data_channel_priority(
+            &frames,
+            1,
+            protocol_v5::DataChannel::SearchPayload,
+            protocol_v5::Priority::UserInput,
+        );
         let partials = decode_v5_partial_file_search_responses(&frames, 1);
         assert_eq!(partials.len(), 1);
         assert_eq!(partials[0].files.len(), V5_SEARCH_PARTIAL_BATCH_SIZE);
@@ -14550,19 +18217,35 @@ mod tests {
             hidden: true,
             ..TextSearchRequest::default()
         });
-        let input = v5_client_input(v5_request_frames(1, &search, &[]));
+        let mut options = search.v5_request_options();
+        options.priority = protocol_v5::Priority::UserInput;
+        let input = BlockingRead::default();
+        input.push(v5_client_input(v5_request_frames_with_options(
+            1,
+            &search,
+            &[],
+            options,
+        )));
         let output = SharedWrite::default();
         let service =
             WorkspaceService::new(LocalWorkspaceBackend, temp.path().to_path_buf()).unwrap();
-
-        service
-            .serve_v5_concurrent(
-                protocol_v5::FramedIo::new(Cursor::new(input), output.clone()),
-                &protocol_v5::ServerHandshakeInfo::current(temp.path().display().to_string()),
-            )
-            .unwrap();
+        let service_thread = spawn_v5_concurrent_service(
+            service,
+            &input,
+            &output,
+            protocol_v5::ServerHandshakeInfo::current(temp.path().display().to_string()),
+        );
+        wait_for_v5_stream_frame(&output, 1, protocol_v5::FrameType::EndStream);
+        input.close();
+        service_thread.join().unwrap();
 
         let frames = read_v5_frames(output.bytes());
+        assert_v5_data_channel_priority(
+            &frames,
+            1,
+            protocol_v5::DataChannel::SearchPayload,
+            protocol_v5::Priority::UserInput,
+        );
         let partials = decode_v5_partial_text_search_responses(&frames, 1);
         assert_eq!(partials.len(), 1);
         assert_eq!(partials[0].matches.len(), V5_SEARCH_PARTIAL_BATCH_SIZE);
@@ -14686,17 +18369,27 @@ mod tests {
             max_output_bytes: None,
             timeout_ms: None,
         });
-        let input = v5_client_input(v5_request_frames(1, &process, &[]));
+        let mut options = process.v5_request_options();
+        options.priority = protocol_v5::Priority::UserInput;
+        let input = BlockingRead::default();
+        input.push(v5_client_input(v5_request_frames_with_options(
+            1,
+            &process,
+            &[],
+            options,
+        )));
         let output = SharedWrite::default();
         let service =
             WorkspaceService::new(LocalWorkspaceBackend, temp.path().to_path_buf()).unwrap();
-
-        service
-            .serve_v5_concurrent(
-                protocol_v5::FramedIo::new(Cursor::new(input), output.clone()),
-                &protocol_v5::ServerHandshakeInfo::current(temp.path().display().to_string()),
-            )
-            .unwrap();
+        let service_thread = spawn_v5_concurrent_service(
+            service,
+            &input,
+            &output,
+            protocol_v5::ServerHandshakeInfo::current(temp.path().display().to_string()),
+        );
+        wait_for_v5_stream_frame(&output, 1, protocol_v5::FrameType::EndStream);
+        input.close();
+        service_thread.join().unwrap();
 
         let frames = read_v5_frames(output.bytes());
         let (response, _body, error) = decode_v5_service_response(&frames, 1);
@@ -14714,6 +18407,18 @@ mod tests {
         assert_eq!(
             v5_data_for_channel(&frames, 1, protocol_v5::DataChannel::Stderr),
             b"stderr-data"
+        );
+        assert_v5_data_channel_priority(
+            &frames,
+            1,
+            protocol_v5::DataChannel::Stdout,
+            protocol_v5::Priority::UserInput,
+        );
+        assert_v5_data_channel_priority(
+            &frames,
+            1,
+            protocol_v5::DataChannel::Stderr,
+            protocol_v5::Priority::UserInput,
         );
 
         let final_response_index = v5_final_response_index(&frames, 1);
@@ -14805,6 +18510,60 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn v5_concurrent_service_cancels_running_process_on_peer_eof() {
+        let temp = tempfile::tempdir().unwrap();
+        let process = RemoteRequest::RunProcess(ProcessRequest {
+            program: "/bin/sh".to_string(),
+            args: vec!["-c".to_string(), "printf 'started'; sleep 3".to_string()],
+            cwd: PathBuf::new(),
+            env: BTreeMap::new(),
+            clear_env: false,
+            inherit_project_environment: false,
+            max_output_bytes: None,
+            timeout_ms: None,
+        });
+        let input = BlockingRead::default();
+        input.push(v5_client_input(v5_request_frames(1, &process, &[])));
+        let output = SharedWrite::default();
+        let service =
+            WorkspaceService::new(LocalWorkspaceBackend, temp.path().to_path_buf()).unwrap();
+        let service_input = input.clone();
+        let service_output = output.clone();
+        let service_thread = std::thread::spawn(move || {
+            service
+                .serve_v5_concurrent(
+                    protocol_v5::FramedIo::new(service_input, service_output),
+                    &protocol_v5::ServerHandshakeInfo::current(temp.path().display().to_string()),
+                )
+                .unwrap();
+        });
+
+        let started = Instant::now();
+        loop {
+            if find_v5_output_data_for_channel(&output, 1, protocol_v5::DataChannel::Stdout)
+                == b"started"
+            {
+                break;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "timed out waiting for process stdout"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        let disconnected_at = Instant::now();
+        input.close();
+        service_thread.join().unwrap();
+
+        assert!(
+            disconnected_at.elapsed() < Duration::from_secs(2),
+            "service waited for the sleeping process after peer EOF"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn v5_concurrent_service_expires_running_process_deadline() {
         let temp = tempfile::tempdir().unwrap();
         let process = RemoteRequest::RunProcess(ProcessRequest {
@@ -14855,6 +18614,7 @@ mod tests {
         }
 
         let deadline_wait_started = Instant::now();
+        wait_for_v5_stream_frame(&output, 1, protocol_v5::FrameType::ResetStream);
         input.close();
         service_thread.join().unwrap();
 
@@ -14938,6 +18698,8 @@ mod tests {
             &[],
             options,
         )));
+        wait_for_v5_stream_frame(&output, 1, protocol_v5::FrameType::ResetStream);
+        wait_for_v5_stream_frame(&output, 3, protocol_v5::FrameType::EndStream);
         input.close();
         service_thread.join().unwrap();
 
@@ -15021,17 +18783,20 @@ mod tests {
         };
         let mut request_frames = v5_request_frames(1, &read, &[]);
         request_frames.extend(v5_request_frames(3, &stat, &[]));
-        let input = v5_client_input(request_frames);
+        let input = BlockingRead::default();
+        input.push(v5_client_input(request_frames));
         let output = SharedWrite::default();
         let service =
             WorkspaceService::new(ConcurrentV5Backend::new(), temp.path().to_path_buf()).unwrap();
-
-        service
-            .serve_v5_concurrent(
-                protocol_v5::FramedIo::new(Cursor::new(input), output.clone()),
-                &protocol_v5::ServerHandshakeInfo::current(temp.path().display().to_string()),
-            )
-            .unwrap();
+        let service_thread = spawn_v5_concurrent_service(
+            service,
+            &input,
+            &output,
+            protocol_v5::ServerHandshakeInfo::current(temp.path().display().to_string()),
+        );
+        wait_for_v5_stream_frame(&output, 1, protocol_v5::FrameType::EndStream);
+        input.close();
+        service_thread.join().unwrap();
 
         let frames = read_v5_frames(output.bytes());
         let (stat_response, _, stat_error) = decode_v5_service_response(&frames, 3);
@@ -15065,17 +18830,20 @@ mod tests {
             "client superseded read",
         ));
         request_frames.extend(v5_request_frames(3, &stat, &[]));
-        let input = v5_client_input(request_frames);
+        let input = BlockingRead::default();
+        input.push(v5_client_input(request_frames));
         let output = SharedWrite::default();
         let service =
             WorkspaceService::new(ConcurrentV5Backend::new(), temp.path().to_path_buf()).unwrap();
-
-        service
-            .serve_v5_concurrent(
-                protocol_v5::FramedIo::new(Cursor::new(input), output.clone()),
-                &protocol_v5::ServerHandshakeInfo::current(temp.path().display().to_string()),
-            )
-            .unwrap();
+        let service_thread = spawn_v5_concurrent_service(
+            service,
+            &input,
+            &output,
+            protocol_v5::ServerHandshakeInfo::current(temp.path().display().to_string()),
+        );
+        wait_for_v5_stream_frame(&output, 3, protocol_v5::FrameType::EndStream);
+        input.close();
+        service_thread.join().unwrap();
 
         let frames = read_v5_frames(output.bytes());
         let (stat_response, _, stat_error) = decode_v5_service_response(&frames, 3);
@@ -15344,6 +19112,7 @@ mod tests {
     enum FakeProtocolOutcome {
         Ok(RemoteResponse),
         Disconnected,
+        Io(io::ErrorKind),
         RemoteError(&'static str),
     }
 
@@ -15381,6 +19150,10 @@ mod tests {
             {
                 FakeProtocolOutcome::Ok(response) => Ok((response, Vec::new())),
                 FakeProtocolOutcome::Disconnected => Err(RemoteClientError::Disconnected),
+                FakeProtocolOutcome::Io(kind) => Err(RemoteClientError::Io(io::Error::new(
+                    kind,
+                    "fake I/O failure",
+                ))),
                 FakeProtocolOutcome::RemoteError(code) => {
                     Err(RemoteClientError::Remote(RemoteError {
                         code: code.to_string(),
@@ -15393,6 +19166,211 @@ mod tests {
 
         fn shutdown(&self) -> std::result::Result<(), RemoteClientError> {
             Ok(())
+        }
+    }
+
+    struct LifecycleProtocolClient {
+        closes: Arc<AtomicUsize>,
+        shutdowns: Arc<AtomicUsize>,
+    }
+
+    impl RemoteWorkspaceProtocolClient for LifecycleProtocolClient {
+        fn request(
+            &self,
+            _request: RemoteRequest,
+            _body: Vec<u8>,
+        ) -> std::result::Result<(RemoteResponse, Vec<u8>), RemoteClientError> {
+            Err(RemoteClientError::Disconnected)
+        }
+
+        fn shutdown(&self) -> std::result::Result<(), RemoteClientError> {
+            self.shutdowns.fetch_add(1, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_secs(2));
+            Ok(())
+        }
+
+        fn close(&self) {
+            self.closes.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    struct WatchProtocolClient {
+        starts: Arc<AtomicUsize>,
+        closes: Arc<AtomicUsize>,
+        fail_start: bool,
+    }
+
+    impl RemoteWorkspaceProtocolClient for WatchProtocolClient {
+        fn request(
+            &self,
+            _request: RemoteRequest,
+            _body: Vec<u8>,
+        ) -> std::result::Result<(RemoteResponse, Vec<u8>), RemoteClientError> {
+            Err(RemoteClientError::Disconnected)
+        }
+
+        fn shutdown(&self) -> std::result::Result<(), RemoteClientError> {
+            Ok(())
+        }
+
+        fn close(&self) {
+            self.closes.fetch_add(1, Ordering::SeqCst);
+        }
+
+        fn start_watch(
+            &self,
+            _request: WorkspaceWatchRequest,
+        ) -> std::result::Result<Option<WorkspaceWatch>, RemoteClientError> {
+            self.starts.fetch_add(1, Ordering::SeqCst);
+            if self.fail_start {
+                Err(RemoteClientError::Io(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "fake watch transport timeout",
+                )))
+            } else {
+                Ok(None)
+            }
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum WatchControlFailure {
+        Update,
+        Stop,
+    }
+
+    struct WatchControlProtocolClient {
+        updates: Arc<AtomicUsize>,
+        stops: Arc<AtomicUsize>,
+        closes: Arc<AtomicUsize>,
+        failed_operation: Option<WatchControlFailure>,
+    }
+
+    impl RemoteWorkspaceProtocolClient for WatchControlProtocolClient {
+        fn request(
+            &self,
+            _request: RemoteRequest,
+            _body: Vec<u8>,
+        ) -> std::result::Result<(RemoteResponse, Vec<u8>), RemoteClientError> {
+            Err(RemoteClientError::Disconnected)
+        }
+
+        fn shutdown(&self) -> std::result::Result<(), RemoteClientError> {
+            Ok(())
+        }
+
+        fn close(&self) {
+            self.closes.fetch_add(1, Ordering::SeqCst);
+        }
+
+        fn update_watch(
+            &self,
+            _watch_id: u64,
+            _add_roots: Vec<PathBuf>,
+            _remove_roots: Vec<PathBuf>,
+        ) -> std::result::Result<Option<WorkspaceWatchUpdate>, RemoteClientError> {
+            self.updates.fetch_add(1, Ordering::SeqCst);
+            if self.failed_operation == Some(WatchControlFailure::Update) {
+                Err(RemoteClientError::Io(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "fake watch.update transport timeout",
+                )))
+            } else {
+                Ok(None)
+            }
+        }
+
+        fn stop_watch(&self, _watch_id: u64) -> std::result::Result<(), RemoteClientError> {
+            self.stops.fetch_add(1, Ordering::SeqCst);
+            if self.failed_operation == Some(WatchControlFailure::Stop) {
+                Err(RemoteClientError::Io(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "fake watch.stop transport timeout",
+                )))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct PausingWrite {
+        state: Arc<(StdMutex<PausingWriteState>, Condvar)>,
+    }
+
+    #[derive(Default)]
+    struct PausingWriteState {
+        bytes: Vec<u8>,
+        pause_next_write: bool,
+        paused: bool,
+        released: bool,
+    }
+
+    impl PausingWrite {
+        fn pause_next_write(&self) {
+            let (lock, _) = &*self.state;
+            let mut state = lock.lock().unwrap();
+            state.pause_next_write = true;
+            state.paused = false;
+            state.released = false;
+        }
+
+        fn wait_until_paused(&self) {
+            let started = Instant::now();
+            let (lock, cvar) = &*self.state;
+            let mut state = lock.lock().unwrap();
+            while !state.paused {
+                let (next, _) = cvar.wait_timeout(state, Duration::from_millis(20)).unwrap();
+                state = next;
+                assert!(
+                    started.elapsed() < Duration::from_secs(5),
+                    "timed out waiting for v5 writer pause"
+                );
+            }
+        }
+
+        fn release(&self) {
+            let (lock, cvar) = &*self.state;
+            let mut state = lock.lock().unwrap();
+            state.released = true;
+            cvar.notify_all();
+        }
+
+        fn bytes(&self) -> Vec<u8> {
+            self.state.0.lock().unwrap().bytes.clone()
+        }
+    }
+
+    impl Write for PausingWrite {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            let (lock, cvar) = &*self.state;
+            let mut state = lock.lock().unwrap();
+            if state.pause_next_write {
+                state.pause_next_write = false;
+                state.paused = true;
+                cvar.notify_all();
+                while !state.released {
+                    state = cvar.wait(state).unwrap();
+                }
+            }
+            state.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct ReleasingTransportAbort {
+        writer: PausingWrite,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl V5TransportAbort for ReleasingTransportAbort {
+        fn abort(&self) {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.writer.release();
         }
     }
 
@@ -15414,6 +19392,71 @@ mod tests {
         }
 
         fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct FaultInjectingWrite {
+        output: SharedWrite,
+        mode: Arc<StdMutex<FaultWriteMode>>,
+    }
+
+    #[derive(Default)]
+    enum FaultWriteMode {
+        #[default]
+        Healthy,
+        FailAfterBytes(usize),
+        FailAfterFlushes(usize),
+    }
+
+    impl FaultInjectingWrite {
+        fn output(&self) -> SharedWrite {
+            self.output.clone()
+        }
+
+        fn fail_after_bytes(&self, bytes: usize) {
+            *self.mode.lock().unwrap() = FaultWriteMode::FailAfterBytes(bytes);
+        }
+
+        fn fail_after_flushes(&self, successful_flushes: usize) {
+            *self.mode.lock().unwrap() = FaultWriteMode::FailAfterFlushes(successful_flushes);
+        }
+
+        fn injected_error() -> io::Error {
+            io::Error::new(io::ErrorKind::BrokenPipe, "injected v5 writer failure")
+        }
+    }
+
+    impl Write for FaultInjectingWrite {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            let mut mode = self.mode.lock().unwrap();
+            if let FaultWriteMode::FailAfterBytes(remaining) = &mut *mode {
+                if *remaining == 0 {
+                    return Err(Self::injected_error());
+                }
+                let written = buf.len().min(*remaining);
+                self.output
+                    .bytes
+                    .lock()
+                    .unwrap()
+                    .extend_from_slice(&buf[..written]);
+                *remaining -= written;
+                return Ok(written);
+            }
+
+            self.output.bytes.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            let mut mode = self.mode.lock().unwrap();
+            if let FaultWriteMode::FailAfterFlushes(remaining) = &mut *mode {
+                if *remaining == 0 {
+                    return Err(Self::injected_error());
+                }
+                *remaining -= 1;
+            }
             Ok(())
         }
     }
@@ -15463,6 +19506,49 @@ mod tests {
         }
     }
 
+    fn spawn_v5_concurrent_service<B>(
+        service: WorkspaceService<B>,
+        input: &BlockingRead,
+        output: &SharedWrite,
+        info: protocol_v5::ServerHandshakeInfo,
+    ) -> std::thread::JoinHandle<()>
+    where
+        B: WorkspaceBackend + 'static,
+    {
+        let service_input = input.clone();
+        let service_output = output.clone();
+        std::thread::spawn(move || {
+            service
+                .serve_v5_concurrent(
+                    protocol_v5::FramedIo::new(service_input, service_output),
+                    &info,
+                )
+                .unwrap();
+        })
+    }
+
+    fn wait_for_v5_stream_frame(
+        output: &SharedWrite,
+        stream_id: u64,
+        expected_frame_type: protocol_v5::FrameType,
+    ) {
+        let started = Instant::now();
+        loop {
+            let bytes = output.bytes();
+            let mut cursor = Cursor::new(bytes);
+            while let Ok(Some(frame)) = protocol_v5::read_frame(&mut cursor) {
+                if frame.stream_id == stream_id && frame.frame_type == expected_frame_type {
+                    return;
+                }
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "timed out waiting for {expected_frame_type:?} on stream {stream_id}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
     fn v5_frames_bytes(frames: Vec<protocol_v5::Frame>) -> Vec<u8> {
         let mut bytes = Vec::new();
         for frame in frames {
@@ -15497,6 +19583,28 @@ mod tests {
             assert!(
                 started.elapsed() < Duration::from_secs(2),
                 "timed out waiting for v5 request {method}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn wait_for_v5_outbound_request_reservation_release<W>(
+        shared: &RemoteWorkspaceV5Shared<W>,
+        stream_id: u64,
+    ) {
+        let started = Instant::now();
+        loop {
+            let retained = shared
+                .outbound_request_reservations
+                .lock()
+                .unwrap()
+                .contains_key(&stream_id);
+            if !retained {
+                return;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "timed out waiting for v5 request reservation on stream {stream_id} to release"
             );
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -16803,6 +20911,97 @@ mod tests {
     }
 
     #[test]
+    fn remote_helper_upload_command_registers_temporary_file_cleanup() {
+        let expected_sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let command = remote_helper_upload_command(
+            "/home/me/.cache/nucleotide",
+            "/home/me/.cache/nucleotide/helper tmp",
+            "/home/me/.cache/nucleotide/helper",
+            expected_sha256,
+        );
+
+        assert!(command.starts_with("sh -lc "));
+        assert!(command.contains("sha256sum"));
+        assert!(command.contains("shasum -a 256"));
+        assert!(command.contains("checksum mismatch for uploaded helper"));
+        assert!(command.contains("cleanup() { rm -f \"$tmp\"; }"));
+        assert!(command.contains("trap cleanup EXIT"));
+        assert!(command.contains("trap \"exit 1\" INT TERM HUP"));
+        assert!(command.contains("cat > \"$tmp\""));
+        assert!(command.contains("mv -f \"$tmp\" \"$final\""));
+        assert!(command.contains("'/home/me/.cache/nucleotide/helper tmp'"));
+        assert!(command.contains(expected_sha256));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remote_helper_upload_command_rejects_truncated_input_without_replacing_helper() {
+        let temp = tempfile::tempdir().unwrap();
+        let helper_dir = temp.path().join("helper dir");
+        let tmp_path = helper_dir.join("helper tmp");
+        let helper_path = helper_dir.join("helper");
+        let input_path = temp.path().join("input helper");
+        let complete_helper = b"complete helper bytes that must arrive intact";
+        let expected_sha256 = sha256_reader(&mut complete_helper.as_slice()).unwrap();
+        std::fs::create_dir_all(&helper_dir).unwrap();
+        std::fs::write(&helper_path, b"existing working helper").unwrap();
+        std::fs::write(&input_path, b"partial helper bytes").unwrap();
+        let command = remote_helper_upload_command(
+            helper_dir.to_str().unwrap(),
+            tmp_path.to_str().unwrap(),
+            helper_path.to_str().unwrap(),
+            &expected_sha256,
+        );
+
+        let output = std::process::Command::new("/bin/sh")
+            .args(["-c", &command])
+            .stdin(Stdio::from(std::fs::File::open(input_path).unwrap()))
+            .output()
+            .unwrap();
+
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("checksum mismatch"));
+        assert!(!tmp_path.exists(), "failed upload left its temporary file");
+        assert_eq!(
+            std::fs::read(&helper_path).unwrap(),
+            b"existing working helper"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remote_helper_upload_command_installs_complete_verified_input() {
+        let temp = tempfile::tempdir().unwrap();
+        let helper_dir = temp.path().join("helper dir");
+        let tmp_path = helper_dir.join("helper tmp");
+        let helper_path = helper_dir.join("helper");
+        let input_path = temp.path().join("input helper");
+        let helper = b"complete verified helper bytes";
+        let expected_sha256 = sha256_reader(&mut helper.as_slice()).unwrap();
+        std::fs::write(&input_path, helper).unwrap();
+        let command = remote_helper_upload_command(
+            helper_dir.to_str().unwrap(),
+            tmp_path.to_str().unwrap(),
+            helper_path.to_str().unwrap(),
+            &expected_sha256,
+        );
+
+        let output = std::process::Command::new("/bin/sh")
+            .args(["-c", &command])
+            .stdin(Stdio::from(std::fs::File::open(input_path).unwrap()))
+            .output()
+            .unwrap();
+
+        assert!(
+            output.status.success(),
+            "verified upload failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!tmp_path.exists());
+        assert_eq!(std::fs::read(&helper_path).unwrap(), helper);
+    }
+
+    #[test]
     fn remote_helper_download_command_verifies_checksum_before_install() {
         let command = remote_helper_download_command(
             "/home/me/.cache/nucleotide/remote",
@@ -16819,6 +21018,8 @@ mod tests {
         assert!(command.contains("sha256sum"));
         assert!(command.contains("shasum -a 256"));
         assert!(command.contains("checksum mismatch"));
+        assert!(command.contains("trap cleanup EXIT"));
+        assert!(command.contains("trap \"exit 1\" INT TERM HUP"));
         assert!(command.contains("mv -f"));
         assert!(command.contains("'/home/me/.cache/nucleotide/remote/helper tmp'"));
         assert!(command.contains("nucleotide-remote-linux-x86_64"));

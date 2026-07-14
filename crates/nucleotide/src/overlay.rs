@@ -735,10 +735,19 @@ impl OverlayView {
                 self.replace_picker(cx);
                 self.replace_remote_connection_manager(cx);
 
+                let Some(core) = self.core.upgrade() else {
+                    nucleotide_logging::warn!(
+                        "Cannot open remote connection manager after application shutdown"
+                    );
+                    return;
+                };
+                let backend_options = core.read(cx).config.remote_workspace_backend_options();
+
                 let manager_view = cx.new(|cx| {
                     crate::remote_connection_manager::RemoteConnectionManagerView::new(
                         self.core.clone(),
                         self.handle.clone(),
+                        backend_options,
                         cx,
                     )
                 });

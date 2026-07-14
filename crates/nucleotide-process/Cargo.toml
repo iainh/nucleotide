@@ -14,6 +14,12 @@ rust-version.workspace = true
 [dependencies]
 tokio = { workspace = true, optional = true, features = ["process"] }
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile.workspace = true
+
 [features]
 default = []
 tokio = ["dep:tokio"]
