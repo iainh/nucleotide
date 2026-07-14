@@ -1121,6 +1121,58 @@ impl OutboundScheduler {
         Ok(())
     }
 
+    /// Atomically replaces queued work for one terminal stream with a concrete frame batch.
+    ///
+    /// Preflight scans queue metadata and clones only control-budget counters. It does not clone
+    /// queued DATA bodies or producers. Once validation succeeds, dropping the stream and
+    /// inserting the precomputed items are infallible.
+    fn drop_stream_and_enqueue_batch(
+        &mut self,
+        stream_id: u64,
+        frames: Vec<Frame>,
+    ) -> io::Result<usize> {
+        let mut control_budget = self.control_budget.clone();
+        for queue in &self.queues {
+            for queued in queue {
+                if queued.item.stream_id() == stream_id
+                    && let OutboundItem::Frame(frame) = &queued.item
+                {
+                    control_budget.release_frame(frame);
+                }
+            }
+        }
+
+        let mut next_order = self.next_enqueue_order;
+        let mut queued_frames = Vec::with_capacity(frames.len());
+        for frame in frames {
+            if frame.frame_type == FrameType::Data && frame.stream_id == 0 {
+                return Err(protocol_error("DATA frames require a non-zero stream id"));
+            }
+            Priority::from_wire(frame.priority)?;
+            control_budget.reserve_frame(&frame)?;
+            let order = next_order;
+            next_order = next_order
+                .checked_add(1)
+                .ok_or_else(|| io::Error::other("v5 outbound scheduler order exhausted"))?;
+            queued_frames.push((
+                Priority::queue_index_from_wire(frame.priority),
+                order,
+                frame,
+            ));
+        }
+
+        let dropped = self.drop_stream(stream_id);
+        self.control_budget = control_budget;
+        self.next_enqueue_order = next_order;
+        for (queue_index, order, frame) in queued_frames {
+            self.queues[queue_index].push_back(QueuedItem {
+                order,
+                item: OutboundItem::Frame(frame),
+            });
+        }
+        Ok(dropped)
+    }
+
     pub fn grant_connection(&mut self, credit_bytes: u64) -> io::Result<()> {
         self.connection_window.grant(credit_bytes)
     }
@@ -1485,13 +1537,19 @@ impl ReceiveFlowControl {
         self.stream_window_mut(stream_id).grant(bytes)
     }
 
-    fn drop_stream(&mut self, stream_id: u64) -> io::Result<u64> {
+    fn seal_stream(&mut self, stream_id: u64) -> io::Result<Option<u64>> {
         let Some(window) = self.stream_windows.remove(&stream_id) else {
-            return Ok(0);
+            return Ok(None);
         };
-        let released = self.default_stream_window - window.available();
-        self.connection_window.grant(released)?;
-        Ok(released)
+        let debt = self
+            .default_stream_window
+            .checked_sub(window.available())
+            .ok_or_else(|| protocol_error("v5 receive stream window exceeds its limit"))?;
+        Ok(Some(debt))
+    }
+
+    fn acknowledge_connection(&mut self, bytes: u64) -> io::Result<()> {
+        self.connection_window.grant(bytes)
     }
 
     fn clear(&mut self) {
@@ -1504,6 +1562,15 @@ impl ReceiveFlowControl {
             .entry(stream_id)
             .or_insert_with(|| FlowWindow::new(self.default_stream_window))
     }
+}
+
+#[derive(Debug)]
+struct ReceiveSealPlan {
+    receive_flow: ReceiveFlowControl,
+    sealed_receive_debts: HashMap<u64, u64>,
+    pending_receive_credit: HashMap<u64, u64>,
+    pending_receive_connection_credit: u64,
+    connection_credit: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1897,6 +1964,17 @@ impl InFlightRequests {
         &mut self,
         superseding_stream_id: u64,
     ) -> io::Result<Option<Frame>> {
+        let Some(superseded_stream_id) = self.superseded_stream_id(superseding_stream_id)? else {
+            return Ok(None);
+        };
+        Ok(self.cancel_stream(
+            superseded_stream_id,
+            RESET_CANCELLED,
+            format!("superseded by stream {superseding_stream_id}"),
+        ))
+    }
+
+    fn superseded_stream_id(&self, superseding_stream_id: u64) -> io::Result<Option<u64>> {
         let superseded_stream_id = self
             .requests
             .get(&superseding_stream_id)
@@ -1912,11 +1990,10 @@ impl InFlightRequests {
                 "stream {superseding_stream_id} cannot supersede itself"
             )));
         }
-        Ok(self.cancel_stream(
-            superseded_stream_id,
-            RESET_CANCELLED,
-            format!("superseded by stream {superseding_stream_id}"),
-        ))
+        Ok(self
+            .requests
+            .contains_key(&superseded_stream_id)
+            .then_some(superseded_stream_id))
     }
 
     pub fn expire_deadlines(&mut self, now_unix_ms: u64) -> Vec<Frame> {
@@ -1987,6 +2064,8 @@ pub struct ProtocolSession {
     receive_credit_update_threshold: u64,
     pending_receive_credit: HashMap<u64, u64>,
     pending_receive_connection_credit: u64,
+    sealed_receive_debts: HashMap<u64, u64>,
+    sealed_receive_debt_limit: usize,
     min_unsolicited_ping_interval: Duration,
     last_unsolicited_ping_at: Option<Instant>,
     terminated: bool,
@@ -2039,6 +2118,11 @@ impl ProtocolSession {
             receive_credit_update_threshold,
             pending_receive_credit: HashMap::new(),
             pending_receive_connection_credit: 0,
+            sealed_receive_debts: HashMap::new(),
+            sealed_receive_debt_limit: nonzero_or(
+                settings.max_concurrent_streams,
+                DEFAULT_MAX_CONCURRENT_STREAMS,
+            ) as usize,
             min_unsolicited_ping_interval: Duration::from_millis(u64::from(nonzero_or(
                 settings.min_unsolicited_ping_interval_ms,
                 MIN_UNSOLICITED_PING_INTERVAL_MS,
@@ -2077,7 +2161,17 @@ impl ProtocolSession {
     }
 
     pub fn receive_stream_window(&self, stream_id: u64) -> u64 {
-        self.receive_flow.stream_window(stream_id)
+        if self.sealed_receive_debts.contains_key(&stream_id)
+            || matches!(
+                self.streams.get(stream_id).map(|entry| entry.state),
+                Some(StreamState::HalfClosedRemote | StreamState::Closed)
+            )
+            || self.stream_tombstone(stream_id).is_some()
+        {
+            0
+        } else {
+            self.receive_flow.stream_window(stream_id)
+        }
     }
 
     pub fn receive_connection_window(&self) -> u64 {
@@ -2554,9 +2648,6 @@ impl ProtocolSession {
         self.scheduler
             .enqueue(end_stream_frame(stream_id)?.with_priority(priority))?;
         let state = self.streams.mark_local_end(stream_id)?;
-        if state == StreamState::Closed {
-            self.release_receive_stream(stream_id)?;
-        }
         Ok(state)
     }
 
@@ -2618,6 +2709,12 @@ impl ProtocolSession {
         if let Some(event) = self.reject_unknown_stream_after_local_goaway(&frame)? {
             return Ok(event);
         }
+        if matches!(
+            frame.frame_type,
+            FrameType::EndStream | FrameType::ResetStream
+        ) {
+            return self.receive_terminal_stream_frame(frame);
+        }
         let routed = self.streams.route_incoming(&frame)?;
         match &routed {
             RoutedFrame::WindowUpdate {
@@ -2673,10 +2770,7 @@ impl ProtocolSession {
                 routed,
                 stream_event: None,
             }),
-            RoutedFrame::Headers { .. }
-            | RoutedFrame::Data { .. }
-            | RoutedFrame::EndStream { .. }
-            | RoutedFrame::ResetStream { .. } => {
+            RoutedFrame::Headers { .. } | RoutedFrame::Data { .. } => {
                 if let RoutedFrame::Data {
                     stream_id,
                     flow_control_len,
@@ -2700,28 +2794,74 @@ impl ProtocolSession {
                 if let Some(event) = event.as_ref() {
                     self.observe_stream_event(event)?;
                 }
-                match &routed {
-                    RoutedFrame::ResetStream { stream_id, .. } => {
-                        self.discard_stream_state(*stream_id)?;
-                    }
-                    RoutedFrame::EndStream {
-                        stream_id,
-                        state: StreamState::Closed,
-                    } => {
-                        self.release_receive_stream(*stream_id)?;
-                        if self.locally_ended_on_wire.remove(stream_id) {
-                            self.scheduler.drop_stream_window(*stream_id);
-                            self.retire_closed_stream(*stream_id);
-                        }
-                    }
-                    _ => {}
-                }
                 Ok(SessionEvent {
                     routed,
                     stream_event: event,
                 })
             }
+            RoutedFrame::EndStream { .. } | RoutedFrame::ResetStream { .. } => {
+                unreachable!("terminal v5 stream frames are handled before ordinary routing")
+            }
         }
+    }
+
+    fn receive_terminal_stream_frame(&mut self, frame: Frame) -> io::Result<SessionEvent> {
+        let stream_id = frame.stream_id;
+        let content_encoding = self
+            .streams
+            .get(stream_id)
+            .map(|entry| entry.content_encoding)
+            .unwrap_or(ContentEncoding::None);
+        let mut streams = self.streams.clone();
+        let routed = streams.route_incoming(&frame)?;
+        let event = StreamEvent::from_frame_with_content_encoding_and_limit(
+            frame,
+            content_encoding,
+            self.limits.max_body_len as u64,
+        )?;
+        let seal = self.prepare_receive_seal(stream_id)?;
+        let retire_closed = matches!(
+            &routed,
+            RoutedFrame::EndStream {
+                state: StreamState::Closed,
+                ..
+            }
+        ) && self.locally_ended_on_wire.contains(&stream_id);
+
+        let credit_frames = Self::receive_seal_credit_frames(seal.connection_credit)?;
+        if matches!(&routed, RoutedFrame::ResetStream { .. }) {
+            self.scheduler
+                .drop_stream_and_enqueue_batch(stream_id, credit_frames)?;
+        } else {
+            self.scheduler.enqueue_batch(credit_frames)?;
+            if retire_closed {
+                self.scheduler.drop_stream_window(stream_id);
+            }
+        }
+
+        self.streams = streams;
+        self.apply_receive_seal(seal);
+        self.in_flight.requests.remove(&stream_id);
+
+        match routed {
+            RoutedFrame::ResetStream { .. } => {
+                self.extracted_streams.remove(&stream_id);
+                self.locally_ended_on_wire.remove(&stream_id);
+                self.forget_crossing_receive_allowance(stream_id);
+                self.retire_closed_stream(stream_id);
+            }
+            RoutedFrame::EndStream { .. } if retire_closed => {
+                self.locally_ended_on_wire.remove(&stream_id);
+                self.retire_closed_stream(stream_id);
+            }
+            RoutedFrame::EndStream { .. } => {}
+            _ => unreachable!("only terminal v5 stream frames reach terminal routing"),
+        }
+
+        Ok(SessionEvent {
+            routed,
+            stream_event: event,
+        })
     }
 
     fn observe_unsolicited_ping(&mut self, received_at: Instant) -> io::Result<()> {
@@ -2739,8 +2879,117 @@ impl ProtocolSession {
         Ok(())
     }
 
+    fn prepare_receive_seal(&self, stream_id: u64) -> io::Result<ReceiveSealPlan> {
+        let mut receive_flow = self.receive_flow.clone();
+        let active_debt = receive_flow.seal_stream(stream_id)?;
+        let mut pending_receive_credit = self.pending_receive_credit.clone();
+        let pending_credit = pending_receive_credit.remove(&stream_id).unwrap_or(0);
+        let pending_total =
+            self.pending_receive_credit
+                .values()
+                .try_fold(0_u64, |total, credit| {
+                    total
+                        .checked_add(*credit)
+                        .ok_or_else(|| protocol_error("v5 pending receive credit overflow"))
+                })?;
+        if pending_total != self.pending_receive_connection_credit {
+            return Err(protocol_error(
+                "v5 pending stream and connection receive credit diverged",
+            ));
+        }
+        let pending_receive_connection_credit = self
+            .pending_receive_connection_credit
+            .checked_sub(pending_credit)
+            .ok_or_else(|| {
+                protocol_error("v5 pending stream and connection receive credit diverged")
+            })?;
+
+        if active_debt.is_none() && pending_credit > 0 {
+            return Err(protocol_error(format!(
+                "pending receive credit exists for sealed v5 stream {stream_id}"
+            )));
+        }
+        let debt = active_debt.unwrap_or(0);
+        let sealed_debt = debt.checked_sub(pending_credit).ok_or_else(|| {
+            protocol_error(format!(
+                "pending receive credit exceeds debt for v5 stream {stream_id}"
+            ))
+        })?;
+        receive_flow.acknowledge_connection(pending_credit)?;
+
+        let mut sealed_receive_debts = self.sealed_receive_debts.clone();
+        if active_debt.is_some() && sealed_receive_debts.contains_key(&stream_id) {
+            return Err(protocol_error(format!(
+                "v5 stream {stream_id} has both live and sealed receive debt"
+            )));
+        }
+        if sealed_debt > 0 {
+            if !sealed_receive_debts.contains_key(&stream_id)
+                && sealed_receive_debts.len() >= self.sealed_receive_debt_limit
+            {
+                return Err(protocol_error(format!(
+                    "v5 sealed receive debt limit of {} streams exceeded",
+                    self.sealed_receive_debt_limit
+                )));
+            }
+            sealed_receive_debts.insert(stream_id, sealed_debt);
+        }
+
+        Ok(ReceiveSealPlan {
+            receive_flow,
+            sealed_receive_debts,
+            pending_receive_credit,
+            pending_receive_connection_credit,
+            connection_credit: pending_credit,
+        })
+    }
+
+    fn receive_seal_credit_frames(connection_credit: u64) -> io::Result<Vec<Frame>> {
+        if connection_credit == 0 {
+            return Ok(Vec::new());
+        }
+        Ok(vec![
+            window_update_frame(0, connection_credit)?.with_priority(Priority::UserInput),
+        ])
+    }
+
+    fn apply_receive_seal(&mut self, seal: ReceiveSealPlan) {
+        self.receive_flow = seal.receive_flow;
+        self.sealed_receive_debts = seal.sealed_receive_debts;
+        self.pending_receive_credit = seal.pending_receive_credit;
+        self.pending_receive_connection_credit = seal.pending_receive_connection_credit;
+    }
+
     pub fn acknowledge_data(&mut self, stream_id: u64, credit_bytes: u64) -> io::Result<()> {
+        if self.terminated {
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "v5 protocol session is terminated",
+            ));
+        }
         if credit_bytes == 0 {
+            return Ok(());
+        }
+        if let Some(debt) = self.sealed_receive_debts.get(&stream_id).copied() {
+            if credit_bytes > debt {
+                return Err(protocol_error(format!(
+                    "v5 DATA acknowledgement exceeds sealed receive debt for stream \
+                     {stream_id}: acknowledge {credit_bytes}, debt is {debt}"
+                )));
+            }
+
+            let mut receive_flow = self.receive_flow.clone();
+            receive_flow.acknowledge_connection(credit_bytes)?;
+            self.scheduler.enqueue_batch(vec![
+                window_update_frame(0, credit_bytes)?.with_priority(Priority::UserInput),
+            ])?;
+            self.receive_flow = receive_flow;
+            if credit_bytes == debt {
+                self.sealed_receive_debts.remove(&stream_id);
+            } else {
+                self.sealed_receive_debts
+                    .insert(stream_id, debt - credit_bytes);
+            }
             return Ok(());
         }
 
@@ -2830,11 +3079,13 @@ impl ProtocolSession {
         code: impl Into<String>,
         diagnostic: impl Into<String>,
     ) -> io::Result<bool> {
-        let Some(frame) = self.in_flight.cancel_stream(stream_id, code, diagnostic) else {
+        if !self.in_flight.contains(stream_id) {
             return Ok(false);
-        };
+        }
+
+        self.queue_terminal_reset(reset_stream_frame(stream_id, code, diagnostic))?;
+        self.in_flight.requests.remove(&stream_id);
         self.streams.streams.remove(&stream_id);
-        self.queue_terminal_reset(frame)?;
         Ok(true)
     }
 
@@ -2844,12 +3095,15 @@ impl ProtocolSession {
         code: impl Into<String>,
         diagnostic: impl Into<String>,
     ) -> io::Result<bool> {
-        self.in_flight.requests.remove(&stream_id);
-        let known = self.streams.streams.remove(&stream_id).is_some();
+        let known = self.streams.streams.contains_key(&stream_id);
         if known {
             self.queue_terminal_reset(reset_stream_frame(stream_id, code, diagnostic))?;
+            self.streams.streams.remove(&stream_id);
+            self.in_flight.requests.remove(&stream_id);
         } else if self.stream_tombstone(stream_id).is_none() {
             self.discard_stream_state(stream_id)?;
+        } else {
+            self.in_flight.requests.remove(&stream_id);
         }
         Ok(known)
     }
@@ -2860,24 +3114,51 @@ impl ProtocolSession {
         code: impl Into<String>,
         diagnostic: impl Into<String>,
     ) -> io::Result<usize> {
-        let frames = self
+        if cancellation_group.is_empty()
+            || !self
+                .in_flight
+                .requests
+                .values()
+                .any(|request| request.cancellation_group == cancellation_group)
+        {
+            return Ok(0);
+        }
+
+        // Group cancellation is rare and must be all-or-nothing. A staged session clone is
+        // bounded by negotiated stream, flow-control, and control-queue limits.
+        let mut staged = self.clone();
+        let frames = staged
             .in_flight
             .cancel_group(cancellation_group, code, diagnostic);
         let frame_count = frames.len();
         for frame in frames {
-            self.streams.streams.remove(&frame.stream_id);
-            self.queue_terminal_reset(frame)?;
+            staged.streams.streams.remove(&frame.stream_id);
+            staged.queue_terminal_reset(frame)?;
         }
+        *self = staged;
         Ok(frame_count)
     }
 
     pub fn expire_deadlines(&mut self, now_unix_ms: u64) -> io::Result<usize> {
-        let frames = self.in_flight.expire_deadlines(now_unix_ms);
+        if !self
+            .in_flight
+            .requests
+            .values()
+            .any(|request| request.deadline_unix_ms != 0 && request.deadline_unix_ms <= now_unix_ms)
+        {
+            return Ok(0);
+        }
+
+        // Deadline batches are rare and must be all-or-nothing. A staged session clone is
+        // bounded by negotiated stream, flow-control, and control-queue limits.
+        let mut staged = self.clone();
+        let frames = staged.in_flight.expire_deadlines(now_unix_ms);
         let frame_count = frames.len();
         for frame in frames {
-            self.streams.streams.remove(&frame.stream_id);
-            self.queue_terminal_reset(frame)?;
+            staged.streams.streams.remove(&frame.stream_id);
+            staged.queue_terminal_reset(frame)?;
         }
+        *self = staged;
         Ok(frame_count)
     }
 
@@ -2904,6 +3185,7 @@ impl ProtocolSession {
         self.crossing_receive_allowance_order.clear();
         self.pending_receive_credit.clear();
         self.pending_receive_connection_credit = 0;
+        self.sealed_receive_debts.clear();
         self.locally_ended_on_wire.clear();
         self.extracted_streams.clear();
         self.closed_stream_watermarks = [0; 2];
@@ -2963,10 +3245,7 @@ impl ProtocolSession {
             .enqueue(end_stream_frame(stream_id)?.with_priority(priority))?;
         self.streams.mark_local_end(stream_id)?;
 
-        if let Some(frame) = self.in_flight.cancel_superseded_by(stream_id)? {
-            self.streams.streams.remove(&frame.stream_id);
-            self.queue_terminal_reset(frame)?;
-        }
+        self.cancel_superseded_request(stream_id)?;
 
         Ok(())
     }
@@ -2979,15 +3258,60 @@ impl ProtocolSession {
             ..
         } = event
         {
-            self.in_flight
-                .register_from_envelope(*stream_id, envelope)?;
-            if let Some(frame) = self.in_flight.cancel_superseded_by(*stream_id)? {
-                self.streams.streams.remove(&frame.stream_id);
-                self.queue_terminal_reset(frame)?;
+            let mut in_flight = self.in_flight.clone();
+            in_flight.register_from_envelope(*stream_id, envelope)?;
+            let superseded_stream_id = in_flight
+                .get(*stream_id)
+                .ok_or_else(|| protocol_error(format!("unknown in-flight stream {stream_id}")))?
+                .supersedes_stream_id;
+            if superseded_stream_id == *stream_id {
+                return Err(protocol_error(format!(
+                    "stream {stream_id} cannot supersede itself"
+                )));
             }
+            if superseded_stream_id != 0 && in_flight.contains(superseded_stream_id) {
+                self.queue_terminal_reset(reset_stream_frame(
+                    superseded_stream_id,
+                    RESET_CANCELLED,
+                    format!("superseded by stream {stream_id}"),
+                ))?;
+                in_flight.requests.remove(&superseded_stream_id);
+                self.streams.streams.remove(&superseded_stream_id);
+            }
+            self.in_flight = in_flight;
             return Ok(());
         }
         self.in_flight.observe_event(event)
+    }
+
+    fn cancel_superseded_request(&mut self, superseding_stream_id: u64) -> io::Result<()> {
+        let superseded_stream_id = self
+            .in_flight
+            .get(superseding_stream_id)
+            .ok_or_else(|| {
+                protocol_error(format!("unknown in-flight stream {superseding_stream_id}"))
+            })?
+            .supersedes_stream_id;
+        if superseded_stream_id == 0 {
+            return Ok(());
+        }
+        if superseded_stream_id == superseding_stream_id {
+            return Err(protocol_error(format!(
+                "stream {superseding_stream_id} cannot supersede itself"
+            )));
+        }
+        if !self.in_flight.contains(superseded_stream_id) {
+            return Ok(());
+        }
+
+        self.queue_terminal_reset(reset_stream_frame(
+            superseded_stream_id,
+            RESET_CANCELLED,
+            format!("superseded by stream {superseding_stream_id}"),
+        ))?;
+        self.in_flight.requests.remove(&superseded_stream_id);
+        self.streams.streams.remove(&superseded_stream_id);
+        Ok(())
     }
 
     fn rollback_stream(&mut self, stream_id: u64) {
@@ -2996,7 +3320,7 @@ impl ProtocolSession {
         self.extracted_streams.remove(&stream_id);
         self.forget_crossing_receive_allowance(stream_id);
         self.scheduler.drop_stream(stream_id);
-        let _ = self.receive_flow.drop_stream(stream_id);
+        let _ = self.receive_flow.seal_stream(stream_id);
         self.forget_pending_receive_credit(stream_id);
         self.retire_closed_stream(stream_id);
     }
@@ -3012,6 +3336,12 @@ impl ProtocolSession {
 
     fn queue_terminal_reset(&mut self, frame: Frame) -> io::Result<()> {
         let stream_id = frame.stream_id;
+        let seal = self.prepare_receive_seal(stream_id)?;
+        let mut frames = vec![frame];
+        frames.extend(Self::receive_seal_credit_frames(seal.connection_credit)?);
+        self.scheduler
+            .drop_stream_and_enqueue_batch(stream_id, frames)?;
+
         self.register_crossing_receive_allowance(
             stream_id,
             self.receive_flow.stream_window(stream_id),
@@ -3021,38 +3351,22 @@ impl ProtocolSession {
         self.stream_tombstones
             .entry(stream_id)
             .or_insert(StreamTombstone::Reset);
-        self.scheduler.drop_stream(stream_id);
-        let mut receive_flow = self.receive_flow.clone();
-        let released = receive_flow.drop_stream(stream_id)?;
-        let mut frames = vec![frame];
-        if released > 0 {
-            frames.push(window_update_frame(0, released)?.with_priority(Priority::UserInput));
-        }
-        self.scheduler.enqueue_batch(frames)?;
-        self.receive_flow = receive_flow;
-        self.forget_pending_receive_credit(stream_id);
+        self.apply_receive_seal(seal);
         Ok(())
     }
 
     fn discard_stream_state(&mut self, stream_id: u64) -> io::Result<()> {
+        let seal = self.prepare_receive_seal(stream_id)?;
+        let credit_frames = Self::receive_seal_credit_frames(seal.connection_credit)?;
+        self.scheduler
+            .drop_stream_and_enqueue_batch(stream_id, credit_frames)?;
+
         self.in_flight.requests.remove(&stream_id);
         self.extracted_streams.remove(&stream_id);
         self.locally_ended_on_wire.remove(&stream_id);
         self.forget_crossing_receive_allowance(stream_id);
         self.retire_closed_stream(stream_id);
-        self.scheduler.drop_stream(stream_id);
-        self.release_receive_stream(stream_id)
-    }
-
-    fn release_receive_stream(&mut self, stream_id: u64) -> io::Result<()> {
-        let mut receive_flow = self.receive_flow.clone();
-        let released = receive_flow.drop_stream(stream_id)?;
-        if released > 0 {
-            self.scheduler
-                .enqueue(window_update_frame(0, released)?.with_priority(Priority::UserInput))?;
-        }
-        self.receive_flow = receive_flow;
-        self.forget_pending_receive_credit(stream_id);
+        self.apply_receive_seal(seal);
         Ok(())
     }
 
@@ -6174,7 +6488,7 @@ mod tests {
     }
 
     #[test]
-    fn protocol_session_releases_residual_receive_credit_on_close_and_reset() {
+    fn protocol_session_retains_closed_receive_debt_until_late_acknowledgement() {
         let settings = ConnectionSettings {
             initial_stream_window: 8,
             initial_connection_window: 12,
@@ -6197,47 +6511,223 @@ mod tests {
                 ),
             ))
             .unwrap();
-        client.receive_frame(data_frame(client_stream, 2)).unwrap();
-        client.acknowledge_data(client_stream, 2).unwrap();
+        client.receive_frame(data_frame(client_stream, 3)).unwrap();
+        client.acknowledge_data(client_stream, 1).unwrap();
         assert!(client.pop_next_frame().unwrap().is_none());
 
         client
             .receive_frame(Frame::new(FrameType::EndStream, client_stream))
             .unwrap();
-        let close_update = client.pop_next_frame().unwrap().unwrap();
-        assert_eq!(close_update.stream_id, 0);
+        let pending_update = client.pop_next_frame().unwrap().unwrap();
+        assert_eq!(pending_update.stream_id, 0);
         assert_eq!(
-            close_update
+            pending_update
+                .decode_control::<WindowUpdate>()
+                .unwrap()
+                .credit_bytes,
+            1
+        );
+        assert!(client.pop_next_frame().unwrap().is_none());
+        assert!(client.pending_receive_credit.is_empty());
+        assert_eq!(client.pending_receive_connection_credit, 0);
+        assert_eq!(client.sealed_receive_debts.get(&client_stream), Some(&2));
+        assert_eq!(client.receive_stream_window(client_stream), 0);
+        assert_eq!(client.receive_connection_window(), 10);
+
+        let queued = client.queued_len();
+        let error = client.acknowledge_data(client_stream, 3).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("exceeds sealed receive debt"));
+        assert_eq!(client.queued_len(), queued);
+        assert_eq!(client.sealed_receive_debts.get(&client_stream), Some(&2));
+        assert_eq!(client.receive_connection_window(), 10);
+
+        client.acknowledge_data(client_stream, 2).unwrap();
+        let late_update = client.pop_next_frame().unwrap().unwrap();
+        assert_eq!(late_update.stream_id, 0);
+        assert_eq!(
+            late_update
                 .decode_control::<WindowUpdate>()
                 .unwrap()
                 .credit_bytes,
             2
         );
         assert!(client.pop_next_frame().unwrap().is_none());
-        assert!(client.pending_receive_credit.is_empty());
-        assert_eq!(client.pending_receive_connection_credit, 0);
+        assert!(!client.sealed_receive_debts.contains_key(&client_stream));
+        assert_eq!(client.receive_connection_window(), 12);
+    }
+
+    #[test]
+    fn protocol_session_peer_reset_retains_unconsumed_receive_debt() {
+        let settings = ConnectionSettings {
+            initial_stream_window: 8,
+            initial_connection_window: 12,
+            ..ConnectionSettings::recommended()
+        };
 
         let mut server = ProtocolSession::new(StreamInitiator::Server, &settings);
         server
             .receive_frame(headers_frame(1, StreamEnvelope::request(1, "fs.write")))
             .unwrap();
         server.receive_frame(data_frame(1, 2)).unwrap();
-        server.acknowledge_data(1, 2).unwrap();
-        assert!(server.pop_next_frame().unwrap().is_none());
-
         server.receive_frame(reset_frame(1)).unwrap();
-        let reset_update = server.pop_next_frame().unwrap().unwrap();
-        assert_eq!(reset_update.stream_id, 0);
+
+        assert!(server.pop_next_frame().unwrap().is_none());
+        assert_eq!(server.sealed_receive_debts.get(&1), Some(&2));
+        assert_eq!(server.receive_connection_window(), 10);
+
+        server.acknowledge_data(1, 1).unwrap();
+        let update = server.pop_next_frame().unwrap().unwrap();
+        assert_eq!(update.stream_id, 0);
         assert_eq!(
-            reset_update
+            update
                 .decode_control::<WindowUpdate>()
                 .unwrap()
                 .credit_bytes,
-            2
+            1
         );
         assert!(server.pop_next_frame().unwrap().is_none());
-        assert!(server.pending_receive_credit.is_empty());
-        assert_eq!(server.pending_receive_connection_credit, 0);
+        assert_eq!(server.sealed_receive_debts.get(&1), Some(&1));
+        assert_eq!(server.receive_connection_window(), 11);
+    }
+
+    #[test]
+    fn protocol_session_peer_end_seals_receive_credit_before_local_end() {
+        let settings = ConnectionSettings {
+            initial_stream_window: 8,
+            initial_connection_window: 12,
+            ..ConnectionSettings::recommended()
+        };
+        let mut server = ProtocolSession::new(StreamInitiator::Server, &settings);
+        server
+            .receive_frame(headers_frame(1, StreamEnvelope::request(1, "fs.write")))
+            .unwrap();
+        server.receive_frame(data_frame(1, 2)).unwrap();
+
+        let ended = server
+            .receive_frame(Frame::new(FrameType::EndStream, 1))
+            .unwrap();
+
+        assert_eq!(
+            ended.routed,
+            RoutedFrame::EndStream {
+                stream_id: 1,
+                state: StreamState::HalfClosedRemote,
+            }
+        );
+        assert_eq!(
+            server.get_stream(1).unwrap().state,
+            StreamState::HalfClosedRemote
+        );
+        assert_eq!(server.sealed_receive_debts.get(&1), Some(&2));
+        assert_eq!(server.receive_stream_window(1), 0);
+        assert!(server.pop_next_frame().unwrap().is_none());
+
+        server.acknowledge_data(1, 1).unwrap();
+        let update = server.pop_next_frame().unwrap().unwrap();
+        assert_eq!(update.stream_id, 0);
+        assert_eq!(
+            update
+                .decode_control::<WindowUpdate>()
+                .unwrap()
+                .credit_bytes,
+            1
+        );
+        assert!(server.pop_next_frame().unwrap().is_none());
+        assert_eq!(server.sealed_receive_debts.get(&1), Some(&1));
+
+        assert_eq!(
+            server.finish_stream(1, Priority::Background).unwrap(),
+            StreamState::Closed
+        );
+        assert_eq!(server.sealed_receive_debts.get(&1), Some(&1));
+    }
+
+    #[test]
+    fn protocol_session_sealed_receive_debt_limit_fails_atomically() {
+        let settings = ConnectionSettings {
+            max_concurrent_streams: 1,
+            initial_stream_window: 8,
+            initial_connection_window: 8,
+            ..ConnectionSettings::recommended()
+        };
+        let mut session = ProtocolSession::new(StreamInitiator::Server, &settings);
+        session
+            .receive_frame(headers_frame(1, StreamEnvelope::request(1, "fs.write")))
+            .unwrap();
+        session.receive_frame(data_frame(1, 1)).unwrap();
+        session.receive_frame(reset_frame(1)).unwrap();
+        assert_eq!(session.sealed_receive_debts.get(&1), Some(&1));
+
+        session
+            .receive_frame(headers_frame(3, StreamEnvelope::request(3, "fs.write")))
+            .unwrap();
+        session.receive_frame(data_frame(3, 1)).unwrap();
+        let queued = session.queued_len();
+        let error = session.receive_frame(reset_frame(3)).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("sealed receive debt limit"));
+        assert_eq!(session.queued_len(), queued);
+        assert_eq!(session.get_stream(3).unwrap().state, StreamState::Open);
+        assert_eq!(session.receive_stream_window(3), 7);
+        assert_eq!(session.receive_connection_window(), 6);
+        assert_eq!(session.sealed_receive_debts.len(), 1);
+        assert_eq!(session.sealed_receive_debts.get(&1), Some(&1));
+
+        session.acknowledge_data(1, 1).unwrap();
+        let update = session.pop_next_frame().unwrap().unwrap();
+        assert_eq!(update.stream_id, 0);
+        session.receive_frame(reset_frame(3)).unwrap();
+        assert_eq!(session.sealed_receive_debts.get(&3), Some(&1));
+    }
+
+    #[test]
+    fn protocol_session_local_cancel_preflights_receive_debt_atomically() {
+        let settings = ConnectionSettings {
+            max_concurrent_streams: 1,
+            initial_stream_window: 8,
+            initial_connection_window: 8,
+            ..ConnectionSettings::recommended()
+        };
+        let mut session = ProtocolSession::new(StreamInitiator::Server, &settings);
+        session
+            .receive_frame(headers_frame(1, StreamEnvelope::request(1, "fs.write")))
+            .unwrap();
+        session.receive_frame(data_frame(1, 1)).unwrap();
+        session.receive_frame(reset_frame(1)).unwrap();
+
+        session
+            .receive_frame(headers_frame(3, StreamEnvelope::request(3, "fs.write")))
+            .unwrap();
+        session.receive_frame(data_frame(3, 1)).unwrap();
+        let queued = session.queued_len();
+        let error = session
+            .cancel_stream(3, RESET_CANCELLED, "cancelled")
+            .unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("sealed receive debt limit"));
+        assert_eq!(session.queued_len(), queued);
+        assert!(session.in_flight.contains(3));
+        assert_eq!(session.get_stream(3).unwrap().state, StreamState::Open);
+        assert_eq!(session.receive_stream_window(3), 7);
+        assert_eq!(session.sealed_receive_debts.get(&1), Some(&1));
+
+        session.acknowledge_data(1, 1).unwrap();
+        let update = session.pop_next_frame().unwrap().unwrap();
+        assert_eq!(update.stream_id, 0);
+        assert!(
+            session
+                .cancel_stream(3, RESET_CANCELLED, "cancelled")
+                .unwrap()
+        );
+        assert!(!session.in_flight.contains(3));
+        assert!(session.get_stream(3).is_none());
+        assert_eq!(session.sealed_receive_debts.get(&3), Some(&1));
+        let reset = session.pop_next_frame().unwrap().unwrap();
+        assert_eq!(reset.frame_type, FrameType::ResetStream);
+        assert_eq!(reset.stream_id, 3);
     }
 
     #[test]
@@ -6290,7 +6780,7 @@ mod tests {
     }
 
     #[test]
-    fn protocol_session_terminate_clears_pending_receive_credit() {
+    fn protocol_session_terminate_clears_pending_and_sealed_receive_credit() {
         let settings = ConnectionSettings {
             initial_stream_window: 8,
             initial_connection_window: 12,
@@ -6301,13 +6791,22 @@ mod tests {
             .receive_frame(headers_frame(1, StreamEnvelope::request(1, "fs.write")))
             .unwrap();
         session.receive_frame(data_frame(1, 2)).unwrap();
-        session.acknowledge_data(1, 2).unwrap();
-        assert_eq!(session.pending_receive_credit.get(&1), Some(&2));
+        session.receive_frame(reset_frame(1)).unwrap();
+        assert_eq!(session.sealed_receive_debts.get(&1), Some(&2));
+        session
+            .receive_frame(headers_frame(3, StreamEnvelope::request(3, "fs.write")))
+            .unwrap();
+        session.receive_frame(data_frame(3, 2)).unwrap();
+        session.acknowledge_data(3, 1).unwrap();
+        assert_eq!(session.pending_receive_credit.get(&3), Some(&1));
 
         session.terminate();
 
         assert!(session.pending_receive_credit.is_empty());
         assert_eq!(session.pending_receive_connection_credit, 0);
+        assert!(session.sealed_receive_debts.is_empty());
+        let error = session.acknowledge_data(1, 1).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::NotConnected);
     }
 
     #[test]
