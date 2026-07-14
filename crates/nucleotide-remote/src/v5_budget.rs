@@ -112,6 +112,19 @@ impl V5ByteReservation {
         debug_assert!(previous >= self.bytes, "v5 byte budget underflow");
         self.bytes = 0;
     }
+
+    pub(crate) fn release(&mut self, bytes: usize) {
+        if bytes == 0 {
+            return;
+        }
+        assert!(
+            bytes <= self.bytes,
+            "cannot release more v5 retained-byte capacity than reserved"
+        );
+        let previous = self.budget.inner.used.fetch_sub(bytes, Ordering::AcqRel);
+        debug_assert!(previous >= bytes, "v5 byte budget underflow");
+        self.bytes -= bytes;
+    }
 }
 
 impl Drop for V5ByteReservation {
@@ -174,6 +187,19 @@ mod tests {
         reservation.release_all();
         assert_eq!(budget.used(), 0);
 
+        drop(reservation);
+        assert_eq!(budget.used(), 0);
+    }
+
+    #[test]
+    fn partial_release_preserves_the_remaining_reservation() {
+        let budget = V5ConnectionByteBudget::new(10);
+        let mut reservation = budget.reservation();
+        reservation.try_grow(7).unwrap();
+
+        reservation.release(3);
+
+        assert_eq!(budget.used(), 4);
         drop(reservation);
         assert_eq!(budget.used(), 0);
     }
