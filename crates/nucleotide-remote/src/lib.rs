@@ -3863,7 +3863,7 @@ pub struct RemoteWorkspaceV5MultiplexedClient<R, W> {
 
 struct RemoteWorkspaceV5Shared<W> {
     session: Mutex<protocol_v5::ProtocolSession>,
-    writer: Mutex<RemoteWorkspaceV5Writer<W>>,
+    writer_wake: mpsc::SyncSender<()>,
     transport_abort: Option<Arc<dyn V5TransportAbort>>,
     request_budget: V5ConnectionByteBudget,
     response_budget: V5ConnectionByteBudget,
@@ -3875,6 +3875,7 @@ struct RemoteWorkspaceV5Shared<W> {
     watch_stream_by_id: Mutex<HashMap<u64, u64>>,
     directory_cache: Mutex<HashMap<PathBuf, DirectoryListingResponse>>,
     closed: AtomicBool,
+    _writer: std::marker::PhantomData<fn() -> W>,
 }
 
 #[derive(Clone)]
@@ -4170,13 +4171,15 @@ where
         let parts = io.into_parts();
         let limits = parts.limits;
         let inbound_frame_sequence = parts.inbound_frame_sequence;
+        let writer = RemoteWorkspaceV5Writer {
+            writer: parts.writer,
+            limits,
+            next_frame_sequence: parts.next_frame_sequence,
+        };
+        let (writer_wake, writer_wakes) = mpsc::sync_channel(1);
         let shared = Arc::new(RemoteWorkspaceV5Shared {
             session: Mutex::new(session),
-            writer: Mutex::new(RemoteWorkspaceV5Writer {
-                writer: parts.writer,
-                limits,
-                next_frame_sequence: parts.next_frame_sequence,
-            }),
+            writer_wake,
             transport_abort,
             request_budget: V5ConnectionByteBudget::new(V5_REQUEST_CONNECTION_BYTE_BUDGET),
             response_budget: V5ConnectionByteBudget::new(V5_RESPONSE_CONNECTION_BYTE_BUDGET),
@@ -4188,7 +4191,14 @@ where
             watch_stream_by_id: Mutex::new(HashMap::new()),
             directory_cache: Mutex::new(HashMap::new()),
             closed: AtomicBool::new(false),
+            _writer: std::marker::PhantomData,
         });
+
+        let writer_shared = Arc::downgrade(&shared);
+        std::thread::Builder::new()
+            .name("nucleotide-v5-client-writer".to_string())
+            .spawn(move || run_v5_client_writer(writer, writer_wakes, writer_shared))
+            .map_err(RemoteClientError::Io)?;
 
         let reader_shared = Arc::downgrade(&shared);
         std::thread::Builder::new()
@@ -4345,7 +4355,7 @@ where
             return Err(RemoteClientError::Disconnected);
         }
 
-        if let Err(error) = self.drain_outbound() {
+        if let Err(error) = self.wake_outbound() {
             return receiver
                 .recv()
                 .unwrap_or(Err(error))
@@ -4720,7 +4730,7 @@ where
             return Err(RemoteClientError::Disconnected);
         }
 
-        if let Err(error) = self.drain_outbound() {
+        if let Err(error) = self.wake_outbound() {
             return receiver
                 .recv()
                 .unwrap_or(Err(error))
@@ -4733,8 +4743,8 @@ where
             .map(V5Budgeted::into_inner)
     }
 
-    fn drain_outbound(&self) -> std::result::Result<(), RemoteClientError> {
-        drain_v5_client_outbound(&self.shared)
+    fn wake_outbound(&self) -> std::result::Result<(), RemoteClientError> {
+        wake_v5_client_writer(&self.shared)
     }
 }
 
@@ -4799,10 +4809,10 @@ fn run_v5_client_reader<R, W>(
                                 break;
                             }
                         }
-                        if let Err(error) = drain_v5_client_outbound(&shared) {
+                        if let Err(error) = wake_v5_client_writer(&shared) {
                             tracing::warn!(
                                 error = %error,
-                                "Closing v5 client after flow-control write failed"
+                                "Closing v5 client after writer wake failed"
                             );
                             break;
                         }
@@ -4838,83 +4848,119 @@ fn run_v5_client_reader<R, W>(
     }
 }
 
-fn drain_v5_client_outbound<W>(
+fn wake_v5_client_writer<W>(
     shared: &RemoteWorkspaceV5Shared<W>,
+) -> std::result::Result<(), RemoteClientError> {
+    if shared.closed.load(Ordering::Acquire) {
+        return Err(RemoteClientError::Disconnected);
+    }
+    match shared.writer_wake.try_send(()) {
+        Ok(()) | Err(mpsc::TrySendError::Full(())) => Ok(()),
+        Err(mpsc::TrySendError::Disconnected(())) => {
+            let error = RemoteClientError::Io(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "v5 client writer stopped",
+            ));
+            fail_all_v5_waiters_for_error(shared, &error);
+            Err(error)
+        }
+    }
+}
+
+fn run_v5_client_writer<W>(
+    mut writer: RemoteWorkspaceV5Writer<W>,
+    wakes: mpsc::Receiver<()>,
+    shared: Weak<RemoteWorkspaceV5Shared<W>>,
+) where
+    W: Write,
+{
+    while wakes.recv().is_ok() {
+        let Some(shared) = shared.upgrade() else {
+            break;
+        };
+        if shared.closed.load(Ordering::Acquire) {
+            break;
+        }
+        if let Err(error) = write_v5_client_outbound(&shared, &mut writer) {
+            if !shared.closed.load(Ordering::Acquire) {
+                tracing::warn!(
+                    error = %error,
+                    "Closing v5 client after writer pump failed"
+                );
+            }
+            fail_all_v5_waiters_for_error(&shared, &error);
+            break;
+        }
+    }
+}
+
+fn write_v5_client_outbound<W>(
+    shared: &RemoteWorkspaceV5Shared<W>,
+    writer: &mut RemoteWorkspaceV5Writer<W>,
 ) -> std::result::Result<(), RemoteClientError>
 where
     W: Write,
 {
-    let result = (|| {
-        loop {
-            if shared.closed.load(Ordering::Acquire) {
-                return Err(RemoteClientError::Disconnected);
-            }
-
-            // Holding the writer while extracting preserves scheduler order across concurrent
-            // drainers. Keep extraction bounded, then revalidate each frame immediately before
-            // its unflushed write so a RESET can invalidate the rest of the batch.
-            let mut writer = shared.writer.lock().map_err(v5_client_lock_error)?;
-            let frames = {
-                let mut session = shared.session.lock().map_err(v5_client_lock_error)?;
-                let mut frames = Vec::with_capacity(V5_CLIENT_WRITE_BATCH_FRAMES);
-                for _ in 0..V5_CLIENT_WRITE_BATCH_FRAMES {
-                    let Some(frame) = session.pop_next_frame()? else {
-                        break;
-                    };
-                    frames.push(frame);
-                }
-                frames
-            };
-            if frames.is_empty() {
-                return Ok(());
-            }
-
-            let mut wrote_frame = false;
-            for mut frame in frames {
-                let should_write = {
-                    let mut session = shared.session.lock().map_err(v5_client_lock_error)?;
-                    let should_write = session.should_write_frame(&frame);
-                    if !should_write {
-                        session.discard_unwritten_frame(&frame)?;
-                    }
-                    should_write
-                };
-                if !should_write || shared.closed.load(Ordering::Acquire) {
-                    continue;
-                }
-
-                frame.frame_sequence = writer.next_frame_sequence;
-                writer.next_frame_sequence =
-                    writer.next_frame_sequence.checked_add(1).ok_or_else(|| {
-                        RemoteClientError::Protocol("v5 frame sequence exhausted".to_string())
-                    })?;
-                let limits = writer.limits;
-                protocol_v5::write_frame_unflushed_with_limits(&mut writer.writer, &frame, limits)?;
-                {
-                    shared
-                        .session
-                        .lock()
-                        .map_err(v5_client_lock_error)?
-                        .observe_frame_written(&frame);
-                }
-                if matches!(
-                    frame.frame_type,
-                    protocol_v5::FrameType::EndStream | protocol_v5::FrameType::ResetStream
-                ) {
-                    release_v5_outbound_request_reservation(shared, frame.stream_id);
-                }
-                wrote_frame = true;
-            }
-            if wrote_frame {
-                writer.writer.flush()?;
-            }
+    loop {
+        if shared.closed.load(Ordering::Acquire) {
+            return Err(RemoteClientError::Disconnected);
         }
-    })();
 
-    if let Err(error) = &result {
-        fail_all_v5_waiters_for_error(shared, error);
+        // Select one frame at a time so newly queued urgent control traffic can pre-empt the
+        // remainder of this bounded flush batch.
+        let mut processed_frames = 0;
+        let mut wrote_frame = false;
+        while processed_frames < V5_CLIENT_WRITE_BATCH_FRAMES {
+            let Some(mut frame) = shared
+                .session
+                .lock()
+                .map_err(v5_client_lock_error)?
+                .pop_next_frame()?
+            else {
+                break;
+            };
+            processed_frames += 1;
+            let should_write = {
+                let mut session = shared.session.lock().map_err(v5_client_lock_error)?;
+                let should_write = session.should_write_frame(&frame);
+                if !should_write {
+                    session.discard_unwritten_frame(&frame)?;
+                }
+                should_write
+            };
+            if !should_write || shared.closed.load(Ordering::Acquire) {
+                continue;
+            }
+
+            frame.frame_sequence = writer.next_frame_sequence;
+            writer.next_frame_sequence =
+                writer.next_frame_sequence.checked_add(1).ok_or_else(|| {
+                    RemoteClientError::Protocol("v5 frame sequence exhausted".to_string())
+                })?;
+            let limits = writer.limits;
+            protocol_v5::write_frame_unflushed_with_limits(&mut writer.writer, &frame, limits)?;
+            {
+                shared
+                    .session
+                    .lock()
+                    .map_err(v5_client_lock_error)?
+                    .observe_frame_written(&frame);
+            }
+            if matches!(
+                frame.frame_type,
+                protocol_v5::FrameType::EndStream | protocol_v5::FrameType::ResetStream
+            ) {
+                release_v5_outbound_request_reservation(shared, frame.stream_id);
+            }
+            wrote_frame = true;
+        }
+        if wrote_frame {
+            writer.writer.flush()?;
+        }
+        if processed_frames < V5_CLIENT_WRITE_BATCH_FRAMES {
+            return Ok(());
+        }
     }
-    result
 }
 
 fn release_v5_outbound_request_reservation<W>(shared: &RemoteWorkspaceV5Shared<W>, stream_id: u64) {
@@ -5016,7 +5062,7 @@ where
         });
     match reset_queued {
         Ok(true) => {
-            let _ = drain_v5_client_outbound(shared);
+            let _ = wake_v5_client_writer(shared);
         }
         Ok(false) => {
             // A response END can close the logical stream before a flow-blocked request body
@@ -5040,6 +5086,7 @@ where
     {
         return;
     }
+    let _ = shared.writer_wake.try_send(());
     shared
         .session
         .lock()
@@ -14734,6 +14781,88 @@ mod tests {
     }
 
     #[test]
+    fn v5_client_reader_routes_responses_while_writer_is_blocked() {
+        let input = BlockingRead::default();
+        let writer = PausingWrite::default();
+        input.push(v5_server_input(Vec::new()));
+        let client = Arc::new(
+            RemoteWorkspaceV5MultiplexedClient::connect(
+                protocol_v5::FramedIo::new(input.clone(), writer.clone()),
+                protocol_v5::ClientHello::nucleotide("test-client"),
+            )
+            .unwrap(),
+        );
+        writer.pause_next_write();
+
+        let request_client = Arc::clone(&client);
+        let (result_sender, result_receiver) = mpsc::channel();
+        let request = std::thread::spawn(move || {
+            let result = request_client.request(
+                RemoteRequest::Stat {
+                    path: PathBuf::from("responsive.rs"),
+                },
+                Vec::new(),
+            );
+            result_sender.send(result).unwrap();
+        });
+        writer.wait_until_paused();
+
+        let ping = protocol_v5::PingPayload {
+            token: b"reader-remains-responsive".to_vec(),
+        };
+        input.push(v5_frames_bytes(vec![protocol_v5::Frame::from_control(
+            protocol_v5::FrameType::Ping,
+            0,
+            &ping,
+        )]));
+        let response = RemoteResponse::Stat(FileStatResponse {
+            path: PathBuf::from("responsive.rs"),
+            kind: RemoteFileKind::File,
+            size: 1,
+            modified_unix_millis: None,
+            modified_unix_nanos: None,
+            readonly: false,
+        });
+        input.push(v5_frames_bytes(v5_response_frames(
+            1,
+            "fs.stat",
+            response.clone(),
+            Vec::new(),
+        )));
+
+        assert_eq!(
+            result_receiver
+                .recv_timeout(Duration::from_secs(2))
+                .expect("client reader should not wait for the blocked writer")
+                .unwrap(),
+            (response, Vec::new())
+        );
+
+        writer.release();
+        request.join().unwrap();
+        let started = Instant::now();
+        loop {
+            let pong = read_v5_frames(writer.bytes())
+                .into_iter()
+                .find(|frame| frame.frame_type == protocol_v5::FrameType::Pong);
+            if let Some(pong) = pong {
+                assert_eq!(
+                    pong.decode_control::<protocol_v5::PingPayload>().unwrap(),
+                    ping
+                );
+                break;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "timed out waiting for writer-pump PONG"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        client.close();
+        input.close();
+    }
+
+    #[test]
     fn v5_writer_failures_close_transport_and_fail_every_waiter() {
         enum Failure {
             AfterBytes(usize),
@@ -14774,6 +14903,7 @@ mod tests {
                 )
                 .unwrap(),
             );
+            let handshake_flushes = writer.successful_flush_count();
 
             let first_client = Arc::clone(&client);
             let first = std::thread::spawn(move || {
@@ -14785,6 +14915,7 @@ mod tests {
                 )
             });
             wait_for_v5_request_stream(&output, "fs.stat");
+            writer.wait_for_successful_flush_after(handshake_flushes);
 
             let (watch_sender, watch_receiver) = mpsc::sync_channel(1);
             client.shared.watch_batches.lock().unwrap().insert(
@@ -15374,13 +15505,10 @@ mod tests {
         )));
         assert_eq!(worker.join().unwrap().unwrap(), (response, Vec::new()));
 
-        let stream_frames = {
-            let _writer = client.shared.writer.lock().unwrap();
-            read_v5_frames(output.bytes())
-                .into_iter()
-                .filter(|frame| frame.stream_id == stream_id)
-                .collect::<Vec<_>>()
-        };
+        let stream_frames = read_v5_frames(output.bytes())
+            .into_iter()
+            .filter(|frame| frame.stream_id == stream_id)
+            .collect::<Vec<_>>();
         assert!(
             stream_frames
                 .iter()
@@ -19475,6 +19603,7 @@ mod tests {
     struct FaultInjectingWrite {
         output: SharedWrite,
         mode: Arc<StdMutex<FaultWriteMode>>,
+        successful_flushes: Arc<AtomicUsize>,
     }
 
     #[derive(Default)]
@@ -19496,6 +19625,21 @@ mod tests {
 
         fn fail_after_flushes(&self, successful_flushes: usize) {
             *self.mode.lock().unwrap() = FaultWriteMode::FailAfterFlushes(successful_flushes);
+        }
+
+        fn successful_flush_count(&self) -> usize {
+            self.successful_flushes.load(Ordering::Acquire)
+        }
+
+        fn wait_for_successful_flush_after(&self, previous: usize) {
+            let started = Instant::now();
+            while self.successful_flush_count() <= previous {
+                assert!(
+                    started.elapsed() < Duration::from_secs(2),
+                    "timed out waiting for v5 writer flush"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
         }
 
         fn injected_error() -> io::Error {
@@ -19532,6 +19676,7 @@ mod tests {
                 }
                 *remaining -= 1;
             }
+            self.successful_flushes.fetch_add(1, Ordering::Release);
             Ok(())
         }
     }
