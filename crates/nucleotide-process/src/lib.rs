@@ -54,6 +54,29 @@ impl OutputLimits {
 /// The caller remains responsible for configuring stdin, including setting it to [`Stdio::null`]
 /// for commands that should receive immediate EOF.
 pub fn output_with_limits(command: &mut Command, limits: OutputLimits) -> io::Result<Output> {
+    output_with_limits_inner(command, limits, None)
+}
+
+/// Runs a child with bounded output and stops its process tree when cancellation is requested.
+///
+/// Cancellation is cooperative at a polling interval of at most 10 ms. The same containment and
+/// reaping guarantees as [`output_with_limits`] apply.
+pub fn output_with_limits_and_cancellation(
+    command: &mut Command,
+    limits: OutputLimits,
+    cancellation: &AtomicBool,
+) -> io::Result<Output> {
+    output_with_limits_inner(command, limits, Some(cancellation))
+}
+
+fn output_with_limits_inner(
+    command: &mut Command,
+    limits: OutputLimits,
+    cancellation: Option<&AtomicBool>,
+) -> io::Result<Output> {
+    if cancellation.is_some_and(|cancellation| cancellation.load(Ordering::Acquire)) {
+        return Err(cancelled_output_error());
+    }
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     configure_output_child(command);
     let mut child = ChildGuard::spawn(command)?;
@@ -84,6 +107,9 @@ pub fn output_with_limits(command: &mut Command, limits: OutputLimits) -> io::Re
     let started = Instant::now();
     let mut status = None;
     loop {
+        if cancellation.is_some_and(|cancellation| cancellation.load(Ordering::Acquire)) {
+            return Err(cancelled_output_error());
+        }
         if output_exceeded.load(Ordering::Acquire) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -130,6 +156,10 @@ pub fn output_with_limits(command: &mut Command, limits: OutputLimits) -> io::Re
         stdout,
         stderr,
     })
+}
+
+fn cancelled_output_error() -> io::Error {
+    io::Error::new(io::ErrorKind::Interrupted, "child execution cancelled")
 }
 
 #[cfg(unix)]
@@ -364,6 +394,31 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn output_with_limits_cancellation_kills_and_reaps_child() {
+        let cancellation = Arc::new(AtomicBool::new(false));
+        let cancel = Arc::clone(&cancellation);
+        let canceller = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(100));
+            cancel.store(true, Ordering::Release);
+        });
+        let mut child = Command::new("sleep");
+        child.arg("5");
+        let started = Instant::now();
+
+        let error = output_with_limits_and_cancellation(
+            &mut child,
+            OutputLimits::new(Duration::from_secs(10), 64, 64),
+            cancellation.as_ref(),
+        )
+        .unwrap_err();
+        canceller.join().unwrap();
+
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn output_with_limits_kills_descendant_holding_pipe_after_leader_exits() {
         let temp = tempfile::tempdir().unwrap();
         let started_file = temp.path().join("descendant-started");
@@ -402,6 +457,57 @@ mod tests {
         assert!(
             !survived_file.exists(),
             "background descendant survived process-group cleanup"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn output_cancellation_kills_descendant_holding_pipe_after_leader_exits() {
+        let temp = tempfile::tempdir().unwrap();
+        let started_file = temp.path().join("descendant-started");
+        let survived_file = temp.path().join("descendant-survived");
+        let cancellation = Arc::new(AtomicBool::new(false));
+        let cancel = Arc::clone(&cancellation);
+        let canceller = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(250));
+            cancel.store(true, Ordering::Release);
+        });
+        let mut child = Command::new("/bin/sh");
+        child
+            .args([
+                "-c",
+                concat!(
+                    "printf started > \"$NUCLEOTIDE_TEST_STARTED_FILE\"; ",
+                    "(sleep 2; printf survived > \"$NUCLEOTIDE_TEST_SURVIVED_FILE\") &",
+                ),
+            ])
+            .env("NUCLEOTIDE_TEST_STARTED_FILE", &started_file)
+            .env("NUCLEOTIDE_TEST_SURVIVED_FILE", &survived_file);
+        let started = Instant::now();
+
+        let error = output_with_limits_and_cancellation(
+            &mut child,
+            OutputLimits::new(Duration::from_secs(10), 64, 64),
+            cancellation.as_ref(),
+        )
+        .unwrap_err();
+        canceller.join().unwrap();
+        let elapsed = started.elapsed();
+
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        assert!(
+            started_file.exists(),
+            "shell leader did not start descendant"
+        );
+        assert!(
+            elapsed < Duration::from_secs(4),
+            "background descendant kept output pipes open for {elapsed:?}"
+        );
+
+        thread::sleep(Duration::from_millis(2_100));
+        assert!(
+            !survived_file.exists(),
+            "background descendant survived cancellation cleanup"
         );
     }
 }

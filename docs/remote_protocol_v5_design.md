@@ -710,6 +710,7 @@ Current integration:
 - File tree starts `watch.start` when `watch_filesystem` is enabled and the server advertises `watch`.
 - The reconnecting client preserves desired watch roots behind a stable logical watch ID. It recreates the physical watch, sends `watch.resync`, suppresses pre-resync batches and exposes one mandatory resync batch before later deltas.
 - File tree treats that resync as an application barrier: every expanded directory must refresh successfully before the sequence advances, and results from an older watch epoch are discarded.
+- Remote startup is one owned attempt with a shared cancellation token and monotonic deadline, five minutes by default. Home discovery, helper probes and transfer, service launch, handshake, reinstall retry and the first directory listing all consume the same remaining budget. Replacing, dismissing or dropping the owning UI cancels and reaps its active child processes; dropping the first-listing future resets its live transport request.
 - Existing remote polling remains as fallback and as low-frequency reconciliation when watching is active.
 - UI components receive the same domain-level events they receive today: directory refreshes, file system changed, VCS changed and process output.
 
@@ -749,12 +750,12 @@ The v5 baseline is complete:
 4. `watch.start`, `watch.update`, `watch.stop`, `watch.resync` and `watch.batch` are active with polling fallback.
 5. Directory generations, fingerprints, `not_modified` responses and optional deltas are active.
 
-The 2026-07-13 hardening pass adds executable failure and memory invariants around the baseline. It includes atomic stream teardown, decoded-data bounds, receive-window enforcement, lazy producers, bounded server and watch queues, deadline-bound startup commands with direct-child reaping and Unix process-group cleanup, child-handshake and client connection-heartbeat watchdogs, bidirectional heartbeat probes, terminal transport errors, typed recovery outcomes, reconnecting logical watches with mandatory resync, end-to-end priority propagation, cooperative filesystem cancellation, cancellation-aware response production, cancel-on-drop client ownership and shutdown cleanup.
+The 2026-07-13 hardening pass adds executable failure and memory invariants around the baseline. It includes atomic stream teardown, decoded-data bounds, receive-window enforcement, lazy producers, bounded server and watch queues, owned aggregate-deadline startup attempts with direct-child reaping and Unix process-group cleanup, child-handshake and client connection-heartbeat watchdogs, bidirectional heartbeat probes, terminal transport errors, typed recovery outcomes, reconnecting logical watches with mandatory resync, end-to-end priority propagation, cooperative filesystem cancellation, cancellation-aware response production, cancel-on-drop client ownership and shutdown cleanup.
 
 The next integration work should:
 
 1. Expose incremental file/search/process consumers and consumption-based receive credit above the transport.
-2. Make the complete startup attempt cancellable and add safe browse-session handoff or bootstrap reuse.
+2. Add safe browse-session handoff or bootstrap reuse without widening the browse backend's containment root.
 3. Make helper liveness independent of blocking writes.
 4. Expand loopback, Linux SSH and WSL fault/load fixtures, including stalled-peer memory and latency assertions.
 

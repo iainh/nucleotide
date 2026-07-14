@@ -50,6 +50,7 @@ pub const PROTOCOL_VERSION: u32 = protocol_v5::PROTOCOL_MAJOR;
 pub const FRAME_VERSION: u16 = protocol_v5::FRAME_HEADER_VERSION;
 pub const MAX_FRAME_BODY_LEN: u64 = protocol_v5::MAX_NEGOTIATED_FRAME_BODY_LEN as u64;
 pub const DEFAULT_SSH_CONNECT_TIMEOUT_SECS: u64 = 30;
+pub const DEFAULT_REMOTE_STARTUP_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 pub const REMOTE_STARTUP_PROBE_TIMEOUT: Duration = Duration::from_secs(30);
 pub const REMOTE_STARTUP_OUTPUT_LIMIT: usize = 64 * 1024;
 const REMOTE_REQUEST_SLOW_LOG_MS: u64 = 500;
@@ -1810,6 +1811,7 @@ pub struct RemoteWorkspaceBackendOptions {
     pub ssh_connect_timeout_secs: Option<u64>,
     pub ssh_extra_args: Vec<OsString>,
     pub ssh_control_path: Option<PathBuf>,
+    pub startup_timeout: Duration,
     pub use_local_service: bool,
 }
 
@@ -1833,6 +1835,7 @@ impl Default for RemoteWorkspaceBackendOptions {
             ssh_control_path: default_ssh_control_master_enabled()
                 .then(default_ssh_control_path)
                 .flatten(),
+            startup_timeout: DEFAULT_REMOTE_STARTUP_TIMEOUT,
             use_local_service: false,
         }
     }
@@ -2022,9 +2025,134 @@ impl LinuxHelperTransport<'_> {
     }
 }
 
+#[derive(Debug)]
+pub struct RemoteStartupCancelled;
+
+impl fmt::Display for RemoteStartupCancelled {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("remote workspace startup cancelled")
+    }
+}
+
+impl Error for RemoteStartupCancelled {}
+
+#[derive(Debug)]
+pub struct RemoteStartupDeadlineExceeded;
+
+impl fmt::Display for RemoteStartupDeadlineExceeded {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("remote workspace startup deadline exceeded")
+    }
+}
+
+impl Error for RemoteStartupDeadlineExceeded {}
+
+pub fn remote_startup_was_cancelled(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|cause| cause.downcast_ref::<RemoteStartupCancelled>().is_some())
+}
+
+pub fn remote_startup_deadline_was_exceeded(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<RemoteStartupDeadlineExceeded>()
+            .is_some()
+    })
+}
+
+/// Shared cancellation and monotonic deadline for one complete remote startup attempt.
+#[derive(Clone, Debug)]
+pub struct RemoteStartupContext {
+    cancellation: WorkspaceCancellationToken,
+    deadline: Instant,
+}
+
+impl RemoteStartupContext {
+    pub fn new(timeout: Duration) -> Self {
+        Self::with_cancellation(WorkspaceCancellationToken::new(), timeout)
+    }
+
+    pub fn with_cancellation(cancellation: WorkspaceCancellationToken, timeout: Duration) -> Self {
+        let started = Instant::now();
+        let deadline = started
+            .checked_add(timeout)
+            .unwrap_or_else(|| started + DEFAULT_REMOTE_STARTUP_TIMEOUT);
+        Self {
+            cancellation,
+            deadline,
+        }
+    }
+
+    pub fn cancellation(&self) -> &WorkspaceCancellationToken {
+        &self.cancellation
+    }
+
+    pub fn cancel(&self) {
+        self.cancellation.cancel();
+    }
+
+    pub fn check(&self) -> Result<()> {
+        if self.cancellation.is_cancelled() {
+            Err(RemoteStartupCancelled.into())
+        } else if Instant::now() >= self.deadline {
+            Err(RemoteStartupDeadlineExceeded.into())
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn remaining(&self) -> Result<Duration> {
+        self.check()?;
+        Ok(self.deadline.saturating_duration_since(Instant::now()))
+    }
+
+    pub fn cap_timeout(&self, stage_timeout: Duration) -> Result<Duration> {
+        Ok(stage_timeout.min(self.remaining()?))
+    }
+}
+
+/// Owns a startup context and cancels it unless the accepted attempt is explicitly disarmed.
+#[derive(Debug)]
+pub struct RemoteStartupAttempt {
+    context: RemoteStartupContext,
+    armed: bool,
+}
+
+impl RemoteStartupAttempt {
+    pub fn new(timeout: Duration) -> Self {
+        Self {
+            context: RemoteStartupContext::new(timeout),
+            armed: true,
+        }
+    }
+
+    pub fn context(&self) -> RemoteStartupContext {
+        self.context.clone()
+    }
+
+    pub fn cancel(&mut self) {
+        self.context.cancel();
+        self.armed = false;
+    }
+
+    pub fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for RemoteStartupAttempt {
+    fn drop(&mut self) {
+        if self.armed {
+            self.context.cancel();
+        }
+    }
+}
+
 pub struct RemoteHelperManager<'a> {
     options: &'a RemoteWorkspaceBackendOptions,
     progress: Option<&'a dyn Fn(RemoteDeploymentProgress)>,
+    startup: RemoteStartupContext,
 }
 
 impl<'a> RemoteHelperManager<'a> {
@@ -2032,6 +2160,7 @@ impl<'a> RemoteHelperManager<'a> {
         Self {
             options,
             progress: None,
+            startup: RemoteStartupContext::new(options.startup_timeout),
         }
     }
 
@@ -2042,24 +2171,41 @@ impl<'a> RemoteHelperManager<'a> {
         Self {
             options,
             progress: Some(progress),
+            startup: RemoteStartupContext::new(options.startup_timeout),
+        }
+    }
+
+    pub fn with_progress_and_startup_context(
+        options: &'a RemoteWorkspaceBackendOptions,
+        progress: Option<&'a dyn Fn(RemoteDeploymentProgress)>,
+        startup: &RemoteStartupContext,
+    ) -> Self {
+        Self {
+            options,
+            progress,
+            startup: startup.clone(),
         }
     }
 
     pub fn resolve_helper_for_location(&self, location: &WorkspaceLocation) -> Result<PathBuf> {
-        match location {
+        self.check_cancelled()?;
+        let helper = match location {
             WorkspaceLocation::Ssh { target, .. } => self.resolve_ssh_helper(
                 &ssh_target_from_workspace_target_with_options(target, self.options),
             ),
             WorkspaceLocation::Wsl { distro, .. } => self.resolve_wsl_helper(distro),
             WorkspaceLocation::Local { .. } => Ok(self.options.remote_helper_path.clone()),
-        }
+        }?;
+        self.check_cancelled()?;
+        Ok(helper)
     }
 
     pub fn reinstall_helper_for_location(
         &self,
         location: &WorkspaceLocation,
     ) -> Result<Option<PathBuf>> {
-        match location {
+        self.check_cancelled()?;
+        let helper = match location {
             WorkspaceLocation::Ssh { target, .. } => self
                 .reinstall_ssh_helper(&ssh_target_from_workspace_target_with_options(
                     target,
@@ -2068,7 +2214,9 @@ impl<'a> RemoteHelperManager<'a> {
                 .map(Some),
             WorkspaceLocation::Wsl { distro, .. } => self.reinstall_wsl_helper(distro).map(Some),
             WorkspaceLocation::Local { .. } => Ok(None),
-        }
+        }?;
+        self.check_cancelled()?;
+        Ok(helper)
     }
 
     fn resolve_ssh_helper(&self, target: &SshTarget) -> Result<PathBuf> {
@@ -2112,6 +2260,7 @@ impl<'a> RemoteHelperManager<'a> {
         configured_helper_path: &Path,
         helper_path_is_override: bool,
     ) -> Result<PathBuf> {
+        self.check_cancelled()?;
         if helper_path_is_override
             && install_policy != RemoteHelperInstallPolicy::Upload
             && install_policy != RemoteHelperInstallPolicy::RemoteDownload
@@ -2130,7 +2279,13 @@ impl<'a> RemoteHelperManager<'a> {
         self.emit_progress(connection_phase, Some(transport.target_name()), None);
         let probe = match self.probe_linux_platform(transport) {
             Ok(probe) => probe,
-            Err(_) if install_policy == RemoteHelperInstallPolicy::Auto => {
+            Err(error) if install_policy == RemoteHelperInstallPolicy::Auto => {
+                self.check_cancelled()?;
+                tracing::debug!(
+                    error = %error,
+                    target = %transport.target_name(),
+                    "Falling back to configured helper after platform probe failure"
+                );
                 return Ok(configured_helper_path.to_path_buf());
             }
             Err(error) => return Err(error),
@@ -2147,13 +2302,13 @@ impl<'a> RemoteHelperManager<'a> {
             Some(transport.target_name()),
             Some(helper_path.display().to_string()),
         );
-        if self.remote_helper_matches(transport, &helper_path, &probe.platform) {
+        if self.remote_helper_matches(transport, &helper_path, &probe.platform)? {
             return Ok(helper_path);
         }
 
         if install_policy == RemoteHelperInstallPolicy::RemoteDownload {
             self.install_helper_by_remote_download(transport, &probe.platform, &helper_path)?;
-            if !self.remote_helper_matches(transport, &helper_path, &probe.platform) {
+            if !self.remote_helper_matches(transport, &helper_path, &probe.platform)? {
                 bail!(
                     "downloaded nucleotide-remote on {} but version probe did not match protocol {}",
                     transport.description(),
@@ -2164,19 +2319,31 @@ impl<'a> RemoteHelperManager<'a> {
         }
 
         let Some(local_helper) = self.local_upload_artifact_for_platform(&probe.platform) else {
-            if install_policy == RemoteHelperInstallPolicy::Auto
-                && self
-                    .install_helper_by_remote_download(transport, &probe.platform, &helper_path)
-                    .is_ok()
-            {
-                if !self.remote_helper_matches(transport, &helper_path, &probe.platform) {
-                    bail!(
-                        "downloaded nucleotide-remote on {} but version probe did not match protocol {}",
-                        transport.description(),
-                        PROTOCOL_VERSION
-                    );
+            if install_policy == RemoteHelperInstallPolicy::Auto {
+                match self.install_helper_by_remote_download(
+                    transport,
+                    &probe.platform,
+                    &helper_path,
+                ) {
+                    Ok(()) => {
+                        if !self.remote_helper_matches(transport, &helper_path, &probe.platform)? {
+                            bail!(
+                                "downloaded nucleotide-remote on {} but version probe did not match protocol {}",
+                                transport.description(),
+                                PROTOCOL_VERSION
+                            );
+                        }
+                        return Ok(helper_path);
+                    }
+                    Err(error) => {
+                        self.check_cancelled()?;
+                        tracing::debug!(
+                            error = %error,
+                            target = %transport.target_name(),
+                            "Automatic remote helper download was unavailable"
+                        );
+                    }
                 }
-                return Ok(helper_path);
             }
 
             if install_policy == RemoteHelperInstallPolicy::Upload {
@@ -2212,7 +2379,7 @@ impl<'a> RemoteHelperManager<'a> {
                 )
             })?;
 
-        if !self.remote_helper_matches(transport, &helper_path, &probe.platform) {
+        if !self.remote_helper_matches(transport, &helper_path, &probe.platform)? {
             bail!(
                 "uploaded nucleotide-remote on {} but version probe did not match protocol {}",
                 transport.description(),
@@ -2264,6 +2431,7 @@ impl<'a> RemoteHelperManager<'a> {
         configured_helper_path: &Path,
         helper_path_is_override: bool,
     ) -> Result<PathBuf> {
+        self.check_cancelled()?;
         if helper_path_is_override
             && install_policy != RemoteHelperInstallPolicy::Upload
             && install_policy != RemoteHelperInstallPolicy::RemoteDownload
@@ -2290,7 +2458,7 @@ impl<'a> RemoteHelperManager<'a> {
 
         if install_policy == RemoteHelperInstallPolicy::RemoteDownload {
             self.install_helper_by_remote_download(transport, &probe.platform, &helper_path)?;
-            if !self.remote_helper_matches(transport, &helper_path, &probe.platform) {
+            if !self.remote_helper_matches(transport, &helper_path, &probe.platform)? {
                 bail!(
                     "reinstalled nucleotide-remote on {} by download but version probe did not match protocol {}",
                     transport.description(),
@@ -2329,7 +2497,7 @@ impl<'a> RemoteHelperManager<'a> {
                 )
             })?;
 
-        if !self.remote_helper_matches(transport, &helper_path, &probe.platform) {
+        if !self.remote_helper_matches(transport, &helper_path, &probe.platform)? {
             bail!(
                 "reinstalled nucleotide-remote on {} but version probe did not match protocol {}",
                 transport.description(),
@@ -2372,10 +2540,20 @@ impl<'a> RemoteHelperManager<'a> {
         transport: LinuxHelperTransport<'_>,
         helper_path: &Path,
         platform: &SshRemotePlatform,
-    ) -> bool {
-        self.remote_helper_version(transport, helper_path)
-            .map(|info| helper_version_matches_current(&info, platform))
-            .unwrap_or(false)
+    ) -> Result<bool> {
+        match self.remote_helper_version(transport, helper_path) {
+            Ok(info) => Ok(helper_version_matches_current(&info, platform)),
+            Err(error) => {
+                self.check_cancelled()?;
+                tracing::debug!(
+                    error = %error,
+                    target = %transport.target_name(),
+                    helper = %helper_path.display(),
+                    "Remote helper version probe did not match"
+                );
+                Ok(false)
+            }
+        }
     }
 
     fn remote_helper_version(
@@ -2459,8 +2637,9 @@ impl<'a> RemoteHelperManager<'a> {
         );
         let mut local_file = std::fs::File::open(local_helper)
             .with_context(|| format!("failed to open {}", local_helper.display()))?;
-        let expected_sha256 = sha256_reader(&mut local_file)
+        let expected_sha256 = sha256_reader_with_startup_context(&mut local_file, &self.startup)
             .with_context(|| format!("failed to hash {}", local_helper.display()))?;
+        self.check_cancelled()?;
         local_file
             .rewind()
             .with_context(|| format!("failed to rewind {}", local_helper.display()))?;
@@ -2469,21 +2648,22 @@ impl<'a> RemoteHelperManager<'a> {
         let spec = transport.command(remote_command);
         let mut command = spec.command();
         command.stdin(Stdio::from(local_file));
-        let output = nucleotide_process::output_with_limits(
-            &mut command,
-            nucleotide_process::OutputLimits::new(
-                REMOTE_HELPER_TRANSFER_TIMEOUT,
-                REMOTE_STARTUP_OUTPUT_LIMIT,
-                REMOTE_STARTUP_OUTPUT_LIMIT,
-            ),
-        )
-        .with_context(|| {
-            format!(
-                "failed to run helper upload command for {}: {}",
-                transport.description(),
-                spec.display_context()
+        let output = self
+            .run_bounded_command(
+                &mut command,
+                nucleotide_process::OutputLimits::new(
+                    REMOTE_HELPER_TRANSFER_TIMEOUT,
+                    REMOTE_STARTUP_OUTPUT_LIMIT,
+                    REMOTE_STARTUP_OUTPUT_LIMIT,
+                ),
             )
-        })?;
+            .with_context(|| {
+                format!(
+                    "failed to run helper upload command for {}: {}",
+                    transport.description(),
+                    spec.display_context()
+                )
+            })?;
 
         if output.status.success() {
             Ok(())
@@ -2526,20 +2706,21 @@ impl<'a> RemoteHelperManager<'a> {
         let spec = transport.command(remote_command);
         let mut command = spec.command();
         command.stdin(Stdio::null());
-        let output = nucleotide_process::output_with_limits(
-            &mut command,
-            nucleotide_process::OutputLimits::new(
-                REMOTE_HELPER_TRANSFER_TIMEOUT,
-                REMOTE_STARTUP_OUTPUT_LIMIT,
-                REMOTE_STARTUP_OUTPUT_LIMIT,
-            ),
-        )
-        .with_context(|| {
-            format!(
-                "failed to run helper download command for {}",
-                transport.description()
+        let output = self
+            .run_bounded_command(
+                &mut command,
+                nucleotide_process::OutputLimits::new(
+                    REMOTE_HELPER_TRANSFER_TIMEOUT,
+                    REMOTE_STARTUP_OUTPUT_LIMIT,
+                    REMOTE_STARTUP_OUTPUT_LIMIT,
+                ),
             )
-        })?;
+            .with_context(|| {
+                format!(
+                    "failed to run helper download command for {}",
+                    transport.description()
+                )
+            })?;
 
         if output.status.success() {
             Ok(())
@@ -2562,21 +2743,22 @@ impl<'a> RemoteHelperManager<'a> {
         let spec = transport.command(remote_command.to_string());
         let mut command = spec.command();
         command.stdin(Stdio::null());
-        let output = nucleotide_process::output_with_limits(
-            &mut command,
-            nucleotide_process::OutputLimits::new(
-                REMOTE_STARTUP_PROBE_TIMEOUT,
-                REMOTE_STARTUP_OUTPUT_LIMIT,
-                REMOTE_STARTUP_OUTPUT_LIMIT,
-            ),
-        )
-        .with_context(|| {
-            format!(
-                "failed to run command on {} while {label}: {}",
-                transport.description(),
-                spec.display_context()
+        let output = self
+            .run_bounded_command(
+                &mut command,
+                nucleotide_process::OutputLimits::new(
+                    REMOTE_STARTUP_PROBE_TIMEOUT,
+                    REMOTE_STARTUP_OUTPUT_LIMIT,
+                    REMOTE_STARTUP_OUTPUT_LIMIT,
+                ),
             )
-        })?;
+            .with_context(|| {
+                format!(
+                    "failed to run command on {} while {label}: {}",
+                    transport.description(),
+                    spec.display_context()
+                )
+            })?;
 
         if output.status.success() {
             String::from_utf8(output.stdout).with_context(|| {
@@ -2601,6 +2783,9 @@ impl<'a> RemoteHelperManager<'a> {
         target: Option<String>,
         detail: Option<String>,
     ) {
+        if self.check_cancelled().is_err() {
+            return;
+        }
         if let Some(progress) = self.progress {
             progress(RemoteDeploymentProgress {
                 phase,
@@ -2608,6 +2793,26 @@ impl<'a> RemoteHelperManager<'a> {
                 detail,
             });
         }
+    }
+
+    fn run_bounded_command(
+        &self,
+        command: &mut Command,
+        mut limits: nucleotide_process::OutputLimits,
+    ) -> Result<std::process::Output> {
+        self.check_cancelled()?;
+        limits.timeout = self.startup.cap_timeout(limits.timeout)?;
+        let output = nucleotide_process::output_with_limits_and_cancellation(
+            command,
+            limits,
+            self.startup.cancellation().as_atomic_bool(),
+        );
+        self.check_cancelled()?;
+        output.map_err(Into::into)
+    }
+
+    fn check_cancelled(&self) -> Result<()> {
+        self.startup.check()
     }
 }
 
@@ -2848,7 +3053,8 @@ pub fn connect_workspace_backend_for_location(
     location: WorkspaceLocation,
     options: &RemoteWorkspaceBackendOptions,
 ) -> Result<WorkspaceBackendConnection> {
-    connect_workspace_backend_for_location_with_optional_progress(location, options, None)
+    let startup = RemoteStartupContext::new(options.startup_timeout);
+    connect_workspace_backend_for_location_with_optional_progress(location, options, None, &startup)
 }
 
 pub fn connect_workspace_backend_for_location_with_progress(
@@ -2856,14 +3062,49 @@ pub fn connect_workspace_backend_for_location_with_progress(
     options: &RemoteWorkspaceBackendOptions,
     progress: &dyn Fn(RemoteDeploymentProgress),
 ) -> Result<WorkspaceBackendConnection> {
-    connect_workspace_backend_for_location_with_optional_progress(location, options, Some(progress))
+    let startup = RemoteStartupContext::new(options.startup_timeout);
+    connect_workspace_backend_for_location_with_optional_progress(
+        location,
+        options,
+        Some(progress),
+        &startup,
+    )
+}
+
+pub fn connect_workspace_backend_for_location_with_progress_and_cancellation(
+    location: WorkspaceLocation,
+    options: &RemoteWorkspaceBackendOptions,
+    progress: &dyn Fn(RemoteDeploymentProgress),
+    cancellation: &WorkspaceCancellationToken,
+) -> Result<WorkspaceBackendConnection> {
+    let startup =
+        RemoteStartupContext::with_cancellation(cancellation.clone(), options.startup_timeout);
+    connect_workspace_backend_for_location_with_progress_and_startup_context(
+        location, options, progress, &startup,
+    )
+}
+
+pub fn connect_workspace_backend_for_location_with_progress_and_startup_context(
+    location: WorkspaceLocation,
+    options: &RemoteWorkspaceBackendOptions,
+    progress: &dyn Fn(RemoteDeploymentProgress),
+    startup: &RemoteStartupContext,
+) -> Result<WorkspaceBackendConnection> {
+    connect_workspace_backend_for_location_with_optional_progress(
+        location,
+        options,
+        Some(progress),
+        startup,
+    )
 }
 
 fn connect_workspace_backend_for_location_with_optional_progress(
     location: WorkspaceLocation,
     options: &RemoteWorkspaceBackendOptions,
     progress: Option<&dyn Fn(RemoteDeploymentProgress)>,
+    startup: &RemoteStartupContext,
 ) -> Result<WorkspaceBackendConnection> {
+    startup.check()?;
     if let WorkspaceLocation::Local { path } = &location {
         if options.use_local_service {
             let helper_path = options
@@ -2871,12 +3112,13 @@ fn connect_workspace_backend_for_location_with_optional_progress(
                 .as_deref()
                 .unwrap_or(&options.remote_helper_path);
             let command = local_service_command(helper_path, path);
-            let (backend, hello) = spawn_child_process_workspace_backend(
+            let (backend, hello) = spawn_child_process_workspace_backend_with_startup_context(
                 RemoteWorkspaceIdentity {
                     kind: RemoteWorkspaceKind::Other("local-service".to_string()),
                     name: "local-service".to_string(),
                 },
                 &command,
+                startup,
             )
             .with_context(|| {
                 format!(
@@ -2902,30 +3144,33 @@ fn connect_workspace_backend_for_location_with_optional_progress(
 
     let identity = remote_workspace_identity_for_location(&location)
         .context("remote workspace location is missing an identity")?;
-    let helper_path = match progress {
-        Some(progress) => {
-            resolve_remote_helper_for_location_with_progress(&location, options, progress)?
-        }
-        None => resolve_remote_helper_for_location(&location, options)?,
-    };
+    let helper_manager =
+        RemoteHelperManager::with_progress_and_startup_context(options, progress, startup);
+    let helper_path = helper_manager.resolve_helper_for_location(&location)?;
+    startup.check()?;
     let command =
         remote_service_command_for_location_with_options(&location, &helper_path, options)
             .context("remote workspace location is missing a service command")?;
     let mapping = location.path_mapping();
     let display_root = location.display_root().to_path_buf();
+    startup.check()?;
     emit_remote_deployment_progress(
         progress,
         RemoteDeploymentPhase::StartingRemoteWorkspaceService,
         &location,
         Some(display_root.display().to_string()),
     );
-    let (backend, hello) = match spawn_child_process_workspace_backend(identity.clone(), &command) {
+    let (backend, hello) = match spawn_child_process_workspace_backend_with_startup_context(
+        identity.clone(),
+        &command,
+        startup,
+    ) {
         Ok(connection) => connection,
         Err(error) if remote_startup_error_can_retry_helper_install(&location, &error) => {
-            let retry_helper_path = match progress {
-                Some(progress) => RemoteHelperManager::with_progress(options, progress),
-                None => RemoteHelperManager::new(options),
-            }
+            startup.check()?;
+            let retry_helper_path = RemoteHelperManager::with_progress_and_startup_context(
+                options, progress, startup,
+            )
             .reinstall_helper_for_location(&location)
             .with_context(|| {
                 format!(
@@ -2939,13 +3184,18 @@ fn connect_workspace_backend_for_location_with_optional_progress(
                 options,
             )
             .context("remote workspace location is missing a service command")?;
+            startup.check()?;
             emit_remote_deployment_progress(
                 progress,
                 RemoteDeploymentPhase::StartingRemoteWorkspaceService,
                 &location,
                 Some(display_root.display().to_string()),
             );
-            spawn_child_process_workspace_backend(identity, &retry_command)
+            spawn_child_process_workspace_backend_with_startup_context(
+                identity,
+                &retry_command,
+                startup,
+            )
             .with_context(|| {
                 format!(
                     "failed to initialize remote workspace service for {} after reinstalling helper. Initial error: {error:#}",
@@ -2963,6 +3213,8 @@ fn connect_workspace_backend_for_location_with_optional_progress(
             });
         }
     };
+
+    startup.check()?;
 
     Ok(WorkspaceBackendConnection {
         backend: path_mapped_workspace_backend(backend, mapping),
@@ -3303,12 +3555,36 @@ fn posix_parent(path: &str) -> String {
     }
 }
 
+#[cfg(test)]
 fn sha256_reader(reader: &mut impl Read) -> io::Result<String> {
     let mut hasher = Sha256::new();
     let mut buffer = [0_u8; 64 * 1024];
     loop {
         let read = reader.read(&mut buffer)?;
         if read == 0 {
+            return Ok(format!("{:x}", hasher.finalize()));
+        }
+        hasher.update(&buffer[..read]);
+    }
+}
+
+fn sha256_reader_with_startup_context(
+    reader: &mut impl Read,
+    startup: &RemoteStartupContext,
+) -> Result<String> {
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        startup.check()?;
+        let read = match reader.read(&mut buffer) {
+            Ok(read) => read,
+            Err(error) => {
+                startup.check()?;
+                return Err(error.into());
+            }
+        };
+        if read == 0 {
+            startup.check()?;
             return Ok(format!("{:x}", hasher.finalize()));
         }
         hasher.update(&buffer[..read]);
@@ -4924,21 +5200,54 @@ fn connect_child_process_v5_client_with_timeout(
     client_hello: protocol_v5::ClientHello,
     timeout: Duration,
 ) -> std::result::Result<RemoteWorkspaceV5ChildClient, RemoteClientError> {
+    connect_child_process_v5_client_with_timeout_and_cancellation(
+        io,
+        control,
+        client_hello,
+        timeout,
+        None,
+    )
+}
+
+fn connect_child_process_v5_client_with_timeout_and_cancellation(
+    io: protocol_v5::FramedIo<ChildStdout, ChildProcessV5Writer>,
+    control: Arc<ChildProcessV5Control>,
+    client_hello: protocol_v5::ClientHello,
+    timeout: Duration,
+    cancellation: Option<WorkspaceCancellationToken>,
+) -> std::result::Result<RemoteWorkspaceV5ChildClient, RemoteClientError> {
     let (watchdog_cancel, watchdog_receiver) = mpsc::channel();
     let watchdog_control = Arc::clone(&control);
     let watchdog = std::thread::Builder::new()
         .name("nucleotide-v5-handshake-watchdog".to_string())
         .spawn(move || {
-            if matches!(
-                watchdog_receiver.recv_timeout(timeout),
-                Err(mpsc::RecvTimeoutError::Timeout)
-            ) {
-                tracing::warn!(
-                    child_id = watchdog_control.child_id(),
-                    timeout_ms = timeout.as_millis() as u64,
-                    "Terminating remote service after v5 handshake timeout"
-                );
-                watchdog_control.abort();
+            let started = Instant::now();
+            loop {
+                if cancellation
+                    .as_ref()
+                    .is_some_and(WorkspaceCancellationToken::is_cancelled)
+                {
+                    tracing::info!(
+                        child_id = watchdog_control.child_id(),
+                        "Terminating remote service after startup cancellation"
+                    );
+                    watchdog_control.abort();
+                    break;
+                }
+                let remaining = timeout.saturating_sub(started.elapsed());
+                if remaining.is_zero() {
+                    tracing::warn!(
+                        child_id = watchdog_control.child_id(),
+                        timeout_ms = timeout.as_millis() as u64,
+                        "Terminating remote service after v5 handshake timeout"
+                    );
+                    watchdog_control.abort();
+                    break;
+                }
+                match watchdog_receiver.recv_timeout(remaining.min(Duration::from_millis(10))) {
+                    Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                }
             }
         })
         .map_err(RemoteClientError::Io)?;
@@ -8523,33 +8832,68 @@ pub fn spawn_child_process_workspace_backend(
     identity: RemoteWorkspaceIdentity,
     command: &RemoteServiceCommand,
 ) -> Result<(WorkspaceBackendHandle, HelloResponse)> {
-    spawn_child_process_workspace_v5_backend(identity, command)
+    let startup = RemoteStartupContext::new(DEFAULT_REMOTE_STARTUP_TIMEOUT);
+    spawn_child_process_workspace_backend_with_startup_context(identity, command, &startup)
 }
 
-fn spawn_child_process_workspace_v5_backend(
+fn spawn_child_process_workspace_backend_with_startup_context(
     identity: RemoteWorkspaceIdentity,
     command: &RemoteServiceCommand,
+    startup: &RemoteStartupContext,
 ) -> Result<(WorkspaceBackendHandle, HelloResponse)> {
+    startup.check()?;
     tracing::info!(
         remote_kind = ?identity.kind,
         remote_name = %identity.name,
         command = %command.display_context(),
         "Starting v5 remote workspace service process"
     );
-    let (io, control) = spawn_child_process_v5_io(command).with_context(|| {
-        format!(
-            "failed to start v5 remote workspace service: {}",
-            command.display_context()
-        )
-    })?;
+    let (io, control) = match spawn_child_process_v5_io(command) {
+        Ok(connection) => connection,
+        Err(error) => {
+            startup.check()?;
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to start v5 remote workspace service: {}",
+                    command.display_context()
+                )
+            });
+        }
+    };
+    if let Err(error) = startup.check() {
+        control.abort();
+        return Err(error);
+    }
     let client_hello = protocol_v5::ClientHello::nucleotide(env!("CARGO_PKG_VERSION"));
-    let client = connect_child_process_v5_client(io, control, client_hello).with_context(|| {
+    let handshake_timeout = match startup.cap_timeout(V5_CHILD_HANDSHAKE_TIMEOUT) {
+        Ok(timeout) => timeout,
+        Err(error) => {
+            control.abort();
+            return Err(error);
+        }
+    };
+    let client_result = connect_child_process_v5_client_with_timeout_and_cancellation(
+        io,
+        Arc::clone(&control),
+        client_hello,
+        handshake_timeout,
+        Some(startup.cancellation().clone()),
+    );
+    if let Err(error) = startup.check() {
+        control.abort();
+        return Err(error);
+    }
+    let client = client_result.with_context(|| {
             format!(
                 "failed to connect to v5 remote workspace service after starting {}; verify the helper speaks protocol v5",
                 command.display_context()
             )
         })?;
     let hello = hello_response_from_v5_server_hello(client.server_hello());
+    if let Err(error) = startup.check() {
+        control.abort();
+        return Err(error);
+    }
     let reconnect_command = command.clone();
     let reconnect_identity = identity.clone();
     let reconnecting_client: RemoteWorkspaceV5ReconnectingClient =
@@ -8566,6 +8910,10 @@ fn spawn_child_process_workspace_v5_backend(
         });
     let backend =
         RemoteWorkspaceBackendImpl::from_protocol_client(identity.clone(), reconnecting_client);
+    if let Err(error) = startup.check() {
+        drop(backend);
+        return Err(error);
+    }
     tracing::info!(
         remote_kind = ?identity.kind,
         remote_name = %identity.name,
@@ -18617,6 +18965,165 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn child_handshake_cancellation_physically_aborts_and_reaps_silent_helper() {
+        let command = RemoteServiceCommand {
+            program: OsString::from("/bin/sleep"),
+            args: vec![OsString::from("60")],
+            current_dir: None,
+        };
+        let (io, control) = spawn_child_process_v5_io(&command).unwrap();
+        let cancellation = WorkspaceCancellationToken::new();
+        let cancel = cancellation.clone();
+        let canceller = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            cancel.cancel();
+        });
+
+        let result = connect_child_process_v5_client_with_timeout_and_cancellation(
+            io,
+            Arc::clone(&control),
+            protocol_v5::ClientHello::nucleotide("test-client"),
+            Duration::from_secs(5),
+            Some(cancellation),
+        );
+        canceller.join().unwrap();
+
+        assert!(result.is_err());
+        let started = Instant::now();
+        while !control.was_reaped() {
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "timed out waiting for cancelled v5 child to be reaped"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pre_cancelled_startup_does_not_spawn_remote_service() {
+        let temp = tempfile::tempdir().unwrap();
+        let marker = temp.path().join("spawned");
+        let command = RemoteServiceCommand {
+            program: OsString::from("/bin/sh"),
+            args: vec![
+                OsString::from("-c"),
+                OsString::from(format!("touch '{}'; sleep 60", marker.display())),
+            ],
+            current_dir: None,
+        };
+        let cancellation = WorkspaceCancellationToken::new();
+        cancellation.cancel();
+        let startup =
+            RemoteStartupContext::with_cancellation(cancellation, DEFAULT_REMOTE_STARTUP_TIMEOUT);
+
+        let error = match spawn_child_process_workspace_backend_with_startup_context(
+            loopback_identity(),
+            &command,
+            &startup,
+        ) {
+            Ok(_) => panic!("pre-cancelled startup unexpectedly spawned a service"),
+            Err(error) => error,
+        };
+
+        assert!(remote_startup_was_cancelled(&error));
+        assert!(!marker.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn helper_commands_share_one_startup_deadline() {
+        let options = RemoteWorkspaceBackendOptions::default();
+        let startup = RemoteStartupContext::new(Duration::from_millis(250));
+        let manager =
+            RemoteHelperManager::with_progress_and_startup_context(&options, None, &startup);
+        let mut first = Command::new("/bin/sleep");
+        first.arg("0.1");
+        manager
+            .run_bounded_command(
+                &mut first,
+                nucleotide_process::OutputLimits::new(
+                    Duration::from_secs(5),
+                    REMOTE_STARTUP_OUTPUT_LIMIT,
+                    REMOTE_STARTUP_OUTPUT_LIMIT,
+                ),
+            )
+            .unwrap();
+        let mut second = Command::new("/bin/sleep");
+        second.arg("60");
+        let started = Instant::now();
+
+        let error = manager
+            .run_bounded_command(
+                &mut second,
+                nucleotide_process::OutputLimits::new(
+                    Duration::from_secs(5),
+                    REMOTE_STARTUP_OUTPUT_LIMIT,
+                    REMOTE_STARTUP_OUTPUT_LIMIT,
+                ),
+            )
+            .unwrap_err();
+
+        assert!(remote_startup_deadline_was_exceeded(&error));
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "second stage restarted the aggregate startup deadline"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn helper_command_cancellation_is_typed_and_prompt() {
+        let options = RemoteWorkspaceBackendOptions::default();
+        let cancellation = WorkspaceCancellationToken::new();
+        let startup = RemoteStartupContext::with_cancellation(
+            cancellation.clone(),
+            DEFAULT_REMOTE_STARTUP_TIMEOUT,
+        );
+        let manager =
+            RemoteHelperManager::with_progress_and_startup_context(&options, None, &startup);
+        let canceller = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            cancellation.cancel();
+        });
+        let mut command = Command::new("/bin/sleep");
+        command.arg("60");
+        let started = Instant::now();
+
+        let error = manager
+            .run_bounded_command(
+                &mut command,
+                nucleotide_process::OutputLimits::new(
+                    Duration::from_secs(5),
+                    REMOTE_STARTUP_OUTPUT_LIMIT,
+                    REMOTE_STARTUP_OUTPUT_LIMIT,
+                ),
+            )
+            .unwrap_err();
+        canceller.join().unwrap();
+
+        assert!(remote_startup_was_cancelled(&error));
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn owned_startup_attempt_cancels_on_drop_and_can_be_disarmed() {
+        let cancelled_attempt = RemoteStartupAttempt::new(DEFAULT_REMOTE_STARTUP_TIMEOUT);
+        let cancelled_context = cancelled_attempt.context();
+        drop(cancelled_attempt);
+        assert!(remote_startup_was_cancelled(
+            &cancelled_context.check().unwrap_err()
+        ));
+
+        let mut completed_attempt = RemoteStartupAttempt::new(DEFAULT_REMOTE_STARTUP_TIMEOUT);
+        let completed_context = completed_attempt.context();
+        completed_attempt.disarm();
+        drop(completed_attempt);
+        assert!(completed_context.check().is_ok());
     }
 
     #[test]

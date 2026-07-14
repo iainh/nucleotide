@@ -8978,12 +8978,18 @@ fn detect_and_create_project_environment() -> ProjectEnvironment {
     ProjectEnvironment::new(Some(cli_env))
 }
 
-pub(crate) fn workspace_backend_for_project_directory_with_options_and_progress(
+pub(crate) fn workspace_backend_for_project_directory_with_options_progress_and_startup_context(
     project_directory: Option<&Path>,
     options: &nucleotide_remote::RemoteWorkspaceBackendOptions,
     progress: &dyn Fn(nucleotide_remote::RemoteDeploymentProgress),
+    startup: &nucleotide_remote::RemoteStartupContext,
 ) -> Result<WorkspaceBackendHandle, Error> {
-    workspace_backend_for_project_directory_with_options(project_directory, options, Some(progress))
+    workspace_backend_for_project_directory_with_options(
+        project_directory,
+        options,
+        Some(progress),
+        Some(startup),
+    )
 }
 
 pub(crate) fn workspace_backend_for_project_directory_with_config(
@@ -8991,13 +8997,14 @@ pub(crate) fn workspace_backend_for_project_directory_with_config(
     config: &crate::config::Config,
 ) -> Result<WorkspaceBackendHandle, Error> {
     let options = config.remote_workspace_backend_options();
-    workspace_backend_for_project_directory_with_options(project_directory, &options, None)
+    workspace_backend_for_project_directory_with_options(project_directory, &options, None, None)
 }
 
 fn workspace_backend_for_project_directory_with_options(
     project_directory: Option<&Path>,
     options: &nucleotide_remote::RemoteWorkspaceBackendOptions,
     progress_handler: Option<&dyn Fn(nucleotide_remote::RemoteDeploymentProgress)>,
+    startup: Option<&nucleotide_remote::RemoteStartupContext>,
 ) -> Result<WorkspaceBackendHandle, Error> {
     let Some(project_directory) = project_directory else {
         return Ok(local_workspace_backend());
@@ -9018,11 +9025,21 @@ fn workspace_backend_for_project_directory_with_options(
             progress_handler(progress.clone());
         }
     };
-    let connection = nucleotide_remote::connect_workspace_backend_for_location_with_progress(
-        location,
-        options,
-        &deployment_progress,
-    )
+    let connection = match startup {
+        Some(startup) => {
+            nucleotide_remote::connect_workspace_backend_for_location_with_progress_and_startup_context(
+                location,
+                options,
+                &deployment_progress,
+                startup,
+            )
+        }
+        None => nucleotide_remote::connect_workspace_backend_for_location_with_progress(
+            location,
+            options,
+            &deployment_progress,
+        ),
+    }
     .with_context(|| {
         format!(
             "failed to initialize workspace backend for {}",
@@ -11319,6 +11336,7 @@ mod tests {
                 ssh_connect_timeout_secs: None,
                 ssh_extra_args: Vec::new(),
                 ssh_control_path: None,
+                startup_timeout: nucleotide_remote::DEFAULT_REMOTE_STARTUP_TIMEOUT,
                 use_local_service: false,
             },
             helper_path_cache: std::sync::Mutex::new(HashMap::new()),
