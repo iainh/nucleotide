@@ -10239,26 +10239,31 @@ where
     ) -> Result<()>
     where
         R: Read + Send + 'static,
-        W: Write,
+        W: Write + Send + 'static,
     {
         let handshake =
             protocol_v5::server_handshake(&mut io, info).context("v5 handshake failed")?;
-        let mut session = protocol_v5::ProtocolSession::new(
+        let shared_session = Arc::new(Mutex::new(protocol_v5::ProtocolSession::new(
             protocol_v5::StreamInitiator::Server,
             &handshake.settings,
-        );
+        )));
         let request_budget = V5ConnectionByteBudget::new(V5_REQUEST_CONNECTION_BYTE_BUDGET);
         let parts = io.into_parts();
-        let mut writer = parts.writer;
-        let limits = parts.limits;
         let mut inbound_frame_sequence = parts.inbound_frame_sequence;
-        let mut next_frame_sequence = parts.next_frame_sequence;
         let mut requests = HashMap::<u64, V5ServiceRequest>::new();
         let (events_tx, events_rx) = mpsc::channel::<V5ServeEvent>();
         let (inbound_tx, inbound_rx) =
             mpsc::sync_channel::<V5InboundEvent>(V5_SERVE_INBOUND_EVENT_CAPACITY);
         let inbound_events = V5InboundSender::new(inbound_tx, events_tx.clone());
         let reader_events = inbound_events.clone();
+        let server_writer = spawn_v5_server_writer(
+            parts.writer,
+            parts.limits,
+            parts.next_frame_sequence,
+            Arc::clone(&shared_session),
+            events_tx.clone(),
+        )?;
+        let limits = parts.limits;
 
         std::thread::Builder::new()
             .name("nucleotide-v5-reader".to_string())
@@ -10297,6 +10302,7 @@ where
             let shutdown_grace =
                 Duration::from_millis(u64::from(handshake.settings.shutdown_grace_ms));
             let mut shutdown_started: Option<Instant> = None;
+            let mut shutdown_grace_expired = false;
             let idle_ping_interval =
                 Duration::from_millis(u64::from(handshake.settings.idle_ping_interval_ms));
             let ping_timeout = Duration::from_millis(u64::from(handshake.settings.ping_timeout_ms));
@@ -10346,10 +10352,10 @@ where
             }
 
             macro_rules! drain_v5_service_task_queue {
-                () => {{
+                ($session:expr) => {{
                     while let Some((stream_id, request)) = task_pools.pop_next_startable() {
                         if v5_deadline_expired(request.deadline_unix_ms) {
-                            session
+                            $session
                                 .reset_stream(
                                     stream_id,
                                     protocol_v5::RESET_DEADLINE_EXCEEDED,
@@ -10364,7 +10370,7 @@ where
             }
 
             macro_rules! apply_v5_output_event {
-                ($event:expr) => {{
+                ($session:expr, $event:expr) => {{
                     let output_event = $event;
                     match output_event {
                         V5ServeOutputEvent::StreamData {
@@ -10376,7 +10382,7 @@ where
                             if active_streams.contains(&stream_id)
                                 && !canceled_streams.contains(&stream_id)
                             {
-                                session
+                                $session
                                     .send_owned_data(stream_id, channel, body, priority)
                                     .context("failed to queue v5 streamed response data")?;
                             }
@@ -10390,7 +10396,7 @@ where
                             if active_streams.contains(&stream_id)
                                 && !canceled_streams.contains(&stream_id)
                             {
-                                session
+                                $session
                                     .send_response_with_priority(
                                         stream_id,
                                         method,
@@ -10399,7 +10405,7 @@ where
                                         priority,
                                     )
                                     .context("failed to queue v5 partial response headers")?;
-                                session
+                                $session
                                     .send_owned_data(
                                         stream_id,
                                         protocol_v5::DataChannel::SearchPayload,
@@ -10417,10 +10423,10 @@ where
                             if active_streams.contains(&stream_id)
                                 && !canceled_streams.contains(&stream_id)
                             {
-                                let priority = session
+                                let priority = $session
                                     .stream_priority(stream_id)
                                     .unwrap_or(protocol_v5::Priority::Background);
-                                session
+                                $session
                                     .send_progress_with_priority(
                                         stream_id, method, progress, priority,
                                     )
@@ -10439,7 +10445,7 @@ where
                                     "Suppressing v5 response for canceled stream"
                                 );
                             } else if v5_deadline_expired(deadline_unix_ms) {
-                                session
+                                $session
                                     .reset_stream(
                                         completion.stream_id,
                                         protocol_v5::RESET_DEADLINE_EXCEEDED,
@@ -10450,7 +10456,7 @@ where
                                     )?;
                             } else {
                                 shutdown |=
-                                    self.apply_v5_service_terminal(&mut session, completion)?;
+                                    self.apply_v5_service_terminal($session, completion)?;
                             }
                         }
                     }
@@ -10459,6 +10465,18 @@ where
             }
 
             loop {
+                if let Err(error) = server_writer.check_failure() {
+                    cancel_all_v5_service_work(
+                        &mut requests,
+                        &mut task_pools,
+                        &active_cancellations,
+                        &mut active_deadlines,
+                        &mut canceled_streams,
+                        &mut watches,
+                    );
+                    return Err(error);
+                }
+                let writer_drained = server_writer.is_drained();
                 if inbound_closed && active_workers == 0 && !task_pools.has_pending() {
                     break;
                 }
@@ -10466,6 +10484,7 @@ where
                     && active_workers == 0
                     && !task_pools.has_pending()
                     && !output_events.has_pending_output()
+                    && writer_drained
                 {
                     break;
                 }
@@ -10476,6 +10495,11 @@ where
                     idle_ping_interval,
                     ping_timeout,
                 );
+                let service_wait = if inbound_closed || shutdown {
+                    ping_wait.min(Duration::from_millis(10))
+                } else {
+                    ping_wait
+                };
                 let event = if watches.has_active_watches() {
                     let timeout =
                         if active_workers > 0 || !requests.is_empty() || task_pools.has_pending() {
@@ -10483,7 +10507,7 @@ where
                         } else {
                             watches.next_poll_timeout()
                         }
-                        .min(ping_wait);
+                        .min(service_wait);
                     match events_rx.recv_timeout(timeout) {
                         Ok(event) => Some(event),
                         Err(mpsc::RecvTimeoutError::Timeout) => None,
@@ -10500,7 +10524,7 @@ where
                         }
                     }
                 } else if active_workers > 0 || !requests.is_empty() || task_pools.has_pending() {
-                    match events_rx.recv_timeout(Duration::from_millis(10).min(ping_wait)) {
+                    match events_rx.recv_timeout(Duration::from_millis(10).min(service_wait)) {
                         Ok(event) => Some(event),
                         Err(mpsc::RecvTimeoutError::Timeout) => None,
                         Err(mpsc::RecvTimeoutError::Disconnected) => {
@@ -10516,7 +10540,7 @@ where
                         }
                     }
                 } else {
-                    match events_rx.recv_timeout(ping_wait) {
+                    match events_rx.recv_timeout(service_wait) {
                         Ok(event) => Some(event),
                         Err(mpsc::RecvTimeoutError::Timeout) => None,
                         Err(mpsc::RecvTimeoutError::Disconnected) => {
@@ -10549,6 +10573,8 @@ where
                     event => Some(V5ServeLoopEvent::Wake(event)),
                 });
 
+                let mut session = v5_server_session_lock(&shared_session)
+                    .context("failed to lock v5 server protocol session")?;
                 if let Some(event) = event {
                     match event {
                         V5ServeLoopEvent::Inbound(Ok(Some(frame))) => {
@@ -10631,9 +10657,7 @@ where
                                                     .context(
                                                         "failed to reset expired v5 request stream",
                                                     )?;
-                                                continue;
-                                            }
-                                            if let Some(should_shutdown) = self
+                                            } else if let Some(should_shutdown) = self
                                                 .handle_v5_control_request(
                                                     &mut session,
                                                     &mut watches,
@@ -10697,6 +10721,7 @@ where
                                 &mut canceled_streams,
                                 &mut watches,
                             );
+                            session.terminate();
                         }
                         V5ServeLoopEvent::Inbound(Err(error)) => {
                             cancel_all_v5_service_work(
@@ -10707,6 +10732,7 @@ where
                                 &mut canceled_streams,
                                 &mut watches,
                             );
+                            session.terminate();
                             return Err(error).context("failed to read v5 protocol frame");
                         }
                         V5ServeLoopEvent::Wake(V5ServeEvent::Output) => {
@@ -10715,7 +10741,7 @@ where
                                 match output_rx.try_recv() {
                                     Ok(output_event) => {
                                         let _ = output_events.signal_ready();
-                                        apply_v5_output_event!(output_event);
+                                        apply_v5_output_event!(&mut *session, output_event);
                                     }
                                     Err(mpsc::TryRecvError::Empty) => {}
                                     Err(mpsc::TryRecvError::Disconnected) => {
@@ -10773,11 +10799,26 @@ where
                                 canceled_streams.remove(&stream_id);
                             }
                         }
+                        V5ServeLoopEvent::Wake(V5ServeEvent::Writer) => {
+                            if let Err(error) = server_writer.check_failure() {
+                                cancel_all_v5_service_work(
+                                    &mut requests,
+                                    &mut task_pools,
+                                    &active_cancellations,
+                                    &mut active_deadlines,
+                                    &mut canceled_streams,
+                                    &mut watches,
+                                );
+                                session.terminate();
+                                return Err(error);
+                            }
+                        }
                         V5ServeLoopEvent::Wake(V5ServeEvent::Inbound) => {}
                     }
                 }
 
                 if inbound_closed {
+                    drop(session);
                     continue;
                 }
 
@@ -10793,6 +10834,9 @@ where
                         &mut canceled_streams,
                         &mut watches,
                     );
+                    session.terminate();
+                    shutdown_grace_expired = true;
+                    break;
                 }
 
                 if let Err(error) = expire_v5_service_deadlines(
@@ -10811,9 +10855,10 @@ where
                         &mut canceled_streams,
                         &mut watches,
                     );
+                    session.terminate();
                     return Err(error);
                 }
-                drain_v5_service_task_queue!();
+                drain_v5_service_task_queue!(&mut *session);
                 if let Err(error) = drive_v5_idle_ping(
                     &mut session,
                     &mut last_activity,
@@ -10830,6 +10875,7 @@ where
                         &mut canceled_streams,
                         &mut watches,
                     );
+                    session.terminate();
                     return Err(error);
                 }
                 if let Err(error) = self.poll_v5_watches(&mut session, &mut watches) {
@@ -10841,22 +10887,7 @@ where
                         &mut canceled_streams,
                         &mut watches,
                     );
-                    return Err(error);
-                }
-                if let Err(error) = self.drain_v5_session_writer(
-                    &mut session,
-                    &mut writer,
-                    limits,
-                    &mut next_frame_sequence,
-                ) {
-                    cancel_all_v5_service_work(
-                        &mut requests,
-                        &mut task_pools,
-                        &active_cancellations,
-                        &mut active_deadlines,
-                        &mut canceled_streams,
-                        &mut watches,
-                    );
+                    session.terminate();
                     return Err(error);
                 }
                 if session.queued_len() < V5_SERVE_SCHEDULER_BACKLOG_LIMIT
@@ -10864,14 +10895,17 @@ where
                 {
                     let _ = output_events.signal_ready();
                 }
+                let has_queued_frames = session.queued_len() != 0;
+                drop(session);
+                if has_queued_frames {
+                    server_writer.wake()?;
+                }
             }
 
-            self.drain_v5_session_writer(
-                &mut session,
-                &mut writer,
-                limits,
-                &mut next_frame_sequence,
-            )
+            if !shutdown_grace_expired {
+                server_writer.check_failure()?;
+            }
+            Ok(())
         })
     }
 
@@ -12331,37 +12365,6 @@ where
         }
     }
 
-    fn drain_v5_session_writer<W: Write>(
-        &self,
-        session: &mut protocol_v5::ProtocolSession,
-        writer: &mut W,
-        limits: protocol_v5::FrameLimits,
-        next_frame_sequence: &mut u64,
-    ) -> Result<()> {
-        loop {
-            let mut frames = Vec::with_capacity(V5_SERVER_WRITE_BATCH_FRAMES);
-            for _ in 0..V5_SERVER_WRITE_BATCH_FRAMES {
-                let Some(mut frame) = session.pop_next_frame().context("failed to pop v5 frame")?
-                else {
-                    break;
-                };
-                frame.frame_sequence = *next_frame_sequence;
-                *next_frame_sequence = next_frame_sequence
-                    .checked_add(1)
-                    .context("v5 frame sequence exhausted")?;
-                frames.push(frame);
-            }
-            if frames.is_empty() {
-                return Ok(());
-            }
-            protocol_v5::write_frame_batch_with_limits(writer, &frames, limits)
-                .context("failed to write v5 frame batch")?;
-            for frame in &frames {
-                session.observe_frame_written(frame);
-            }
-        }
-    }
-
     fn execute(
         &self,
         request: RemoteRequest,
@@ -12830,11 +12833,218 @@ where
     }
 }
 
-pub fn serve_local_workspace_v5<R: Read + Send + 'static, W: Write>(
-    workspace_root: PathBuf,
-    reader: R,
+#[derive(Debug, Clone)]
+struct V5ServerWriterFailure {
+    kind: io::ErrorKind,
+    message: String,
+}
+
+impl V5ServerWriterFailure {
+    fn from_io(error: &io::Error) -> Self {
+        Self {
+            kind: error.kind(),
+            message: error.to_string(),
+        }
+    }
+
+    fn to_io(&self) -> io::Error {
+        io::Error::new(self.kind, self.message.clone())
+    }
+}
+
+struct V5ServerWriterHandle {
+    wakes: mpsc::SyncSender<u64>,
+    requested_generation: Arc<AtomicU64>,
+    completed_generation: Arc<AtomicU64>,
+    in_flight_frames: Arc<AtomicU64>,
+    failure: Arc<Mutex<Option<V5ServerWriterFailure>>>,
+}
+
+impl V5ServerWriterHandle {
+    fn wake(&self) -> Result<()> {
+        let requested = self.requested_generation.load(Ordering::Acquire);
+        let generation = requested
+            .checked_add(1)
+            .context("v5 server writer wake generation exhausted")?;
+        match self.wakes.try_send(generation) {
+            Ok(()) => {
+                self.requested_generation
+                    .store(generation, Ordering::Release);
+                Ok(())
+            }
+            Err(mpsc::TrySendError::Full(_)) => Ok(()),
+            Err(mpsc::TrySendError::Disconnected(_)) => {
+                self.check_failure()?;
+                Err(anyhow::anyhow!("v5 server writer stopped unexpectedly"))
+            }
+        }
+    }
+
+    fn is_drained(&self) -> bool {
+        self.in_flight_frames.load(Ordering::Acquire) == 0
+            && self.completed_generation.load(Ordering::Acquire)
+                >= self.requested_generation.load(Ordering::Acquire)
+    }
+
+    fn check_failure(&self) -> Result<()> {
+        let failure = self
+            .failure
+            .lock()
+            .map_err(|_| anyhow::anyhow!("v5 server writer failure lock poisoned"))?
+            .clone();
+        match failure {
+            Some(failure) => Err(failure.to_io()).context("v5 server writer failed"),
+            None => Ok(()),
+        }
+    }
+}
+
+fn v5_server_session_lock(
+    session: &Arc<Mutex<protocol_v5::ProtocolSession>>,
+) -> io::Result<std::sync::MutexGuard<'_, protocol_v5::ProtocolSession>> {
+    session
+        .lock()
+        .map_err(|_| io::Error::other("v5 server session lock poisoned"))
+}
+
+fn spawn_v5_server_writer<W>(
     writer: W,
-) -> Result<()> {
+    limits: protocol_v5::FrameLimits,
+    next_frame_sequence: u64,
+    session: Arc<Mutex<protocol_v5::ProtocolSession>>,
+    events: mpsc::Sender<V5ServeEvent>,
+) -> Result<V5ServerWriterHandle>
+where
+    W: Write + Send + 'static,
+{
+    let (wake_tx, wake_rx) = mpsc::sync_channel(1);
+    let requested_generation = Arc::new(AtomicU64::new(0));
+    let completed_generation = Arc::new(AtomicU64::new(0));
+    let in_flight_frames = Arc::new(AtomicU64::new(0));
+    let failure = Arc::new(Mutex::new(None));
+
+    let writer_completed_generation = Arc::clone(&completed_generation);
+    let writer_in_flight_frames = Arc::clone(&in_flight_frames);
+    let writer_failure = Arc::clone(&failure);
+    std::thread::Builder::new()
+        .name("nucleotide-v5-server-writer".to_string())
+        .spawn(move || {
+            run_v5_server_writer(
+                writer,
+                limits,
+                next_frame_sequence,
+                wake_rx,
+                &session,
+                &writer_completed_generation,
+                &writer_in_flight_frames,
+                &writer_failure,
+                &events,
+            );
+        })
+        .context("failed to spawn v5 server writer")?;
+
+    Ok(V5ServerWriterHandle {
+        wakes: wake_tx,
+        requested_generation,
+        completed_generation,
+        in_flight_frames,
+        failure,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_v5_server_writer<W>(
+    mut writer: W,
+    limits: protocol_v5::FrameLimits,
+    mut next_frame_sequence: u64,
+    wakes: mpsc::Receiver<u64>,
+    session: &Arc<Mutex<protocol_v5::ProtocolSession>>,
+    completed_generation: &AtomicU64,
+    in_flight_frames: &AtomicU64,
+    failure: &Mutex<Option<V5ServerWriterFailure>>,
+    events: &mpsc::Sender<V5ServeEvent>,
+) where
+    W: Write,
+{
+    while let Ok(generation) = wakes.recv() {
+        match write_v5_server_outbound(
+            &mut writer,
+            limits,
+            &mut next_frame_sequence,
+            session,
+            in_flight_frames,
+        ) {
+            Ok(()) => completed_generation.store(generation, Ordering::Release),
+            Err(error) => {
+                if let Ok(mut stored) = failure.lock() {
+                    *stored = Some(V5ServerWriterFailure::from_io(&error));
+                }
+                if let Ok(mut session) = v5_server_session_lock(session) {
+                    session.terminate();
+                }
+                let _ = events.send(V5ServeEvent::Writer);
+                break;
+            }
+        }
+    }
+}
+
+fn write_v5_server_outbound<W>(
+    writer: &mut W,
+    limits: protocol_v5::FrameLimits,
+    next_frame_sequence: &mut u64,
+    session: &Arc<Mutex<protocol_v5::ProtocolSession>>,
+    in_flight_frames: &AtomicU64,
+) -> io::Result<()>
+where
+    W: Write,
+{
+    loop {
+        let mut processed_frames = 0_usize;
+        let mut written_frames = Vec::with_capacity(V5_SERVER_WRITE_BATCH_FRAMES);
+        while processed_frames < V5_SERVER_WRITE_BATCH_FRAMES {
+            let frame = {
+                let mut session = v5_server_session_lock(session)?;
+                let Some(frame) = session.pop_next_frame()? else {
+                    break;
+                };
+                processed_frames += 1;
+                if !session.should_write_frame(&frame) {
+                    session.discard_unwritten_frame(&frame)?;
+                    continue;
+                }
+                in_flight_frames.fetch_add(1, Ordering::AcqRel);
+                frame
+            };
+
+            let mut frame = frame;
+            frame.frame_sequence = *next_frame_sequence;
+            *next_frame_sequence = next_frame_sequence
+                .checked_add(1)
+                .ok_or_else(|| io::Error::other("v5 frame sequence exhausted"))?;
+            protocol_v5::write_frame_unflushed_with_limits(writer, &frame, limits)?;
+            written_frames.push((frame.stream_id, frame.frame_type));
+        }
+
+        if !written_frames.is_empty() {
+            writer.flush()?;
+            let mut session = v5_server_session_lock(session)?;
+            for (stream_id, frame_type) in &written_frames {
+                session.observe_frame_parts_written(*stream_id, *frame_type);
+            }
+            in_flight_frames.fetch_sub(written_frames.len() as u64, Ordering::AcqRel);
+        }
+        if processed_frames < V5_SERVER_WRITE_BATCH_FRAMES {
+            return Ok(());
+        }
+    }
+}
+
+pub fn serve_local_workspace_v5<R, W>(workspace_root: PathBuf, reader: R, writer: W) -> Result<()>
+where
+    R: Read + Send + 'static,
+    W: Write + Send + 'static,
+{
     let info = protocol_v5::ServerHandshakeInfo::current(workspace_root.display().to_string());
     let io = protocol_v5::FramedIo::new(reader, writer);
     WorkspaceService::new(LocalWorkspaceBackend, workspace_root)?.serve_v5_concurrent(io, &info)
@@ -12878,6 +13088,7 @@ enum V5ServeEvent {
     Inbound,
     Output,
     NativeWatch,
+    Writer,
     WorkerFinished {
         stream_id: u64,
         terminal_queued: bool,
@@ -26459,6 +26670,90 @@ mod tests {
                     protocol_v5::FrameType::Headers | protocol_v5::FrameType::EndStream
                 )
         }));
+    }
+
+    #[test]
+    fn v5_shutdown_grace_remains_live_while_server_writer_is_blocked() {
+        let temp = tempfile::tempdir().unwrap();
+        let list = RemoteRequest::ListDirs {
+            paths: vec![PathBuf::from("first"), PathBuf::from("second")],
+        };
+        let mut settings = protocol_v5::ConnectionSettings::recommended();
+        settings.shutdown_grace_ms = 200;
+        let input = BlockingRead::default();
+        input.push(v5_client_input_with_settings(Vec::new(), settings));
+        let output = PausingWrite::default();
+        let backend = ConcurrentV5Backend::new();
+        let service = WorkspaceService::new(backend.clone(), temp.path().to_path_buf()).unwrap();
+        let service_input = input.clone();
+        let service_output = output.clone();
+        let info = protocol_v5::ServerHandshakeInfo::current(temp.path().display().to_string());
+        let service_thread = std::thread::spawn(move || {
+            service.serve_v5_concurrent(
+                protocol_v5::FramedIo::new(service_input, service_output),
+                &info,
+            )
+        });
+
+        let handshake_started = Instant::now();
+        while !read_v5_complete_frames(output.bytes())
+            .iter()
+            .any(|frame| frame.frame_type == protocol_v5::FrameType::Settings)
+        {
+            assert!(
+                handshake_started.elapsed() < Duration::from_secs(2),
+                "timed out waiting for the v5 server handshake"
+            );
+            std::thread::yield_now();
+        }
+
+        output.pause_next_write();
+        input.push(v5_frames_bytes(vec![protocol_v5::Frame::from_control(
+            protocol_v5::FrameType::Ping,
+            0,
+            &protocol_v5::PingPayload {
+                token: b"block-server-writer".to_vec(),
+            },
+        )]));
+        output.wait_until_paused();
+        input.push(v5_frames_bytes(v5_request_frames(1, &list, &[])));
+        let cancellation = backend.wait_for_first_list_cancellation();
+        input.push(v5_frames_bytes(v5_request_frames(
+            3,
+            &RemoteRequest::Shutdown,
+            &[],
+        )));
+
+        let cancellation_started = Instant::now();
+        while !cancellation.is_cancelled()
+            && cancellation_started.elapsed() < Duration::from_secs(2)
+        {
+            std::thread::yield_now();
+        }
+        let cancelled_while_writer_stalled = cancellation.is_cancelled();
+
+        backend.release_first_list();
+        let service_exit_started = Instant::now();
+        while !service_thread.is_finished()
+            && service_exit_started.elapsed() < Duration::from_secs(2)
+        {
+            std::thread::yield_now();
+        }
+        let exited_while_writer_stalled = service_thread.is_finished();
+
+        output.release();
+        input.close();
+        service_thread.join().unwrap().unwrap();
+
+        assert!(
+            cancelled_while_writer_stalled,
+            "shutdown grace expiry was blocked behind the physical server write"
+        );
+        assert!(
+            exited_while_writer_stalled,
+            "server waited for a blocked physical writer after shutdown grace expiry"
+        );
+        assert_eq!(backend.list_dir_calls(), vec![temp.path().join("first")]);
     }
 
     #[test]

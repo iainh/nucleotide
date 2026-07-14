@@ -11,7 +11,7 @@ The user goal is a remote workspace that feels local: file tree changes appear q
 
 ## Current behaviour
 
-Protocol v5 is the active remote workspace protocol. It uses fixed binary frames, protobuf control messages and raw `DATA` bodies over SSH, WSL or local stdio. The client multiplexes requests through one reader and a dedicated wake-driven writer. The server admits work through bounded class-specific pools and schedules response traffic by priority.
+Protocol v5 is the active remote workspace protocol. It uses fixed binary frames, protobuf control messages and raw `DATA` bodies over SSH, WSL or local stdio. Each peer multiplexes requests through one reader and a dedicated wake-driven writer. The server admits work through bounded class-specific pools and schedules response traffic by priority.
 
 The implementation includes:
 
@@ -27,9 +27,9 @@ The implementation includes:
 - Safe read-only reconnect replay, configuration-derived startup options, bounded probe/handshake processes, OpenSSH connection reuse, transport keepalives, negotiated bidirectional heartbeat probes and an independent client-side watchdog.
 - Bounded, success-only bootstrap reuse that single-flights platform probes and validated helper resolution for the same exact SSH identity or WSL distro without reusing a workspace backend across roots.
 
-Post-v5 hardening also bounds the server producer-to-writer lanes, gives the client writer sole ownership of physical writes, propagates validated priority through worker admission and response scheduling, limits queued wire batches and gives application request ownership an explicit cancellation lifetime. Reconnecting clients retain logical watch registrations, recreate their physical subscriptions and require a full resync before exposing replacement-connection batches. The associated regression tests cover partial writes, blocked-flow resets, dropped handles, decompression bounds, watch storms, EOF cancellation, reconnect ambiguity and framed watch restoration.
+Post-v5 hardening also bounds the server producer-to-writer lanes, gives each peer's writer sole ownership of physical writes, propagates validated priority through worker admission and response scheduling, limits queued wire batches and gives application request ownership an explicit cancellation lifetime. The server writer revalidates extracted frames and reports terminal failures without blocking the service loop's heartbeat, deadlines, cancellation or shutdown grace. Reconnecting clients retain logical watch registrations, recreate their physical subscriptions and require a full resync before exposing replacement-connection batches. The associated regression tests cover partial writes, blocked-flow resets, dropped handles, decompression bounds, watch storms, EOF cancellation, blocked server writes, reconnect ambiguity and framed watch restoration.
 
-Some architectural work remains. The synchronous workspace API still returns complete file/search/process results instead of exposing incremental consumers, so receive credit reflects transport demultiplexing rather than final UI consumption. Dropping a workspace future cancels its transport stream, but an explicit `WorkspaceCancellationToken` does not yet wake a remote request whose future remains polled. The helper still runs heartbeat timeout checks and physical writes on the same service loop, so a blocked stdout write can prevent timeout enforcement. Filesystem handlers now cooperate with cancellation between user-space work units, but no user-space deadline can force a filesystem call already blocked in the operating system to return. Child handshakes and command probes have deadlines and terminate local descendants through a process group on Unix or a Job Object on Windows. A Windows Job Object contains the local SSH or WSL launcher tree, not processes on an SSH host or Linux processes inside WSL; those still rely on transport teardown and EOF/HUP behaviour. The browse backend is deliberately not handed off: only pathless bootstrap facts are shared, and every selected root starts a new contained service. These are follow-up lifecycle and integration changes, not missing v5 wire primitives.
+Some architectural work remains. The synchronous workspace API still returns complete file/search/process results instead of exposing incremental consumers, so receive credit reflects transport demultiplexing rather than final UI consumption. Dropping a workspace future cancels its transport stream, but an explicit `WorkspaceCancellationToken` does not yet wake a remote request whose future remains polled. Filesystem handlers now cooperate with cancellation between user-space work units, but no user-space deadline can force a filesystem call already blocked in the operating system to return. Child handshakes and command probes have deadlines and terminate local descendants through a process group on Unix or a Job Object on Windows. A Windows Job Object contains the local SSH or WSL launcher tree, not processes on an SSH host or Linux processes inside WSL; those still rely on transport teardown and EOF/HUP behaviour. The browse backend is deliberately not handed off: only pathless bootstrap facts are shared, and every selected root starts a new contained service. These are follow-up lifecycle and integration changes, not missing v5 wire primitives.
 
 ## Design goals
 
@@ -299,7 +299,7 @@ Priority values:
 Implementation model:
 
 - The client transport has one reader thread, one wake-driven writer thread and an in-flight stream map.
-- The server transport has one reader thread, a service-loop-owned writer and a scheduler.
+- The server transport has one reader thread, one wake-driven writer thread and a service-loop-owned scheduler.
 - Handlers run in bounded task pools by class: metadata, file body, search, git/env and process.
 - The writer picks frames using priority plus round-robin fairness so a single bulk stream cannot monopolize the connection.
 
@@ -676,7 +676,7 @@ Why:
 - The client may retry read-only operations after reconnect if no final response was received.
 - The client must not automatically retry mutations after reconnect.
 - Server logs must go to stderr only; stdout remains protocol bytes.
-- Each peer sends `PING` after 30 seconds without accepted inbound traffic. The independent client watchdog closes the connection if the writer stalls or an exact `PONG` is missing for 90 seconds. The helper detects a missing `PONG` while its service/writer loop can progress.
+- Each peer sends `PING` after 30 seconds without accepted inbound traffic. The independent client watchdog closes the connection if the writer stalls or an exact `PONG` is missing for 90 seconds. The helper's service loop enforces its heartbeat and shutdown timers independently of a blocked physical write.
 - On helper shutdown, server sends `GOAWAY` and drains accepted streams until their deadlines or a shutdown grace period expires. The default grace period is 5 seconds unless peers negotiate a different setting.
 
 Why:
@@ -752,13 +752,12 @@ The v5 baseline is complete:
 4. `watch.start`, `watch.update`, `watch.stop`, `watch.resync` and `watch.batch` are active with polling fallback.
 5. Directory generations, fingerprints, `not_modified` responses and optional deltas are active.
 
-The 2026-07-13 hardening pass adds executable failure and memory invariants around the baseline. It includes atomic stream teardown, decoded-data bounds, receive-window enforcement, lazy producers, bounded server and watch queues, owned aggregate-deadline startup attempts with descendant cleanup through Unix process groups and Windows Job Objects, child-handshake and client connection-heartbeat watchdogs, bidirectional heartbeat probes, terminal transport errors, typed recovery outcomes, reconnecting logical watches with mandatory resync, end-to-end priority propagation, cooperative filesystem cancellation, cancellation-aware response production, cancel-on-drop client ownership, shutdown cleanup and containment-safe bootstrap reuse. Successful bounded commands release their Windows Job Object before closing it so OpenSSH `ControlPersist` processes remain reusable; cancellation, timeout and failure retain kill-on-close containment. Compatibility fixtures pin additive protobuf-field handling, capability intersection and minor-version skew. A recurring short-read, short-write and interrupted-I/O duplex exercises framing end to end, while a platform-independent real-helper loopback fixture verifies that metadata and file requests remain responsive during a live process stream. Linux CI also executes the SSH and WSL command fixtures.
+The 2026-07-13 hardening pass adds executable failure and memory invariants around the baseline. It includes atomic stream teardown, decoded-data bounds, receive-window enforcement, lazy producers, bounded server and watch queues, dedicated client and server writers, owned aggregate-deadline startup attempts with descendant cleanup through Unix process groups and Windows Job Objects, child-handshake and client connection-heartbeat watchdogs, bidirectional heartbeat probes, terminal transport errors, typed recovery outcomes, reconnecting logical watches with mandatory resync, end-to-end priority propagation, cooperative filesystem cancellation, cancellation-aware response production, cancel-on-drop client ownership, shutdown cleanup and containment-safe bootstrap reuse. Successful bounded commands release their Windows Job Object before closing it so OpenSSH `ControlPersist` processes remain reusable; cancellation, timeout and failure retain kill-on-close containment. Compatibility fixtures pin additive protobuf-field handling, capability intersection and minor-version skew. A recurring short-read, short-write and interrupted-I/O duplex exercises framing end to end, while a platform-independent real-helper loopback fixture verifies that metadata and file requests remain responsive during a live process stream. Linux CI also executes the SSH and WSL command fixtures.
 
 The next integration work should:
 
 1. Expose incremental file/search/process consumers and consumption-based receive credit above the transport.
-2. Make helper liveness independent of blocking writes.
-3. Expand the command-level fixtures into real Linux SSH and Windows WSL fault/load environments, including stalled-peer memory and latency assertions. The platform-independent local-service loopback and Linux SSH/WSL command shims now run in CI.
+2. Expand the command-level fixtures into real Linux SSH and Windows WSL fault/load environments, including stalled-peer memory and latency assertions. The platform-independent local-service loopback and Linux SSH/WSL command shims now run in CI.
 
 Multiplexing remains the foundation. Future encoding or daemon work should follow measured queue, latency and recovery results rather than replace the implemented v5 state machine.
 
@@ -791,6 +790,7 @@ Cancellation tests:
 - Cancel a read during its operating-system read and after its first emitted chunk; verify no post-cancellation chunk arrives.
 - Fill the producer-to-service queue, cancel response serialization and verify the producer exits without a terminal event or leaked byte reservation.
 - Close the peer while filesystem work is blocked and verify its worker finishes without retaining a task-class permit.
+- Stall the server writer, request shutdown and verify grace expiry cancels active work and lets the service exit before the write resumes.
 - Send a zero-byte write and verify it commits through the staged atomic path without leaving a temp file.
 - Verify every method receives the documented absolute and inactivity defaults.
 - Verify only target-stream progress extends inactivity and never extends the absolute deadline.
