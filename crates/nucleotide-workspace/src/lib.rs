@@ -9,11 +9,16 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+    mpsc,
+};
 use std::time::{Duration, Instant, SystemTime};
 use thiserror::Error;
 
 const DEFAULT_PROCESS_OUTPUT_LIMIT_BYTES: usize = 1024 * 1024;
+const LOCAL_FILE_IO_CHUNK_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Error)]
 pub enum WorkspaceError {
@@ -48,9 +53,49 @@ pub enum WorkspaceError {
         message: String,
         diagnostic: Option<String>,
     },
+
+    #[error("{operation} cancelled for {path}")]
+    Cancelled {
+        operation: &'static str,
+        path: PathBuf,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, WorkspaceError>;
+
+#[derive(Debug, Clone, Default)]
+pub struct WorkspaceCancellationToken {
+    cancelled: Arc<AtomicBool>,
+}
+
+impl WorkspaceCancellationToken {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+
+    pub fn check_cancelled(&self, operation: &'static str, path: &Path) -> Result<()> {
+        if self.is_cancelled() {
+            Err(WorkspaceError::Cancelled {
+                operation,
+                path: path.to_path_buf(),
+            })
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn as_atomic_bool(&self) -> &AtomicBool {
+        self.cancelled.as_ref()
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum WorkspaceIdentity {
@@ -950,7 +995,29 @@ pub trait WorkspaceBackend: Send + Sync {
 
     async fn stat(&self, path: &Path) -> Result<FileStat>;
 
+    async fn stat_with_cancellation(
+        &self,
+        path: &Path,
+        cancellation: &WorkspaceCancellationToken,
+    ) -> Result<FileStat> {
+        cancellation.check_cancelled("stat", path)?;
+        let result = self.stat(path).await;
+        cancellation.check_cancelled("stat", path)?;
+        result
+    }
+
     async fn list_dir(&self, path: &Path) -> Result<DirectoryListing>;
+
+    async fn list_dir_with_cancellation(
+        &self,
+        path: &Path,
+        cancellation: &WorkspaceCancellationToken,
+    ) -> Result<DirectoryListing> {
+        cancellation.check_cancelled("list directory", path)?;
+        let result = self.list_dir(path).await;
+        cancellation.check_cancelled("list directory", path)?;
+        result
+    }
 
     async fn list_dirs(&self, paths: Vec<PathBuf>) -> Vec<(PathBuf, Result<DirectoryListing>)> {
         let mut listings = Vec::with_capacity(paths.len());
@@ -968,17 +1035,89 @@ pub trait WorkspaceBackend: Send + Sync {
         limit: usize,
     ) -> Result<Option<PathBuf>>;
 
+    async fn find_ancestor_file_with_cancellation(
+        &self,
+        start: &Path,
+        file_name: &str,
+        limit: usize,
+        cancellation: &WorkspaceCancellationToken,
+    ) -> Result<Option<PathBuf>> {
+        cancellation.check_cancelled("find ancestor file", start)?;
+        let result = self.find_ancestor_file(start, file_name, limit).await;
+        cancellation.check_cancelled("find ancestor file", start)?;
+        result
+    }
+
     async fn create_file(&self, path: &Path) -> Result<FileStat>;
+
+    async fn create_file_with_cancellation(
+        &self,
+        path: &Path,
+        cancellation: &WorkspaceCancellationToken,
+    ) -> Result<FileStat> {
+        cancellation.check_cancelled("create file", path)?;
+        self.create_file(path).await
+    }
 
     async fn create_dir(&self, path: &Path) -> Result<FileStat>;
 
+    async fn create_dir_with_cancellation(
+        &self,
+        path: &Path,
+        cancellation: &WorkspaceCancellationToken,
+    ) -> Result<FileStat> {
+        cancellation.check_cancelled("create directory", path)?;
+        self.create_dir(path).await
+    }
+
     async fn rename_path(&self, from: &Path, to: &Path) -> Result<FileStat>;
+
+    async fn rename_path_with_cancellation(
+        &self,
+        from: &Path,
+        to: &Path,
+        cancellation: &WorkspaceCancellationToken,
+    ) -> Result<FileStat> {
+        cancellation.check_cancelled("rename path", from)?;
+        self.rename_path(from, to).await
+    }
 
     async fn delete_path(&self, path: &Path) -> Result<FileStat>;
 
+    async fn delete_path_with_cancellation(
+        &self,
+        path: &Path,
+        cancellation: &WorkspaceCancellationToken,
+    ) -> Result<FileStat> {
+        cancellation.check_cancelled("delete path", path)?;
+        self.delete_path(path).await
+    }
+
     async fn copy_path(&self, from: &Path, to: &Path) -> Result<FileStat>;
 
+    async fn copy_path_with_cancellation(
+        &self,
+        from: &Path,
+        to: &Path,
+        cancellation: &WorkspaceCancellationToken,
+    ) -> Result<FileStat> {
+        cancellation.check_cancelled("copy path", from)?;
+        self.copy_path(from, to).await
+    }
+
     async fn read_file(&self, path: &Path, options: ReadOptions) -> Result<FileRead>;
+
+    async fn read_file_with_cancellation(
+        &self,
+        path: &Path,
+        options: ReadOptions,
+        cancellation: &WorkspaceCancellationToken,
+    ) -> Result<FileRead> {
+        cancellation.check_cancelled("read file", path)?;
+        let result = self.read_file(path, options).await;
+        cancellation.check_cancelled("read file", path)?;
+        result
+    }
 
     async fn write_file(
         &self,
@@ -986,6 +1125,17 @@ pub trait WorkspaceBackend: Send + Sync {
         bytes: &[u8],
         options: WriteOptions,
     ) -> Result<WriteResult>;
+
+    async fn write_file_with_cancellation(
+        &self,
+        path: &Path,
+        bytes: &[u8],
+        options: WriteOptions,
+        cancellation: &WorkspaceCancellationToken,
+    ) -> Result<WriteResult> {
+        cancellation.check_cancelled("write file", path)?;
+        self.write_file(path, bytes, options).await
+    }
 
     async fn file_search(&self, query: FileSearchQuery) -> Result<FileSearchResult>;
 
@@ -1275,10 +1425,34 @@ impl WorkspaceBackend for PathMappedWorkspaceBackend {
             .map(|stat| self.map_file_stat_to_display(stat))
     }
 
+    async fn stat_with_cancellation(
+        &self,
+        path: &Path,
+        cancellation: &WorkspaceCancellationToken,
+    ) -> Result<FileStat> {
+        let native_path = self.mapping.to_native_path(path);
+        self.inner
+            .stat_with_cancellation(&native_path, cancellation)
+            .await
+            .map(|stat| self.map_file_stat_to_display(stat))
+    }
+
     async fn list_dir(&self, path: &Path) -> Result<DirectoryListing> {
         let native_path = self.mapping.to_native_path(path);
         self.inner
             .list_dir(&native_path)
+            .await
+            .map(|listing| self.map_directory_listing_to_display(listing))
+    }
+
+    async fn list_dir_with_cancellation(
+        &self,
+        path: &Path,
+        cancellation: &WorkspaceCancellationToken,
+    ) -> Result<DirectoryListing> {
+        let native_path = self.mapping.to_native_path(path);
+        self.inner
+            .list_dir_with_cancellation(&native_path, cancellation)
             .await
             .map(|listing| self.map_directory_listing_to_display(listing))
     }
@@ -1296,6 +1470,20 @@ impl WorkspaceBackend for PathMappedWorkspaceBackend {
             .map(|path| path.map(|path| self.mapping.to_display_path(&path)))
     }
 
+    async fn find_ancestor_file_with_cancellation(
+        &self,
+        start: &Path,
+        file_name: &str,
+        limit: usize,
+        cancellation: &WorkspaceCancellationToken,
+    ) -> Result<Option<PathBuf>> {
+        let native_start = self.mapping.to_native_path(start);
+        self.inner
+            .find_ancestor_file_with_cancellation(&native_start, file_name, limit, cancellation)
+            .await
+            .map(|path| path.map(|path| self.mapping.to_display_path(&path)))
+    }
+
     async fn create_file(&self, path: &Path) -> Result<FileStat> {
         let native_path = self.mapping.to_native_path(path);
         self.inner
@@ -1304,10 +1492,34 @@ impl WorkspaceBackend for PathMappedWorkspaceBackend {
             .map(|stat| self.map_file_stat_to_display(stat))
     }
 
+    async fn create_file_with_cancellation(
+        &self,
+        path: &Path,
+        cancellation: &WorkspaceCancellationToken,
+    ) -> Result<FileStat> {
+        let native_path = self.mapping.to_native_path(path);
+        self.inner
+            .create_file_with_cancellation(&native_path, cancellation)
+            .await
+            .map(|stat| self.map_file_stat_to_display(stat))
+    }
+
     async fn create_dir(&self, path: &Path) -> Result<FileStat> {
         let native_path = self.mapping.to_native_path(path);
         self.inner
             .create_dir(&native_path)
+            .await
+            .map(|stat| self.map_file_stat_to_display(stat))
+    }
+
+    async fn create_dir_with_cancellation(
+        &self,
+        path: &Path,
+        cancellation: &WorkspaceCancellationToken,
+    ) -> Result<FileStat> {
+        let native_path = self.mapping.to_native_path(path);
+        self.inner
+            .create_dir_with_cancellation(&native_path, cancellation)
             .await
             .map(|stat| self.map_file_stat_to_display(stat))
     }
@@ -1321,10 +1533,36 @@ impl WorkspaceBackend for PathMappedWorkspaceBackend {
             .map(|stat| self.map_file_stat_to_display(stat))
     }
 
+    async fn rename_path_with_cancellation(
+        &self,
+        from: &Path,
+        to: &Path,
+        cancellation: &WorkspaceCancellationToken,
+    ) -> Result<FileStat> {
+        let native_from = self.mapping.to_native_path(from);
+        let native_to = self.mapping.to_native_path(to);
+        self.inner
+            .rename_path_with_cancellation(&native_from, &native_to, cancellation)
+            .await
+            .map(|stat| self.map_file_stat_to_display(stat))
+    }
+
     async fn delete_path(&self, path: &Path) -> Result<FileStat> {
         let native_path = self.mapping.to_native_path(path);
         self.inner
             .delete_path(&native_path)
+            .await
+            .map(|stat| self.map_file_stat_to_display(stat))
+    }
+
+    async fn delete_path_with_cancellation(
+        &self,
+        path: &Path,
+        cancellation: &WorkspaceCancellationToken,
+    ) -> Result<FileStat> {
+        let native_path = self.mapping.to_native_path(path);
+        self.inner
+            .delete_path_with_cancellation(&native_path, cancellation)
             .await
             .map(|stat| self.map_file_stat_to_display(stat))
     }
@@ -1338,10 +1576,37 @@ impl WorkspaceBackend for PathMappedWorkspaceBackend {
             .map(|stat| self.map_file_stat_to_display(stat))
     }
 
+    async fn copy_path_with_cancellation(
+        &self,
+        from: &Path,
+        to: &Path,
+        cancellation: &WorkspaceCancellationToken,
+    ) -> Result<FileStat> {
+        let native_from = self.mapping.to_native_path(from);
+        let native_to = self.mapping.to_native_path(to);
+        self.inner
+            .copy_path_with_cancellation(&native_from, &native_to, cancellation)
+            .await
+            .map(|stat| self.map_file_stat_to_display(stat))
+    }
+
     async fn read_file(&self, path: &Path, options: ReadOptions) -> Result<FileRead> {
         let native_path = self.mapping.to_native_path(path);
         self.inner
             .read_file(&native_path, options)
+            .await
+            .map(|read| self.map_file_read_to_display(read))
+    }
+
+    async fn read_file_with_cancellation(
+        &self,
+        path: &Path,
+        options: ReadOptions,
+        cancellation: &WorkspaceCancellationToken,
+    ) -> Result<FileRead> {
+        let native_path = self.mapping.to_native_path(path);
+        self.inner
+            .read_file_with_cancellation(&native_path, options, cancellation)
             .await
             .map(|read| self.map_file_read_to_display(read))
     }
@@ -1355,6 +1620,20 @@ impl WorkspaceBackend for PathMappedWorkspaceBackend {
         let native_path = self.mapping.to_native_path(path);
         self.inner
             .write_file(&native_path, bytes, options)
+            .await
+            .map(|result| self.map_write_result_to_display(result))
+    }
+
+    async fn write_file_with_cancellation(
+        &self,
+        path: &Path,
+        bytes: &[u8],
+        options: WriteOptions,
+        cancellation: &WorkspaceCancellationToken,
+    ) -> Result<WriteResult> {
+        let native_path = self.mapping.to_native_path(path);
+        self.inner
+            .write_file_with_cancellation(&native_path, bytes, options, cancellation)
             .await
             .map(|result| self.map_write_result_to_display(result))
     }
@@ -1525,6 +1804,14 @@ impl WorkspaceBackend for LocalWorkspaceBackend {
         local_list_dir(path)
     }
 
+    async fn list_dir_with_cancellation(
+        &self,
+        path: &Path,
+        cancellation: &WorkspaceCancellationToken,
+    ) -> Result<DirectoryListing> {
+        local_list_dir_with_cancellation(path, Some(cancellation))
+    }
+
     async fn find_ancestor_file(
         &self,
         start: &Path,
@@ -1534,28 +1821,89 @@ impl WorkspaceBackend for LocalWorkspaceBackend {
         local_find_ancestor_file(start, file_name, limit)
     }
 
+    async fn find_ancestor_file_with_cancellation(
+        &self,
+        start: &Path,
+        file_name: &str,
+        limit: usize,
+        cancellation: &WorkspaceCancellationToken,
+    ) -> Result<Option<PathBuf>> {
+        local_find_ancestor_file_with_cancellation(start, file_name, limit, Some(cancellation))
+    }
+
     async fn create_file(&self, path: &Path) -> Result<FileStat> {
         local_create_file(path)
+    }
+
+    async fn create_file_with_cancellation(
+        &self,
+        path: &Path,
+        cancellation: &WorkspaceCancellationToken,
+    ) -> Result<FileStat> {
+        local_create_file_with_cancellation(path, Some(cancellation))
     }
 
     async fn create_dir(&self, path: &Path) -> Result<FileStat> {
         local_create_dir(path)
     }
 
+    async fn create_dir_with_cancellation(
+        &self,
+        path: &Path,
+        cancellation: &WorkspaceCancellationToken,
+    ) -> Result<FileStat> {
+        local_create_dir_with_cancellation(path, Some(cancellation))
+    }
+
     async fn rename_path(&self, from: &Path, to: &Path) -> Result<FileStat> {
         local_rename_path(from, to)
+    }
+
+    async fn rename_path_with_cancellation(
+        &self,
+        from: &Path,
+        to: &Path,
+        cancellation: &WorkspaceCancellationToken,
+    ) -> Result<FileStat> {
+        local_rename_path_with_cancellation(from, to, Some(cancellation))
     }
 
     async fn delete_path(&self, path: &Path) -> Result<FileStat> {
         local_delete_path(path)
     }
 
+    async fn delete_path_with_cancellation(
+        &self,
+        path: &Path,
+        cancellation: &WorkspaceCancellationToken,
+    ) -> Result<FileStat> {
+        local_delete_path_with_cancellation(path, Some(cancellation))
+    }
+
     async fn copy_path(&self, from: &Path, to: &Path) -> Result<FileStat> {
         local_copy_path(from, to)
     }
 
+    async fn copy_path_with_cancellation(
+        &self,
+        from: &Path,
+        to: &Path,
+        cancellation: &WorkspaceCancellationToken,
+    ) -> Result<FileStat> {
+        local_copy_path_with_cancellation(from, to, Some(cancellation))
+    }
+
     async fn read_file(&self, path: &Path, options: ReadOptions) -> Result<FileRead> {
         local_read_file(path, options)
+    }
+
+    async fn read_file_with_cancellation(
+        &self,
+        path: &Path,
+        options: ReadOptions,
+        cancellation: &WorkspaceCancellationToken,
+    ) -> Result<FileRead> {
+        local_read_file_with_cancellation(path, options, Some(cancellation))
     }
 
     async fn write_file(
@@ -1565,6 +1913,16 @@ impl WorkspaceBackend for LocalWorkspaceBackend {
         options: WriteOptions,
     ) -> Result<WriteResult> {
         local_write_file(path, bytes, options)
+    }
+
+    async fn write_file_with_cancellation(
+        &self,
+        path: &Path,
+        bytes: &[u8],
+        options: WriteOptions,
+        cancellation: &WorkspaceCancellationToken,
+    ) -> Result<WriteResult> {
+        local_write_file_with_cancellation(path, bytes, options, Some(cancellation))
     }
 
     async fn file_search(&self, query: FileSearchQuery) -> Result<FileSearchResult> {
@@ -1602,69 +1960,89 @@ fn local_stat(path: &Path) -> Result<FileStat> {
 }
 
 fn local_list_dir(path: &Path) -> Result<DirectoryListing> {
+    local_list_dir_with_cancellation(path, None)
+}
+
+fn local_list_dir_with_cancellation(
+    path: &Path,
+    cancellation: Option<&WorkspaceCancellationToken>,
+) -> Result<DirectoryListing> {
+    workspace_cancellation_checkpoint(cancellation, "list directory", path)?;
     let entries = fs::read_dir(path).map_err(|source| WorkspaceError::Io {
         operation: "list directory",
         path: path.to_path_buf(),
         source,
     })?;
-    let mut entries = entries
-        .map(|entry| {
-            let entry = entry.map_err(|source| WorkspaceError::Io {
-                operation: "read directory entry",
-                path: path.to_path_buf(),
+    let mut listed_entries = Vec::new();
+    for entry in entries {
+        workspace_cancellation_checkpoint(cancellation, "list directory", path)?;
+        let entry = entry.map_err(|source| WorkspaceError::Io {
+            operation: "read directory entry",
+            path: path.to_path_buf(),
+            source,
+        })?;
+        let entry_path = entry.path();
+        let metadata = fs::symlink_metadata(&entry_path).map_err(|source| WorkspaceError::Io {
+            operation: "stat directory entry",
+            path: entry_path.clone(),
+            source,
+        })?;
+        let file_type = metadata.file_type();
+        let symlink_target = file_type
+            .is_symlink()
+            .then(|| fs::read_link(&entry_path))
+            .transpose()
+            .map_err(|source| WorkspaceError::Io {
+                operation: "read symlink",
+                path: entry_path.clone(),
                 source,
             })?;
-            let entry_path = entry.path();
-            let metadata =
-                fs::symlink_metadata(&entry_path).map_err(|source| WorkspaceError::Io {
-                    operation: "stat directory entry",
-                    path: entry_path.clone(),
-                    source,
-                })?;
-            let file_type = metadata.file_type();
-            let symlink_target = file_type
-                .is_symlink()
-                .then(|| fs::read_link(&entry_path))
-                .transpose()
-                .map_err(|source| WorkspaceError::Io {
-                    operation: "read symlink",
-                    path: entry_path.clone(),
-                    source,
-                })?;
-            let target_exists = symlink_target.as_ref().map(|target| {
-                if target.is_absolute() {
-                    target.exists()
-                } else {
-                    entry_path
-                        .parent()
-                        .unwrap_or_else(|| Path::new("."))
-                        .join(target)
-                        .exists()
-                }
-            });
+        let target_exists = symlink_target.as_ref().map(|target| {
+            if target.is_absolute() {
+                target.exists()
+            } else {
+                entry_path
+                    .parent()
+                    .unwrap_or_else(|| Path::new("."))
+                    .join(target)
+                    .exists()
+            }
+        });
 
-            Ok(DirectoryEntry {
-                name: entry.file_name().to_string_lossy().into_owned(),
-                path: entry_path.clone(),
-                stat: file_stat_from_metadata(entry_path, metadata),
-                symlink_target,
-                target_exists,
-                ignored: None,
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
+        listed_entries.push(DirectoryEntry {
+            name: entry.file_name().to_string_lossy().into_owned(),
+            path: entry_path.clone(),
+            stat: file_stat_from_metadata(entry_path, metadata),
+            symlink_target,
+            target_exists,
+            ignored: None,
+        });
+    }
+    workspace_cancellation_checkpoint(cancellation, "list directory", path)?;
 
-    entries.sort_by(|left, right| {
+    listed_entries.sort_by(|left, right| {
         left.name
             .to_lowercase()
             .cmp(&right.name.to_lowercase())
             .then_with(|| left.name.cmp(&right.name))
     });
+    workspace_cancellation_checkpoint(cancellation, "list directory", path)?;
 
     Ok(DirectoryListing {
         path: path.to_path_buf(),
-        entries,
+        entries: listed_entries,
     })
+}
+
+fn workspace_cancellation_checkpoint(
+    cancellation: Option<&WorkspaceCancellationToken>,
+    operation: &'static str,
+    path: &Path,
+) -> Result<()> {
+    if let Some(cancellation) = cancellation {
+        cancellation.check_cancelled(operation, path)?;
+    }
+    Ok(())
 }
 
 fn ensure_not_exists(path: &Path, operation: &'static str) -> Result<()> {
@@ -1861,6 +2239,16 @@ fn local_find_ancestor_file(
     file_name: &str,
     limit: usize,
 ) -> Result<Option<PathBuf>> {
+    local_find_ancestor_file_with_cancellation(start, file_name, limit, None)
+}
+
+fn local_find_ancestor_file_with_cancellation(
+    start: &Path,
+    file_name: &str,
+    limit: usize,
+    cancellation: Option<&WorkspaceCancellationToken>,
+) -> Result<Option<PathBuf>> {
+    workspace_cancellation_checkpoint(cancellation, "find ancestor file", start)?;
     validate_ancestor_file_name(file_name)?;
 
     let start_stat = local_stat(start)?;
@@ -1874,9 +2262,11 @@ fn local_find_ancestor_file(
     };
 
     for _ in 0..=limit {
+        workspace_cancellation_checkpoint(cancellation, "find ancestor file", start)?;
         let candidate = current.join(file_name);
         match fs::symlink_metadata(&candidate) {
             Ok(metadata) if metadata.is_file() || metadata.file_type().is_symlink() => {
+                workspace_cancellation_checkpoint(cancellation, "find ancestor file", start)?;
                 return Ok(Some(candidate));
             }
             Ok(_) => {}
@@ -1895,10 +2285,19 @@ fn local_find_ancestor_file(
         }
     }
 
+    workspace_cancellation_checkpoint(cancellation, "find ancestor file", start)?;
     Ok(None)
 }
 
 fn local_create_file(path: &Path) -> Result<FileStat> {
+    local_create_file_with_cancellation(path, None)
+}
+
+fn local_create_file_with_cancellation(
+    path: &Path,
+    cancellation: Option<&WorkspaceCancellationToken>,
+) -> Result<FileStat> {
+    workspace_cancellation_checkpoint(cancellation, "create file", path)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|source| WorkspaceError::Io {
             operation: "create parent directories",
@@ -1906,6 +2305,7 @@ fn local_create_file(path: &Path) -> Result<FileStat> {
             source,
         })?;
     }
+    workspace_cancellation_checkpoint(cancellation, "create file", path)?;
 
     OpenOptions::new()
         .write(true)
@@ -1921,7 +2321,16 @@ fn local_create_file(path: &Path) -> Result<FileStat> {
 }
 
 fn local_create_dir(path: &Path) -> Result<FileStat> {
+    local_create_dir_with_cancellation(path, None)
+}
+
+fn local_create_dir_with_cancellation(
+    path: &Path,
+    cancellation: Option<&WorkspaceCancellationToken>,
+) -> Result<FileStat> {
+    workspace_cancellation_checkpoint(cancellation, "create directory", path)?;
     ensure_not_exists(path, "create directory")?;
+    workspace_cancellation_checkpoint(cancellation, "create directory", path)?;
     fs::create_dir_all(path).map_err(|source| WorkspaceError::Io {
         operation: "create directory",
         path: path.to_path_buf(),
@@ -1932,6 +2341,15 @@ fn local_create_dir(path: &Path) -> Result<FileStat> {
 }
 
 fn local_rename_path(from: &Path, to: &Path) -> Result<FileStat> {
+    local_rename_path_with_cancellation(from, to, None)
+}
+
+fn local_rename_path_with_cancellation(
+    from: &Path,
+    to: &Path,
+    cancellation: Option<&WorkspaceCancellationToken>,
+) -> Result<FileStat> {
+    workspace_cancellation_checkpoint(cancellation, "rename path", from)?;
     let case_only_name_change = is_case_only_name_change(from, to);
     let target_is_source = case_only_name_change && rename_target_is_source(from, to)?;
     if !target_is_source {
@@ -1945,6 +2363,7 @@ fn local_rename_path(from: &Path, to: &Path) -> Result<FileStat> {
             source,
         })
     };
+    workspace_cancellation_checkpoint(cancellation, "rename path", from)?;
 
     match rename(from, to) {
         Ok(()) => local_stat(to),
@@ -1969,7 +2388,16 @@ fn local_rename_path(from: &Path, to: &Path) -> Result<FileStat> {
 }
 
 fn local_delete_path(path: &Path) -> Result<FileStat> {
+    local_delete_path_with_cancellation(path, None)
+}
+
+fn local_delete_path_with_cancellation(
+    path: &Path,
+    cancellation: Option<&WorkspaceCancellationToken>,
+) -> Result<FileStat> {
+    workspace_cancellation_checkpoint(cancellation, "delete path", path)?;
     let stat = local_stat(path)?;
+    workspace_cancellation_checkpoint(cancellation, "delete path", path)?;
     match stat.kind {
         FileKind::Directory => fs::remove_dir_all(path).map_err(|source| WorkspaceError::Io {
             operation: "delete directory",
@@ -1989,8 +2417,18 @@ fn local_delete_path(path: &Path) -> Result<FileStat> {
 }
 
 fn local_copy_path(from: &Path, to: &Path) -> Result<FileStat> {
+    local_copy_path_with_cancellation(from, to, None)
+}
+
+fn local_copy_path_with_cancellation(
+    from: &Path,
+    to: &Path,
+    cancellation: Option<&WorkspaceCancellationToken>,
+) -> Result<FileStat> {
+    workspace_cancellation_checkpoint(cancellation, "copy path", from)?;
     ensure_not_exists(to, "copy path")?;
     let from_stat = local_stat(from)?;
+    workspace_cancellation_checkpoint(cancellation, "copy path", from)?;
     match from_stat.kind {
         FileKind::Directory => {
             if path_is_self_or_descendant(to, from)? {
@@ -2000,16 +2438,12 @@ fn local_copy_path(from: &Path, to: &Path) -> Result<FileStat> {
                     message: "cannot copy a directory into itself".to_string(),
                 });
             }
-            copy_dir_recursive(from, to)?;
+            copy_dir_recursive(from, to, cancellation)?;
         }
         FileKind::File => {
-            fs::copy(from, to).map_err(|source| WorkspaceError::Io {
-                operation: "copy file",
-                path: from.to_path_buf(),
-                source,
-            })?;
+            copy_file_with_cancellation(from, to, cancellation)?;
         }
-        FileKind::Symlink => copy_symlink_target(from, to)?,
+        FileKind::Symlink => copy_symlink_target(from, to, cancellation)?,
         FileKind::Other => {
             return Err(WorkspaceError::NotFile {
                 path: from.to_path_buf(),
@@ -2020,7 +2454,81 @@ fn local_copy_path(from: &Path, to: &Path) -> Result<FileStat> {
     local_stat(to)
 }
 
-fn copy_dir_recursive(from: &Path, to: &Path) -> Result<()> {
+fn copy_file_with_cancellation(
+    from: &Path,
+    to: &Path,
+    cancellation: Option<&WorkspaceCancellationToken>,
+) -> Result<()> {
+    if cancellation.is_none() {
+        fs::copy(from, to).map_err(|source| WorkspaceError::Io {
+            operation: "copy file",
+            path: from.to_path_buf(),
+            source,
+        })?;
+        return Ok(());
+    }
+
+    workspace_cancellation_checkpoint(cancellation, "copy path", from)?;
+    let mut source = File::open(from).map_err(|source| WorkspaceError::Io {
+        operation: "open copied file",
+        path: from.to_path_buf(),
+        source,
+    })?;
+    let source_permissions = source
+        .metadata()
+        .map_err(|source| WorkspaceError::Io {
+            operation: "stat copied file",
+            path: from.to_path_buf(),
+            source,
+        })?
+        .permissions();
+    let mut destination = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(to)
+        .map_err(|source| WorkspaceError::Io {
+            operation: "create copied file",
+            path: to.to_path_buf(),
+            source,
+        })?;
+    let mut buffer = vec![0_u8; LOCAL_FILE_IO_CHUNK_BYTES];
+    loop {
+        workspace_cancellation_checkpoint(cancellation, "copy path", from)?;
+        let read = source
+            .read(&mut buffer)
+            .map_err(|source| WorkspaceError::Io {
+                operation: "read copied file",
+                path: from.to_path_buf(),
+                source,
+            })?;
+        workspace_cancellation_checkpoint(cancellation, "copy path", from)?;
+        if read == 0 {
+            break;
+        }
+        destination
+            .write_all(&buffer[..read])
+            .map_err(|source| WorkspaceError::Io {
+                operation: "write copied file",
+                path: to.to_path_buf(),
+                source,
+            })?;
+    }
+    destination
+        .set_permissions(source_permissions)
+        .map_err(|source| WorkspaceError::Io {
+            operation: "set copied file permissions",
+            path: to.to_path_buf(),
+            source,
+        })?;
+    Ok(())
+}
+
+fn copy_dir_recursive(
+    from: &Path,
+    to: &Path,
+    cancellation: Option<&WorkspaceCancellationToken>,
+) -> Result<()> {
+    workspace_cancellation_checkpoint(cancellation, "copy path", from)?;
     fs::create_dir_all(to).map_err(|source| WorkspaceError::Io {
         operation: "create copied directory",
         path: to.to_path_buf(),
@@ -2032,6 +2540,7 @@ fn copy_dir_recursive(from: &Path, to: &Path) -> Result<()> {
         path: from.to_path_buf(),
         source,
     })? {
+        workspace_cancellation_checkpoint(cancellation, "copy path", from)?;
         let entry = entry.map_err(|source| WorkspaceError::Io {
             operation: "read directory entry for copy",
             path: from.to_path_buf(),
@@ -2041,15 +2550,11 @@ fn copy_dir_recursive(from: &Path, to: &Path) -> Result<()> {
         let entry_to = to.join(entry.file_name());
         let entry_stat = local_stat(&entry_from)?;
         match entry_stat.kind {
-            FileKind::Directory => copy_dir_recursive(&entry_from, &entry_to)?,
+            FileKind::Directory => copy_dir_recursive(&entry_from, &entry_to, cancellation)?,
             FileKind::File => {
-                fs::copy(&entry_from, &entry_to).map_err(|source| WorkspaceError::Io {
-                    operation: "copy file",
-                    path: entry_from,
-                    source,
-                })?;
+                copy_file_with_cancellation(&entry_from, &entry_to, cancellation)?;
             }
-            FileKind::Symlink => copy_symlink_target(&entry_from, &entry_to)?,
+            FileKind::Symlink => copy_symlink_target(&entry_from, &entry_to, cancellation)?,
             FileKind::Other => {}
         }
     }
@@ -2057,7 +2562,12 @@ fn copy_dir_recursive(from: &Path, to: &Path) -> Result<()> {
     Ok(())
 }
 
-fn copy_symlink_target(from: &Path, to: &Path) -> Result<()> {
+fn copy_symlink_target(
+    from: &Path,
+    to: &Path,
+    cancellation: Option<&WorkspaceCancellationToken>,
+) -> Result<()> {
+    workspace_cancellation_checkpoint(cancellation, "copy path", from)?;
     let target = fs::read_link(from).map_err(|source| WorkspaceError::Io {
         operation: "read symlink for copy",
         path: from.to_path_buf(),
@@ -2070,20 +2580,24 @@ fn copy_symlink_target(from: &Path, to: &Path) -> Result<()> {
     };
     let target_stat = local_stat(&target)?;
     match target_stat.kind {
-        FileKind::Directory => copy_dir_recursive(&target, to),
+        FileKind::Directory => copy_dir_recursive(&target, to, cancellation),
         FileKind::File | FileKind::Symlink => {
-            fs::copy(&target, to).map_err(|source| WorkspaceError::Io {
-                operation: "copy symlink target",
-                path: target,
-                source,
-            })?;
-            Ok(())
+            copy_file_with_cancellation(&target, to, cancellation)
         }
         FileKind::Other => Err(WorkspaceError::NotFile { path: target }),
     }
 }
 
 fn local_read_file(path: &Path, options: ReadOptions) -> Result<FileRead> {
+    local_read_file_with_cancellation(path, options, None)
+}
+
+fn local_read_file_with_cancellation(
+    path: &Path,
+    options: ReadOptions,
+    cancellation: Option<&WorkspaceCancellationToken>,
+) -> Result<FileRead> {
+    workspace_cancellation_checkpoint(cancellation, "read file", path)?;
     let metadata = fs::metadata(path).map_err(|source| WorkspaceError::Io {
         operation: "stat file",
         path: path.to_path_buf(),
@@ -2103,14 +2617,26 @@ fn local_read_file(path: &Path, options: ReadOptions) -> Result<FileRead> {
         source,
     })?;
     let mut bytes = Vec::with_capacity(read_len.try_into().unwrap_or(0));
-    std::io::Read::by_ref(&mut file)
-        .take(read_len)
-        .read_to_end(&mut bytes)
-        .map_err(|source| WorkspaceError::Io {
-            operation: "read file",
-            path: path.to_path_buf(),
-            source,
-        })?;
+    let mut remaining = read_len;
+    let mut buffer = vec![0_u8; LOCAL_FILE_IO_CHUNK_BYTES];
+    while remaining > 0 {
+        workspace_cancellation_checkpoint(cancellation, "read file", path)?;
+        let chunk_len = remaining.min(buffer.len() as u64) as usize;
+        let read = file
+            .read(&mut buffer[..chunk_len])
+            .map_err(|source| WorkspaceError::Io {
+                operation: "read file",
+                path: path.to_path_buf(),
+                source,
+            })?;
+        workspace_cancellation_checkpoint(cancellation, "read file", path)?;
+        if read == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&buffer[..read]);
+        remaining = remaining.saturating_sub(read as u64);
+    }
+    workspace_cancellation_checkpoint(cancellation, "read file", path)?;
 
     Ok(FileRead {
         path: path.to_path_buf(),
@@ -2123,6 +2649,16 @@ fn local_read_file(path: &Path, options: ReadOptions) -> Result<FileRead> {
 }
 
 fn local_write_file(path: &Path, bytes: &[u8], options: WriteOptions) -> Result<WriteResult> {
+    local_write_file_with_cancellation(path, bytes, options, None)
+}
+
+fn local_write_file_with_cancellation(
+    path: &Path,
+    bytes: &[u8],
+    options: WriteOptions,
+    cancellation: Option<&WorkspaceCancellationToken>,
+) -> Result<WriteResult> {
+    workspace_cancellation_checkpoint(cancellation, "write file", path)?;
     if let Some(parent) = path.parent()
         && options.create_parent_dirs
     {
@@ -2165,6 +2701,7 @@ fn local_write_file(path: &Path, bytes: &[u8], options: WriteOptions) -> Result<
             });
         }
     };
+    workspace_cancellation_checkpoint(cancellation, "write file", path)?;
     let parent = target_path.parent().ok_or_else(|| WorkspaceError::Io {
         operation: "resolve write parent",
         path: target_path.clone(),
@@ -2178,13 +2715,21 @@ fn local_write_file(path: &Path, bytes: &[u8], options: WriteOptions) -> Result<
             path: parent.to_path_buf(),
             source,
         })?;
-    temp.write_all(bytes)
-        .and_then(|_| temp.flush())
-        .map_err(|source| WorkspaceError::Io {
+    for chunk in bytes.chunks(LOCAL_FILE_IO_CHUNK_BYTES) {
+        workspace_cancellation_checkpoint(cancellation, "write file", path)?;
+        temp.write_all(chunk).map_err(|source| WorkspaceError::Io {
             operation: "write temporary file",
             path: target_path.clone(),
             source,
         })?;
+        workspace_cancellation_checkpoint(cancellation, "write file", path)?;
+    }
+    temp.flush().map_err(|source| WorkspaceError::Io {
+        operation: "flush temporary file",
+        path: target_path.clone(),
+        source,
+    })?;
+    workspace_cancellation_checkpoint(cancellation, "write file", path)?;
     if let Some(permissions) = existing_permissions {
         temp.as_file()
             .set_permissions(permissions)
@@ -2201,6 +2746,7 @@ fn local_write_file(path: &Path, bytes: &[u8], options: WriteOptions) -> Result<
             path: target_path.clone(),
             source,
         })?;
+    workspace_cancellation_checkpoint(cancellation, "write file", path)?;
 
     let temp_path = temp.into_temp_path();
     fs::rename(&temp_path, &target_path).map_err(|source| WorkspaceError::Io {
@@ -2829,6 +3375,63 @@ mod tests {
         let backend = local_workspace_backend();
 
         assert_eq!(backend.identity(), WorkspaceIdentity::Local);
+    }
+
+    #[test]
+    fn workspace_cancellation_token_is_shared_across_clones() {
+        let cancellation = WorkspaceCancellationToken::new();
+        let clone = cancellation.clone();
+
+        clone.cancel();
+
+        assert!(cancellation.is_cancelled());
+        assert!(clone.is_cancelled());
+    }
+
+    #[test]
+    fn cancelled_local_write_does_not_replace_existing_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("document.txt");
+        fs::write(&path, "original").unwrap();
+        let cancellation = WorkspaceCancellationToken::new();
+        cancellation.cancel();
+
+        let result = block_on(LocalWorkspaceBackend.write_file_with_cancellation(
+            &path,
+            b"replacement",
+            WriteOptions::default(),
+            &cancellation,
+        ));
+
+        assert!(matches!(result, Err(WorkspaceError::Cancelled { .. })));
+        assert_eq!(fs::read_to_string(path).unwrap(), "original");
+        assert!(fs::read_dir(temp.path()).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".nucleotide-write-")
+        }));
+    }
+
+    #[test]
+    fn cancellable_local_write_supports_empty_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("document.txt");
+        fs::write(&path, "original").unwrap();
+        let cancellation = WorkspaceCancellationToken::new();
+
+        let result = block_on(LocalWorkspaceBackend.write_file_with_cancellation(
+            &path,
+            b"",
+            WriteOptions::default(),
+            &cancellation,
+        ))
+        .unwrap();
+
+        assert_eq!(result.path, path);
+        assert_eq!(result.size, 0);
+        assert_eq!(fs::read(path).unwrap(), b"");
     }
 
     #[cfg(unix)]
@@ -3500,6 +4103,32 @@ mod tests {
             std::fs::read_to_string(native_path).unwrap(),
             "fn main() {}\n"
         );
+    }
+
+    #[test]
+    fn path_mapped_backend_forwards_filesystem_cancellation() {
+        let temp = tempfile::tempdir().unwrap();
+        let native_path = temp.path().join("document.txt");
+        fs::write(&native_path, "original").unwrap();
+        let display_root = PathBuf::from("/remote/project");
+        let display_path = display_root.join("document.txt");
+        let backend = path_mapped_workspace_backend(
+            local_workspace_backend(),
+            WorkspacePathMapping::new(display_root, temp.path()),
+        );
+        let cancellation = WorkspaceCancellationToken::new();
+        cancellation.cancel();
+
+        let result = block_on(backend.read_file_with_cancellation(
+            &display_path,
+            ReadOptions::default(),
+            &cancellation,
+        ));
+
+        assert!(matches!(
+            result,
+            Err(WorkspaceError::Cancelled { path, .. }) if path == native_path
+        ));
     }
 
     #[cfg(unix)]
