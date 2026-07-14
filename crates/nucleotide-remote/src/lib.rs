@@ -3864,6 +3864,8 @@ pub struct RemoteWorkspaceV5MultiplexedClient<R, W> {
 struct RemoteWorkspaceV5Shared<W> {
     session: Mutex<protocol_v5::ProtocolSession>,
     writer_wake: mpsc::SyncSender<()>,
+    heartbeat: Mutex<V5ClientHeartbeat>,
+    heartbeat_wake: mpsc::SyncSender<()>,
     transport_abort: Option<Arc<dyn V5TransportAbort>>,
     request_budget: V5ConnectionByteBudget,
     response_budget: V5ConnectionByteBudget,
@@ -3889,6 +3891,212 @@ struct RemoteWorkspaceV5Writer<W> {
     writer: W,
     limits: protocol_v5::FrameLimits,
     next_frame_sequence: u64,
+}
+
+#[derive(Debug)]
+struct V5ClientHeartbeat {
+    idle_ping_interval: Duration,
+    ping_timeout: Duration,
+    last_peer_activity: Instant,
+    next_ping_id: u64,
+    ping: Option<V5ClientPing>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum V5ClientPing {
+    Queued {
+        expected_pong_control: Vec<u8>,
+        queued_at: Instant,
+    },
+    Outstanding {
+        expected_pong_control: Vec<u8>,
+        started_at: Instant,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum V5ClientHeartbeatAction {
+    Wait(Duration),
+    QueuePing(Vec<u8>),
+    TimedOut(&'static str),
+}
+
+const V5_CLIENT_PING_WRITE_TIMEOUT: &str = "v5 client writer did not send idle PING before timeout";
+const V5_CLIENT_PONG_TIMEOUT: &str = "v5 peer did not answer client idle PING before timeout";
+
+fn v5_client_heartbeat_timeout(message: &'static str) -> RemoteClientError {
+    RemoteClientError::Io(io::Error::new(io::ErrorKind::TimedOut, message))
+}
+
+impl V5ClientHeartbeat {
+    fn new(settings: &protocol_v5::ConnectionSettings, now: Instant) -> Self {
+        let min_unsolicited_ping_interval_ms = if settings.min_unsolicited_ping_interval_ms == 0 {
+            protocol_v5::MIN_UNSOLICITED_PING_INTERVAL_MS
+        } else {
+            settings.min_unsolicited_ping_interval_ms
+        }
+        .max(protocol_v5::MIN_UNSOLICITED_PING_INTERVAL_MS);
+        let idle_ping_interval_ms = if settings.idle_ping_interval_ms == 0 {
+            protocol_v5::IDLE_PING_INTERVAL_MS
+        } else {
+            settings.idle_ping_interval_ms
+        }
+        .max(min_unsolicited_ping_interval_ms);
+        let ping_timeout_ms = if settings.ping_timeout_ms == 0 {
+            protocol_v5::PING_TIMEOUT_MS
+        } else {
+            settings.ping_timeout_ms
+        };
+        Self {
+            idle_ping_interval: Duration::from_millis(u64::from(idle_ping_interval_ms)),
+            ping_timeout: Duration::from_millis(u64::from(ping_timeout_ms)),
+            last_peer_activity: now,
+            next_ping_id: 0,
+            ping: None,
+        }
+    }
+
+    fn next_action(
+        &mut self,
+        now: Instant,
+    ) -> std::result::Result<V5ClientHeartbeatAction, RemoteClientError> {
+        if let Some(ping) = &self.ping {
+            let (started_at, timeout_message) = match ping {
+                V5ClientPing::Queued { queued_at, .. } => {
+                    (*queued_at, V5_CLIENT_PING_WRITE_TIMEOUT)
+                }
+                V5ClientPing::Outstanding { started_at, .. } => {
+                    (*started_at, V5_CLIENT_PONG_TIMEOUT)
+                }
+            };
+            let elapsed = now.saturating_duration_since(started_at);
+            return Ok(if elapsed >= self.ping_timeout {
+                V5ClientHeartbeatAction::TimedOut(timeout_message)
+            } else {
+                V5ClientHeartbeatAction::Wait(self.ping_timeout - elapsed)
+            });
+        }
+
+        let idle = now.saturating_duration_since(self.last_peer_activity);
+        if idle < self.idle_ping_interval {
+            return Ok(V5ClientHeartbeatAction::Wait(
+                self.idle_ping_interval - idle,
+            ));
+        }
+
+        self.next_ping_id = self.next_ping_id.checked_add(1).ok_or_else(|| {
+            RemoteClientError::Protocol("v5 client heartbeat nonce exhausted".to_string())
+        })?;
+        let token = self.next_ping_id.to_be_bytes().to_vec();
+        let expected_pong_control = protocol_v5::PingPayload {
+            token: token.clone(),
+        }
+        .encode_to_vec();
+        self.ping = Some(V5ClientPing::Queued {
+            expected_pong_control,
+            queued_at: now,
+        });
+        Ok(V5ClientHeartbeatAction::QueuePing(token))
+    }
+
+    fn mark_ping_started(
+        &mut self,
+        frame: &protocol_v5::Frame,
+        now: Instant,
+    ) -> std::result::Result<(), RemoteClientError> {
+        match self.ping.take() {
+            Some(V5ClientPing::Queued {
+                expected_pong_control,
+                queued_at,
+            }) => {
+                if expected_pong_control != frame.control {
+                    self.ping = Some(V5ClientPing::Queued {
+                        expected_pong_control,
+                        queued_at,
+                    });
+                    return Err(RemoteClientError::Protocol(
+                        "v5 writer selected an unexpected client heartbeat PING".to_string(),
+                    ));
+                }
+                if now.saturating_duration_since(queued_at) >= self.ping_timeout {
+                    self.ping = Some(V5ClientPing::Queued {
+                        expected_pong_control,
+                        queued_at,
+                    });
+                    return Err(v5_client_heartbeat_timeout(V5_CLIENT_PING_WRITE_TIMEOUT));
+                }
+                self.ping = Some(V5ClientPing::Outstanding {
+                    expected_pong_control,
+                    started_at: now,
+                });
+                Ok(())
+            }
+            Some(ping) => {
+                self.ping = Some(ping);
+                Err(RemoteClientError::Protocol(
+                    "v5 writer selected an unexpected client heartbeat PING".to_string(),
+                ))
+            }
+            None => Err(RemoteClientError::Protocol(
+                "v5 writer selected a client heartbeat PING without queued state".to_string(),
+            )),
+        }
+    }
+
+    fn observe_inbound(
+        &mut self,
+        frame_type: protocol_v5::FrameType,
+        pong_control: Option<Vec<u8>>,
+        now: Instant,
+    ) -> std::result::Result<Option<Duration>, RemoteClientError> {
+        if frame_type != protocol_v5::FrameType::Pong {
+            self.last_peer_activity = now;
+            return Ok(None);
+        }
+
+        let pong_control = pong_control.ok_or_else(|| {
+            RemoteClientError::Protocol("v5 PONG did not carry heartbeat control".to_string())
+        })?;
+        match self.ping.take() {
+            Some(V5ClientPing::Outstanding {
+                expected_pong_control,
+                started_at,
+            }) => {
+                let rtt = now.saturating_duration_since(started_at);
+                if rtt >= self.ping_timeout {
+                    self.ping = Some(V5ClientPing::Outstanding {
+                        expected_pong_control,
+                        started_at,
+                    });
+                    return Err(v5_client_heartbeat_timeout(V5_CLIENT_PONG_TIMEOUT));
+                }
+                if expected_pong_control == pong_control {
+                    self.last_peer_activity = now;
+                    return Ok(Some(rtt));
+                }
+                self.ping = Some(V5ClientPing::Outstanding {
+                    expected_pong_control,
+                    started_at,
+                });
+                Err(RemoteClientError::Protocol(
+                    "received v5 PONG with an unexpected heartbeat token".to_string(),
+                ))
+            }
+            Some(ping @ V5ClientPing::Queued { .. }) => {
+                self.ping = Some(ping);
+                Err(RemoteClientError::Protocol(
+                    "received v5 PONG before the client heartbeat PING was written".to_string(),
+                ))
+            }
+            None => Err(RemoteClientError::Protocol(
+                "received unsolicited v5 PONG".to_string(),
+            )),
+        }
+    }
+}
+
+fn v5_client_pong_control(frame: &protocol_v5::Frame) -> Option<Vec<u8>> {
+    (frame.frame_type == protocol_v5::FrameType::Pong).then(|| frame.control.clone())
 }
 
 type V5ResponseDelivery =
@@ -4177,9 +4385,12 @@ where
             next_frame_sequence: parts.next_frame_sequence,
         };
         let (writer_wake, writer_wakes) = mpsc::sync_channel(1);
+        let (heartbeat_wake, heartbeat_wakes) = mpsc::sync_channel(1);
         let shared = Arc::new(RemoteWorkspaceV5Shared {
             session: Mutex::new(session),
             writer_wake,
+            heartbeat: Mutex::new(V5ClientHeartbeat::new(&handshake.settings, Instant::now())),
+            heartbeat_wake,
             transport_abort,
             request_budget: V5ConnectionByteBudget::new(V5_REQUEST_CONNECTION_BYTE_BUDGET),
             response_budget: V5ConnectionByteBudget::new(V5_RESPONSE_CONNECTION_BYTE_BUDGET),
@@ -4198,6 +4409,12 @@ where
         std::thread::Builder::new()
             .name("nucleotide-v5-client-writer".to_string())
             .spawn(move || run_v5_client_writer(writer, writer_wakes, writer_shared))
+            .map_err(RemoteClientError::Io)?;
+
+        let heartbeat_shared = Arc::downgrade(&shared);
+        std::thread::Builder::new()
+            .name("nucleotide-v5-client-heartbeat".to_string())
+            .spawn(move || run_v5_client_heartbeat(heartbeat_wakes, heartbeat_shared))
             .map_err(RemoteClientError::Io)?;
 
         let reader_shared = Arc::downgrade(&shared);
@@ -4766,6 +4983,9 @@ fn run_v5_client_reader<R, W>(
                 let Some(shared) = shared.upgrade() else {
                     break;
                 };
+                let received_at = Instant::now();
+                let frame_type = frame.frame_type;
+                let pong_control = v5_client_pong_control(&frame);
                 let event = {
                     let mut session = match shared.session.lock() {
                         Ok(session) => session,
@@ -4782,6 +5002,27 @@ fn run_v5_client_reader<R, W>(
                 };
                 match event {
                     Ok(event) => {
+                        let heartbeat_result = shared
+                            .heartbeat
+                            .lock()
+                            .map_err(v5_client_lock_error)
+                            .and_then(|mut heartbeat| {
+                                heartbeat.observe_inbound(frame_type, pong_control, received_at)
+                            });
+                        match heartbeat_result {
+                            Ok(Some(rtt)) => {
+                                tracing::trace!(
+                                    rtt_micros = rtt.as_micros() as u64,
+                                    "Received matching v5 client heartbeat PONG"
+                                );
+                            }
+                            Ok(None) => {}
+                            Err(error) => {
+                                fail_all_v5_waiters_for_error(&shared, &error);
+                                break;
+                            }
+                        }
+                        signal_v5_client_heartbeat(&shared);
                         let data_credit = event.data_credit();
                         let acknowledge_data = event
                             .stream_event
@@ -4843,6 +5084,65 @@ fn run_v5_client_reader<R, W>(
                     });
                 }
                 break;
+            }
+        }
+    }
+}
+
+fn signal_v5_client_heartbeat<W>(shared: &RemoteWorkspaceV5Shared<W>) {
+    let _ = shared.heartbeat_wake.try_send(());
+}
+
+fn run_v5_client_heartbeat<W>(wakes: mpsc::Receiver<()>, shared: Weak<RemoteWorkspaceV5Shared<W>>) {
+    loop {
+        let Some(shared) = shared.upgrade() else {
+            break;
+        };
+        if shared.closed.load(Ordering::Acquire) {
+            break;
+        }
+
+        let action = match shared
+            .heartbeat
+            .lock()
+            .map_err(v5_client_lock_error)
+            .and_then(|mut heartbeat| heartbeat.next_action(Instant::now()))
+        {
+            Ok(action) => action,
+            Err(error) => {
+                fail_all_v5_waiters_for_error(&shared, &error);
+                break;
+            }
+        };
+
+        match action {
+            V5ClientHeartbeatAction::QueuePing(token) => {
+                let queued = shared
+                    .session
+                    .lock()
+                    .map_err(v5_client_lock_error)
+                    .and_then(|mut session| {
+                        session.send_ping(token).map_err(RemoteClientError::Io)
+                    });
+                if let Err(error) = queued {
+                    fail_all_v5_waiters_for_error(&shared, &error);
+                    break;
+                }
+                if wake_v5_client_writer(&shared).is_err() {
+                    break;
+                }
+            }
+            V5ClientHeartbeatAction::TimedOut(message) => {
+                let error = RemoteClientError::Io(io::Error::new(io::ErrorKind::TimedOut, message));
+                fail_all_v5_waiters_for_error(&shared, &error);
+                break;
+            }
+            V5ClientHeartbeatAction::Wait(timeout) => {
+                drop(shared);
+                match wakes.recv_timeout(timeout) {
+                    Ok(()) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                }
             }
         }
     }
@@ -4932,6 +5232,14 @@ where
                 continue;
             }
 
+            if frame.frame_type == protocol_v5::FrameType::Ping {
+                shared
+                    .heartbeat
+                    .lock()
+                    .map_err(v5_client_lock_error)?
+                    .mark_ping_started(&frame, Instant::now())?;
+                signal_v5_client_heartbeat(shared);
+            }
             frame.frame_sequence = writer.next_frame_sequence;
             writer.next_frame_sequence =
                 writer.next_frame_sequence.checked_add(1).ok_or_else(|| {
@@ -5087,6 +5395,7 @@ where
         return;
     }
     let _ = shared.writer_wake.try_send(());
+    let _ = shared.heartbeat_wake.try_send(());
     shared
         .session
         .lock()
@@ -7200,7 +7509,6 @@ where
                 });
 
                 if let Some(event) = event {
-                    last_activity = Instant::now();
                     match event {
                         V5ServeLoopEvent::Inbound(Ok(Some(frame))) => {
                             let frame_type = frame.frame_type;
@@ -7219,6 +7527,7 @@ where
                                     return Err(error).context("failed to route v5 protocol frame");
                                 }
                             };
+                            last_activity = Instant::now();
                             let data_credit = event.data_credit();
                             if frame_type == protocol_v5::FrameType::Pong
                                 && outstanding_ping
@@ -13537,7 +13846,15 @@ mod tests {
         info: protocol_v5::ServerHandshakeInfo,
     ) -> Vec<u8> {
         let client = protocol_v5::ClientHello::nucleotide("test-client");
-        let hello = protocol_v5::ServerHello::accept_client(&client, &info).unwrap();
+        v5_server_input_for_client(frames, &client, info)
+    }
+
+    fn v5_server_input_for_client(
+        frames: Vec<protocol_v5::Frame>,
+        client: &protocol_v5::ClientHello,
+        info: protocol_v5::ServerHandshakeInfo,
+    ) -> Vec<u8> {
+        let hello = protocol_v5::ServerHello::accept_client(client, &info).unwrap();
         let settings = hello.accepted_settings.clone().unwrap();
         let mut all_frames = vec![
             protocol_v5::Frame::from_control(protocol_v5::FrameType::Hello, 0, &hello),
@@ -13545,6 +13862,22 @@ mod tests {
         ];
         all_frames.extend(frames);
         encode_v5_sequenced_frames(all_frames)
+    }
+
+    fn v5_heartbeat_client_hello(ping_timeout: Duration) -> protocol_v5::ClientHello {
+        let mut settings = protocol_v5::ConnectionSettings::recommended();
+        settings.ping_timeout_ms = u32::try_from(ping_timeout.as_millis()).unwrap();
+        let mut client = protocol_v5::ClientHello::nucleotide("test-client");
+        client.desired_settings = Some(settings);
+        client
+    }
+
+    fn v5_test_client_heartbeat(now: Instant) -> V5ClientHeartbeat {
+        let mut heartbeat =
+            V5ClientHeartbeat::new(&protocol_v5::ConnectionSettings::recommended(), now);
+        heartbeat.idle_ping_interval = Duration::from_millis(20);
+        heartbeat.ping_timeout = Duration::from_millis(50);
+        heartbeat
     }
 
     fn encode_v5_sequenced_frames(frames: Vec<protocol_v5::Frame>) -> Vec<u8> {
@@ -14361,6 +14694,259 @@ mod tests {
     }
 
     #[test]
+    fn v5_client_heartbeat_queues_once_and_correlates_exact_pong() {
+        let started = Instant::now();
+        let mut heartbeat = v5_test_client_heartbeat(started);
+        let first_token = 1_u64.to_be_bytes().to_vec();
+
+        assert_eq!(
+            heartbeat
+                .next_action(started + Duration::from_millis(20))
+                .unwrap(),
+            V5ClientHeartbeatAction::QueuePing(first_token.clone())
+        );
+        assert_eq!(
+            heartbeat
+                .next_action(started + Duration::from_millis(21))
+                .unwrap(),
+            V5ClientHeartbeatAction::Wait(Duration::from_millis(49))
+        );
+
+        let ping = protocol_v5::Frame::from_control(
+            protocol_v5::FrameType::Ping,
+            0,
+            &protocol_v5::PingPayload {
+                token: first_token.clone(),
+            },
+        );
+        heartbeat
+            .mark_ping_started(&ping, started + Duration::from_millis(22))
+            .unwrap();
+        let pong = protocol_v5::Frame::from_control(
+            protocol_v5::FrameType::Pong,
+            0,
+            &protocol_v5::PingPayload { token: first_token },
+        );
+        assert_eq!(
+            heartbeat
+                .observe_inbound(
+                    pong.frame_type,
+                    Some(pong.control.clone()),
+                    started + Duration::from_millis(27),
+                )
+                .unwrap(),
+            Some(Duration::from_millis(5))
+        );
+        assert_eq!(
+            heartbeat
+                .next_action(started + Duration::from_millis(47))
+                .unwrap(),
+            V5ClientHeartbeatAction::QueuePing(2_u64.to_be_bytes().to_vec())
+        );
+
+        let mut active = v5_test_client_heartbeat(started);
+        active
+            .observe_inbound(
+                protocol_v5::FrameType::Ping,
+                None,
+                started + Duration::from_millis(15),
+            )
+            .unwrap();
+        assert_eq!(
+            active
+                .next_action(started + Duration::from_millis(20))
+                .unwrap(),
+            V5ClientHeartbeatAction::Wait(Duration::from_millis(15))
+        );
+    }
+
+    #[test]
+    fn v5_client_heartbeat_requires_matching_pong_before_timeout() {
+        let started = Instant::now();
+        let mut heartbeat = v5_test_client_heartbeat(started);
+        let token = match heartbeat
+            .next_action(started + Duration::from_millis(20))
+            .unwrap()
+        {
+            V5ClientHeartbeatAction::QueuePing(token) => token,
+            action => panic!("expected heartbeat PING, got {action:?}"),
+        };
+        let ping = protocol_v5::Frame::from_control(
+            protocol_v5::FrameType::Ping,
+            0,
+            &protocol_v5::PingPayload {
+                token: token.clone(),
+            },
+        );
+        let ping_started = started + Duration::from_millis(22);
+        heartbeat.mark_ping_started(&ping, ping_started).unwrap();
+
+        let unrelated = protocol_v5::Frame::new(protocol_v5::FrameType::GoAway, 0);
+        assert_eq!(
+            heartbeat
+                .observe_inbound(
+                    unrelated.frame_type,
+                    None,
+                    started + Duration::from_millis(30),
+                )
+                .unwrap(),
+            None
+        );
+        let wrong_pong = protocol_v5::Frame::from_control(
+            protocol_v5::FrameType::Pong,
+            0,
+            &protocol_v5::PingPayload {
+                token: b"wrong".to_vec(),
+            },
+        );
+        let error = heartbeat
+            .observe_inbound(
+                wrong_pong.frame_type,
+                Some(wrong_pong.control.clone()),
+                started + Duration::from_millis(31),
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("unexpected heartbeat token"));
+        let mut altered_control = protocol_v5::PingPayload { token }.encode_to_vec();
+        altered_control.extend_from_slice(&[0x78, 0x01]);
+        let error = heartbeat
+            .observe_inbound(
+                protocol_v5::FrameType::Pong,
+                Some(altered_control),
+                started + Duration::from_millis(32),
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("unexpected heartbeat token"));
+        assert_eq!(
+            heartbeat
+                .next_action(ping_started + Duration::from_millis(50))
+                .unwrap(),
+            V5ClientHeartbeatAction::TimedOut(
+                "v5 peer did not answer client idle PING before timeout"
+            )
+        );
+
+        let mut unsolicited = v5_test_client_heartbeat(started);
+        assert!(
+            unsolicited
+                .observe_inbound(
+                    wrong_pong.frame_type,
+                    Some(wrong_pong.control.clone()),
+                    started,
+                )
+                .unwrap_err()
+                .to_string()
+                .contains("unsolicited")
+        );
+
+        let mut queued = v5_test_client_heartbeat(started);
+        let queued_token = match queued
+            .next_action(started + Duration::from_millis(20))
+            .unwrap()
+        {
+            V5ClientHeartbeatAction::QueuePing(token) => token,
+            action => panic!("expected queued heartbeat PING, got {action:?}"),
+        };
+        let queued_control = protocol_v5::PingPayload {
+            token: queued_token,
+        }
+        .encode_to_vec();
+        assert!(
+            queued
+                .observe_inbound(
+                    protocol_v5::FrameType::Pong,
+                    Some(queued_control),
+                    started + Duration::from_millis(21),
+                )
+                .unwrap_err()
+                .to_string()
+                .contains("before the client heartbeat PING was written")
+        );
+        assert_eq!(
+            queued
+                .next_action(started + Duration::from_millis(70))
+                .unwrap(),
+            V5ClientHeartbeatAction::TimedOut(
+                "v5 client writer did not send idle PING before timeout"
+            )
+        );
+    }
+
+    #[test]
+    fn v5_client_heartbeat_deadlines_win_transition_races() {
+        let started = Instant::now();
+        let mut queued = v5_test_client_heartbeat(started);
+        let token = match queued
+            .next_action(started + Duration::from_millis(20))
+            .unwrap()
+        {
+            V5ClientHeartbeatAction::QueuePing(token) => token,
+            action => panic!("expected queued heartbeat PING, got {action:?}"),
+        };
+        let ping = protocol_v5::Frame::from_control(
+            protocol_v5::FrameType::Ping,
+            0,
+            &protocol_v5::PingPayload {
+                token: token.clone(),
+            },
+        );
+        let error = queued
+            .mark_ping_started(&ping, started + Duration::from_millis(70))
+            .unwrap_err();
+        let RemoteClientError::Io(error) = error else {
+            panic!("expected queued heartbeat timeout, got {error:?}");
+        };
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(error.to_string().contains("writer did not send"));
+        assert!(matches!(queued.ping, Some(V5ClientPing::Queued { .. })));
+
+        let mut outstanding = v5_test_client_heartbeat(started);
+        let _ = outstanding
+            .next_action(started + Duration::from_millis(20))
+            .unwrap();
+        outstanding
+            .mark_ping_started(&ping, started + Duration::from_millis(21))
+            .unwrap();
+        let pong = protocol_v5::Frame::from_control(
+            protocol_v5::FrameType::Pong,
+            0,
+            &protocol_v5::PingPayload { token },
+        );
+        let error = outstanding
+            .observe_inbound(
+                pong.frame_type,
+                Some(pong.control),
+                started + Duration::from_millis(71),
+            )
+            .unwrap_err();
+        let RemoteClientError::Io(error) = error else {
+            panic!("expected outstanding heartbeat timeout, got {error:?}");
+        };
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(error.to_string().contains("peer did not answer"));
+        assert!(matches!(
+            outstanding.ping,
+            Some(V5ClientPing::Outstanding { .. })
+        ));
+    }
+
+    #[test]
+    fn v5_client_heartbeat_normalizes_inconsistent_peer_settings() {
+        let mut settings = protocol_v5::ConnectionSettings::recommended();
+        settings.idle_ping_interval_ms = 20;
+        settings.ping_timeout_ms = 0;
+        settings.min_unsolicited_ping_interval_ms = 1;
+
+        let heartbeat = V5ClientHeartbeat::new(&settings, Instant::now());
+
+        assert_eq!(heartbeat.idle_ping_interval, Duration::from_millis(5_000));
+        assert_eq!(
+            heartbeat.ping_timeout,
+            Duration::from_millis(u64::from(protocol_v5::PING_TIMEOUT_MS))
+        );
+    }
+
+    #[test]
     fn v5_service_preserves_request_priority_on_response_frames() {
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(temp.path().join("visible.txt"), b"visible").unwrap();
@@ -14778,6 +15364,237 @@ mod tests {
         assert!(message.contains("failed to read v5 protocol frame"));
         assert!(message.contains("expected 3, got 4"), "{message}");
         input.close();
+    }
+
+    #[test]
+    fn v5_client_heartbeat_uses_negotiated_timing_and_exact_pong() {
+        let input = BlockingRead::default();
+        let output = SharedWrite::default();
+        let client_hello = v5_heartbeat_client_hello(Duration::from_millis(500));
+        input.push(v5_server_input_for_client(
+            Vec::new(),
+            &client_hello,
+            protocol_v5::ServerHandshakeInfo::current("/workspace"),
+        ));
+        let client = RemoteWorkspaceV5MultiplexedClient::connect(
+            protocol_v5::FramedIo::new(input.clone(), output.clone()),
+            client_hello,
+        )
+        .unwrap();
+
+        {
+            let heartbeat = client.shared.heartbeat.lock().unwrap();
+            assert_eq!(
+                heartbeat.idle_ping_interval,
+                Duration::from_millis(u64::from(protocol_v5::IDLE_PING_INTERVAL_MS))
+            );
+            assert_eq!(heartbeat.ping_timeout, Duration::from_millis(500));
+        }
+        trigger_v5_client_idle_ping(&client.shared);
+
+        let first_ping =
+            wait_for_v5_connection_frame_after(&output, protocol_v5::FrameType::Ping, 2);
+        let first_payload = first_ping
+            .decode_control::<protocol_v5::PingPayload>()
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(60));
+        assert_eq!(
+            read_v5_frames(output.bytes())
+                .into_iter()
+                .filter(|frame| frame.frame_type == protocol_v5::FrameType::Ping)
+                .count(),
+            1,
+            "only one heartbeat may be outstanding"
+        );
+
+        input.push(v5_frames_bytes(vec![protocol_v5::Frame::from_control(
+            protocol_v5::FrameType::Pong,
+            0,
+            &first_payload,
+        )]));
+        trigger_v5_client_idle_ping(&client.shared);
+        let second_ping = wait_for_v5_connection_frame_after(
+            &output,
+            protocol_v5::FrameType::Ping,
+            first_ping.frame_sequence,
+        );
+        let second_payload = second_ping
+            .decode_control::<protocol_v5::PingPayload>()
+            .unwrap();
+        assert_ne!(second_payload.token, first_payload.token);
+        assert!(!client.shared.closed.load(Ordering::Acquire));
+
+        client.close();
+        input.close();
+    }
+
+    #[test]
+    fn v5_client_wrong_pong_is_connection_terminal() {
+        let input = BlockingRead::default();
+        let output = SharedWrite::default();
+        let abort_calls = Arc::new(AtomicUsize::new(0));
+        let abort: Arc<dyn V5TransportAbort> = Arc::new(CountingTransportAbort {
+            calls: Arc::clone(&abort_calls),
+        });
+        let client_hello = v5_heartbeat_client_hello(Duration::from_millis(500));
+        input.push(v5_server_input_for_client(
+            Vec::new(),
+            &client_hello,
+            protocol_v5::ServerHandshakeInfo::current("/workspace"),
+        ));
+        let client = Arc::new(
+            RemoteWorkspaceV5MultiplexedClient::connect_with_transport_abort(
+                protocol_v5::FramedIo::new(input.clone(), output.clone()),
+                client_hello,
+                Some(abort),
+            )
+            .unwrap(),
+        );
+        let request_client = Arc::clone(&client);
+        let (result_sender, result_receiver) = mpsc::channel();
+        let request = std::thread::spawn(move || {
+            let result = request_client.request(
+                RemoteRequest::Stat {
+                    path: PathBuf::from("pending.rs"),
+                },
+                Vec::new(),
+            );
+            result_sender.send(result).unwrap();
+        });
+        wait_for_v5_request_stream(&output, "fs.stat");
+        trigger_v5_client_idle_ping(&client.shared);
+        let _ping = wait_for_v5_connection_frame_after(&output, protocol_v5::FrameType::Ping, 2);
+
+        input.push(v5_frames_bytes(vec![protocol_v5::Frame::from_control(
+            protocol_v5::FrameType::Pong,
+            0,
+            &protocol_v5::PingPayload {
+                token: b"wrong".to_vec(),
+            },
+        )]));
+
+        let error = result_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("wrong PONG should fail the pending request")
+            .unwrap_err();
+        let RemoteClientError::TransportClosed { cause } = error else {
+            panic!("expected terminal heartbeat protocol error, got {error:?}");
+        };
+        assert!(cause.contains("unexpected heartbeat token"), "{cause}");
+        assert!(client.shared.closed.load(Ordering::Acquire));
+        assert_eq!(abort_calls.load(Ordering::Acquire), 1);
+        client.close();
+        assert_eq!(abort_calls.load(Ordering::Acquire), 1);
+        input.close();
+        request.join().unwrap();
+    }
+
+    #[test]
+    fn v5_client_missing_pong_times_out_waiter_and_aborts_once() {
+        let input = BlockingRead::default();
+        let output = SharedWrite::default();
+        let abort_calls = Arc::new(AtomicUsize::new(0));
+        let abort: Arc<dyn V5TransportAbort> = Arc::new(CountingTransportAbort {
+            calls: Arc::clone(&abort_calls),
+        });
+        let client_hello = v5_heartbeat_client_hello(Duration::from_millis(80));
+        input.push(v5_server_input_for_client(
+            Vec::new(),
+            &client_hello,
+            protocol_v5::ServerHandshakeInfo::current("/workspace"),
+        ));
+        let client = Arc::new(
+            RemoteWorkspaceV5MultiplexedClient::connect_with_transport_abort(
+                protocol_v5::FramedIo::new(input.clone(), output.clone()),
+                client_hello,
+                Some(abort),
+            )
+            .unwrap(),
+        );
+        let request_client = Arc::clone(&client);
+        let (result_sender, result_receiver) = mpsc::channel();
+        let request = std::thread::spawn(move || {
+            let result = request_client.request(
+                RemoteRequest::Stat {
+                    path: PathBuf::from("pending.rs"),
+                },
+                Vec::new(),
+            );
+            result_sender.send(result).unwrap();
+        });
+        wait_for_v5_request_stream(&output, "fs.stat");
+        trigger_v5_client_idle_ping(&client.shared);
+        let _ping = wait_for_v5_connection_frame_after(&output, protocol_v5::FrameType::Ping, 2);
+
+        let error = result_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("missing PONG should fail the pending request")
+            .unwrap_err();
+        let RemoteClientError::Io(error) = error else {
+            panic!("expected heartbeat timeout, got {error:?}");
+        };
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(error.to_string().contains("peer did not answer"));
+        assert!(client.shared.closed.load(Ordering::Acquire));
+        assert_eq!(abort_calls.load(Ordering::Acquire), 1);
+        client.close();
+        assert_eq!(abort_calls.load(Ordering::Acquire), 1);
+        input.close();
+        request.join().unwrap();
+    }
+
+    #[test]
+    fn v5_client_heartbeat_aborts_writer_stalled_before_ping() {
+        let input = BlockingRead::default();
+        let writer = PausingWrite::default();
+        let abort_calls = Arc::new(AtomicUsize::new(0));
+        let abort: Arc<dyn V5TransportAbort> = Arc::new(ReleasingTransportAbort {
+            writer: writer.clone(),
+            calls: Arc::clone(&abort_calls),
+        });
+        let client_hello = v5_heartbeat_client_hello(Duration::from_millis(80));
+        input.push(v5_server_input_for_client(
+            Vec::new(),
+            &client_hello,
+            protocol_v5::ServerHandshakeInfo::current("/workspace"),
+        ));
+        let client = Arc::new(
+            RemoteWorkspaceV5MultiplexedClient::connect_with_transport_abort(
+                protocol_v5::FramedIo::new(input.clone(), writer.clone()),
+                client_hello,
+                Some(abort),
+            )
+            .unwrap(),
+        );
+        writer.pause_next_write();
+        let request_client = Arc::clone(&client);
+        let (result_sender, result_receiver) = mpsc::channel();
+        let request = std::thread::spawn(move || {
+            let result = request_client.request(
+                RemoteRequest::Stat {
+                    path: PathBuf::from("blocked.rs"),
+                },
+                Vec::new(),
+            );
+            result_sender.send(result).unwrap();
+        });
+        writer.wait_until_paused();
+        trigger_v5_client_idle_ping(&client.shared);
+
+        let error = result_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("queued heartbeat should time out a stalled writer")
+            .unwrap_err();
+        let RemoteClientError::Io(error) = error else {
+            panic!("expected stalled-writer heartbeat timeout, got {error:?}");
+        };
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(error.to_string().contains("writer did not send"));
+        assert_eq!(abort_calls.load(Ordering::Acquire), 1);
+        client.close();
+        assert_eq!(abort_calls.load(Ordering::Acquire), 1);
+        input.close();
+        request.join().unwrap();
     }
 
     #[test]
@@ -19066,7 +19883,7 @@ mod tests {
     fn v5_concurrent_service_sends_idle_ping() {
         let temp = tempfile::tempdir().unwrap();
         let mut settings = protocol_v5::ConnectionSettings::recommended();
-        settings.idle_ping_interval_ms = 20;
+        settings.idle_ping_interval_ms = protocol_v5::MIN_UNSOLICITED_PING_INTERVAL_MS;
         settings.ping_timeout_ms = 1_000;
         let input = BlockingRead::default();
         input.push(v5_client_input_with_settings(Vec::new(), settings));
@@ -19094,7 +19911,7 @@ mod tests {
                 break frame;
             }
             assert!(
-                started.elapsed() < Duration::from_secs(2),
+                started.elapsed() < Duration::from_secs(8),
                 "timed out waiting for idle PING"
             );
             std::thread::sleep(Duration::from_millis(10));
@@ -19102,6 +19919,59 @@ mod tests {
 
         let payload = ping.decode_control::<protocol_v5::PingPayload>().unwrap();
         assert!(!payload.token.is_empty());
+        input.close();
+        service_thread.join().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn v5_concurrent_service_outbound_progress_does_not_suppress_idle_ping() {
+        let temp = tempfile::tempdir().unwrap();
+        let process = RemoteRequest::RunProcess(ProcessRequest {
+            program: "/bin/sh".to_string(),
+            args: vec![
+                "-c".to_string(),
+                "i=0; while [ \"$i\" -lt 400 ]; do printf x; sleep 0.02; i=$((i + 1)); done"
+                    .to_string(),
+            ],
+            cwd: PathBuf::new(),
+            env: BTreeMap::new(),
+            clear_env: false,
+            inherit_project_environment: false,
+            max_output_bytes: None,
+            timeout_ms: None,
+        });
+        let mut settings = protocol_v5::ConnectionSettings::recommended();
+        settings.idle_ping_interval_ms = protocol_v5::MIN_UNSOLICITED_PING_INTERVAL_MS;
+        settings.ping_timeout_ms = 1_000;
+        let input = BlockingRead::default();
+        input.push(v5_client_input_with_settings(
+            v5_request_frames(1, &process, &[]),
+            settings,
+        ));
+        let output = SharedWrite::default();
+        let service =
+            WorkspaceService::new(LocalWorkspaceBackend, temp.path().to_path_buf()).unwrap();
+        let service_thread = spawn_v5_concurrent_service(
+            service,
+            &input,
+            &output,
+            protocol_v5::ServerHandshakeInfo::current(temp.path().display().to_string()),
+        );
+
+        let _ping = wait_for_v5_connection_frame_after_with_timeout(
+            &output,
+            protocol_v5::FrameType::Ping,
+            2,
+            Duration::from_secs(8),
+        );
+        assert!(
+            !read_v5_frames(output.bytes()).into_iter().any(|frame| {
+                frame.stream_id == 1 && frame.frame_type == protocol_v5::FrameType::EndStream
+            }),
+            "outbound progress must not postpone the heartbeat until the process completes"
+        );
+
         input.close();
         service_thread.join().unwrap();
     }
@@ -19577,6 +20447,16 @@ mod tests {
         }
     }
 
+    struct CountingTransportAbort {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl V5TransportAbort for CountingTransportAbort {
+        fn abort(&self) {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
     #[derive(Clone, Default)]
     struct SharedWrite {
         bytes: Arc<StdMutex<Vec<u8>>>,
@@ -19809,6 +20689,68 @@ mod tests {
             assert!(
                 started.elapsed() < Duration::from_secs(5),
                 "timed out waiting for {expected_frame_type:?} on stream {stream_id}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn wait_for_v5_connection_frame_after(
+        output: &SharedWrite,
+        expected_frame_type: protocol_v5::FrameType,
+        after_sequence: u64,
+    ) -> protocol_v5::Frame {
+        wait_for_v5_connection_frame_after_with_timeout(
+            output,
+            expected_frame_type,
+            after_sequence,
+            Duration::from_secs(2),
+        )
+    }
+
+    fn wait_for_v5_connection_frame_after_with_timeout(
+        output: &SharedWrite,
+        expected_frame_type: protocol_v5::FrameType,
+        after_sequence: u64,
+        timeout: Duration,
+    ) -> protocol_v5::Frame {
+        let started = Instant::now();
+        loop {
+            if let Some(frame) = read_v5_frames(output.bytes()).into_iter().find(|frame| {
+                frame.stream_id == 0
+                    && frame.frame_type == expected_frame_type
+                    && frame.frame_sequence > after_sequence
+            }) {
+                return frame;
+            }
+            assert!(
+                started.elapsed() < timeout,
+                "timed out waiting for {expected_frame_type:?} after frame {after_sequence}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn trigger_v5_client_idle_ping<W>(shared: &RemoteWorkspaceV5Shared<W>) {
+        let started = Instant::now();
+        loop {
+            let armed = {
+                let mut heartbeat = shared.heartbeat.lock().unwrap();
+                if heartbeat.ping.is_none() {
+                    heartbeat.last_peer_activity = Instant::now()
+                        .checked_sub(heartbeat.idle_ping_interval)
+                        .unwrap();
+                    true
+                } else {
+                    false
+                }
+            };
+            if armed {
+                signal_v5_client_heartbeat(shared);
+                return;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "timed out waiting for the previous client heartbeat to clear"
             );
             std::thread::sleep(Duration::from_millis(10));
         }

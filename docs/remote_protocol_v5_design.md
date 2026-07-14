@@ -23,11 +23,11 @@ The implementation includes:
 - Server cancellation on peer loss and enforced shutdown-grace cancellation for queued and cooperative active work.
 - Count- and byte-bounded watch batches, explicit overflow/resync events and bounded client delivery.
 - Directory generations, fingerprints, `not_modified` responses, deltas and bounded server-side directory caching.
-- Safe read-only reconnect replay, configuration-derived startup options, bounded probe/handshake processes, OpenSSH connection reuse and transport keepalives.
+- Safe read-only reconnect replay, configuration-derived startup options, bounded probe/handshake processes, OpenSSH connection reuse, transport keepalives, negotiated bidirectional heartbeat probes and an independent client-side watchdog.
 
 Post-v5 hardening also bounds the server producer-to-writer lanes, gives the client writer sole ownership of physical writes, propagates validated priority through worker admission and response scheduling, and limits queued wire batches. The associated regression tests cover partial writes, blocked-flow resets, decompression bounds, watch storms, EOF cancellation and reconnect ambiguity.
 
-Some architectural work remains. The synchronous workspace API still returns complete file/search/process results instead of exposing incremental consumers, so receive credit reflects transport demultiplexing rather than final UI consumption. Ordinary client requests do not yet have a default inactivity deadline or client-side heartbeat watchdog. Generic filesystem calls cannot be force-cancelled once blocked in the operating system. Reconnect does not yet restore watches, and UI cancellation does not yet propagate through every startup stage. Child handshakes and command probes have deadlines and reap their direct child; Unix probes also terminate descendants that remain in the child's process group. Windows needs job-object containment for the equivalent descendant guarantee, and no userspace deadline can force an uninterruptible operating-system wait to return. Browse-session handoff also remains future work. These are follow-up lifecycle and integration changes, not missing v5 wire primitives.
+Some architectural work remains. The synchronous workspace API still returns complete file/search/process results instead of exposing incremental consumers, so receive credit reflects transport demultiplexing rather than final UI consumption. Ordinary client requests do not yet have a default inactivity deadline. The helper still runs heartbeat timeout checks and physical writes on the same service loop, so a blocked stdout write can prevent timeout enforcement. Generic filesystem calls cannot be force-cancelled once blocked in the operating system. Reconnect does not yet restore watches, and UI cancellation does not yet propagate through every startup stage. Child handshakes and command probes have deadlines and reap their direct child; Unix probes also terminate descendants that remain in the child's process group. Windows needs job-object containment for the equivalent descendant guarantee, and no userspace deadline can force an uninterruptible operating-system wait to return. Browse-session handoff also remains future work. These are follow-up lifecycle and integration changes, not missing v5 wire primitives.
 
 ## Design goals
 
@@ -322,7 +322,7 @@ Rules:
 - A receiver sends `WINDOW_UPDATE` after bounded transport/backend storage accepts the bytes, not merely after reading from stdio. Incremental application consumers should delay this update until they release channel capacity.
 - If a sender exhausts stream credit, it must pause that stream and allow other streams with credit to progress.
 - Non-`DATA` frames are still bounded. Default queued control bytes are 1 MiB per connection and 256 KiB per stream. A peer that exceeds either budget gets `RESOURCE_EXHAUSTED` or connection-level `GOAWAY`. Small `RESET_STREAM`, `WINDOW_UPDATE`, `PING` and `PONG` frames use a reserved urgent lane so saturation cannot prevent teardown or liveness traffic.
-- The helper sends unsolicited health-check `PING` frames at the negotiated idle cadence; the default is 30 seconds. Replies to received `PING` frames do not count as unsolicited pings.
+- Both peers send unsolicited health-check `PING` frames at the negotiated idle cadence; the default is 30 seconds and negotiation never lowers it below the accepted unsolicited-ping minimum. Each permits only one outstanding heartbeat and requires the exact encoded control payload in `PONG`. Replies to received `PING` frames do not count as unsolicited pings.
 
 Default retained decoded-byte budgets are 260 MiB for all client outbound requests, 260 MiB for all server request accumulators, 64 MiB for all client response accumulators and 64 MiB for server completion payloads being serialized. The server worker-output channel retains at most 64 events of 64 KiB each, and the scheduler admits at most another 64 lazy items. These are logical payload bounds; allocator spare capacity, domain objects constructed before serialization and parsed object overhead are not byte-exact.
 
@@ -621,13 +621,13 @@ Why:
 
 - Unknown stream frames after `GOAWAY` are ignored or reset.
 - Unknown frame types are connection errors unless negotiated by extension.
-- Unknown optional fields in protobuf control messages are ignored.
+- Unknown optional fields in protobuf control messages are ignored, except that heartbeat `PING` and `PONG` control bytes are opaque echo tokens. A solicited `PONG` must match the original encoded `PING` control bytes exactly.
 - Unknown required capabilities fail during handshake.
 - A peer must always close streams with `END_STREAM` or `RESET_STREAM`.
 - The client may retry read-only operations after reconnect if no final response was received.
 - The client must not automatically retry mutations after reconnect.
 - Server logs must go to stderr only; stdout remains protocol bytes.
-- The helper sends `PING` every 30 seconds while idle. Missing `PONG` for 90 seconds marks the connection unhealthy.
+- Each peer sends `PING` after 30 seconds without accepted inbound traffic. The independent client watchdog closes the connection if the writer stalls or an exact `PONG` is missing for 90 seconds. The helper detects a missing `PONG` while its service/writer loop can progress.
 - On helper shutdown, server sends `GOAWAY` and drains accepted streams until their deadlines or a shutdown grace period expires. The default grace period is 5 seconds unless peers negotiate a different setting.
 
 Why:
@@ -698,14 +698,14 @@ The v5 baseline is complete:
 4. `watch.start`, `watch.update`, `watch.stop`, `watch.resync` and `watch.batch` are active with polling fallback.
 5. Directory generations, fingerprints, `not_modified` responses and optional deltas are active.
 
-The 2026-07-13 hardening pass adds executable failure and memory invariants around the baseline. It includes atomic stream teardown, decoded-data bounds, receive-window enforcement, lazy producers, bounded server and watch queues, deadline-bound startup commands with direct-child reaping and Unix process-group cleanup, a child-handshake watchdog, terminal transport errors, typed recovery outcomes, end-to-end priority propagation and shutdown cleanup.
+The 2026-07-13 hardening pass adds executable failure and memory invariants around the baseline. It includes atomic stream teardown, decoded-data bounds, receive-window enforcement, lazy producers, bounded server and watch queues, deadline-bound startup commands with direct-child reaping and Unix process-group cleanup, child-handshake and client connection-heartbeat watchdogs, bidirectional heartbeat probes, terminal transport errors, typed recovery outcomes, end-to-end priority propagation and shutdown cleanup.
 
 The next integration work should:
 
 1. Expose cancel-on-drop, incremental file/search/process consumers and consumption-based receive credit above the transport.
 2. Restore desired watches after reconnect and require a generation resync before applying new deltas.
 3. Make the complete startup attempt cancellable and add safe browse-session handoff or bootstrap reuse.
-4. Add default client request/inactivity deadlines and a client heartbeat watchdog.
+4. Add default client request/inactivity deadlines and make helper liveness independent of blocking writes.
 5. Expand loopback, Linux SSH and WSL fault/load fixtures, including stalled-peer memory and latency assertions.
 
 Multiplexing remains the foundation. Future encoding or daemon work should follow measured queue, latency and recovery results rather than replace the implemented v5 state machine.

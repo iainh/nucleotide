@@ -4093,6 +4093,14 @@ impl ConnectionSettings {
 
     pub fn accept_peer_desired(desired: Option<&Self>) -> Self {
         let desired = desired.cloned().unwrap_or_else(Self::recommended);
+        let min_unsolicited_ping_interval_ms = nonzero_or(
+            desired.min_unsolicited_ping_interval_ms,
+            MIN_UNSOLICITED_PING_INTERVAL_MS,
+        )
+        .max(MIN_UNSOLICITED_PING_INTERVAL_MS);
+        let idle_ping_interval_ms =
+            nonzero_or(desired.idle_ping_interval_ms, IDLE_PING_INTERVAL_MS)
+                .max(min_unsolicited_ping_interval_ms);
         Self {
             max_concurrent_streams: nonzero_or(
                 desired.max_concurrent_streams,
@@ -4121,13 +4129,9 @@ impl ConnectionSettings {
             )
             .min(DEFAULT_STREAM_CONTROL_BUDGET),
             shutdown_grace_ms: nonzero_or(desired.shutdown_grace_ms, DEFAULT_SHUTDOWN_GRACE_MS),
-            idle_ping_interval_ms: nonzero_or(desired.idle_ping_interval_ms, IDLE_PING_INTERVAL_MS),
+            idle_ping_interval_ms,
             ping_timeout_ms: nonzero_or(desired.ping_timeout_ms, PING_TIMEOUT_MS),
-            min_unsolicited_ping_interval_ms: nonzero_or(
-                desired.min_unsolicited_ping_interval_ms,
-                MIN_UNSOLICITED_PING_INTERVAL_MS,
-            )
-            .max(MIN_UNSOLICITED_PING_INTERVAL_MS),
+            min_unsolicited_ping_interval_ms,
         }
     }
 }
@@ -8621,6 +8625,24 @@ mod tests {
         assert_eq!(
             FrameLimits::from_settings(&accepted).max_body_len,
             MAX_NEGOTIATED_FRAME_BODY_LEN
+        );
+    }
+
+    #[test]
+    fn settings_negotiation_keeps_idle_ping_at_or_above_accepted_minimum() {
+        let mut desired = ConnectionSettings::recommended();
+        desired.idle_ping_interval_ms = 100;
+        desired.min_unsolicited_ping_interval_ms = 0;
+
+        let accepted = ConnectionSettings::accept_peer_desired(Some(&desired));
+
+        assert_eq!(
+            accepted.min_unsolicited_ping_interval_ms,
+            MIN_UNSOLICITED_PING_INTERVAL_MS
+        );
+        assert_eq!(
+            accepted.idle_ping_interval_ms,
+            accepted.min_unsolicited_ping_interval_ms
         );
     }
 
