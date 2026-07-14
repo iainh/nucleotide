@@ -4375,6 +4375,19 @@ fn validate_required_capabilities(
 }
 
 fn validate_server_capabilities(client: &ClientHello, server: &ServerHello) -> io::Result<()> {
+    let requested = client_requested_capabilities(client);
+    if let Some(capability) = server
+        .capabilities
+        .iter()
+        .find(|capability| !requested.contains(capability))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "UNSUPPORTED_CAPABILITY: server accepted unrequested v5 capability: {capability}"
+            ),
+        ));
+    }
     if let Some(capability) = client
         .required_capabilities
         .iter()
@@ -8677,6 +8690,120 @@ mod tests {
     }
 
     #[test]
+    fn handshakes_ignore_unknown_additive_protobuf_fields() {
+        // Field 63, wire type varint, value 42. These literal bytes are a golden
+        // representation of an additive field unknown to the current schema.
+        const UNKNOWN_FIELD: &[u8] = &[0xf8, 0x03, 0x2a];
+
+        let client_hello = ClientHello::nucleotide("0.1.0");
+        let mut client_hello_frame = Frame::from_control(FrameType::Hello, 0, &client_hello);
+        client_hello_frame.control.extend_from_slice(UNKNOWN_FIELD);
+        let input =
+            encode_sequenced_frames([client_hello_frame, Frame::new(FrameType::SettingsAck, 0)]);
+        let mut server_io = FramedIo::new(Cursor::new(input), Vec::new());
+
+        let server_handshake =
+            server_handshake(&mut server_io, &ServerHandshakeInfo::current("/workspace")).unwrap();
+
+        assert_eq!(server_handshake.client_hello, client_hello);
+
+        let settings = ConnectionSettings::recommended();
+        let server_hello = ServerHello {
+            protocol_major: PROTOCOL_MAJOR,
+            protocol_minor: PROTOCOL_MINOR,
+            helper_version: "helper".to_string(),
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+            workspace_root: "/workspace".to_string(),
+            control_codec: "protobuf".to_string(),
+            capabilities: vec!["multiplex".to_string()],
+            accepted_settings: Some(settings.clone()),
+        };
+        let mut server_hello_frame = Frame::from_control(FrameType::Hello, 0, &server_hello);
+        server_hello_frame.control.extend_from_slice(UNKNOWN_FIELD);
+        let mut settings_frame = Frame::from_control(FrameType::Settings, 0, &settings);
+        settings_frame.control.extend_from_slice(UNKNOWN_FIELD);
+        let input = encode_sequenced_frames([server_hello_frame, settings_frame]);
+        let mut client_io = FramedIo::new(Cursor::new(input), Vec::new());
+
+        let client_handshake = client_handshake(&mut client_io, client_hello).unwrap();
+
+        assert_eq!(client_handshake.server_hello, server_hello);
+        assert_eq!(client_handshake.settings, settings);
+    }
+
+    #[test]
+    fn client_handshake_accepts_lower_and_higher_peer_minor_versions() {
+        for (client_minor, server_minor) in [(7, 3), (3, 7)] {
+            let mut client = ClientHello::nucleotide("0.1.0");
+            client.protocol_minor = client_minor;
+            client.required_capabilities = vec!["multiplex".to_string()];
+            let settings = ConnectionSettings::recommended();
+            let server_hello = ServerHello {
+                protocol_major: PROTOCOL_MAJOR,
+                protocol_minor: server_minor,
+                helper_version: "helper".to_string(),
+                os: "linux".to_string(),
+                arch: "x86_64".to_string(),
+                workspace_root: "/workspace".to_string(),
+                control_codec: "protobuf".to_string(),
+                capabilities: vec!["multiplex".to_string()],
+                accepted_settings: Some(settings.clone()),
+            };
+            let input = encode_sequenced_frames([
+                Frame::from_control(FrameType::Hello, 0, &server_hello),
+                Frame::from_control(FrameType::Settings, 0, &settings),
+            ]);
+            let mut io = FramedIo::new(Cursor::new(input), Vec::new());
+
+            let handshake = client_handshake(&mut io, client).unwrap();
+
+            assert_eq!(handshake.client_hello.protocol_minor, client_minor);
+            assert_eq!(handshake.server_hello.protocol_minor, server_minor);
+        }
+    }
+
+    #[test]
+    fn handshake_rejects_peer_major_version_mismatch() {
+        let mut client = ClientHello::nucleotide("0.1.0");
+        client.protocol_major = PROTOCOL_MAJOR + 1;
+        let input = encode_sequenced_frames([Frame::from_control(FrameType::Hello, 0, &client)]);
+        let mut server_io = FramedIo::new(Cursor::new(input), Vec::new());
+
+        let server_error =
+            server_handshake(&mut server_io, &ServerHandshakeInfo::current("/workspace"))
+                .err()
+                .expect("server should reject a client major-version mismatch");
+
+        assert_eq!(server_error.kind(), io::ErrorKind::InvalidData);
+        assert!(
+            server_error
+                .to_string()
+                .contains("protocol major from client")
+        );
+
+        let client = ClientHello::nucleotide("0.1.0");
+        let mut server_hello =
+            ServerHello::accept_client(&client, &ServerHandshakeInfo::current("/workspace"))
+                .unwrap();
+        server_hello.protocol_major = PROTOCOL_MAJOR + 1;
+        let input =
+            encode_sequenced_frames([Frame::from_control(FrameType::Hello, 0, &server_hello)]);
+        let mut client_io = FramedIo::new(Cursor::new(input), Vec::new());
+
+        let client_error = client_handshake(&mut client_io, client)
+            .err()
+            .expect("client should reject a server major-version mismatch");
+
+        assert_eq!(client_error.kind(), io::ErrorKind::InvalidData);
+        assert!(
+            client_error
+                .to_string()
+                .contains("protocol major from server")
+        );
+    }
+
+    #[test]
     fn server_handshake_reads_client_hello_and_writes_server_frames() {
         let client = ClientHello::nucleotide("0.1.0");
         let input = encode_sequenced_frames([
@@ -8960,6 +9087,38 @@ mod tests {
 
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         assert!(error.to_string().contains("UNSUPPORTED_CAPABILITY"));
+        assert!(error.to_string().contains("watch"));
+    }
+
+    #[test]
+    fn client_handshake_rejects_server_capability_not_offered_by_client() {
+        let mut client = ClientHello::nucleotide("0.1.0");
+        client.capabilities = vec!["multiplex".to_string()];
+        let settings = ConnectionSettings::recommended();
+        let server_hello = ServerHello {
+            protocol_major: PROTOCOL_MAJOR,
+            protocol_minor: PROTOCOL_MINOR,
+            helper_version: "helper".to_string(),
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+            workspace_root: "/workspace".to_string(),
+            control_codec: "protobuf".to_string(),
+            capabilities: vec!["multiplex".to_string(), "watch".to_string()],
+            accepted_settings: Some(settings.clone()),
+        };
+        let input = encode_sequenced_frames([
+            Frame::from_control(FrameType::Hello, 0, &server_hello),
+            Frame::from_control(FrameType::Settings, 0, &settings),
+        ]);
+        let mut io = FramedIo::new(Cursor::new(input), Vec::new());
+
+        let error = client_handshake(&mut io, client)
+            .err()
+            .expect("client should reject a capability it did not offer");
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("UNSUPPORTED_CAPABILITY"));
+        assert!(error.to_string().contains("unrequested"));
         assert!(error.to_string().contains("watch"));
     }
 
