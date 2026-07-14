@@ -60,7 +60,7 @@ use nucleotide_lsp::{LspStatusKind, LspStatusSummary, ServerStatus};
 
 use crate::application::{
     LspCompletionTrigger, find_workspace_root_from,
-    workspace_backend_for_project_directory_with_progress,
+    workspace_backend_for_project_directory_with_options_and_progress,
 };
 use crate::document::DocumentView;
 use crate::file_tree::{
@@ -1114,8 +1114,20 @@ pub struct Workspace {
 #[derive(Clone, Debug)]
 struct PendingRemoteOpen {
     id: u64,
+    target: RemoteOpenTarget,
+    backend_options: nucleotide_remote::RemoteWorkspaceBackendOptions,
     workspace_root: PathBuf,
     activity_id: BackgroundActivityId,
+}
+
+fn pending_remote_open_matches(
+    pending: Option<&PendingRemoteOpen>,
+    target: &RemoteOpenTarget,
+    backend_options: &nucleotide_remote::RemoteWorkspaceBackendOptions,
+) -> bool {
+    pending.is_some_and(|pending| {
+        pending.target == *target && pending.backend_options == *backend_options
+    })
 }
 
 #[derive(Clone, Debug)]
@@ -9075,9 +9087,20 @@ impl Workspace {
     }
 
     fn handle_open_remote_submitted(&mut self, input: &str, cx: &mut Context<Self>) {
+        self.handle_open_remote_submitted_with_options(input, None, cx);
+    }
+
+    fn handle_open_remote_submitted_with_options(
+        &mut self,
+        input: &str,
+        options: Option<nucleotide_remote::RemoteWorkspaceBackendOptions>,
+        cx: &mut Context<Self>,
+    ) {
         let store = self.load_remote_connection_store(cx);
         match parse_remote_open_request(input, &store) {
-            Ok(RemoteOpenRequest::Open(target)) => self.open_remote_target(target, cx),
+            Ok(RemoteOpenRequest::Open(target)) => {
+                self.open_remote_target_with_options(target, options, cx);
+            }
             Ok(RemoteOpenRequest::Save { name, target }) => {
                 self.save_remote_connection(name, target, cx);
             }
@@ -9222,6 +9245,15 @@ impl Workspace {
     }
 
     fn open_remote_target(&mut self, target: RemoteOpenTarget, cx: &mut Context<Self>) {
+        self.open_remote_target_with_options(target, None, cx);
+    }
+
+    fn open_remote_target_with_options(
+        &mut self,
+        target: RemoteOpenTarget,
+        backend_options: Option<nucleotide_remote::RemoteWorkspaceBackendOptions>,
+        cx: &mut Context<Self>,
+    ) {
         let workspace_root = match target.kind {
             RemoteOpenTargetKind::File => {
                 nucleotide_workspace::remote_startup_workspace_root(&target.path)
@@ -9229,6 +9261,13 @@ impl Workspace {
             }
             RemoteOpenTargetKind::Directory => target.path.clone(),
         };
+        let backend_options = backend_options
+            .unwrap_or_else(|| self.core.read(cx).config.remote_workspace_backend_options());
+
+        if pending_remote_open_matches(self.pending_remote_open.as_ref(), &target, &backend_options)
+        {
+            return;
+        }
 
         self.remote_open_generation = self.remote_open_generation.wrapping_add(1).max(1);
         let remote_open_id = self.remote_open_generation;
@@ -9239,6 +9278,8 @@ impl Workspace {
         let activity_id = self.start_background_activity(message.clone(), cx);
         self.pending_remote_open = Some(PendingRemoteOpen {
             id: remote_open_id,
+            target: target.clone(),
+            backend_options: backend_options.clone(),
             workspace_root: workspace_root.clone(),
             activity_id,
         });
@@ -9274,7 +9315,11 @@ impl Workspace {
                 });
             };
 
-            workspace_backend_for_project_directory_with_progress(Some(&task_root), &progress_sink)
+            workspace_backend_for_project_directory_with_options_and_progress(
+                Some(&task_root),
+                &backend_options,
+                &progress_sink,
+            )
         });
 
         runtime_handle.spawn(async move {
@@ -10041,6 +10086,9 @@ impl Workspace {
             crate::Update::OpenFile(path) => self.handle_open_file(path, cx),
             crate::Update::OpenDirectory(path) => self.handle_open_directory(path, cx),
             crate::Update::OpenRemote(input) => self.handle_open_remote_submitted(input, cx),
+            crate::Update::OpenRemoteWithOptions { input, options } => {
+                self.handle_open_remote_submitted_with_options(input, Some(options.clone()), cx)
+            }
             crate::Update::FileTreeEvent(event) => {
                 self.handle_file_tree_event(event, cx);
             }
@@ -17188,6 +17236,53 @@ mod tests {
         assert!(status.status.contains("WSL distro `Ubuntu`"));
         assert!(status.status.contains("/home/me/project"));
         assert!(status.status.contains("NUCLEOTIDE_REMOTE_HELPER"));
+    }
+
+    #[test]
+    fn pending_remote_open_deduplicates_only_the_same_target_and_options() {
+        let target = RemoteOpenTarget {
+            path: PathBuf::from("ssh://devbox/home/me/project"),
+            kind: RemoteOpenTargetKind::Directory,
+        };
+        let backend_options = nucleotide_remote::RemoteWorkspaceBackendOptions::default();
+        let pending = PendingRemoteOpen {
+            id: 1,
+            target: target.clone(),
+            backend_options: backend_options.clone(),
+            workspace_root: target.path.clone(),
+            activity_id: BackgroundActivityId(1),
+        };
+
+        assert!(pending_remote_open_matches(
+            Some(&pending),
+            &target,
+            &backend_options
+        ));
+        assert!(!pending_remote_open_matches(
+            Some(&pending),
+            &RemoteOpenTarget {
+                path: target.path.join("README.md"),
+                kind: RemoteOpenTargetKind::File,
+            },
+            &backend_options,
+        ));
+        let mut changed_options = backend_options.clone();
+        changed_options.ssh_connect_timeout_secs = Some(
+            backend_options
+                .ssh_connect_timeout_secs
+                .unwrap_or_default()
+                .saturating_add(1),
+        );
+        assert!(!pending_remote_open_matches(
+            Some(&pending),
+            &target,
+            &changed_options,
+        ));
+        assert!(!pending_remote_open_matches(
+            None,
+            &target,
+            &backend_options
+        ));
     }
 
     #[test]

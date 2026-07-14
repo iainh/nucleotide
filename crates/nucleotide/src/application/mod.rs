@@ -8978,16 +8978,12 @@ fn detect_and_create_project_environment() -> ProjectEnvironment {
     ProjectEnvironment::new(Some(cli_env))
 }
 
-pub(crate) fn workspace_backend_for_project_directory_with_progress(
+pub(crate) fn workspace_backend_for_project_directory_with_options_and_progress(
     project_directory: Option<&Path>,
+    options: &nucleotide_remote::RemoteWorkspaceBackendOptions,
     progress: &dyn Fn(nucleotide_remote::RemoteDeploymentProgress),
 ) -> Result<WorkspaceBackendHandle, Error> {
-    let options = nucleotide_remote::RemoteWorkspaceBackendOptions::from_environment();
-    workspace_backend_for_project_directory_with_options_and_progress(
-        project_directory,
-        &options,
-        Some(progress),
-    )
+    workspace_backend_for_project_directory_with_options(project_directory, options, Some(progress))
 }
 
 pub(crate) fn workspace_backend_for_project_directory_with_config(
@@ -8995,14 +8991,10 @@ pub(crate) fn workspace_backend_for_project_directory_with_config(
     config: &crate::config::Config,
 ) -> Result<WorkspaceBackendHandle, Error> {
     let options = config.remote_workspace_backend_options();
-    workspace_backend_for_project_directory_with_options_and_progress(
-        project_directory,
-        &options,
-        None,
-    )
+    workspace_backend_for_project_directory_with_options(project_directory, &options, None)
 }
 
-fn workspace_backend_for_project_directory_with_options_and_progress(
+fn workspace_backend_for_project_directory_with_options(
     project_directory: Option<&Path>,
     options: &nucleotide_remote::RemoteWorkspaceBackendOptions,
     progress_handler: Option<&dyn Fn(nucleotide_remote::RemoteDeploymentProgress)>,

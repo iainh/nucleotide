@@ -1,8 +1,8 @@
 # Nucleotide remote protocol v5 design
 
-Status: proposed
+Status: implemented; post-v5 hardening updated 2026-07-13
 
-This document redesigns the `nucleotide-remote` workspace protocol around two protocol-level changes:
+This document defines the implemented `nucleotide-remote` v5 workspace protocol around two protocol-level changes:
 
 1. Slow operations must not block fast operations. The protocol needs multiplexing, cancellation, streaming results and backpressure.
 2. Remote file tree freshness should be event-driven where possible. The helper should watch the target filesystem and send coalesced invalidation events instead of making the UI poll expanded directories every few seconds.
@@ -11,17 +11,23 @@ The user goal is a remote workspace that feels local: file tree changes appear q
 
 ## Current behaviour
 
-The current protocol in `crates/nucleotide-remote` is a framed stdio protocol using JSON headers plus optional raw bodies. It already has a clear workspace service boundary and supports stat, list, batched list, ancestor lookup, create, rename, delete, copy, read, write, search, git, project environment and process execution. It also has frame kinds named `Data`, `Progress` and `Cancel`, but the client/server flow still behaves as a single request/response channel.
+Protocol v5 is the active remote workspace protocol. It uses fixed binary frames, protobuf control messages and raw `DATA` bodies over SSH, WSL or local stdio. The client multiplexes requests through one reader and serialized writer. The server admits work through bounded class-specific pools and schedules response traffic by priority.
 
-Current limitations:
+The implementation includes:
 
-- The workspace client serializes requests behind a shared transport lock, and the service loop reads a request, executes it synchronously, and writes one response.
-- Slow `text_search`, `file_search`, `git_status`, `project_environment` or `run_process` work can delay interactive file tree, stat or read requests.
-- Large reads, writes and process output are whole-response operations bounded by frame limits instead of streaming operations with backpressure.
-- Cancellation is not implemented end to end. Once a request starts, the client can stop caring, but the server keeps spending remote CPU and I/O.
-- Remote file tree updates poll expanded directories every 2 seconds, then back off to 16 seconds while idle. Local file trees use filesystem notifications.
+- Concurrent odd/even streams, negotiated limits and capabilities, cancellation, deadlines, progress, partial results and per-stream compression.
+- Flow-controlled file, process and search data with lazy, shared-buffer DATA producers instead of eager per-frame copies.
+- Atomic reset and teardown that purge queued frames, flow state and request state before a terminal frame is sent.
+- Receive-window validation, decoded chunk limits, declared-length checks and cumulative request/response limits.
+- Connection-terminal client write failures that fail all waiters, invalidate caches and preserve typed ambiguous outcomes for mutations.
+- Server cancellation on peer loss and enforced shutdown-grace cancellation for queued and cooperative active work.
+- Count- and byte-bounded watch batches, explicit overflow/resync events and bounded client delivery.
+- Directory generations, fingerprints, `not_modified` responses, deltas and bounded server-side directory caching.
+- Safe read-only reconnect replay, configuration-derived startup options, bounded probe/handshake processes, OpenSSH connection reuse and transport keepalives.
 
-These are protocol problems, not just implementation details, because the wire format currently has no durable model for concurrent in-flight work or server-initiated watch events.
+Post-v5 hardening also bounds the server producer-to-writer lanes, propagates validated priority through worker admission and response scheduling, and limits queued wire batches. The associated regression tests cover partial writes, blocked-flow resets, decompression bounds, watch storms, EOF cancellation and reconnect ambiguity.
+
+Some architectural work remains. The synchronous workspace API still returns complete file/search/process results instead of exposing incremental consumers, so receive credit reflects transport demultiplexing rather than final UI consumption. Ordinary client requests do not yet have a default inactivity deadline or client-side heartbeat watchdog. Generic filesystem calls cannot be force-cancelled once blocked in the operating system. Reconnect does not yet restore watches, and UI cancellation does not yet propagate through every startup stage. Child handshakes and command probes have deadlines and reap their direct child; Unix probes also terminate descendants that remain in the child's process group. Windows needs job-object containment for the equivalent descendant guarantee, and no userspace deadline can force an uninterruptible operating-system wait to return. Browse-session handoff also remains future work. These are follow-up lifecycle and integration changes, not missing v5 wire primitives.
 
 ## Design goals
 
@@ -32,7 +38,7 @@ These are protocol problems, not just implementation details, because the wire f
 - Bound memory and network pressure with per-stream and per-connection flow control.
 - Keep the current operational model: `nucleotide-remote` is launched over SSH or WSL stdio, with no listening port required.
 - Preserve workspace write containment and the current read-only external-file escape hatch used for LSP/toolchain navigation.
-- Let old helpers continue to work while the v5 protocol is rolled out.
+- Detect incompatible older helpers and replace them atomically with a verified v5 binary.
 
 ## Non-goals
 
@@ -290,8 +296,8 @@ Priority values:
 
 Implementation model:
 
-- The client transport has one reader task, one writer task and an in-flight stream map.
-- The server transport has one reader task, one writer task and a scheduler.
+- The client transport has one reader thread, a mutex-serialized writer and an in-flight stream map.
+- The server transport has one reader thread, a service-loop-owned writer and a scheduler.
 - Handlers run in bounded task pools by class: metadata, file body, search, git/env and process.
 - The writer picks frames using priority plus round-robin fairness so a single bulk stream cannot monopolize the connection.
 
@@ -311,12 +317,14 @@ Settings:
 
 Rules:
 
-- `DATA` consumes stream and connection window.
+- `DATA` consumes stream and connection window according to its decoded length, so compression cannot bypass retained-memory backpressure.
 - `HELLO`, `SETTINGS`, `SETTINGS_ACK`, `HEADERS`, `END_STREAM`, `RESET_STREAM`, `WINDOW_UPDATE`, `PING`, `PONG` and `GOAWAY` do not consume flow-control window.
-- A receiver sends `WINDOW_UPDATE` after consuming bytes into the workspace/backend/UI layer, not merely after reading from stdio.
+- A receiver sends `WINDOW_UPDATE` after bounded transport/backend storage accepts the bytes, not merely after reading from stdio. Incremental application consumers should delay this update until they release channel capacity.
 - If a sender exhausts stream credit, it must pause that stream and allow other streams with credit to progress.
-- Non-`DATA` frames are still bounded. Default queued control bytes are 1 MiB per connection and 256 KiB per stream. A peer that exceeds either budget gets `RESOURCE_EXHAUSTED` or connection-level `GOAWAY`.
-- A peer sends unsolicited health-check `PING` frames at the negotiated idle cadence; the default helper cadence is 30 seconds. Replies to received `PING` frames do not count as unsolicited pings.
+- Non-`DATA` frames are still bounded. Default queued control bytes are 1 MiB per connection and 256 KiB per stream. A peer that exceeds either budget gets `RESOURCE_EXHAUSTED` or connection-level `GOAWAY`. Small `RESET_STREAM`, `WINDOW_UPDATE`, `PING` and `PONG` frames use a reserved urgent lane so saturation cannot prevent teardown or liveness traffic.
+- The helper sends unsolicited health-check `PING` frames at the negotiated idle cadence; the default is 30 seconds. Replies to received `PING` frames do not count as unsolicited pings.
+
+Default retained decoded-byte budgets are 260 MiB for all client outbound requests, 260 MiB for all server request accumulators, 64 MiB for all client response accumulators and 64 MiB for server completion payloads being serialized. The server worker-output channel retains at most 64 events of 64 KiB each, and the scheduler admits at most another 64 lazy items. These are logical payload bounds; allocator spare capacity, domain objects constructed before serialization and parsed object overhead are not byte-exact.
 
 Why:
 
@@ -637,7 +645,7 @@ What:
 - Mutating filesystem methods are constrained to the workspace root.
 - `external_read_only` paths are permitted only for read/stat operations and only when enabled in server capabilities.
 - Watch roots are constrained to the workspace root in v5.0.
-- Process execution inherits the existing remote workspace environment policy and must carry explicit limits for output, runtime and working directory.
+- Process execution inherits the existing remote workspace environment policy and carries explicit output and working-directory constraints. Callers that require a runtime bound must supply a process timeout or protocol deadline.
 
 Why:
 
@@ -646,13 +654,19 @@ Why:
 
 ## Client integration
 
-What:
+Current integration:
 
-- Route backend calls through the async v5 multiplexed transport handle.
-- Each backend method opens a stream and awaits the final response while consuming progress/data events.
+- Backend calls use the v5 multiplexed transport handle through the existing synchronous workspace-client boundary.
+- Each backend method opens a stream and awaits the final response. The central reader validates and accumulates partial/data events under connection and per-stream limits.
 - File tree starts `watch.start` when `watch_filesystem` is enabled and the server advertises `watch`.
 - Existing remote polling remains as fallback and as low-frequency reconciliation when watching is active.
 - UI components receive the same domain-level events they receive today: directory refreshes, file system changed, VCS changed and process output.
+
+Next integration:
+
+- Replace whole-result accumulation for large files, search and process output with bounded incremental consumers.
+- Tie `WINDOW_UPDATE` to consumer capacity and reset a request when its handle is dropped.
+- Restore desired watches after reconnect, then emit a mandatory resync before applying new batches.
 
 Why:
 
@@ -674,20 +688,27 @@ Why:
 - This separates protocol correctness from filesystem/search/git implementation.
 - It also gives tests clear seams: frame tests, scheduler tests, handler tests and watch tests.
 
-## Implementation plan
+## Implementation status and remaining plan
 
-1. Keep v5 as the sole supported remote workspace protocol for helper launch, CLI `serve`, tests and documentation.
-2. Keep multiplexing as the baseline for existing one-shot methods.
-3. Add cancellation, deadlines, progress and scheduler priorities.
-4. Convert `fs.read`, `fs.write`, `process.run` and search methods to streaming.
-5. Add `watch.start`, `watch.update`, `watch.stop` and `watch.batch`; keep remote polling as a v5 capability fallback and low-frequency reconciliation path.
-6. Add directory generations, `not_modified` responses and optional deltas.
-7. Remove obsolete protocol compatibility fixtures when the equivalent loopback, SSH and WSL v5 fixtures cover the behaviour.
+The v5 baseline is complete:
 
-Why:
+1. v5 is the sole helper, CLI `serve`, test and documentation wire protocol.
+2. Multiplexing, bounded worker classes, cancellation metadata, deadlines, progress and priorities are active.
+3. `fs.read`, `fs.write`, `process.run` and search use flow-controlled DATA frames.
+4. `watch.start`, `watch.update`, `watch.stop`, `watch.resync` and `watch.batch` are active with polling fallback.
+5. Directory generations, fingerprints, `not_modified` responses and optional deltas are active.
 
-- Multiplexing is the foundation for every other improvement, and it can be tested without changing method semantics.
-- Watch rollout should be late enough that cancellation, events and stream reliability are already proven.
+The 2026-07-13 hardening pass adds executable failure and memory invariants around the baseline. It includes atomic stream teardown, decoded-data bounds, receive-window enforcement, lazy producers, bounded server and watch queues, deadline-bound startup commands with direct-child reaping and Unix process-group cleanup, a child-handshake watchdog, terminal transport errors, typed recovery outcomes, end-to-end priority propagation and shutdown cleanup.
+
+The next integration work should:
+
+1. Expose cancel-on-drop, incremental file/search/process consumers and consumption-based receive credit above the transport.
+2. Restore desired watches after reconnect and require a generation resync before applying new deltas.
+3. Make the complete startup attempt cancellable and add safe browse-session handoff or bootstrap reuse.
+4. Add default client request/inactivity deadlines, a client heartbeat watchdog and inbound frame-sequence validation.
+5. Expand loopback, Linux SSH and WSL fault/load fixtures, including stalled-peer memory and latency assertions.
+
+Multiplexing remains the foundation. Future encoding or daemon work should follow measured queue, latency and recovery results rather than replace the implemented v5 state machine.
 
 ## Testing strategy
 
@@ -734,7 +755,7 @@ Performance checks:
 
 ## Open questions
 
-- Should v5.0 implement protobuf only, or keep JSON as a negotiated debug codec for early development builds?
+- Which high-volume JSON method payloads merit a measured migration to protobuf now that control messages use protobuf exclusively?
 - Should recursive project-root watch be enabled by default on platforms with efficient recursive notifications, or should expanded-directory watching remain the default everywhere?
 - Should a future helper daemon share watch state, environment capture and git caches across multiple windows?
 - Should local workspaces optionally use the same v5 backend for parity testing?
