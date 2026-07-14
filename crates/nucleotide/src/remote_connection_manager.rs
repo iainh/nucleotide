@@ -3,7 +3,9 @@
 
 use std::collections::BTreeSet;
 use std::ffi::OsString;
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{Context as _, Result, anyhow};
 use gpui::prelude::FluentBuilder;
@@ -32,7 +34,7 @@ use nucleotide_workspace::{
     classify_workspace_location, ssh_display_path, wsl_display_path,
 };
 
-use crate::application::workspace_backend_for_project_directory_with_options_and_progress;
+use crate::application::workspace_backend_for_project_directory_with_options_progress_and_startup_context;
 use crate::file_tree::icons::chevron_icon;
 use crate::remote_connections::{RemoteConnectionStore, target_to_string, valid_connection_name};
 
@@ -200,20 +202,30 @@ enum RemoteManagerTaskEvent {
 struct ConnectionAttemptState {
     generation: u64,
     active: bool,
+    startup: Option<nucleotide_remote::RemoteStartupAttempt>,
 }
 
 impl ConnectionAttemptState {
-    fn begin(&mut self) -> Option<u64> {
+    fn begin(
+        &mut self,
+        timeout: Duration,
+    ) -> Option<(u64, nucleotide_remote::RemoteStartupContext)> {
         if self.active {
             return None;
         }
 
         self.generation = self.generation.wrapping_add(1).max(1);
         self.active = true;
-        Some(self.generation)
+        let startup = nucleotide_remote::RemoteStartupAttempt::new(timeout);
+        let context = startup.context();
+        self.startup = Some(startup);
+        Some((self.generation, context))
     }
 
     fn invalidate(&mut self) {
+        if let Some(mut startup) = self.startup.take() {
+            startup.cancel();
+        }
         self.generation = self.generation.wrapping_add(1).max(1);
         self.active = false;
     }
@@ -236,6 +248,9 @@ impl ConnectionAttemptState {
         }
 
         self.active = false;
+        if let Some(mut startup) = self.startup.take() {
+            startup.disarm();
+        }
         true
     }
 }
@@ -600,7 +615,10 @@ impl RemoteConnectionManagerView {
             }
         };
 
-        let Some(generation) = self.connection_attempt.begin() else {
+        let Some((generation, startup_context)) = self
+            .connection_attempt
+            .begin(self.backend_options.startup_timeout)
+        else {
             return;
         };
         self.status = Some(EditorStatus {
@@ -608,19 +626,25 @@ impl RemoteConnectionManagerView {
             severity: Severity::Info,
         });
         self.browse_session = None;
-
         let options = self.backend_options.clone();
         let handle = self.handle.clone();
+        let browse_handle = handle.clone();
         let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
         let progress_tx = event_tx.clone();
 
         let join = handle.spawn_blocking(move || {
-            connect_browse_session(target, options, |message| {
-                let _ = progress_tx.send(RemoteManagerTaskEvent::Progress {
-                    generation,
-                    message,
-                });
-            })
+            connect_browse_session(
+                target,
+                options,
+                &startup_context,
+                &browse_handle,
+                |message| {
+                    let _ = progress_tx.send(RemoteManagerTaskEvent::Progress {
+                        generation,
+                        message,
+                    });
+                },
+            )
         });
 
         handle.spawn(async move {
@@ -1462,6 +1486,12 @@ impl Focusable for RemoteConnectionManagerView {
 
 impl EventEmitter<DismissEvent> for RemoteConnectionManagerView {}
 
+impl Drop for RemoteConnectionManagerView {
+    fn drop(&mut self) {
+        self.invalidate_connection_attempt();
+    }
+}
+
 impl Render for RemoteConnectionManagerView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (
@@ -1637,15 +1667,18 @@ impl Render for RemoteConnectionManagerView {
 fn connect_browse_session(
     target: RemoteConnectTarget,
     options: nucleotide_remote::RemoteWorkspaceBackendOptions,
+    startup: &nucleotide_remote::RemoteStartupContext,
+    runtime: &tokio::runtime::Handle,
     progress: impl Fn(String),
 ) -> Result<RemoteBrowseConnection> {
+    startup.check()?;
     let (display_home, selected_path) = match target {
         RemoteConnectTarget::Ssh {
             target,
             selected_path,
         } => {
             progress(format!("Connecting to SSH host: {}", target.host));
-            let home = resolve_ssh_home(&target, &options)?;
+            let home = resolve_ssh_home(&target, &options, startup)?;
             (ssh_display_path(&target, &home), selected_path)
         }
         RemoteConnectTarget::Wsl {
@@ -1653,27 +1686,28 @@ fn connect_browse_session(
             selected_path,
         } => {
             progress(format!("Connecting to WSL distro: {distro}"));
-            let home = resolve_wsl_home(&distro)?;
+            let home = resolve_wsl_home(&distro, startup)?;
             (wsl_display_path(&distro, &home), selected_path)
         }
     };
 
+    startup.check()?;
     progress("Starting remote browse session".to_string());
-    let backend = workspace_backend_for_project_directory_with_options_and_progress(
-        Some(&display_home),
-        &options,
-        &|p| {
-            progress(p.message());
-        },
-    )?;
+    let backend =
+        workspace_backend_for_project_directory_with_options_progress_and_startup_context(
+            Some(&display_home),
+            &options,
+            &|p| {
+                progress(p.message());
+            },
+            startup,
+        )?;
 
+    startup.check()?;
     progress("Loading remote home directory".to_string());
-    let listing = futures_executor::block_on(backend.list_dir(&display_home)).map_err(|error| {
-        anyhow!(
-            "failed to list remote home {}: {error}",
-            display_home.display()
-        )
-    })?;
+    let listing = block_on_remote_startup_future(runtime, startup, backend.list_dir(&display_home))
+        .with_context(|| format!("failed to list remote home {}", display_home.display()))?;
+    startup.check()?;
 
     Ok(RemoteBrowseConnection {
         backend,
@@ -1686,7 +1720,9 @@ fn connect_browse_session(
 fn resolve_ssh_home(
     target: &SshWorkspaceTarget,
     options: &nucleotide_remote::RemoteWorkspaceBackendOptions,
+    startup: &nucleotide_remote::RemoteStartupContext,
 ) -> Result<PathBuf> {
+    startup.check()?;
     let ssh_target = nucleotide_remote::SshTarget {
         host: target.host.clone(),
         user: target.user.clone(),
@@ -1699,15 +1735,17 @@ fn resolve_ssh_home(
         nucleotide_remote::ssh_non_tty_remote_command(ssh_target, "printf '%s\\n' \"$HOME\"");
     let mut process = command.command();
     process.stdin(std::process::Stdio::null());
-    let output = nucleotide_process::output_with_limits(
+    let output = nucleotide_process::output_with_limits_and_cancellation(
         &mut process,
         nucleotide_process::OutputLimits::new(
-            nucleotide_remote::REMOTE_STARTUP_PROBE_TIMEOUT,
+            startup.cap_timeout(nucleotide_remote::REMOTE_STARTUP_PROBE_TIMEOUT)?,
             nucleotide_remote::REMOTE_STARTUP_OUTPUT_LIMIT,
             nucleotide_remote::REMOTE_STARTUP_OUTPUT_LIMIT,
         ),
-    )
-    .with_context(|| format!("failed to run {}", command.display_context()))?;
+        startup.cancellation().as_atomic_bool(),
+    );
+    startup.check()?;
+    let output = output.with_context(|| format!("failed to run {}", command.display_context()))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -1729,7 +1767,11 @@ fn resolve_ssh_home(
     Ok(PathBuf::from(home))
 }
 
-fn resolve_wsl_home(distro: &str) -> Result<PathBuf> {
+fn resolve_wsl_home(
+    distro: &str,
+    startup: &nucleotide_remote::RemoteStartupContext,
+) -> Result<PathBuf> {
+    startup.check()?;
     let mut command = nucleotide_process::command("wsl.exe");
     command.args([
         OsString::from("--distribution"),
@@ -1740,15 +1782,17 @@ fn resolve_wsl_home(distro: &str) -> Result<PathBuf> {
         OsString::from("printf '%s\\n' \"$HOME\""),
     ]);
     command.stdin(std::process::Stdio::null());
-    let output = nucleotide_process::output_with_limits(
+    let output = nucleotide_process::output_with_limits_and_cancellation(
         &mut command,
         nucleotide_process::OutputLimits::new(
-            nucleotide_remote::REMOTE_STARTUP_PROBE_TIMEOUT,
+            startup.cap_timeout(nucleotide_remote::REMOTE_STARTUP_PROBE_TIMEOUT)?,
             nucleotide_remote::REMOTE_STARTUP_OUTPUT_LIMIT,
             nucleotide_remote::REMOTE_STARTUP_OUTPUT_LIMIT,
         ),
-    )
-    .with_context(|| "failed to run wsl.exe for home directory discovery")?;
+        startup.cancellation().as_atomic_bool(),
+    );
+    startup.check()?;
+    let output = output.with_context(|| "failed to run wsl.exe for home directory discovery")?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -1768,6 +1812,41 @@ fn resolve_wsl_home(distro: &str) -> Result<PathBuf> {
     }
 
     Ok(PathBuf::from(home))
+}
+
+fn block_on_remote_startup_future<T, E, F>(
+    runtime: &tokio::runtime::Handle,
+    startup: &nucleotide_remote::RemoteStartupContext,
+    future: F,
+) -> std::result::Result<T, anyhow::Error>
+where
+    F: Future<Output = std::result::Result<T, E>>,
+    E: Into<anyhow::Error>,
+{
+    runtime.block_on(async {
+        tokio::pin!(future);
+        tokio::select! {
+            biased;
+            error = wait_for_remote_startup_stop(startup) => Err(error),
+            result = &mut future => {
+                startup.check()?;
+                result.map_err(Into::into)
+            },
+        }
+    })
+}
+
+async fn wait_for_remote_startup_stop(
+    startup: &nucleotide_remote::RemoteStartupContext,
+) -> anyhow::Error {
+    loop {
+        match startup.remaining() {
+            Ok(remaining) => {
+                tokio::time::sleep(remaining.min(Duration::from_millis(10))).await;
+            }
+            Err(error) => return error,
+        }
+    }
 }
 
 fn load_remote_server_suggestions() -> Vec<RemoteServerSuggestion> {
@@ -2264,21 +2343,89 @@ fn generated_connection_name(
 mod tests {
     use super::*;
     use nucleotide_workspace::{DirectoryEntry, FileStat};
+    use std::pin::Pin;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    use std::task::{Context as TaskContext, Poll};
+
+    struct PendingStartupFuture {
+        polled: Arc<AtomicBool>,
+        dropped: Arc<AtomicBool>,
+    }
+
+    impl Future for PendingStartupFuture {
+        type Output = std::result::Result<(), anyhow::Error>;
+
+        fn poll(self: Pin<&mut Self>, _cx: &mut TaskContext<'_>) -> Poll<Self::Output> {
+            self.polled.store(true, Ordering::Release);
+            Poll::Pending
+        }
+    }
+
+    impl Drop for PendingStartupFuture {
+        fn drop(&mut self) {
+            self.dropped.store(true, Ordering::Release);
+        }
+    }
 
     #[test]
     fn connection_attempt_state_rejects_duplicates_and_stale_completion() {
         let mut state = ConnectionAttemptState::default();
 
-        let first = state.begin().expect("first attempt should start");
-        assert_eq!(state.begin(), None);
+        let (first, first_startup) = state
+            .begin(Duration::from_secs(5))
+            .expect("first attempt should start");
+        assert!(state.begin(Duration::from_secs(5)).is_none());
 
         state.invalidate();
-        let replacement = state.begin().expect("replacement attempt should start");
+        assert!(nucleotide_remote::remote_startup_was_cancelled(
+            &first_startup.check().unwrap_err()
+        ));
+        let (replacement, replacement_startup) = state
+            .begin(Duration::from_secs(5))
+            .expect("replacement attempt should start");
         assert_ne!(replacement, first);
         assert!(!state.finish(first));
         assert!(state.is_active(replacement));
+        assert!(replacement_startup.check().is_ok());
         assert!(state.finish(replacement));
         assert!(!state.is_active(replacement));
+        assert!(replacement_startup.check().is_ok());
+    }
+
+    #[test]
+    fn startup_cancellation_drops_blocked_home_listing() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_time()
+            .build()
+            .unwrap();
+        let handle = runtime.handle().clone();
+        let startup = nucleotide_remote::RemoteStartupContext::new(Duration::from_secs(5));
+        let worker_startup = startup.clone();
+        let polled = Arc::new(AtomicBool::new(false));
+        let dropped = Arc::new(AtomicBool::new(false));
+        let future = PendingStartupFuture {
+            polled: Arc::clone(&polled),
+            dropped: Arc::clone(&dropped),
+        };
+        let worker = std::thread::spawn(move || {
+            block_on_remote_startup_future(&handle, &worker_startup, future)
+        });
+        let started = std::time::Instant::now();
+        while !polled.load(Ordering::Acquire) {
+            assert!(started.elapsed() < Duration::from_secs(1));
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        startup.cancel();
+        let error = worker.join().unwrap().unwrap_err();
+
+        assert!(nucleotide_remote::remote_startup_was_cancelled(&error));
+        assert!(dropped.load(Ordering::Acquire));
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 
     #[test]

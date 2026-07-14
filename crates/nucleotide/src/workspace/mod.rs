@@ -60,7 +60,7 @@ use nucleotide_lsp::{LspStatusKind, LspStatusSummary, ServerStatus};
 
 use crate::application::{
     LspCompletionTrigger, find_workspace_root_from,
-    workspace_backend_for_project_directory_with_options_and_progress,
+    workspace_backend_for_project_directory_with_options_progress_and_startup_context,
 };
 use crate::document::DocumentView;
 use crate::file_tree::{
@@ -1111,13 +1111,14 @@ pub struct Workspace {
     last_remote_open_target: Option<RemoteOpenTarget>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct PendingRemoteOpen {
     id: u64,
     target: RemoteOpenTarget,
     backend_options: nucleotide_remote::RemoteWorkspaceBackendOptions,
     workspace_root: PathBuf,
     activity_id: BackgroundActivityId,
+    startup: nucleotide_remote::RemoteStartupAttempt,
 }
 
 fn pending_remote_open_matches(
@@ -9276,12 +9277,15 @@ impl Workspace {
         }
         let message = format!("Connecting to remote project: {}", workspace_root.display());
         let activity_id = self.start_background_activity(message.clone(), cx);
+        let startup = nucleotide_remote::RemoteStartupAttempt::new(backend_options.startup_timeout);
+        let startup_context = startup.context();
         self.pending_remote_open = Some(PendingRemoteOpen {
             id: remote_open_id,
             target: target.clone(),
             backend_options: backend_options.clone(),
             workspace_root: workspace_root.clone(),
             activity_id,
+            startup,
         });
 
         self.push_editor_status_notification(
@@ -9315,10 +9319,11 @@ impl Workspace {
                 });
             };
 
-            workspace_backend_for_project_directory_with_options_and_progress(
+            workspace_backend_for_project_directory_with_options_progress_and_startup_context(
                 Some(&task_root),
                 &backend_options,
                 &progress_sink,
+                &startup_context,
             )
         });
 
@@ -9375,7 +9380,8 @@ impl Workspace {
                                 }
 
                                 let pending = workspace.pending_remote_open.take();
-                                if let Some(pending) = pending {
+                                if let Some(mut pending) = pending {
+                                    pending.startup.disarm();
                                     workspace.finish_background_activity(pending.activity_id, cx);
                                 }
                                 workspace.last_remote_open_target = Some(target.clone());
@@ -9409,7 +9415,8 @@ impl Workspace {
                                 }
 
                                 let pending = workspace.pending_remote_open.take();
-                                if let Some(pending) = pending {
+                                if let Some(mut pending) = pending {
+                                    pending.startup.disarm();
                                     workspace.finish_background_activity(pending.activity_id, cx);
                                 }
                                 workspace.push_editor_status_notification(
@@ -17251,6 +17258,7 @@ mod tests {
             backend_options: backend_options.clone(),
             workspace_root: target.path.clone(),
             activity_id: BackgroundActivityId(1),
+            startup: nucleotide_remote::RemoteStartupAttempt::new(backend_options.startup_timeout),
         };
 
         assert!(pending_remote_open_matches(
@@ -17282,6 +17290,12 @@ mod tests {
             None,
             &target,
             &backend_options
+        ));
+
+        let startup = pending.startup.context();
+        drop(pending);
+        assert!(nucleotide_remote::remote_startup_was_cancelled(
+            &startup.check().unwrap_err()
         ));
     }
 
