@@ -937,6 +937,69 @@ pub struct FileSearchResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileSearchEvent {
+    Batch(Vec<PathBuf>),
+    Complete { root: PathBuf, truncated: bool },
+}
+
+pub type FileSearchStream = WorkspaceEventStream<FileSearchEvent>;
+
+impl WorkspaceEventStream<FileSearchEvent> {
+    pub fn from_file_search(result: FileSearchResult) -> Self {
+        let FileSearchResult {
+            root,
+            files,
+            truncated,
+        } = result;
+        let mut events = Vec::with_capacity(usize::from(!files.is_empty()) + 1);
+        if !files.is_empty() {
+            events.push(Ok(FileSearchEvent::Batch(files)));
+        }
+        events.push(Ok(FileSearchEvent::Complete { root, truncated }));
+        Self::new(futures::stream::iter(events))
+    }
+
+    pub async fn collect_search(mut self, request_root: &Path) -> Result<FileSearchResult> {
+        let mut files = Vec::new();
+        let mut completion = None;
+        while let Some(event) = self.next().await {
+            match event? {
+                FileSearchEvent::Batch(batch) if completion.is_none() => files.extend(batch),
+                FileSearchEvent::Batch(_) => {
+                    return Err(search_stream_error(
+                        "file search stream",
+                        request_root,
+                        "received file-search results after completion",
+                    ));
+                }
+                FileSearchEvent::Complete { root, truncated } if completion.is_none() => {
+                    completion = Some((root, truncated));
+                }
+                FileSearchEvent::Complete { .. } => {
+                    return Err(search_stream_error(
+                        "file search stream",
+                        request_root,
+                        "received duplicate file-search completion",
+                    ));
+                }
+            }
+        }
+        let (root, truncated) = completion.ok_or_else(|| {
+            search_stream_error(
+                "file search stream",
+                request_root,
+                "file-search stream ended before completion",
+            )
+        })?;
+        Ok(FileSearchResult {
+            root,
+            files,
+            truncated,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TextSearchQuery {
     pub root: PathBuf,
     pub pattern: String,
@@ -992,6 +1055,81 @@ pub struct TextSearchResult {
     pub root: PathBuf,
     pub matches: Vec<TextSearchMatch>,
     pub truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TextSearchEvent {
+    Batch(Vec<TextSearchMatch>),
+    Complete { root: PathBuf, truncated: bool },
+}
+
+pub type TextSearchStream = WorkspaceEventStream<TextSearchEvent>;
+
+impl WorkspaceEventStream<TextSearchEvent> {
+    pub fn from_text_search(result: TextSearchResult) -> Self {
+        let TextSearchResult {
+            root,
+            matches,
+            truncated,
+        } = result;
+        let mut events = Vec::with_capacity(usize::from(!matches.is_empty()) + 1);
+        if !matches.is_empty() {
+            events.push(Ok(TextSearchEvent::Batch(matches)));
+        }
+        events.push(Ok(TextSearchEvent::Complete { root, truncated }));
+        Self::new(futures::stream::iter(events))
+    }
+
+    pub async fn collect_search(mut self, request_root: &Path) -> Result<TextSearchResult> {
+        let mut matches = Vec::new();
+        let mut completion = None;
+        while let Some(event) = self.next().await {
+            match event? {
+                TextSearchEvent::Batch(batch) if completion.is_none() => matches.extend(batch),
+                TextSearchEvent::Batch(_) => {
+                    return Err(search_stream_error(
+                        "text search stream",
+                        request_root,
+                        "received text-search results after completion",
+                    ));
+                }
+                TextSearchEvent::Complete { root, truncated } if completion.is_none() => {
+                    completion = Some((root, truncated));
+                }
+                TextSearchEvent::Complete { .. } => {
+                    return Err(search_stream_error(
+                        "text search stream",
+                        request_root,
+                        "received duplicate text-search completion",
+                    ));
+                }
+            }
+        }
+        let (root, truncated) = completion.ok_or_else(|| {
+            search_stream_error(
+                "text search stream",
+                request_root,
+                "text-search stream ended before completion",
+            )
+        })?;
+        Ok(TextSearchResult {
+            root,
+            matches,
+            truncated,
+        })
+    }
+}
+
+fn search_stream_error(
+    operation: &'static str,
+    root: &Path,
+    message: &'static str,
+) -> WorkspaceError {
+    WorkspaceError::Io {
+        operation,
+        path: root.to_path_buf(),
+        source: std::io::Error::new(std::io::ErrorKind::InvalidData, message),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1363,7 +1501,41 @@ pub trait WorkspaceBackend: Send + Sync {
 
     async fn file_search(&self, query: FileSearchQuery) -> Result<FileSearchResult>;
 
+    async fn file_search_stream(&self, query: FileSearchQuery) -> Result<FileSearchStream> {
+        self.file_search(query)
+            .await
+            .map(FileSearchStream::from_file_search)
+    }
+
+    async fn file_search_stream_with_cancellation(
+        &self,
+        query: FileSearchQuery,
+        cancellation: &WorkspaceCancellationToken,
+    ) -> Result<FileSearchStream> {
+        cancellation.check_cancelled("file search", &query.root)?;
+        let result = self.file_search(query.clone()).await;
+        cancellation.check_cancelled("file search", &query.root)?;
+        result.map(FileSearchStream::from_file_search)
+    }
+
     async fn text_search(&self, query: TextSearchQuery) -> Result<TextSearchResult>;
+
+    async fn text_search_stream(&self, query: TextSearchQuery) -> Result<TextSearchStream> {
+        self.text_search(query)
+            .await
+            .map(TextSearchStream::from_text_search)
+    }
+
+    async fn text_search_stream_with_cancellation(
+        &self,
+        query: TextSearchQuery,
+        cancellation: &WorkspaceCancellationToken,
+    ) -> Result<TextSearchStream> {
+        cancellation.check_cancelled("text search", &query.root)?;
+        let result = self.text_search(query.clone()).await;
+        cancellation.check_cancelled("text search", &query.root)?;
+        result.map(TextSearchStream::from_text_search)
+    }
 
     async fn project_environment(&self, root: &Path) -> Result<ProjectEnvironmentSnapshot>;
 
@@ -1527,6 +1699,19 @@ impl PathMappedWorkspaceBackend {
         result
     }
 
+    fn map_file_search_stream_to_display(&self, stream: FileSearchStream) -> FileSearchStream {
+        let mapping = self.mapping.clone();
+        WorkspaceEventStream::new(StreamExt::map(stream, move |event| {
+            event.map(|event| match event {
+                FileSearchEvent::Batch(files) => FileSearchEvent::Batch(files),
+                FileSearchEvent::Complete { root, truncated } => FileSearchEvent::Complete {
+                    root: mapping.to_display_path(&root),
+                    truncated,
+                },
+            })
+        }))
+    }
+
     fn map_text_search_query_to_native(&self, mut query: TextSearchQuery) -> TextSearchQuery {
         query.root = self.mapping.to_native_path(&query.root);
         query
@@ -1535,6 +1720,19 @@ impl PathMappedWorkspaceBackend {
     fn map_text_search_result_to_display(&self, mut result: TextSearchResult) -> TextSearchResult {
         result.root = self.mapping.to_display_path(&result.root);
         result
+    }
+
+    fn map_text_search_stream_to_display(&self, stream: TextSearchStream) -> TextSearchStream {
+        let mapping = self.mapping.clone();
+        WorkspaceEventStream::new(StreamExt::map(stream, move |event| {
+            event.map(|event| match event {
+                TextSearchEvent::Batch(matches) => TextSearchEvent::Batch(matches),
+                TextSearchEvent::Complete { root, truncated } => TextSearchEvent::Complete {
+                    root: mapping.to_display_path(&root),
+                    truncated,
+                },
+            })
+        }))
     }
 
     fn map_project_environment_to_display(
@@ -1903,11 +2101,53 @@ impl WorkspaceBackend for PathMappedWorkspaceBackend {
             .map(|result| self.map_file_search_result_to_display(result))
     }
 
+    async fn file_search_stream(&self, query: FileSearchQuery) -> Result<FileSearchStream> {
+        self.inner
+            .file_search_stream(self.map_file_search_query_to_native(query))
+            .await
+            .map(|stream| self.map_file_search_stream_to_display(stream))
+    }
+
+    async fn file_search_stream_with_cancellation(
+        &self,
+        query: FileSearchQuery,
+        cancellation: &WorkspaceCancellationToken,
+    ) -> Result<FileSearchStream> {
+        self.inner
+            .file_search_stream_with_cancellation(
+                self.map_file_search_query_to_native(query),
+                cancellation,
+            )
+            .await
+            .map(|stream| self.map_file_search_stream_to_display(stream))
+    }
+
     async fn text_search(&self, query: TextSearchQuery) -> Result<TextSearchResult> {
         self.inner
             .text_search(self.map_text_search_query_to_native(query))
             .await
             .map(|result| self.map_text_search_result_to_display(result))
+    }
+
+    async fn text_search_stream(&self, query: TextSearchQuery) -> Result<TextSearchStream> {
+        self.inner
+            .text_search_stream(self.map_text_search_query_to_native(query))
+            .await
+            .map(|stream| self.map_text_search_stream_to_display(stream))
+    }
+
+    async fn text_search_stream_with_cancellation(
+        &self,
+        query: TextSearchQuery,
+        cancellation: &WorkspaceCancellationToken,
+    ) -> Result<TextSearchStream> {
+        self.inner
+            .text_search_stream_with_cancellation(
+                self.map_text_search_query_to_native(query),
+                cancellation,
+            )
+            .await
+            .map(|stream| self.map_text_search_stream_to_display(stream))
     }
 
     async fn project_environment(&self, root: &Path) -> Result<ProjectEnvironmentSnapshot> {
@@ -4490,6 +4730,109 @@ mod tests {
                 source,
             } if error_path == path && source.kind() == std::io::ErrorKind::UnexpectedEof
         ));
+    }
+
+    #[test]
+    fn search_stream_collectors_preserve_batches_and_completion_metadata() {
+        let file_root = PathBuf::from("/project");
+        let file_stream = FileSearchStream::new(futures::stream::iter(vec![
+            Ok(FileSearchEvent::Batch(vec![PathBuf::from("src/lib.rs")])),
+            Ok(FileSearchEvent::Batch(vec![PathBuf::from("src/main.rs")])),
+            Ok(FileSearchEvent::Complete {
+                root: file_root.clone(),
+                truncated: true,
+            }),
+        ]));
+        assert_eq!(
+            block_on(file_stream.collect_search(&file_root)).unwrap(),
+            FileSearchResult {
+                root: file_root.clone(),
+                files: vec![PathBuf::from("src/lib.rs"), PathBuf::from("src/main.rs")],
+                truncated: true,
+            }
+        );
+
+        let expected_match = TextSearchMatch {
+            relative_path: PathBuf::from("src/lib.rs"),
+            line_number: 3,
+            line_text: "needle".to_string(),
+            start: 0,
+            end: 6,
+        };
+        let text_stream = TextSearchStream::new(futures::stream::iter(vec![
+            Ok(TextSearchEvent::Batch(vec![expected_match.clone()])),
+            Ok(TextSearchEvent::Complete {
+                root: file_root.clone(),
+                truncated: false,
+            }),
+        ]));
+        assert_eq!(
+            block_on(text_stream.collect_search(&file_root)).unwrap(),
+            TextSearchResult {
+                root: file_root,
+                matches: vec![expected_match],
+                truncated: false,
+            }
+        );
+    }
+
+    #[test]
+    fn path_mapped_search_streams_map_only_completion_roots() {
+        let display_root = PathBuf::from("/remote/project");
+        let native_root = PathBuf::from("/native/project");
+        let backend = PathMappedWorkspaceBackend::new(
+            local_workspace_backend(),
+            WorkspacePathMapping::new(display_root.clone(), native_root.clone()),
+        );
+        let file_batch = vec![PathBuf::from("src/lib.rs")];
+        let mut file_stream = backend.map_file_search_stream_to_display(FileSearchStream::new(
+            futures::stream::iter(vec![
+                Ok(FileSearchEvent::Batch(file_batch.clone())),
+                Ok(FileSearchEvent::Complete {
+                    root: native_root.clone(),
+                    truncated: false,
+                }),
+            ]),
+        ));
+        assert_eq!(
+            block_on(file_stream.next()).unwrap().unwrap(),
+            FileSearchEvent::Batch(file_batch)
+        );
+        assert_eq!(
+            block_on(file_stream.next()).unwrap().unwrap(),
+            FileSearchEvent::Complete {
+                root: display_root.clone(),
+                truncated: false,
+            }
+        );
+
+        let text_batch = vec![TextSearchMatch {
+            relative_path: PathBuf::from("src/lib.rs"),
+            line_number: 1,
+            line_text: "match".to_string(),
+            start: 0,
+            end: 5,
+        }];
+        let mut text_stream = backend.map_text_search_stream_to_display(TextSearchStream::new(
+            futures::stream::iter(vec![
+                Ok(TextSearchEvent::Batch(text_batch.clone())),
+                Ok(TextSearchEvent::Complete {
+                    root: native_root,
+                    truncated: true,
+                }),
+            ]),
+        ));
+        assert_eq!(
+            block_on(text_stream.next()).unwrap().unwrap(),
+            TextSearchEvent::Batch(text_batch)
+        );
+        assert_eq!(
+            block_on(text_stream.next()).unwrap().unwrap(),
+            TextSearchEvent::Complete {
+                root: display_root,
+                truncated: true,
+            }
+        );
     }
 
     #[test]

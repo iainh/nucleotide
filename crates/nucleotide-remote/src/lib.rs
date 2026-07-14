@@ -15,15 +15,16 @@ use notify::Watcher as _;
 use nucleotide_env::{EnvironmentOrigin, ProjectEnvironment, ShellEnvironmentError};
 use nucleotide_workspace::{
     DirectoryListing, FileKind, FileRead, FileReadEvent, FileReadMetadata, FileReadStream,
-    FileSearchQuery, FileSearchResult, FileStat, GitHeadResult, GitStatusEntry, GitStatusKind,
-    GitStatusOptions, GitStatusResult, LocalWorkspaceBackend, ProcessOutput, ProcessSpec,
-    ProjectEnvironmentOrigin, ProjectEnvironmentSnapshot, ReadOptions, RemoteWorkspaceIdentity,
-    RemoteWorkspaceKind, SshWorkspaceTarget, TextSearchMatch, TextSearchQuery, TextSearchResult,
-    WorkspaceBackend, WorkspaceBackendHandle, WorkspaceCancellationToken, WorkspaceError,
-    WorkspaceIdentity, WorkspaceLocation, WorkspaceWatch, WorkspaceWatchBatch,
-    WorkspaceWatchChange, WorkspaceWatchChangeKind, WorkspaceWatchDirectoryGeneration,
-    WorkspaceWatchRequest, WorkspaceWatchUpdate, WriteOptions, WriteResult,
-    local_workspace_backend, path_mapped_workspace_backend, posix_path_string,
+    FileSearchEvent, FileSearchQuery, FileSearchResult, FileSearchStream, FileStat, GitHeadResult,
+    GitStatusEntry, GitStatusKind, GitStatusOptions, GitStatusResult, LocalWorkspaceBackend,
+    ProcessOutput, ProcessSpec, ProjectEnvironmentOrigin, ProjectEnvironmentSnapshot, ReadOptions,
+    RemoteWorkspaceIdentity, RemoteWorkspaceKind, SshWorkspaceTarget, TextSearchEvent,
+    TextSearchMatch, TextSearchQuery, TextSearchResult, TextSearchStream, WorkspaceBackend,
+    WorkspaceBackendHandle, WorkspaceCancellationToken, WorkspaceError, WorkspaceIdentity,
+    WorkspaceLocation, WorkspaceWatch, WorkspaceWatchBatch, WorkspaceWatchChange,
+    WorkspaceWatchChangeKind, WorkspaceWatchDirectoryGeneration, WorkspaceWatchRequest,
+    WorkspaceWatchUpdate, WriteOptions, WriteResult, local_workspace_backend,
+    path_mapped_workspace_backend, posix_path_string,
 };
 use prost::Message as ProstMessage;
 use regex::RegexBuilder;
@@ -4587,45 +4588,28 @@ pub enum RemoteFileReadEvent {
     Complete(FileReadResponse),
 }
 
-#[must_use = "dropping a live remote file stream cancels its request"]
-pub struct RemoteFileReadStream {
-    inner: Pin<
-        Box<
-            dyn Stream<Item = std::result::Result<RemoteFileReadEvent, RemoteClientError>>
-                + Send
-                + 'static,
-        >,
-    >,
+type RemoteTerminalPredicate<E> = Box<dyn Fn(&E) -> bool + Send + Sync + 'static>;
+
+#[must_use = "dropping a live remote event stream cancels its request"]
+pub struct RemoteEventStream<E> {
+    inner: Pin<Box<dyn Stream<Item = std::result::Result<E, RemoteClientError>> + Send + 'static>>,
     cancellation: Option<RemoteRequestCancellation>,
     terminal_error: Option<Box<dyn FnOnce() + Send + 'static>>,
+    terminal_on_ok: Option<RemoteTerminalPredicate<E>>,
     finished: bool,
 }
 
-impl RemoteFileReadStream {
+impl<E> RemoteEventStream<E> {
     fn new(
-        stream: impl Stream<Item = std::result::Result<RemoteFileReadEvent, RemoteClientError>>
-        + Send
-        + 'static,
+        stream: impl Stream<Item = std::result::Result<E, RemoteClientError>> + Send + 'static,
     ) -> Self {
         Self {
             inner: Box::pin(stream),
             cancellation: None,
             terminal_error: None,
+            terminal_on_ok: None,
             finished: false,
         }
-    }
-
-    fn from_response(
-        response: FileReadResponse,
-        body: Vec<u8>,
-    ) -> std::result::Result<Self, RemoteClientError> {
-        validate_file_read_body(&response, body.len())?;
-        let mut events = Vec::with_capacity(usize::from(!body.is_empty()) + 1);
-        if !body.is_empty() {
-            events.push(Ok(RemoteFileReadEvent::Chunk(body)));
-        }
-        events.push(Ok(RemoteFileReadEvent::Complete(response)));
-        Ok(Self::new(futures::stream::iter(events)))
     }
 
     fn with_cancellation(mut self, cancellation: RemoteRequestCancellation) -> Self {
@@ -4637,10 +4621,36 @@ impl RemoteFileReadStream {
         self.terminal_error = Some(Box::new(callback));
         self
     }
+
+    fn with_terminal_predicate(
+        mut self,
+        predicate: impl Fn(&E) -> bool + Send + Sync + 'static,
+    ) -> Self {
+        self.terminal_on_ok = Some(Box::new(predicate));
+        self
+    }
 }
 
-impl Stream for RemoteFileReadStream {
-    type Item = std::result::Result<RemoteFileReadEvent, RemoteClientError>;
+pub type RemoteFileReadStream = RemoteEventStream<RemoteFileReadEvent>;
+
+impl RemoteEventStream<RemoteFileReadEvent> {
+    fn from_response(
+        response: FileReadResponse,
+        body: Vec<u8>,
+    ) -> std::result::Result<Self, RemoteClientError> {
+        validate_file_read_body(&response, body.len())?;
+        let mut events = Vec::with_capacity(usize::from(!body.is_empty()) + 1);
+        if !body.is_empty() {
+            events.push(Ok(RemoteFileReadEvent::Chunk(body)));
+        }
+        events.push(Ok(RemoteFileReadEvent::Complete(response)));
+        Ok(Self::new(futures::stream::iter(events))
+            .with_terminal_predicate(|event| matches!(event, RemoteFileReadEvent::Complete(_))))
+    }
+}
+
+impl<E> Stream for RemoteEventStream<E> {
+    type Item = std::result::Result<E, RemoteClientError>;
 
     fn poll_next(
         mut self: Pin<&mut Self>,
@@ -4651,7 +4661,11 @@ impl Stream for RemoteFileReadStream {
         }
         match self.inner.as_mut().poll_next(context) {
             Poll::Ready(Some(Ok(event))) => {
-                if matches!(event, RemoteFileReadEvent::Complete(_)) {
+                if self
+                    .terminal_on_ok
+                    .as_ref()
+                    .is_some_and(|predicate| predicate(&event))
+                {
                     self.finished = true;
                     self.cancellation = None;
                 }
@@ -4675,7 +4689,7 @@ impl Stream for RemoteFileReadStream {
     }
 }
 
-impl Drop for RemoteFileReadStream {
+impl<E> Drop for RemoteEventStream<E> {
     fn drop(&mut self) {
         if !self.finished
             && let Some(cancellation) = self.cancellation.take()
@@ -4798,6 +4812,58 @@ pub struct TextSearchResponse {
     pub root: PathBuf,
     pub matches: Vec<TextSearchMatchResponse>,
     pub truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RemoteFileSearchEvent {
+    Batch(Vec<PathBuf>),
+    Complete { root: PathBuf, truncated: bool },
+}
+
+pub type RemoteFileSearchStream = RemoteEventStream<RemoteFileSearchEvent>;
+
+impl RemoteEventStream<RemoteFileSearchEvent> {
+    fn from_response(response: FileSearchResponse) -> Self {
+        let FileSearchResponse {
+            root,
+            files,
+            truncated,
+        } = response;
+        let mut events = Vec::with_capacity(usize::from(!files.is_empty()) + 1);
+        if !files.is_empty() {
+            events.push(Ok(RemoteFileSearchEvent::Batch(files)));
+        }
+        events.push(Ok(RemoteFileSearchEvent::Complete { root, truncated }));
+        Self::new(futures::stream::iter(events)).with_terminal_predicate(|event| {
+            matches!(event, RemoteFileSearchEvent::Complete { .. })
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RemoteTextSearchEvent {
+    Batch(Vec<TextSearchMatchResponse>),
+    Complete { root: PathBuf, truncated: bool },
+}
+
+pub type RemoteTextSearchStream = RemoteEventStream<RemoteTextSearchEvent>;
+
+impl RemoteEventStream<RemoteTextSearchEvent> {
+    fn from_response(response: TextSearchResponse) -> Self {
+        let TextSearchResponse {
+            root,
+            matches,
+            truncated,
+        } = response;
+        let mut events = Vec::with_capacity(usize::from(!matches.is_empty()) + 1);
+        if !matches.is_empty() {
+            events.push(Ok(RemoteTextSearchEvent::Batch(matches)));
+        }
+        events.push(Ok(RemoteTextSearchEvent::Complete { root, truncated }));
+        Self::new(futures::stream::iter(events)).with_terminal_predicate(|event| {
+            matches!(event, RemoteTextSearchEvent::Complete { .. })
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -5232,6 +5298,9 @@ struct RemoteWorkspaceV5Shared<W> {
     outbound_request_reservations: Mutex<HashMap<u64, V5ByteReservation>>,
     waiters: Mutex<HashMap<u64, V5PendingResponse>>,
     file_waiters: Mutex<HashMap<u64, V5PendingFileRead>>,
+    search_waiters: Mutex<HashMap<u64, V5PendingSearch>>,
+    completed_file_streams: Mutex<HashMap<u64, Arc<V5FileStreamMailbox>>>,
+    completed_search_streams: Mutex<HashMap<u64, Arc<V5SearchStreamMailbox>>>,
     raw_waiters: Mutex<HashMap<u64, V5PendingRawResponse>>,
     pending_cancellations: Mutex<HashMap<u64, V5ClientCancellation>>,
     pending_receive_credits: Mutex<HashMap<u64, u64>>,
@@ -5398,6 +5467,14 @@ impl V5FileStreamMailbox {
         Ok(())
     }
 
+    fn has_pending_delivery(&self) -> bool {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        !state.chunks.is_empty() || state.completion.is_some()
+    }
+
     fn complete(&self, completion: FileReadResponse) -> std::result::Result<(), RemoteClientError> {
         let mut state = self.state.lock().map_err(v5_client_lock_error)?;
         if state.terminal {
@@ -5417,7 +5494,11 @@ impl V5FileStreamMailbox {
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if state.terminal && state.error.is_none() {
+        if state.terminal
+            && state.error.is_none()
+            && state.chunks.is_empty()
+            && state.completion.is_none()
+        {
             return 0;
         }
         let credit_bytes = state.queued_credit;
@@ -5474,6 +5555,435 @@ struct V5RemoteFileReadSource<W> {
     finished: bool,
 }
 
+enum V5SearchWireEvent {
+    FileBatch(Vec<PathBuf>),
+    TextBatch(Vec<TextSearchMatchResponse>),
+    FileComplete { root: PathBuf, truncated: bool },
+    TextComplete { root: PathBuf, truncated: bool },
+}
+
+struct V5PendingSearch {
+    mailbox: Arc<V5SearchStreamMailbox>,
+    current_method: Option<String>,
+    current_payload: Vec<u8>,
+    current_credit: u64,
+    current_bytes: usize,
+    final_method: Option<String>,
+    final_payload: Vec<u8>,
+    final_credit: u64,
+    final_bytes: usize,
+    final_error: Option<RemoteError>,
+    received_bytes: usize,
+    method: &'static str,
+    deadline: V5RequestDeadline,
+}
+
+struct V5SearchStreamMailbox {
+    state: Mutex<V5SearchStreamMailboxState>,
+    waker: AtomicWaker,
+    byte_limit: usize,
+}
+
+struct V5SearchStreamMailboxState {
+    batches: VecDeque<V5SearchStreamBatch>,
+    queued_bytes: usize,
+    queued_credit: u64,
+    reservation: V5ByteReservation,
+    completion: Option<V5SearchStreamBatch>,
+    error: Option<RemoteClientError>,
+    terminal: bool,
+}
+
+struct V5SearchStreamBatch {
+    event: V5SearchWireEvent,
+    retained_bytes: usize,
+    credit_bytes: u64,
+}
+
+struct V5SearchStreamDelivery {
+    event: V5SearchWireEvent,
+    credit_bytes: u64,
+}
+
+impl V5SearchStreamMailbox {
+    fn new(byte_limit: usize, reservation: V5ByteReservation) -> Self {
+        Self {
+            state: Mutex::new(V5SearchStreamMailboxState {
+                batches: VecDeque::new(),
+                queued_bytes: 0,
+                queued_credit: 0,
+                reservation,
+                completion: None,
+                error: None,
+                terminal: false,
+            }),
+            waker: AtomicWaker::new(),
+            byte_limit,
+        }
+    }
+
+    fn reserve_data(
+        &self,
+        retained_bytes: usize,
+        credit_bytes: u64,
+    ) -> std::result::Result<(), RemoteClientError> {
+        if usize::try_from(credit_bytes).ok() != Some(retained_bytes) {
+            return Err(RemoteClientError::Protocol(format!(
+                "v5 search DATA credit {credit_bytes} does not match decoded payload length {retained_bytes}"
+            )));
+        }
+        let mut state = self.state.lock().map_err(v5_client_lock_error)?;
+        if state.terminal {
+            return Err(RemoteClientError::ResponseIncomplete {
+                cause: "v5 search DATA arrived after terminal delivery".to_string(),
+            });
+        }
+        let queued_bytes = state
+            .queued_bytes
+            .checked_add(retained_bytes)
+            .ok_or_else(|| {
+                RemoteClientError::Protocol("v5 search delivery byte count overflowed".to_string())
+            })?;
+        if queued_bytes > self.byte_limit {
+            return Err(RemoteClientError::Protocol(format!(
+                "v5 search delivery exceeds negotiated stream window of {} bytes",
+                self.byte_limit
+            )));
+        }
+        let queued_credit = state
+            .queued_credit
+            .checked_add(credit_bytes)
+            .ok_or_else(|| {
+                RemoteClientError::Protocol("v5 search delivery credit overflowed".to_string())
+            })?;
+        state
+            .reservation
+            .try_grow(retained_bytes)
+            .map_err(|error| {
+                RemoteClientError::Protocol(format!(
+                    "v5 search delivery exceeds connection retained-byte budget: {error}"
+                ))
+            })?;
+        state.queued_bytes = queued_bytes;
+        state.queued_credit = queued_credit;
+        Ok(())
+    }
+
+    fn queued_credit(&self) -> u64 {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .queued_credit
+    }
+
+    fn has_pending_delivery(&self) -> bool {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        !state.batches.is_empty() || state.completion.is_some()
+    }
+
+    fn push_batch(
+        &self,
+        event: V5SearchWireEvent,
+        retained_bytes: usize,
+        credit_bytes: u64,
+    ) -> std::result::Result<(), RemoteClientError> {
+        let mut state = self.state.lock().map_err(v5_client_lock_error)?;
+        if state.terminal {
+            return Err(RemoteClientError::ResponseIncomplete {
+                cause: "v5 search batch arrived after terminal delivery".to_string(),
+            });
+        }
+        let can_coalesce = state.batches.back().is_some_and(|batch| {
+            batch.retained_bytes.saturating_add(retained_bytes) <= V5_FILE_STREAM_CHUNK_TARGET_BYTES
+                && matches!(
+                    (&batch.event, &event),
+                    (
+                        V5SearchWireEvent::FileBatch(_),
+                        V5SearchWireEvent::FileBatch(_)
+                    ) | (
+                        V5SearchWireEvent::TextBatch(_),
+                        V5SearchWireEvent::TextBatch(_)
+                    )
+                )
+        });
+        if !can_coalesce && state.batches.len() >= V5_FILE_STREAM_MAX_QUEUED_CHUNKS {
+            return Err(RemoteClientError::Protocol(format!(
+                "v5 search delivery exceeds {} queued batches",
+                V5_FILE_STREAM_MAX_QUEUED_CHUNKS
+            )));
+        }
+        if can_coalesce {
+            let batch = state
+                .batches
+                .back_mut()
+                .expect("coalesced search batch should exist");
+            match (&mut batch.event, event) {
+                (
+                    V5SearchWireEvent::FileBatch(existing),
+                    V5SearchWireEvent::FileBatch(mut next),
+                ) => {
+                    existing.append(&mut next);
+                }
+                (
+                    V5SearchWireEvent::TextBatch(existing),
+                    V5SearchWireEvent::TextBatch(mut next),
+                ) => {
+                    existing.append(&mut next);
+                }
+                _ => unreachable!("search batch kinds were checked before coalescing"),
+            }
+            batch.retained_bytes = batch
+                .retained_bytes
+                .checked_add(retained_bytes)
+                .ok_or_else(|| {
+                    RemoteClientError::Protocol(
+                        "v5 search batch retained byte count overflowed".to_string(),
+                    )
+                })?;
+            batch.credit_bytes = batch
+                .credit_bytes
+                .checked_add(credit_bytes)
+                .ok_or_else(|| {
+                    RemoteClientError::Protocol("v5 search batch credit overflowed".to_string())
+                })?;
+        } else {
+            state.batches.push_back(V5SearchStreamBatch {
+                event,
+                retained_bytes,
+                credit_bytes,
+            });
+        }
+        drop(state);
+        self.waker.wake();
+        Ok(())
+    }
+
+    fn complete(
+        &self,
+        event: V5SearchWireEvent,
+        retained_bytes: usize,
+        credit_bytes: u64,
+    ) -> std::result::Result<(), RemoteClientError> {
+        let mut state = self.state.lock().map_err(v5_client_lock_error)?;
+        if state.terminal {
+            return Err(RemoteClientError::Protocol(
+                "v5 search stream completed more than once".to_string(),
+            ));
+        }
+        state.completion = Some(V5SearchStreamBatch {
+            event,
+            retained_bytes,
+            credit_bytes,
+        });
+        state.terminal = true;
+        drop(state);
+        self.waker.wake();
+        Ok(())
+    }
+
+    fn fail(&self, error: RemoteClientError) -> u64 {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.terminal
+            && state.error.is_none()
+            && state.batches.is_empty()
+            && state.completion.is_none()
+        {
+            return 0;
+        }
+        let credit_bytes = state.queued_credit;
+        state.batches.clear();
+        state.queued_bytes = 0;
+        state.queued_credit = 0;
+        state.reservation.release_all();
+        state.completion = None;
+        state.error = Some(error);
+        state.terminal = true;
+        drop(state);
+        self.waker.wake();
+        credit_bytes
+    }
+
+    fn poll_delivery(
+        &self,
+        context: &mut TaskContext<'_>,
+    ) -> Poll<Option<std::result::Result<V5SearchStreamDelivery, RemoteClientError>>> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(batch) = state.batches.pop_front() {
+            state.queued_bytes = state.queued_bytes.saturating_sub(batch.retained_bytes);
+            state.queued_credit = state.queued_credit.saturating_sub(batch.credit_bytes);
+            state.reservation.release(batch.retained_bytes);
+            return Poll::Ready(Some(Ok(V5SearchStreamDelivery {
+                event: batch.event,
+                credit_bytes: batch.credit_bytes,
+            })));
+        }
+        if let Some(completion) = state.completion.take() {
+            state.queued_bytes = state.queued_bytes.saturating_sub(completion.retained_bytes);
+            state.queued_credit = state.queued_credit.saturating_sub(completion.credit_bytes);
+            state.reservation.release(completion.retained_bytes);
+            return Poll::Ready(Some(Ok(V5SearchStreamDelivery {
+                event: completion.event,
+                credit_bytes: completion.credit_bytes,
+            })));
+        }
+        if let Some(error) = state.error.take() {
+            return Poll::Ready(Some(Err(error)));
+        }
+        if state.terminal {
+            return Poll::Ready(None);
+        }
+        self.waker.register(context.waker());
+        Poll::Pending
+    }
+}
+
+struct V5RemoteFileSearchSource<W> {
+    shared: Weak<RemoteWorkspaceV5Shared<W>>,
+    mailbox: Arc<V5SearchStreamMailbox>,
+    stream_id: u64,
+    finished: bool,
+}
+
+impl<W> Stream for V5RemoteFileSearchSource<W>
+where
+    W: Write,
+{
+    type Item = std::result::Result<RemoteFileSearchEvent, RemoteClientError>;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        context: &mut TaskContext<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        if self.finished {
+            return Poll::Ready(None);
+        }
+        match self.mailbox.poll_delivery(context) {
+            Poll::Ready(Some(Ok(delivery))) => {
+                if delivery.credit_bytes > 0
+                    && let Some(shared) = self.shared.upgrade()
+                    && let Err(error) = queue_v5_released_receive_credit(
+                        &shared,
+                        self.stream_id,
+                        delivery.credit_bytes,
+                    )
+                {
+                    self.finished = true;
+                    fail_all_v5_waiters_for_error(&shared, &error);
+                    return Poll::Ready(Some(Err(error)));
+                }
+                let event = match delivery.event {
+                    V5SearchWireEvent::FileBatch(files) => RemoteFileSearchEvent::Batch(files),
+                    V5SearchWireEvent::FileComplete { root, truncated } => {
+                        self.finished = true;
+                        if let Some(shared) = self.shared.upgrade() {
+                            shared
+                                .completed_search_streams
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                                .remove(&self.stream_id);
+                        }
+                        RemoteFileSearchEvent::Complete { root, truncated }
+                    }
+                    _ => {
+                        self.finished = true;
+                        return Poll::Ready(Some(Err(RemoteClientError::Protocol(
+                            "v5 file-search stream received text-search delivery".to_string(),
+                        ))));
+                    }
+                };
+                Poll::Ready(Some(Ok(event)))
+            }
+            Poll::Ready(Some(Err(error))) => {
+                self.finished = true;
+                Poll::Ready(Some(Err(error)))
+            }
+            Poll::Ready(None) => {
+                self.finished = true;
+                Poll::Ready(None)
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+struct V5RemoteTextSearchSource<W> {
+    shared: Weak<RemoteWorkspaceV5Shared<W>>,
+    mailbox: Arc<V5SearchStreamMailbox>,
+    stream_id: u64,
+    finished: bool,
+}
+
+impl<W> Stream for V5RemoteTextSearchSource<W>
+where
+    W: Write,
+{
+    type Item = std::result::Result<RemoteTextSearchEvent, RemoteClientError>;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        context: &mut TaskContext<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        if self.finished {
+            return Poll::Ready(None);
+        }
+        match self.mailbox.poll_delivery(context) {
+            Poll::Ready(Some(Ok(delivery))) => {
+                if delivery.credit_bytes > 0
+                    && let Some(shared) = self.shared.upgrade()
+                    && let Err(error) = queue_v5_released_receive_credit(
+                        &shared,
+                        self.stream_id,
+                        delivery.credit_bytes,
+                    )
+                {
+                    self.finished = true;
+                    fail_all_v5_waiters_for_error(&shared, &error);
+                    return Poll::Ready(Some(Err(error)));
+                }
+                let event = match delivery.event {
+                    V5SearchWireEvent::TextBatch(matches) => RemoteTextSearchEvent::Batch(matches),
+                    V5SearchWireEvent::TextComplete { root, truncated } => {
+                        self.finished = true;
+                        if let Some(shared) = self.shared.upgrade() {
+                            shared
+                                .completed_search_streams
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                                .remove(&self.stream_id);
+                        }
+                        RemoteTextSearchEvent::Complete { root, truncated }
+                    }
+                    _ => {
+                        self.finished = true;
+                        return Poll::Ready(Some(Err(RemoteClientError::Protocol(
+                            "v5 text-search stream received file-search delivery".to_string(),
+                        ))));
+                    }
+                };
+                Poll::Ready(Some(Ok(event)))
+            }
+            Poll::Ready(Some(Err(error))) => {
+                self.finished = true;
+                Poll::Ready(Some(Err(error)))
+            }
+            Poll::Ready(None) => {
+                self.finished = true;
+                Poll::Ready(None)
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
 impl<W> Stream for V5RemoteFileReadSource<W>
 where
     W: Write,
@@ -5503,6 +6013,13 @@ where
                 }
                 if matches!(delivery.event, RemoteFileReadEvent::Complete(_)) {
                     self.finished = true;
+                    if let Some(shared) = self.shared.upgrade() {
+                        shared
+                            .completed_file_streams
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .remove(&self.stream_id);
+                    }
                 }
                 Poll::Ready(Some(Ok(delivery.event)))
             }
@@ -6035,6 +6552,261 @@ impl V5PendingFileRead {
     }
 }
 
+enum V5SearchStreamObservation {
+    Continue { acknowledge_data: bool },
+    Complete,
+}
+
+impl V5PendingSearch {
+    fn reserve_payload_data(
+        &mut self,
+        body_len: usize,
+        data_credit: Option<(u64, u64)>,
+    ) -> std::result::Result<u64, RemoteClientError> {
+        let (_, credit_bytes) = data_credit.ok_or_else(|| {
+            RemoteClientError::Protocol("v5 search DATA did not carry receive credit".to_string())
+        })?;
+        let received_bytes = self.received_bytes.checked_add(body_len).ok_or_else(|| {
+            RemoteClientError::Protocol("v5 search decoded byte count overflowed".to_string())
+        })?;
+        if received_bytes > V5_MAX_ACCUMULATED_RESPONSE_BYTES {
+            return Err(RemoteClientError::Protocol(format!(
+                "v5 search response exceeds decoded byte limit of {V5_MAX_ACCUMULATED_RESPONSE_BYTES}"
+            )));
+        }
+        self.mailbox.reserve_data(body_len, credit_bytes)?;
+        self.received_bytes = received_bytes;
+        Ok(credit_bytes)
+    }
+
+    fn finish_current(&mut self) -> std::result::Result<(), RemoteClientError> {
+        let Some(method) = self.current_method.take() else {
+            return Ok(());
+        };
+        let payload = std::mem::take(&mut self.current_payload);
+        let retained_bytes = std::mem::take(&mut self.current_bytes);
+        let credit_bytes = std::mem::take(&mut self.current_credit);
+        let response = RemoteResponse::from_v5_payload(&method, &payload)
+            .map_err(v5_method_error_to_client_error)?;
+        let event = match (self.method, response) {
+            ("search.files", RemoteResponse::FileSearch(response)) => {
+                V5SearchWireEvent::FileBatch(response.files)
+            }
+            ("search.text", RemoteResponse::TextSearch(response)) => {
+                V5SearchWireEvent::TextBatch(response.matches)
+            }
+            (_, other) => {
+                return Err(RemoteClientError::Protocol(format!(
+                    "unexpected v5 search partial response: {other:?}"
+                )));
+            }
+        };
+        self.mailbox.push_batch(event, retained_bytes, credit_bytes)
+    }
+
+    fn finish_final(&mut self) -> std::result::Result<(), RemoteClientError> {
+        self.finish_current()?;
+        if let Some(error) = self.final_error.take() {
+            return Err(RemoteClientError::Remote(error));
+        }
+        let Some(method) = self.final_method.take() else {
+            return Err(RemoteClientError::Protocol(
+                "v5 search stream ended without final response".to_string(),
+            ));
+        };
+        if method != self.method {
+            return Err(RemoteClientError::Protocol(format!(
+                "v5 search stream expected {} response, received {method}",
+                self.method
+            )));
+        }
+        let response = RemoteResponse::from_v5_payload(&method, &self.final_payload)
+            .map_err(v5_method_error_to_client_error)?;
+        let retained_bytes = std::mem::take(&mut self.final_bytes);
+        let credit_bytes = std::mem::take(&mut self.final_credit);
+        match response {
+            RemoteResponse::FileSearch(response) if self.method == "search.files" => {
+                let FileSearchResponse {
+                    root,
+                    files,
+                    truncated,
+                } = response;
+                if files.is_empty() {
+                    self.mailbox.complete(
+                        V5SearchWireEvent::FileComplete { root, truncated },
+                        retained_bytes,
+                        credit_bytes,
+                    )
+                } else {
+                    self.mailbox.push_batch(
+                        V5SearchWireEvent::FileBatch(files),
+                        retained_bytes,
+                        credit_bytes,
+                    )?;
+                    self.mailbox
+                        .complete(V5SearchWireEvent::FileComplete { root, truncated }, 0, 0)
+                }
+            }
+            RemoteResponse::TextSearch(response) if self.method == "search.text" => {
+                let TextSearchResponse {
+                    root,
+                    matches,
+                    truncated,
+                } = response;
+                if matches.is_empty() {
+                    self.mailbox.complete(
+                        V5SearchWireEvent::TextComplete { root, truncated },
+                        retained_bytes,
+                        credit_bytes,
+                    )
+                } else {
+                    self.mailbox.push_batch(
+                        V5SearchWireEvent::TextBatch(matches),
+                        retained_bytes,
+                        credit_bytes,
+                    )?;
+                    self.mailbox
+                        .complete(V5SearchWireEvent::TextComplete { root, truncated }, 0, 0)
+                }
+            }
+            other => Err(RemoteClientError::Protocol(format!(
+                "unexpected v5 search final response: {other:?}"
+            ))),
+        }
+    }
+
+    fn observe(
+        &mut self,
+        event: protocol_v5::StreamEvent,
+        data_credit: Option<(u64, u64)>,
+    ) -> std::result::Result<V5SearchStreamObservation, RemoteClientError> {
+        match event {
+            protocol_v5::StreamEvent::Headers {
+                role: protocol_v5::MessageRole::PartialResult,
+                envelope,
+                ..
+            } => {
+                self.finish_current()?;
+                if envelope.method != self.method {
+                    return Err(RemoteClientError::Protocol(format!(
+                        "v5 search stream expected {}, received partial {}",
+                        self.method, envelope.method
+                    )));
+                }
+                self.current_method = Some(envelope.method);
+                Ok(V5SearchStreamObservation::Continue {
+                    acknowledge_data: true,
+                })
+            }
+            protocol_v5::StreamEvent::Headers {
+                role: protocol_v5::MessageRole::FinalResponse,
+                envelope,
+                ..
+            } => {
+                self.finish_current()?;
+                if self.final_method.is_some() || self.final_error.is_some() {
+                    return Err(RemoteClientError::Protocol(
+                        "v5 search stream received duplicate final headers".to_string(),
+                    ));
+                }
+                self.final_method = Some(envelope.method);
+                Ok(V5SearchStreamObservation::Continue {
+                    acknowledge_data: true,
+                })
+            }
+            protocol_v5::StreamEvent::Headers {
+                role: protocol_v5::MessageRole::FinalError,
+                envelope,
+                ..
+            } => {
+                self.finish_current()?;
+                if self.final_method.is_some() || self.final_error.is_some() {
+                    return Err(RemoteClientError::Protocol(
+                        "v5 search stream received duplicate final headers".to_string(),
+                    ));
+                }
+                self.final_method = Some(envelope.method.clone());
+                self.final_error = Some(v5_final_error_from_envelope(envelope)?);
+                Ok(V5SearchStreamObservation::Continue {
+                    acknowledge_data: true,
+                })
+            }
+            protocol_v5::StreamEvent::Data {
+                channel: protocol_v5::DataChannel::SearchPayload,
+                body,
+                ..
+            } => {
+                if self.current_method.is_none() {
+                    return Err(RemoteClientError::Protocol(
+                        "v5 search payload arrived without partial-result headers".to_string(),
+                    ));
+                }
+                let credit_bytes = self.reserve_payload_data(body.len(), data_credit)?;
+                self.current_bytes =
+                    self.current_bytes.checked_add(body.len()).ok_or_else(|| {
+                        RemoteClientError::Protocol(
+                            "v5 partial search payload length overflowed".to_string(),
+                        )
+                    })?;
+                self.current_credit =
+                    self.current_credit
+                        .checked_add(credit_bytes)
+                        .ok_or_else(|| {
+                            RemoteClientError::Protocol(
+                                "v5 partial search payload credit overflowed".to_string(),
+                            )
+                        })?;
+                self.current_payload.extend(body);
+                Ok(V5SearchStreamObservation::Continue {
+                    acknowledge_data: false,
+                })
+            }
+            protocol_v5::StreamEvent::Data {
+                channel: protocol_v5::DataChannel::Unspecified,
+                body,
+                ..
+            } => {
+                let credit_bytes = self.reserve_payload_data(body.len(), data_credit)?;
+                self.final_bytes = self.final_bytes.checked_add(body.len()).ok_or_else(|| {
+                    RemoteClientError::Protocol(
+                        "v5 final search payload length overflowed".to_string(),
+                    )
+                })?;
+                self.final_credit =
+                    self.final_credit.checked_add(credit_bytes).ok_or_else(|| {
+                        RemoteClientError::Protocol(
+                            "v5 final search payload credit overflowed".to_string(),
+                        )
+                    })?;
+                self.final_payload.extend(body);
+                Ok(V5SearchStreamObservation::Continue {
+                    acknowledge_data: false,
+                })
+            }
+            protocol_v5::StreamEvent::EndStream { .. } => {
+                self.finish_final()?;
+                Ok(V5SearchStreamObservation::Complete)
+            }
+            protocol_v5::StreamEvent::ResetStream {
+                code, diagnostic, ..
+            } => Err(RemoteClientError::Remote(RemoteError {
+                code,
+                message: "v5 search stream reset".to_string(),
+                diagnostic: (!diagnostic.is_empty()).then_some(diagnostic),
+            })),
+            protocol_v5::StreamEvent::Data { channel, .. } => Err(RemoteClientError::Protocol(
+                format!("unexpected {channel:?} DATA on v5 search stream"),
+            )),
+            protocol_v5::StreamEvent::Headers { .. } => {
+                self.finish_current()?;
+                Ok(V5SearchStreamObservation::Continue {
+                    acknowledge_data: true,
+                })
+            }
+        }
+    }
+}
+
 fn reserve_v5_client_request_bytes(
     budget: &V5ConnectionByteBudget,
     method: &str,
@@ -6287,6 +7059,9 @@ where
             outbound_request_reservations: Mutex::new(HashMap::new()),
             waiters: Mutex::new(HashMap::new()),
             file_waiters: Mutex::new(HashMap::new()),
+            search_waiters: Mutex::new(HashMap::new()),
+            completed_file_streams: Mutex::new(HashMap::new()),
+            completed_search_streams: Mutex::new(HashMap::new()),
             raw_waiters: Mutex::new(HashMap::new()),
             pending_cancellations: Mutex::new(HashMap::new()),
             pending_receive_credits: Mutex::new(HashMap::new()),
@@ -6473,6 +7248,32 @@ where
         cancellation: &RemoteRequestCancellation,
     ) -> std::result::Result<RemoteFileReadStream, RemoteClientError> {
         self.start_file_read_stream_with_context_and_cancellation(
+            request,
+            context,
+            cancellation.clone(),
+        )
+    }
+
+    fn file_search_stream_with_context_and_cancellation(
+        &self,
+        request: RemoteRequest,
+        context: RemoteRequestContext,
+        cancellation: &RemoteRequestCancellation,
+    ) -> std::result::Result<RemoteFileSearchStream, RemoteClientError> {
+        self.start_file_search_stream_with_context_and_cancellation(
+            request,
+            context,
+            cancellation.clone(),
+        )
+    }
+
+    fn text_search_stream_with_context_and_cancellation(
+        &self,
+        request: RemoteRequest,
+        context: RemoteRequestContext,
+        cancellation: &RemoteRequestCancellation,
+    ) -> std::result::Result<RemoteTextSearchStream, RemoteClientError> {
+        self.start_text_search_stream_with_context_and_cancellation(
             request,
             context,
             cancellation.clone(),
@@ -6732,6 +7533,170 @@ where
             stream_id,
             finished: false,
         })
+        .with_terminal_predicate(|event| matches!(event, RemoteFileReadEvent::Complete(_)))
+        .with_cancellation(cancellation))
+    }
+
+    fn start_search_stream_with_context_and_cancellation(
+        &self,
+        request: RemoteRequest,
+        context: RemoteRequestContext,
+        cancellation: RemoteRequestCancellation,
+    ) -> std::result::Result<(Arc<V5SearchStreamMailbox>, u64), RemoteClientError> {
+        if self.shared.closed.load(Ordering::SeqCst) {
+            return Err(RemoteClientError::Disconnected);
+        }
+        if !matches!(
+            &request,
+            RemoteRequest::FileSearch(_) | RemoteRequest::TextSearch(_)
+        ) {
+            return Err(RemoteClientError::Protocol(format!(
+                "{} is not a search request",
+                request.v5_method()
+            )));
+        }
+        let (method, payload) = self.v5_method_payload_with_directory_cache(&request)?;
+        cancellation.check_cancelled(method)?;
+        if let Some(kind) = context.expired_at(Instant::now()) {
+            return Err(RemoteClientError::RequestDeadlineExceeded {
+                method: method.to_string(),
+                kind,
+            });
+        }
+        let options = request.v5_request_options_with_context(context);
+        let request_reservation =
+            reserve_v5_client_request_bytes(&self.shared.request_budget, method, payload.len(), 0)?;
+        let mailbox = Arc::new(V5SearchStreamMailbox::new(
+            self.shared.file_stream_byte_limit,
+            self.shared.response_budget.reservation(),
+        ));
+        let deadline = V5RequestDeadline::new(context, Instant::now());
+
+        let stream_id = {
+            let mut session = self.shared.session.lock().map_err(v5_client_lock_error)?;
+            if self.shared.closed.load(Ordering::Acquire) {
+                return Err(RemoteClientError::Disconnected);
+            }
+            cancellation.check_cancelled(method)?;
+            if let Some(kind) = context.expired_at(Instant::now()) {
+                return Err(RemoteClientError::RequestDeadlineExceeded {
+                    method: method.to_string(),
+                    kind,
+                });
+            }
+            let stream_id = session.open_request_with_owned_payload_and_body(
+                method,
+                options,
+                payload,
+                protocol_v5::DataChannel::SearchPayload,
+                Vec::new(),
+            )?;
+            let pending = V5PendingSearch {
+                mailbox: Arc::clone(&mailbox),
+                current_method: None,
+                current_payload: Vec::new(),
+                current_credit: 0,
+                current_bytes: 0,
+                final_method: None,
+                final_payload: Vec::new(),
+                final_credit: 0,
+                final_bytes: 0,
+                final_error: None,
+                received_bytes: 0,
+                method,
+                deadline,
+            };
+            self.shared
+                .outbound_request_reservations
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .insert(stream_id, request_reservation);
+            let mut waiters = match self.shared.search_waiters.lock() {
+                Ok(waiters) => waiters,
+                Err(error) => {
+                    let error = v5_client_lock_error(error);
+                    let reset_result = session.reset_stream(
+                        stream_id,
+                        protocol_v5::RESET_CANCELLED,
+                        "client could not register search stream waiter",
+                    );
+                    release_v5_outbound_request_reservation(&self.shared, stream_id);
+                    reset_result?;
+                    return Err(error);
+                }
+            };
+            waiters.insert(stream_id, pending);
+            stream_id
+        };
+
+        register_v5_client_cancellation(
+            &cancellation,
+            &self.shared,
+            stream_id,
+            V5ClientCancellation {
+                method,
+                mode: V5ClientCancellationMode::Stream,
+            },
+        );
+        signal_v5_client_deadlines(&self.shared);
+        if self.shared.closed.load(Ordering::SeqCst) {
+            return Err(RemoteClientError::Disconnected);
+        }
+        self.wake_outbound()?;
+        Ok((mailbox, stream_id))
+    }
+
+    fn start_file_search_stream_with_context_and_cancellation(
+        &self,
+        request: RemoteRequest,
+        context: RemoteRequestContext,
+        cancellation: RemoteRequestCancellation,
+    ) -> std::result::Result<RemoteFileSearchStream, RemoteClientError> {
+        if !matches!(&request, RemoteRequest::FileSearch(_)) {
+            return Err(RemoteClientError::Protocol(format!(
+                "{} is not a file-search request",
+                request.v5_method()
+            )));
+        }
+        let (mailbox, stream_id) = self.start_search_stream_with_context_and_cancellation(
+            request,
+            context,
+            cancellation.clone(),
+        )?;
+        Ok(RemoteFileSearchStream::new(V5RemoteFileSearchSource {
+            shared: Arc::downgrade(&self.shared),
+            mailbox,
+            stream_id,
+            finished: false,
+        })
+        .with_terminal_predicate(|event| matches!(event, RemoteFileSearchEvent::Complete { .. }))
+        .with_cancellation(cancellation))
+    }
+
+    fn start_text_search_stream_with_context_and_cancellation(
+        &self,
+        request: RemoteRequest,
+        context: RemoteRequestContext,
+        cancellation: RemoteRequestCancellation,
+    ) -> std::result::Result<RemoteTextSearchStream, RemoteClientError> {
+        if !matches!(&request, RemoteRequest::TextSearch(_)) {
+            return Err(RemoteClientError::Protocol(format!(
+                "{} is not a text-search request",
+                request.v5_method()
+            )));
+        }
+        let (mailbox, stream_id) = self.start_search_stream_with_context_and_cancellation(
+            request,
+            context,
+            cancellation.clone(),
+        )?;
+        Ok(RemoteTextSearchStream::new(V5RemoteTextSearchSource {
+            shared: Arc::downgrade(&self.shared),
+            mailbox,
+            stream_id,
+            finished: false,
+        })
+        .with_terminal_predicate(|event| matches!(event, RemoteTextSearchEvent::Complete { .. }))
         .with_cancellation(cancellation))
     }
 
@@ -7675,6 +8640,21 @@ fn process_v5_client_cancellations<W>(
             .lock()
             .map_err(v5_client_lock_error)?
             .remove(&stream_id);
+        let search_pending = shared
+            .search_waiters
+            .lock()
+            .map_err(v5_client_lock_error)?
+            .remove(&stream_id);
+        let completed_file = shared
+            .completed_file_streams
+            .lock()
+            .map_err(v5_client_lock_error)?
+            .remove(&stream_id);
+        let completed_search = shared
+            .completed_search_streams
+            .lock()
+            .map_err(v5_client_lock_error)?
+            .remove(&stream_id);
         let reset = shared
             .session
             .lock()
@@ -7689,6 +8669,20 @@ fn process_v5_client_cancellations<W>(
             let credit_bytes = file_pending
                 .mailbox
                 .fail(remote_request_cancelled_error(file_pending.method));
+            queue_v5_released_receive_credit(shared, stream_id, credit_bytes)?;
+        }
+        if let Some(search_pending) = search_pending {
+            let credit_bytes = search_pending
+                .mailbox
+                .fail(remote_request_cancelled_error(search_pending.method));
+            queue_v5_released_receive_credit(shared, stream_id, credit_bytes)?;
+        }
+        if let Some(mailbox) = completed_file {
+            let credit_bytes = mailbox.fail(remote_request_cancelled_error(cancellation.method));
+            queue_v5_released_receive_credit(shared, stream_id, credit_bytes)?;
+        }
+        if let Some(mailbox) = completed_search {
+            let credit_bytes = mailbox.fail(remote_request_cancelled_error(cancellation.method));
             queue_v5_released_receive_credit(shared, stream_id, credit_bytes)?;
         }
         match reset? {
@@ -7754,7 +8748,14 @@ where
         .map_err(v5_client_lock_error)?
         .values()
         .any(|pending| pending.deadline.expired_at(now).is_some() && !peer_is_healthy);
-    let connection_terminal = response_connection_terminal || file_connection_terminal;
+    let search_connection_terminal = shared
+        .search_waiters
+        .lock()
+        .map_err(v5_client_lock_error)?
+        .values()
+        .any(|pending| pending.deadline.expired_at(now).is_some() && !peer_is_healthy);
+    let connection_terminal =
+        response_connection_terminal || file_connection_terminal || search_connection_terminal;
     let close_claimed = connection_terminal
         && shared
             .closed
@@ -7799,6 +8800,28 @@ where
             .into_iter()
             .filter_map(|(stream_id, kind)| {
                 file_waiters
+                    .remove(&stream_id)
+                    .map(|pending| (stream_id, kind, pending))
+            })
+            .collect::<Vec<_>>()
+    };
+    let search_expired = if connection_terminal {
+        Vec::new()
+    } else {
+        let mut search_waiters = shared.search_waiters.lock().map_err(v5_client_lock_error)?;
+        let expired = search_waiters
+            .iter()
+            .filter_map(|(stream_id, pending)| {
+                pending
+                    .deadline
+                    .expired_at(now)
+                    .map(|kind| (*stream_id, kind))
+            })
+            .collect::<Vec<_>>();
+        expired
+            .into_iter()
+            .filter_map(|(stream_id, kind)| {
+                search_waiters
                     .remove(&stream_id)
                     .map(|pending| (stream_id, kind, pending))
             })
@@ -7881,6 +8904,29 @@ where
         }
     }
 
+    for (stream_id, kind, pending) in search_expired {
+        let reset = shared
+            .session
+            .lock()
+            .map_err(v5_client_lock_error)?
+            .reset_stream(
+                stream_id,
+                protocol_v5::RESET_DEADLINE_EXCEEDED,
+                format!("client {kind} deadline expired"),
+            )
+            .map_err(RemoteClientError::Io);
+        let deadline_error = RemoteClientError::RequestDeadlineExceeded {
+            method: pending.method.to_string(),
+            kind,
+        };
+        let credit_bytes = pending.mailbox.fail(deadline_error);
+        queue_v5_released_receive_credit(shared, stream_id, credit_bytes)?;
+        match reset? {
+            true => wake_v5_client_writer(shared)?,
+            false => release_v5_outbound_request_reservation(shared, stream_id),
+        }
+    }
+
     next_v5_client_deadline_wait(shared, Instant::now())
 }
 
@@ -7909,11 +8955,23 @@ fn next_v5_client_deadline_wait<W>(
         .values()
         .filter_map(|pending| pending.deadline.next_expiry().map(|(deadline, _)| deadline))
         .min();
-    Ok([response_deadline, raw_deadline, file_deadline]
-        .into_iter()
-        .flatten()
-        .min()
-        .map(|deadline| deadline.saturating_duration_since(now)))
+    let search_deadline = shared
+        .search_waiters
+        .lock()
+        .map_err(v5_client_lock_error)?
+        .values()
+        .filter_map(|pending| pending.deadline.next_expiry().map(|(deadline, _)| deadline))
+        .min();
+    Ok([
+        response_deadline,
+        raw_deadline,
+        file_deadline,
+        search_deadline,
+    ]
+    .into_iter()
+    .flatten()
+    .min()
+    .map(|deadline| deadline.saturating_duration_since(now)))
 }
 
 fn wake_v5_client_writer<W>(
@@ -8181,9 +9239,25 @@ where
         let observation = pending.observe(event, data_credit);
         match &observation {
             Ok(V5FileStreamObservation::Continue { .. }) => (None, observation),
-            Ok(V5FileStreamObservation::Complete(_)) | Err(_) => {
-                (waiters.remove(&stream_id), observation)
+            Ok(V5FileStreamObservation::Complete(_)) => {
+                let pending = waiters.remove(&stream_id);
+                let Some(pending_ref) = pending.as_ref() else {
+                    return Some(false);
+                };
+                match shared.completed_file_streams.lock() {
+                    Ok(mut completed) => {
+                        completed.insert(stream_id, Arc::clone(&pending_ref.mailbox));
+                        (pending, observation)
+                    }
+                    Err(_) => (
+                        pending,
+                        Err(RemoteClientError::Protocol(
+                            "v5 completed file stream registry lock is poisoned".to_string(),
+                        )),
+                    ),
+                }
             }
+            Err(_) => (waiters.remove(&stream_id), observation),
         }
     };
 
@@ -8192,6 +9266,11 @@ where
         Ok(V5FileStreamObservation::Complete(read)) => {
             let pending = pending.expect("completed v5 file waiter should be removed");
             if let Err(error) = pending.mailbox.complete(read) {
+                shared
+                    .completed_file_streams
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .remove(&stream_id);
                 reset_v5_client_stream_after_local_error(shared, stream_id);
                 let credit_bytes = pending.mailbox.fail(error);
                 if let Err(error) =
@@ -8200,6 +9279,11 @@ where
                     fail_all_v5_waiters_for_error(shared, &error);
                 }
                 return Some(false);
+            }
+            if let Ok(mut completed) = shared.completed_file_streams.lock()
+                && !pending.mailbox.has_pending_delivery()
+            {
+                completed.remove(&stream_id);
             }
             Some(true)
         }
@@ -8213,6 +9297,94 @@ where
             let Some(released_credit) = queued_credit.checked_add(current_credit) else {
                 let error = RemoteClientError::Protocol(
                     "v5 abandoned file stream credit overflowed".to_string(),
+                );
+                fail_all_v5_waiters_for_error(shared, &error);
+                return Some(false);
+            };
+            if let Err(error) = queue_v5_released_receive_credit(shared, stream_id, released_credit)
+            {
+                fail_all_v5_waiters_for_error(shared, &error);
+            }
+            Some(false)
+        }
+    }
+}
+
+fn handle_v5_client_search_stream_event<W>(
+    shared: &RemoteWorkspaceV5Shared<W>,
+    event: protocol_v5::StreamEvent,
+    data_credit: Option<(u64, u64)>,
+) -> Option<bool>
+where
+    W: Write,
+{
+    let stream_id = event.stream_id();
+    let peer_reset = matches!(&event, protocol_v5::StreamEvent::ResetStream { .. });
+    let (pending, observation, credit_was_reserved) = {
+        let mut waiters = match shared.search_waiters.lock() {
+            Ok(waiters) => waiters,
+            Err(_) => return Some(false),
+        };
+        let pending = waiters.get_mut(&stream_id)?;
+        let credit_before = pending.mailbox.queued_credit();
+        let observation = pending.observe(event, data_credit);
+        let credit_after = pending.mailbox.queued_credit();
+        let current_credit = data_credit.map(|(_, credit)| credit).unwrap_or(0);
+        let credit_was_reserved = credit_after >= credit_before.saturating_add(current_credit);
+        match &observation {
+            Ok(V5SearchStreamObservation::Continue { .. }) => {
+                (None, observation, credit_was_reserved)
+            }
+            Ok(V5SearchStreamObservation::Complete) => {
+                let pending = waiters.remove(&stream_id);
+                let Some(pending_ref) = pending.as_ref() else {
+                    return Some(false);
+                };
+                match shared.completed_search_streams.lock() {
+                    Ok(mut completed) => {
+                        completed.insert(stream_id, Arc::clone(&pending_ref.mailbox));
+                        (pending, observation, credit_was_reserved)
+                    }
+                    Err(_) => (
+                        pending,
+                        Err(RemoteClientError::Protocol(
+                            "v5 completed search stream registry lock is poisoned".to_string(),
+                        )),
+                        credit_was_reserved,
+                    ),
+                }
+            }
+            Err(_) => (waiters.remove(&stream_id), observation, credit_was_reserved),
+        }
+    };
+
+    match observation {
+        Ok(V5SearchStreamObservation::Continue { acknowledge_data }) => Some(acknowledge_data),
+        Ok(V5SearchStreamObservation::Complete) => {
+            let pending = pending.expect("completed v5 search waiter should be removed");
+            if let Ok(mut completed) = shared.completed_search_streams.lock() {
+                if !pending.mailbox.has_pending_delivery() {
+                    completed.remove(&stream_id);
+                }
+                Some(true)
+            } else {
+                Some(false)
+            }
+        }
+        Err(error) => {
+            let pending = pending.expect("failed v5 search waiter should be removed");
+            if !peer_reset {
+                reset_v5_client_stream_after_local_error(shared, stream_id);
+            }
+            let queued_credit = pending.mailbox.fail(error);
+            let unreserved_current_credit = if credit_was_reserved {
+                0
+            } else {
+                data_credit.map(|(_, credit)| credit).unwrap_or(0)
+            };
+            let Some(released_credit) = queued_credit.checked_add(unreserved_current_credit) else {
+                let error = RemoteClientError::Protocol(
+                    "v5 abandoned search stream credit overflowed".to_string(),
                 );
                 fail_all_v5_waiters_for_error(shared, &error);
                 return Some(false);
@@ -8248,6 +9420,14 @@ where
         .unwrap_or(false);
     if is_file_stream {
         return handle_v5_client_file_stream_event(shared, event, data_credit).unwrap_or(false);
+    }
+    let is_search_stream = shared
+        .search_waiters
+        .lock()
+        .map(|waiters| waiters.contains_key(&stream_id))
+        .unwrap_or(false);
+    if is_search_stream {
+        return handle_v5_client_search_stream_event(shared, event, data_credit).unwrap_or(false);
     }
     let mut event = Some(event);
     let completed_response = {
@@ -8499,6 +9679,28 @@ where
     for (_, pending) in file_waiters {
         let error = transport_closed_before_final_error(make_error());
         pending.mailbox.fail(error);
+    }
+    let search_waiters = match shared.search_waiters.lock() {
+        Ok(mut search_waiters) => std::mem::take(&mut *search_waiters),
+        Err(poisoned) => std::mem::take(&mut *poisoned.into_inner()),
+    };
+    for (_, pending) in search_waiters {
+        let error = transport_closed_before_final_error(make_error());
+        pending.mailbox.fail(error);
+    }
+    let completed_file_streams = match shared.completed_file_streams.lock() {
+        Ok(mut completed) => std::mem::take(&mut *completed),
+        Err(poisoned) => std::mem::take(&mut *poisoned.into_inner()),
+    };
+    for (_, mailbox) in completed_file_streams {
+        mailbox.fail(transport_closed_before_final_error(make_error()));
+    }
+    let completed_search_streams = match shared.completed_search_streams.lock() {
+        Ok(mut completed) => std::mem::take(&mut *completed),
+        Err(poisoned) => std::mem::take(&mut *poisoned.into_inner()),
+    };
+    for (_, mailbox) in completed_search_streams {
+        mailbox.fail(transport_closed_before_final_error(make_error()));
     }
     shared
         .watch_batches
@@ -9141,6 +10343,86 @@ pub trait RemoteWorkspaceProtocolClient: Send + Sync {
             }
             other => Err(RemoteClientError::Protocol(format!(
                 "unexpected read file response: {other:?}"
+            ))),
+        }
+    }
+
+    fn file_search_stream(
+        &self,
+        request: FileSearchRequest,
+    ) -> std::result::Result<RemoteFileSearchStream, RemoteClientError> {
+        let request = RemoteRequest::FileSearch(request);
+        let context = request.v5_request_context();
+        self.file_search_stream_with_context_and_cancellation(
+            request,
+            context,
+            &RemoteRequestCancellation::new(),
+        )
+    }
+
+    fn file_search_stream_with_context_and_cancellation(
+        &self,
+        request: RemoteRequest,
+        context: RemoteRequestContext,
+        cancellation: &RemoteRequestCancellation,
+    ) -> std::result::Result<RemoteFileSearchStream, RemoteClientError> {
+        let method = request.v5_method();
+        if !matches!(&request, RemoteRequest::FileSearch(_)) {
+            return Err(RemoteClientError::Protocol(format!(
+                "{method} is not a file-search request"
+            )));
+        }
+        cancellation.check_cancelled(method)?;
+        let (response, _) =
+            self.request_with_context_and_cancellation(request, Vec::new(), context, cancellation)?;
+        cancellation.check_cancelled(method)?;
+        match response {
+            RemoteResponse::FileSearch(response) => {
+                Ok(RemoteFileSearchStream::from_response(response)
+                    .with_cancellation(cancellation.clone()))
+            }
+            other => Err(RemoteClientError::Protocol(format!(
+                "unexpected file-search response: {other:?}"
+            ))),
+        }
+    }
+
+    fn text_search_stream(
+        &self,
+        request: TextSearchRequest,
+    ) -> std::result::Result<RemoteTextSearchStream, RemoteClientError> {
+        let request = RemoteRequest::TextSearch(request);
+        let context = request.v5_request_context();
+        self.text_search_stream_with_context_and_cancellation(
+            request,
+            context,
+            &RemoteRequestCancellation::new(),
+        )
+    }
+
+    fn text_search_stream_with_context_and_cancellation(
+        &self,
+        request: RemoteRequest,
+        context: RemoteRequestContext,
+        cancellation: &RemoteRequestCancellation,
+    ) -> std::result::Result<RemoteTextSearchStream, RemoteClientError> {
+        let method = request.v5_method();
+        if !matches!(&request, RemoteRequest::TextSearch(_)) {
+            return Err(RemoteClientError::Protocol(format!(
+                "{method} is not a text-search request"
+            )));
+        }
+        cancellation.check_cancelled(method)?;
+        let (response, _) =
+            self.request_with_context_and_cancellation(request, Vec::new(), context, cancellation)?;
+        cancellation.check_cancelled(method)?;
+        match response {
+            RemoteResponse::TextSearch(response) => {
+                Ok(RemoteTextSearchStream::from_response(response)
+                    .with_cancellation(cancellation.clone()))
+            }
+            other => Err(RemoteClientError::Protocol(format!(
+                "unexpected text-search response: {other:?}"
             ))),
         }
     }
@@ -9886,6 +11168,138 @@ where
         }
     }
 
+    fn file_search_stream_with_context_and_cancellation(
+        &self,
+        request: RemoteRequest,
+        context: RemoteRequestContext,
+        cancellation: &RemoteRequestCancellation,
+    ) -> std::result::Result<RemoteFileSearchStream, RemoteClientError> {
+        let method = request.v5_method();
+        if !matches!(&request, RemoteRequest::FileSearch(_)) {
+            return Err(RemoteClientError::Protocol(format!(
+                "{method} is not a file-search request"
+            )));
+        }
+        cancellation.check_cancelled(method)?;
+        let client = self.current_client()?;
+        cancellation.check_cancelled(method)?;
+        match client.file_search_stream_with_context_and_cancellation(
+            request.clone(),
+            context,
+            cancellation,
+        ) {
+            Ok(stream) => {
+                let reconnecting = self.shared_handle();
+                let stale = Arc::clone(&client);
+                Ok(stream.with_terminal_error_callback(move || {
+                    if let Err(error) = reconnecting.discard_if_current(&stale) {
+                        tracing::warn!(
+                            error = %error,
+                            "Failed to invalidate v5 transport after file-search stream failure"
+                        );
+                    }
+                }))
+            }
+            Err(error) if remote_client_error_requires_reconnect(&error) => {
+                cancellation.check_cancelled(method)?;
+                let retry_safe = remote_client_error_allows_reconnect_retry(&error);
+                let retry_client = self.reconnect_if_current(&client)?;
+                cancellation.check_cancelled(method)?;
+                if !retry_safe {
+                    return Err(error);
+                }
+                if let Some(kind) = context.expired_at(Instant::now()) {
+                    return Err(RemoteClientError::RequestDeadlineExceeded {
+                        method: method.to_string(),
+                        kind,
+                    });
+                }
+                let stream = retry_client.file_search_stream_with_context_and_cancellation(
+                    request,
+                    context,
+                    cancellation,
+                )?;
+                let reconnecting = self.shared_handle();
+                let stale = Arc::clone(&retry_client);
+                Ok(stream.with_terminal_error_callback(move || {
+                    if let Err(error) = reconnecting.discard_if_current(&stale) {
+                        tracing::warn!(
+                            error = %error,
+                            "Failed to invalidate replayed v5 file-search stream transport"
+                        );
+                    }
+                }))
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn text_search_stream_with_context_and_cancellation(
+        &self,
+        request: RemoteRequest,
+        context: RemoteRequestContext,
+        cancellation: &RemoteRequestCancellation,
+    ) -> std::result::Result<RemoteTextSearchStream, RemoteClientError> {
+        let method = request.v5_method();
+        if !matches!(&request, RemoteRequest::TextSearch(_)) {
+            return Err(RemoteClientError::Protocol(format!(
+                "{method} is not a text-search request"
+            )));
+        }
+        cancellation.check_cancelled(method)?;
+        let client = self.current_client()?;
+        cancellation.check_cancelled(method)?;
+        match client.text_search_stream_with_context_and_cancellation(
+            request.clone(),
+            context,
+            cancellation,
+        ) {
+            Ok(stream) => {
+                let reconnecting = self.shared_handle();
+                let stale = Arc::clone(&client);
+                Ok(stream.with_terminal_error_callback(move || {
+                    if let Err(error) = reconnecting.discard_if_current(&stale) {
+                        tracing::warn!(
+                            error = %error,
+                            "Failed to invalidate v5 transport after text-search stream failure"
+                        );
+                    }
+                }))
+            }
+            Err(error) if remote_client_error_requires_reconnect(&error) => {
+                cancellation.check_cancelled(method)?;
+                let retry_safe = remote_client_error_allows_reconnect_retry(&error);
+                let retry_client = self.reconnect_if_current(&client)?;
+                cancellation.check_cancelled(method)?;
+                if !retry_safe {
+                    return Err(error);
+                }
+                if let Some(kind) = context.expired_at(Instant::now()) {
+                    return Err(RemoteClientError::RequestDeadlineExceeded {
+                        method: method.to_string(),
+                        kind,
+                    });
+                }
+                let stream = retry_client.text_search_stream_with_context_and_cancellation(
+                    request,
+                    context,
+                    cancellation,
+                )?;
+                let reconnecting = self.shared_handle();
+                let stale = Arc::clone(&retry_client);
+                Ok(stream.with_terminal_error_callback(move || {
+                    if let Err(error) = reconnecting.discard_if_current(&stale) {
+                        tracing::warn!(
+                            error = %error,
+                            "Failed to invalidate replayed v5 text-search stream transport"
+                        );
+                    }
+                }))
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     fn shutdown(&self) -> std::result::Result<(), RemoteClientError> {
         self.current_client()?.shutdown()
     }
@@ -10510,6 +11924,188 @@ where
                         }
                     })
                     .map_err(|error| client_error_to_workspace("read file", &error_path, error))
+            },
+        )))
+    }
+
+    async fn file_search_stream_with_optional_workspace_cancellation(
+        &self,
+        query: FileSearchQuery,
+        workspace_cancellation: Option<&WorkspaceCancellationToken>,
+    ) -> nucleotide_workspace::Result<FileSearchStream>
+    where
+        C: 'static,
+    {
+        let root = query.root.clone();
+        if let Some(cancellation) = workspace_cancellation {
+            cancellation.check_cancelled("file search", &root)?;
+        }
+        let mut cancel_on_drop = RemoteRequestCancelOnDrop::new();
+        let cancellation = cancel_on_drop.cancellation();
+        let workspace_cancellation_registration = workspace_cancellation.map(|workspace| {
+            let cancellation = cancellation.clone();
+            workspace.on_cancel(move || cancellation.cancel())
+        });
+        let request = RemoteRequest::FileSearch(FileSearchRequest {
+            root: query.root,
+            pattern: query.pattern,
+            limit: query.limit,
+            hidden: query.hidden,
+            parents: query.parents,
+            ignore: query.ignore,
+            git_ignore: query.git_ignore,
+            git_global: query.git_global,
+            git_exclude: query.git_exclude,
+            follow_links: query.follow_links,
+            max_depth: query.max_depth,
+            excluded_relative_prefixes: query.excluded_relative_prefixes,
+        });
+        let context = request.v5_request_context();
+        let client = Arc::clone(&self.client);
+        let worker_root = root.clone();
+        let worker_cancellation = cancellation.clone();
+        let (sender, receiver) = oneshot::channel();
+        std::thread::Builder::new()
+            .name("nucleotide-remote-file-search-stream".to_string())
+            .spawn(move || {
+                let result = client
+                    .file_search_stream_with_context_and_cancellation(
+                        request,
+                        context,
+                        &worker_cancellation,
+                    )
+                    .map_err(|error| client_error_to_workspace("file search", &worker_root, error));
+                let _ = sender.send(result);
+            })
+            .map_err(|source| WorkspaceError::Io {
+                operation: "file search",
+                path: root.clone(),
+                source,
+            })?;
+
+        let remote_stream = match receiver.await {
+            Ok(result) => {
+                cancel_on_drop.disarm();
+                result?
+            }
+            Err(_) => {
+                return Err(WorkspaceError::Remote {
+                    operation: "file search",
+                    path: root.clone(),
+                    message: "remote file-search worker exited before returning a stream"
+                        .to_string(),
+                    diagnostic: None,
+                });
+            }
+        };
+        let error_root = root;
+        Ok(FileSearchStream::new(StreamExt::map(
+            remote_stream,
+            move |event| {
+                let _registration = &workspace_cancellation_registration;
+                event
+                    .map(|event| match event {
+                        RemoteFileSearchEvent::Batch(files) => FileSearchEvent::Batch(files),
+                        RemoteFileSearchEvent::Complete { root, truncated } => {
+                            FileSearchEvent::Complete { root, truncated }
+                        }
+                    })
+                    .map_err(|error| client_error_to_workspace("file search", &error_root, error))
+            },
+        )))
+    }
+
+    async fn text_search_stream_with_optional_workspace_cancellation(
+        &self,
+        query: TextSearchQuery,
+        workspace_cancellation: Option<&WorkspaceCancellationToken>,
+    ) -> nucleotide_workspace::Result<TextSearchStream>
+    where
+        C: 'static,
+    {
+        let root = query.root.clone();
+        if let Some(cancellation) = workspace_cancellation {
+            cancellation.check_cancelled("text search", &root)?;
+        }
+        let mut cancel_on_drop = RemoteRequestCancelOnDrop::new();
+        let cancellation = cancel_on_drop.cancellation();
+        let workspace_cancellation_registration = workspace_cancellation.map(|workspace| {
+            let cancellation = cancellation.clone();
+            workspace.on_cancel(move || cancellation.cancel())
+        });
+        let request = RemoteRequest::TextSearch(TextSearchRequest {
+            root: query.root,
+            pattern: query.pattern,
+            limit: query.limit,
+            smart_case: query.smart_case,
+            hidden: query.hidden,
+            parents: query.parents,
+            ignore: query.ignore,
+            git_ignore: query.git_ignore,
+            git_global: query.git_global,
+            git_exclude: query.git_exclude,
+            follow_links: query.follow_links,
+            max_depth: query.max_depth,
+            max_file_bytes: query.max_file_bytes,
+            excluded_relative_paths: query.excluded_relative_paths,
+            custom_ignore_filenames: query.custom_ignore_filenames,
+        });
+        let context = request.v5_request_context();
+        let client = Arc::clone(&self.client);
+        let worker_root = root.clone();
+        let worker_cancellation = cancellation.clone();
+        let (sender, receiver) = oneshot::channel();
+        std::thread::Builder::new()
+            .name("nucleotide-remote-text-search-stream".to_string())
+            .spawn(move || {
+                let result = client
+                    .text_search_stream_with_context_and_cancellation(
+                        request,
+                        context,
+                        &worker_cancellation,
+                    )
+                    .map_err(|error| client_error_to_workspace("text search", &worker_root, error));
+                let _ = sender.send(result);
+            })
+            .map_err(|source| WorkspaceError::Io {
+                operation: "text search",
+                path: root.clone(),
+                source,
+            })?;
+
+        let remote_stream = match receiver.await {
+            Ok(result) => {
+                cancel_on_drop.disarm();
+                result?
+            }
+            Err(_) => {
+                return Err(WorkspaceError::Remote {
+                    operation: "text search",
+                    path: root.clone(),
+                    message: "remote text-search worker exited before returning a stream"
+                        .to_string(),
+                    diagnostic: None,
+                });
+            }
+        };
+        let error_root = root;
+        Ok(TextSearchStream::new(StreamExt::map(
+            remote_stream,
+            move |event| {
+                let _registration = &workspace_cancellation_registration;
+                event
+                    .map(|event| match event {
+                        RemoteTextSearchEvent::Batch(matches) => TextSearchEvent::Batch(
+                            matches
+                                .into_iter()
+                                .map(text_search_match_from_response)
+                                .collect(),
+                        ),
+                        RemoteTextSearchEvent::Complete { root, truncated } => {
+                            TextSearchEvent::Complete { root, truncated }
+                        }
+                    })
+                    .map_err(|error| client_error_to_workspace("text search", &error_root, error))
             },
         )))
     }
@@ -11200,32 +12796,27 @@ where
         query: FileSearchQuery,
     ) -> nucleotide_workspace::Result<FileSearchResult> {
         let root = query.root.clone();
-        let request = FileSearchRequest {
-            root: query.root,
-            pattern: query.pattern,
-            limit: query.limit,
-            hidden: query.hidden,
-            parents: query.parents,
-            ignore: query.ignore,
-            git_ignore: query.git_ignore,
-            git_global: query.git_global,
-            git_exclude: query.git_exclude,
-            follow_links: query.follow_links,
-            max_depth: query.max_depth,
-            excluded_relative_prefixes: query.excluded_relative_prefixes,
-        };
-        let (response, _) = self
-            .request(
-                "file search",
-                &root,
-                RemoteRequest::FileSearch(request),
-                Vec::new(),
-            )
-            .await?;
-        match response {
-            RemoteResponse::FileSearch(result) => Ok(file_search_from_response(result)),
-            other => Err(unexpected_response_error("file search", &root, other)),
-        }
+        self.file_search_stream(query)
+            .await?
+            .collect_search(&root)
+            .await
+    }
+
+    async fn file_search_stream(
+        &self,
+        query: FileSearchQuery,
+    ) -> nucleotide_workspace::Result<FileSearchStream> {
+        self.file_search_stream_with_optional_workspace_cancellation(query, None)
+            .await
+    }
+
+    async fn file_search_stream_with_cancellation(
+        &self,
+        query: FileSearchQuery,
+        cancellation: &WorkspaceCancellationToken,
+    ) -> nucleotide_workspace::Result<FileSearchStream> {
+        self.file_search_stream_with_optional_workspace_cancellation(query, Some(cancellation))
+            .await
     }
 
     async fn text_search(
@@ -11233,35 +12824,27 @@ where
         query: TextSearchQuery,
     ) -> nucleotide_workspace::Result<TextSearchResult> {
         let root = query.root.clone();
-        let request = TextSearchRequest {
-            root: query.root,
-            pattern: query.pattern,
-            limit: query.limit,
-            smart_case: query.smart_case,
-            hidden: query.hidden,
-            parents: query.parents,
-            ignore: query.ignore,
-            git_ignore: query.git_ignore,
-            git_global: query.git_global,
-            git_exclude: query.git_exclude,
-            follow_links: query.follow_links,
-            max_depth: query.max_depth,
-            max_file_bytes: query.max_file_bytes,
-            excluded_relative_paths: query.excluded_relative_paths,
-            custom_ignore_filenames: query.custom_ignore_filenames,
-        };
-        let (response, _) = self
-            .request(
-                "text search",
-                &root,
-                RemoteRequest::TextSearch(request),
-                Vec::new(),
-            )
-            .await?;
-        match response {
-            RemoteResponse::TextSearch(result) => Ok(text_search_from_response(result)),
-            other => Err(unexpected_response_error("text search", &root, other)),
-        }
+        self.text_search_stream(query)
+            .await?
+            .collect_search(&root)
+            .await
+    }
+
+    async fn text_search_stream(
+        &self,
+        query: TextSearchQuery,
+    ) -> nucleotide_workspace::Result<TextSearchStream> {
+        self.text_search_stream_with_optional_workspace_cancellation(query, None)
+            .await
+    }
+
+    async fn text_search_stream_with_cancellation(
+        &self,
+        query: TextSearchQuery,
+        cancellation: &WorkspaceCancellationToken,
+    ) -> nucleotide_workspace::Result<TextSearchStream> {
+        self.text_search_stream_with_optional_workspace_cancellation(query, Some(cancellation))
+            .await
     }
 
     async fn project_environment(
@@ -17917,29 +19500,13 @@ fn write_result_from_response(result: WriteResultResponse) -> WriteResult {
     }
 }
 
-fn file_search_from_response(result: FileSearchResponse) -> FileSearchResult {
-    FileSearchResult {
-        root: result.root,
-        files: result.files,
-        truncated: result.truncated,
-    }
-}
-
-fn text_search_from_response(result: TextSearchResponse) -> TextSearchResult {
-    TextSearchResult {
-        root: result.root,
-        matches: result
-            .matches
-            .into_iter()
-            .map(|match_| TextSearchMatch {
-                relative_path: match_.relative_path,
-                line_number: match_.line_number,
-                line_text: match_.line_text,
-                start: match_.start,
-                end: match_.end,
-            })
-            .collect(),
-        truncated: result.truncated,
+fn text_search_match_from_response(match_: TextSearchMatchResponse) -> TextSearchMatch {
+    TextSearchMatch {
+        relative_path: match_.relative_path,
+        line_number: match_.line_number,
+        line_text: match_.line_text,
+        start: match_.start,
+        end: match_.end,
     }
 }
 
@@ -21183,6 +22750,49 @@ mod tests {
     }
 
     #[test]
+    fn explicit_workspace_cancellation_stays_attached_to_search_stream() {
+        let input = BlockingRead::default();
+        let output = SharedWrite::default();
+        input.push(v5_server_input(Vec::new()));
+        let client = RemoteWorkspaceV5MultiplexedClient::connect(
+            protocol_v5::FramedIo::new(input.clone(), output.clone()),
+            protocol_v5::ClientHello::nucleotide("test-client"),
+        )
+        .unwrap();
+        let shared = Arc::clone(&client.shared);
+        let backend = RemoteWorkspaceBackendImpl::new(loopback_identity(), client);
+        let cancellation = WorkspaceCancellationToken::new();
+        let root = PathBuf::from("src");
+        let mut stream = futures::executor::block_on(backend.file_search_stream_with_cancellation(
+            FileSearchQuery {
+                root: root.clone(),
+                ..FileSearchQuery::default()
+            },
+            &cancellation,
+        ))
+        .unwrap();
+        let stream_id = wait_for_v5_request_stream(&output, "search.files");
+
+        cancellation.cancel();
+
+        let error = futures::executor::block_on(stream.next())
+            .expect("cancelled search stream should return an error")
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            WorkspaceError::Cancelled {
+                operation: "file search",
+                path,
+            } if path == root
+        ));
+        wait_for_v5_stream_frame(&output, stream_id, protocol_v5::FrameType::ResetStream);
+        assert!(shared.search_waiters.lock().unwrap().is_empty());
+        assert!(shared.completed_search_streams.lock().unwrap().is_empty());
+        assert!(!shared.closed.load(Ordering::Acquire));
+        input.close();
+    }
+
+    #[test]
     fn dropping_backend_watch_start_closes_ambiguous_control_connection() {
         let input = BlockingRead::default();
         let output = SharedWrite::default();
@@ -22512,6 +24122,35 @@ mod tests {
                 assert_eq!(error.kind(), io::ErrorKind::BrokenPipe, "{label}");
             }
             assert!(client.shared.closed.load(Ordering::Acquire), "{label}");
+            let cleanup_started = Instant::now();
+            loop {
+                let cleaned = client.shared.waiters.lock().unwrap().is_empty()
+                    && client.shared.file_waiters.lock().unwrap().is_empty()
+                    && client.shared.search_waiters.lock().unwrap().is_empty()
+                    && client
+                        .shared
+                        .completed_file_streams
+                        .lock()
+                        .unwrap()
+                        .is_empty()
+                    && client
+                        .shared
+                        .completed_search_streams
+                        .lock()
+                        .unwrap()
+                        .is_empty()
+                    && client.shared.raw_waiters.lock().unwrap().is_empty()
+                    && client.shared.watch_batches.lock().unwrap().is_empty()
+                    && client.shared.watch_stream_by_id.lock().unwrap().is_empty();
+                if cleaned {
+                    break;
+                }
+                assert!(
+                    cleanup_started.elapsed() < Duration::from_secs(2),
+                    "{label}: timed out waiting for terminal writer cleanup"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
             assert_eq!(client.shared.request_budget.used(), 0, "{label}");
             assert!(
                 client
@@ -22523,6 +24162,32 @@ mod tests {
                 "{label}"
             );
             assert!(client.shared.waiters.lock().unwrap().is_empty(), "{label}");
+            assert!(
+                client.shared.file_waiters.lock().unwrap().is_empty(),
+                "{label}"
+            );
+            assert!(
+                client.shared.search_waiters.lock().unwrap().is_empty(),
+                "{label}"
+            );
+            assert!(
+                client
+                    .shared
+                    .completed_file_streams
+                    .lock()
+                    .unwrap()
+                    .is_empty(),
+                "{label}"
+            );
+            assert!(
+                client
+                    .shared
+                    .completed_search_streams
+                    .lock()
+                    .unwrap()
+                    .is_empty(),
+                "{label}"
+            );
             assert!(
                 client.shared.raw_waiters.lock().unwrap().is_empty(),
                 "{label}"
@@ -25528,6 +27193,339 @@ mod tests {
             RemoteFileReadEvent::Complete(response)
         );
         assert!(futures::executor::block_on(stream.next()).is_none());
+        input.close();
+    }
+
+    #[test]
+    fn v5_file_search_stream_delivers_partials_and_credits_consumed_batches() {
+        let input = BlockingRead::default();
+        let output = SharedWrite::default();
+        input.push(v5_server_input(Vec::new()));
+        let client = RemoteWorkspaceV5MultiplexedClient::connect(
+            protocol_v5::FramedIo::new(input.clone(), output.clone()),
+            protocol_v5::ClientHello::nucleotide("test-client"),
+        )
+        .unwrap();
+
+        let mut stream = client
+            .file_search_stream(FileSearchRequest {
+                root: PathBuf::from("src"),
+                pattern: Some("rs".to_string()),
+                ..FileSearchRequest::default()
+            })
+            .unwrap();
+        let stream_id = wait_for_v5_request_stream(&output, "search.files");
+        let partial_payload = RemoteResponse::FileSearch(FileSearchResponse {
+            root: PathBuf::from("src"),
+            files: vec![PathBuf::from("lib.rs")],
+            truncated: false,
+        })
+        .to_v5_payload()
+        .unwrap();
+        let final_payload = RemoteResponse::FileSearch(FileSearchResponse {
+            root: PathBuf::from("src"),
+            files: vec![PathBuf::from("main.rs")],
+            truncated: true,
+        })
+        .to_v5_payload()
+        .unwrap();
+        let frames = [
+            protocol_v5::Frame::from_control(
+                protocol_v5::FrameType::Headers,
+                stream_id,
+                &protocol_v5::StreamEnvelope::response(
+                    stream_id,
+                    "search.files",
+                    protocol_v5::MessageRole::PartialResult,
+                    false,
+                ),
+            ),
+            protocol_v5::stream_data_frame(
+                stream_id,
+                partial_payload.clone(),
+                protocol_v5::DataFrameOptions::new(protocol_v5::DataChannel::SearchPayload),
+            )
+            .unwrap(),
+            protocol_v5::Frame::from_control(
+                protocol_v5::FrameType::Headers,
+                stream_id,
+                &protocol_v5::StreamEnvelope::progress(
+                    stream_id,
+                    "search.files",
+                    protocol_v5::Progress {
+                        message: "file search matches".to_string(),
+                        completed: 1,
+                        total: 2,
+                    },
+                ),
+            ),
+            protocol_v5::stream_data_frame(
+                stream_id,
+                final_payload.clone(),
+                protocol_v5::DataFrameOptions::new(protocol_v5::DataChannel::Unspecified),
+            )
+            .unwrap(),
+            protocol_v5::Frame::from_control(
+                protocol_v5::FrameType::Headers,
+                stream_id,
+                &protocol_v5::StreamEnvelope::response(
+                    stream_id,
+                    "search.files",
+                    protocol_v5::MessageRole::FinalResponse,
+                    true,
+                ),
+            ),
+            protocol_v5::Frame::new(protocol_v5::FrameType::EndStream, stream_id),
+        ];
+        input.push(v5_frames_bytes(frames[..3].to_vec()));
+
+        let started = Instant::now();
+        while client.shared.response_budget.used() != partial_payload.len() {
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "timed out waiting for buffered partial search results"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let connection_credit = || {
+            read_v5_complete_frames(output.bytes())
+                .into_iter()
+                .filter(|frame| {
+                    frame.stream_id == 0 && frame.frame_type == protocol_v5::FrameType::WindowUpdate
+                })
+                .map(|frame| {
+                    frame
+                        .decode_control::<protocol_v5::WindowUpdate>()
+                        .unwrap()
+                        .credit_bytes
+                })
+                .sum::<u64>()
+        };
+        let before_poll = connection_credit();
+
+        assert_eq!(
+            futures::executor::block_on(stream.next()).unwrap().unwrap(),
+            RemoteFileSearchEvent::Batch(vec![PathBuf::from("lib.rs")])
+        );
+        assert_eq!(client.shared.response_budget.used(), 0);
+        assert_eq!(connection_credit(), before_poll);
+
+        input.push(v5_frames_bytes(frames[3..].to_vec()));
+        let started = Instant::now();
+        while client.shared.response_budget.used() != final_payload.len()
+            || !client.shared.search_waiters.lock().unwrap().is_empty()
+        {
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "timed out waiting for buffered final search results"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let started = Instant::now();
+        while connection_credit() < before_poll + partial_payload.len() as u64 {
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "timed out waiting for partial-search consumption credit"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let before_final_poll = connection_credit();
+
+        assert_eq!(
+            futures::executor::block_on(stream.next()).unwrap().unwrap(),
+            RemoteFileSearchEvent::Batch(vec![PathBuf::from("main.rs")])
+        );
+        assert_eq!(client.shared.response_budget.used(), 0);
+        assert_eq!(
+            futures::executor::block_on(stream.next()).unwrap().unwrap(),
+            RemoteFileSearchEvent::Complete {
+                root: PathBuf::from("src"),
+                truncated: true,
+            }
+        );
+        assert!(futures::executor::block_on(stream.next()).is_none());
+        let started = Instant::now();
+        while connection_credit() < before_final_poll + final_payload.len() as u64 {
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "timed out waiting for final-search consumption credit"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            connection_credit() - before_final_poll,
+            final_payload.len() as u64
+        );
+        input.close();
+    }
+
+    #[test]
+    fn v5_text_search_stream_decodes_partial_matches_before_completion() {
+        let input = BlockingRead::default();
+        let output = SharedWrite::default();
+        input.push(v5_server_input(Vec::new()));
+        let client = RemoteWorkspaceV5MultiplexedClient::connect(
+            protocol_v5::FramedIo::new(input.clone(), output.clone()),
+            protocol_v5::ClientHello::nucleotide("test-client"),
+        )
+        .unwrap();
+
+        let mut stream = client
+            .text_search_stream(TextSearchRequest {
+                root: PathBuf::from("src"),
+                pattern: "needle".to_string(),
+                ..TextSearchRequest::default()
+            })
+            .unwrap();
+        let stream_id = wait_for_v5_request_stream(&output, "search.text");
+        let expected = TextSearchMatchResponse {
+            relative_path: PathBuf::from("lib.rs"),
+            line_number: 7,
+            line_text: "a needle here".to_string(),
+            start: 2,
+            end: 8,
+        };
+        let partial_payload = RemoteResponse::TextSearch(TextSearchResponse {
+            root: PathBuf::from("src"),
+            matches: vec![expected.clone()],
+            truncated: false,
+        })
+        .to_v5_payload()
+        .unwrap();
+        let mut frames = vec![
+            protocol_v5::Frame::from_control(
+                protocol_v5::FrameType::Headers,
+                stream_id,
+                &protocol_v5::StreamEnvelope::response(
+                    stream_id,
+                    "search.text",
+                    protocol_v5::MessageRole::PartialResult,
+                    false,
+                ),
+            ),
+            protocol_v5::stream_data_frame(
+                stream_id,
+                partial_payload,
+                protocol_v5::DataFrameOptions::new(protocol_v5::DataChannel::SearchPayload),
+            )
+            .unwrap(),
+            protocol_v5::Frame::from_control(
+                protocol_v5::FrameType::Headers,
+                stream_id,
+                &protocol_v5::StreamEnvelope::progress(
+                    stream_id,
+                    "search.text",
+                    protocol_v5::Progress {
+                        message: "text search matches".to_string(),
+                        completed: 1,
+                        total: 1,
+                    },
+                ),
+            ),
+        ];
+        frames.extend(v5_response_frames(
+            stream_id,
+            "search.text",
+            RemoteResponse::TextSearch(TextSearchResponse {
+                root: PathBuf::from("src"),
+                matches: Vec::new(),
+                truncated: false,
+            }),
+            Vec::new(),
+        ));
+        input.push(v5_frames_bytes(frames));
+
+        assert_eq!(
+            futures::executor::block_on(stream.next()).unwrap().unwrap(),
+            RemoteTextSearchEvent::Batch(vec![expected])
+        );
+        assert_eq!(
+            futures::executor::block_on(stream.next()).unwrap().unwrap(),
+            RemoteTextSearchEvent::Complete {
+                root: PathBuf::from("src"),
+                truncated: false,
+            }
+        );
+        assert!(futures::executor::block_on(stream.next()).is_none());
+        input.close();
+    }
+
+    #[test]
+    fn dropping_completed_search_stream_releases_sealed_receive_debt() {
+        let input = BlockingRead::default();
+        let output = SharedWrite::default();
+        input.push(v5_server_input(Vec::new()));
+        let client = RemoteWorkspaceV5MultiplexedClient::connect(
+            protocol_v5::FramedIo::new(input.clone(), output.clone()),
+            protocol_v5::ClientHello::nucleotide("test-client"),
+        )
+        .unwrap();
+        let stream = client
+            .file_search_stream(FileSearchRequest::default())
+            .unwrap();
+        let stream_id = wait_for_v5_request_stream(&output, "search.files");
+        let response = RemoteResponse::FileSearch(FileSearchResponse {
+            root: PathBuf::new(),
+            files: vec![PathBuf::from("src/lib.rs")],
+            truncated: false,
+        });
+        let payload_len = response.to_v5_payload().unwrap().len();
+        input.push(v5_frames_bytes(v5_response_frames(
+            stream_id,
+            "search.files",
+            response,
+            Vec::new(),
+        )));
+        let started = Instant::now();
+        while !client
+            .shared
+            .completed_search_streams
+            .lock()
+            .unwrap()
+            .contains_key(&stream_id)
+        {
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "timed out waiting for completed buffered search"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(client.shared.response_budget.used(), payload_len);
+
+        drop(stream);
+
+        let started = Instant::now();
+        loop {
+            let released = client.shared.response_budget.used() == 0
+                && client
+                    .shared
+                    .completed_search_streams
+                    .lock()
+                    .unwrap()
+                    .is_empty();
+            let credited = read_v5_complete_frames(output.bytes())
+                .into_iter()
+                .filter(|frame| {
+                    frame.stream_id == 0 && frame.frame_type == protocol_v5::FrameType::WindowUpdate
+                })
+                .map(|frame| {
+                    frame
+                        .decode_control::<protocol_v5::WindowUpdate>()
+                        .unwrap()
+                        .credit_bytes
+                })
+                .sum::<u64>()
+                >= payload_len as u64;
+            if released && credited {
+                break;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "timed out releasing completed search debt"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!client.shared.closed.load(Ordering::Acquire));
         input.close();
     }
 
