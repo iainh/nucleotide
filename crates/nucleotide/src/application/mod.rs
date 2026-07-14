@@ -8978,31 +8978,38 @@ fn detect_and_create_project_environment() -> ProjectEnvironment {
     ProjectEnvironment::new(Some(cli_env))
 }
 
-pub(crate) fn workspace_backend_for_project_directory_with_options_progress_and_startup_context(
+pub(crate) fn workspace_backend_for_project_directory_with_bootstrap_progress_and_startup_context(
     project_directory: Option<&Path>,
-    options: &nucleotide_remote::RemoteWorkspaceBackendOptions,
+    bootstrap: &nucleotide_remote::RemoteWorkspaceBootstrap,
     progress: &dyn Fn(nucleotide_remote::RemoteDeploymentProgress),
     startup: &nucleotide_remote::RemoteStartupContext,
 ) -> Result<WorkspaceBackendHandle, Error> {
-    workspace_backend_for_project_directory_with_options(
+    workspace_backend_for_project_directory_with_bootstrap(
         project_directory,
-        options,
+        bootstrap,
         Some(progress),
         Some(startup),
     )
 }
 
-pub(crate) fn workspace_backend_for_project_directory_with_config(
-    project_directory: Option<&Path>,
-    config: &crate::config::Config,
-) -> Result<WorkspaceBackendHandle, Error> {
-    let options = config.remote_workspace_backend_options();
-    workspace_backend_for_project_directory_with_options(project_directory, &options, None, None)
-}
-
 fn workspace_backend_for_project_directory_with_options(
     project_directory: Option<&Path>,
     options: &nucleotide_remote::RemoteWorkspaceBackendOptions,
+    progress_handler: Option<&dyn Fn(nucleotide_remote::RemoteDeploymentProgress)>,
+    startup: Option<&nucleotide_remote::RemoteStartupContext>,
+) -> Result<WorkspaceBackendHandle, Error> {
+    let bootstrap = nucleotide_remote::RemoteWorkspaceBootstrap::new(options.clone());
+    workspace_backend_for_project_directory_with_bootstrap(
+        project_directory,
+        &bootstrap,
+        progress_handler,
+        startup,
+    )
+}
+
+fn workspace_backend_for_project_directory_with_bootstrap(
+    project_directory: Option<&Path>,
+    bootstrap: &nucleotide_remote::RemoteWorkspaceBootstrap,
     progress_handler: Option<&dyn Fn(nucleotide_remote::RemoteDeploymentProgress)>,
     startup: Option<&nucleotide_remote::RemoteStartupContext>,
 ) -> Result<WorkspaceBackendHandle, Error> {
@@ -9027,16 +9034,16 @@ fn workspace_backend_for_project_directory_with_options(
     };
     let connection = match startup {
         Some(startup) => {
-            nucleotide_remote::connect_workspace_backend_for_location_with_progress_and_startup_context(
+            nucleotide_remote::connect_workspace_backend_for_location_with_bootstrap_progress_and_startup_context(
                 location,
-                options,
+                bootstrap,
                 &deployment_progress,
                 startup,
             )
         }
         None => nucleotide_remote::connect_workspace_backend_for_location_with_progress(
             location,
-            options,
+            bootstrap.options(),
             &deployment_progress,
         ),
     }
@@ -9068,6 +9075,14 @@ fn workspace_backend_for_project_directory_with_options(
     }
 
     Ok(connection.backend)
+}
+
+pub(crate) fn workspace_backend_for_project_directory_with_config(
+    project_directory: Option<&Path>,
+    config: &crate::config::Config,
+) -> Result<WorkspaceBackendHandle, Error> {
+    let options = config.remote_workspace_backend_options();
+    workspace_backend_for_project_directory_with_options(project_directory, &options, None, None)
 }
 
 pub fn init_editor(

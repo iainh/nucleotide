@@ -108,6 +108,10 @@ pub enum Update {
         input: String,
         options: nucleotide_remote::RemoteWorkspaceBackendOptions,
     },
+    OpenRemoteWithBootstrap {
+        input: String,
+        bootstrap: nucleotide_remote::RemoteWorkspaceBootstrap,
+    },
     SelectionChanged {
         doc_id: helix_view::DocumentId,
         view_id: helix_view::ViewId,
@@ -162,6 +166,9 @@ impl std::fmt::Debug for Update {
             Update::OpenRemote(input) => write!(f, "OpenRemote({input:?})"),
             Update::OpenRemoteWithOptions { input, .. } => {
                 write!(f, "OpenRemoteWithOptions({input:?})")
+            }
+            Update::OpenRemoteWithBootstrap { input, .. } => {
+                write!(f, "OpenRemoteWithBootstrap({input:?})")
             }
             Update::RegexSelectionSubmitted { action, regex } => {
                 write!(f, "RegexSelectionSubmitted({action:?}, {regex:?})")

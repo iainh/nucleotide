@@ -742,12 +742,13 @@ impl OverlayView {
                     return;
                 };
                 let backend_options = core.read(cx).config.remote_workspace_backend_options();
+                let bootstrap = nucleotide_remote::RemoteWorkspaceBootstrap::new(backend_options);
 
                 let manager_view = cx.new(|cx| {
                     crate::remote_connection_manager::RemoteConnectionManagerView::new(
                         self.core.clone(),
                         self.handle.clone(),
-                        backend_options,
+                        bootstrap,
                         cx,
                     )
                 });

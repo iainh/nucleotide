@@ -60,7 +60,7 @@ use nucleotide_lsp::{LspStatusKind, LspStatusSummary, ServerStatus};
 
 use crate::application::{
     LspCompletionTrigger, find_workspace_root_from,
-    workspace_backend_for_project_directory_with_options_progress_and_startup_context,
+    workspace_backend_for_project_directory_with_bootstrap_progress_and_startup_context,
 };
 use crate::document::DocumentView;
 use crate::file_tree::{
@@ -9088,19 +9088,19 @@ impl Workspace {
     }
 
     fn handle_open_remote_submitted(&mut self, input: &str, cx: &mut Context<Self>) {
-        self.handle_open_remote_submitted_with_options(input, None, cx);
+        self.handle_open_remote_submitted_with_bootstrap(input, None, cx);
     }
 
-    fn handle_open_remote_submitted_with_options(
+    fn handle_open_remote_submitted_with_bootstrap(
         &mut self,
         input: &str,
-        options: Option<nucleotide_remote::RemoteWorkspaceBackendOptions>,
+        bootstrap: Option<nucleotide_remote::RemoteWorkspaceBootstrap>,
         cx: &mut Context<Self>,
     ) {
         let store = self.load_remote_connection_store(cx);
         match parse_remote_open_request(input, &store) {
             Ok(RemoteOpenRequest::Open(target)) => {
-                self.open_remote_target_with_options(target, options, cx);
+                self.open_remote_target_with_bootstrap(target, bootstrap, cx);
             }
             Ok(RemoteOpenRequest::Save { name, target }) => {
                 self.save_remote_connection(name, target, cx);
@@ -9246,13 +9246,13 @@ impl Workspace {
     }
 
     fn open_remote_target(&mut self, target: RemoteOpenTarget, cx: &mut Context<Self>) {
-        self.open_remote_target_with_options(target, None, cx);
+        self.open_remote_target_with_bootstrap(target, None, cx);
     }
 
-    fn open_remote_target_with_options(
+    fn open_remote_target_with_bootstrap(
         &mut self,
         target: RemoteOpenTarget,
-        backend_options: Option<nucleotide_remote::RemoteWorkspaceBackendOptions>,
+        bootstrap: Option<nucleotide_remote::RemoteWorkspaceBootstrap>,
         cx: &mut Context<Self>,
     ) {
         let workspace_root = match target.kind {
@@ -9262,8 +9262,12 @@ impl Workspace {
             }
             RemoteOpenTargetKind::Directory => target.path.clone(),
         };
-        let backend_options = backend_options
-            .unwrap_or_else(|| self.core.read(cx).config.remote_workspace_backend_options());
+        let bootstrap = bootstrap.unwrap_or_else(|| {
+            nucleotide_remote::RemoteWorkspaceBootstrap::new(
+                self.core.read(cx).config.remote_workspace_backend_options(),
+            )
+        });
+        let backend_options = bootstrap.options().clone();
 
         if pending_remote_open_matches(self.pending_remote_open.as_ref(), &target, &backend_options)
         {
@@ -9321,9 +9325,9 @@ impl Workspace {
                 });
             };
 
-            workspace_backend_for_project_directory_with_options_progress_and_startup_context(
+            workspace_backend_for_project_directory_with_bootstrap_progress_and_startup_context(
                 Some(&task_root),
-                &backend_options,
+                &bootstrap,
                 &progress_sink,
                 &startup_context,
             )
@@ -10095,8 +10099,16 @@ impl Workspace {
             crate::Update::OpenFile(path) => self.handle_open_file(path, cx),
             crate::Update::OpenDirectory(path) => self.handle_open_directory(path, cx),
             crate::Update::OpenRemote(input) => self.handle_open_remote_submitted(input, cx),
-            crate::Update::OpenRemoteWithOptions { input, options } => {
-                self.handle_open_remote_submitted_with_options(input, Some(options.clone()), cx)
+            crate::Update::OpenRemoteWithOptions { input, options } => self
+                .handle_open_remote_submitted_with_bootstrap(
+                    input,
+                    Some(nucleotide_remote::RemoteWorkspaceBootstrap::new(
+                        options.clone(),
+                    )),
+                    cx,
+                ),
+            crate::Update::OpenRemoteWithBootstrap { input, bootstrap } => {
+                self.handle_open_remote_submitted_with_bootstrap(input, Some(bootstrap.clone()), cx)
             }
             crate::Update::FileTreeEvent(event) => {
                 self.handle_file_tree_event(event, cx);

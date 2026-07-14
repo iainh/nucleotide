@@ -38,7 +38,7 @@ use std::io::{self, Read, Seek, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{
-    Arc, Mutex, Weak,
+    Arc, Condvar, Mutex, Weak,
     atomic::{AtomicBool, AtomicU64, Ordering},
     mpsc,
 };
@@ -1994,6 +1994,56 @@ struct SshRemoteProbe {
     cache_root: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum RemoteBootstrapTransportKey {
+    Ssh {
+        host: String,
+        user: Option<String>,
+        port: Option<u16>,
+        connect_timeout_secs: Option<u64>,
+        extra_args: Vec<OsString>,
+        control_path: Option<PathBuf>,
+    },
+    Wsl {
+        distro: String,
+    },
+}
+
+impl RemoteBootstrapTransportKey {
+    fn from_location(
+        location: &WorkspaceLocation,
+        options: &RemoteWorkspaceBackendOptions,
+    ) -> Option<Self> {
+        match location {
+            WorkspaceLocation::Ssh { target, .. } => {
+                Some(Self::from_transport(LinuxHelperTransport::Ssh(
+                    &ssh_target_from_workspace_target_with_options(target, options),
+                )))
+            }
+            WorkspaceLocation::Wsl { distro, .. } => Some(Self::Wsl {
+                distro: distro.clone(),
+            }),
+            WorkspaceLocation::Local { .. } => None,
+        }
+    }
+
+    fn from_transport(transport: LinuxHelperTransport<'_>) -> Self {
+        match transport {
+            LinuxHelperTransport::Ssh(target) => Self::Ssh {
+                host: target.host.clone(),
+                user: target.user.clone(),
+                port: target.port,
+                connect_timeout_secs: target.connect_timeout_secs,
+                extra_args: target.extra_args.clone(),
+                control_path: target.control_path.clone(),
+            },
+            LinuxHelperTransport::Wsl(distro) => Self::Wsl {
+                distro: distro.to_string(),
+            },
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 enum LinuxHelperTransport<'a> {
     Ssh(&'a SshTarget),
@@ -2145,10 +2195,436 @@ impl Drop for RemoteStartupAttempt {
     }
 }
 
+const REMOTE_BOOTSTRAP_CACHE_CAPACITY: usize = 32;
+const REMOTE_BOOTSTRAP_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
+const REMOTE_BOOTSTRAP_WAIT_POLL: Duration = Duration::from_millis(10);
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RemoteSingleFlightKind {
+    Load,
+    Refresh,
+}
+
+enum RemoteSingleFlightEntry<V> {
+    Resolving {
+        flight_id: u64,
+        kind: RemoteSingleFlightKind,
+    },
+    Ready {
+        value: V,
+        generation: u64,
+        kind: RemoteSingleFlightKind,
+        expires_at: Instant,
+    },
+}
+
+enum RemoteSingleFlightLoad<V> {
+    Cache(V),
+    Uncached(V),
+}
+
+impl<V> RemoteSingleFlightLoad<V> {
+    fn into_value(self) -> V {
+        match self {
+            Self::Cache(value) | Self::Uncached(value) => value,
+        }
+    }
+}
+
+struct RemoteSingleFlightLookup<V> {
+    value: V,
+    generation: u64,
+}
+
+#[derive(Clone, Copy)]
+enum RemoteSingleFlightRequest {
+    Load,
+    Refresh { observed_generation: u64 },
+}
+
+impl RemoteSingleFlightRequest {
+    fn kind(self) -> RemoteSingleFlightKind {
+        match self {
+            Self::Load => RemoteSingleFlightKind::Load,
+            Self::Refresh { .. } => RemoteSingleFlightKind::Refresh,
+        }
+    }
+
+    fn can_use_ready(self, kind: RemoteSingleFlightKind, generation: u64) -> bool {
+        match self {
+            Self::Load => true,
+            Self::Refresh {
+                observed_generation,
+            } => kind == RemoteSingleFlightKind::Refresh && generation != observed_generation,
+        }
+    }
+}
+
+struct RemoteSingleFlightState<K, V> {
+    entries: HashMap<K, RemoteSingleFlightEntry<V>>,
+    ready_order: VecDeque<K>,
+    next_flight_id: u64,
+}
+
+impl<K, V> RemoteSingleFlightState<K, V>
+where
+    K: Clone + Eq + Hash,
+{
+    fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+            ready_order: VecDeque::new(),
+            next_flight_id: 1,
+        }
+    }
+
+    fn remove_expired(&mut self, now: Instant) {
+        let expired = self
+            .ready_order
+            .iter()
+            .filter(|key| {
+                matches!(
+                    self.entries.get(*key),
+                    Some(RemoteSingleFlightEntry::Ready { expires_at, .. })
+                        if *expires_at <= now
+                )
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        for key in expired {
+            self.entries.remove(&key);
+            self.ready_order.retain(|cached| cached != &key);
+        }
+    }
+
+    fn evict_oldest_ready(&mut self) -> bool {
+        while let Some(key) = self.ready_order.pop_front() {
+            if matches!(
+                self.entries.get(&key),
+                Some(RemoteSingleFlightEntry::Ready { .. })
+            ) {
+                self.entries.remove(&key);
+                return true;
+            }
+        }
+        false
+    }
+
+    fn allocate_flight_id(&mut self) -> u64 {
+        let flight_id = self.next_flight_id;
+        self.next_flight_id = self.next_flight_id.wrapping_add(1).max(1);
+        flight_id
+    }
+}
+
+struct RemoteSingleFlightCache<K, V> {
+    state: Mutex<RemoteSingleFlightState<K, V>>,
+    wake: Condvar,
+    capacity: usize,
+    ttl: Duration,
+}
+
+impl<K, V> RemoteSingleFlightCache<K, V>
+where
+    K: Clone + Eq + Hash,
+    V: Clone,
+{
+    fn new(capacity: usize, ttl: Duration) -> Self {
+        Self {
+            state: Mutex::new(RemoteSingleFlightState::new()),
+            wake: Condvar::new(),
+            capacity: capacity.max(1),
+            ttl,
+        }
+    }
+
+    fn get_or_try_init(
+        &self,
+        key: K,
+        startup: &RemoteStartupContext,
+        initialize: impl FnOnce() -> Result<V>,
+    ) -> Result<V> {
+        self.get_or_try_init_controlled(key, startup, || {
+            initialize().map(RemoteSingleFlightLoad::Cache)
+        })
+        .map(|lookup| lookup.value)
+    }
+
+    fn get_or_try_init_controlled(
+        &self,
+        key: K,
+        startup: &RemoteStartupContext,
+        initialize: impl FnOnce() -> Result<RemoteSingleFlightLoad<V>>,
+    ) -> Result<RemoteSingleFlightLookup<V>> {
+        self.get_or_try_init_for_request(key, startup, RemoteSingleFlightRequest::Load, initialize)
+    }
+
+    fn refresh_after(
+        &self,
+        key: K,
+        observed_generation: u64,
+        startup: &RemoteStartupContext,
+        initialize: impl FnOnce() -> Result<V>,
+    ) -> Result<RemoteSingleFlightLookup<V>> {
+        self.get_or_try_init_for_request(
+            key,
+            startup,
+            RemoteSingleFlightRequest::Refresh {
+                observed_generation,
+            },
+            || initialize().map(RemoteSingleFlightLoad::Cache),
+        )
+    }
+
+    fn get_or_try_init_for_request(
+        &self,
+        key: K,
+        startup: &RemoteStartupContext,
+        request: RemoteSingleFlightRequest,
+        initialize: impl FnOnce() -> Result<RemoteSingleFlightLoad<V>>,
+    ) -> Result<RemoteSingleFlightLookup<V>> {
+        let mut initialize = Some(initialize);
+        loop {
+            startup.check()?;
+            let mut state = self.lock_state();
+            let now = Instant::now();
+            state.remove_expired(now);
+
+            if let Some(RemoteSingleFlightEntry::Ready {
+                value,
+                generation,
+                kind,
+                ..
+            }) = state.entries.get(&key)
+            {
+                if request.can_use_ready(*kind, *generation) {
+                    let value = value.clone();
+                    let generation = *generation;
+                    state.ready_order.retain(|cached| cached != &key);
+                    state.ready_order.push_back(key.clone());
+                    drop(state);
+                    startup.check()?;
+                    return Ok(RemoteSingleFlightLookup { value, generation });
+                }
+                state.entries.remove(&key);
+                state.ready_order.retain(|cached| cached != &key);
+            }
+
+            if matches!(
+                state.entries.get(&key),
+                Some(RemoteSingleFlightEntry::Resolving { .. })
+            ) {
+                let wait = startup.cap_timeout(REMOTE_BOOTSTRAP_WAIT_POLL)?;
+                let (state, _) = self
+                    .wake
+                    .wait_timeout(state, wait)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                drop(state);
+                continue;
+            }
+
+            while state.entries.len() >= self.capacity && state.evict_oldest_ready() {}
+            if state.entries.len() >= self.capacity {
+                let wait = startup.cap_timeout(REMOTE_BOOTSTRAP_WAIT_POLL)?;
+                let (state, _) = self
+                    .wake
+                    .wait_timeout(state, wait)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                drop(state);
+                continue;
+            }
+
+            let flight_id = state.allocate_flight_id();
+            state.entries.insert(
+                key.clone(),
+                RemoteSingleFlightEntry::Resolving {
+                    flight_id,
+                    kind: request.kind(),
+                },
+            );
+            drop(state);
+
+            let mut leader = RemoteSingleFlightLeader::new(self, key, flight_id, request.kind());
+            let initialize = initialize
+                .take()
+                .expect("bootstrap initializer must run at most once");
+            return match initialize() {
+                Ok(RemoteSingleFlightLoad::Cache(value)) => {
+                    startup.check()?;
+                    leader.complete(value.clone());
+                    Ok(RemoteSingleFlightLookup {
+                        value,
+                        generation: flight_id,
+                    })
+                }
+                Ok(RemoteSingleFlightLoad::Uncached(value)) => {
+                    startup.check()?;
+                    leader.finish_without_value();
+                    Ok(RemoteSingleFlightLookup {
+                        value,
+                        generation: flight_id,
+                    })
+                }
+                Err(error) => Err(error),
+            };
+        }
+    }
+
+    fn lock_state(&self) -> std::sync::MutexGuard<'_, RemoteSingleFlightState<K, V>> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+struct RemoteSingleFlightLeader<'a, K, V>
+where
+    K: Clone + Eq + Hash,
+    V: Clone,
+{
+    cache: &'a RemoteSingleFlightCache<K, V>,
+    key: K,
+    flight_id: u64,
+    kind: RemoteSingleFlightKind,
+    completed: bool,
+}
+
+impl<'a, K, V> RemoteSingleFlightLeader<'a, K, V>
+where
+    K: Clone + Eq + Hash,
+    V: Clone,
+{
+    fn new(
+        cache: &'a RemoteSingleFlightCache<K, V>,
+        key: K,
+        flight_id: u64,
+        kind: RemoteSingleFlightKind,
+    ) -> Self {
+        Self {
+            cache,
+            key,
+            flight_id,
+            kind,
+            completed: false,
+        }
+    }
+
+    fn complete(&mut self, value: V) {
+        let mut state = self.cache.lock_state();
+        if !matches!(
+            state.entries.get(&self.key),
+            Some(RemoteSingleFlightEntry::Resolving { flight_id, kind })
+                if *flight_id == self.flight_id && *kind == self.kind
+        ) {
+            self.completed = true;
+            return;
+        }
+        state.entries.insert(
+            self.key.clone(),
+            RemoteSingleFlightEntry::Ready {
+                value,
+                generation: self.flight_id,
+                kind: self.kind,
+                expires_at: Instant::now() + self.cache.ttl,
+            },
+        );
+        state.ready_order.retain(|cached| cached != &self.key);
+        state.ready_order.push_back(self.key.clone());
+        while state.ready_order.len() > self.cache.capacity {
+            if let Some(evicted) = state.ready_order.pop_front() {
+                state.entries.remove(&evicted);
+            }
+        }
+        self.completed = true;
+        self.cache.wake.notify_all();
+    }
+
+    fn finish_without_value(&mut self) {
+        let mut state = self.cache.lock_state();
+        if matches!(
+            state.entries.get(&self.key),
+            Some(RemoteSingleFlightEntry::Resolving { flight_id, kind })
+                if *flight_id == self.flight_id && *kind == self.kind
+        ) {
+            state.entries.remove(&self.key);
+        }
+        self.completed = true;
+        self.cache.wake.notify_all();
+    }
+}
+
+impl<K, V> Drop for RemoteSingleFlightLeader<'_, K, V>
+where
+    K: Clone + Eq + Hash,
+    V: Clone,
+{
+    fn drop(&mut self) {
+        if self.completed {
+            return;
+        }
+        self.finish_without_value();
+    }
+}
+
+struct RemoteBootstrapCache {
+    probes: RemoteSingleFlightCache<RemoteBootstrapTransportKey, SshRemoteProbe>,
+    helpers: RemoteSingleFlightCache<RemoteBootstrapTransportKey, PathBuf>,
+}
+
+impl RemoteBootstrapCache {
+    fn new() -> Self {
+        Self {
+            probes: RemoteSingleFlightCache::new(
+                REMOTE_BOOTSTRAP_CACHE_CAPACITY,
+                REMOTE_BOOTSTRAP_CACHE_TTL,
+            ),
+            helpers: RemoteSingleFlightCache::new(
+                REMOTE_BOOTSTRAP_CACHE_CAPACITY,
+                REMOTE_BOOTSTRAP_CACHE_TTL,
+            ),
+        }
+    }
+}
+
+/// Immutable remote connection options plus bounded, pathless bootstrap facts shared by opens.
+#[derive(Clone)]
+pub struct RemoteWorkspaceBootstrap {
+    options: Arc<RemoteWorkspaceBackendOptions>,
+    cache: Arc<RemoteBootstrapCache>,
+}
+
+impl RemoteWorkspaceBootstrap {
+    pub fn new(options: RemoteWorkspaceBackendOptions) -> Self {
+        Self {
+            options: Arc::new(options),
+            cache: Arc::new(RemoteBootstrapCache::new()),
+        }
+    }
+
+    pub fn options(&self) -> &RemoteWorkspaceBackendOptions {
+        self.options.as_ref()
+    }
+}
+
+impl fmt::Debug for RemoteWorkspaceBootstrap {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RemoteWorkspaceBootstrap")
+            .field("options", &self.options)
+            .finish_non_exhaustive()
+    }
+}
+
+struct RemoteHelperResolution {
+    path: PathBuf,
+    cache_generation: Option<u64>,
+}
+
 pub struct RemoteHelperManager<'a> {
     options: &'a RemoteWorkspaceBackendOptions,
     progress: Option<&'a dyn Fn(RemoteDeploymentProgress)>,
     startup: RemoteStartupContext,
+    bootstrap: Option<&'a RemoteWorkspaceBootstrap>,
 }
 
 impl<'a> RemoteHelperManager<'a> {
@@ -2157,6 +2633,7 @@ impl<'a> RemoteHelperManager<'a> {
             options,
             progress: None,
             startup: RemoteStartupContext::new(DEFAULT_REMOTE_STARTUP_TIMEOUT),
+            bootstrap: None,
         }
     }
 
@@ -2168,6 +2645,7 @@ impl<'a> RemoteHelperManager<'a> {
             options,
             progress: Some(progress),
             startup: RemoteStartupContext::new(DEFAULT_REMOTE_STARTUP_TIMEOUT),
+            bootstrap: None,
         }
     }
 
@@ -2180,20 +2658,72 @@ impl<'a> RemoteHelperManager<'a> {
             options,
             progress,
             startup: startup.clone(),
+            bootstrap: None,
+        }
+    }
+
+    pub fn with_bootstrap_and_startup_context(
+        bootstrap: &'a RemoteWorkspaceBootstrap,
+        progress: Option<&'a dyn Fn(RemoteDeploymentProgress)>,
+        startup: &RemoteStartupContext,
+    ) -> Self {
+        Self {
+            options: bootstrap.options(),
+            progress,
+            startup: startup.clone(),
+            bootstrap: Some(bootstrap),
         }
     }
 
     pub fn resolve_helper_for_location(&self, location: &WorkspaceLocation) -> Result<PathBuf> {
+        self.resolve_helper_for_startup(location)
+            .map(|helper| helper.path)
+    }
+
+    fn resolve_helper_for_startup(
+        &self,
+        location: &WorkspaceLocation,
+    ) -> Result<RemoteHelperResolution> {
         self.check_cancelled()?;
-        let helper = match location {
+        let helper =
+            if let (Some(bootstrap), Some(key)) = (
+                self.bootstrap,
+                RemoteBootstrapTransportKey::from_location(location, self.options),
+            ) {
+                let lookup = bootstrap.cache.helpers.get_or_try_init_controlled(
+                    key,
+                    &self.startup,
+                    || self.resolve_helper_for_location_uncached(location),
+                )?;
+                RemoteHelperResolution {
+                    path: lookup.value,
+                    cache_generation: Some(lookup.generation),
+                }
+            } else {
+                RemoteHelperResolution {
+                    path: self
+                        .resolve_helper_for_location_uncached(location)?
+                        .into_value(),
+                    cache_generation: None,
+                }
+            };
+        self.check_cancelled()?;
+        Ok(helper)
+    }
+
+    fn resolve_helper_for_location_uncached(
+        &self,
+        location: &WorkspaceLocation,
+    ) -> Result<RemoteSingleFlightLoad<PathBuf>> {
+        match location {
             WorkspaceLocation::Ssh { target, .. } => self.resolve_ssh_helper(
                 &ssh_target_from_workspace_target_with_options(target, self.options),
             ),
             WorkspaceLocation::Wsl { distro, .. } => self.resolve_wsl_helper(distro),
-            WorkspaceLocation::Local { .. } => Ok(self.options.remote_helper_path.clone()),
-        }?;
-        self.check_cancelled()?;
-        Ok(helper)
+            WorkspaceLocation::Local { .. } => Ok(RemoteSingleFlightLoad::Uncached(
+                self.options.remote_helper_path.clone(),
+            )),
+        }
     }
 
     pub fn reinstall_helper_for_location(
@@ -2201,7 +2731,51 @@ impl<'a> RemoteHelperManager<'a> {
         location: &WorkspaceLocation,
     ) -> Result<Option<PathBuf>> {
         self.check_cancelled()?;
-        let helper = match location {
+        let helper = self.reinstall_helper_for_location_uncached(location)?;
+        self.check_cancelled()?;
+        Ok(helper)
+    }
+
+    fn refresh_helper_for_location(
+        &self,
+        location: &WorkspaceLocation,
+        previous: &RemoteHelperResolution,
+    ) -> Result<Option<RemoteHelperResolution>> {
+        self.check_cancelled()?;
+        let helper = if let (Some(bootstrap), Some(key), Some(observed_generation)) = (
+            self.bootstrap,
+            RemoteBootstrapTransportKey::from_location(location, self.options),
+            previous.cache_generation,
+        ) {
+            let lookup = bootstrap.cache.helpers.refresh_after(
+                key,
+                observed_generation,
+                &self.startup,
+                || {
+                    self.reinstall_helper_for_location_uncached(location)?
+                        .context("remote helper reinstall did not return a helper path")
+                },
+            )?;
+            Some(RemoteHelperResolution {
+                path: lookup.value,
+                cache_generation: Some(lookup.generation),
+            })
+        } else {
+            self.reinstall_helper_for_location_uncached(location)?
+                .map(|path| RemoteHelperResolution {
+                    path,
+                    cache_generation: None,
+                })
+        };
+        self.check_cancelled()?;
+        Ok(helper)
+    }
+
+    fn reinstall_helper_for_location_uncached(
+        &self,
+        location: &WorkspaceLocation,
+    ) -> Result<Option<PathBuf>> {
+        match location {
             WorkspaceLocation::Ssh { target, .. } => self
                 .reinstall_ssh_helper(&ssh_target_from_workspace_target_with_options(
                     target,
@@ -2210,12 +2784,10 @@ impl<'a> RemoteHelperManager<'a> {
                 .map(Some),
             WorkspaceLocation::Wsl { distro, .. } => self.reinstall_wsl_helper(distro).map(Some),
             WorkspaceLocation::Local { .. } => Ok(None),
-        }?;
-        self.check_cancelled()?;
-        Ok(helper)
+        }
     }
 
-    fn resolve_ssh_helper(&self, target: &SshTarget) -> Result<PathBuf> {
+    fn resolve_ssh_helper(&self, target: &SshTarget) -> Result<RemoteSingleFlightLoad<PathBuf>> {
         let helper_path = self
             .options
             .ssh_helper_path
@@ -2232,7 +2804,7 @@ impl<'a> RemoteHelperManager<'a> {
         )
     }
 
-    fn resolve_wsl_helper(&self, distro: &str) -> Result<PathBuf> {
+    fn resolve_wsl_helper(&self, distro: &str) -> Result<RemoteSingleFlightLoad<PathBuf>> {
         let helper_path = self
             .options
             .wsl_helper_path
@@ -2255,17 +2827,21 @@ impl<'a> RemoteHelperManager<'a> {
         install_policy: RemoteHelperInstallPolicy,
         configured_helper_path: &Path,
         helper_path_is_override: bool,
-    ) -> Result<PathBuf> {
+    ) -> Result<RemoteSingleFlightLoad<PathBuf>> {
         self.check_cancelled()?;
         if helper_path_is_override
             && install_policy != RemoteHelperInstallPolicy::Upload
             && install_policy != RemoteHelperInstallPolicy::RemoteDownload
         {
-            return Ok(configured_helper_path.to_path_buf());
+            return Ok(RemoteSingleFlightLoad::Uncached(
+                configured_helper_path.to_path_buf(),
+            ));
         }
 
         if install_policy == RemoteHelperInstallPolicy::Never {
-            return Ok(configured_helper_path.to_path_buf());
+            return Ok(RemoteSingleFlightLoad::Uncached(
+                configured_helper_path.to_path_buf(),
+            ));
         }
 
         let connection_phase = match transport {
@@ -2282,7 +2858,9 @@ impl<'a> RemoteHelperManager<'a> {
                     target = %transport.target_name(),
                     "Falling back to configured helper after platform probe failure"
                 );
-                return Ok(configured_helper_path.to_path_buf());
+                return Ok(RemoteSingleFlightLoad::Uncached(
+                    configured_helper_path.to_path_buf(),
+                ));
             }
             Err(error) => return Err(error),
         };
@@ -2299,7 +2877,7 @@ impl<'a> RemoteHelperManager<'a> {
             Some(helper_path.display().to_string()),
         );
         if self.remote_helper_matches(transport, &helper_path, &probe.platform)? {
-            return Ok(helper_path);
+            return Ok(RemoteSingleFlightLoad::Cache(helper_path));
         }
 
         if install_policy == RemoteHelperInstallPolicy::RemoteDownload {
@@ -2311,7 +2889,7 @@ impl<'a> RemoteHelperManager<'a> {
                     PROTOCOL_VERSION
                 );
             }
-            return Ok(helper_path);
+            return Ok(RemoteSingleFlightLoad::Cache(helper_path));
         }
 
         let Some(local_helper) = self.local_upload_artifact_for_platform(&probe.platform) else {
@@ -2329,7 +2907,7 @@ impl<'a> RemoteHelperManager<'a> {
                                 PROTOCOL_VERSION
                             );
                         }
-                        return Ok(helper_path);
+                        return Ok(RemoteSingleFlightLoad::Cache(helper_path));
                     }
                     Err(error) => {
                         self.check_cancelled()?;
@@ -2348,7 +2926,9 @@ impl<'a> RemoteHelperManager<'a> {
                     transport.description()
                 );
             }
-            return Ok(configured_helper_path.to_path_buf());
+            return Ok(RemoteSingleFlightLoad::Uncached(
+                configured_helper_path.to_path_buf(),
+            ));
         };
 
         if !local_helper.is_file() {
@@ -2359,7 +2939,9 @@ impl<'a> RemoteHelperManager<'a> {
                     local_helper.display()
                 );
             }
-            return Ok(configured_helper_path.to_path_buf());
+            return Ok(RemoteSingleFlightLoad::Uncached(
+                configured_helper_path.to_path_buf(),
+            ));
         }
 
         self.emit_progress(
@@ -2383,7 +2965,7 @@ impl<'a> RemoteHelperManager<'a> {
             );
         }
 
-        Ok(helper_path)
+        Ok(RemoteSingleFlightLoad::Cache(helper_path))
     }
 
     fn reinstall_ssh_helper(&self, target: &SshTarget) -> Result<PathBuf> {
@@ -2514,6 +3096,24 @@ impl<'a> RemoteHelperManager<'a> {
     }
 
     fn probe_linux_platform(&self, transport: LinuxHelperTransport<'_>) -> Result<SshRemoteProbe> {
+        self.check_cancelled()?;
+        let probe = if let Some(bootstrap) = self.bootstrap {
+            bootstrap.cache.probes.get_or_try_init(
+                RemoteBootstrapTransportKey::from_transport(transport),
+                &self.startup,
+                || self.probe_linux_platform_uncached(transport),
+            )?
+        } else {
+            self.probe_linux_platform_uncached(transport)?
+        };
+        self.check_cancelled()?;
+        Ok(probe)
+    }
+
+    fn probe_linux_platform_uncached(
+        &self,
+        transport: LinuxHelperTransport<'_>,
+    ) -> Result<SshRemoteProbe> {
         self.emit_progress(
             RemoteDeploymentPhase::DetectingRemotePlatform,
             Some(transport.target_name()),
@@ -3050,7 +3650,10 @@ pub fn connect_workspace_backend_for_location(
     options: &RemoteWorkspaceBackendOptions,
 ) -> Result<WorkspaceBackendConnection> {
     let startup = RemoteStartupContext::new(DEFAULT_REMOTE_STARTUP_TIMEOUT);
-    connect_workspace_backend_for_location_with_optional_progress(location, options, None, &startup)
+    let bootstrap = RemoteWorkspaceBootstrap::new(options.clone());
+    connect_workspace_backend_for_location_with_optional_progress(
+        location, &bootstrap, None, &startup,
+    )
 }
 
 pub fn connect_workspace_backend_for_location_with_progress(
@@ -3059,9 +3662,10 @@ pub fn connect_workspace_backend_for_location_with_progress(
     progress: &dyn Fn(RemoteDeploymentProgress),
 ) -> Result<WorkspaceBackendConnection> {
     let startup = RemoteStartupContext::new(DEFAULT_REMOTE_STARTUP_TIMEOUT);
+    let bootstrap = RemoteWorkspaceBootstrap::new(options.clone());
     connect_workspace_backend_for_location_with_optional_progress(
         location,
-        options,
+        &bootstrap,
         Some(progress),
         &startup,
     )
@@ -3088,9 +3692,21 @@ pub fn connect_workspace_backend_for_location_with_progress_and_startup_context(
     progress: &dyn Fn(RemoteDeploymentProgress),
     startup: &RemoteStartupContext,
 ) -> Result<WorkspaceBackendConnection> {
+    let bootstrap = RemoteWorkspaceBootstrap::new(options.clone());
+    connect_workspace_backend_for_location_with_bootstrap_progress_and_startup_context(
+        location, &bootstrap, progress, startup,
+    )
+}
+
+pub fn connect_workspace_backend_for_location_with_bootstrap_progress_and_startup_context(
+    location: WorkspaceLocation,
+    bootstrap: &RemoteWorkspaceBootstrap,
+    progress: &dyn Fn(RemoteDeploymentProgress),
+    startup: &RemoteStartupContext,
+) -> Result<WorkspaceBackendConnection> {
     connect_workspace_backend_for_location_with_optional_progress(
         location,
-        options,
+        bootstrap,
         Some(progress),
         startup,
     )
@@ -3098,11 +3714,12 @@ pub fn connect_workspace_backend_for_location_with_progress_and_startup_context(
 
 fn connect_workspace_backend_for_location_with_optional_progress(
     location: WorkspaceLocation,
-    options: &RemoteWorkspaceBackendOptions,
+    bootstrap: &RemoteWorkspaceBootstrap,
     progress: Option<&dyn Fn(RemoteDeploymentProgress)>,
     startup: &RemoteStartupContext,
 ) -> Result<WorkspaceBackendConnection> {
     startup.check()?;
+    let options = bootstrap.options();
     if let WorkspaceLocation::Local { path } = &location {
         if options.use_local_service {
             let helper_path = options
@@ -3143,11 +3760,11 @@ fn connect_workspace_backend_for_location_with_optional_progress(
     let identity = remote_workspace_identity_for_location(&location)
         .context("remote workspace location is missing an identity")?;
     let helper_manager =
-        RemoteHelperManager::with_progress_and_startup_context(options, progress, startup);
-    let helper_path = helper_manager.resolve_helper_for_location(&location)?;
+        RemoteHelperManager::with_bootstrap_and_startup_context(bootstrap, progress, startup);
+    let helper = helper_manager.resolve_helper_for_startup(&location)?;
     startup.check()?;
     let command =
-        remote_service_command_for_location_with_options(&location, &helper_path, options)
+        remote_service_command_for_location_with_options(&location, &helper.path, options)
             .context("remote workspace location is missing a service command")?;
     let mapping = location.path_mapping();
     let display_root = location.display_root().to_path_buf();
@@ -3166,19 +3783,17 @@ fn connect_workspace_backend_for_location_with_optional_progress(
         Ok(connection) => connection,
         Err(error) if remote_startup_error_can_retry_helper_install(&location, &error) => {
             startup.check()?;
-            let retry_helper_path = RemoteHelperManager::with_progress_and_startup_context(
-                options, progress, startup,
-            )
-            .reinstall_helper_for_location(&location)
-            .with_context(|| {
-                format!(
-                    "failed to reinstall remote helper after startup failure. Initial error: {error:#}"
-                )
-            })?
-            .context("remote helper reinstall did not apply to this workspace location")?;
+            let retry_helper = helper_manager
+                .refresh_helper_for_location(&location, &helper)
+                .with_context(|| {
+                    format!(
+                        "failed to reinstall remote helper after startup failure. Initial error: {error:#}"
+                    )
+                })?
+                .context("remote helper reinstall did not apply to this workspace location")?;
             let retry_command = remote_service_command_for_location_with_options(
                 &location,
-                &retry_helper_path,
+                &retry_helper.path,
                 options,
             )
             .context("remote workspace location is missing a service command")?;
@@ -3206,7 +3821,7 @@ fn connect_workspace_backend_for_location_with_optional_progress(
                 format!(
                     "failed to initialize remote workspace service for {}. {}",
                     display_root.display(),
-                    remote_helper_setup_hint(&location, &helper_path)
+                    remote_helper_setup_hint(&location, &helper.path)
                 )
             });
         }
@@ -16598,7 +17213,7 @@ mod tests {
     #[cfg(unix)]
     use std::sync::atomic::AtomicBool;
     use std::sync::{
-        Arc, Condvar, Mutex as StdMutex,
+        Arc, Barrier, Condvar, Mutex as StdMutex,
         atomic::{AtomicUsize, Ordering},
     };
 
@@ -19129,6 +19744,491 @@ mod tests {
         let startup = RemoteStartupContext::new(Duration::MAX);
 
         assert!(startup.remaining().unwrap() > DEFAULT_REMOTE_STARTUP_TIMEOUT);
+    }
+
+    #[test]
+    fn bootstrap_cache_single_flights_concurrent_callers() {
+        let cache = Arc::new(RemoteSingleFlightCache::new(4, Duration::from_secs(5)));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let start = Arc::new(Barrier::new(9));
+        let callers = (0..8)
+            .map(|_| {
+                let cache = Arc::clone(&cache);
+                let calls = Arc::clone(&calls);
+                let start = Arc::clone(&start);
+                std::thread::spawn(move || {
+                    let startup = RemoteStartupContext::new(Duration::from_secs(5));
+                    start.wait();
+                    cache.get_or_try_init("host".to_string(), &startup, || {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        std::thread::sleep(Duration::from_millis(50));
+                        Ok(42)
+                    })
+                })
+            })
+            .collect::<Vec<_>>();
+        start.wait();
+
+        for caller in callers {
+            assert_eq!(caller.join().unwrap().unwrap(), 42);
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn bootstrap_cache_follower_cancellation_does_not_cancel_leader() {
+        let cache = Arc::new(RemoteSingleFlightCache::new(4, Duration::from_secs(5)));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let leader = {
+            let cache = Arc::clone(&cache);
+            let calls = Arc::clone(&calls);
+            std::thread::spawn(move || {
+                let startup = RemoteStartupContext::new(Duration::from_secs(5));
+                cache.get_or_try_init("host".to_string(), &startup, || {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    started_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                    Ok(11)
+                })
+            })
+        };
+        started_rx.recv().unwrap();
+
+        let cancellation = WorkspaceCancellationToken::new();
+        let follower = {
+            let cache = Arc::clone(&cache);
+            let startup = RemoteStartupContext::with_cancellation(
+                cancellation.clone(),
+                Duration::from_secs(5),
+            );
+            std::thread::spawn(move || {
+                cache.get_or_try_init("host".to_string(), &startup, || Ok(22))
+            })
+        };
+        cancellation.cancel();
+        let follower_error = follower.join().unwrap().unwrap_err();
+        assert!(remote_startup_was_cancelled(&follower_error));
+
+        release_tx.send(()).unwrap();
+        assert_eq!(leader.join().unwrap().unwrap(), 11);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let startup = RemoteStartupContext::new(Duration::from_secs(5));
+        assert_eq!(
+            cache
+                .get_or_try_init("host".to_string(), &startup, || {
+                    panic!("successful leader result was not cached")
+                })
+                .unwrap(),
+            11
+        );
+    }
+
+    #[test]
+    fn bootstrap_cache_failure_and_cancelled_publication_are_not_sticky() {
+        let cache = RemoteSingleFlightCache::new(4, Duration::from_secs(5));
+        let startup = RemoteStartupContext::new(Duration::from_secs(5));
+        let first_error = cache
+            .get_or_try_init("failed".to_string(), &startup, || {
+                Err::<usize, _>(anyhow::anyhow!("probe failed"))
+            })
+            .unwrap_err();
+        assert!(first_error.to_string().contains("probe failed"));
+        assert_eq!(
+            cache
+                .get_or_try_init("failed".to_string(), &startup, || Ok(7))
+                .unwrap(),
+            7
+        );
+
+        let cancellation = WorkspaceCancellationToken::new();
+        let cancelled_startup =
+            RemoteStartupContext::with_cancellation(cancellation.clone(), Duration::from_secs(5));
+        let cancelled_error = cache
+            .get_or_try_init("cancelled".to_string(), &cancelled_startup, || {
+                cancellation.cancel();
+                Ok(1)
+            })
+            .unwrap_err();
+        assert!(remote_startup_was_cancelled(&cancelled_error));
+        assert_eq!(
+            cache
+                .get_or_try_init("cancelled".to_string(), &startup, || Ok(2))
+                .unwrap(),
+            2
+        );
+    }
+
+    #[test]
+    fn bootstrap_cache_forced_refresh_excludes_ordinary_resolution() {
+        let cache = Arc::new(RemoteSingleFlightCache::new(4, Duration::from_secs(5)));
+        let startup = RemoteStartupContext::new(Duration::from_secs(5));
+        let original = cache
+            .get_or_try_init_controlled("host".to_string(), &startup, || {
+                Ok(RemoteSingleFlightLoad::Cache("old".to_string()))
+            })
+            .unwrap();
+        let refresh_calls = Arc::new(AtomicUsize::new(0));
+        let ordinary_calls = Arc::new(AtomicUsize::new(0));
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+
+        let refresh = {
+            let cache = Arc::clone(&cache);
+            let refresh_calls = Arc::clone(&refresh_calls);
+            std::thread::spawn(move || {
+                let startup = RemoteStartupContext::new(Duration::from_secs(5));
+                cache.refresh_after("host".to_string(), original.generation, &startup, || {
+                    refresh_calls.fetch_add(1, Ordering::SeqCst);
+                    started_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                    Ok("new".to_string())
+                })
+            })
+        };
+        started_rx.recv().unwrap();
+
+        let ordinary = {
+            let cache = Arc::clone(&cache);
+            let ordinary_calls = Arc::clone(&ordinary_calls);
+            std::thread::spawn(move || {
+                let startup = RemoteStartupContext::new(Duration::from_secs(5));
+                cache.get_or_try_init("host".to_string(), &startup, || {
+                    ordinary_calls.fetch_add(1, Ordering::SeqCst);
+                    Ok("ordinary".to_string())
+                })
+            })
+        };
+        let refresh_follower = {
+            let cache = Arc::clone(&cache);
+            std::thread::spawn(move || {
+                let startup = RemoteStartupContext::new(Duration::from_secs(5));
+                cache.refresh_after("host".to_string(), original.generation, &startup, || {
+                    panic!("refresh follower unexpectedly became the leader")
+                })
+            })
+        };
+
+        release_tx.send(()).unwrap();
+        let refreshed = refresh.join().unwrap().unwrap();
+        assert_eq!(refreshed.value, "new");
+        assert_eq!(ordinary.join().unwrap().unwrap(), "new");
+        let follower = refresh_follower.join().unwrap().unwrap();
+        assert_eq!(follower.value, "new");
+        assert_eq!(follower.generation, refreshed.generation);
+        assert_eq!(refresh_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(ordinary_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn bootstrap_cache_stale_refresh_cannot_replace_newer_generation() {
+        let cache = RemoteSingleFlightCache::new(4, Duration::from_secs(5));
+        let startup = RemoteStartupContext::new(Duration::from_secs(5));
+        let original = cache
+            .get_or_try_init_controlled("host".to_string(), &startup, || {
+                Ok(RemoteSingleFlightLoad::Cache("old".to_string()))
+            })
+            .unwrap();
+        let refreshed = cache
+            .refresh_after("host".to_string(), original.generation, &startup, || {
+                Ok("new".to_string())
+            })
+            .unwrap();
+        assert_ne!(refreshed.generation, original.generation);
+
+        let stale = cache
+            .refresh_after("host".to_string(), original.generation, &startup, || {
+                panic!("stale observation replaced a newer refresh")
+            })
+            .unwrap();
+        assert_eq!(stale.value, "new");
+        assert_eq!(stale.generation, refreshed.generation);
+
+        let next = cache
+            .refresh_after("host".to_string(), refreshed.generation, &startup, || {
+                Ok("newer".to_string())
+            })
+            .unwrap();
+        assert_eq!(next.value, "newer");
+        assert_ne!(next.generation, refreshed.generation);
+    }
+
+    #[test]
+    fn bootstrap_does_not_cache_unvalidated_helper_overrides() {
+        let helper_path = PathBuf::from("/opt/custom/nucleotide-remote");
+        let options = RemoteWorkspaceBackendOptions {
+            ssh_helper_path: Some(helper_path.clone()),
+            ssh_helper_path_is_override: true,
+            ..RemoteWorkspaceBackendOptions::default()
+        };
+        let bootstrap = RemoteWorkspaceBootstrap::new(options);
+        let startup = RemoteStartupContext::new(Duration::from_secs(5));
+        let manager =
+            RemoteHelperManager::with_bootstrap_and_startup_context(&bootstrap, None, &startup);
+        let location = WorkspaceLocation::Ssh {
+            original_path: PathBuf::from("ssh://me@example.com/project"),
+            target: SshWorkspaceTarget {
+                host: "example.com".to_string(),
+                user: Some("me".to_string()),
+                port: None,
+            },
+            path: PathBuf::from("/project"),
+        };
+
+        assert_eq!(
+            manager.resolve_helper_for_location(&location).unwrap(),
+            helper_path
+        );
+        assert!(bootstrap.cache.helpers.lock_state().entries.is_empty());
+    }
+
+    #[test]
+    fn bootstrap_cache_is_bounded_when_all_slots_are_resolving() {
+        let cache = Arc::new(RemoteSingleFlightCache::new(1, Duration::from_secs(5)));
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let leader = {
+            let cache = Arc::clone(&cache);
+            std::thread::spawn(move || {
+                let startup = RemoteStartupContext::new(Duration::from_secs(5));
+                cache.get_or_try_init("first".to_string(), &startup, || {
+                    started_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                    Ok(1)
+                })
+            })
+        };
+        started_rx.recv().unwrap();
+
+        let (second_started_tx, second_started_rx) = mpsc::channel();
+        let second = {
+            let cache = Arc::clone(&cache);
+            std::thread::spawn(move || {
+                let startup = RemoteStartupContext::new(Duration::from_secs(5));
+                cache.get_or_try_init("second".to_string(), &startup, || {
+                    second_started_tx.send(()).unwrap();
+                    Ok(2)
+                })
+            })
+        };
+        std::thread::sleep(Duration::from_millis(25));
+        assert!(matches!(
+            second_started_rx.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+        {
+            let state = cache.lock_state();
+            assert_eq!(state.entries.len(), 1);
+            assert!(state.entries.contains_key("first"));
+            assert!(!state.entries.contains_key("second"));
+        }
+
+        release_tx.send(()).unwrap();
+        assert_eq!(leader.join().unwrap().unwrap(), 1);
+        second_started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+        assert_eq!(second.join().unwrap().unwrap(), 2);
+    }
+
+    #[test]
+    fn bootstrap_cache_serializes_refresh_and_load_when_capacity_is_saturated() {
+        let cache = Arc::new(RemoteSingleFlightCache::new(1, Duration::from_secs(5)));
+        let startup = RemoteStartupContext::new(Duration::from_secs(5));
+        let original = cache
+            .get_or_try_init_controlled("target".to_string(), &startup, || {
+                Ok(RemoteSingleFlightLoad::Cache("old".to_string()))
+            })
+            .unwrap();
+        let (blocker_started_tx, blocker_started_rx) = mpsc::channel();
+        let (release_blocker_tx, release_blocker_rx) = mpsc::channel();
+        let blocker = {
+            let cache = Arc::clone(&cache);
+            std::thread::spawn(move || {
+                let startup = RemoteStartupContext::new(Duration::from_secs(5));
+                cache.get_or_try_init("blocker".to_string(), &startup, || {
+                    blocker_started_tx.send(()).unwrap();
+                    release_blocker_rx.recv().unwrap();
+                    Ok("blocker".to_string())
+                })
+            })
+        };
+        blocker_started_rx.recv().unwrap();
+
+        let start = Arc::new(Barrier::new(3));
+        let active_initializers = Arc::new(AtomicUsize::new(0));
+        let overlaps = Arc::new(AtomicUsize::new(0));
+        let refresh_calls = Arc::new(AtomicUsize::new(0));
+        let ordinary_calls = Arc::new(AtomicUsize::new(0));
+        let refresh = {
+            let cache = Arc::clone(&cache);
+            let start = Arc::clone(&start);
+            let active_initializers = Arc::clone(&active_initializers);
+            let overlaps = Arc::clone(&overlaps);
+            let refresh_calls = Arc::clone(&refresh_calls);
+            std::thread::spawn(move || {
+                let startup = RemoteStartupContext::new(Duration::from_secs(5));
+                start.wait();
+                cache.refresh_after("target".to_string(), original.generation, &startup, || {
+                    if active_initializers.fetch_add(1, Ordering::SeqCst) != 0 {
+                        overlaps.fetch_add(1, Ordering::SeqCst);
+                    }
+                    refresh_calls.fetch_add(1, Ordering::SeqCst);
+                    std::thread::sleep(Duration::from_millis(25));
+                    active_initializers.fetch_sub(1, Ordering::SeqCst);
+                    Ok("new".to_string())
+                })
+            })
+        };
+        let ordinary = {
+            let cache = Arc::clone(&cache);
+            let start = Arc::clone(&start);
+            let active_initializers = Arc::clone(&active_initializers);
+            let overlaps = Arc::clone(&overlaps);
+            let ordinary_calls = Arc::clone(&ordinary_calls);
+            std::thread::spawn(move || {
+                let startup = RemoteStartupContext::new(Duration::from_secs(5));
+                start.wait();
+                cache.get_or_try_init("target".to_string(), &startup, || {
+                    if active_initializers.fetch_add(1, Ordering::SeqCst) != 0 {
+                        overlaps.fetch_add(1, Ordering::SeqCst);
+                    }
+                    ordinary_calls.fetch_add(1, Ordering::SeqCst);
+                    std::thread::sleep(Duration::from_millis(25));
+                    active_initializers.fetch_sub(1, Ordering::SeqCst);
+                    Ok("ordinary".to_string())
+                })
+            })
+        };
+        start.wait();
+        release_blocker_tx.send(()).unwrap();
+        assert_eq!(blocker.join().unwrap().unwrap(), "blocker");
+
+        let refreshed = refresh.join().unwrap().unwrap();
+        let ordinary = ordinary.join().unwrap().unwrap();
+        assert_eq!(refreshed.value, "new");
+        assert!(ordinary == "ordinary" || ordinary == "new");
+        assert_eq!(refresh_calls.load(Ordering::SeqCst), 1);
+        assert!(ordinary_calls.load(Ordering::SeqCst) <= 1);
+        assert_eq!(overlaps.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            cache
+                .get_or_try_init("target".to_string(), &startup, || {
+                    panic!("final refreshed generation was not cached")
+                })
+                .unwrap(),
+            "new"
+        );
+    }
+
+    #[test]
+    fn bootstrap_cache_expires_entries_and_evicts_least_recently_used() {
+        let cache = RemoteSingleFlightCache::new(2, Duration::from_secs(5));
+        let startup = RemoteStartupContext::new(Duration::from_secs(5));
+        assert_eq!(
+            cache
+                .get_or_try_init("first".to_string(), &startup, || Ok(1))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            cache
+                .get_or_try_init("second".to_string(), &startup, || Ok(2))
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            cache
+                .get_or_try_init("first".to_string(), &startup, || {
+                    panic!("cache hit unexpectedly invoked initializer")
+                })
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            cache
+                .get_or_try_init("third".to_string(), &startup, || Ok(3))
+                .unwrap(),
+            3
+        );
+        {
+            let state = cache.lock_state();
+            assert_eq!(state.entries.len(), 2);
+            assert!(state.entries.contains_key("first"));
+            assert!(!state.entries.contains_key("second"));
+            assert!(state.entries.contains_key("third"));
+        }
+
+        let expiring = RemoteSingleFlightCache::new(1, Duration::from_millis(10));
+        assert_eq!(
+            expiring
+                .get_or_try_init("host".to_string(), &startup, || Ok(4))
+                .unwrap(),
+            4
+        );
+        std::thread::sleep(Duration::from_millis(25));
+        assert_eq!(
+            expiring
+                .get_or_try_init("host".to_string(), &startup, || Ok(5))
+                .unwrap(),
+            5
+        );
+    }
+
+    #[test]
+    fn bootstrap_transport_keys_ignore_roots_but_include_exact_ssh_options() {
+        let first = WorkspaceLocation::Ssh {
+            original_path: PathBuf::from("ssh://me@example.com/one"),
+            target: SshWorkspaceTarget {
+                host: "example.com".to_string(),
+                user: Some("me".to_string()),
+                port: Some(2222),
+            },
+            path: PathBuf::from("/one"),
+        };
+        let second = WorkspaceLocation::Ssh {
+            original_path: PathBuf::from("ssh://me@example.com/two"),
+            target: SshWorkspaceTarget {
+                host: "example.com".to_string(),
+                user: Some("me".to_string()),
+                port: Some(2222),
+            },
+            path: PathBuf::from("/two"),
+        };
+        let options = RemoteWorkspaceBackendOptions::default();
+        assert_eq!(
+            RemoteBootstrapTransportKey::from_location(&first, &options),
+            RemoteBootstrapTransportKey::from_location(&second, &options)
+        );
+
+        let mut different_options = options.clone();
+        different_options
+            .ssh_extra_args
+            .push(OsString::from("ProxyJump=bastion"));
+        different_options.ssh_control_path = Some(PathBuf::from("/tmp/different-control"));
+        assert_ne!(
+            RemoteBootstrapTransportKey::from_location(&first, &options),
+            RemoteBootstrapTransportKey::from_location(&first, &different_options)
+        );
+        assert_ne!(
+            RemoteBootstrapTransportKey::from_location(
+                &WorkspaceLocation::Wsl {
+                    original_path: PathBuf::from(r"\\wsl.localhost\Ubuntu\home\me"),
+                    distro: "Ubuntu".to_string(),
+                    linux_path: PathBuf::from("/home/me"),
+                },
+                &options,
+            ),
+            RemoteBootstrapTransportKey::from_location(
+                &WorkspaceLocation::Wsl {
+                    original_path: PathBuf::from(r"\\wsl.localhost\Debian\home\me"),
+                    distro: "Debian".to_string(),
+                    linux_path: PathBuf::from("/home/me"),
+                },
+                &options,
+            )
+        );
     }
 
     #[test]
