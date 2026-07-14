@@ -5092,6 +5092,30 @@ where
         )))
     }
 
+    fn resync_watch(
+        &self,
+        watch_id: u64,
+        roots: Vec<PathBuf>,
+    ) -> std::result::Result<(), RemoteClientError> {
+        self.resync_watch_with_cancellation(watch_id, roots, &RemoteRequestCancellation::new())
+    }
+
+    fn resync_watch_with_cancellation(
+        &self,
+        watch_id: u64,
+        roots: Vec<PathBuf>,
+        cancellation: &RemoteRequestCancellation,
+    ) -> std::result::Result<(), RemoteClientError> {
+        self.resync_v5_watch_with_cancellation(
+            protocol_v5::WatchResync {
+                watch_id,
+                roots: roots.iter().map(posix_path_string).collect(),
+            },
+            cancellation,
+        )?;
+        Ok(())
+    }
+
     fn stop_watch(&self, watch_id: u64) -> std::result::Result<(), RemoteClientError> {
         self.stop_watch_with_cancellation(watch_id, &RemoteRequestCancellation::new())
     }
@@ -5437,10 +5461,19 @@ where
         &self,
         request: protocol_v5::WatchResync,
     ) -> std::result::Result<protocol_v5::WatchResyncResponse, RemoteClientError> {
-        let payload = self.request_v5_raw(
+        self.resync_v5_watch_with_cancellation(request, &RemoteRequestCancellation::new())
+    }
+
+    fn resync_v5_watch_with_cancellation(
+        &self,
+        request: protocol_v5::WatchResync,
+        cancellation: &RemoteRequestCancellation,
+    ) -> std::result::Result<protocol_v5::WatchResyncResponse, RemoteClientError> {
+        let payload = self.request_v5_raw_with_cancellation(
             "watch.resync",
             request.encode_to_vec(),
             v5_watch_control_request_context(),
+            cancellation,
         )?;
         protocol_v5::WatchResyncResponse::decode(payload.as_slice()).map_err(|error| {
             RemoteClientError::Protocol(format!(
@@ -5490,6 +5523,7 @@ where
         Ok(())
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     fn request_v5_raw(
         &self,
         method: &'static str,
@@ -7312,6 +7346,28 @@ pub trait RemoteWorkspaceProtocolClient: Send + Sync {
         result
     }
 
+    fn resync_watch(
+        &self,
+        _watch_id: u64,
+        _roots: Vec<PathBuf>,
+    ) -> std::result::Result<(), RemoteClientError> {
+        Err(RemoteClientError::Protocol(
+            "remote protocol client does not support watch resync".to_string(),
+        ))
+    }
+
+    fn resync_watch_with_cancellation(
+        &self,
+        watch_id: u64,
+        roots: Vec<PathBuf>,
+        cancellation: &RemoteRequestCancellation,
+    ) -> std::result::Result<(), RemoteClientError> {
+        cancellation.check_cancelled("watch.resync")?;
+        let result = self.resync_watch(watch_id, roots);
+        cancellation.check_cancelled("watch.resync")?;
+        result
+    }
+
     fn stop_watch(&self, _watch_id: u64) -> std::result::Result<(), RemoteClientError> {
         Ok(())
     }
@@ -7331,11 +7387,32 @@ pub trait RemoteWorkspaceProtocolClient: Send + Sync {
 type ReconnectFactory<C> =
     dyn Fn() -> std::result::Result<C, RemoteClientError> + Send + Sync + 'static;
 
+const RECONNECTING_WATCH_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const RECONNECTING_WATCH_RETRY_MIN_DELAY: Duration = Duration::from_millis(100);
+const RECONNECTING_WATCH_RETRY_MAX_DELAY: Duration = Duration::from_secs(2);
+
+struct ReconnectingWatchRegistration {
+    logical_watch_id: u64,
+    desired: Mutex<WorkspaceWatchRequest>,
+    physical_watch_id: Mutex<Option<u64>>,
+    operation_gate: Mutex<()>,
+    next_sequence: AtomicU64,
+    stopped: AtomicBool,
+    sender: mpsc::SyncSender<WorkspaceWatchBatch>,
+}
+
+#[derive(Default)]
+struct ReconnectingWatchRegistry {
+    next_watch_id: AtomicU64,
+    registrations: Mutex<HashMap<u64, Arc<ReconnectingWatchRegistration>>>,
+}
+
 pub struct ReconnectingRemoteWorkspaceProtocolClient<C: RemoteWorkspaceProtocolClient> {
-    client: Mutex<Option<Arc<C>>>,
-    reconnect_gate: Mutex<()>,
+    client: Arc<Mutex<Option<Arc<C>>>>,
+    reconnect_gate: Arc<Mutex<()>>,
     reconnect: Arc<ReconnectFactory<C>>,
-    closed: AtomicBool,
+    closed: Arc<AtomicBool>,
+    watches: Arc<ReconnectingWatchRegistry>,
 }
 
 impl<C> ReconnectingRemoteWorkspaceProtocolClient<C>
@@ -7347,10 +7424,21 @@ where
         reconnect: impl Fn() -> std::result::Result<C, RemoteClientError> + Send + Sync + 'static,
     ) -> Self {
         Self {
-            client: Mutex::new(Some(Arc::new(client))),
-            reconnect_gate: Mutex::new(()),
+            client: Arc::new(Mutex::new(Some(Arc::new(client)))),
+            reconnect_gate: Arc::new(Mutex::new(())),
             reconnect: Arc::new(reconnect),
-            closed: AtomicBool::new(false),
+            closed: Arc::new(AtomicBool::new(false)),
+            watches: Arc::new(ReconnectingWatchRegistry::default()),
+        }
+    }
+
+    fn shared_handle(&self) -> Self {
+        Self {
+            client: Arc::clone(&self.client),
+            reconnect_gate: Arc::clone(&self.reconnect_gate),
+            reconnect: Arc::clone(&self.reconnect),
+            closed: Arc::clone(&self.closed),
+            watches: Arc::clone(&self.watches),
         }
     }
 
@@ -7461,6 +7549,307 @@ where
             }
         }
         Ok(())
+    }
+
+    fn start_physical_watch_with_context_and_cancellation(
+        &self,
+        request: WorkspaceWatchRequest,
+        context: RemoteRequestContext,
+        cancellation: &RemoteRequestCancellation,
+    ) -> std::result::Result<Option<WorkspaceWatch>, RemoteClientError> {
+        cancellation.check_cancelled("watch.start")?;
+        let client = self.current_client()?;
+        cancellation.check_cancelled("watch.start")?;
+        match client.start_watch_with_context_and_cancellation(
+            request.clone(),
+            context,
+            cancellation,
+        ) {
+            Ok(watch) => {
+                cancellation.check_cancelled("watch.start")?;
+                Ok(watch)
+            }
+            Err(error) if remote_client_error_requires_reconnect(&error) => {
+                cancellation.check_cancelled("watch.start")?;
+                tracing::warn!(error = %error, "Retrying v5 watch.start after reconnect");
+                let retry_client = self.reconnect_if_current(&client)?;
+                cancellation.check_cancelled("watch.start")?;
+                if let Some(kind) = context.expired_at(Instant::now()) {
+                    return Err(RemoteClientError::RequestDeadlineExceeded {
+                        method: "watch.start".to_string(),
+                        kind,
+                    });
+                }
+                let result = retry_client.start_watch_with_context_and_cancellation(
+                    request,
+                    context,
+                    cancellation,
+                );
+                cancellation.check_cancelled("watch.start")?;
+                if let Err(retry_error) = &result
+                    && remote_client_error_requires_reconnect(retry_error)
+                    && let Err(close_error) = self.discard_if_current(&retry_client)
+                {
+                    tracing::warn!(
+                        error = %close_error,
+                        retry_error = %retry_error,
+                        "Failed to invalidate v5 transport after watch.start replay failure"
+                    );
+                }
+                result
+            }
+            Err(error) => {
+                cancellation.check_cancelled("watch.start")?;
+                Err(error)
+            }
+        }
+    }
+
+    fn update_physical_watch_with_cancellation(
+        &self,
+        watch_id: u64,
+        add_roots: Vec<PathBuf>,
+        remove_roots: Vec<PathBuf>,
+        cancellation: &RemoteRequestCancellation,
+    ) -> std::result::Result<Option<WorkspaceWatchUpdate>, RemoteClientError> {
+        cancellation.check_cancelled("watch.update")?;
+        let client = self.current_client()?;
+        cancellation.check_cancelled("watch.update")?;
+        match client.update_watch_with_cancellation(watch_id, add_roots, remove_roots, cancellation)
+        {
+            Err(error) if remote_client_error_requires_reconnect(&error) => {
+                cancellation.check_cancelled("watch.update")?;
+                if let Err(reconnect_error) = self.reconnect_if_current(&client) {
+                    tracing::warn!(
+                        error = %reconnect_error,
+                        original_error = %error,
+                        "Failed to heal v5 transport after watch.update failure"
+                    );
+                }
+                Err(error)
+            }
+            result => {
+                cancellation.check_cancelled("watch.update")?;
+                result
+            }
+        }
+    }
+
+    fn resync_physical_watch_with_cancellation(
+        &self,
+        watch_id: u64,
+        roots: Vec<PathBuf>,
+        cancellation: &RemoteRequestCancellation,
+    ) -> std::result::Result<(), RemoteClientError> {
+        cancellation.check_cancelled("watch.resync")?;
+        let client = self.current_client()?;
+        cancellation.check_cancelled("watch.resync")?;
+        match client.resync_watch_with_cancellation(watch_id, roots, cancellation) {
+            Err(error) if remote_client_error_requires_reconnect(&error) => {
+                cancellation.check_cancelled("watch.resync")?;
+                if let Err(reconnect_error) = self.reconnect_if_current(&client) {
+                    tracing::warn!(
+                        error = %reconnect_error,
+                        original_error = %error,
+                        "Failed to heal v5 transport after watch.resync failure"
+                    );
+                }
+                Err(error)
+            }
+            result => {
+                cancellation.check_cancelled("watch.resync")?;
+                result
+            }
+        }
+    }
+
+    fn stop_physical_watch_with_cancellation(
+        &self,
+        watch_id: u64,
+        cancellation: &RemoteRequestCancellation,
+    ) -> std::result::Result<(), RemoteClientError> {
+        cancellation.check_cancelled("watch.stop")?;
+        let client = self.current_client()?;
+        cancellation.check_cancelled("watch.stop")?;
+        match client.stop_watch_with_cancellation(watch_id, cancellation) {
+            Err(error) if remote_client_error_requires_reconnect(&error) => {
+                cancellation.check_cancelled("watch.stop")?;
+                if let Err(reconnect_error) = self.reconnect_if_current(&client) {
+                    tracing::warn!(
+                        error = %reconnect_error,
+                        original_error = %error,
+                        "Failed to heal v5 transport after watch.stop failure"
+                    );
+                }
+                Err(error)
+            }
+            result => {
+                cancellation.check_cancelled("watch.stop")?;
+                result
+            }
+        }
+    }
+
+    fn register_reconnecting_watch(
+        &self,
+        request: WorkspaceWatchRequest,
+        physical_watch: WorkspaceWatch,
+    ) -> std::result::Result<WorkspaceWatch, RemoteClientError> {
+        let physical_watch_id = physical_watch.watch_id;
+        let logical_watch_id = self
+            .watches
+            .next_watch_id
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1);
+        if logical_watch_id == 0 {
+            return Err(RemoteClientError::Protocol(
+                "remote logical watch id space exhausted".to_string(),
+            ));
+        }
+        let (sender, receiver) = mpsc::sync_channel(V5_WATCH_DELIVERY_CAPACITY);
+        let registration = Arc::new(ReconnectingWatchRegistration {
+            logical_watch_id,
+            desired: Mutex::new(request),
+            physical_watch_id: Mutex::new(Some(physical_watch.watch_id)),
+            operation_gate: Mutex::new(()),
+            next_sequence: AtomicU64::new(1),
+            stopped: AtomicBool::new(false),
+            sender,
+        });
+        self.watches
+            .registrations
+            .lock()
+            .map_err(|_| {
+                RemoteClientError::Protocol(
+                    "remote reconnect watch registry lock is poisoned".to_string(),
+                )
+            })?
+            .insert(logical_watch_id, Arc::clone(&registration));
+
+        let reconnecting_client = self.shared_handle();
+        if let Err(source) = std::thread::Builder::new()
+            .name("nucleotide-v5-watch-reconnect".to_string())
+            .spawn(move || {
+                run_reconnecting_workspace_watch(reconnecting_client, registration, physical_watch);
+            })
+        {
+            self.watches
+                .registrations
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .remove(&logical_watch_id);
+            let _ = self.stop_physical_watch_with_cancellation(
+                physical_watch_id,
+                &RemoteRequestCancellation::new(),
+            );
+            return Err(RemoteClientError::Io(source));
+        }
+
+        Ok(WorkspaceWatch::new(
+            logical_watch_id,
+            logical_watch_id,
+            receiver,
+        ))
+    }
+
+    fn watch_registration(
+        &self,
+        logical_watch_id: u64,
+    ) -> Option<Arc<ReconnectingWatchRegistration>> {
+        self.watches
+            .registrations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&logical_watch_id)
+            .cloned()
+    }
+
+    fn remove_watch_registration(
+        &self,
+        logical_watch_id: u64,
+    ) -> Option<Arc<ReconnectingWatchRegistration>> {
+        self.watches
+            .registrations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&logical_watch_id)
+    }
+
+    fn restore_reconnecting_watch(
+        &self,
+        registration: &Arc<ReconnectingWatchRegistration>,
+    ) -> std::result::Result<(WorkspaceWatch, WorkspaceWatchBatch), RemoteClientError> {
+        let _operation = registration.operation_gate.lock().map_err(|_| {
+            RemoteClientError::Protocol("remote watch operation lock is poisoned".to_string())
+        })?;
+        if registration.stopped.load(Ordering::Acquire) || self.closed.load(Ordering::Acquire) {
+            return Err(RemoteClientError::Disconnected);
+        }
+
+        let desired = registration
+            .desired
+            .lock()
+            .map_err(|_| {
+                RemoteClientError::Protocol(
+                    "remote watch desired roots lock is poisoned".to_string(),
+                )
+            })?
+            .clone();
+        let cancellation = RemoteRequestCancellation::new();
+        let Some(watch) = self.start_physical_watch_with_context_and_cancellation(
+            desired.clone(),
+            v5_watch_control_request_context(),
+            &cancellation,
+        )?
+        else {
+            return Err(RemoteClientError::Protocol(
+                "remote watch capability disappeared after reconnect".to_string(),
+            ));
+        };
+
+        if registration.stopped.load(Ordering::Acquire) || self.closed.load(Ordering::Acquire) {
+            let _ = self.stop_physical_watch_with_cancellation(watch.watch_id, &cancellation);
+            return Err(RemoteClientError::Disconnected);
+        }
+        if let Err(error) = self.resync_physical_watch_with_cancellation(
+            watch.watch_id,
+            desired.roots,
+            &cancellation,
+        ) {
+            let _ = self.stop_physical_watch_with_cancellation(watch.watch_id, &cancellation);
+            return Err(error);
+        }
+
+        let barrier_deadline = Instant::now() + V5_REQUEST_CONTROL_DEADLINE;
+        loop {
+            if registration.stopped.load(Ordering::Acquire) || self.closed.load(Ordering::Acquire) {
+                let _ = self.stop_physical_watch_with_cancellation(watch.watch_id, &cancellation);
+                return Err(RemoteClientError::Disconnected);
+            }
+            match watch.recv_timeout(RECONNECTING_WATCH_POLL_INTERVAL) {
+                Ok(batch) if batch.resync_required => {
+                    *registration.physical_watch_id.lock().map_err(|_| {
+                        RemoteClientError::Protocol(
+                            "remote physical watch id lock is poisoned".to_string(),
+                        )
+                    })? = Some(watch.watch_id);
+                    return Ok((watch, batch));
+                }
+                Ok(_) => {}
+                Err(mpsc::RecvTimeoutError::Timeout) if Instant::now() < barrier_deadline => {}
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    let _ =
+                        self.stop_physical_watch_with_cancellation(watch.watch_id, &cancellation);
+                    return Err(RemoteClientError::RequestDeadlineExceeded {
+                        method: "watch.resync".to_string(),
+                        kind: RemoteRequestDeadlineKind::Absolute,
+                    });
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err(RemoteClientError::Disconnected);
+                }
+            }
+        }
     }
 }
 
@@ -7590,6 +7979,17 @@ where
         {
             return;
         }
+        let registrations = self
+            .watches
+            .registrations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .drain()
+            .map(|(_, registration)| registration)
+            .collect::<Vec<_>>();
+        for registration in registrations {
+            registration.stopped.store(true, Ordering::Release);
+        }
         let current = self
             .client
             .lock()
@@ -7625,54 +8025,16 @@ where
         context: RemoteRequestContext,
         cancellation: &RemoteRequestCancellation,
     ) -> std::result::Result<Option<WorkspaceWatch>, RemoteClientError> {
-        cancellation.check_cancelled("watch.start")?;
-        let client = self.current_client()?;
-        cancellation.check_cancelled("watch.start")?;
-        match client.start_watch_with_context_and_cancellation(
+        let physical_watch = self.start_physical_watch_with_context_and_cancellation(
             request.clone(),
             context,
             cancellation,
-        ) {
-            Ok(watch) => {
-                cancellation.check_cancelled("watch.start")?;
-                Ok(watch)
-            }
-            Err(error) if remote_client_error_requires_reconnect(&error) => {
-                cancellation.check_cancelled("watch.start")?;
-                tracing::warn!(
-                    error = %error,
-                    "Retrying v5 watch.start after reconnect"
-                );
-                let retry_client = self.reconnect_if_current(&client)?;
-                cancellation.check_cancelled("watch.start")?;
-                if let Some(kind) = context.expired_at(Instant::now()) {
-                    return Err(RemoteClientError::RequestDeadlineExceeded {
-                        method: "watch.start".to_string(),
-                        kind,
-                    });
-                }
-                let result = retry_client.start_watch_with_context_and_cancellation(
-                    request,
-                    context,
-                    cancellation,
-                );
-                cancellation.check_cancelled("watch.start")?;
-                if let Err(retry_error) = &result
-                    && remote_client_error_requires_reconnect(retry_error)
-                    && let Err(close_error) = self.discard_if_current(&retry_client)
-                {
-                    tracing::warn!(
-                        error = %close_error,
-                        retry_error = %retry_error,
-                        "Failed to invalidate v5 transport after watch.start replay failure"
-                    );
-                }
-                result
-            }
-            Err(error) => {
-                cancellation.check_cancelled("watch.start")?;
-                Err(error)
-            }
+        )?;
+        match physical_watch {
+            Some(physical_watch) => self
+                .register_reconnecting_watch(request, physical_watch)
+                .map(Some),
+            None => Ok(None),
         }
     }
 
@@ -7697,27 +8059,71 @@ where
         remove_roots: Vec<PathBuf>,
         cancellation: &RemoteRequestCancellation,
     ) -> std::result::Result<Option<WorkspaceWatchUpdate>, RemoteClientError> {
-        cancellation.check_cancelled("watch.update")?;
-        let client = self.current_client()?;
-        cancellation.check_cancelled("watch.update")?;
-        match client.update_watch_with_cancellation(watch_id, add_roots, remove_roots, cancellation)
+        let Some(registration) = self.watch_registration(watch_id) else {
+            return self.update_physical_watch_with_cancellation(
+                watch_id,
+                add_roots,
+                remove_roots,
+                cancellation,
+            );
+        };
+        let _operation = registration.operation_gate.lock().map_err(|_| {
+            RemoteClientError::Protocol("remote watch operation lock is poisoned".to_string())
+        })?;
+        if registration.stopped.load(Ordering::Acquire) {
+            return Err(RemoteClientError::Disconnected);
+        }
         {
-            Err(error) if remote_client_error_requires_reconnect(&error) => {
-                cancellation.check_cancelled("watch.update")?;
-                if let Err(reconnect_error) = self.reconnect_if_current(&client) {
-                    tracing::warn!(
-                        error = %reconnect_error,
-                        original_error = %error,
-                        "Failed to heal v5 transport after watch.update failure"
-                    );
+            let mut desired = registration.desired.lock().map_err(|_| {
+                RemoteClientError::Protocol(
+                    "remote watch desired roots lock is poisoned".to_string(),
+                )
+            })?;
+            desired
+                .roots
+                .retain(|root| !remove_roots.iter().any(|removed| removed == root));
+            for root in &add_roots {
+                if !desired.roots.contains(root) {
+                    desired.roots.push(root.clone());
                 }
-                Err(error)
-            }
-            result => {
-                cancellation.check_cancelled("watch.update")?;
-                result
             }
         }
+        let physical_watch_id = registration
+            .physical_watch_id
+            .lock()
+            .map_err(|_| {
+                RemoteClientError::Protocol("remote physical watch id lock is poisoned".to_string())
+            })?
+            .ok_or(RemoteClientError::Disconnected)?;
+        self.update_physical_watch_with_cancellation(
+            physical_watch_id,
+            add_roots,
+            remove_roots,
+            cancellation,
+        )
+        .map(|update| {
+            update.map(|mut update| {
+                update.watch_id = watch_id;
+                update
+            })
+        })
+    }
+
+    fn resync_watch(
+        &self,
+        watch_id: u64,
+        roots: Vec<PathBuf>,
+    ) -> std::result::Result<(), RemoteClientError> {
+        self.resync_watch_with_cancellation(watch_id, roots, &RemoteRequestCancellation::new())
+    }
+
+    fn resync_watch_with_cancellation(
+        &self,
+        watch_id: u64,
+        roots: Vec<PathBuf>,
+        cancellation: &RemoteRequestCancellation,
+    ) -> std::result::Result<(), RemoteClientError> {
+        self.resync_physical_watch_with_cancellation(watch_id, roots, cancellation)
     }
 
     fn stop_watch(&self, watch_id: u64) -> std::result::Result<(), RemoteClientError> {
@@ -7729,27 +8135,127 @@ where
         watch_id: u64,
         cancellation: &RemoteRequestCancellation,
     ) -> std::result::Result<(), RemoteClientError> {
-        cancellation.check_cancelled("watch.stop")?;
-        let client = self.current_client()?;
-        cancellation.check_cancelled("watch.stop")?;
-        match client.stop_watch_with_cancellation(watch_id, cancellation) {
-            Err(error) if remote_client_error_requires_reconnect(&error) => {
-                cancellation.check_cancelled("watch.stop")?;
-                if let Err(reconnect_error) = self.reconnect_if_current(&client) {
-                    tracing::warn!(
-                        error = %reconnect_error,
-                        original_error = %error,
-                        "Failed to heal v5 transport after watch.stop failure"
-                    );
-                }
-                Err(error)
+        let Some(registration) = self.remove_watch_registration(watch_id) else {
+            return self.stop_physical_watch_with_cancellation(watch_id, cancellation);
+        };
+        registration.stopped.store(true, Ordering::Release);
+        let _operation = registration.operation_gate.lock().map_err(|_| {
+            RemoteClientError::Protocol("remote watch operation lock is poisoned".to_string())
+        })?;
+        let physical_watch_id = registration
+            .physical_watch_id
+            .lock()
+            .map_err(|_| {
+                RemoteClientError::Protocol("remote physical watch id lock is poisoned".to_string())
+            })?
+            .take();
+        match physical_watch_id {
+            Some(physical_watch_id) => {
+                self.stop_physical_watch_with_cancellation(physical_watch_id, cancellation)
             }
-            result => {
-                cancellation.check_cancelled("watch.stop")?;
-                result
+            None => Ok(()),
+        }
+    }
+}
+
+fn run_reconnecting_workspace_watch<C>(
+    client: ReconnectingRemoteWorkspaceProtocolClient<C>,
+    registration: Arc<ReconnectingWatchRegistration>,
+    mut physical_watch: WorkspaceWatch,
+) where
+    C: RemoteWorkspaceProtocolClient + 'static,
+{
+    let mut retry_delay = RECONNECTING_WATCH_RETRY_MIN_DELAY;
+    'watch: loop {
+        if registration.stopped.load(Ordering::Acquire) || client.closed.load(Ordering::Acquire) {
+            break;
+        }
+        match physical_watch.recv_timeout(RECONNECTING_WATCH_POLL_INTERVAL) {
+            Ok(mut batch) => {
+                batch.watch_id = registration.logical_watch_id;
+                batch.sequence = registration.next_sequence.fetch_add(1, Ordering::AcqRel);
+                if registration.sender.send(batch).is_err() {
+                    registration.stopped.store(true, Ordering::Release);
+                    break;
+                }
+                retry_delay = RECONNECTING_WATCH_RETRY_MIN_DELAY;
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                *registration
+                    .physical_watch_id
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+                loop {
+                    if registration.stopped.load(Ordering::Acquire)
+                        || client.closed.load(Ordering::Acquire)
+                    {
+                        break 'watch;
+                    }
+                    match client.restore_reconnecting_watch(&registration) {
+                        Ok((watch, mut resync_batch)) => {
+                            resync_batch.watch_id = registration.logical_watch_id;
+                            resync_batch.sequence =
+                                registration.next_sequence.fetch_add(1, Ordering::AcqRel);
+                            if registration.sender.send(resync_batch).is_err() {
+                                registration.stopped.store(true, Ordering::Release);
+                                break 'watch;
+                            }
+                            physical_watch = watch;
+                            retry_delay = RECONNECTING_WATCH_RETRY_MIN_DELAY;
+                            continue 'watch;
+                        }
+                        Err(error) if remote_watch_restore_error_is_retryable(&error) => {
+                            tracing::warn!(
+                                error = %error,
+                                logical_watch_id = registration.logical_watch_id,
+                                retry_ms = retry_delay.as_millis() as u64,
+                                "Retrying remote watch restoration"
+                            );
+                            let retry_at = Instant::now() + retry_delay;
+                            while Instant::now() < retry_at {
+                                if registration.stopped.load(Ordering::Acquire)
+                                    || client.closed.load(Ordering::Acquire)
+                                {
+                                    break 'watch;
+                                }
+                                std::thread::sleep(
+                                    RECONNECTING_WATCH_POLL_INTERVAL
+                                        .min(retry_at.saturating_duration_since(Instant::now())),
+                                );
+                            }
+                            retry_delay = retry_delay
+                                .saturating_mul(2)
+                                .min(RECONNECTING_WATCH_RETRY_MAX_DELAY);
+                        }
+                        Err(error) => {
+                            tracing::error!(
+                                error = %error,
+                                logical_watch_id = registration.logical_watch_id,
+                                "Remote watch restoration failed permanently"
+                            );
+                            registration.stopped.store(true, Ordering::Release);
+                            break 'watch;
+                        }
+                    }
+                }
             }
         }
     }
+
+    client.remove_watch_registration(registration.logical_watch_id);
+}
+
+fn remote_watch_restore_error_is_retryable(error: &RemoteClientError) -> bool {
+    matches!(
+        error,
+        RemoteClientError::Disconnected
+            | RemoteClientError::TransportClosed { .. }
+            | RemoteClientError::Io(_)
+            | RemoteClientError::RequestDeadlineExceeded { .. }
+            | RemoteClientError::OutcomeUnknown { .. }
+            | RemoteClientError::ResponseIncomplete { .. }
+    )
 }
 
 fn remote_client_error_allows_reconnect_retry(error: &RemoteClientError) -> bool {
@@ -17689,6 +18195,222 @@ mod tests {
     }
 
     #[test]
+    fn reconnecting_v5_watch_restores_desired_roots_behind_resync_barrier() {
+        let initial_input = BlockingRead::default();
+        let initial_output = SharedWrite::default();
+        initial_input.push(v5_server_input(Vec::new()));
+        let initial = RemoteWorkspaceV5MultiplexedClient::connect(
+            protocol_v5::FramedIo::new(initial_input.clone(), initial_output.clone()),
+            protocol_v5::ClientHello::nucleotide("test-client"),
+        )
+        .unwrap();
+
+        let replacement_input = BlockingRead::default();
+        let replacement_output = SharedWrite::default();
+        replacement_input.push(v5_server_input(Vec::new()));
+        let replacement = RemoteWorkspaceV5MultiplexedClient::connect(
+            protocol_v5::FramedIo::new(replacement_input.clone(), replacement_output.clone()),
+            protocol_v5::ClientHello::nucleotide("test-client"),
+        )
+        .unwrap();
+        let replacement = Arc::new(StdMutex::new(Some(replacement)));
+        let reconnects = Arc::new(AtomicUsize::new(0));
+        let reconnect_replacement = Arc::clone(&replacement);
+        let reconnect_count = Arc::clone(&reconnects);
+        let client = Arc::new(ReconnectingRemoteWorkspaceProtocolClient::new(
+            initial,
+            move || {
+                reconnect_count.fetch_add(1, Ordering::SeqCst);
+                Ok(reconnect_replacement
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .expect("replacement v5 client should only be consumed once"))
+            },
+        ));
+
+        let start_client = Arc::clone(&client);
+        let start = std::thread::spawn(move || {
+            start_client.start_watch(WorkspaceWatchRequest::expanded_dirs([PathBuf::from("src")]))
+        });
+        let initial_start_stream = wait_for_v5_request_stream(&initial_output, "watch.start");
+        let initial_start: protocol_v5::WatchStart =
+            decode_v5_protobuf_request(&initial_output, initial_start_stream).unwrap();
+        assert_eq!(initial_start.roots, vec!["src"]);
+        let initial_response = protocol_v5::WatchStartResponse {
+            watch_id: 11,
+            event_stream_id: 2,
+            backend: "poll".to_string(),
+            recursive_coverage: protocol_v5::RecursiveCoverage::None as i32,
+            degraded: true,
+            requires_reconciliation: true,
+            accepted_roots: vec!["src".to_string()],
+            degraded_roots: Vec::new(),
+            unsupported_roots: Vec::new(),
+        };
+        let mut initial_frames = vec![v5_watch_event_open_frame(2, 11)];
+        initial_frames.extend(v5_raw_response_frames(
+            initial_start_stream,
+            "watch.start",
+            initial_response.encode_to_vec(),
+        ));
+        initial_input.push(v5_frames_bytes(initial_frames));
+        let watch = start.join().unwrap().unwrap().unwrap();
+        assert_ne!(watch.watch_id, 11, "physical watch id leaked to caller");
+
+        initial_input.push(v5_frames_bytes(vec![
+            protocol_v5::watch_batch_frame(
+                2,
+                protocol_v5::WatchBatch {
+                    watch_id: 11,
+                    sequence: 9,
+                    directory_generations: Vec::new(),
+                    events: vec![protocol_v5::WatchChange::modified("src", true)],
+                    overflow: false,
+                    resync_required: false,
+                },
+            )
+            .unwrap(),
+        ]));
+        let initial_batch = watch.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(initial_batch.watch_id, watch.watch_id);
+        assert_eq!(initial_batch.sequence, 1);
+
+        let logical_watch_id = watch.watch_id;
+        let update_client = Arc::clone(&client);
+        let update = std::thread::spawn(move || {
+            update_client.update_watch(
+                logical_watch_id,
+                vec![PathBuf::from("tests")],
+                vec![PathBuf::from("src")],
+            )
+        });
+        let update_stream =
+            wait_for_v5_request_stream_after(&initial_output, "watch.update", initial_start_stream);
+        let update_request: protocol_v5::WatchUpdate =
+            decode_v5_protobuf_request(&initial_output, update_stream).unwrap();
+        assert_eq!(update_request.watch_id, 11);
+        initial_input.push(v5_frames_bytes(v5_raw_response_frames(
+            update_stream,
+            "watch.update",
+            protocol_v5::WatchUpdateResponse {
+                watch_id: 11,
+                accepted_roots: vec!["tests".to_string()],
+                degraded_roots: Vec::new(),
+                unsupported_roots: Vec::new(),
+            }
+            .encode_to_vec(),
+        )));
+        let update = update.join().unwrap().unwrap().unwrap();
+        assert_eq!(update.watch_id, watch.watch_id);
+
+        initial_input.close();
+        let replacement_start_stream =
+            wait_for_v5_request_stream(&replacement_output, "watch.start");
+        let replacement_start: protocol_v5::WatchStart =
+            decode_v5_protobuf_request(&replacement_output, replacement_start_stream).unwrap();
+        assert_eq!(replacement_start.roots, vec!["tests"]);
+        let replacement_response = protocol_v5::WatchStartResponse {
+            watch_id: 41,
+            event_stream_id: 4,
+            backend: "poll".to_string(),
+            recursive_coverage: protocol_v5::RecursiveCoverage::None as i32,
+            degraded: true,
+            requires_reconciliation: true,
+            accepted_roots: vec!["tests".to_string()],
+            degraded_roots: Vec::new(),
+            unsupported_roots: Vec::new(),
+        };
+        let mut replacement_frames = vec![v5_watch_event_open_frame(4, 41)];
+        replacement_frames.extend(v5_raw_response_frames(
+            replacement_start_stream,
+            "watch.start",
+            replacement_response.encode_to_vec(),
+        ));
+        replacement_input.push(v5_frames_bytes(replacement_frames));
+
+        let resync_stream = wait_for_v5_request_stream_after(
+            &replacement_output,
+            "watch.resync",
+            replacement_start_stream,
+        );
+        let resync: protocol_v5::WatchResync =
+            decode_v5_protobuf_request(&replacement_output, resync_stream).unwrap();
+        assert_eq!(resync.watch_id, 41);
+        assert_eq!(resync.roots, vec!["tests"]);
+        let pre_barrier = protocol_v5::WatchBatch {
+            watch_id: 41,
+            sequence: 1,
+            directory_generations: Vec::new(),
+            events: vec![protocol_v5::WatchChange::modified("pre-barrier", false)],
+            overflow: false,
+            resync_required: false,
+        };
+        let barrier = protocol_v5::WatchBatch {
+            watch_id: 41,
+            sequence: 2,
+            directory_generations: Vec::new(),
+            events: Vec::new(),
+            overflow: false,
+            resync_required: true,
+        };
+        let after_barrier = protocol_v5::WatchBatch {
+            watch_id: 41,
+            sequence: 3,
+            directory_generations: Vec::new(),
+            events: vec![protocol_v5::WatchChange::modified("after-barrier", false)],
+            overflow: false,
+            resync_required: false,
+        };
+        let mut resync_frames = v5_raw_response_frames(
+            resync_stream,
+            "watch.resync",
+            protocol_v5::WatchResyncResponse {
+                watch_id: 41,
+                accepted_roots: vec!["tests".to_string()],
+                unsupported_roots: Vec::new(),
+            }
+            .encode_to_vec(),
+        );
+        resync_frames.push(protocol_v5::watch_batch_frame(4, pre_barrier).unwrap());
+        resync_frames.push(protocol_v5::watch_batch_frame(4, barrier).unwrap());
+        resync_frames.push(protocol_v5::watch_batch_frame(4, after_barrier).unwrap());
+        replacement_input.push(v5_frames_bytes(resync_frames));
+
+        let resync_batch = watch.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(resync_batch.watch_id, watch.watch_id);
+        assert_eq!(resync_batch.sequence, 2);
+        assert!(resync_batch.resync_required);
+        let next_batch = watch.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(next_batch.watch_id, watch.watch_id);
+        assert_eq!(next_batch.sequence, 3);
+        assert_eq!(
+            next_batch.events[0].path,
+            PathBuf::from("/workspace/after-barrier")
+        );
+
+        let stop_client = Arc::clone(&client);
+        let stop_watch_id = watch.watch_id;
+        let stop = std::thread::spawn(move || stop_client.stop_watch(stop_watch_id));
+        let stop_stream =
+            wait_for_v5_request_stream_after(&replacement_output, "watch.stop", resync_stream);
+        let stop_request: protocol_v5::WatchStop =
+            decode_v5_protobuf_request(&replacement_output, stop_stream).unwrap();
+        assert_eq!(stop_request.watch_id, 41);
+        replacement_input.push(v5_frames_bytes(v5_raw_response_frames(
+            stop_stream,
+            "watch.stop",
+            Vec::new(),
+        )));
+        stop.join().unwrap().unwrap();
+
+        replacement_input.close();
+        std::thread::sleep(Duration::from_millis(250));
+        assert_eq!(reconnects.load(Ordering::SeqCst), 1);
+        client.close();
+    }
+
+    #[test]
     fn reconnecting_client_heals_watch_control_failures_without_replaying_them() {
         for failed_operation in [WatchControlFailure::Update, WatchControlFailure::Stop] {
             let updates = Arc::new(AtomicUsize::new(0));
@@ -25266,6 +25988,43 @@ mod tests {
             }
         }
         serde_json::from_slice(&payload).ok()
+    }
+
+    fn decode_v5_protobuf_request<T>(output: &SharedWrite, stream_id: u64) -> Option<T>
+    where
+        T: ProstMessage + Default,
+    {
+        let bytes = output.bytes();
+        let mut cursor = Cursor::new(bytes);
+        let mut payload = Vec::new();
+        let mut content_encoding = protocol_v5::ContentEncoding::None;
+        while let Some(frame) = protocol_v5::read_frame(&mut cursor).ok()? {
+            if frame.stream_id != stream_id {
+                continue;
+            }
+            if frame.frame_type == protocol_v5::FrameType::Headers {
+                let envelope = frame.decode_control::<protocol_v5::StreamEnvelope>().ok()?;
+                content_encoding = envelope.decode_content_encoding().ok()?;
+                continue;
+            }
+            if frame.frame_type != protocol_v5::FrameType::Data {
+                continue;
+            }
+            let envelope = frame.decode_control::<protocol_v5::DataEnvelope>().ok()?;
+            if protocol_v5::DataChannel::try_from(envelope.channel).ok()?
+                == protocol_v5::DataChannel::Unspecified
+            {
+                match content_encoding {
+                    protocol_v5::ContentEncoding::None => payload.extend_from_slice(&frame.body),
+                    protocol_v5::ContentEncoding::Zstd => {
+                        let len = usize::try_from(envelope.uncompressed_len).ok()?;
+                        let decoded = zstd::bulk::decompress(&frame.body, len).ok()?;
+                        payload.extend_from_slice(&decoded);
+                    }
+                }
+            }
+        }
+        T::decode(payload.as_slice()).ok()
     }
 
     #[derive(Clone)]

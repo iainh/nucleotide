@@ -39,6 +39,8 @@ const REMOTE_FILE_TREE_POLL_MAX_INTERVAL: std::time::Duration = std::time::Durat
 const REMOTE_FILE_TREE_RECONCILIATION_INTERVAL: std::time::Duration =
     std::time::Duration::from_secs(60);
 const REMOTE_FILE_TREE_IDLE_BACKOFF_AFTER_POLLS: u32 = 3;
+const REMOTE_FILE_TREE_RESYNC_RETRY_INTERVAL: std::time::Duration =
+    std::time::Duration::from_secs(2);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DirectoryListingFingerprint {
@@ -95,6 +97,22 @@ fn cached_file_tree_presentation(
 struct RemoteDirectoryPollResult {
     path: PathBuf,
     listing: Result<DirectoryListing, String>,
+}
+
+struct RemoteWatchRefreshPlan {
+    workspace_backend: WorkspaceBackendHandle,
+    directories: Vec<PathBuf>,
+    watch_id: u64,
+    sequence: u64,
+    epoch: u64,
+    requires_resync: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum RemoteDirectoryPollApplication {
+    Stale,
+    Complete,
+    Incomplete(Vec<PathBuf>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -432,6 +450,12 @@ pub struct FileTreeView {
     remote_file_watch_roots: BTreeSet<PathBuf>,
     /// Last applied remote watch sequence, used to discard stale batches.
     remote_file_watch_last_sequence: u64,
+    /// Sequence currently being refreshed before it can be marked as applied.
+    remote_file_watch_pending_sequence: Option<u64>,
+    /// Whether the pending watch refresh is a mandatory full resync barrier.
+    remote_file_watch_resync_pending: bool,
+    /// Invalidates directory poll results captured before a watch resync or replacement.
+    remote_file_watch_epoch: u64,
     /// Whether the initial tree load is running in the background.
     initial_load_in_flight: bool,
     /// Monotonic revision for structural tree changes.
@@ -481,6 +505,9 @@ impl FileTreeView {
             remote_file_watch_id: None,
             remote_file_watch_roots: BTreeSet::new(),
             remote_file_watch_last_sequence: 0,
+            remote_file_watch_pending_sequence: None,
+            remote_file_watch_resync_pending: false,
+            remote_file_watch_epoch: 0,
             initial_load_in_flight: false,
             tree_revision: 0,
             presentation_cache: None,
@@ -550,6 +577,9 @@ impl FileTreeView {
             remote_file_watch_id: None,
             remote_file_watch_roots: BTreeSet::new(),
             remote_file_watch_last_sequence: 0,
+            remote_file_watch_pending_sequence: None,
+            remote_file_watch_resync_pending: false,
+            remote_file_watch_epoch: 0,
             initial_load_in_flight: false,
             tree_revision: 0,
             presentation_cache: None,
@@ -720,6 +750,7 @@ impl FileTreeView {
         self.remote_file_watch_active = true;
         self.remote_file_watch_roots = roots.iter().cloned().collect();
         self.remote_file_watch_last_sequence = 0;
+        self.invalidate_remote_file_watch_refreshes();
         let workspace_backend = self.workspace_backend.clone();
         debug!(
             root_path = %self.tree.root_path().display(),
@@ -745,6 +776,7 @@ impl FileTreeView {
                 Ok(Some(watch)) => {
                     let watch_id = watch.watch_id;
                     entity.update(cx, |view, cx| {
+                        view.invalidate_remote_file_watch_refreshes();
                         view.remote_file_watch_id = Some(watch_id);
                         view.seed_remote_directory_fingerprints();
                         view.start_remote_file_polling(cx);
@@ -754,6 +786,7 @@ impl FileTreeView {
                 Ok(None) => {
                     entity.update(cx, |view, cx| {
                         debug!("Remote workspace backend does not support file watching; using polling");
+                        view.invalidate_remote_file_watch_refreshes();
                         view.remote_file_watch_active = false;
                         view.remote_file_watch_id = None;
                         view.remote_file_watch_roots.clear();
@@ -765,6 +798,7 @@ impl FileTreeView {
                 Err(error) => {
                     entity.update(cx, |view, cx| {
                         warn!(error = %error, "Failed to start remote file tree watch; using polling");
+                        view.invalidate_remote_file_watch_refreshes();
                         view.remote_file_watch_active = false;
                         view.remote_file_watch_id = None;
                         view.remote_file_watch_roots.clear();
@@ -792,20 +826,53 @@ impl FileTreeView {
                         let plan = entity.update(cx, |view, _cx| {
                             view.remote_watch_refresh_plan(&batch)
                         });
-                        if let Some((workspace_backend, directories)) = plan {
-                            let results = cx
-                                .background_executor()
-                                .spawn(poll_remote_directory_listings(
-                                    workspace_backend,
-                                    directories,
-                                ))
-                                .await;
-                            if let Some(entity) = this.upgrade() {
-                                entity.update(cx, |view, cx| {
-                                    view.apply_remote_directory_poll_results(results, cx);
+                        if let Some(plan) = plan {
+                            let mut directories = plan.directories.clone();
+                            loop {
+                                let requested_directories = directories;
+                                let results = cx
+                                    .background_executor()
+                                    .spawn(poll_remote_directory_listings(
+                                        plan.workspace_backend.clone(),
+                                        requested_directories.clone(),
+                                    ))
+                                    .await;
+                                let Some(entity) = this.upgrade() else {
+                                    return;
+                                };
+                                let application = entity.update(cx, |view, cx| {
+                                    view.apply_remote_directory_poll_results(
+                                        results,
+                                        plan.epoch,
+                                        &requested_directories,
+                                        plan.requires_resync,
+                                        cx,
+                                    )
                                 });
-                            } else {
-                                break;
+
+                                match application {
+                                    RemoteDirectoryPollApplication::Stale => break,
+                                    RemoteDirectoryPollApplication::Complete => {
+                                        entity.update(cx, |view, _cx| {
+                                            view.finish_remote_watch_refresh(&plan, true);
+                                        });
+                                        break;
+                                    }
+                                    RemoteDirectoryPollApplication::Incomplete(retry_directories)
+                                        if plan.requires_resync =>
+                                    {
+                                        directories = retry_directories;
+                                        cx.background_executor()
+                                            .timer(REMOTE_FILE_TREE_RESYNC_RETRY_INTERVAL)
+                                            .await;
+                                    }
+                                    RemoteDirectoryPollApplication::Incomplete(_) => {
+                                        entity.update(cx, |view, _cx| {
+                                            view.finish_remote_watch_refresh(&plan, false);
+                                        });
+                                        break;
+                                    }
+                                }
                             }
                         }
                     }
@@ -826,6 +893,7 @@ impl FileTreeView {
 
     fn sync_remote_file_watch_roots(&mut self, cx: &mut Context<Self>) {
         if !self.should_watch_remote_filesystem() {
+            self.invalidate_remote_file_watch_refreshes();
             self.remote_file_watch_active = false;
             self.remote_file_watch_id = None;
             self.remote_file_watch_roots.clear();
@@ -876,8 +944,9 @@ impl FileTreeView {
     fn remote_watch_refresh_plan(
         &mut self,
         batch: &WorkspaceWatchBatch,
-    ) -> Option<(WorkspaceBackendHandle, Vec<PathBuf>)> {
+    ) -> Option<RemoteWatchRefreshPlan> {
         if !self.should_watch_remote_filesystem() {
+            self.invalidate_remote_file_watch_refreshes();
             self.remote_file_watch_active = false;
             self.remote_file_watch_id = None;
             self.remote_file_watch_roots.clear();
@@ -889,13 +958,22 @@ impl FileTreeView {
         if batch.sequence <= self.remote_file_watch_last_sequence {
             return None;
         }
-        self.remote_file_watch_last_sequence = batch.sequence;
+        if self.remote_file_watch_pending_sequence.is_some() {
+            return None;
+        }
+
+        let requires_resync = batch.overflow || batch.resync_required;
+        if requires_resync {
+            self.remote_file_watch_epoch = self.remote_file_watch_epoch.wrapping_add(1);
+            self.remote_directory_fingerprints.clear();
+        }
+        self.remote_file_watch_pending_sequence = Some(batch.sequence);
+        self.remote_file_watch_resync_pending = requires_resync;
 
         let expanded = self.tree.expanded_directory_paths();
         let expanded_set = expanded.iter().cloned().collect::<BTreeSet<_>>();
         let mut directories = BTreeSet::new();
-        if batch.overflow || batch.resync_required {
-            self.remote_directory_fingerprints.clear();
+        if requires_resync {
             directories.extend(expanded);
         } else {
             for generation in &batch.directory_generations {
@@ -944,14 +1022,42 @@ impl FileTreeView {
         }
 
         if directories.is_empty() {
+            self.remote_file_watch_last_sequence = batch.sequence;
+            self.remote_file_watch_pending_sequence = None;
+            self.remote_file_watch_resync_pending = false;
             None
         } else {
             self.reset_remote_file_poll_backoff();
-            Some((
-                self.workspace_backend.clone(),
-                directories.into_iter().collect(),
-            ))
+            Some(RemoteWatchRefreshPlan {
+                workspace_backend: self.workspace_backend.clone(),
+                directories: directories.into_iter().collect(),
+                watch_id: batch.watch_id,
+                sequence: batch.sequence,
+                epoch: self.remote_file_watch_epoch,
+                requires_resync,
+            })
         }
+    }
+
+    fn finish_remote_watch_refresh(&mut self, plan: &RemoteWatchRefreshPlan, applied: bool) {
+        if self.remote_file_watch_id != Some(plan.watch_id)
+            || self.remote_file_watch_epoch != plan.epoch
+            || self.remote_file_watch_pending_sequence != Some(plan.sequence)
+        {
+            return;
+        }
+
+        if applied {
+            self.remote_file_watch_last_sequence = plan.sequence;
+        }
+        self.remote_file_watch_pending_sequence = None;
+        self.remote_file_watch_resync_pending = false;
+    }
+
+    fn invalidate_remote_file_watch_refreshes(&mut self) {
+        self.remote_file_watch_epoch = self.remote_file_watch_epoch.wrapping_add(1);
+        self.remote_file_watch_pending_sequence = None;
+        self.remote_file_watch_resync_pending = false;
     }
 
     fn seed_remote_directory_fingerprints(&mut self) {
@@ -979,6 +1085,7 @@ impl FileTreeView {
     }
 
     fn restart_remote_file_polling_after_watch_disconnect(&mut self, cx: &mut Context<Self>) {
+        self.invalidate_remote_file_watch_refreshes();
         self.remote_file_watch_active = false;
         self.remote_file_watch_id = None;
         self.remote_file_watch_roots.clear();
@@ -1043,11 +1150,16 @@ impl FileTreeView {
 
                     Some((
                         view.workspace_backend.clone(),
-                        view.tree.expanded_directory_paths(),
+                        if view.remote_file_watch_resync_pending {
+                            Vec::new()
+                        } else {
+                            view.tree.expanded_directory_paths()
+                        },
+                        view.remote_file_watch_epoch,
                     ))
                 });
 
-                let Some((workspace_backend, directories)) = poll_plan else {
+                let Some((workspace_backend, directories, watch_epoch)) = poll_plan else {
                     break;
                 };
 
@@ -1055,17 +1167,24 @@ impl FileTreeView {
                     continue;
                 }
 
+                let requested_directories = directories;
                 let results = cx
                     .background_executor()
                     .spawn(poll_remote_directory_listings(
                         workspace_backend,
-                        directories,
+                        requested_directories.clone(),
                     ))
                     .await;
 
                 if let Some(entity) = this.upgrade() {
                     entity.update(cx, |view, cx| {
-                        view.apply_remote_directory_poll_results(results, cx);
+                        view.apply_remote_directory_poll_results(
+                            results,
+                            watch_epoch,
+                            &requested_directories,
+                            false,
+                            cx,
+                        );
                     });
                 } else {
                     break;
@@ -1078,22 +1197,38 @@ impl FileTreeView {
     fn apply_remote_directory_poll_results(
         &mut self,
         results: Vec<RemoteDirectoryPollResult>,
+        expected_watch_epoch: u64,
+        requested_directories: &[PathBuf],
+        require_all_expanded: bool,
         cx: &mut Context<Self>,
-    ) {
+    ) -> RemoteDirectoryPollApplication {
         if !self.should_poll_remote_filesystem() {
             self.remote_file_polling_active = false;
             self.remote_file_poll_idle_ticks = 0;
             self.remote_directory_fingerprints.clear();
-            return;
+            return RemoteDirectoryPollApplication::Stale;
+        }
+        if self.remote_file_watch_epoch != expected_watch_epoch {
+            return RemoteDirectoryPollApplication::Stale;
         }
 
         let expanded = self.tree.expanded_directory_paths();
+        let expanded_set = expanded.iter().cloned().collect::<BTreeSet<_>>();
         self.remote_directory_fingerprints
             .retain(|path, _| expanded.contains(path));
+        let mut incomplete_directories = if require_all_expanded {
+            expanded_set.clone()
+        } else {
+            requested_directories
+                .iter()
+                .filter(|path| expanded_set.contains(*path))
+                .cloned()
+                .collect::<BTreeSet<_>>()
+        };
 
         let mut changed_paths = Vec::new();
         for result in results {
-            if !expanded.contains(&result.path) {
+            if !expanded_set.contains(&result.path) {
                 continue;
             }
 
@@ -1112,6 +1247,7 @@ impl FileTreeView {
             let fingerprint = listing_fingerprint(&listing);
             let previous_fingerprint = self.remote_directory_fingerprints.get(&result.path);
             if previous_fingerprint == Some(&fingerprint) {
+                incomplete_directories.remove(&result.path);
                 continue;
             }
             let changed_child_paths =
@@ -1126,6 +1262,7 @@ impl FileTreeView {
                 Ok(()) => {
                     self.remote_directory_fingerprints
                         .insert(result.path.clone(), fingerprint);
+                    incomplete_directories.remove(&result.path);
                     if changed_child_paths.is_empty() {
                         changed_paths.push(result.path);
                     } else {
@@ -1155,6 +1292,16 @@ impl FileTreeView {
             cx.notify();
         } else {
             self.remote_file_poll_idle_ticks = self.remote_file_poll_idle_ticks.saturating_add(1);
+        }
+
+        if incomplete_directories.is_empty() {
+            RemoteDirectoryPollApplication::Complete
+        } else {
+            RemoteDirectoryPollApplication::Incomplete(if require_all_expanded {
+                expanded
+            } else {
+                incomplete_directories.into_iter().collect()
+            })
         }
     }
 
@@ -1208,6 +1355,7 @@ impl FileTreeView {
         if self.should_poll_remote_filesystem() {
             self.start_remote_file_watching(cx);
         } else {
+            self.invalidate_remote_file_watch_refreshes();
             self.remote_file_polling_active = false;
             self.remote_file_poll_idle_ticks = 0;
             self.remote_directory_fingerprints.clear();
@@ -3433,11 +3581,14 @@ mod tests {
                 resync_required: false,
             };
             assert!(view.remote_watch_refresh_plan(&foreign_batch).is_none());
-            let (_, directories) = view
+            let plan = view
                 .remote_watch_refresh_plan(&batch)
                 .expect("batch should refresh expanded root");
-            assert_eq!(directories, vec![expanded_root.clone()]);
+            assert_eq!(plan.directories, vec![expanded_root.clone()]);
+            assert_eq!(view.remote_file_watch_last_sequence, 0);
             assert!(view.remote_watch_refresh_plan(&batch).is_none());
+            view.finish_remote_watch_refresh(&plan, true);
+            assert_eq!(view.remote_file_watch_last_sequence, 1);
 
             let resync = WorkspaceWatchBatch {
                 watch_id: 1,
@@ -3447,10 +3598,112 @@ mod tests {
                 overflow: true,
                 resync_required: true,
             };
-            let (_, directories) = view
+            let plan = view
                 .remote_watch_refresh_plan(&resync)
                 .expect("resync should refresh expanded directories");
-            assert!(directories.contains(&expanded_root));
+            assert!(plan.directories.contains(&expanded_root));
+            assert!(plan.requires_resync);
+            assert!(view.remote_file_watch_resync_pending);
+        });
+    }
+
+    #[gpui::test]
+    async fn remote_watch_resync_rejects_old_results_until_refresh_is_complete(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(|cx| {
+            let vcs_service = VcsServiceHandle::new(nucleotide_vcs::VcsConfig::default(), cx);
+            cx.set_global(vcs_service);
+        });
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root_path = temp_dir.path().to_path_buf();
+        let main_path = root_path.join("main.rs");
+        std::fs::write(&main_path, "fn main() {}\n").unwrap();
+        let mut config = test_config();
+        config.watch_filesystem = true;
+        let view = cx.new(|cx| FileTreeView::new(root_path.clone(), config, cx));
+
+        view.update(cx, |view, cx| {
+            view.workspace_backend = std::sync::Arc::new(RemoteWatchTestBackend);
+            view.remote_file_watch_active = true;
+            view.remote_file_watch_id = Some(7);
+            let old_epoch = view.remote_file_watch_epoch;
+
+            let resync = WorkspaceWatchBatch {
+                watch_id: 7,
+                sequence: 4,
+                directory_generations: Vec::new(),
+                events: Vec::new(),
+                overflow: false,
+                resync_required: true,
+            };
+            let plan = view
+                .remote_watch_refresh_plan(&resync)
+                .expect("resync should create a full refresh plan");
+            assert_ne!(plan.epoch, old_epoch);
+            assert_eq!(view.remote_file_watch_last_sequence, 0);
+
+            let stale = view.apply_remote_directory_poll_results(
+                vec![RemoteDirectoryPollResult {
+                    path: root_path.clone(),
+                    listing: Ok(DirectoryListing {
+                        path: root_path.clone(),
+                        entries: Vec::new(),
+                    }),
+                }],
+                old_epoch,
+                &plan.directories,
+                false,
+                cx,
+            );
+            assert_eq!(stale, RemoteDirectoryPollApplication::Stale);
+            assert!(view.tree.entry_by_path(&main_path).is_some());
+
+            let incomplete = view.apply_remote_directory_poll_results(
+                vec![RemoteDirectoryPollResult {
+                    path: root_path.clone(),
+                    listing: Err("temporary list failure".to_string()),
+                }],
+                plan.epoch,
+                &plan.directories,
+                true,
+                cx,
+            );
+            assert_eq!(
+                incomplete,
+                RemoteDirectoryPollApplication::Incomplete(vec![root_path.clone()])
+            );
+            assert_eq!(view.remote_file_watch_last_sequence, 0);
+            assert!(view.remote_file_watch_resync_pending);
+
+            let next_batch = WorkspaceWatchBatch {
+                watch_id: 7,
+                sequence: 5,
+                directory_generations: Vec::new(),
+                events: Vec::new(),
+                overflow: false,
+                resync_required: false,
+            };
+            assert!(view.remote_watch_refresh_plan(&next_batch).is_none());
+
+            let complete = view.apply_remote_directory_poll_results(
+                vec![RemoteDirectoryPollResult {
+                    path: root_path.clone(),
+                    listing: Ok(DirectoryListing {
+                        path: root_path,
+                        entries: Vec::new(),
+                    }),
+                }],
+                plan.epoch,
+                &plan.directories,
+                true,
+                cx,
+            );
+            assert_eq!(complete, RemoteDirectoryPollApplication::Complete);
+            view.finish_remote_watch_refresh(&plan, true);
+            assert_eq!(view.remote_file_watch_last_sequence, 4);
+            assert_eq!(view.remote_file_watch_pending_sequence, None);
+            assert!(!view.remote_file_watch_resync_pending);
         });
     }
 

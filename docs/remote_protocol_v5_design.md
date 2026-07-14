@@ -26,9 +26,9 @@ The implementation includes:
 - Directory generations, fingerprints, `not_modified` responses, deltas and bounded server-side directory caching.
 - Safe read-only reconnect replay, configuration-derived startup options, bounded probe/handshake processes, OpenSSH connection reuse, transport keepalives, negotiated bidirectional heartbeat probes and an independent client-side watchdog.
 
-Post-v5 hardening also bounds the server producer-to-writer lanes, gives the client writer sole ownership of physical writes, propagates validated priority through worker admission and response scheduling, limits queued wire batches and gives application request ownership an explicit cancellation lifetime. The associated regression tests cover partial writes, blocked-flow resets, dropped handles, decompression bounds, watch storms, EOF cancellation and reconnect ambiguity.
+Post-v5 hardening also bounds the server producer-to-writer lanes, gives the client writer sole ownership of physical writes, propagates validated priority through worker admission and response scheduling, limits queued wire batches and gives application request ownership an explicit cancellation lifetime. Reconnecting clients retain logical watch registrations, recreate their physical subscriptions and require a full resync before exposing replacement-connection batches. The associated regression tests cover partial writes, blocked-flow resets, dropped handles, decompression bounds, watch storms, EOF cancellation, reconnect ambiguity and framed watch restoration.
 
-Some architectural work remains. The synchronous workspace API still returns complete file/search/process results instead of exposing incremental consumers, so receive credit reflects transport demultiplexing rather than final UI consumption. Dropping a workspace future cancels its transport stream, but an explicit `WorkspaceCancellationToken` does not yet wake a remote request whose future remains polled. The helper still runs heartbeat timeout checks and physical writes on the same service loop, so a blocked stdout write can prevent timeout enforcement. Filesystem handlers now cooperate with cancellation between user-space work units, but no user-space deadline can force a filesystem call already blocked in the operating system to return. Reconnect does not yet restore watches, and UI cancellation does not yet propagate through every startup stage. Child handshakes and command probes have deadlines and reap their direct child; Unix probes also terminate descendants that remain in the child's process group. Windows needs job-object containment for the equivalent descendant guarantee. Browse-session handoff also remains future work. These are follow-up lifecycle and integration changes, not missing v5 wire primitives.
+Some architectural work remains. The synchronous workspace API still returns complete file/search/process results instead of exposing incremental consumers, so receive credit reflects transport demultiplexing rather than final UI consumption. Dropping a workspace future cancels its transport stream, but an explicit `WorkspaceCancellationToken` does not yet wake a remote request whose future remains polled. The helper still runs heartbeat timeout checks and physical writes on the same service loop, so a blocked stdout write can prevent timeout enforcement. Filesystem handlers now cooperate with cancellation between user-space work units, but no user-space deadline can force a filesystem call already blocked in the operating system to return. UI cancellation does not yet propagate through every startup stage. Child handshakes and command probes have deadlines and reap their direct child; Unix probes also terminate descendants that remain in the child's process group. Windows needs job-object containment for the equivalent descendant guarantee. Browse-session handoff also remains future work. These are follow-up lifecycle and integration changes, not missing v5 wire primitives.
 
 ## Design goals
 
@@ -708,6 +708,8 @@ Current integration:
 - Each backend method opens a stream and awaits the final response. The central reader validates and accumulates partial/data events under connection and per-stream limits.
 - The owned v5 request handle and each asynchronous backend bridge share a latched cancellation token. Dropping either cancels the live stream, wakes the control worker and prevents reconnect replay.
 - File tree starts `watch.start` when `watch_filesystem` is enabled and the server advertises `watch`.
+- The reconnecting client preserves desired watch roots behind a stable logical watch ID. It recreates the physical watch, sends `watch.resync`, suppresses pre-resync batches and exposes one mandatory resync batch before later deltas.
+- File tree treats that resync as an application barrier: every expanded directory must refresh successfully before the sequence advances, and results from an older watch epoch are discarded.
 - Existing remote polling remains as fallback and as low-frequency reconciliation when watching is active.
 - UI components receive the same domain-level events they receive today: directory refreshes, file system changed, VCS changed and process output.
 
@@ -716,7 +718,6 @@ Next integration:
 - Replace whole-result accumulation for large files, search and process output with bounded incremental consumers.
 - Tie `WINDOW_UPDATE` to incremental consumer capacity.
 - Forward explicit `WorkspaceCancellationToken` signals into in-flight transport cancellation without polling.
-- Restore desired watches after reconnect, then emit a mandatory resync before applying new batches.
 
 Why:
 
@@ -748,15 +749,14 @@ The v5 baseline is complete:
 4. `watch.start`, `watch.update`, `watch.stop`, `watch.resync` and `watch.batch` are active with polling fallback.
 5. Directory generations, fingerprints, `not_modified` responses and optional deltas are active.
 
-The 2026-07-13 hardening pass adds executable failure and memory invariants around the baseline. It includes atomic stream teardown, decoded-data bounds, receive-window enforcement, lazy producers, bounded server and watch queues, deadline-bound startup commands with direct-child reaping and Unix process-group cleanup, child-handshake and client connection-heartbeat watchdogs, bidirectional heartbeat probes, terminal transport errors, typed recovery outcomes, end-to-end priority propagation, cooperative filesystem cancellation, cancellation-aware response production, cancel-on-drop client ownership and shutdown cleanup.
+The 2026-07-13 hardening pass adds executable failure and memory invariants around the baseline. It includes atomic stream teardown, decoded-data bounds, receive-window enforcement, lazy producers, bounded server and watch queues, deadline-bound startup commands with direct-child reaping and Unix process-group cleanup, child-handshake and client connection-heartbeat watchdogs, bidirectional heartbeat probes, terminal transport errors, typed recovery outcomes, reconnecting logical watches with mandatory resync, end-to-end priority propagation, cooperative filesystem cancellation, cancellation-aware response production, cancel-on-drop client ownership and shutdown cleanup.
 
 The next integration work should:
 
 1. Expose incremental file/search/process consumers and consumption-based receive credit above the transport.
-2. Restore desired watches after reconnect and require a generation resync before applying new deltas.
-3. Make the complete startup attempt cancellable and add safe browse-session handoff or bootstrap reuse.
-4. Make helper liveness independent of blocking writes.
-5. Expand loopback, Linux SSH and WSL fault/load fixtures, including stalled-peer memory and latency assertions.
+2. Make the complete startup attempt cancellable and add safe browse-session handoff or bootstrap reuse.
+3. Make helper liveness independent of blocking writes.
+4. Expand loopback, Linux SSH and WSL fault/load fixtures, including stalled-peer memory and latency assertions.
 
 Multiplexing remains the foundation. Future encoding or daemon work should follow measured queue, latency and recovery results rather than replace the implemented v5 state machine.
 
