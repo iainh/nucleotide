@@ -27,7 +27,7 @@ The implementation includes:
 
 Post-v5 hardening also bounds the server producer-to-writer lanes, gives the client writer sole ownership of physical writes, propagates validated priority through worker admission and response scheduling, and limits queued wire batches. The associated regression tests cover partial writes, blocked-flow resets, decompression bounds, watch storms, EOF cancellation and reconnect ambiguity.
 
-Some architectural work remains. The synchronous workspace API still returns complete file/search/process results instead of exposing incremental consumers, so receive credit reflects transport demultiplexing rather than final UI consumption. Ordinary client requests do not yet have a default inactivity deadline. The helper still runs heartbeat timeout checks and physical writes on the same service loop, so a blocked stdout write can prevent timeout enforcement. Generic filesystem calls cannot be force-cancelled once blocked in the operating system. Reconnect does not yet restore watches, and UI cancellation does not yet propagate through every startup stage. Child handshakes and command probes have deadlines and reap their direct child; Unix probes also terminate descendants that remain in the child's process group. Windows needs job-object containment for the equivalent descendant guarantee, and no userspace deadline can force an uninterruptible operating-system wait to return. Browse-session handoff also remains future work. These are follow-up lifecycle and integration changes, not missing v5 wire primitives.
+Some architectural work remains. The synchronous workspace API still returns complete file/search/process results instead of exposing incremental consumers, so receive credit reflects transport demultiplexing rather than final UI consumption. The helper still runs heartbeat timeout checks and physical writes on the same service loop, so a blocked stdout write can prevent timeout enforcement. Generic filesystem calls cannot be force-cancelled once blocked in the operating system. Reconnect does not yet restore watches, and UI cancellation does not yet propagate through every startup stage. Child handshakes and command probes have deadlines and reap their direct child; Unix probes also terminate descendants that remain in the child's process group. Windows needs job-object containment for the equivalent descendant guarantee, and no userspace deadline can force an uninterruptible operating-system wait to return. Browse-session handoff also remains future work. These are follow-up lifecycle and integration changes, not missing v5 wire primitives.
 
 ## Design goals
 
@@ -340,12 +340,50 @@ Request metadata may include:
 - `supersedes_stream_id`
 - `idempotency = read_only | mutation | process`
 
+Every production multiplexed-client request has one immutable request context that can carry two independent limits:
+
+- The absolute deadline bounds every request attempt and any safe reconnect replay from one context creation point. It does not restart when a stream opens, makes progress or reconnects, and no new stream may open after it expires.
+- The inactivity deadline bounds one transport attempt. It restarts only after targeted progress on that stream. A safe replay starts a new inactivity interval but retains the original absolute deadline.
+
+For a finite absolute deadline, the client records a monotonic local deadline and derives `deadline_unix_ms` once when it creates the context. It sends that same wire deadline on every attempt. Wall-clock changes cannot extend the local budget, and reconnect must not calculate a new wire deadline. The inactivity limit is local client policy; it is not encoded in request metadata or negotiated with the helper. A reconnect or startup factory already in progress cannot yet be interrupted at the request deadline; the startup-cancellation work below must close that remaining outer-bound gap.
+
+The client uses these conservative defaults:
+
+| Methods | Absolute deadline | Inactivity deadline |
+| --- | ---: | ---: |
+| `fs.stat`, `fs.list_dir`, `fs.list_dirs`, `fs.find_ancestor`, `git.head`, `git.status` | 60 seconds | 30 seconds |
+| `env.project`, `fs.create_file`, `fs.create_dir`, `fs.rename`, `fs.delete`, `fs.copy` | 120 seconds | 30 seconds |
+| `fs.read`, `fs.write` | 5 minutes | 60 seconds |
+| `search.files`, `search.text` | 10 minutes | 120 seconds |
+| `process.run` with `timeout_ms` | `timeout_ms` plus 15 seconds | No inactivity limit |
+| `process.run` without `timeout_ms` | Unlimited | Unlimited |
+| `session.shutdown`, `watch.start`, `watch.update`, `watch.stop`, `watch.resync` | 15 seconds | 10 seconds |
+
+The synchronous protocol conformance client also sends the fixed absolute wire deadline, but it has no independent watchdog for a generic blocking `Read`. The workspace backend uses the multiplexed client and its local deadline worker.
+
+The `process.run` runtime timeout and protocol deadline have different purposes. `timeout_ms` limits child execution on the helper and returns a normal process result with `timed_out = true`. The additional 15 seconds bounds request delivery, response delivery and cancellation cleanup; it does not extend the child's runtime. A process without `timeout_ms` is explicitly unlimited because a valid process may remain silent indefinitely. Heartbeats, explicit cancellation and process-output limits still protect that connection.
+
+Only progress attributable to the target stream extends its inactivity deadline:
+
+- Successfully writing that stream's request `HEADERS`, `DATA` or `END_STREAM` frame.
+- Accepting and routing that stream's `HEADERS`, `DATA`, `END_STREAM` or `RESET_STREAM` response frame.
+- Accepting a `WINDOW_UPDATE` addressed to that stream.
+
+Queue admission, buffered but unwritten bytes, connection-level frames, heartbeat traffic and frames for other streams do not extend the interval. Traffic on another stream may prove that the connection is healthy, but it is not progress for the stalled request.
+
+On local expiry, the client keeps the failure stream-scoped only when recent accepted inbound traffic and heartbeat state prove that the peer is healthy. Health is known only while the last accepted inbound frame is newer than the negotiated idle-ping interval and no local heartbeat is queued or awaiting its exact `PONG`. The client removes a healthy read-only waiter, sends `RESET_STREAM DEADLINE_EXCEEDED` once and returns a typed request-deadline error. It uses the same stream-local result for a mutation or process request whose final response metadata has already established the outcome. The connection remains available to other streams. A peer-sent `DEADLINE_EXCEEDED` reset has the same typed read-only result.
+
+If peer health is unknown, the client treats the expiry as connection-terminal and fails every waiter exactly once. A read-only request may replay once after reconnect only when its original absolute deadline still permits it. Before final response metadata arrives, mutations and process requests are never replayed: their expiry or a peer-sent deadline error closes the connection and returns an outcome-unknown error because the helper may already have performed the operation. `session.shutdown` expiry is also terminal and is not replayed.
+
+Watch-control deadlines are connection-terminal because a timed-out control may already have changed helper state. After closing the stale transport, `watch.start` may replay once on a fresh connection with its original request context. `watch.update`, `watch.stop` and `watch.resync` are not replayed against a possibly different subscription. The persistent server-initiated watch event stream has no request inactivity deadline; connection heartbeats and watch reconciliation govern its liveness.
+
 Cancellation forms:
 
 - `RESET_STREAM CANCELLED` cancels one stream.
 - A client cancels a group by sending `RESET_STREAM CANCELLED` for each open stream it owns in that `cancellation_group`.
 - `supersedes_stream_id` lets a new request declare that it replaces one older stream. If the older stream is still active, the server treats it as cancelled.
-- Deadline expiry on either side behaves like cancellation with reason `DEADLINE_EXCEEDED`.
+- A server-side deadline expiry cancels its work and sends `RESET_STREAM DEADLINE_EXCEEDED`.
+- A healthy client-side read-only deadline expiry behaves like cancellation with reason `DEADLINE_EXCEEDED`. Ambiguous or unhealthy client cases use the connection-terminal rules above.
 
 Server obligations:
 
@@ -645,7 +683,7 @@ What:
 - Mutating filesystem methods are constrained to the workspace root.
 - `external_read_only` paths are permitted only for read/stat operations and only when enabled in server capabilities.
 - Watch roots are constrained to the workspace root in v5.0.
-- Process execution inherits the existing remote workspace environment policy and carries explicit output and working-directory constraints. Callers that require a runtime bound must supply a process timeout or protocol deadline.
+- Process execution inherits the existing remote workspace environment policy and carries explicit output and working-directory constraints. Callers that require a child-runtime bound must supply a process timeout; the protocol deadline is a separate request-lifecycle bound.
 
 Why:
 
@@ -705,7 +743,7 @@ The next integration work should:
 1. Expose cancel-on-drop, incremental file/search/process consumers and consumption-based receive credit above the transport.
 2. Restore desired watches after reconnect and require a generation resync before applying new deltas.
 3. Make the complete startup attempt cancellable and add safe browse-session handoff or bootstrap reuse.
-4. Add default client request/inactivity deadlines and make helper liveness independent of blocking writes.
+4. Make helper liveness independent of blocking writes.
 5. Expand loopback, Linux SSH and WSL fault/load fixtures, including stalled-peer memory and latency assertions.
 
 Multiplexing remains the foundation. Future encoding or daemon work should follow measured queue, latency and recovery results rather than replace the implemented v5 state machine.
@@ -731,6 +769,12 @@ Cancellation tests:
 - Cancel search mid-walk and verify no more result batches arrive.
 - Cancel process execution and verify the process group is terminated.
 - Cancel write before commit and verify the temp file is removed and destination is unchanged.
+- Verify every method receives the documented absolute and inactivity defaults.
+- Verify only target-stream progress extends inactivity and never extends the absolute deadline.
+- Expire a healthy read-only stream and verify one reset, one typed error and continued use of another stream.
+- Expire a stream with unknown peer health and verify terminal teardown, one safe read replay within the original budget and no mutation replay.
+- Verify replay preserves the exact request context and race a final response against expiry to prove exactly one completion.
+- Verify process runtime timeouts, unlimited silent processes and watch-control deadlines follow their distinct rules.
 
 Watch tests:
 
