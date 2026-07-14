@@ -34,7 +34,7 @@ use nucleotide_workspace::{
     classify_workspace_location, ssh_display_path, wsl_display_path,
 };
 
-use crate::application::workspace_backend_for_project_directory_with_options_progress_and_startup_context;
+use crate::application::workspace_backend_for_project_directory_with_bootstrap_progress_and_startup_context;
 use crate::file_tree::icons::chevron_icon;
 use crate::remote_connections::{RemoteConnectionStore, target_to_string, valid_connection_name};
 
@@ -260,7 +260,7 @@ pub struct RemoteConnectionManagerView {
     save_connection_focus_handle: FocusHandle,
     core: gpui::WeakEntity<crate::Core>,
     handle: tokio::runtime::Handle,
-    backend_options: nucleotide_remote::RemoteWorkspaceBackendOptions,
+    bootstrap: nucleotide_remote::RemoteWorkspaceBootstrap,
 
     protocol: RemoteConnectionProtocol,
     protocol_menu_open: bool,
@@ -299,7 +299,7 @@ impl RemoteConnectionManagerView {
     pub fn new(
         core: gpui::WeakEntity<crate::Core>,
         handle: tokio::runtime::Handle,
-        backend_options: nucleotide_remote::RemoteWorkspaceBackendOptions,
+        bootstrap: nucleotide_remote::RemoteWorkspaceBootstrap,
         cx: &mut Context<Self>,
     ) -> Self {
         let server_input_view = Self::new_server_input(cx);
@@ -315,7 +315,7 @@ impl RemoteConnectionManagerView {
             save_connection_focus_handle,
             core,
             handle,
-            backend_options,
+            bootstrap,
             protocol: RemoteConnectionProtocol::Ssh,
             protocol_menu_open: false,
             protocol_menu: None,
@@ -626,7 +626,7 @@ impl RemoteConnectionManagerView {
             severity: Severity::Info,
         });
         self.browse_session = None;
-        let options = self.backend_options.clone();
+        let bootstrap = self.bootstrap.clone();
         let handle = self.handle.clone();
         let browse_handle = handle.clone();
         let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -635,7 +635,7 @@ impl RemoteConnectionManagerView {
         let join = handle.spawn_blocking(move || {
             connect_browse_session(
                 target,
-                options,
+                bootstrap,
                 &startup_context,
                 &browse_handle,
                 |message| {
@@ -912,11 +912,11 @@ impl RemoteConnectionManagerView {
 
         if let Some(core) = self.core.upgrade() {
             let target = target_to_string(&path);
-            let options = self.backend_options.clone();
+            let bootstrap = self.bootstrap.clone();
             core.update(cx, |_core, cx| {
-                cx.emit(crate::Update::OpenRemoteWithOptions {
+                cx.emit(crate::Update::OpenRemoteWithBootstrap {
                     input: target,
-                    options,
+                    bootstrap,
                 });
             });
         }
@@ -1666,19 +1666,20 @@ impl Render for RemoteConnectionManagerView {
 
 fn connect_browse_session(
     target: RemoteConnectTarget,
-    options: nucleotide_remote::RemoteWorkspaceBackendOptions,
+    bootstrap: nucleotide_remote::RemoteWorkspaceBootstrap,
     startup: &nucleotide_remote::RemoteStartupContext,
     runtime: &tokio::runtime::Handle,
     progress: impl Fn(String),
 ) -> Result<RemoteBrowseConnection> {
     startup.check()?;
+    let options = bootstrap.options();
     let (display_home, selected_path) = match target {
         RemoteConnectTarget::Ssh {
             target,
             selected_path,
         } => {
             progress(format!("Connecting to SSH host: {}", target.host));
-            let home = resolve_ssh_home(&target, &options, startup)?;
+            let home = resolve_ssh_home(&target, options, startup)?;
             (ssh_display_path(&target, &home), selected_path)
         }
         RemoteConnectTarget::Wsl {
@@ -1694,9 +1695,9 @@ fn connect_browse_session(
     startup.check()?;
     progress("Starting remote browse session".to_string());
     let backend =
-        workspace_backend_for_project_directory_with_options_progress_and_startup_context(
+        workspace_backend_for_project_directory_with_bootstrap_progress_and_startup_context(
             Some(&display_home),
-            &options,
+            &bootstrap,
             &|p| {
                 progress(p.message());
             },
