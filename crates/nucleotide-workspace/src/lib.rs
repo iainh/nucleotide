@@ -10,8 +10,8 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicBool, Ordering},
+    Arc, Mutex, Weak,
+    atomic::{AtomicBool, AtomicU64, Ordering},
     mpsc,
 };
 use std::time::{Duration, Instant, SystemTime};
@@ -63,9 +63,33 @@ pub enum WorkspaceError {
 
 pub type Result<T> = std::result::Result<T, WorkspaceError>;
 
-#[derive(Debug, Clone, Default)]
+type WorkspaceCancellationCallback = Box<dyn FnOnce() + Send + 'static>;
+
+#[derive(Clone, Default)]
 pub struct WorkspaceCancellationToken {
-    cancelled: Arc<AtomicBool>,
+    inner: Arc<WorkspaceCancellationInner>,
+}
+
+#[derive(Default)]
+struct WorkspaceCancellationInner {
+    cancelled: AtomicBool,
+    next_callback_id: AtomicU64,
+    callbacks: Mutex<BTreeMap<u64, WorkspaceCancellationCallback>>,
+}
+
+#[must_use = "dropping the registration disconnects its cancellation callback"]
+pub struct WorkspaceCancellationRegistration {
+    inner: Weak<WorkspaceCancellationInner>,
+    callback_id: Option<u64>,
+}
+
+impl std::fmt::Debug for WorkspaceCancellationToken {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("WorkspaceCancellationToken")
+            .field("cancelled", &self.is_cancelled())
+            .finish_non_exhaustive()
+    }
 }
 
 impl WorkspaceCancellationToken {
@@ -74,11 +98,54 @@ impl WorkspaceCancellationToken {
     }
 
     pub fn cancel(&self) {
-        self.cancelled.store(true, Ordering::Release);
+        let callbacks = {
+            let mut callbacks = self
+                .inner
+                .callbacks
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if self.inner.cancelled.swap(true, Ordering::AcqRel) {
+                return;
+            }
+            std::mem::take(&mut *callbacks)
+        };
+        for (_, callback) in callbacks {
+            callback();
+        }
     }
 
     pub fn is_cancelled(&self) -> bool {
-        self.cancelled.load(Ordering::Acquire)
+        self.inner.cancelled.load(Ordering::Acquire)
+    }
+
+    pub fn on_cancel(
+        &self,
+        callback: impl FnOnce() + Send + 'static,
+    ) -> WorkspaceCancellationRegistration {
+        let callback_id = self.inner.next_callback_id.fetch_add(1, Ordering::Relaxed);
+        let mut callback = Some(Box::new(callback) as WorkspaceCancellationCallback);
+        let registered_id = {
+            let mut callbacks = self
+                .inner
+                .callbacks
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if self.is_cancelled() {
+                None
+            } else if let Some(callback) = callback.take() {
+                callbacks.insert(callback_id, callback);
+                Some(callback_id)
+            } else {
+                None
+            }
+        };
+        if let Some(callback) = callback {
+            callback();
+        }
+        WorkspaceCancellationRegistration {
+            inner: Arc::downgrade(&self.inner),
+            callback_id: registered_id,
+        }
     }
 
     pub fn check_cancelled(&self, operation: &'static str, path: &Path) -> Result<()> {
@@ -93,7 +160,23 @@ impl WorkspaceCancellationToken {
     }
 
     pub fn as_atomic_bool(&self) -> &AtomicBool {
-        self.cancelled.as_ref()
+        &self.inner.cancelled
+    }
+}
+
+impl Drop for WorkspaceCancellationRegistration {
+    fn drop(&mut self) {
+        let Some(callback_id) = self.callback_id.take() else {
+            return;
+        };
+        let Some(inner) = self.inner.upgrade() else {
+            return;
+        };
+        inner
+            .callbacks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&callback_id);
     }
 }
 
@@ -3369,6 +3452,7 @@ fn write_target_for_path(path: &Path) -> Result<PathBuf> {
 mod tests {
     use super::*;
     use futures::executor::block_on;
+    use std::sync::atomic::AtomicUsize;
 
     #[test]
     fn local_workspace_backend_handle_identifies_as_local() {
@@ -3386,6 +3470,52 @@ mod tests {
 
         assert!(cancellation.is_cancelled());
         assert!(clone.is_cancelled());
+    }
+
+    #[test]
+    fn workspace_cancellation_callbacks_fire_once_and_do_not_hold_cancel_lock() {
+        let cancellation = WorkspaceCancellationToken::new();
+        let callback_calls = Arc::new(AtomicUsize::new(0));
+        let callback_cancellation = cancellation.clone();
+        let callback_calls_clone = Arc::clone(&callback_calls);
+        let _registration = cancellation.on_cancel(move || {
+            assert!(callback_cancellation.is_cancelled());
+            callback_calls_clone.fetch_add(1, Ordering::AcqRel);
+        });
+
+        cancellation.cancel();
+        cancellation.cancel();
+
+        assert_eq!(callback_calls.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn workspace_cancellation_callback_registration_disconnects_on_drop() {
+        let cancellation = WorkspaceCancellationToken::new();
+        let callback_calls = Arc::new(AtomicUsize::new(0));
+        let callback_calls_clone = Arc::clone(&callback_calls);
+        let registration = cancellation.on_cancel(move || {
+            callback_calls_clone.fetch_add(1, Ordering::AcqRel);
+        });
+
+        drop(registration);
+        cancellation.cancel();
+
+        assert_eq!(callback_calls.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn workspace_cancellation_callback_registered_after_cancel_fires_immediately() {
+        let cancellation = WorkspaceCancellationToken::new();
+        cancellation.cancel();
+        let callback_calls = Arc::new(AtomicUsize::new(0));
+        let callback_calls_clone = Arc::clone(&callback_calls);
+
+        let _registration = cancellation.on_cancel(move || {
+            callback_calls_clone.fetch_add(1, Ordering::AcqRel);
+        });
+
+        assert_eq!(callback_calls.load(Ordering::Acquire), 1);
     }
 
     #[test]
