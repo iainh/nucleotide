@@ -6,7 +6,7 @@ mod v5_budget;
 
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
-use futures::{channel::oneshot, executor::block_on};
+use futures::{Stream, StreamExt, channel::oneshot, executor::block_on, task::AtomicWaker};
 use ignore::{
     WalkBuilder,
     gitignore::{Gitignore, GitignoreBuilder},
@@ -14,16 +14,16 @@ use ignore::{
 use notify::Watcher as _;
 use nucleotide_env::{EnvironmentOrigin, ProjectEnvironment, ShellEnvironmentError};
 use nucleotide_workspace::{
-    DirectoryListing, FileKind, FileRead, FileSearchQuery, FileSearchResult, FileStat,
-    GitHeadResult, GitStatusEntry, GitStatusKind, GitStatusOptions, GitStatusResult,
-    LocalWorkspaceBackend, ProcessOutput, ProcessSpec, ProjectEnvironmentOrigin,
-    ProjectEnvironmentSnapshot, ReadOptions, RemoteWorkspaceIdentity, RemoteWorkspaceKind,
-    SshWorkspaceTarget, TextSearchMatch, TextSearchQuery, TextSearchResult, WorkspaceBackend,
-    WorkspaceBackendHandle, WorkspaceCancellationToken, WorkspaceError, WorkspaceIdentity,
-    WorkspaceLocation, WorkspaceWatch, WorkspaceWatchBatch, WorkspaceWatchChange,
-    WorkspaceWatchChangeKind, WorkspaceWatchDirectoryGeneration, WorkspaceWatchRequest,
-    WorkspaceWatchUpdate, WriteOptions, WriteResult, local_workspace_backend,
-    path_mapped_workspace_backend, posix_path_string,
+    DirectoryListing, FileKind, FileRead, FileReadEvent, FileReadMetadata, FileReadStream,
+    FileSearchQuery, FileSearchResult, FileStat, GitHeadResult, GitStatusEntry, GitStatusKind,
+    GitStatusOptions, GitStatusResult, LocalWorkspaceBackend, ProcessOutput, ProcessSpec,
+    ProjectEnvironmentOrigin, ProjectEnvironmentSnapshot, ReadOptions, RemoteWorkspaceIdentity,
+    RemoteWorkspaceKind, SshWorkspaceTarget, TextSearchMatch, TextSearchQuery, TextSearchResult,
+    WorkspaceBackend, WorkspaceBackendHandle, WorkspaceCancellationToken, WorkspaceError,
+    WorkspaceIdentity, WorkspaceLocation, WorkspaceWatch, WorkspaceWatchBatch,
+    WorkspaceWatchChange, WorkspaceWatchChangeKind, WorkspaceWatchDirectoryGeneration,
+    WorkspaceWatchRequest, WorkspaceWatchUpdate, WriteOptions, WriteResult,
+    local_workspace_backend, path_mapped_workspace_backend, posix_path_string,
 };
 use prost::Message as ProstMessage;
 use regex::RegexBuilder;
@@ -36,12 +36,14 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::io::{self, Read, Seek, Write};
 use std::path::{Component, Path, PathBuf};
+use std::pin::Pin;
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{
     Arc, Condvar, Mutex, Weak,
     atomic::{AtomicBool, AtomicU64, Ordering},
     mpsc,
 };
+use std::task::{Context as TaskContext, Poll};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncWriteExt;
 use v5_budget::{V5Budgeted, V5ByteReservation, V5ConnectionByteBudget};
@@ -69,6 +71,8 @@ const V5_MAX_WATCH_EVENTS_PER_BATCH: usize = 4_096;
 const V5_WATCH_BATCH_PAYLOAD_BUDGET: usize = 48 * 1024;
 const V5_WATCH_DELIVERY_CAPACITY: usize = 64;
 const V5_WATCH_BACKLOG_LIMIT: usize = 64;
+const V5_FILE_STREAM_CHUNK_TARGET_BYTES: usize = 64 * 1024;
+const V5_FILE_STREAM_MAX_QUEUED_CHUNKS: usize = 256;
 const V5_SERVE_OUTPUT_EVENT_CAPACITY: usize = 64;
 const V5_SERVE_OUTPUT_EVENT_MAX_RETAINED_BYTES: usize = 64 * 1024;
 const V5_SERVE_COMPLETION_BYTE_BUDGET: usize = 64 * 1024 * 1024;
@@ -4577,6 +4581,110 @@ pub struct FileReadResponse {
     pub truncated: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RemoteFileReadEvent {
+    Chunk(Vec<u8>),
+    Complete(FileReadResponse),
+}
+
+#[must_use = "dropping a live remote file stream cancels its request"]
+pub struct RemoteFileReadStream {
+    inner: Pin<
+        Box<
+            dyn Stream<Item = std::result::Result<RemoteFileReadEvent, RemoteClientError>>
+                + Send
+                + 'static,
+        >,
+    >,
+    cancellation: Option<RemoteRequestCancellation>,
+    terminal_error: Option<Box<dyn FnOnce() + Send + 'static>>,
+    finished: bool,
+}
+
+impl RemoteFileReadStream {
+    fn new(
+        stream: impl Stream<Item = std::result::Result<RemoteFileReadEvent, RemoteClientError>>
+        + Send
+        + 'static,
+    ) -> Self {
+        Self {
+            inner: Box::pin(stream),
+            cancellation: None,
+            terminal_error: None,
+            finished: false,
+        }
+    }
+
+    fn from_response(
+        response: FileReadResponse,
+        body: Vec<u8>,
+    ) -> std::result::Result<Self, RemoteClientError> {
+        validate_file_read_body(&response, body.len())?;
+        let mut events = Vec::with_capacity(usize::from(!body.is_empty()) + 1);
+        if !body.is_empty() {
+            events.push(Ok(RemoteFileReadEvent::Chunk(body)));
+        }
+        events.push(Ok(RemoteFileReadEvent::Complete(response)));
+        Ok(Self::new(futures::stream::iter(events)))
+    }
+
+    fn with_cancellation(mut self, cancellation: RemoteRequestCancellation) -> Self {
+        self.cancellation = Some(cancellation);
+        self
+    }
+
+    fn with_terminal_error_callback(mut self, callback: impl FnOnce() + Send + 'static) -> Self {
+        self.terminal_error = Some(Box::new(callback));
+        self
+    }
+}
+
+impl Stream for RemoteFileReadStream {
+    type Item = std::result::Result<RemoteFileReadEvent, RemoteClientError>;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        context: &mut TaskContext<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        if self.finished {
+            return Poll::Ready(None);
+        }
+        match self.inner.as_mut().poll_next(context) {
+            Poll::Ready(Some(Ok(event))) => {
+                if matches!(event, RemoteFileReadEvent::Complete(_)) {
+                    self.finished = true;
+                    self.cancellation = None;
+                }
+                Poll::Ready(Some(Ok(event)))
+            }
+            Poll::Ready(Some(Err(error))) => {
+                self.finished = true;
+                self.cancellation = None;
+                if let Some(callback) = self.terminal_error.take() {
+                    callback();
+                }
+                Poll::Ready(Some(Err(error)))
+            }
+            Poll::Ready(None) => {
+                self.finished = true;
+                self.cancellation = None;
+                Poll::Ready(None)
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl Drop for RemoteFileReadStream {
+    fn drop(&mut self) {
+        if !self.finished
+            && let Some(cancellation) = self.cancellation.take()
+        {
+            cancellation.cancel();
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WriteResultResponse {
     pub path: PathBuf,
@@ -5123,8 +5231,11 @@ struct RemoteWorkspaceV5Shared<W> {
     response_budget: V5ConnectionByteBudget,
     outbound_request_reservations: Mutex<HashMap<u64, V5ByteReservation>>,
     waiters: Mutex<HashMap<u64, V5PendingResponse>>,
+    file_waiters: Mutex<HashMap<u64, V5PendingFileRead>>,
     raw_waiters: Mutex<HashMap<u64, V5PendingRawResponse>>,
     pending_cancellations: Mutex<HashMap<u64, V5ClientCancellation>>,
+    pending_receive_credits: Mutex<HashMap<u64, u64>>,
+    file_stream_byte_limit: usize,
     watch_batches: Mutex<HashMap<u64, V5WatchDelivery>>,
     watch_backlog: Mutex<HashMap<u64, VecDeque<protocol_v5::WatchBatch>>>,
     watch_stream_by_id: Mutex<HashMap<u64, u64>>,
@@ -5150,6 +5261,262 @@ struct V5WatchDelivery {
     sender: mpsc::SyncSender<protocol_v5::WatchBatch>,
     overflowed: Arc<AtomicBool>,
     last_sequence: Arc<AtomicU64>,
+}
+
+struct V5PendingFileRead {
+    mailbox: Arc<V5FileStreamMailbox>,
+    payload: Vec<u8>,
+    response_reservation: V5ByteReservation,
+    final_method: Option<String>,
+    final_error: Option<RemoteError>,
+    file_bytes: usize,
+    method: &'static str,
+    deadline: V5RequestDeadline,
+}
+
+struct V5FileStreamMailbox {
+    state: Mutex<V5FileStreamMailboxState>,
+    waker: AtomicWaker,
+    byte_limit: usize,
+}
+
+struct V5FileStreamMailboxState {
+    chunks: VecDeque<V5FileStreamChunk>,
+    queued_bytes: usize,
+    queued_credit: u64,
+    reservation: V5ByteReservation,
+    completion: Option<FileReadResponse>,
+    error: Option<RemoteClientError>,
+    terminal: bool,
+}
+
+struct V5FileStreamChunk {
+    body: Vec<u8>,
+    credit_bytes: u64,
+}
+
+struct V5FileStreamDelivery {
+    event: RemoteFileReadEvent,
+    credit_bytes: u64,
+}
+
+impl V5FileStreamMailbox {
+    fn new(byte_limit: usize, reservation: V5ByteReservation) -> Self {
+        Self {
+            state: Mutex::new(V5FileStreamMailboxState {
+                chunks: VecDeque::new(),
+                queued_bytes: 0,
+                queued_credit: 0,
+                reservation,
+                completion: None,
+                error: None,
+                terminal: false,
+            }),
+            waker: AtomicWaker::new(),
+            byte_limit,
+        }
+    }
+
+    fn push_chunk(
+        &self,
+        body: Vec<u8>,
+        credit_bytes: u64,
+    ) -> std::result::Result<(), RemoteClientError> {
+        if usize::try_from(credit_bytes).ok() != Some(body.len()) {
+            return Err(RemoteClientError::Protocol(format!(
+                "v5 file DATA credit {credit_bytes} does not match decoded body length {}",
+                body.len()
+            )));
+        }
+        let mut state = self.state.lock().map_err(v5_client_lock_error)?;
+        if state.terminal {
+            return Err(RemoteClientError::ResponseIncomplete {
+                cause: "v5 file DATA arrived after terminal delivery".to_string(),
+            });
+        }
+        let queued_bytes = state.queued_bytes.checked_add(body.len()).ok_or_else(|| {
+            RemoteClientError::Protocol("v5 file delivery byte count overflowed".to_string())
+        })?;
+        if queued_bytes > self.byte_limit {
+            return Err(RemoteClientError::Protocol(format!(
+                "v5 file delivery exceeds negotiated stream window of {} bytes",
+                self.byte_limit
+            )));
+        }
+        let coalesce = state.chunks.back().is_some_and(|chunk| {
+            chunk.body.len().saturating_add(body.len()) <= V5_FILE_STREAM_CHUNK_TARGET_BYTES
+        });
+        if !coalesce && state.chunks.len() >= V5_FILE_STREAM_MAX_QUEUED_CHUNKS {
+            return Err(RemoteClientError::Protocol(format!(
+                "v5 file delivery exceeds {} queued chunks",
+                V5_FILE_STREAM_MAX_QUEUED_CHUNKS
+            )));
+        }
+        let queued_credit = state
+            .queued_credit
+            .checked_add(credit_bytes)
+            .ok_or_else(|| {
+                RemoteClientError::Protocol("v5 file delivery credit overflowed".to_string())
+            })?;
+        let coalesced_credit = if coalesce {
+            Some(
+                state
+                    .chunks
+                    .back()
+                    .expect("coalesced file delivery chunk should exist")
+                    .credit_bytes
+                    .checked_add(credit_bytes)
+                    .ok_or_else(|| {
+                        RemoteClientError::Protocol("v5 file chunk credit overflowed".to_string())
+                    })?,
+            )
+        } else {
+            None
+        };
+        state.reservation.try_grow(body.len()).map_err(|error| {
+            RemoteClientError::Protocol(format!(
+                "v5 file delivery exceeds connection retained-byte budget: {error}"
+            ))
+        })?;
+        state.queued_bytes = queued_bytes;
+        state.queued_credit = queued_credit;
+        if coalesce {
+            let chunk = state
+                .chunks
+                .back_mut()
+                .expect("coalesced file delivery chunk should exist");
+            chunk.body.extend(body);
+            chunk.credit_bytes =
+                coalesced_credit.expect("coalesced file delivery credit should be precomputed");
+        } else {
+            state
+                .chunks
+                .push_back(V5FileStreamChunk { body, credit_bytes });
+        }
+        drop(state);
+        self.waker.wake();
+        Ok(())
+    }
+
+    fn complete(&self, completion: FileReadResponse) -> std::result::Result<(), RemoteClientError> {
+        let mut state = self.state.lock().map_err(v5_client_lock_error)?;
+        if state.terminal {
+            return Err(RemoteClientError::Protocol(
+                "v5 file stream completed more than once".to_string(),
+            ));
+        }
+        state.completion = Some(completion);
+        state.terminal = true;
+        drop(state);
+        self.waker.wake();
+        Ok(())
+    }
+
+    fn fail(&self, error: RemoteClientError) -> u64 {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.terminal && state.error.is_none() {
+            return 0;
+        }
+        let credit_bytes = state.queued_credit;
+        state.chunks.clear();
+        state.queued_bytes = 0;
+        state.queued_credit = 0;
+        state.reservation.release_all();
+        state.completion = None;
+        state.error = Some(error);
+        state.terminal = true;
+        drop(state);
+        self.waker.wake();
+        credit_bytes
+    }
+
+    fn poll_delivery(
+        &self,
+        context: &mut TaskContext<'_>,
+    ) -> Poll<Option<std::result::Result<V5FileStreamDelivery, RemoteClientError>>> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(chunk) = state.chunks.pop_front() {
+            state.queued_bytes = state.queued_bytes.saturating_sub(chunk.body.len());
+            state.queued_credit = state.queued_credit.saturating_sub(chunk.credit_bytes);
+            state.reservation.release(chunk.body.len());
+            return Poll::Ready(Some(Ok(V5FileStreamDelivery {
+                event: RemoteFileReadEvent::Chunk(chunk.body),
+                credit_bytes: chunk.credit_bytes,
+            })));
+        }
+        if let Some(completion) = state.completion.take() {
+            return Poll::Ready(Some(Ok(V5FileStreamDelivery {
+                event: RemoteFileReadEvent::Complete(completion),
+                credit_bytes: 0,
+            })));
+        }
+        if let Some(error) = state.error.take() {
+            return Poll::Ready(Some(Err(error)));
+        }
+        if state.terminal {
+            return Poll::Ready(None);
+        }
+        self.waker.register(context.waker());
+        Poll::Pending
+    }
+}
+
+struct V5RemoteFileReadSource<W> {
+    shared: Weak<RemoteWorkspaceV5Shared<W>>,
+    mailbox: Arc<V5FileStreamMailbox>,
+    stream_id: u64,
+    finished: bool,
+}
+
+impl<W> Stream for V5RemoteFileReadSource<W>
+where
+    W: Write,
+{
+    type Item = std::result::Result<RemoteFileReadEvent, RemoteClientError>;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        context: &mut TaskContext<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        if self.finished {
+            return Poll::Ready(None);
+        }
+        match self.mailbox.poll_delivery(context) {
+            Poll::Ready(Some(Ok(delivery))) => {
+                if delivery.credit_bytes > 0
+                    && let Some(shared) = self.shared.upgrade()
+                    && let Err(error) = queue_v5_released_receive_credit(
+                        &shared,
+                        self.stream_id,
+                        delivery.credit_bytes,
+                    )
+                {
+                    self.finished = true;
+                    fail_all_v5_waiters_for_error(&shared, &error);
+                    return Poll::Ready(Some(Err(error)));
+                }
+                if matches!(delivery.event, RemoteFileReadEvent::Complete(_)) {
+                    self.finished = true;
+                }
+                Poll::Ready(Some(Ok(delivery.event)))
+            }
+            Poll::Ready(Some(Err(error))) => {
+                self.finished = true;
+                Poll::Ready(Some(Err(error)))
+            }
+            Poll::Ready(None) => {
+                self.finished = true;
+                Poll::Ready(None)
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
 }
 
 struct RemoteWorkspaceV5Writer<W> {
@@ -5523,6 +5890,151 @@ impl V5PendingRawResponse {
     }
 }
 
+enum V5FileStreamObservation {
+    Continue { acknowledge_data: bool },
+    Complete(FileReadResponse),
+}
+
+impl V5PendingFileRead {
+    fn observe(
+        &mut self,
+        event: protocol_v5::StreamEvent,
+        data_credit: Option<(u64, u64)>,
+    ) -> std::result::Result<V5FileStreamObservation, RemoteClientError> {
+        match event {
+            protocol_v5::StreamEvent::Headers {
+                role: protocol_v5::MessageRole::FinalResponse,
+                envelope,
+                ..
+            } => {
+                if self.final_method.is_some() || self.final_error.is_some() {
+                    return Err(RemoteClientError::Protocol(
+                        "v5 file stream received duplicate final headers".to_string(),
+                    ));
+                }
+                if envelope.method != self.method {
+                    return Err(RemoteClientError::Protocol(format!(
+                        "v5 file stream expected {} response, received {}",
+                        self.method, envelope.method
+                    )));
+                }
+                self.final_method = Some(envelope.method);
+                Ok(V5FileStreamObservation::Continue {
+                    acknowledge_data: true,
+                })
+            }
+            protocol_v5::StreamEvent::Headers {
+                role: protocol_v5::MessageRole::FinalError,
+                envelope,
+                ..
+            } => {
+                if self.final_method.is_some() || self.final_error.is_some() {
+                    return Err(RemoteClientError::Protocol(
+                        "v5 file stream received duplicate final headers".to_string(),
+                    ));
+                }
+                if envelope.method != self.method {
+                    return Err(RemoteClientError::Protocol(format!(
+                        "v5 file stream expected {} error, received {}",
+                        self.method, envelope.method
+                    )));
+                }
+                self.final_method = Some(envelope.method.clone());
+                self.final_error = Some(v5_final_error_from_envelope(envelope)?);
+                Ok(V5FileStreamObservation::Continue {
+                    acknowledge_data: true,
+                })
+            }
+            protocol_v5::StreamEvent::Data {
+                channel: protocol_v5::DataChannel::FileBody,
+                body,
+                ..
+            } => {
+                let (_, credit_bytes) = data_credit.ok_or_else(|| {
+                    RemoteClientError::Protocol(
+                        "v5 file DATA did not carry receive credit".to_string(),
+                    )
+                })?;
+                let file_bytes = self.file_bytes.checked_add(body.len()).ok_or_else(|| {
+                    RemoteClientError::Protocol("v5 file byte count overflowed".to_string())
+                })?;
+                if u64::try_from(file_bytes).unwrap_or(u64::MAX) > V5_MAX_STREAMED_FILE_READ_BYTES {
+                    return Err(RemoteClientError::Protocol(format!(
+                        "v5 file stream exceeds decoded byte limit of \
+                         {V5_MAX_STREAMED_FILE_READ_BYTES}"
+                    )));
+                }
+                self.mailbox.push_chunk(body, credit_bytes)?;
+                self.file_bytes = file_bytes;
+                Ok(V5FileStreamObservation::Continue {
+                    acknowledge_data: false,
+                })
+            }
+            protocol_v5::StreamEvent::Data {
+                channel: protocol_v5::DataChannel::Unspecified,
+                body,
+                ..
+            } => {
+                let payload_len = self.payload.len().checked_add(body.len()).ok_or_else(|| {
+                    RemoteClientError::Protocol(
+                        "v5 file response payload length overflowed".to_string(),
+                    )
+                })?;
+                if payload_len > V5_MAX_REQUEST_PAYLOAD_BYTES {
+                    return Err(RemoteClientError::Protocol(format!(
+                        "v5 file response payload exceeds decoded byte limit of \
+                         {V5_MAX_REQUEST_PAYLOAD_BYTES}"
+                    )));
+                }
+                self.response_reservation
+                    .try_grow(body.len())
+                    .map_err(|error| {
+                        RemoteClientError::Protocol(format!(
+                            "v5 file response metadata exceeds connection retained-byte budget: \
+                             {error}"
+                        ))
+                    })?;
+                self.payload.extend(body);
+                Ok(V5FileStreamObservation::Continue {
+                    acknowledge_data: true,
+                })
+            }
+            protocol_v5::StreamEvent::EndStream { stream_id } => {
+                if let Some(error) = self.final_error.take() {
+                    return Err(RemoteClientError::Remote(error));
+                }
+                let Some(method) = self.final_method.take() else {
+                    return Err(RemoteClientError::Protocol(format!(
+                        "v5 file stream {stream_id} ended without final response"
+                    )));
+                };
+                let response = RemoteResponse::from_v5_payload(&method, &self.payload)
+                    .map_err(v5_method_error_to_client_error)?;
+                let RemoteResponse::ReadFile(read) = response else {
+                    return Err(RemoteClientError::Protocol(format!(
+                        "unexpected v5 file stream final response: {response:?}"
+                    )));
+                };
+                validate_file_read_body(&read, self.file_bytes)?;
+                Ok(V5FileStreamObservation::Complete(read))
+            }
+            protocol_v5::StreamEvent::ResetStream {
+                code, diagnostic, ..
+            } => Err(RemoteClientError::Remote(RemoteError {
+                code,
+                message: "v5 file stream reset".to_string(),
+                diagnostic: (!diagnostic.is_empty()).then_some(diagnostic),
+            })),
+            protocol_v5::StreamEvent::Data { channel, .. } => Err(RemoteClientError::Protocol(
+                format!("unexpected {channel:?} DATA on v5 file stream"),
+            )),
+            protocol_v5::StreamEvent::Headers { role, .. } => Err(RemoteClientError::Protocol(
+                format!("unexpected {role:?} headers on v5 file stream"),
+            )),
+        }
+    }
+}
+
 fn reserve_v5_client_request_bytes(
     budget: &V5ConnectionByteBudget,
     method: &str,
@@ -5774,8 +6286,18 @@ where
             response_budget: V5ConnectionByteBudget::new(V5_RESPONSE_CONNECTION_BYTE_BUDGET),
             outbound_request_reservations: Mutex::new(HashMap::new()),
             waiters: Mutex::new(HashMap::new()),
+            file_waiters: Mutex::new(HashMap::new()),
             raw_waiters: Mutex::new(HashMap::new()),
             pending_cancellations: Mutex::new(HashMap::new()),
+            pending_receive_credits: Mutex::new(HashMap::new()),
+            file_stream_byte_limit: usize::try_from(
+                if handshake.settings.initial_stream_window == 0 {
+                    protocol_v5::DEFAULT_STREAM_WINDOW
+                } else {
+                    handshake.settings.initial_stream_window
+                },
+            )
+            .unwrap_or(usize::MAX),
             watch_batches: Mutex::new(HashMap::new()),
             watch_backlog: Mutex::new(HashMap::new()),
             watch_stream_by_id: Mutex::new(HashMap::new()),
@@ -5944,6 +6466,19 @@ where
         .wait()
     }
 
+    fn read_file_stream_with_context_and_cancellation(
+        &self,
+        request: RemoteRequest,
+        context: RemoteRequestContext,
+        cancellation: &RemoteRequestCancellation,
+    ) -> std::result::Result<RemoteFileReadStream, RemoteClientError> {
+        self.start_file_read_stream_with_context_and_cancellation(
+            request,
+            context,
+            cancellation.clone(),
+        )
+    }
+
     fn shutdown(&self) -> std::result::Result<(), RemoteClientError> {
         let (response, _) = self.request(RemoteRequest::Shutdown, Vec::new())?;
         match response {
@@ -6083,6 +6618,123 @@ impl<R, W> RemoteWorkspaceV5MultiplexedClient<R, W>
 where
     W: Write + 'static,
 {
+    fn start_file_read_stream_with_context_and_cancellation(
+        &self,
+        request: RemoteRequest,
+        context: RemoteRequestContext,
+        cancellation: RemoteRequestCancellation,
+    ) -> std::result::Result<RemoteFileReadStream, RemoteClientError> {
+        if self.shared.closed.load(Ordering::SeqCst) {
+            return Err(RemoteClientError::Disconnected);
+        }
+        if !matches!(&request, RemoteRequest::ReadFile { .. }) {
+            return Err(RemoteClientError::Protocol(format!(
+                "{} is not a file-read request",
+                request.v5_method()
+            )));
+        }
+        let (method, payload) = self.v5_method_payload_with_directory_cache(&request)?;
+        cancellation.check_cancelled(method)?;
+        if let Some(kind) = context.expired_at(Instant::now()) {
+            return Err(RemoteClientError::RequestDeadlineExceeded {
+                method: method.to_string(),
+                kind,
+            });
+        }
+        let mut options = request.v5_request_options_with_context(context);
+        if request.v5_prefers_zstd_compression()
+            && self
+                .server_hello
+                .capabilities
+                .iter()
+                .any(|capability| capability == "compression_zstd")
+        {
+            options.content_encoding = protocol_v5::ContentEncoding::Zstd;
+        }
+        let request_reservation =
+            reserve_v5_client_request_bytes(&self.shared.request_budget, method, payload.len(), 0)?;
+        let mailbox = Arc::new(V5FileStreamMailbox::new(
+            self.shared.file_stream_byte_limit,
+            self.shared.response_budget.reservation(),
+        ));
+        let response_reservation = self.shared.response_budget.reservation();
+        let deadline = V5RequestDeadline::new(context, Instant::now());
+
+        let stream_id = {
+            let mut session = self.shared.session.lock().map_err(v5_client_lock_error)?;
+            if self.shared.closed.load(Ordering::Acquire) {
+                return Err(RemoteClientError::Disconnected);
+            }
+            cancellation.check_cancelled(method)?;
+            if let Some(kind) = context.expired_at(Instant::now()) {
+                return Err(RemoteClientError::RequestDeadlineExceeded {
+                    method: method.to_string(),
+                    kind,
+                });
+            }
+            let stream_id = session.open_request_with_owned_payload_and_body(
+                method,
+                options,
+                payload,
+                protocol_v5::DataChannel::FileBody,
+                Vec::new(),
+            )?;
+            let pending = V5PendingFileRead {
+                mailbox: Arc::clone(&mailbox),
+                payload: Vec::new(),
+                response_reservation,
+                final_method: None,
+                final_error: None,
+                file_bytes: 0,
+                method,
+                deadline,
+            };
+            self.shared
+                .outbound_request_reservations
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .insert(stream_id, request_reservation);
+            let mut waiters = match self.shared.file_waiters.lock() {
+                Ok(waiters) => waiters,
+                Err(error) => {
+                    let error = v5_client_lock_error(error);
+                    let reset_result = session.reset_stream(
+                        stream_id,
+                        protocol_v5::RESET_CANCELLED,
+                        "client could not register file stream waiter",
+                    );
+                    release_v5_outbound_request_reservation(&self.shared, stream_id);
+                    reset_result?;
+                    return Err(error);
+                }
+            };
+            waiters.insert(stream_id, pending);
+            stream_id
+        };
+
+        register_v5_client_cancellation(
+            &cancellation,
+            &self.shared,
+            stream_id,
+            V5ClientCancellation {
+                method,
+                mode: V5ClientCancellationMode::Stream,
+            },
+        );
+        signal_v5_client_deadlines(&self.shared);
+        if self.shared.closed.load(Ordering::SeqCst) {
+            return Err(RemoteClientError::Disconnected);
+        }
+        self.wake_outbound()?;
+        Ok(RemoteFileReadStream::new(V5RemoteFileReadSource {
+            shared: Arc::downgrade(&self.shared),
+            mailbox,
+            stream_id,
+            finished: false,
+        })
+        .with_cancellation(cancellation))
+    }
+
     pub fn start_request(
         &self,
         request: RemoteRequest,
@@ -6739,7 +7391,7 @@ fn run_v5_client_reader<R, W>(
                         let acknowledge_data = event
                             .stream_event
                             .map(|stream_event| {
-                                handle_v5_client_stream_event(&shared, stream_event)
+                                handle_v5_client_stream_event(&shared, stream_event, data_credit)
                             })
                             .unwrap_or(true);
                         if acknowledge_data && let Some((stream_id, credit_bytes)) = data_credit {
@@ -7018,7 +7670,12 @@ fn process_v5_client_cancellations<W>(
                 .sender
                 .send(Err(remote_request_cancelled_error(pending.method)));
         }
-        match shared
+        let file_pending = shared
+            .file_waiters
+            .lock()
+            .map_err(v5_client_lock_error)?
+            .remove(&stream_id);
+        let reset = shared
             .session
             .lock()
             .map_err(v5_client_lock_error)?
@@ -7027,8 +7684,14 @@ fn process_v5_client_cancellations<W>(
                 protocol_v5::RESET_CANCELLED,
                 format!("client dropped {} request handle", cancellation.method),
             )
-            .map_err(RemoteClientError::Io)?
-        {
+            .map_err(RemoteClientError::Io);
+        if let Some(file_pending) = file_pending {
+            let credit_bytes = file_pending
+                .mailbox
+                .fail(remote_request_cancelled_error(file_pending.method));
+            queue_v5_released_receive_credit(shared, stream_id, credit_bytes)?;
+        }
+        match reset? {
             true => reset_queued = true,
             false => release_v5_outbound_request_reservation(shared, stream_id),
         }
@@ -7081,10 +7744,17 @@ where
     }
 
     let mut waiters = shared.waiters.lock().map_err(v5_client_lock_error)?;
-    let connection_terminal = waiters.values().any(|pending| {
+    let response_connection_terminal = waiters.values().any(|pending| {
         pending.deadline.expired_at(now).is_some()
             && (!peer_is_healthy || pending.deadline_is_connection_terminal())
     });
+    let file_connection_terminal = shared
+        .file_waiters
+        .lock()
+        .map_err(v5_client_lock_error)?
+        .values()
+        .any(|pending| pending.deadline.expired_at(now).is_some() && !peer_is_healthy);
+    let connection_terminal = response_connection_terminal || file_connection_terminal;
     let close_claimed = connection_terminal
         && shared
             .closed
@@ -7112,6 +7782,28 @@ where
             .collect::<Vec<_>>()
     };
     drop(waiters);
+    let file_expired = if connection_terminal {
+        Vec::new()
+    } else {
+        let mut file_waiters = shared.file_waiters.lock().map_err(v5_client_lock_error)?;
+        let expired = file_waiters
+            .iter()
+            .filter_map(|(stream_id, pending)| {
+                pending
+                    .deadline
+                    .expired_at(now)
+                    .map(|kind| (*stream_id, kind))
+            })
+            .collect::<Vec<_>>();
+        expired
+            .into_iter()
+            .filter_map(|(stream_id, kind)| {
+                file_waiters
+                    .remove(&stream_id)
+                    .map(|pending| (stream_id, kind, pending))
+            })
+            .collect::<Vec<_>>()
+    };
     drop(heartbeat);
     if connection_terminal {
         let cause = if !peer_is_healthy {
@@ -7166,6 +7858,29 @@ where
         let _ = pending.sender.send(Err(error));
     }
 
+    for (stream_id, kind, pending) in file_expired {
+        let reset = shared
+            .session
+            .lock()
+            .map_err(v5_client_lock_error)?
+            .reset_stream(
+                stream_id,
+                protocol_v5::RESET_DEADLINE_EXCEEDED,
+                format!("client {kind} deadline expired"),
+            )
+            .map_err(RemoteClientError::Io);
+        let deadline_error = RemoteClientError::RequestDeadlineExceeded {
+            method: pending.method.to_string(),
+            kind,
+        };
+        let credit_bytes = pending.mailbox.fail(deadline_error);
+        queue_v5_released_receive_credit(shared, stream_id, credit_bytes)?;
+        match reset? {
+            true => wake_v5_client_writer(shared)?,
+            false => release_v5_outbound_request_reservation(shared, stream_id),
+        }
+    }
+
     next_v5_client_deadline_wait(shared, Instant::now())
 }
 
@@ -7187,13 +7902,18 @@ fn next_v5_client_deadline_wait<W>(
         .values()
         .filter_map(|pending| pending.deadline.next_expiry().map(|(deadline, _)| deadline))
         .min();
-    Ok(match (response_deadline, raw_deadline) {
-        (Some(response), Some(raw)) => Some(response.min(raw).saturating_duration_since(now)),
-        (Some(deadline), None) | (None, Some(deadline)) => {
-            Some(deadline.saturating_duration_since(now))
-        }
-        (None, None) => None,
-    })
+    let file_deadline = shared
+        .file_waiters
+        .lock()
+        .map_err(v5_client_lock_error)?
+        .values()
+        .filter_map(|pending| pending.deadline.next_expiry().map(|(deadline, _)| deadline))
+        .min();
+    Ok([response_deadline, raw_deadline, file_deadline]
+        .into_iter()
+        .flatten()
+        .min()
+        .map(|deadline| deadline.saturating_duration_since(now)))
 }
 
 fn wake_v5_client_writer<W>(
@@ -7213,6 +7933,52 @@ fn wake_v5_client_writer<W>(
             Err(error)
         }
     }
+}
+
+fn queue_v5_released_receive_credit<W>(
+    shared: &RemoteWorkspaceV5Shared<W>,
+    stream_id: u64,
+    credit_bytes: u64,
+) -> std::result::Result<(), RemoteClientError> {
+    if credit_bytes == 0 || shared.closed.load(Ordering::Acquire) {
+        return Ok(());
+    }
+    let mut credits = shared
+        .pending_receive_credits
+        .lock()
+        .map_err(v5_client_lock_error)?;
+    if shared.closed.load(Ordering::Acquire) {
+        return Ok(());
+    }
+    let credit = credits.entry(stream_id).or_default();
+    *credit = credit.checked_add(credit_bytes).ok_or_else(|| {
+        RemoteClientError::Protocol("v5 released receive credit overflowed".to_string())
+    })?;
+    drop(credits);
+    wake_v5_client_writer(shared)
+}
+
+fn apply_v5_released_receive_credit<W>(
+    shared: &RemoteWorkspaceV5Shared<W>,
+) -> std::result::Result<(), RemoteClientError> {
+    let credits = std::mem::take(
+        &mut *shared
+            .pending_receive_credits
+            .lock()
+            .map_err(v5_client_lock_error)?,
+    );
+    if credits.is_empty() {
+        return Ok(());
+    }
+    let mut credits = credits.into_iter().collect::<Vec<_>>();
+    credits.sort_unstable_by_key(|(stream_id, _)| *stream_id);
+    let mut session = shared.session.lock().map_err(v5_client_lock_error)?;
+    for (stream_id, credit_bytes) in credits {
+        session
+            .acknowledge_data(stream_id, credit_bytes)
+            .map_err(RemoteClientError::Io)?;
+    }
+    Ok(())
 }
 
 fn run_v5_client_writer<W>(
@@ -7253,6 +8019,7 @@ where
         if shared.closed.load(Ordering::Acquire) {
             return Err(RemoteClientError::Disconnected);
         }
+        apply_v5_released_receive_credit(shared)?;
 
         // Select one frame at a time so newly queued urgent control traffic can pre-empt the
         // remainder of this bounded flush batch.
@@ -7374,6 +8141,15 @@ fn observe_v5_client_request_progress<W>(
         .get_mut(&stream_id)
     {
         pending.deadline.observe_progress(now);
+        return Ok(());
+    }
+    if let Some(pending) = shared
+        .file_waiters
+        .lock()
+        .map_err(v5_client_lock_error)?
+        .get_mut(&stream_id)
+    {
+        pending.deadline.observe_progress(now);
     }
     Ok(())
 }
@@ -7386,9 +8162,74 @@ fn release_v5_outbound_request_reservation<W>(shared: &RemoteWorkspaceV5Shared<W
         .remove(&stream_id);
 }
 
+fn handle_v5_client_file_stream_event<W>(
+    shared: &RemoteWorkspaceV5Shared<W>,
+    event: protocol_v5::StreamEvent,
+    data_credit: Option<(u64, u64)>,
+) -> Option<bool>
+where
+    W: Write,
+{
+    let stream_id = event.stream_id();
+    let peer_reset = matches!(&event, protocol_v5::StreamEvent::ResetStream { .. });
+    let (pending, observation) = {
+        let mut waiters = match shared.file_waiters.lock() {
+            Ok(waiters) => waiters,
+            Err(_) => return Some(false),
+        };
+        let pending = waiters.get_mut(&stream_id)?;
+        let observation = pending.observe(event, data_credit);
+        match &observation {
+            Ok(V5FileStreamObservation::Continue { .. }) => (None, observation),
+            Ok(V5FileStreamObservation::Complete(_)) | Err(_) => {
+                (waiters.remove(&stream_id), observation)
+            }
+        }
+    };
+
+    match observation {
+        Ok(V5FileStreamObservation::Continue { acknowledge_data }) => Some(acknowledge_data),
+        Ok(V5FileStreamObservation::Complete(read)) => {
+            let pending = pending.expect("completed v5 file waiter should be removed");
+            if let Err(error) = pending.mailbox.complete(read) {
+                reset_v5_client_stream_after_local_error(shared, stream_id);
+                let credit_bytes = pending.mailbox.fail(error);
+                if let Err(error) =
+                    queue_v5_released_receive_credit(shared, stream_id, credit_bytes)
+                {
+                    fail_all_v5_waiters_for_error(shared, &error);
+                }
+                return Some(false);
+            }
+            Some(true)
+        }
+        Err(error) => {
+            let pending = pending.expect("failed v5 file waiter should be removed");
+            if !peer_reset {
+                reset_v5_client_stream_after_local_error(shared, stream_id);
+            }
+            let queued_credit = pending.mailbox.fail(error);
+            let current_credit = data_credit.map(|(_, credit)| credit).unwrap_or(0);
+            let Some(released_credit) = queued_credit.checked_add(current_credit) else {
+                let error = RemoteClientError::Protocol(
+                    "v5 abandoned file stream credit overflowed".to_string(),
+                );
+                fail_all_v5_waiters_for_error(shared, &error);
+                return Some(false);
+            };
+            if let Err(error) = queue_v5_released_receive_credit(shared, stream_id, released_credit)
+            {
+                fail_all_v5_waiters_for_error(shared, &error);
+            }
+            Some(false)
+        }
+    }
+}
+
 fn handle_v5_client_stream_event<W>(
     shared: &RemoteWorkspaceV5Shared<W>,
     event: protocol_v5::StreamEvent,
+    data_credit: Option<(u64, u64)>,
 ) -> bool
 where
     W: Write,
@@ -7399,6 +8240,14 @@ where
     let stream_id = event.stream_id();
     if matches!(&event, protocol_v5::StreamEvent::ResetStream { .. }) {
         release_v5_outbound_request_reservation(shared, stream_id);
+    }
+    let is_file_stream = shared
+        .file_waiters
+        .lock()
+        .map(|waiters| waiters.contains_key(&stream_id))
+        .unwrap_or(false);
+    if is_file_stream {
+        return handle_v5_client_file_stream_event(shared, event, data_credit).unwrap_or(false);
     }
     let mut event = Some(event);
     let completed_response = {
@@ -7619,6 +8468,11 @@ where
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clear();
+    shared
+        .pending_receive_credits
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clear();
     if let Some(abort) = &shared.transport_abort {
         abort.abort();
     }
@@ -7637,6 +8491,14 @@ where
     for (_, pending) in raw_waiters {
         let error = pending.failure_error(make_error());
         let _ = pending.sender.send(Err(error));
+    }
+    let file_waiters = match shared.file_waiters.lock() {
+        Ok(mut file_waiters) => std::mem::take(&mut *file_waiters),
+        Err(poisoned) => std::mem::take(&mut *poisoned.into_inner()),
+    };
+    for (_, pending) in file_waiters {
+        let error = transport_closed_before_final_error(make_error());
+        pending.mailbox.fail(error);
     }
     shared
         .watch_batches
@@ -8240,6 +9102,47 @@ pub trait RemoteWorkspaceProtocolClient: Send + Sync {
         let result = self.request_with_context(request, body, context);
         cancellation.check_cancelled(method)?;
         result
+    }
+
+    fn read_file_stream(
+        &self,
+        path: PathBuf,
+        max_bytes: Option<u64>,
+    ) -> std::result::Result<RemoteFileReadStream, RemoteClientError> {
+        let request = RemoteRequest::ReadFile { path, max_bytes };
+        let context = request.v5_request_context();
+        self.read_file_stream_with_context_and_cancellation(
+            request,
+            context,
+            &RemoteRequestCancellation::new(),
+        )
+    }
+
+    fn read_file_stream_with_context_and_cancellation(
+        &self,
+        request: RemoteRequest,
+        context: RemoteRequestContext,
+        cancellation: &RemoteRequestCancellation,
+    ) -> std::result::Result<RemoteFileReadStream, RemoteClientError> {
+        let method = request.v5_method();
+        if !matches!(&request, RemoteRequest::ReadFile { .. }) {
+            return Err(RemoteClientError::Protocol(format!(
+                "{method} is not a file-read request"
+            )));
+        }
+        cancellation.check_cancelled(method)?;
+        let (response, body) =
+            self.request_with_context_and_cancellation(request, Vec::new(), context, cancellation)?;
+        cancellation.check_cancelled(method)?;
+        match response {
+            RemoteResponse::ReadFile(response) => {
+                RemoteFileReadStream::from_response(response, body)
+                    .map(|stream| stream.with_cancellation(cancellation.clone()))
+            }
+            other => Err(RemoteClientError::Protocol(format!(
+                "unexpected read file response: {other:?}"
+            ))),
+        }
     }
 
     fn shutdown(&self) -> std::result::Result<(), RemoteClientError>;
@@ -8917,6 +9820,72 @@ where
         }
     }
 
+    fn read_file_stream_with_context_and_cancellation(
+        &self,
+        request: RemoteRequest,
+        context: RemoteRequestContext,
+        cancellation: &RemoteRequestCancellation,
+    ) -> std::result::Result<RemoteFileReadStream, RemoteClientError> {
+        let method = request.v5_method();
+        if !matches!(&request, RemoteRequest::ReadFile { .. }) {
+            return Err(RemoteClientError::Protocol(format!(
+                "{method} is not a file-read request"
+            )));
+        }
+        cancellation.check_cancelled(method)?;
+        let client = self.current_client()?;
+        cancellation.check_cancelled(method)?;
+        match client.read_file_stream_with_context_and_cancellation(
+            request.clone(),
+            context,
+            cancellation,
+        ) {
+            Ok(stream) => {
+                let reconnecting = self.shared_handle();
+                let stale = Arc::clone(&client);
+                Ok(stream.with_terminal_error_callback(move || {
+                    if let Err(error) = reconnecting.discard_if_current(&stale) {
+                        tracing::warn!(
+                            error = %error,
+                            "Failed to invalidate v5 transport after file stream failure"
+                        );
+                    }
+                }))
+            }
+            Err(error) if remote_client_error_requires_reconnect(&error) => {
+                cancellation.check_cancelled(method)?;
+                let retry_safe = remote_client_error_allows_reconnect_retry(&error);
+                let retry_client = self.reconnect_if_current(&client)?;
+                cancellation.check_cancelled(method)?;
+                if !retry_safe {
+                    return Err(error);
+                }
+                if let Some(kind) = context.expired_at(Instant::now()) {
+                    return Err(RemoteClientError::RequestDeadlineExceeded {
+                        method: method.to_string(),
+                        kind,
+                    });
+                }
+                let stream = retry_client.read_file_stream_with_context_and_cancellation(
+                    request,
+                    context,
+                    cancellation,
+                )?;
+                let reconnecting = self.shared_handle();
+                let stale = Arc::clone(&retry_client);
+                Ok(stream.with_terminal_error_callback(move || {
+                    if let Err(error) = reconnecting.discard_if_current(&stale) {
+                        tracing::warn!(
+                            error = %error,
+                            "Failed to invalidate replayed v5 file stream transport"
+                        );
+                    }
+                }))
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     fn shutdown(&self) -> std::result::Result<(), RemoteClientError> {
         self.current_client()?.shutdown()
     }
@@ -9456,6 +10425,93 @@ where
                 diagnostic: None,
             }),
         }
+    }
+
+    async fn read_file_stream_with_optional_workspace_cancellation(
+        &self,
+        path: &Path,
+        options: ReadOptions,
+        workspace_cancellation: Option<&WorkspaceCancellationToken>,
+    ) -> nucleotide_workspace::Result<FileReadStream>
+    where
+        C: 'static,
+    {
+        if let Some(cancellation) = workspace_cancellation {
+            cancellation.check_cancelled("read file", path)?;
+        }
+        let mut cancel_on_drop = RemoteRequestCancelOnDrop::new();
+        let cancellation = cancel_on_drop.cancellation();
+        let workspace_cancellation_registration = workspace_cancellation.map(|workspace| {
+            let cancellation = cancellation.clone();
+            workspace.on_cancel(move || cancellation.cancel())
+        });
+        let request = RemoteRequest::ReadFile {
+            path: path.to_path_buf(),
+            max_bytes: options.max_bytes,
+        };
+        let context = request.v5_request_context();
+        let client = Arc::clone(&self.client);
+        let request_path = path.to_path_buf();
+        let worker_path = request_path.clone();
+        let worker_cancellation = cancellation.clone();
+        let (sender, receiver) = oneshot::channel();
+        std::thread::Builder::new()
+            .name("nucleotide-remote-read-file-stream".to_string())
+            .spawn(move || {
+                let result = client
+                    .read_file_stream_with_context_and_cancellation(
+                        request,
+                        context,
+                        &worker_cancellation,
+                    )
+                    .map_err(|error| client_error_to_workspace("read file", &worker_path, error));
+                let _ = sender.send(result);
+            })
+            .map_err(|source| WorkspaceError::Io {
+                operation: "read file",
+                path: request_path.clone(),
+                source,
+            })?;
+
+        let remote_stream = match receiver.await {
+            Ok(result) => {
+                cancel_on_drop.disarm();
+                result?
+            }
+            Err(_) => {
+                return Err(WorkspaceError::Remote {
+                    operation: "read file",
+                    path: request_path,
+                    message: "remote file stream worker exited before returning a stream"
+                        .to_string(),
+                    diagnostic: None,
+                });
+            }
+        };
+        let error_path = path.to_path_buf();
+        Ok(FileReadStream::new(StreamExt::map(
+            remote_stream,
+            move |event| {
+                let _registration = &workspace_cancellation_registration;
+                event
+                    .map(|event| match event {
+                        RemoteFileReadEvent::Chunk(bytes) => FileReadEvent::Chunk(bytes),
+                        RemoteFileReadEvent::Complete(read) => {
+                            FileReadEvent::Complete(FileReadMetadata {
+                                path: read.path,
+                                size: read.size,
+                                modified: system_time_from_unix_millis_and_nanos(
+                                    read.modified_unix_millis,
+                                    read.modified_unix_nanos,
+                                ),
+                                readonly: read.readonly,
+                                truncated: read.truncated,
+                            })
+                        }
+                    })
+                    .map_err(|error| client_error_to_workspace("read file", &error_path, error))
+            },
+        )))
     }
 }
 
@@ -10038,22 +11094,19 @@ where
         path: &Path,
         options: ReadOptions,
     ) -> nucleotide_workspace::Result<FileRead> {
-        let (response, body) = self
-            .request(
-                "read file",
-                path,
-                RemoteRequest::ReadFile {
-                    path: path.to_path_buf(),
-                    max_bytes: options.max_bytes,
-                },
-                Vec::new(),
-            )
-            .await?;
-        match response {
-            RemoteResponse::ReadFile(read) => file_read_from_response(read, body)
-                .map_err(|error| client_error_to_workspace("read file", path, error)),
-            other => Err(unexpected_response_error("read file", path, other)),
-        }
+        self.read_file_stream(path, options)
+            .await?
+            .collect_file(path)
+            .await
+    }
+
+    async fn read_file_stream(
+        &self,
+        path: &Path,
+        options: ReadOptions,
+    ) -> nucleotide_workspace::Result<FileReadStream> {
+        self.read_file_stream_with_optional_workspace_cancellation(path, options, None)
+            .await
     }
 
     async fn read_file_with_cancellation(
@@ -10062,24 +11115,24 @@ where
         options: ReadOptions,
         cancellation: &WorkspaceCancellationToken,
     ) -> nucleotide_workspace::Result<FileRead> {
-        let (response, body) = self
-            .request_with_workspace_cancellation(
-                "read file",
-                path,
-                RemoteRequest::ReadFile {
-                    path: path.to_path_buf(),
-                    max_bytes: options.max_bytes,
-                },
-                Vec::new(),
-                cancellation,
-            )
-            .await?;
-        cancellation.check_cancelled("read file", path)?;
-        match response {
-            RemoteResponse::ReadFile(read) => file_read_from_response(read, body)
-                .map_err(|error| client_error_to_workspace("read file", path, error)),
-            other => Err(unexpected_response_error("read file", path, other)),
-        }
+        self.read_file_stream_with_cancellation(path, options, cancellation)
+            .await?
+            .collect_file(path)
+            .await
+    }
+
+    async fn read_file_stream_with_cancellation(
+        &self,
+        path: &Path,
+        options: ReadOptions,
+        cancellation: &WorkspaceCancellationToken,
+    ) -> nucleotide_workspace::Result<FileReadStream> {
+        self.read_file_stream_with_optional_workspace_cancellation(
+            path,
+            options,
+            Some(cancellation),
+        )
+        .await
     }
 
     async fn write_file(
@@ -16833,37 +17886,24 @@ fn directory_listing_from_response(listing: DirectoryListingResponse) -> Directo
     }
 }
 
-fn file_read_from_response(
-    read: FileReadResponse,
-    bytes: Vec<u8>,
-) -> std::result::Result<FileRead, RemoteClientError> {
-    let body_len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-    if body_len > read.size {
+fn validate_file_read_body(
+    read: &FileReadResponse,
+    body_len: usize,
+) -> std::result::Result<(), RemoteClientError> {
+    let body_len_u64 = u64::try_from(body_len).unwrap_or(u64::MAX);
+    if body_len_u64 > read.size {
         return Err(RemoteClientError::Protocol(format!(
             "malformed read_file body: body has {} bytes but file size is {}",
-            bytes.len(),
-            read.size
+            body_len, read.size
         )));
     }
-    if !read.truncated && body_len != read.size {
+    if !read.truncated && body_len_u64 != read.size {
         return Err(RemoteClientError::Protocol(format!(
             "malformed read_file body: response is not truncated but body has {} bytes and file size is {}",
-            bytes.len(),
-            read.size
+            body_len, read.size
         )));
     }
-
-    Ok(FileRead {
-        path: read.path,
-        bytes,
-        size: read.size,
-        modified: system_time_from_unix_millis_and_nanos(
-            read.modified_unix_millis,
-            read.modified_unix_nanos,
-        ),
-        readonly: read.readonly,
-        truncated: read.truncated,
-    })
+    Ok(())
 }
 
 fn write_result_from_response(result: WriteResultResponse) -> WriteResult {
@@ -17705,6 +18745,71 @@ fn print_help<W: Write>(writer: &mut W) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn v5_file_mailbox_retains_bytes_and_credit_until_consumer_poll() {
+        let budget = V5ConnectionByteBudget::new(16);
+        let mailbox = V5FileStreamMailbox::new(16, budget.reservation());
+        mailbox.push_chunk(b"hello".to_vec(), 5).unwrap();
+
+        assert_eq!(budget.used(), 5);
+        let state = mailbox.state.lock().unwrap();
+        assert_eq!(state.queued_credit, 5);
+        drop(state);
+
+        let waker = futures::task::noop_waker();
+        let mut context = TaskContext::from_waker(&waker);
+        let Poll::Ready(Some(Ok(delivery))) = mailbox.poll_delivery(&mut context) else {
+            panic!("queued file chunk should be ready");
+        };
+        assert_eq!(delivery.credit_bytes, 5);
+        assert_eq!(
+            delivery.event,
+            RemoteFileReadEvent::Chunk(b"hello".to_vec())
+        );
+        assert_eq!(budget.used(), 0);
+        assert_eq!(mailbox.state.lock().unwrap().queued_credit, 0);
+    }
+
+    #[test]
+    fn v5_file_mailbox_coalesces_tiny_frames_into_bounded_deliveries() {
+        let frame_count = V5_FILE_STREAM_MAX_QUEUED_CHUNKS * 4;
+        let budget = V5ConnectionByteBudget::new(frame_count);
+        let mailbox = V5FileStreamMailbox::new(frame_count, budget.reservation());
+
+        for _ in 0..frame_count {
+            mailbox.push_chunk(vec![7], 1).unwrap();
+        }
+
+        let state = mailbox.state.lock().unwrap();
+        assert_eq!(state.queued_bytes, frame_count);
+        assert_eq!(state.queued_credit, frame_count as u64);
+        assert!(state.chunks.len() < V5_FILE_STREAM_MAX_QUEUED_CHUNKS);
+        assert!(
+            state
+                .chunks
+                .iter()
+                .all(|chunk| chunk.body.len() <= V5_FILE_STREAM_CHUNK_TARGET_BYTES)
+        );
+    }
+
+    #[test]
+    fn v5_file_mailbox_failure_releases_all_retained_bytes_and_credit() {
+        let budget = V5ConnectionByteBudget::new(16);
+        let mailbox = V5FileStreamMailbox::new(16, budget.reservation());
+        mailbox.push_chunk(b"hello".to_vec(), 5).unwrap();
+        mailbox.push_chunk(b" world".to_vec(), 6).unwrap();
+
+        let released = mailbox.fail(RemoteClientError::Disconnected);
+
+        assert_eq!(released, 11);
+        assert_eq!(budget.used(), 0);
+        let state = mailbox.state.lock().unwrap();
+        assert!(state.chunks.is_empty());
+        assert_eq!(state.queued_bytes, 0);
+        assert_eq!(state.queued_credit, 0);
+        assert!(matches!(state.error, Some(RemoteClientError::Disconnected)));
+    }
 
     fn arg_index(args: &[OsString], needle: &str) -> usize {
         args.iter()
@@ -21300,7 +22405,7 @@ mod tests {
         request.join().unwrap();
         let started = Instant::now();
         loop {
-            let pong = read_v5_frames(writer.bytes())
+            let pong = read_v5_complete_frames(writer.bytes())
                 .into_iter()
                 .find(|frame| frame.frame_type == protocol_v5::FrameType::Pong);
             if let Some(pong) = pong {
@@ -23014,6 +24119,7 @@ mod tests {
                     true,
                 ),
             },
+            None,
         ));
         drop(heartbeat);
         expiry.join().unwrap();
@@ -24325,6 +25431,195 @@ mod tests {
         }
         assert!(connection_credit >= 11);
         assert!(stream_credit <= connection_credit);
+        input.close();
+    }
+
+    #[test]
+    fn v5_file_stream_releases_body_credit_only_after_chunk_delivery() {
+        let input = BlockingRead::default();
+        let output = SharedWrite::default();
+        input.push(v5_server_input(Vec::new()));
+        let client = RemoteWorkspaceV5MultiplexedClient::connect(
+            protocol_v5::FramedIo::new(input.clone(), output.clone()),
+            protocol_v5::ClientHello::nucleotide("test-client"),
+        )
+        .unwrap();
+
+        let mut stream = client
+            .read_file_stream(PathBuf::from("README.md"), None)
+            .unwrap();
+        let stream_id = wait_for_v5_request_stream(&output, "fs.read");
+        let response = FileReadResponse {
+            path: PathBuf::from("README.md"),
+            size: 11,
+            modified_unix_millis: None,
+            modified_unix_nanos: None,
+            readonly: false,
+            truncated: false,
+        };
+        let frames = v5_response_frames(
+            stream_id,
+            "fs.read",
+            RemoteResponse::ReadFile(response.clone()),
+            b"hello world".to_vec(),
+        );
+        input.push(v5_frames_bytes(frames.clone()));
+
+        let started = Instant::now();
+        while client.shared.response_budget.used() != 11 {
+            if started.elapsed() >= Duration::from_secs(2) {
+                panic!(
+                    "timed out waiting for retained file chunk: budget={}, file_waiters={}, ordinary_waiters={}, closed={}",
+                    client.shared.response_budget.used(),
+                    client.shared.file_waiters.lock().unwrap().len(),
+                    client.shared.waiters.lock().unwrap().len(),
+                    client.shared.closed.load(Ordering::Acquire),
+                );
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let retained_before_poll = client.shared.response_budget.used();
+        let credits = |bytes: Vec<u8>| {
+            let mut connection = 0_u64;
+            let mut file_stream = 0_u64;
+            for frame in read_v5_complete_frames(bytes)
+                .into_iter()
+                .filter(|frame| frame.frame_type == protocol_v5::FrameType::WindowUpdate)
+            {
+                let update = frame.decode_control::<protocol_v5::WindowUpdate>().unwrap();
+                if frame.stream_id == 0 {
+                    connection += update.credit_bytes;
+                } else if frame.stream_id == stream_id {
+                    file_stream += update.credit_bytes;
+                }
+            }
+            (connection, file_stream)
+        };
+        let before_poll = credits(output.bytes());
+
+        assert_eq!(
+            futures::executor::block_on(stream.next()).unwrap().unwrap(),
+            RemoteFileReadEvent::Chunk(b"hello world".to_vec())
+        );
+        assert_eq!(
+            client.shared.response_budget.used(),
+            retained_before_poll - 11
+        );
+        let started = Instant::now();
+        let after_poll = loop {
+            let current = credits(output.bytes());
+            if current.0 >= before_poll.0 + 11 {
+                break current;
+            }
+            if started.elapsed() >= Duration::from_secs(2) {
+                panic!(
+                    "timed out waiting for consumption-based file credit: before={before_poll:?}, current={current:?}, pending={:?}, closed={}",
+                    client.shared.pending_receive_credits.lock().unwrap(),
+                    client.shared.closed.load(Ordering::Acquire),
+                );
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(after_poll.0 - before_poll.0, 11);
+        assert_eq!(after_poll.1 - before_poll.1, 0);
+
+        assert_eq!(
+            futures::executor::block_on(stream.next()).unwrap().unwrap(),
+            RemoteFileReadEvent::Complete(response)
+        );
+        assert!(futures::executor::block_on(stream.next()).is_none());
+        input.close();
+    }
+
+    #[test]
+    fn dropping_v5_file_stream_resets_once_and_keeps_connection_usable() {
+        let input = BlockingRead::default();
+        let output = SharedWrite::default();
+        input.push(v5_server_input(Vec::new()));
+        let client = Arc::new(
+            RemoteWorkspaceV5MultiplexedClient::connect(
+                protocol_v5::FramedIo::new(input.clone(), output.clone()),
+                protocol_v5::ClientHello::nucleotide("test-client"),
+            )
+            .unwrap(),
+        );
+
+        let stream = client
+            .read_file_stream(PathBuf::from("large.bin"), None)
+            .unwrap();
+        let cancelled_stream = wait_for_v5_request_stream(&output, "fs.read");
+        wait_for_v5_stream_frame(&output, cancelled_stream, protocol_v5::FrameType::EndStream);
+        input.push(v5_frames_bytes(vec![
+            protocol_v5::stream_data_frame(
+                cancelled_stream,
+                vec![5; 64],
+                protocol_v5::DataFrameOptions::new(protocol_v5::DataChannel::FileBody),
+            )
+            .unwrap(),
+        ]));
+        let started = Instant::now();
+        while client.shared.response_budget.used() != 64 {
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "timed out waiting for queued file bytes"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        drop(stream);
+
+        wait_for_v5_stream_frame(
+            &output,
+            cancelled_stream,
+            protocol_v5::FrameType::ResetStream,
+        );
+        let started = Instant::now();
+        while client.shared.response_budget.used() != 0
+            || !client.shared.file_waiters.lock().unwrap().is_empty()
+        {
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "timed out waiting for cancelled file stream cleanup"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let resets = read_v5_complete_frames(output.bytes())
+            .into_iter()
+            .filter(|frame| {
+                frame.stream_id == cancelled_stream
+                    && frame.frame_type == protocol_v5::FrameType::ResetStream
+            })
+            .count();
+        assert_eq!(resets, 1);
+        assert!(!client.shared.closed.load(Ordering::Acquire));
+
+        let healthy_client = Arc::clone(&client);
+        let healthy = std::thread::spawn(move || {
+            healthy_client.request(
+                RemoteRequest::Stat {
+                    path: PathBuf::from("healthy.rs"),
+                },
+                Vec::new(),
+            )
+        });
+        let healthy_stream = wait_for_v5_request_stream_after(&output, "fs.stat", cancelled_stream);
+        input.push(v5_frames_bytes(v5_response_frames(
+            healthy_stream,
+            "fs.stat",
+            RemoteResponse::Stat(FileStatResponse {
+                path: PathBuf::from("healthy.rs"),
+                kind: RemoteFileKind::File,
+                size: 1,
+                modified_unix_millis: None,
+                modified_unix_nanos: None,
+                readonly: false,
+            }),
+            Vec::new(),
+        )));
+        assert!(matches!(
+            healthy.join().unwrap().unwrap().0,
+            RemoteResponse::Stat(_)
+        ));
         input.close();
     }
 
