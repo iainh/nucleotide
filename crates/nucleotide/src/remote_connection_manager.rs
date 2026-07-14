@@ -1734,9 +1734,9 @@ fn resolve_ssh_home(
     };
     let command =
         nucleotide_remote::ssh_non_tty_remote_command(ssh_target, "printf '%s\\n' \"$HOME\"");
-    let mut process = command.command();
+    let mut process = command.contained_command();
     process.stdin(std::process::Stdio::null());
-    let output = nucleotide_process::output_with_limits_and_cancellation(
+    let output = nucleotide_process::output_with_limits_contained_and_cancellation(
         &mut process,
         nucleotide_process::OutputLimits::new(
             startup.cap_timeout(nucleotide_remote::REMOTE_STARTUP_PROBE_TIMEOUT)?,
@@ -1773,7 +1773,7 @@ fn resolve_wsl_home(
     startup: &nucleotide_remote::RemoteStartupContext,
 ) -> Result<PathBuf> {
     startup.check()?;
-    let mut command = nucleotide_process::command("wsl.exe");
+    let mut command = nucleotide_process::contained_command("wsl.exe");
     command.args([
         OsString::from("--distribution"),
         OsString::from(distro),
@@ -1783,7 +1783,7 @@ fn resolve_wsl_home(
         OsString::from("printf '%s\\n' \"$HOME\""),
     ]);
     command.stdin(std::process::Stdio::null());
-    let output = nucleotide_process::output_with_limits_and_cancellation(
+    let output = nucleotide_process::output_with_limits_contained_and_cancellation(
         &mut command,
         nucleotide_process::OutputLimits::new(
             startup.cap_timeout(nucleotide_remote::REMOTE_STARTUP_PROBE_TIMEOUT)?,
@@ -1997,11 +1997,11 @@ fn wsl_distributions() -> Vec<String> {
 
     const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(3);
 
-    let mut command = nucleotide_process::command("wsl.exe");
+    let mut command = nucleotide_process::contained_command("wsl.exe");
     command
         .args([OsString::from("--list"), OsString::from("--quiet")])
         .stdin(std::process::Stdio::null());
-    nucleotide_process::output_with_limits(
+    nucleotide_process::output_with_limits_contained(
         &mut command,
         nucleotide_process::OutputLimits::new(
             DISCOVERY_TIMEOUT,

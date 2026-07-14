@@ -190,6 +190,16 @@ impl RemoteServiceCommand {
         command
     }
 
+    pub fn contained_command(&self) -> nucleotide_process::ContainedCommand {
+        let program = self.resolved_program();
+        let mut command = nucleotide_process::contained_command(&program);
+        command.args(&self.args);
+        if let Some(current_dir) = &self.current_dir {
+            command.current_dir(current_dir);
+        }
+        command
+    }
+
     pub fn resolved_program(&self) -> OsString {
         resolve_service_program(&self.program)
     }
@@ -668,14 +678,14 @@ trait V5TransportAbort: Send + Sync {
 }
 
 struct ChildProcessV5Control {
-    child: Mutex<Option<Child>>,
+    child: Mutex<Option<nucleotide_process::ContainedChild>>,
     child_id: u32,
     abort_started: AtomicBool,
     reaped: Arc<AtomicBool>,
 }
 
 impl ChildProcessV5Control {
-    fn new(child: Child) -> Self {
+    fn new(child: nucleotide_process::ContainedChild) -> Self {
         let child_id = child.id();
         Self {
             child: Mutex::new(Some(child)),
@@ -710,12 +720,27 @@ impl ChildProcessV5Control {
 
         // Killing is a prompt, non-waiting syscall. Reaping can block, so leave that to a
         // detached thread and never make transport close wait for child teardown.
-        let _ = child.kill();
+        let termination_succeeded = match child.terminate() {
+            Ok(()) => true,
+            Err(error) => {
+                tracing::warn!(
+                    child_id = self.child_id,
+                    %error,
+                    "Failed to terminate contained v5 child; closing containment without a blocking reap"
+                );
+                false
+            }
+        };
         let reaped = Arc::clone(&self.reaped);
         if std::thread::Builder::new()
             .name("nucleotide-v5-child-reaper".to_string())
             .spawn(move || {
-                let _ = child.wait();
+                if termination_succeeded {
+                    let _ = child.wait();
+                } else {
+                    let _ = child.child_mut().try_wait();
+                }
+                drop(child);
                 reaped.store(true, Ordering::Release);
             })
             .is_err()
@@ -778,17 +803,19 @@ fn spawn_child_process_v5_io(
     protocol_v5::FramedIo<ChildStdout, ChildProcessV5Writer>,
     Arc<ChildProcessV5Control>,
 )> {
-    let mut command = spec.command();
+    let mut command = spec.contained_command();
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
-    let mut child = command.spawn()?;
+    let mut child = nucleotide_process::ContainedChild::spawn(&mut command)?;
     let writer = child
+        .child_mut()
         .stdin
         .take()
         .ok_or_else(|| io::Error::other("remote service child did not expose stdin"))?;
     let reader = child
+        .child_mut()
         .stdout
         .take()
         .ok_or_else(|| io::Error::other("remote service child did not expose stdout"))?;
@@ -3242,7 +3269,7 @@ impl<'a> RemoteHelperManager<'a> {
         let remote_command =
             remote_helper_upload_command(&helper_dir, &tmp_path, &helper_path, &expected_sha256);
         let spec = transport.command(remote_command);
-        let mut command = spec.command();
+        let mut command = spec.contained_command();
         command.stdin(Stdio::from(local_file));
         let output = self
             .run_bounded_command(
@@ -3300,7 +3327,7 @@ impl<'a> RemoteHelperManager<'a> {
             asset_name,
         );
         let spec = transport.command(remote_command);
-        let mut command = spec.command();
+        let mut command = spec.contained_command();
         command.stdin(Stdio::null());
         let output = self
             .run_bounded_command(
@@ -3337,7 +3364,7 @@ impl<'a> RemoteHelperManager<'a> {
         remote_command: &str,
     ) -> Result<String> {
         let spec = transport.command(remote_command.to_string());
-        let mut command = spec.command();
+        let mut command = spec.contained_command();
         command.stdin(Stdio::null());
         let output = self
             .run_bounded_command(
@@ -3393,12 +3420,12 @@ impl<'a> RemoteHelperManager<'a> {
 
     fn run_bounded_command(
         &self,
-        command: &mut Command,
+        command: &mut nucleotide_process::ContainedCommand,
         mut limits: nucleotide_process::OutputLimits,
     ) -> Result<std::process::Output> {
         self.check_cancelled()?;
         limits.timeout = self.startup.cap_timeout(limits.timeout)?;
-        let output = nucleotide_process::output_with_limits_and_cancellation(
+        let output = nucleotide_process::output_with_limits_contained_and_cancellation(
             command,
             limits,
             self.startup.cancellation().as_atomic_bool(),
@@ -19552,14 +19579,30 @@ mod tests {
         input.close();
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn child_handshake_watchdog_physically_aborts_and_reaps_silent_helper() {
-        let command = RemoteServiceCommand {
+    #[cfg(any(unix, windows))]
+    fn silent_service_command() -> RemoteServiceCommand {
+        #[cfg(unix)]
+        return RemoteServiceCommand {
             program: OsString::from("/bin/sleep"),
             args: vec![OsString::from("60")],
             current_dir: None,
         };
+
+        #[cfg(windows)]
+        RemoteServiceCommand {
+            program: OsString::from("cmd.exe"),
+            args: ["/D", "/Q", "/C", "ping.exe -n 60 127.0.0.1 >NUL"]
+                .into_iter()
+                .map(OsString::from)
+                .collect(),
+            current_dir: None,
+        }
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn child_handshake_watchdog_physically_aborts_and_reaps_silent_helper() {
+        let command = silent_service_command();
         let (io, control) = spawn_child_process_v5_io(&command).unwrap();
 
         let result = connect_child_process_v5_client_with_timeout(
@@ -19580,14 +19623,10 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn child_handshake_cancellation_physically_aborts_and_reaps_silent_helper() {
-        let command = RemoteServiceCommand {
-            program: OsString::from("/bin/sleep"),
-            args: vec![OsString::from("60")],
-            current_dir: None,
-        };
+        let command = silent_service_command();
         let (io, control) = spawn_child_process_v5_io(&command).unwrap();
         let cancellation = WorkspaceCancellationToken::new();
         let cancel = cancellation.clone();
@@ -19654,7 +19693,7 @@ mod tests {
         let startup = RemoteStartupContext::new(Duration::from_millis(250));
         let manager =
             RemoteHelperManager::with_progress_and_startup_context(&options, None, &startup);
-        let mut first = Command::new("/bin/sleep");
+        let mut first = nucleotide_process::contained_command("/bin/sleep");
         first.arg("0.1");
         manager
             .run_bounded_command(
@@ -19666,7 +19705,7 @@ mod tests {
                 ),
             )
             .unwrap();
-        let mut second = Command::new("/bin/sleep");
+        let mut second = nucleotide_process::contained_command("/bin/sleep");
         second.arg("60");
         let started = Instant::now();
 
@@ -19703,7 +19742,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(50));
             cancellation.cancel();
         });
-        let mut command = Command::new("/bin/sleep");
+        let mut command = nucleotide_process::contained_command("/bin/sleep");
         command.arg("60");
         let started = Instant::now();
 
