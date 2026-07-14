@@ -20,14 +20,15 @@ The implementation includes:
 - Atomic reset and teardown that purge queued frames, flow state and request state before a terminal frame is sent.
 - Receive-window validation, exact per-direction frame sequencing, decoded chunk limits, declared-length checks and cumulative request/response limits.
 - Connection-terminal client write failures that fail all waiters, invalidate caches and preserve typed ambiguous outcomes for mutations.
+- Cancel-on-drop client request handles and workspace futures that reset abandoned streams without blocking the dropping thread.
 - Server cancellation on peer loss and enforced shutdown-grace cancellation for queued and cooperative active work.
 - Count- and byte-bounded watch batches, explicit overflow/resync events and bounded client delivery.
 - Directory generations, fingerprints, `not_modified` responses, deltas and bounded server-side directory caching.
 - Safe read-only reconnect replay, configuration-derived startup options, bounded probe/handshake processes, OpenSSH connection reuse, transport keepalives, negotiated bidirectional heartbeat probes and an independent client-side watchdog.
 
-Post-v5 hardening also bounds the server producer-to-writer lanes, gives the client writer sole ownership of physical writes, propagates validated priority through worker admission and response scheduling, and limits queued wire batches. The associated regression tests cover partial writes, blocked-flow resets, decompression bounds, watch storms, EOF cancellation and reconnect ambiguity.
+Post-v5 hardening also bounds the server producer-to-writer lanes, gives the client writer sole ownership of physical writes, propagates validated priority through worker admission and response scheduling, limits queued wire batches and gives application request ownership an explicit cancellation lifetime. The associated regression tests cover partial writes, blocked-flow resets, dropped handles, decompression bounds, watch storms, EOF cancellation and reconnect ambiguity.
 
-Some architectural work remains. The synchronous workspace API still returns complete file/search/process results instead of exposing incremental consumers, so receive credit reflects transport demultiplexing rather than final UI consumption. The helper still runs heartbeat timeout checks and physical writes on the same service loop, so a blocked stdout write can prevent timeout enforcement. Filesystem handlers now cooperate with cancellation between user-space work units, but no user-space deadline can force a filesystem call already blocked in the operating system to return. Reconnect does not yet restore watches, and UI cancellation does not yet propagate through every startup stage. Child handshakes and command probes have deadlines and reap their direct child; Unix probes also terminate descendants that remain in the child's process group. Windows needs job-object containment for the equivalent descendant guarantee. Browse-session handoff also remains future work. These are follow-up lifecycle and integration changes, not missing v5 wire primitives.
+Some architectural work remains. The synchronous workspace API still returns complete file/search/process results instead of exposing incremental consumers, so receive credit reflects transport demultiplexing rather than final UI consumption. Dropping a workspace future cancels its transport stream, but an explicit `WorkspaceCancellationToken` does not yet wake a remote request whose future remains polled. The helper still runs heartbeat timeout checks and physical writes on the same service loop, so a blocked stdout write can prevent timeout enforcement. Filesystem handlers now cooperate with cancellation between user-space work units, but no user-space deadline can force a filesystem call already blocked in the operating system to return. Reconnect does not yet restore watches, and UI cancellation does not yet propagate through every startup stage. Child handshakes and command probes have deadlines and reap their direct child; Unix probes also terminate descendants that remain in the child's process group. Windows needs job-object containment for the equivalent descendant guarantee. Browse-session handoff also remains future work. These are follow-up lifecycle and integration changes, not missing v5 wire primitives.
 
 ## Design goals
 
@@ -380,6 +381,9 @@ Watch-control deadlines are connection-terminal because a timed-out control may 
 Cancellation forms:
 
 - `RESET_STREAM CANCELLED` cancels one stream.
+- Dropping a live `RemoteWorkspaceV5RequestHandle`, or a polled remote workspace future that has not consumed its worker result, queues cancellation without taking the session or waiter locks on the dropping thread. The client control worker removes the waiter, returns a typed cancellation result, resets an open stream exactly once and owns request/response reservation release.
+- The cancellation action remains armed until the application consumes the worker result. If an early final response has already closed the logical stream while a request body is still flow-blocked, dropping the future purges the unsent scheduler state and releases its reservation directly; it does not emit a second terminal frame.
+- Dropping a raw watch-control request closes the connection because the helper may already have changed persistent watch state. A dropped successful `watch.start` result also attempts compensating `watch.stop` cleanup.
 - A client cancels a group by sending `RESET_STREAM CANCELLED` for each open stream it owns in that `cancellation_group`.
 - `supersedes_stream_id` lets a new request declare that it replaces one older stream. If the older stream is still active, the server treats it as cancelled.
 - A server-side deadline expiry cancels its work and sends `RESET_STREAM DEADLINE_EXCEEDED`.
@@ -702,6 +706,7 @@ Current integration:
 
 - Backend calls use the v5 multiplexed transport handle through the existing synchronous workspace-client boundary.
 - Each backend method opens a stream and awaits the final response. The central reader validates and accumulates partial/data events under connection and per-stream limits.
+- The owned v5 request handle and each asynchronous backend bridge share a latched cancellation token. Dropping either cancels the live stream, wakes the control worker and prevents reconnect replay.
 - File tree starts `watch.start` when `watch_filesystem` is enabled and the server advertises `watch`.
 - Existing remote polling remains as fallback and as low-frequency reconciliation when watching is active.
 - UI components receive the same domain-level events they receive today: directory refreshes, file system changed, VCS changed and process output.
@@ -709,7 +714,8 @@ Current integration:
 Next integration:
 
 - Replace whole-result accumulation for large files, search and process output with bounded incremental consumers.
-- Tie `WINDOW_UPDATE` to consumer capacity and reset a request when its handle is dropped.
+- Tie `WINDOW_UPDATE` to incremental consumer capacity.
+- Forward explicit `WorkspaceCancellationToken` signals into in-flight transport cancellation without polling.
 - Restore desired watches after reconnect, then emit a mandatory resync before applying new batches.
 
 Why:
@@ -742,11 +748,11 @@ The v5 baseline is complete:
 4. `watch.start`, `watch.update`, `watch.stop`, `watch.resync` and `watch.batch` are active with polling fallback.
 5. Directory generations, fingerprints, `not_modified` responses and optional deltas are active.
 
-The 2026-07-13 hardening pass adds executable failure and memory invariants around the baseline. It includes atomic stream teardown, decoded-data bounds, receive-window enforcement, lazy producers, bounded server and watch queues, deadline-bound startup commands with direct-child reaping and Unix process-group cleanup, child-handshake and client connection-heartbeat watchdogs, bidirectional heartbeat probes, terminal transport errors, typed recovery outcomes, end-to-end priority propagation, cooperative filesystem cancellation, cancellation-aware response production and shutdown cleanup.
+The 2026-07-13 hardening pass adds executable failure and memory invariants around the baseline. It includes atomic stream teardown, decoded-data bounds, receive-window enforcement, lazy producers, bounded server and watch queues, deadline-bound startup commands with direct-child reaping and Unix process-group cleanup, child-handshake and client connection-heartbeat watchdogs, bidirectional heartbeat probes, terminal transport errors, typed recovery outcomes, end-to-end priority propagation, cooperative filesystem cancellation, cancellation-aware response production, cancel-on-drop client ownership and shutdown cleanup.
 
 The next integration work should:
 
-1. Expose cancel-on-drop, incremental file/search/process consumers and consumption-based receive credit above the transport.
+1. Expose incremental file/search/process consumers and consumption-based receive credit above the transport.
 2. Restore desired watches after reconnect and require a generation resync before applying new deltas.
 3. Make the complete startup attempt cancellable and add safe browse-session handoff or bootstrap reuse.
 4. Make helper liveness independent of blocking writes.
@@ -772,6 +778,10 @@ Concurrency tests:
 
 Cancellation tests:
 
+- Drop a live request handle after partial response DATA and verify one `CANCELLED` reset, complete budget release and continued use of another stream.
+- Drop a polled workspace request future and verify its blocking worker observes cancellation and exits.
+- Drop a pending `watch.start` future and verify its ambiguous control connection closes with no raw waiter or byte reservation left behind.
+- Cancel during reconnect recovery and verify no replay stream opens.
 - Cancel search mid-walk and verify no more result batches arrive.
 - Cancel process execution and verify the process group is terminated.
 - Cancel a complete staged write immediately before commit and verify the temp file is removed and destination is unchanged.
