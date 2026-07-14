@@ -19,10 +19,11 @@ use nucleotide_workspace::{
     LocalWorkspaceBackend, ProcessOutput, ProcessSpec, ProjectEnvironmentOrigin,
     ProjectEnvironmentSnapshot, ReadOptions, RemoteWorkspaceIdentity, RemoteWorkspaceKind,
     SshWorkspaceTarget, TextSearchMatch, TextSearchQuery, TextSearchResult, WorkspaceBackend,
-    WorkspaceBackendHandle, WorkspaceError, WorkspaceIdentity, WorkspaceLocation, WorkspaceWatch,
-    WorkspaceWatchBatch, WorkspaceWatchChange, WorkspaceWatchChangeKind,
-    WorkspaceWatchDirectoryGeneration, WorkspaceWatchRequest, WorkspaceWatchUpdate, WriteOptions,
-    WriteResult, local_workspace_backend, path_mapped_workspace_backend, posix_path_string,
+    WorkspaceBackendHandle, WorkspaceCancellationToken, WorkspaceError, WorkspaceIdentity,
+    WorkspaceLocation, WorkspaceWatch, WorkspaceWatchBatch, WorkspaceWatchChange,
+    WorkspaceWatchChangeKind, WorkspaceWatchDirectoryGeneration, WorkspaceWatchRequest,
+    WorkspaceWatchUpdate, WriteOptions, WriteResult, local_workspace_backend,
+    path_mapped_workspace_backend, posix_path_string,
 };
 use prost::Message as ProstMessage;
 use regex::RegexBuilder;
@@ -8128,7 +8129,7 @@ where
             let mut task_pools = V5ServiceTaskPools::default();
             let mut active_streams = HashSet::<u64>::new();
             let mut active_task_classes = HashMap::<u64, V5ServiceTaskClass>::new();
-            let mut active_cancellations = HashMap::<u64, Arc<AtomicBool>>::new();
+            let mut active_cancellations = HashMap::<u64, WorkspaceCancellationToken>::new();
             let mut active_deadlines = HashMap::<u64, u64>::new();
             let mut canceled_streams = HashSet::<u64>::new();
             let mut watches = V5WatchRegistry::with_native_events(native_watch_events.clone());
@@ -8153,24 +8154,33 @@ where
                     active_workers += 1;
                     active_streams.insert(stream_id);
                     active_task_classes.insert(stream_id, task_class);
-                    let cancellation = Arc::new(AtomicBool::new(false));
-                    active_cancellations.insert(stream_id, Arc::clone(&cancellation));
+                    let cancellation = WorkspaceCancellationToken::new();
+                    active_cancellations.insert(stream_id, cancellation.clone());
                     if deadline_unix_ms != 0 {
                         active_deadlines.insert(stream_id, deadline_unix_ms);
                     }
                     let worker_output_events = output_events.clone();
+                    let worker_events = events_tx.clone();
                     scope.spawn(move || {
                         let completion = self.execute_v5_request(
                             stream_id,
                             request,
                             Some(worker_output_events.clone()),
-                            Some(cancellation),
+                            Some(cancellation.clone()),
                         );
-                        let _ = self.enqueue_v5_service_completion(
-                            completion,
-                            priority,
-                            &worker_output_events,
+                        let terminal_queued = matches!(
+                            self.enqueue_v5_service_completion(
+                                completion,
+                                priority,
+                                &worker_output_events,
+                                &cancellation,
+                            ),
+                            Ok(true)
                         );
+                        let _ = worker_events.send(V5ServeEvent::WorkerFinished {
+                            stream_id,
+                            terminal_queued,
+                        });
                     });
                 }};
             }
@@ -8258,12 +8268,6 @@ where
                             }
                         }
                         V5ServeOutputEvent::Completed(completion) => {
-                            active_workers = active_workers.saturating_sub(1);
-                            if let Some(task_class) =
-                                active_task_classes.remove(&completion.stream_id)
-                            {
-                                task_pools.mark_finished(task_class);
-                            }
                             active_cancellations.remove(&completion.stream_id);
                             let deadline_unix_ms =
                                 active_deadlines.remove(&completion.stream_id).unwrap_or(0);
@@ -8295,7 +8299,13 @@ where
             }
 
             loop {
-                if (shutdown || inbound_closed) && active_workers == 0 && !task_pools.has_pending()
+                if inbound_closed && active_workers == 0 && !task_pools.has_pending() {
+                    break;
+                }
+                if shutdown
+                    && active_workers == 0
+                    && !task_pools.has_pending()
+                    && !output_events.has_pending_output()
                 {
                     break;
                 }
@@ -8419,7 +8429,7 @@ where
                                         if let Some(cancellation) =
                                             active_cancellations.get(stream_id)
                                         {
-                                            cancellation.store(true, Ordering::Relaxed);
+                                            cancellation.cancel();
                                         }
                                         active_deadlines.remove(stream_id);
                                         canceled_streams.insert(*stream_id);
@@ -8586,6 +8596,21 @@ where
                                         "Native v5 watch event queue closed; using polling fallback"
                                     );
                                 }
+                            }
+                        }
+                        V5ServeLoopEvent::Wake(V5ServeEvent::WorkerFinished {
+                            stream_id,
+                            terminal_queued,
+                        }) => {
+                            active_workers = active_workers.saturating_sub(1);
+                            if let Some(task_class) = active_task_classes.remove(&stream_id) {
+                                task_pools.mark_finished(task_class);
+                            }
+                            if !terminal_queued {
+                                active_cancellations.remove(&stream_id);
+                                active_deadlines.remove(&stream_id);
+                                active_streams.remove(&stream_id);
+                                canceled_streams.remove(&stream_id);
                             }
                         }
                         V5ServeLoopEvent::Wake(V5ServeEvent::Inbound) => {}
@@ -9109,10 +9134,21 @@ where
         stream_id: u64,
         mut request: V5ServiceRequest,
         stream_events: Option<V5ServeOutputSender>,
-        cancellation: Option<Arc<AtomicBool>>,
+        cancellation: Option<WorkspaceCancellationToken>,
     ) -> V5ServiceCompletion {
         let method = request.method.clone();
+        let cancellation = cancellation.unwrap_or_default();
         if let Some(error) = request.early_error.take() {
+            return V5ServiceCompletion {
+                stream_id,
+                method,
+                result: Err(error),
+            };
+        }
+        if let Err(error) = cancellation
+            .check_cancelled("execute remote request", &self.workspace_root)
+            .map_err(remote_error_from_workspace)
+        {
             return V5ServiceCompletion {
                 stream_id,
                 method,
@@ -9123,24 +9159,30 @@ where
             return V5ServiceCompletion {
                 stream_id,
                 method,
-                result: self.execute_v5_list_dir_request(&request),
+                result: self.execute_v5_list_dir_request(&request, &cancellation),
             };
         }
         if method == "fs.list_dirs" {
             return V5ServiceCompletion {
                 stream_id,
                 method,
-                result: self.execute_v5_list_dirs_request(&request),
+                result: self.execute_v5_list_dirs_request(&request, &cancellation),
             };
         }
-        if method == "fs.write"
-            && request.streamed_write.is_some()
-            && matches!(self.backend.identity(), WorkspaceIdentity::Local)
-        {
+        if method == "fs.write" && matches!(self.backend.identity(), WorkspaceIdentity::Local) {
+            if request.streamed_write.is_none()
+                && let Err(error) = self.append_v5_streaming_write_data(&mut request, &[])
+            {
+                return V5ServiceCompletion {
+                    stream_id,
+                    method,
+                    result: Err(error),
+                };
+            }
             return V5ServiceCompletion {
                 stream_id,
                 method,
-                result: self.execute_v5_streaming_write_request(request, cancellation),
+                result: self.execute_v5_streaming_write_request(request, &cancellation),
             };
         }
         if let Some(stream_events) = stream_events
@@ -9155,6 +9197,7 @@ where
                             stream_id,
                             &request,
                             stream_events,
+                            &cancellation,
                         ),
                     };
                 }
@@ -9166,7 +9209,7 @@ where
                             stream_id,
                             &request,
                             stream_events,
-                            cancellation,
+                            Some(cancellation.clone()),
                         ),
                     };
                 }
@@ -9178,7 +9221,7 @@ where
                             stream_id,
                             &request,
                             stream_events,
-                            cancellation,
+                            Some(cancellation.clone()),
                         ),
                     };
                 }
@@ -9190,7 +9233,7 @@ where
                             stream_id,
                             &request,
                             stream_events,
-                            cancellation,
+                            Some(cancellation.clone()),
                         ),
                     };
                 }
@@ -9220,14 +9263,14 @@ where
                         stream_id,
                         method,
                         result: self
-                            .execute_v5_project_environment_request(root, cancellation.as_ref()),
+                            .execute_v5_project_environment_request(root, Some(&cancellation)),
                     };
                 }
                 RemoteRequest::GitHead { root } => {
                     return V5ServiceCompletion {
                         stream_id,
                         method,
-                        result: self.execute_v5_git_head_request(root, cancellation),
+                        result: self.execute_v5_git_head_request(root, Some(cancellation.clone())),
                     };
                 }
                 RemoteRequest::GitStatus {
@@ -9244,7 +9287,7 @@ where
                                 include_untracked: *include_untracked,
                                 limit: *limit,
                             },
-                            cancellation,
+                            Some(cancellation.clone()),
                         ),
                     };
                 }
@@ -9255,7 +9298,7 @@ where
         V5ServiceCompletion {
             stream_id,
             method,
-            result: self.execute(remote_request, request.body),
+            result: self.execute(remote_request, request.body, &cancellation),
         }
     }
 
@@ -9263,7 +9306,7 @@ where
         &self,
         request: ProcessRequest,
         request_body: Vec<u8>,
-        cancellation: Option<&Arc<AtomicBool>>,
+        cancellation: Option<&WorkspaceCancellationToken>,
     ) -> std::result::Result<ProcessSpec, RemoteError> {
         let cwd = self.resolve_path(&request.cwd)?;
         let max_output_bytes = Some(v5_process_output_limit(request.max_output_bytes));
@@ -9295,23 +9338,31 @@ where
     fn execute_v5_list_dir_request(
         &self,
         request: &V5ServiceRequest,
+        cancellation: &WorkspaceCancellationToken,
     ) -> std::result::Result<ServiceOutcome, RemoteError> {
         let payload: V5DirectoryListPayload = decode_v5_payload(&request.method, &request.payload)
             .map_err(v5_method_error_to_remote_error)?;
         let path = self.resolve_path(&payload.path)?;
-        let listing =
-            block_on(self.backend.list_dir(&path)).map_err(remote_error_from_workspace)?;
-        let listing = annotate_directory_listing_ignored(
+        let listing = block_on(self.backend.list_dir_with_cancellation(&path, cancellation))
+            .map_err(remote_error_from_workspace)?;
+        let listing = annotate_directory_listing_ignored_with_cancellation(
             listing,
             &self.workspace_root,
             self.ignore_matcher.as_ref(),
-        );
+            cancellation,
+        )
+        .map_err(remote_error_from_workspace)?;
+        cancellation
+            .check_cancelled("prepare directory listing response", &path)
+            .map_err(remote_error_from_workspace)?;
         let response = self.cached_directory_listing_response(
             &path,
-            directory_listing_response(listing),
+            directory_listing_response_with_cancellation(listing, cancellation)
+                .map_err(remote_error_from_workspace)?,
             payload.known_generation,
             payload.known_fingerprint,
-        );
+            cancellation,
+        )?;
         Ok(ServiceOutcome::continue_response(
             RemoteResponse::ListDir(response),
             Vec::new(),
@@ -9324,7 +9375,11 @@ where
         response: DirectoryListingResponse,
         known_generation: Option<u64>,
         known_fingerprint: Option<u64>,
-    ) -> DirectoryListingResponse {
+        cancellation: &WorkspaceCancellationToken,
+    ) -> std::result::Result<DirectoryListingResponse, RemoteError> {
+        cancellation
+            .check_cancelled("cache directory listing", cache_key)
+            .map_err(remote_error_from_workspace)?;
         let current = response.clone();
         let mut response = directory_listing_response_for_known_state(
             response,
@@ -9335,6 +9390,9 @@ where
             && response.delta.is_none()
             && let Ok(mut cache) = self.directory_delta_cache.lock()
         {
+            cancellation
+                .check_cancelled("cache directory listing", cache_key)
+                .map_err(remote_error_from_workspace)?;
             if let Some(previous) = cache.get(cache_key) {
                 response = directory_listing_delta_response_for_known_state(
                     response,
@@ -9351,12 +9409,16 @@ where
             }
             cache.insert(cache_key.to_path_buf(), current);
         }
-        response
+        cancellation
+            .check_cancelled("cache directory listing", cache_key)
+            .map_err(remote_error_from_workspace)?;
+        Ok(response)
     }
 
     fn execute_v5_list_dirs_request(
         &self,
         request: &V5ServiceRequest,
+        cancellation: &WorkspaceCancellationToken,
     ) -> std::result::Result<ServiceOutcome, RemoteError> {
         let payload: V5DirectoryListDirsPayload =
             decode_v5_payload(&request.method, &request.payload)
@@ -9378,34 +9440,47 @@ where
         let mut results = Vec::with_capacity(entries.len());
         for entry in entries {
             let display_path = entry.path;
+            cancellation
+                .check_cancelled("list directories", &display_path)
+                .map_err(remote_error_from_workspace)?;
             let result = match self.resolve_path(&display_path) {
                 Ok(path) => {
-                    match block_on(self.backend.list_dir(&path))
-                        .map_err(remote_error_from_workspace)
-                    {
+                    match block_on(self.backend.list_dir_with_cancellation(&path, cancellation)) {
                         Ok(listing) => {
-                            let listing = annotate_directory_listing_ignored(
+                            let listing = annotate_directory_listing_ignored_with_cancellation(
                                 listing,
                                 &self.workspace_root,
                                 self.ignore_matcher.as_ref(),
-                            );
+                                cancellation,
+                            )
+                            .map_err(remote_error_from_workspace)?;
                             let listing = self.cached_directory_listing_response(
                                 &path,
-                                directory_listing_response(listing),
+                                directory_listing_response_with_cancellation(listing, cancellation)
+                                    .map_err(remote_error_from_workspace)?,
                                 entry.known_generation,
                                 entry.known_fingerprint,
-                            );
+                                cancellation,
+                            )?;
                             DirectoryListingResultResponse {
                                 path: display_path,
                                 listing: Some(listing),
                                 error: None,
                             }
                         }
-                        Err(error) => DirectoryListingResultResponse {
-                            path: display_path,
-                            listing: None,
-                            error: Some(error),
-                        },
+                        Err(error @ WorkspaceError::Cancelled { .. }) => {
+                            return Err(remote_error_from_workspace(error));
+                        }
+                        Err(error) => {
+                            cancellation
+                                .check_cancelled("list directories", &path)
+                                .map_err(remote_error_from_workspace)?;
+                            DirectoryListingResultResponse {
+                                path: display_path,
+                                listing: None,
+                                error: Some(remote_error_from_workspace(error)),
+                            }
+                        }
                     }
                 }
                 Err(error) => DirectoryListingResultResponse {
@@ -9414,6 +9489,9 @@ where
                     error: Some(error),
                 },
             };
+            cancellation
+                .check_cancelled("list directories", &self.workspace_root)
+                .map_err(remote_error_from_workspace)?;
             results.push(result);
         }
 
@@ -9426,7 +9504,7 @@ where
     fn execute_v5_project_environment_request(
         &self,
         root: &Path,
-        cancellation: Option<&Arc<AtomicBool>>,
+        cancellation: Option<&WorkspaceCancellationToken>,
     ) -> std::result::Result<ServiceOutcome, RemoteError> {
         let root = self.resolve_search_root(root)?;
         let snapshot = self
@@ -9441,7 +9519,7 @@ where
     fn execute_v5_git_head_request(
         &self,
         root: &Path,
-        cancellation: Option<Arc<AtomicBool>>,
+        cancellation: Option<WorkspaceCancellationToken>,
     ) -> std::result::Result<ServiceOutcome, RemoteError> {
         let root = self.resolve_search_root(root)?;
         let result =
@@ -9456,7 +9534,7 @@ where
         &self,
         root: &Path,
         options: GitStatusOptions,
-        cancellation: Option<Arc<AtomicBool>>,
+        cancellation: Option<WorkspaceCancellationToken>,
     ) -> std::result::Result<ServiceOutcome, RemoteError> {
         let root = self.resolve_search_root(root)?;
         let result = v5_local_git_status(&root, options, cancellation.as_ref())
@@ -9472,10 +9550,14 @@ where
         stream_id: u64,
         request: &V5ServiceRequest,
         stream_events: V5ServeOutputSender,
+        cancellation: &WorkspaceCancellationToken,
     ) -> std::result::Result<ServiceOutcome, RemoteError> {
         let payload: V5ReadFilePayload = decode_v5_payload(&request.method, &request.payload)
             .map_err(v5_method_error_to_remote_error)?;
         let path = self.resolve_read_path(&payload.path)?;
+        cancellation
+            .check_cancelled("read file", &path)
+            .map_err(remote_error_from_workspace)?;
         let metadata = std::fs::metadata(&path).map_err(|source| {
             remote_error_from_workspace(WorkspaceError::Io {
                 operation: "stat file",
@@ -9483,6 +9565,9 @@ where
                 source,
             })
         })?;
+        cancellation
+            .check_cancelled("read file", &path)
+            .map_err(remote_error_from_workspace)?;
         if !metadata.is_file() {
             return Err(remote_error_from_workspace(WorkspaceError::NotFile {
                 path: path.clone(),
@@ -9502,34 +9587,22 @@ where
                 source,
             })
         })?;
-        let mut remaining = read_len;
-        let mut buffer = vec![0_u8; protocol_v5::DEFAULT_MAX_FRAME_BODY_LEN as usize];
-        while remaining > 0 {
-            let read_limit = remaining.min(buffer.len() as u64) as usize;
-            let read = file.read(&mut buffer[..read_limit]).map_err(|source| {
-                remote_error_from_workspace(WorkspaceError::Io {
-                    operation: "read file",
-                    path: path.clone(),
-                    source,
-                })
-            })?;
-            if read == 0 {
-                break;
-            }
-            remaining = remaining.saturating_sub(read as u64);
+        cancellation
+            .check_cancelled("read file", &path)
+            .map_err(remote_error_from_workspace)?;
+        v5_stream_file_chunks(&mut file, read_len, &path, cancellation, |body| {
             stream_events
-                .send(V5ServeOutputEvent::StreamData {
-                    stream_id,
-                    channel: protocol_v5::DataChannel::FileBody,
-                    body: buffer[..read].to_vec(),
-                    priority: request.priority,
-                })
-                .map_err(|_| RemoteError {
-                    code: "unavailable".to_string(),
-                    message: "v5 service event loop closed while streaming file".to_string(),
-                    diagnostic: Some(path.display().to_string()),
-                })?;
-        }
+                .send_with_cancellation(
+                    V5ServeOutputEvent::StreamData {
+                        stream_id,
+                        channel: protocol_v5::DataChannel::FileBody,
+                        body,
+                        priority: request.priority,
+                    },
+                    cancellation,
+                )
+                .map_err(v5_queue_error_to_remote_error)
+        })?;
 
         let read = FileRead {
             path,
@@ -9548,7 +9621,7 @@ where
     fn execute_v5_streaming_write_request(
         &self,
         mut request: V5ServiceRequest,
-        cancellation: Option<Arc<AtomicBool>>,
+        cancellation: &WorkspaceCancellationToken,
     ) -> std::result::Result<ServiceOutcome, RemoteError> {
         let streamed_write = request.streamed_write.take().ok_or_else(|| RemoteError {
             code: "invalid_request".to_string(),
@@ -9556,7 +9629,7 @@ where
             diagnostic: None,
         })?;
         let result = streamed_write
-            .finish(cancellation.as_ref())
+            .finish(Some(cancellation))
             .map_err(remote_error_from_workspace)?;
         Ok(ServiceOutcome::continue_response(
             RemoteResponse::WriteFile(write_result_response(result)),
@@ -9569,7 +9642,7 @@ where
         stream_id: u64,
         request: &V5ServiceRequest,
         stream_events: V5ServeOutputSender,
-        cancellation: Option<Arc<AtomicBool>>,
+        cancellation: Option<WorkspaceCancellationToken>,
     ) -> std::result::Result<ServiceOutcome, RemoteError> {
         let payload: ProcessRequest = decode_v5_payload(&request.method, &request.payload)
             .map_err(v5_method_error_to_remote_error)?;
@@ -9594,7 +9667,7 @@ where
         stream_id: u64,
         request: &V5ServiceRequest,
         stream_events: V5ServeOutputSender,
-        cancellation: Option<Arc<AtomicBool>>,
+        cancellation: Option<WorkspaceCancellationToken>,
     ) -> std::result::Result<ServiceOutcome, RemoteError> {
         let priority = request.priority;
         let request: FileSearchRequest = decode_v5_payload(&request.method, &request.payload)
@@ -9631,7 +9704,7 @@ where
         stream_id: u64,
         request: &V5ServiceRequest,
         stream_events: V5ServeOutputSender,
-        cancellation: Option<Arc<AtomicBool>>,
+        cancellation: Option<WorkspaceCancellationToken>,
     ) -> std::result::Result<ServiceOutcome, RemoteError> {
         let priority = request.priority;
         let request: TextSearchRequest = decode_v5_payload(&request.method, &request.payload)
@@ -9712,12 +9785,16 @@ where
         completion: V5ServiceCompletion,
         priority: protocol_v5::Priority,
         output_events: &V5ServeOutputSender,
-    ) -> std::result::Result<(), V5ServeQueueError> {
+        cancellation: &WorkspaceCancellationToken,
+    ) -> std::result::Result<bool, V5ServeQueueError> {
         let V5ServiceCompletion {
             stream_id,
             method,
             result,
         } = completion;
+        if cancellation.is_cancelled() {
+            return Ok(false);
+        }
         let terminal_result = match result {
             Ok(ServiceOutcome::Continue { response, body }) => {
                 match self.enqueue_v5_service_response(
@@ -9726,6 +9803,7 @@ where
                     *response,
                     body,
                     priority,
+                    cancellation,
                 ) {
                     Ok(()) => Ok(V5ServiceTerminalOutcome::Continue),
                     Err(error) => Err(error),
@@ -9738,15 +9816,26 @@ where
                     RemoteResponse::Shutdown,
                     Vec::new(),
                     priority,
+                    cancellation,
                 )
                 .map(|()| V5ServiceTerminalOutcome::Shutdown),
             Err(error) => Err(error),
         };
-        output_events.send(V5ServeOutputEvent::Completed(V5ServiceTerminal {
-            stream_id,
-            method: v5_bounded_terminal_string(method, 256),
-            result: terminal_result.map_err(v5_bound_terminal_error),
-        }))
+        if cancellation.is_cancelled() {
+            return Ok(false);
+        }
+        match output_events.send_with_cancellation(
+            V5ServeOutputEvent::Completed(V5ServiceTerminal {
+                stream_id,
+                method: v5_bounded_terminal_string(method, 256),
+                result: terminal_result.map_err(v5_bound_terminal_error),
+            }),
+            cancellation,
+        ) {
+            Ok(()) => Ok(true),
+            Err(V5ServeQueueError::Cancelled) => Ok(false),
+            Err(error) => Err(error),
+        }
     }
 
     fn enqueue_v5_service_response(
@@ -9756,15 +9845,29 @@ where
         response: RemoteResponse,
         body: Vec<u8>,
         priority: protocol_v5::Priority,
+        cancellation: &WorkspaceCancellationToken,
     ) -> std::result::Result<(), RemoteError> {
-        let payload_bytes = v5_serialized_response_len(&response)?;
+        let payload_bytes = v5_serialized_response_len(&response, cancellation)?;
         let retained_bytes = payload_bytes
             .checked_add(body.capacity())
             .ok_or_else(v5_response_size_overflow_error)?;
         let _reservation = output_events.reserve_completion_bytes(retained_bytes)?;
 
-        v5_serialize_response_to_output(output_events, stream_id, &response, priority)?;
-        self.enqueue_v5_service_body(output_events, stream_id, &response, body, priority)
+        v5_serialize_response_to_output(
+            output_events,
+            stream_id,
+            &response,
+            priority,
+            cancellation,
+        )?;
+        self.enqueue_v5_service_body(
+            output_events,
+            stream_id,
+            &response,
+            body,
+            priority,
+            cancellation,
+        )
     }
 
     fn enqueue_v5_service_body(
@@ -9774,6 +9877,7 @@ where
         response: &RemoteResponse,
         body: Vec<u8>,
         priority: protocol_v5::Priority,
+        cancellation: &WorkspaceCancellationToken,
     ) -> std::result::Result<(), RemoteError> {
         if body.is_empty() {
             return Ok(());
@@ -9787,6 +9891,7 @@ where
                     protocol_v5::DataChannel::FileBody,
                     &body,
                     priority,
+                    cancellation,
                 )
                 .map_err(v5_queue_error_to_remote_error),
             RemoteResponse::RunProcess(process) => {
@@ -9813,6 +9918,7 @@ where
                         protocol_v5::DataChannel::Stdout,
                         &body[..process.stdout_len],
                         priority,
+                        cancellation,
                     )
                     .map_err(v5_queue_error_to_remote_error)?;
                 }
@@ -9823,6 +9929,7 @@ where
                         protocol_v5::DataChannel::Stderr,
                         &body[process.stdout_len..total_len],
                         priority,
+                        cancellation,
                     )
                     .map_err(v5_queue_error_to_remote_error)?;
                 }
@@ -9835,6 +9942,7 @@ where
                     protocol_v5::DataChannel::Unspecified,
                     &body,
                     priority,
+                    cancellation,
                 )
                 .map_err(v5_queue_error_to_remote_error),
         }
@@ -9847,14 +9955,18 @@ where
         channel: protocol_v5::DataChannel,
         body: &[u8],
         priority: protocol_v5::Priority,
+        cancellation: &WorkspaceCancellationToken,
     ) -> std::result::Result<(), V5ServeQueueError> {
         for chunk in body.chunks(V5_SERVE_OUTPUT_EVENT_MAX_RETAINED_BYTES) {
-            output_events.send(V5ServeOutputEvent::StreamData {
-                stream_id,
-                channel,
-                body: chunk.to_vec(),
-                priority,
-            })?;
+            output_events.send_with_cancellation(
+                V5ServeOutputEvent::StreamData {
+                    stream_id,
+                    channel,
+                    body: chunk.to_vec(),
+                    priority,
+                },
+                cancellation,
+            )?;
         }
         Ok(())
     }
@@ -10094,12 +10206,13 @@ where
         &self,
         request: RemoteRequest,
         request_body: Vec<u8>,
+        cancellation: &WorkspaceCancellationToken,
     ) -> std::result::Result<ServiceOutcome, RemoteError> {
         match request {
             RemoteRequest::Stat { path } => {
                 let path = self.resolve_read_path(&path)?;
-                let stat =
-                    block_on(self.backend.stat(&path)).map_err(remote_error_from_workspace)?;
+                let stat = block_on(self.backend.stat_with_cancellation(&path, cancellation))
+                    .map_err(remote_error_from_workspace)?;
                 Ok(ServiceOutcome::continue_response(
                     RemoteResponse::Stat(file_stat_response(stat)),
                     Vec::new(),
@@ -10108,42 +10221,68 @@ where
             RemoteRequest::ListDir { path } => {
                 let path = self.resolve_path(&path)?;
                 let listing =
-                    block_on(self.backend.list_dir(&path)).map_err(remote_error_from_workspace)?;
-                let listing = annotate_directory_listing_ignored(
+                    block_on(self.backend.list_dir_with_cancellation(&path, cancellation))
+                        .map_err(remote_error_from_workspace)?;
+                let listing = annotate_directory_listing_ignored_with_cancellation(
                     listing,
                     &self.workspace_root,
                     self.ignore_matcher.as_ref(),
-                );
+                    cancellation,
+                )
+                .map_err(remote_error_from_workspace)?;
                 Ok(ServiceOutcome::continue_response(
-                    RemoteResponse::ListDir(directory_listing_response(listing)),
+                    RemoteResponse::ListDir(
+                        directory_listing_response_with_cancellation(listing, cancellation)
+                            .map_err(remote_error_from_workspace)?,
+                    ),
                     Vec::new(),
                 ))
             }
             RemoteRequest::ListDirs { paths } => {
                 let mut results = Vec::with_capacity(paths.len());
                 for display_path in paths {
+                    cancellation
+                        .check_cancelled("list directories", &display_path)
+                        .map_err(remote_error_from_workspace)?;
                     let result = match self.resolve_path(&display_path) {
                         Ok(path) => {
-                            match block_on(self.backend.list_dir(&path))
-                                .map_err(remote_error_from_workspace)
-                            {
+                            match block_on(
+                                self.backend.list_dir_with_cancellation(&path, cancellation),
+                            ) {
                                 Ok(listing) => {
-                                    let listing = annotate_directory_listing_ignored(
-                                        listing,
-                                        &self.workspace_root,
-                                        self.ignore_matcher.as_ref(),
-                                    );
+                                    let listing =
+                                        annotate_directory_listing_ignored_with_cancellation(
+                                            listing,
+                                            &self.workspace_root,
+                                            self.ignore_matcher.as_ref(),
+                                            cancellation,
+                                        )
+                                        .map_err(remote_error_from_workspace)?;
                                     DirectoryListingResultResponse {
                                         path: display_path,
-                                        listing: Some(directory_listing_response(listing)),
+                                        listing: Some(
+                                            directory_listing_response_with_cancellation(
+                                                listing,
+                                                cancellation,
+                                            )
+                                            .map_err(remote_error_from_workspace)?,
+                                        ),
                                         error: None,
                                     }
                                 }
-                                Err(error) => DirectoryListingResultResponse {
-                                    path: display_path,
-                                    listing: None,
-                                    error: Some(error),
-                                },
+                                Err(error @ WorkspaceError::Cancelled { .. }) => {
+                                    return Err(remote_error_from_workspace(error));
+                                }
+                                Err(error) => {
+                                    cancellation
+                                        .check_cancelled("list directories", &path)
+                                        .map_err(remote_error_from_workspace)?;
+                                    DirectoryListingResultResponse {
+                                        path: display_path,
+                                        listing: None,
+                                        error: Some(remote_error_from_workspace(error)),
+                                    }
+                                }
                             }
                         }
                         Err(error) => DirectoryListingResultResponse {
@@ -10152,6 +10291,9 @@ where
                             error: Some(error),
                         },
                     };
+                    cancellation
+                        .check_cancelled("list directories", &self.workspace_root)
+                        .map_err(remote_error_from_workspace)?;
                     results.push(result);
                 }
 
@@ -10166,10 +10308,11 @@ where
                 limit,
             } => {
                 let start = self.resolve_path(&start)?;
-                let path = block_on(self.backend.find_ancestor_file(
+                let path = block_on(self.backend.find_ancestor_file_with_cancellation(
                     &start,
                     file_name.as_str(),
                     limit,
+                    cancellation,
                 ))
                 .map_err(remote_error_from_workspace)?;
                 let path = path.filter(|path| path_is_within_workspace(path, &self.workspace_root));
@@ -10180,8 +10323,11 @@ where
             }
             RemoteRequest::CreateFile { path } => {
                 let path = self.resolve_path(&path)?;
-                let stat = block_on(self.backend.create_file(&path))
-                    .map_err(remote_error_from_workspace)?;
+                let stat = block_on(
+                    self.backend
+                        .create_file_with_cancellation(&path, cancellation),
+                )
+                .map_err(remote_error_from_workspace)?;
                 Ok(ServiceOutcome::continue_response(
                     RemoteResponse::CreateFile(file_stat_response(stat)),
                     Vec::new(),
@@ -10189,8 +10335,11 @@ where
             }
             RemoteRequest::CreateDir { path } => {
                 let path = self.resolve_path(&path)?;
-                let stat = block_on(self.backend.create_dir(&path))
-                    .map_err(remote_error_from_workspace)?;
+                let stat = block_on(
+                    self.backend
+                        .create_dir_with_cancellation(&path, cancellation),
+                )
+                .map_err(remote_error_from_workspace)?;
                 Ok(ServiceOutcome::continue_response(
                     RemoteResponse::CreateDir(file_stat_response(stat)),
                     Vec::new(),
@@ -10199,8 +10348,12 @@ where
             RemoteRequest::RenamePath { from, to } => {
                 let from = self.resolve_path(&from)?;
                 let to = self.resolve_path(&to)?;
-                let stat = block_on(self.backend.rename_path(&from, &to))
-                    .map_err(remote_error_from_workspace)?;
+                let stat = block_on(self.backend.rename_path_with_cancellation(
+                    &from,
+                    &to,
+                    cancellation,
+                ))
+                .map_err(remote_error_from_workspace)?;
                 Ok(ServiceOutcome::continue_response(
                     RemoteResponse::RenamePath(file_stat_response(stat)),
                     Vec::new(),
@@ -10208,8 +10361,11 @@ where
             }
             RemoteRequest::DeletePath { path } => {
                 let path = self.resolve_path(&path)?;
-                let stat = block_on(self.backend.delete_path(&path))
-                    .map_err(remote_error_from_workspace)?;
+                let stat = block_on(
+                    self.backend
+                        .delete_path_with_cancellation(&path, cancellation),
+                )
+                .map_err(remote_error_from_workspace)?;
                 Ok(ServiceOutcome::continue_response(
                     RemoteResponse::DeletePath(file_stat_response(stat)),
                     Vec::new(),
@@ -10218,8 +10374,12 @@ where
             RemoteRequest::CopyPath { from, to } => {
                 let from = self.resolve_path(&from)?;
                 let to = self.resolve_path(&to)?;
-                let stat = block_on(self.backend.copy_path(&from, &to))
-                    .map_err(remote_error_from_workspace)?;
+                let stat = block_on(self.backend.copy_path_with_cancellation(
+                    &from,
+                    &to,
+                    cancellation,
+                ))
+                .map_err(remote_error_from_workspace)?;
                 Ok(ServiceOutcome::continue_response(
                     RemoteResponse::CopyPath(file_stat_response(stat)),
                     Vec::new(),
@@ -10232,8 +10392,12 @@ where
                         .unwrap_or(MAX_FRAME_BODY_LEN)
                         .min(MAX_FRAME_BODY_LEN),
                 );
-                let read = block_on(self.backend.read_file(&path, ReadOptions { max_bytes }))
-                    .map_err(remote_error_from_workspace)?;
+                let read = block_on(self.backend.read_file_with_cancellation(
+                    &path,
+                    ReadOptions { max_bytes },
+                    cancellation,
+                ))
+                .map_err(remote_error_from_workspace)?;
                 let response = file_read_response(&read);
                 let body = read.bytes;
                 Ok(ServiceOutcome::continue_response(
@@ -10252,13 +10416,14 @@ where
                     expected_modified_unix_millis,
                     expected_modified_unix_nanos,
                 );
-                let result = block_on(self.backend.write_file(
+                let result = block_on(self.backend.write_file_with_cancellation(
                     &path,
                     &request_body,
                     WriteOptions {
                         create_parent_dirs,
                         expected_modified,
                     },
+                    cancellation,
                 ))
                 .map_err(remote_error_from_workspace)?;
                 Ok(ServiceOutcome::continue_response(
@@ -10377,14 +10542,14 @@ where
     fn load_project_environment_with_cancellation(
         &self,
         root: &Path,
-        cancellation: Option<&Arc<AtomicBool>>,
+        cancellation: Option<&WorkspaceCancellationToken>,
     ) -> std::result::Result<ProjectEnvironmentSnapshot, ShellEnvironmentError> {
         self.runtime.block_on(async {
             let mut variables = self
                 .project_environment
                 .get_environment_for_directory_with_cancellation(
                     root,
-                    cancellation.map(|cancellation| cancellation.as_ref()),
+                    cancellation.map(WorkspaceCancellationToken::as_atomic_bool),
                 )
                 .await?;
             let cached_origin = self.project_environment.get_cached_origin(root).await;
@@ -10553,6 +10718,10 @@ enum V5ServeEvent {
     Inbound,
     Output,
     NativeWatch,
+    WorkerFinished {
+        stream_id: u64,
+        terminal_queued: bool,
+    },
 }
 
 enum V5ServeLoopEvent {
@@ -10584,6 +10753,7 @@ enum V5ServeOutputEvent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum V5ServeQueueError {
     Closed,
+    Cancelled,
     EventTooLarge { retained_bytes: usize, max: usize },
 }
 
@@ -10656,6 +10826,38 @@ impl V5ServeOutputSender {
         self.signal_ready()
     }
 
+    fn send_with_cancellation(
+        &self,
+        mut event: V5ServeOutputEvent,
+        cancellation: &WorkspaceCancellationToken,
+    ) -> std::result::Result<(), V5ServeQueueError> {
+        let retained_bytes = event.retained_bytes();
+        if retained_bytes > V5_SERVE_OUTPUT_EVENT_MAX_RETAINED_BYTES {
+            return Err(V5ServeQueueError::EventTooLarge {
+                retained_bytes,
+                max: V5_SERVE_OUTPUT_EVENT_MAX_RETAINED_BYTES,
+            });
+        }
+        self.pending_count.fetch_add(1, Ordering::AcqRel);
+        loop {
+            if cancellation.is_cancelled() {
+                self.mark_delivered();
+                return Err(V5ServeQueueError::Cancelled);
+            }
+            match self.sender.try_send(event) {
+                Ok(()) => return self.signal_ready(),
+                Err(mpsc::TrySendError::Full(returned)) => {
+                    event = returned;
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Err(mpsc::TrySendError::Disconnected(_)) => {
+                    self.mark_delivered();
+                    return Err(V5ServeQueueError::Closed);
+                }
+            }
+        }
+    }
+
     fn signal_ready(&self) -> std::result::Result<(), V5ServeQueueError> {
         if !self.ready.swap(true, Ordering::AcqRel)
             && self.ready_events.send(V5ServeEvent::Output).is_err()
@@ -10679,13 +10881,19 @@ impl V5ServeOutputSender {
     }
 }
 
-#[derive(Default)]
-struct V5SerializedByteCounter {
+struct V5SerializedByteCounter<'a> {
     bytes: usize,
+    cancellation: &'a WorkspaceCancellationToken,
 }
 
-impl Write for V5SerializedByteCounter {
+impl Write for V5SerializedByteCounter<'_> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if self.cancellation.is_cancelled() {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "v5 response sizing cancelled",
+            ));
+        }
         self.bytes = self.bytes.checked_add(bytes.len()).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -10702,13 +10910,25 @@ impl Write for V5SerializedByteCounter {
 
 fn v5_serialized_response_len(
     response: &RemoteResponse,
+    cancellation: &WorkspaceCancellationToken,
 ) -> std::result::Result<usize, RemoteError> {
-    let mut counter = V5SerializedByteCounter::default();
-    serde_json::to_writer(&mut counter, response).map_err(|error| RemoteError {
-        code: "internal".to_string(),
-        message: "failed to size v5 response payload".to_string(),
-        diagnostic: Some(error.to_string()),
-    })?;
+    if cancellation.is_cancelled() {
+        return Err(v5_cancelled_response_error());
+    }
+    let mut counter = V5SerializedByteCounter {
+        bytes: 0,
+        cancellation,
+    };
+    if let Err(error) = serde_json::to_writer(&mut counter, response) {
+        if cancellation.is_cancelled() {
+            return Err(v5_cancelled_response_error());
+        }
+        return Err(RemoteError {
+            code: "internal".to_string(),
+            message: "failed to size v5 response payload".to_string(),
+            diagnostic: Some(error.to_string()),
+        });
+    }
     Ok(counter.bytes)
 }
 
@@ -10716,6 +10936,7 @@ struct V5SerializedResponseWriter<'a> {
     output_events: &'a V5ServeOutputSender,
     stream_id: u64,
     priority: protocol_v5::Priority,
+    cancellation: &'a WorkspaceCancellationToken,
     buffer: Vec<u8>,
     queue_error: Option<V5ServeQueueError>,
 }
@@ -10725,17 +10946,25 @@ impl<'a> V5SerializedResponseWriter<'a> {
         output_events: &'a V5ServeOutputSender,
         stream_id: u64,
         priority: protocol_v5::Priority,
+        cancellation: &'a WorkspaceCancellationToken,
     ) -> Self {
         Self {
             output_events,
             stream_id,
             priority,
+            cancellation,
             buffer: Vec::with_capacity(V5_SERVE_OUTPUT_EVENT_MAX_RETAINED_BYTES),
             queue_error: None,
         }
     }
 
     fn flush_chunk(&mut self) -> io::Result<()> {
+        if self.cancellation.is_cancelled() {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "v5 response serialization cancelled",
+            ));
+        }
         if self.buffer.is_empty() {
             return Ok(());
         }
@@ -10744,12 +10973,15 @@ impl<'a> V5SerializedResponseWriter<'a> {
             Vec::with_capacity(V5_SERVE_OUTPUT_EVENT_MAX_RETAINED_BYTES),
         );
         self.output_events
-            .send(V5ServeOutputEvent::StreamData {
-                stream_id: self.stream_id,
-                channel: protocol_v5::DataChannel::Unspecified,
-                body,
-                priority: self.priority,
-            })
+            .send_with_cancellation(
+                V5ServeOutputEvent::StreamData {
+                    stream_id: self.stream_id,
+                    channel: protocol_v5::DataChannel::Unspecified,
+                    body,
+                    priority: self.priority,
+                },
+                self.cancellation,
+            )
             .map_err(|error| {
                 self.queue_error = Some(error);
                 io::Error::other("v5 service output queue rejected serialized response data")
@@ -10759,6 +10991,12 @@ impl<'a> V5SerializedResponseWriter<'a> {
 
 impl Write for V5SerializedResponseWriter<'_> {
     fn write(&mut self, mut bytes: &[u8]) -> io::Result<usize> {
+        if self.cancellation.is_cancelled() {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "v5 response serialization cancelled",
+            ));
+        }
         let written = bytes.len();
         while !bytes.is_empty() {
             let available =
@@ -10783,11 +11021,19 @@ fn v5_serialize_response_to_output(
     stream_id: u64,
     response: &RemoteResponse,
     priority: protocol_v5::Priority,
+    cancellation: &WorkspaceCancellationToken,
 ) -> std::result::Result<(), RemoteError> {
-    let mut writer = V5SerializedResponseWriter::new(output_events, stream_id, priority);
+    if cancellation.is_cancelled() {
+        return Err(v5_cancelled_response_error());
+    }
+    let mut writer =
+        V5SerializedResponseWriter::new(output_events, stream_id, priority, cancellation);
     if let Err(error) = serde_json::to_writer(&mut writer, response) {
         if let Some(queue_error) = writer.queue_error {
             return Err(v5_queue_error_to_remote_error(queue_error));
+        }
+        if cancellation.is_cancelled() {
+            return Err(v5_cancelled_response_error());
         }
         return Err(RemoteError {
             code: "internal".to_string(),
@@ -10795,16 +11041,28 @@ fn v5_serialize_response_to_output(
             diagnostic: Some(error.to_string()),
         });
     }
-    writer.flush_chunk().map_err(|error| {
-        writer.queue_error.map_or_else(
-            || RemoteError {
-                code: "internal".to_string(),
-                message: "failed to buffer v5 response payload".to_string(),
-                diagnostic: Some(error.to_string()),
-            },
-            v5_queue_error_to_remote_error,
-        )
-    })
+    if let Err(error) = writer.flush_chunk() {
+        if let Some(queue_error) = writer.queue_error {
+            return Err(v5_queue_error_to_remote_error(queue_error));
+        }
+        if cancellation.is_cancelled() {
+            return Err(v5_cancelled_response_error());
+        }
+        return Err(RemoteError {
+            code: "internal".to_string(),
+            message: "failed to buffer v5 response payload".to_string(),
+            diagnostic: Some(error.to_string()),
+        });
+    }
+    Ok(())
+}
+
+fn v5_cancelled_response_error() -> RemoteError {
+    RemoteError {
+        code: protocol_v5::RESET_CANCELLED.to_string(),
+        message: "v5 response production cancelled".to_string(),
+        diagnostic: None,
+    }
 }
 
 fn v5_response_size_overflow_error() -> RemoteError {
@@ -10854,6 +11112,11 @@ fn v5_queue_error_to_remote_error(error: V5ServeQueueError) -> RemoteError {
             message: "v5 service output queue closed".to_string(),
             diagnostic: None,
         },
+        V5ServeQueueError::Cancelled => RemoteError {
+            code: protocol_v5::RESET_CANCELLED.to_string(),
+            message: "v5 response production cancelled".to_string(),
+            diagnostic: None,
+        },
         V5ServeQueueError::EventTooLarge {
             retained_bytes,
             max,
@@ -10875,15 +11138,14 @@ fn v5_bound_terminal_error(mut error: RemoteError) -> RemoteError {
 }
 
 fn v5_bounded_terminal_string(mut value: String, max_bytes: usize) -> String {
-    if value.len() <= max_bytes {
-        return value;
+    if value.len() > max_bytes {
+        let mut boundary = max_bytes;
+        while boundary > 0 && !value.is_char_boundary(boundary) {
+            boundary -= 1;
+        }
+        value.truncate(boundary);
     }
-    let mut boundary = max_bytes;
-    while boundary > 0 && !value.is_char_boundary(boundary) {
-        boundary -= 1;
-    }
-    value.truncate(boundary);
-    value
+    value.into_boxed_str().into_string()
 }
 
 type V5InboundEvent = io::Result<Option<protocol_v5::Frame>>;
@@ -11233,7 +11495,7 @@ fn v5_deadline_expired(deadline_unix_ms: u64) -> bool {
 fn cancel_all_v5_service_work(
     requests: &mut HashMap<u64, V5ServiceRequest>,
     task_pools: &mut V5ServiceTaskPools,
-    active_cancellations: &HashMap<u64, Arc<AtomicBool>>,
+    active_cancellations: &HashMap<u64, WorkspaceCancellationToken>,
     active_deadlines: &mut HashMap<u64, u64>,
     canceled_streams: &mut HashSet<u64>,
     watches: &mut V5WatchRegistry,
@@ -11241,7 +11503,7 @@ fn cancel_all_v5_service_work(
     requests.clear();
     task_pools.clear_pending();
     for (stream_id, cancellation) in active_cancellations {
-        cancellation.store(true, Ordering::Relaxed);
+        cancellation.cancel();
         canceled_streams.insert(*stream_id);
     }
     active_deadlines.clear();
@@ -11295,7 +11557,7 @@ fn expire_v5_service_deadlines(
     session: &mut protocol_v5::ProtocolSession,
     requests: &mut HashMap<u64, V5ServiceRequest>,
     task_pools: &mut V5ServiceTaskPools,
-    active_cancellations: &HashMap<u64, Arc<AtomicBool>>,
+    active_cancellations: &HashMap<u64, WorkspaceCancellationToken>,
     active_deadlines: &mut HashMap<u64, u64>,
     canceled_streams: &mut HashSet<u64>,
 ) -> Result<()> {
@@ -11357,7 +11619,7 @@ fn expire_v5_service_deadlines(
 
 struct V5ServiceCancellationState<'a> {
     task_pools: &'a mut V5ServiceTaskPools,
-    active_cancellations: &'a HashMap<u64, Arc<AtomicBool>>,
+    active_cancellations: &'a HashMap<u64, WorkspaceCancellationToken>,
     active_deadlines: &'a mut HashMap<u64, u64>,
     canceled_streams: &'a mut HashSet<u64>,
 }
@@ -11374,7 +11636,7 @@ fn reset_v5_service_stream(
     cancellation_state.task_pools.remove_pending(stream_id);
     let was_active =
         if let Some(cancellation) = cancellation_state.active_cancellations.get(&stream_id) {
-            cancellation.store(true, Ordering::Relaxed);
+            cancellation.cancel();
             true
         } else {
             false
@@ -12178,7 +12440,7 @@ fn v5_streaming_file_search(
     stream_id: u64,
     priority: protocol_v5::Priority,
     stream_events: V5ServeOutputSender,
-    cancellation: Option<&Arc<AtomicBool>>,
+    cancellation: Option<&WorkspaceCancellationToken>,
 ) -> std::result::Result<FileSearchResult, RemoteError> {
     let pattern = query
         .pattern
@@ -12259,6 +12521,7 @@ fn v5_streaming_file_search(
                 priority,
                 &stream_events,
                 std::mem::take(&mut partial_files),
+                cancellation,
             )?;
             v5_send_search_progress(
                 stream_id,
@@ -12267,7 +12530,7 @@ fn v5_streaming_file_search(
                 matched_count as u64,
                 query.limit as u64,
                 &stream_events,
-                &query.root,
+                cancellation,
             )?;
             partial_flush.mark_flushed();
         }
@@ -12286,6 +12549,7 @@ fn v5_send_file_search_partial(
     priority: protocol_v5::Priority,
     stream_events: &V5ServeOutputSender,
     files: Vec<PathBuf>,
+    cancellation: Option<&WorkspaceCancellationToken>,
 ) -> std::result::Result<(), RemoteError> {
     if files.is_empty() {
         return Ok(());
@@ -12297,18 +12561,17 @@ fn v5_send_file_search_partial(
     })
     .to_v5_payload()
     .map_err(v5_method_error_to_remote_error)?;
-    stream_events
-        .send(V5ServeOutputEvent::PartialResponse {
+    v5_send_output_event_with_optional_cancellation(
+        stream_events,
+        V5ServeOutputEvent::PartialResponse {
             stream_id,
             method: "search.files".to_string(),
             payload,
             priority,
-        })
-        .map_err(|_| RemoteError {
-            code: "unavailable".to_string(),
-            message: "v5 service event loop closed while streaming file search".to_string(),
-            diagnostic: Some(root.display().to_string()),
-        })
+        },
+        cancellation,
+    )
+    .map_err(v5_queue_error_to_remote_error)
 }
 
 fn v5_streaming_text_search(
@@ -12316,7 +12579,7 @@ fn v5_streaming_text_search(
     stream_id: u64,
     priority: protocol_v5::Priority,
     stream_events: V5ServeOutputSender,
-    cancellation: Option<&Arc<AtomicBool>>,
+    cancellation: Option<&WorkspaceCancellationToken>,
 ) -> std::result::Result<TextSearchResult, RemoteError> {
     let case_insensitive = query.smart_case && !query.pattern.chars().any(char::is_uppercase);
     let pattern = RegexBuilder::new(&query.pattern)
@@ -12422,6 +12685,7 @@ fn v5_streaming_text_search(
                         priority,
                         &stream_events,
                         std::mem::take(&mut partial_matches),
+                        cancellation,
                     )?;
                     v5_send_search_progress(
                         stream_id,
@@ -12430,7 +12694,7 @@ fn v5_streaming_text_search(
                         matched_count as u64,
                         query.limit as u64,
                         &stream_events,
-                        &query.root,
+                        cancellation,
                     )?;
                     partial_flush.mark_flushed();
                 }
@@ -12451,6 +12715,7 @@ fn v5_send_text_search_partial(
     priority: protocol_v5::Priority,
     stream_events: &V5ServeOutputSender,
     matches: Vec<TextSearchMatch>,
+    cancellation: Option<&WorkspaceCancellationToken>,
 ) -> std::result::Result<(), RemoteError> {
     if matches.is_empty() {
         return Ok(());
@@ -12462,18 +12727,17 @@ fn v5_send_text_search_partial(
     }))
     .to_v5_payload()
     .map_err(v5_method_error_to_remote_error)?;
-    stream_events
-        .send(V5ServeOutputEvent::PartialResponse {
+    v5_send_output_event_with_optional_cancellation(
+        stream_events,
+        V5ServeOutputEvent::PartialResponse {
             stream_id,
             method: "search.text".to_string(),
             payload,
             priority,
-        })
-        .map_err(|_| RemoteError {
-            code: "unavailable".to_string(),
-            message: "v5 service event loop closed while streaming text search".to_string(),
-            diagnostic: Some(root.display().to_string()),
-        })
+        },
+        cancellation,
+    )
+    .map_err(v5_queue_error_to_remote_error)
 }
 
 fn v5_send_search_progress(
@@ -12483,10 +12747,11 @@ fn v5_send_search_progress(
     completed: u64,
     total: u64,
     stream_events: &V5ServeOutputSender,
-    root: &Path,
+    cancellation: Option<&WorkspaceCancellationToken>,
 ) -> std::result::Result<(), RemoteError> {
-    stream_events
-        .send(V5ServeOutputEvent::Progress {
+    v5_send_output_event_with_optional_cancellation(
+        stream_events,
+        V5ServeOutputEvent::Progress {
             stream_id,
             method: method.to_string(),
             progress: protocol_v5::Progress {
@@ -12494,12 +12759,22 @@ fn v5_send_search_progress(
                 completed,
                 total,
             },
-        })
-        .map_err(|_| RemoteError {
-            code: "unavailable".to_string(),
-            message: "v5 service event loop closed while streaming search progress".to_string(),
-            diagnostic: Some(root.display().to_string()),
-        })
+        },
+        cancellation,
+    )
+    .map_err(v5_queue_error_to_remote_error)
+}
+
+fn v5_send_output_event_with_optional_cancellation(
+    output_events: &V5ServeOutputSender,
+    event: V5ServeOutputEvent,
+    cancellation: Option<&WorkspaceCancellationToken>,
+) -> std::result::Result<(), V5ServeQueueError> {
+    if let Some(cancellation) = cancellation {
+        output_events.send_with_cancellation(event, cancellation)
+    } else {
+        output_events.send(event)
+    }
 }
 
 #[derive(Debug)]
@@ -12531,6 +12806,45 @@ fn v5_cancelled_search_error(root: &Path) -> RemoteError {
         message: "search cancelled".to_string(),
         diagnostic: Some(root.display().to_string()),
     }
+}
+
+fn v5_stream_file_chunks<R, F>(
+    mut reader: R,
+    mut remaining: u64,
+    path: &Path,
+    cancellation: &WorkspaceCancellationToken,
+    mut emit: F,
+) -> std::result::Result<(), RemoteError>
+where
+    R: Read,
+    F: FnMut(Vec<u8>) -> std::result::Result<(), RemoteError>,
+{
+    let mut buffer = vec![0_u8; protocol_v5::DEFAULT_MAX_FRAME_BODY_LEN as usize];
+    while remaining > 0 {
+        cancellation
+            .check_cancelled("read file", path)
+            .map_err(remote_error_from_workspace)?;
+        let read_limit = remaining.min(buffer.len() as u64) as usize;
+        let read = reader.read(&mut buffer[..read_limit]).map_err(|source| {
+            remote_error_from_workspace(WorkspaceError::Io {
+                operation: "read file",
+                path: path.to_path_buf(),
+                source,
+            })
+        })?;
+        cancellation
+            .check_cancelled("read file", path)
+            .map_err(remote_error_from_workspace)?;
+        if read == 0 {
+            break;
+        }
+        remaining = remaining.saturating_sub(read as u64);
+        emit(buffer[..read].to_vec())?;
+        cancellation
+            .check_cancelled("read file", path)
+            .map_err(remote_error_from_workspace)?;
+    }
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -12609,7 +12923,7 @@ impl V5StreamingWrite {
 
     fn finish(
         mut self,
-        cancellation: Option<&Arc<AtomicBool>>,
+        cancellation: Option<&WorkspaceCancellationToken>,
     ) -> std::result::Result<WriteResult, WorkspaceError> {
         if v5_stream_cancelled_ref(cancellation) {
             return Err(v5_cancelled_write_error(&self.original_path));
@@ -12665,10 +12979,9 @@ impl V5StreamingWrite {
 }
 
 fn v5_cancelled_write_error(path: &Path) -> WorkspaceError {
-    WorkspaceError::CommandFailed {
+    WorkspaceError::Cancelled {
         operation: "write file",
         path: path.to_path_buf(),
-        message: "write cancelled".to_string(),
     }
 }
 
@@ -12725,7 +13038,7 @@ fn v5_write_target_for_path(path: &Path) -> std::result::Result<PathBuf, Workspa
 
 fn v5_local_git_head(
     root: &Path,
-    cancellation: Option<&Arc<AtomicBool>>,
+    cancellation: Option<&WorkspaceCancellationToken>,
 ) -> std::result::Result<GitHeadResult, WorkspaceError> {
     let mut command = Command::new("git");
     command
@@ -12755,7 +13068,7 @@ fn v5_local_git_head(
 fn v5_local_git_status(
     root: &Path,
     options: GitStatusOptions,
-    cancellation: Option<&Arc<AtomicBool>>,
+    cancellation: Option<&WorkspaceCancellationToken>,
 ) -> std::result::Result<GitStatusResult, WorkspaceError> {
     let mut command = Command::new("git");
     command
@@ -12809,7 +13122,7 @@ fn v5_run_cancellable_command_collect(
     mut command: Command,
     operation: &'static str,
     path: &Path,
-    cancellation: Option<&Arc<AtomicBool>>,
+    cancellation: Option<&WorkspaceCancellationToken>,
 ) -> std::result::Result<V5CollectedCommandOutput, WorkspaceError> {
     if v5_stream_cancelled_ref(cancellation) {
         return Err(WorkspaceError::CommandFailed {
@@ -12980,7 +13293,7 @@ fn v5_run_local_streaming_process(
     stream_id: u64,
     priority: protocol_v5::Priority,
     stream_events: V5ServeOutputSender,
-    cancellation: Option<Arc<AtomicBool>>,
+    cancellation: Option<WorkspaceCancellationToken>,
 ) -> std::result::Result<V5StreamedProcessOutput, WorkspaceError> {
     let cwd = spec.cwd.clone();
     if v5_stream_cancelled(&cancellation) {
@@ -13032,11 +13345,27 @@ fn v5_run_local_streaming_process(
         })?;
 
     let stdout_events = stream_events.clone();
+    let stdout_cancellation = cancellation.clone();
     let stdout_thread = std::thread::spawn(move || {
-        v5_stream_process_stdout(stdout, output_limit, stream_id, priority, stdout_events)
+        v5_stream_process_stdout(
+            stdout,
+            output_limit,
+            stream_id,
+            priority,
+            stdout_events,
+            stdout_cancellation,
+        )
     });
+    let stderr_cancellation = cancellation.clone();
     let stderr_thread = std::thread::spawn(move || {
-        v5_stream_process_stderr(stderr, output_limit, stream_id, priority, stream_events)
+        v5_stream_process_stderr(
+            stderr,
+            output_limit,
+            stream_id,
+            priority,
+            stream_events,
+            stderr_cancellation,
+        )
     });
     let input = spec.stdin;
     let stdin_thread = stdin.take().map(|mut stdin| {
@@ -13081,6 +13410,7 @@ fn v5_stream_process_stdout(
     stream_id: u64,
     priority: protocol_v5::Priority,
     stream_events: V5ServeOutputSender,
+    cancellation: Option<WorkspaceCancellationToken>,
 ) -> io::Result<V5StreamedProcessPipe> {
     v5_read_limited_process_pipe(
         reader,
@@ -13089,6 +13419,7 @@ fn v5_stream_process_stdout(
         protocol_v5::DataChannel::Stdout,
         priority,
         stream_events,
+        cancellation,
     )
 }
 
@@ -13098,6 +13429,7 @@ fn v5_stream_process_stderr(
     stream_id: u64,
     priority: protocol_v5::Priority,
     stream_events: V5ServeOutputSender,
+    cancellation: Option<WorkspaceCancellationToken>,
 ) -> io::Result<V5StreamedProcessPipe> {
     v5_read_limited_process_pipe(
         reader,
@@ -13106,6 +13438,7 @@ fn v5_stream_process_stderr(
         protocol_v5::DataChannel::Stderr,
         priority,
         stream_events,
+        cancellation,
     )
 }
 
@@ -13116,13 +13449,26 @@ fn v5_read_limited_process_pipe<R: Read>(
     channel: protocol_v5::DataChannel,
     priority: protocol_v5::Priority,
     stream_events: V5ServeOutputSender,
+    cancellation: Option<WorkspaceCancellationToken>,
 ) -> io::Result<V5StreamedProcessPipe> {
     let mut len = 0_usize;
     let mut truncated = false;
     let mut buffer = [0_u8; 8192];
 
     loop {
+        if v5_stream_cancelled(&cancellation) {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "process output streaming cancelled",
+            ));
+        }
         let read = reader.read(&mut buffer)?;
+        if v5_stream_cancelled(&cancellation) {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "process output streaming cancelled",
+            ));
+        }
         if read == 0 {
             break;
         }
@@ -13130,19 +13476,22 @@ fn v5_read_limited_process_pipe<R: Read>(
         let remaining = limit.saturating_sub(len);
         let retained = remaining.min(read);
         if retained > 0 {
-            stream_events
-                .send(V5ServeOutputEvent::StreamData {
+            v5_send_output_event_with_optional_cancellation(
+                &stream_events,
+                V5ServeOutputEvent::StreamData {
                     stream_id,
                     channel,
                     body: buffer[..retained].to_vec(),
                     priority,
-                })
-                .map_err(|_| {
-                    io::Error::new(
-                        io::ErrorKind::BrokenPipe,
-                        "v5 service event loop closed while streaming process output",
-                    )
-                })?;
+                },
+                cancellation.as_ref(),
+            )
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "v5 service event loop closed while streaming process output",
+                )
+            })?;
             len += retained;
         }
         if retained < read {
@@ -13156,7 +13505,7 @@ fn v5_read_limited_process_pipe<R: Read>(
 fn v5_wait_for_process(
     child: &mut Child,
     timeout_ms: Option<u64>,
-    cancellation: Option<&Arc<AtomicBool>>,
+    cancellation: Option<&WorkspaceCancellationToken>,
     path: &Path,
 ) -> std::result::Result<V5ProcessExit, WorkspaceError> {
     if timeout_ms.is_none() && cancellation.is_none() {
@@ -13238,12 +13587,12 @@ struct V5ProcessExit {
     canceled: bool,
 }
 
-fn v5_stream_cancelled(cancellation: &Option<Arc<AtomicBool>>) -> bool {
+fn v5_stream_cancelled(cancellation: &Option<WorkspaceCancellationToken>) -> bool {
     v5_stream_cancelled_ref(cancellation.as_ref())
 }
 
-fn v5_stream_cancelled_ref(cancellation: Option<&Arc<AtomicBool>>) -> bool {
-    cancellation.is_some_and(|cancellation| cancellation.load(Ordering::Relaxed))
+fn v5_stream_cancelled_ref(cancellation: Option<&WorkspaceCancellationToken>) -> bool {
+    cancellation.is_some_and(WorkspaceCancellationToken::is_cancelled)
 }
 
 fn v5_apply_process_environment(command: &mut Command, environment: &BTreeMap<String, String>) {
@@ -13384,29 +13733,39 @@ fn file_stat_response(stat: FileStat) -> FileStatResponse {
     }
 }
 
-fn directory_listing_response(listing: DirectoryListing) -> DirectoryListingResponse {
+fn directory_listing_response_with_cancellation(
+    listing: DirectoryListing,
+    cancellation: &WorkspaceCancellationToken,
+) -> nucleotide_workspace::Result<DirectoryListingResponse> {
+    let path = listing.path;
+    cancellation.check_cancelled("prepare directory listing response", &path)?;
+    let mut entries = Vec::with_capacity(listing.entries.len());
+    for entry in listing.entries {
+        cancellation.check_cancelled("prepare directory listing response", &path)?;
+        entries.push(DirectoryEntryResponse {
+            name: entry.name,
+            path: entry.path,
+            stat: file_stat_response(entry.stat),
+            symlink_target: entry.symlink_target,
+            target_exists: entry.target_exists,
+            ignored: entry.ignored,
+        });
+    }
     let mut response = DirectoryListingResponse {
-        path: listing.path,
+        path,
         generation: None,
         fingerprint: None,
         complete: true,
         not_modified: false,
         delta: None,
-        entries: listing
-            .entries
-            .into_iter()
-            .map(|entry| DirectoryEntryResponse {
-                name: entry.name,
-                path: entry.path,
-                stat: file_stat_response(entry.stat),
-                symlink_target: entry.symlink_target,
-                target_exists: entry.target_exists,
-                ignored: entry.ignored,
-            })
-            .collect(),
+        entries,
     };
-    annotate_directory_listing_response_metadata(&mut response);
-    response
+    let fingerprint =
+        directory_listing_response_fingerprint_with_cancellation(&response, cancellation)?;
+    response.generation = Some(fingerprint);
+    response.fingerprint = Some(fingerprint);
+    cancellation.check_cancelled("prepare directory listing response", &response.path)?;
+    Ok(response)
 }
 
 fn annotate_directory_listing_response_metadata(response: &mut DirectoryListingResponse) {
@@ -13573,6 +13932,32 @@ fn directory_listing_response_fingerprint(response: &DirectoryListingResponse) -
     hasher.finish()
 }
 
+fn directory_listing_response_fingerprint_with_cancellation(
+    response: &DirectoryListingResponse,
+    cancellation: &WorkspaceCancellationToken,
+) -> nucleotide_workspace::Result<u64> {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    "directory-listing-v5".hash(&mut hasher);
+    response.path.hash(&mut hasher);
+    response.complete.hash(&mut hasher);
+    for entry in &response.entries {
+        cancellation.check_cancelled("fingerprint directory listing", &response.path)?;
+        entry.name.hash(&mut hasher);
+        entry.path.hash(&mut hasher);
+        remote_file_kind_discriminant(&entry.stat.kind).hash(&mut hasher);
+        entry.stat.path.hash(&mut hasher);
+        entry.stat.size.hash(&mut hasher);
+        entry.stat.modified_unix_millis.hash(&mut hasher);
+        entry.stat.modified_unix_nanos.hash(&mut hasher);
+        entry.stat.readonly.hash(&mut hasher);
+        entry.symlink_target.hash(&mut hasher);
+        entry.target_exists.hash(&mut hasher);
+        entry.ignored.hash(&mut hasher);
+    }
+    cancellation.check_cancelled("fingerprint directory listing", &response.path)?;
+    Ok(hasher.finish())
+}
+
 fn remote_file_kind_discriminant(kind: &RemoteFileKind) -> u8 {
     match kind {
         RemoteFileKind::File => 0,
@@ -13734,12 +14119,15 @@ fn service_path_is_ignored(
     false
 }
 
-fn annotate_directory_listing_ignored(
+fn annotate_directory_listing_ignored_with_cancellation(
     mut listing: DirectoryListing,
     root_path: &Path,
     matcher: Option<&Gitignore>,
-) -> DirectoryListing {
+    cancellation: &WorkspaceCancellationToken,
+) -> nucleotide_workspace::Result<DirectoryListing> {
+    cancellation.check_cancelled("annotate directory listing", &listing.path)?;
     for entry in &mut listing.entries {
+        cancellation.check_cancelled("annotate directory listing", &listing.path)?;
         entry.ignored = Some(service_path_is_ignored(
             root_path,
             matcher,
@@ -13747,7 +14135,8 @@ fn annotate_directory_listing_ignored(
             entry.stat.kind,
         ));
     }
-    listing
+    cancellation.check_cancelled("annotate directory listing", &listing.path)?;
+    Ok(listing)
 }
 
 fn file_stat_from_response(stat: FileStatResponse) -> FileStat {
@@ -20489,6 +20878,42 @@ mod tests {
     }
 
     #[test]
+    fn v5_service_commits_zero_byte_write_through_streaming_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("out.txt");
+        std::fs::write(&target, b"previous contents").unwrap();
+        let request = RemoteRequest::WriteFile {
+            path: PathBuf::from("out.txt"),
+            create_parent_dirs: false,
+            expected_modified_unix_millis: None,
+            expected_modified_unix_nanos: None,
+        };
+        let input = v5_client_input(v5_request_frames(1, &request, b""));
+        let service =
+            WorkspaceService::new(LocalWorkspaceBackend, temp.path().to_path_buf()).unwrap();
+        let mut io = protocol_v5::FramedIo::new(Cursor::new(input), Vec::new());
+
+        service
+            .serve_v5(
+                &mut io,
+                &protocol_v5::ServerHandshakeInfo::current(temp.path().display().to_string()),
+            )
+            .unwrap();
+        let (_, output) = io.into_inner();
+        let frames = read_v5_frames(output);
+        let (response, body, error) = decode_v5_service_response(&frames, 1);
+
+        assert!(error.is_none());
+        assert!(body.is_empty());
+        let Some(RemoteResponse::WriteFile(write)) = response else {
+            panic!("expected write_file response");
+        };
+        assert_eq!(write.size, 0);
+        assert!(std::fs::read(target).unwrap().is_empty());
+        assert!(v5_write_temp_files(temp.path()).is_empty());
+    }
+
+    #[test]
     fn v5_service_reports_unsupported_method_as_final_error() {
         let temp = tempfile::tempdir().unwrap();
         let headers = protocol_v5::Frame::from_control(
@@ -21077,6 +21502,23 @@ mod tests {
     }
 
     #[test]
+    fn v5_streaming_write_cancellation_before_commit_preserves_target() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("main.rs");
+        std::fs::write(&target, b"old").unwrap();
+        let mut write = V5StreamingWrite::create(target.clone(), false, None).unwrap();
+        write.write_chunk(b"new contents").unwrap();
+        let cancellation = WorkspaceCancellationToken::new();
+        cancellation.cancel();
+
+        let error = write.finish(Some(&cancellation)).unwrap_err();
+
+        assert!(matches!(error, WorkspaceError::Cancelled { .. }));
+        assert_eq!(std::fs::read(&target).unwrap(), b"old");
+        assert!(v5_write_temp_files(temp.path()).is_empty());
+    }
+
+    #[test]
     fn v5_concurrent_service_cleans_streaming_write_temp_file_on_reset() {
         let temp = tempfile::tempdir().unwrap();
         let target = temp.path().join("main.rs");
@@ -21181,6 +21623,71 @@ mod tests {
     }
 
     #[test]
+    fn v5_streamed_read_drops_chunk_when_cancelled_during_read() {
+        struct CancellingReader {
+            cancellation: WorkspaceCancellationToken,
+            reads: Arc<AtomicUsize>,
+        }
+
+        impl Read for CancellingReader {
+            fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+                self.reads.fetch_add(1, Ordering::AcqRel);
+                buffer[..4].copy_from_slice(b"data");
+                self.cancellation.cancel();
+                Ok(4)
+            }
+        }
+
+        let cancellation = WorkspaceCancellationToken::new();
+        let reads = Arc::new(AtomicUsize::new(0));
+        let mut emitted = Vec::new();
+        let result = v5_stream_file_chunks(
+            CancellingReader {
+                cancellation: cancellation.clone(),
+                reads: Arc::clone(&reads),
+            },
+            4,
+            Path::new("document.txt"),
+            &cancellation,
+            |body| {
+                emitted.push(body);
+                Ok(())
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(RemoteError { code, .. }) if code == protocol_v5::RESET_CANCELLED
+        ));
+        assert_eq!(reads.load(Ordering::Acquire), 1);
+        assert!(emitted.is_empty());
+    }
+
+    #[test]
+    fn v5_streamed_read_stops_after_cancelled_emission() {
+        let cancellation = WorkspaceCancellationToken::new();
+        let mut emitted = Vec::new();
+        let body = vec![7_u8; protocol_v5::DEFAULT_MAX_FRAME_BODY_LEN as usize + 1];
+        let result = v5_stream_file_chunks(
+            Cursor::new(body),
+            protocol_v5::DEFAULT_MAX_FRAME_BODY_LEN as u64 + 1,
+            Path::new("document.txt"),
+            &cancellation,
+            |chunk| {
+                emitted.push(chunk);
+                cancellation.cancel();
+                Ok(())
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(RemoteError { code, .. }) if code == protocol_v5::RESET_CANCELLED
+        ));
+        assert_eq!(emitted.len(), 1);
+    }
+
+    #[test]
     fn v5_server_output_queue_backpressures_without_blocking_control_events() {
         let (control_tx, control_rx) = mpsc::channel();
         let (output_tx, output_rx) = mpsc::sync_channel(1);
@@ -21273,6 +21780,157 @@ mod tests {
     }
 
     #[test]
+    fn v5_error_completion_discards_oversized_string_capacity() {
+        let temp = tempfile::tempdir().unwrap();
+        let service =
+            WorkspaceService::new(LocalWorkspaceBackend, temp.path().to_path_buf()).unwrap();
+        let mut method = String::with_capacity(1024 * 1024);
+        method.push_str("fs.list_dirs");
+        let mut code = String::with_capacity(1024 * 1024);
+        code.push_str("remote");
+        let error = RemoteError {
+            code,
+            message: "m".repeat(1024 * 1024),
+            diagnostic: Some("d".repeat(1024 * 1024)),
+        };
+        let (control_tx, _control_rx) = mpsc::channel();
+        let (output_tx, output_rx) = mpsc::sync_channel(1);
+        let output_events = V5ServeOutputSender::new(output_tx, control_tx);
+        let cancellation = WorkspaceCancellationToken::new();
+
+        assert!(
+            service
+                .enqueue_v5_service_completion(
+                    V5ServiceCompletion {
+                        stream_id: 7,
+                        method,
+                        result: Err(error),
+                    },
+                    protocol_v5::Priority::VisibleFileTree,
+                    &output_events,
+                    &cancellation,
+                )
+                .unwrap()
+        );
+
+        let event = output_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(event.retained_bytes() <= V5_SERVE_OUTPUT_EVENT_MAX_RETAINED_BYTES);
+        let V5ServeOutputEvent::Completed(completion) = event else {
+            panic!("expected terminal error completion");
+        };
+        assert_eq!(completion.method.capacity(), completion.method.len());
+        let Err(error) = completion.result else {
+            panic!("expected terminal error result");
+        };
+        assert_eq!(error.code.capacity(), error.code.len());
+        assert_eq!(error.message.len(), 16 * 1024);
+        assert_eq!(error.message.capacity(), error.message.len());
+        let diagnostic = error.diagnostic.unwrap();
+        assert_eq!(diagnostic.len(), 32 * 1024);
+        assert_eq!(diagnostic.capacity(), diagnostic.len());
+        output_events.mark_delivered();
+        assert!(!output_events.has_pending_output());
+    }
+
+    #[test]
+    fn v5_cancellable_output_send_unblocks_when_full() {
+        let (control_tx, _control_rx) = mpsc::channel();
+        let (output_tx, output_rx) = mpsc::sync_channel(1);
+        let output_events = V5ServeOutputSender::new(output_tx, control_tx);
+        let output = |byte| V5ServeOutputEvent::StreamData {
+            stream_id: 7,
+            channel: protocol_v5::DataChannel::FileBody,
+            body: vec![byte],
+            priority: protocol_v5::Priority::ForegroundDocument,
+        };
+        output_events.send(output(1)).unwrap();
+        let cancellation = WorkspaceCancellationToken::new();
+        let worker_cancellation = cancellation.clone();
+        let worker_output = output_events.clone();
+        let (started_tx, started_rx) = mpsc::sync_channel(0);
+        let worker = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            worker_output.send_with_cancellation(output(2), &worker_cancellation)
+        });
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+
+        let started = Instant::now();
+        while output_events.pending_count.load(Ordering::Acquire) < 2 {
+            assert!(
+                started.elapsed() < Duration::from_secs(1),
+                "cancellable sender did not reach the full queue"
+            );
+            std::thread::yield_now();
+        }
+        cancellation.cancel();
+
+        assert_eq!(worker.join().unwrap(), Err(V5ServeQueueError::Cancelled));
+        assert_eq!(output_events.pending_count.load(Ordering::Acquire), 1);
+        assert!(matches!(
+            output_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            V5ServeOutputEvent::StreamData { body, .. } if body == vec![1]
+        ));
+        output_events.mark_delivered();
+        assert!(!output_events.has_pending_output());
+    }
+
+    #[test]
+    fn v5_cancelled_completion_stops_before_terminal_output() {
+        let temp = tempfile::tempdir().unwrap();
+        let service =
+            WorkspaceService::new(LocalWorkspaceBackend, temp.path().to_path_buf()).unwrap();
+        let response = RemoteResponse::FileSearch(FileSearchResponse {
+            root: PathBuf::from("."),
+            files: (0..4_096)
+                .map(|index| PathBuf::from(format!("src/nested/module_{index:04}.rs")))
+                .collect(),
+            truncated: false,
+        });
+        let (control_tx, _control_rx) = mpsc::channel();
+        let (output_tx, output_rx) = mpsc::sync_channel(1);
+        let output_events = V5ServeOutputSender::new(output_tx, control_tx);
+        let cancellation = WorkspaceCancellationToken::new();
+        let worker_cancellation = cancellation.clone();
+        let worker_output = output_events.clone();
+        let worker = std::thread::spawn(move || {
+            service.enqueue_v5_service_completion(
+                V5ServiceCompletion {
+                    stream_id: 7,
+                    method: "search.files".to_string(),
+                    result: Ok(ServiceOutcome::continue_response(response, Vec::new())),
+                },
+                protocol_v5::Priority::LspSupport,
+                &worker_output,
+                &worker_cancellation,
+            )
+        });
+
+        let started = Instant::now();
+        while output_events.pending_count.load(Ordering::Acquire) < 2 {
+            assert!(
+                started.elapsed() < Duration::from_secs(1),
+                "completion did not block behind its first serialized chunk"
+            );
+            std::thread::yield_now();
+        }
+        cancellation.cancel();
+
+        assert_eq!(worker.join().unwrap(), Ok(false));
+        assert_eq!(output_events.completion_budget.used(), 0);
+        assert_eq!(output_events.pending_count.load(Ordering::Acquire), 1);
+        assert!(matches!(
+            output_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            V5ServeOutputEvent::StreamData { stream_id: 7, .. }
+        ));
+        output_events.mark_delivered();
+        assert!(matches!(
+            output_rx.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+        assert!(!output_events.has_pending_output());
+    }
+
+    #[test]
     fn v5_service_completion_serializes_large_payloads_in_bounded_chunks() {
         let temp = tempfile::tempdir().unwrap();
         let service =
@@ -21290,17 +21948,21 @@ mod tests {
         let (control_tx, _control_rx) = mpsc::channel();
         let (output_tx, output_rx) = mpsc::sync_channel(8);
         let output_events = V5ServeOutputSender::new(output_tx, control_tx);
-        service
-            .enqueue_v5_service_completion(
-                V5ServiceCompletion {
-                    stream_id: 7,
-                    method: "search.files".to_string(),
-                    result: Ok(ServiceOutcome::continue_response(response, Vec::new())),
-                },
-                protocol_v5::Priority::LspSupport,
-                &output_events,
-            )
-            .unwrap();
+        let cancellation = WorkspaceCancellationToken::new();
+        assert!(
+            service
+                .enqueue_v5_service_completion(
+                    V5ServiceCompletion {
+                        stream_id: 7,
+                        method: "search.files".to_string(),
+                        result: Ok(ServiceOutcome::continue_response(response, Vec::new())),
+                    },
+                    protocol_v5::Priority::LspSupport,
+                    &output_events,
+                    &cancellation,
+                )
+                .unwrap()
+        );
 
         let mut chunks = 0;
         let mut actual_payload = Vec::new();
@@ -21354,6 +22016,7 @@ mod tests {
         let output_events =
             V5ServeOutputSender::with_completion_budget(output_tx, control_tx, budget.clone());
         let worker_output = output_events.clone();
+        let cancellation = WorkspaceCancellationToken::new();
         let worker = std::thread::spawn(move || {
             service.enqueue_v5_service_completion(
                 V5ServiceCompletion {
@@ -21363,6 +22026,7 @@ mod tests {
                 },
                 protocol_v5::Priority::UserInput,
                 &worker_output,
+                &cancellation,
             )
         });
 
@@ -22075,8 +22739,8 @@ mod tests {
             .args(["-c", "printf started > \"$STARTED_FILE\"; sleep 3"])
             .current_dir(temp.path())
             .env("STARTED_FILE", &started_file);
-        let cancellation = Arc::new(AtomicBool::new(false));
-        let worker_cancellation = Arc::clone(&cancellation);
+        let cancellation = WorkspaceCancellationToken::new();
+        let worker_cancellation = cancellation.clone();
         let root = temp.path().to_path_buf();
         let worker = std::thread::spawn(move || {
             v5_run_cancellable_command_collect(
@@ -22097,7 +22761,7 @@ mod tests {
         }
 
         let cancelled_at = Instant::now();
-        cancellation.store(true, Ordering::Relaxed);
+        cancellation.cancel();
         let error = worker.join().unwrap().unwrap_err();
 
         assert!(
@@ -22112,6 +22776,133 @@ mod tests {
         };
         assert_eq!(operation, "git status");
         assert_eq!(message, "git status cancelled");
+    }
+
+    #[test]
+    fn v5_list_dirs_promotes_backend_cancellation_to_request_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let request = RemoteRequest::ListDirs {
+            paths: vec![PathBuf::from("first"), PathBuf::from("second")],
+        };
+
+        let backend = ConcurrentV5Backend::new();
+        backend.return_list_cancelled();
+        let service = WorkspaceService::new(backend.clone(), temp.path().to_path_buf()).unwrap();
+        let cancellation = WorkspaceCancellationToken::new();
+        let Err(error) = service.execute(request.clone(), Vec::new(), &cancellation) else {
+            panic!("generic list_dirs should promote backend cancellation");
+        };
+        assert_eq!(error.code, protocol_v5::RESET_CANCELLED);
+        assert!(!cancellation.is_cancelled());
+        assert_eq!(backend.list_dir_calls(), vec![temp.path().join("first")]);
+
+        let backend = ConcurrentV5Backend::new();
+        backend.return_list_cancelled();
+        let service = WorkspaceService::new(backend.clone(), temp.path().to_path_buf()).unwrap();
+        let (method, payload) = request.to_v5_method_payload().unwrap();
+        let budget = V5ConnectionByteBudget::new(V5_REQUEST_CONNECTION_BYTE_BUDGET);
+        let service_request = V5ServiceRequest {
+            method: method.to_string(),
+            priority: protocol_v5::Priority::VisibleFileTree,
+            payload,
+            body: Vec::new(),
+            retained_bytes: budget.reservation(),
+            received_payload_bytes: 0,
+            received_body_bytes: 0,
+            deadline_unix_ms: 0,
+            supersedes_stream_id: 0,
+            streamed_write: None,
+            early_error: None,
+        };
+        let cancellation = WorkspaceCancellationToken::new();
+        let Err(error) = service.execute_v5_list_dirs_request(&service_request, &cancellation)
+        else {
+            panic!("v5 list_dirs should promote backend cancellation");
+        };
+        assert_eq!(error.code, protocol_v5::RESET_CANCELLED);
+        assert!(!cancellation.is_cancelled());
+        assert_eq!(backend.list_dir_calls(), vec![temp.path().join("first")]);
+    }
+
+    #[test]
+    fn v5_list_dirs_reset_cancels_batch_before_next_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let request = RemoteRequest::ListDirs {
+            paths: vec![PathBuf::from("first"), PathBuf::from("second")],
+        };
+        let input = BlockingRead::default();
+        input.push(v5_client_input(v5_request_frames(1, &request, &[])));
+        let output = SharedWrite::default();
+        let backend = ConcurrentV5Backend::new();
+        let service = WorkspaceService::new(backend.clone(), temp.path().to_path_buf()).unwrap();
+        let service_thread = spawn_v5_concurrent_service(
+            service,
+            &input,
+            &output,
+            protocol_v5::ServerHandshakeInfo::current(temp.path().display().to_string()),
+        );
+        let cancellation = backend.wait_for_first_list_cancellation();
+
+        input.push(v5_frames_bytes(vec![protocol_v5::reset_stream_frame(
+            1,
+            protocol_v5::RESET_CANCELLED,
+            "list superseded",
+        )]));
+        let started = Instant::now();
+        while !cancellation.is_cancelled() {
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "reset did not reach the filesystem cancellation token"
+            );
+            std::thread::yield_now();
+        }
+        backend.release_first_list();
+        input.close();
+        service_thread.join().unwrap();
+
+        assert_eq!(backend.list_dir_calls(), vec![temp.path().join("first")]);
+        let frames = read_v5_frames(output.bytes());
+        assert!(!frames.iter().any(|frame| {
+            frame.stream_id == 1
+                && matches!(
+                    frame.frame_type,
+                    protocol_v5::FrameType::Headers | protocol_v5::FrameType::EndStream
+                )
+        }));
+    }
+
+    #[test]
+    fn v5_peer_eof_cancels_blocked_filesystem_worker() {
+        let temp = tempfile::tempdir().unwrap();
+        let request = RemoteRequest::ListDirs {
+            paths: vec![PathBuf::from("first"), PathBuf::from("second")],
+        };
+        let input = BlockingRead::default();
+        input.push(v5_client_input(v5_request_frames(1, &request, &[])));
+        let output = SharedWrite::default();
+        let backend = ConcurrentV5Backend::new();
+        let service = WorkspaceService::new(backend.clone(), temp.path().to_path_buf()).unwrap();
+        let service_thread = spawn_v5_concurrent_service(
+            service,
+            &input,
+            &output,
+            protocol_v5::ServerHandshakeInfo::current(temp.path().display().to_string()),
+        );
+        let cancellation = backend.wait_for_first_list_cancellation();
+
+        input.close();
+        let started = Instant::now();
+        while !cancellation.is_cancelled() {
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "peer EOF did not reach the filesystem cancellation token"
+            );
+            std::thread::yield_now();
+        }
+        backend.release_first_list();
+        service_thread.join().unwrap();
+
+        assert_eq!(backend.list_dir_calls(), vec![temp.path().join("first")]);
     }
 
     #[test]
@@ -23300,6 +24091,10 @@ mod tests {
     #[derive(Default)]
     struct ConcurrentV5State {
         stat_seen: bool,
+        list_dir_calls: Vec<PathBuf>,
+        first_list_cancellation: Option<WorkspaceCancellationToken>,
+        release_first_list: bool,
+        return_list_cancelled: bool,
     }
 
     impl ConcurrentV5Backend {
@@ -23320,6 +24115,35 @@ mod tests {
                 message: "unsupported by concurrent v5 test backend".to_string(),
                 diagnostic: None,
             })
+        }
+
+        fn wait_for_first_list_cancellation(&self) -> WorkspaceCancellationToken {
+            let (lock, cvar) = &*self.state;
+            let state = lock.lock().unwrap();
+            let (state, _) = cvar
+                .wait_timeout_while(state, Duration::from_secs(2), |state| {
+                    state.first_list_cancellation.is_none()
+                })
+                .unwrap();
+            state
+                .first_list_cancellation
+                .clone()
+                .expect("first list_dir call did not start")
+        }
+
+        fn release_first_list(&self) {
+            let (lock, cvar) = &*self.state;
+            let mut state = lock.lock().unwrap();
+            state.release_first_list = true;
+            cvar.notify_all();
+        }
+
+        fn list_dir_calls(&self) -> Vec<PathBuf> {
+            self.state.0.lock().unwrap().list_dir_calls.clone()
+        }
+
+        fn return_list_cancelled(&self) {
+            self.state.0.lock().unwrap().return_list_cancelled = true;
         }
     }
 
@@ -23345,6 +24169,35 @@ mod tests {
 
         async fn list_dir(&self, path: &Path) -> nucleotide_workspace::Result<DirectoryListing> {
             self.unsupported("list directory", path)
+        }
+
+        async fn list_dir_with_cancellation(
+            &self,
+            path: &Path,
+            cancellation: &WorkspaceCancellationToken,
+        ) -> nucleotide_workspace::Result<DirectoryListing> {
+            let (lock, cvar) = &*self.state;
+            let mut state = lock.lock().unwrap();
+            state.list_dir_calls.push(path.to_path_buf());
+            if state.return_list_cancelled {
+                return Err(WorkspaceError::Cancelled {
+                    operation: "list directory",
+                    path: path.to_path_buf(),
+                });
+            }
+            if state.list_dir_calls.len() == 1 {
+                state.first_list_cancellation = Some(cancellation.clone());
+                cvar.notify_all();
+                while !state.release_first_list {
+                    state = cvar.wait(state).unwrap();
+                }
+            }
+            drop(state);
+            cancellation.check_cancelled("list directory", path)?;
+            Ok(DirectoryListing {
+                path: path.to_path_buf(),
+                entries: Vec::new(),
+            })
         }
 
         async fn find_ancestor_file(

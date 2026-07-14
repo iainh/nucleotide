@@ -27,7 +27,7 @@ The implementation includes:
 
 Post-v5 hardening also bounds the server producer-to-writer lanes, gives the client writer sole ownership of physical writes, propagates validated priority through worker admission and response scheduling, and limits queued wire batches. The associated regression tests cover partial writes, blocked-flow resets, decompression bounds, watch storms, EOF cancellation and reconnect ambiguity.
 
-Some architectural work remains. The synchronous workspace API still returns complete file/search/process results instead of exposing incremental consumers, so receive credit reflects transport demultiplexing rather than final UI consumption. The helper still runs heartbeat timeout checks and physical writes on the same service loop, so a blocked stdout write can prevent timeout enforcement. Generic filesystem calls cannot be force-cancelled once blocked in the operating system. Reconnect does not yet restore watches, and UI cancellation does not yet propagate through every startup stage. Child handshakes and command probes have deadlines and reap their direct child; Unix probes also terminate descendants that remain in the child's process group. Windows needs job-object containment for the equivalent descendant guarantee, and no userspace deadline can force an uninterruptible operating-system wait to return. Browse-session handoff also remains future work. These are follow-up lifecycle and integration changes, not missing v5 wire primitives.
+Some architectural work remains. The synchronous workspace API still returns complete file/search/process results instead of exposing incremental consumers, so receive credit reflects transport demultiplexing rather than final UI consumption. The helper still runs heartbeat timeout checks and physical writes on the same service loop, so a blocked stdout write can prevent timeout enforcement. Filesystem handlers now cooperate with cancellation between user-space work units, but no user-space deadline can force a filesystem call already blocked in the operating system to return. Reconnect does not yet restore watches, and UI cancellation does not yet propagate through every startup stage. Child handshakes and command probes have deadlines and reap their direct child; Unix probes also terminate descendants that remain in the child's process group. Windows needs job-object containment for the equivalent descendant guarantee. Browse-session handoff also remains future work. These are follow-up lifecycle and integration changes, not missing v5 wire primitives.
 
 ## Design goals
 
@@ -390,7 +390,11 @@ Server obligations:
 - Search walkers check cancellation between directory/file batches.
 - Git and process handlers terminate child process groups on cancellation.
 - Project environment capture terminates the shell process group on cancellation.
-- File writes remove temporary files if cancelled before commit.
+- Every filesystem request receives the stream's shared cancellation token. Directory listing checks between entries and paths, ancestor lookup checks between candidates, and file read/copy/write checks between bounded chunks or stages.
+- `fs.list_dirs` treats cancellation as a request-level result and does not start the next path or return cancellation as one embedded per-path error.
+- File writes check cancellation immediately before their atomic rename and remove the temporary file when cancellation is observed. A zero-byte write uses the same staged path.
+- Other filesystem mutations do not promise rollback. Cancellation may leave a partial copy or an outcome-unknown create, rename or delete once irreversible operating-system work has started.
+- Response sizing, serialization and bounded output enqueue poll the same token. Worker-finished bookkeeping uses a separate control lane so stale DATA backpressure cannot retain a worker-class permit after cancellation or peer loss.
 - If a request is cancelled before a final response, the stream closes with `RESET_STREAM CANCELLED` or a structured `final_error` with code `CANCELLED`, not a silent hang.
 
 Why:
@@ -435,6 +439,7 @@ What:
 - Larger files stream `DATA` chunks.
 - The final response includes bytes sent, content length if known, mtime, executable bit, file type and optional checksum.
 - The client may cancel once it has enough preview data or after a newer read supersedes it.
+- The server checks cancellation before and immediately after each bounded read and before and after each output enqueue. A chunk read concurrently with cancellation is discarded before emission.
 
 Why:
 
@@ -448,6 +453,7 @@ What:
 - Client sends a `RequestHeader` with path, expected mtime and write mode.
 - Client streams body chunks.
 - Server writes to a temp file inside the target directory, validates cancellation/mtime, then commits with rename.
+- Empty writes create and commit the same temporary-file representation instead of bypassing the streaming path.
 - Server returns final metadata.
 
 Why:
@@ -736,7 +742,7 @@ The v5 baseline is complete:
 4. `watch.start`, `watch.update`, `watch.stop`, `watch.resync` and `watch.batch` are active with polling fallback.
 5. Directory generations, fingerprints, `not_modified` responses and optional deltas are active.
 
-The 2026-07-13 hardening pass adds executable failure and memory invariants around the baseline. It includes atomic stream teardown, decoded-data bounds, receive-window enforcement, lazy producers, bounded server and watch queues, deadline-bound startup commands with direct-child reaping and Unix process-group cleanup, child-handshake and client connection-heartbeat watchdogs, bidirectional heartbeat probes, terminal transport errors, typed recovery outcomes, end-to-end priority propagation and shutdown cleanup.
+The 2026-07-13 hardening pass adds executable failure and memory invariants around the baseline. It includes atomic stream teardown, decoded-data bounds, receive-window enforcement, lazy producers, bounded server and watch queues, deadline-bound startup commands with direct-child reaping and Unix process-group cleanup, child-handshake and client connection-heartbeat watchdogs, bidirectional heartbeat probes, terminal transport errors, typed recovery outcomes, end-to-end priority propagation, cooperative filesystem cancellation, cancellation-aware response production and shutdown cleanup.
 
 The next integration work should:
 
@@ -768,7 +774,12 @@ Cancellation tests:
 
 - Cancel search mid-walk and verify no more result batches arrive.
 - Cancel process execution and verify the process group is terminated.
-- Cancel write before commit and verify the temp file is removed and destination is unchanged.
+- Cancel a complete staged write immediately before commit and verify the temp file is removed and destination is unchanged.
+- Cancel `fs.list_dirs` while its first backend call is blocked and verify the next path never starts.
+- Cancel a read during its operating-system read and after its first emitted chunk; verify no post-cancellation chunk arrives.
+- Fill the producer-to-service queue, cancel response serialization and verify the producer exits without a terminal event or leaked byte reservation.
+- Close the peer while filesystem work is blocked and verify its worker finishes without retaining a task-class permit.
+- Send a zero-byte write and verify it commits through the staged atomic path without leaving a temp file.
 - Verify every method receives the documented absolute and inactivity defaults.
 - Verify only target-stream progress extends inactivity and never extends the absolute deadline.
 - Expire a healthy read-only stream and verify one reset, one typed error and continued use of another stream.
