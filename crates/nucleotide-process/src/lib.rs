@@ -57,10 +57,10 @@ pub fn output_with_limits(command: &mut Command, limits: OutputLimits) -> io::Re
     output_with_limits_inner(command, limits, None)
 }
 
-/// Runs a child with bounded output and stops its process tree when cancellation is requested.
+/// Runs a child with bounded output and stops it when cancellation is requested.
 ///
 /// Cancellation is cooperative at a polling interval of at most 10 ms. The same containment and
-/// reaping guarantees as [`output_with_limits`] apply.
+/// reaping guarantees as [`output_with_limits`] apply, including process-group cleanup on Unix.
 pub fn output_with_limits_and_cancellation(
     command: &mut Command,
     limits: OutputLimits,

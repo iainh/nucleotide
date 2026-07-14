@@ -9277,7 +9277,9 @@ impl Workspace {
         }
         let message = format!("Connecting to remote project: {}", workspace_root.display());
         let activity_id = self.start_background_activity(message.clone(), cx);
-        let startup = nucleotide_remote::RemoteStartupAttempt::new(backend_options.startup_timeout);
+        let startup = nucleotide_remote::RemoteStartupAttempt::new(
+            nucleotide_remote::DEFAULT_REMOTE_STARTUP_TIMEOUT,
+        );
         let startup_context = startup.context();
         self.pending_remote_open = Some(PendingRemoteOpen {
             id: remote_open_id,
@@ -17258,7 +17260,9 @@ mod tests {
             backend_options: backend_options.clone(),
             workspace_root: target.path.clone(),
             activity_id: BackgroundActivityId(1),
-            startup: nucleotide_remote::RemoteStartupAttempt::new(backend_options.startup_timeout),
+            startup: nucleotide_remote::RemoteStartupAttempt::new(
+                nucleotide_remote::DEFAULT_REMOTE_STARTUP_TIMEOUT,
+            ),
         };
 
         assert!(pending_remote_open_matches(

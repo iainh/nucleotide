@@ -11336,7 +11336,6 @@ mod tests {
                 ssh_connect_timeout_secs: None,
                 ssh_extra_args: Vec::new(),
                 ssh_control_path: None,
-                startup_timeout: nucleotide_remote::DEFAULT_REMOTE_STARTUP_TIMEOUT,
                 use_local_service: false,
             },
             helper_path_cache: std::sync::Mutex::new(HashMap::new()),
