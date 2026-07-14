@@ -920,6 +920,100 @@ pub struct RemoteRequestContext {
     pub inactivity_timeout: Option<Duration>,
 }
 
+type RemoteRequestCancellationCallback = Box<dyn FnOnce() + Send + 'static>;
+
+#[derive(Clone, Default)]
+pub struct RemoteRequestCancellation {
+    inner: Arc<RemoteRequestCancellationInner>,
+}
+
+#[derive(Default)]
+struct RemoteRequestCancellationInner {
+    cancelled: AtomicBool,
+    callbacks: Mutex<Vec<RemoteRequestCancellationCallback>>,
+}
+
+impl RemoteRequestCancellation {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn cancel(&self) {
+        if self.inner.cancelled.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let callbacks = std::mem::take(
+            &mut *self
+                .inner
+                .callbacks
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        );
+        for callback in callbacks {
+            callback();
+        }
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.inner.cancelled.load(Ordering::Acquire)
+    }
+
+    fn register(&self, callback: impl FnOnce() + Send + 'static) {
+        let mut callback = Some(Box::new(callback) as RemoteRequestCancellationCallback);
+        {
+            let mut callbacks = self
+                .inner
+                .callbacks
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if !self.is_cancelled()
+                && let Some(callback) = callback.take()
+            {
+                callbacks.push(callback);
+            }
+        }
+        if let Some(callback) = callback {
+            callback();
+        }
+    }
+
+    fn check_cancelled(&self, method: &str) -> std::result::Result<(), RemoteClientError> {
+        if self.is_cancelled() {
+            Err(remote_request_cancelled_error(method))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+struct RemoteRequestCancelOnDrop {
+    cancellation: Option<RemoteRequestCancellation>,
+}
+
+impl RemoteRequestCancelOnDrop {
+    fn new() -> Self {
+        Self {
+            cancellation: Some(RemoteRequestCancellation::new()),
+        }
+    }
+
+    fn cancellation(&self) -> RemoteRequestCancellation {
+        self.cancellation.clone().unwrap_or_default()
+    }
+
+    fn disarm(&mut self) {
+        self.cancellation.take();
+    }
+}
+
+impl Drop for RemoteRequestCancelOnDrop {
+    fn drop(&mut self) {
+        if let Some(cancellation) = self.cancellation.take() {
+            cancellation.cancel();
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RemoteRequestDeadlinePolicy {
     absolute_timeout: Option<Duration>,
@@ -3838,6 +3932,14 @@ impl From<serde_json::Error> for RemoteClientError {
     }
 }
 
+fn remote_request_cancelled_error(method: &str) -> RemoteClientError {
+    RemoteClientError::Remote(RemoteError {
+        code: protocol_v5::RESET_CANCELLED.to_string(),
+        message: format!("remote {method} request cancelled by caller"),
+        diagnostic: None,
+    })
+}
+
 pub struct RemoteWorkspaceV5Client<R, W> {
     io: protocol_v5::FramedIo<R, W>,
     session: protocol_v5::ProtocolSession,
@@ -4105,12 +4207,25 @@ struct RemoteWorkspaceV5Shared<W> {
     outbound_request_reservations: Mutex<HashMap<u64, V5ByteReservation>>,
     waiters: Mutex<HashMap<u64, V5PendingResponse>>,
     raw_waiters: Mutex<HashMap<u64, V5PendingRawResponse>>,
+    pending_cancellations: Mutex<HashMap<u64, V5ClientCancellation>>,
     watch_batches: Mutex<HashMap<u64, V5WatchDelivery>>,
     watch_backlog: Mutex<HashMap<u64, VecDeque<protocol_v5::WatchBatch>>>,
     watch_stream_by_id: Mutex<HashMap<u64, u64>>,
     directory_cache: Mutex<HashMap<PathBuf, DirectoryListingResponse>>,
     closed: AtomicBool,
     _writer: std::marker::PhantomData<fn() -> W>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum V5ClientCancellationMode {
+    Stream,
+    Connection,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct V5ClientCancellation {
+    method: &'static str,
+    mode: V5ClientCancellationMode,
 }
 
 #[derive(Clone)]
@@ -4340,6 +4455,47 @@ fn v5_client_pong_control(frame: &protocol_v5::Frame) -> Option<Vec<u8>> {
 type V5ResponseDelivery =
     std::result::Result<V5Budgeted<(RemoteResponse, Vec<u8>)>, RemoteClientError>;
 type V5RawResponseDelivery = std::result::Result<V5Budgeted<Vec<u8>>, RemoteClientError>;
+
+#[must_use = "dropping a live v5 request handle cancels its stream"]
+pub struct RemoteWorkspaceV5RequestHandle<W> {
+    shared: Arc<RemoteWorkspaceV5Shared<W>>,
+    stream_id: u64,
+    request: RemoteRequest,
+    receiver: mpsc::Receiver<V5ResponseDelivery>,
+    cancellation: RemoteRequestCancellation,
+    finished: bool,
+}
+
+impl<W> RemoteWorkspaceV5RequestHandle<W> {
+    pub fn stream_id(&self) -> u64 {
+        self.stream_id
+    }
+
+    pub fn cancel(&self) {
+        self.cancellation.cancel();
+    }
+
+    pub fn wait(mut self) -> std::result::Result<(RemoteResponse, Vec<u8>), RemoteClientError> {
+        let delivery = match self.receiver.recv() {
+            Ok(delivery) => {
+                self.finished = true;
+                delivery
+            }
+            Err(_) => return Err(RemoteClientError::Disconnected),
+        };
+        let (response, body) = delivery?.into_inner();
+        let response = apply_v5_directory_cache(&self.shared, &self.request, response)?;
+        Ok((response, body))
+    }
+}
+
+impl<W> Drop for RemoteWorkspaceV5RequestHandle<W> {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.cancellation.cancel();
+        }
+    }
+}
 
 struct V5NormalizedDeadlineResult<T> {
     result: std::result::Result<T, RemoteClientError>,
@@ -4702,6 +4858,7 @@ where
             outbound_request_reservations: Mutex::new(HashMap::new()),
             waiters: Mutex::new(HashMap::new()),
             raw_waiters: Mutex::new(HashMap::new()),
+            pending_cancellations: Mutex::new(HashMap::new()),
             watch_batches: Mutex::new(HashMap::new()),
             watch_backlog: Mutex::new(HashMap::new()),
             watch_stream_by_id: Mutex::new(HashMap::new()),
@@ -4817,115 +4974,24 @@ where
         body: Vec<u8>,
         context: RemoteRequestContext,
     ) -> std::result::Result<(RemoteResponse, Vec<u8>), RemoteClientError> {
-        if self.shared.closed.load(Ordering::SeqCst) {
-            return Err(RemoteClientError::Disconnected);
-        }
+        self.start_request_with_context(request, body, context)?
+            .wait()
+    }
 
-        let (method, payload) = self.v5_method_payload_with_directory_cache(&request)?;
-        if let Some(kind) = context.expired_at(Instant::now()) {
-            return Err(RemoteClientError::RequestDeadlineExceeded {
-                method: method.to_string(),
-                kind,
-            });
-        }
-        let mut options = request.v5_request_options_with_context(context);
-        if request.v5_prefers_zstd_compression()
-            && self
-                .server_hello
-                .capabilities
-                .iter()
-                .any(|capability| capability == "compression_zstd")
-        {
-            options.content_encoding = protocol_v5::ContentEncoding::Zstd;
-        }
-        let idempotency = options.idempotency;
-        let body_channel = request.v5_body_channel();
-        let request_reservation = reserve_v5_client_request_bytes(
-            &self.shared.request_budget,
-            method,
-            payload.len(),
-            body.len(),
-        )?;
-        let response_reservation = self.shared.response_budget.reservation();
-        let (sender, receiver) = mpsc::channel();
-        let deadline = V5RequestDeadline::new(context, Instant::now());
-
-        let stream_id = {
-            let mut session = self.shared.session.lock().map_err(v5_client_lock_error)?;
-            if self.shared.closed.load(Ordering::Acquire) {
-                return Err(RemoteClientError::Disconnected);
-            }
-            if let Some(kind) = context.expired_at(Instant::now()) {
-                return Err(RemoteClientError::RequestDeadlineExceeded {
-                    method: method.to_string(),
-                    kind,
-                });
-            }
-            let stream_id = session.open_request_with_owned_payload_and_body(
-                method,
-                options,
-                payload,
-                body_channel,
-                body,
-            )?;
-            let pending = V5PendingResponse {
-                sender,
-                accumulator: V5ResponseAccumulator::default(),
-                response_reservation,
-                method,
-                idempotency,
-                terminal_on_deadline: idempotency != protocol_v5::Idempotency::ReadOnly
-                    || matches!(request, RemoteRequest::Shutdown),
-                deadline,
-            };
-            let mut outbound_request_reservations = self
-                .shared
-                .outbound_request_reservations
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            outbound_request_reservations.insert(stream_id, request_reservation);
-            drop(outbound_request_reservations);
-            let mut waiters = match self.shared.waiters.lock() {
-                Ok(waiters) => waiters,
-                Err(error) => {
-                    let error = v5_client_lock_error(error);
-                    let reset_result = session.reset_stream(
-                        stream_id,
-                        protocol_v5::RESET_CANCELLED,
-                        "client could not register response waiter",
-                    );
-                    release_v5_outbound_request_reservation(&self.shared, stream_id);
-                    reset_result?;
-                    return Err(error);
-                }
-            };
-            waiters.insert(stream_id, pending);
-            stream_id
-        };
-        signal_v5_client_deadlines(&self.shared);
-
-        if self.shared.closed.load(Ordering::SeqCst) {
-            self.shared
-                .waiters
-                .lock()
-                .map_err(v5_client_lock_error)?
-                .remove(&stream_id);
-            return Err(RemoteClientError::Disconnected);
-        }
-
-        if let Err(error) = self.wake_outbound() {
-            return receiver
-                .recv()
-                .unwrap_or(Err(error))
-                .map(V5Budgeted::into_inner);
-        }
-
-        let (response, body) = receiver
-            .recv()
-            .map_err(|_| RemoteClientError::Disconnected)??
-            .into_inner();
-        let response = self.apply_v5_directory_cache(&request, response)?;
-        Ok((response, body))
+    fn request_with_context_and_cancellation(
+        &self,
+        request: RemoteRequest,
+        body: Vec<u8>,
+        context: RemoteRequestContext,
+        cancellation: &RemoteRequestCancellation,
+    ) -> std::result::Result<(RemoteResponse, Vec<u8>), RemoteClientError> {
+        self.start_request_with_context_and_cancellation(
+            request,
+            body,
+            context,
+            cancellation.clone(),
+        )?
+        .wait()
     }
 
     fn shutdown(&self) -> std::result::Result<(), RemoteClientError> {
@@ -4958,6 +5024,20 @@ where
         request: WorkspaceWatchRequest,
         context: RemoteRequestContext,
     ) -> std::result::Result<Option<WorkspaceWatch>, RemoteClientError> {
+        self.start_watch_with_context_and_cancellation(
+            request,
+            context,
+            &RemoteRequestCancellation::new(),
+        )
+    }
+
+    fn start_watch_with_context_and_cancellation(
+        &self,
+        request: WorkspaceWatchRequest,
+        context: RemoteRequestContext,
+        cancellation: &RemoteRequestCancellation,
+    ) -> std::result::Result<Option<WorkspaceWatch>, RemoteClientError> {
+        cancellation.check_cancelled("watch.start")?;
         if !self
             .server_hello
             .capabilities
@@ -4971,7 +5051,8 @@ where
         v5_request.debounce_ms = request.debounce_ms;
         v5_request.max_events_per_batch = request.max_events_per_batch;
         let workspace_root = PathBuf::from(&self.server_hello.workspace_root);
-        let watch = self.start_v5_watch_with_context(v5_request, context)?;
+        let watch =
+            self.start_v5_watch_with_context_and_cancellation(v5_request, context, cancellation)?;
         Ok(Some(workspace_watch_from_v5(watch, workspace_root)))
     }
 
@@ -4981,11 +5062,29 @@ where
         add_roots: Vec<PathBuf>,
         remove_roots: Vec<PathBuf>,
     ) -> std::result::Result<Option<WorkspaceWatchUpdate>, RemoteClientError> {
-        let response = self.update_v5_watch(protocol_v5::WatchUpdate {
+        self.update_watch_with_cancellation(
             watch_id,
-            add_roots: add_roots.iter().map(posix_path_string).collect(),
-            remove_roots: remove_roots.iter().map(posix_path_string).collect(),
-        })?;
+            add_roots,
+            remove_roots,
+            &RemoteRequestCancellation::new(),
+        )
+    }
+
+    fn update_watch_with_cancellation(
+        &self,
+        watch_id: u64,
+        add_roots: Vec<PathBuf>,
+        remove_roots: Vec<PathBuf>,
+        cancellation: &RemoteRequestCancellation,
+    ) -> std::result::Result<Option<WorkspaceWatchUpdate>, RemoteClientError> {
+        let response = self.update_v5_watch_with_cancellation(
+            protocol_v5::WatchUpdate {
+                watch_id,
+                add_roots: add_roots.iter().map(posix_path_string).collect(),
+                remove_roots: remove_roots.iter().map(posix_path_string).collect(),
+            },
+            cancellation,
+        )?;
         let workspace_root = PathBuf::from(&self.server_hello.workspace_root);
         Ok(Some(workspace_watch_update_from_v5(
             response,
@@ -4994,14 +5093,165 @@ where
     }
 
     fn stop_watch(&self, watch_id: u64) -> std::result::Result<(), RemoteClientError> {
-        self.stop_v5_watch(watch_id)
+        self.stop_watch_with_cancellation(watch_id, &RemoteRequestCancellation::new())
+    }
+
+    fn stop_watch_with_cancellation(
+        &self,
+        watch_id: u64,
+        cancellation: &RemoteRequestCancellation,
+    ) -> std::result::Result<(), RemoteClientError> {
+        self.stop_v5_watch_with_cancellation(watch_id, cancellation)
     }
 }
 
 impl<R, W> RemoteWorkspaceV5MultiplexedClient<R, W>
 where
-    W: Write,
+    W: Write + 'static,
 {
+    pub fn start_request(
+        &self,
+        request: RemoteRequest,
+        body: Vec<u8>,
+    ) -> std::result::Result<RemoteWorkspaceV5RequestHandle<W>, RemoteClientError> {
+        let context = request.v5_request_context();
+        self.start_request_with_context(request, body, context)
+    }
+
+    pub fn start_request_with_context(
+        &self,
+        request: RemoteRequest,
+        body: Vec<u8>,
+        context: RemoteRequestContext,
+    ) -> std::result::Result<RemoteWorkspaceV5RequestHandle<W>, RemoteClientError> {
+        self.start_request_with_context_and_cancellation(
+            request,
+            body,
+            context,
+            RemoteRequestCancellation::new(),
+        )
+    }
+
+    fn start_request_with_context_and_cancellation(
+        &self,
+        request: RemoteRequest,
+        body: Vec<u8>,
+        context: RemoteRequestContext,
+        cancellation: RemoteRequestCancellation,
+    ) -> std::result::Result<RemoteWorkspaceV5RequestHandle<W>, RemoteClientError> {
+        if self.shared.closed.load(Ordering::SeqCst) {
+            return Err(RemoteClientError::Disconnected);
+        }
+
+        let (method, payload) = self.v5_method_payload_with_directory_cache(&request)?;
+        cancellation.check_cancelled(method)?;
+        if let Some(kind) = context.expired_at(Instant::now()) {
+            return Err(RemoteClientError::RequestDeadlineExceeded {
+                method: method.to_string(),
+                kind,
+            });
+        }
+        let mut options = request.v5_request_options_with_context(context);
+        if request.v5_prefers_zstd_compression()
+            && self
+                .server_hello
+                .capabilities
+                .iter()
+                .any(|capability| capability == "compression_zstd")
+        {
+            options.content_encoding = protocol_v5::ContentEncoding::Zstd;
+        }
+        let idempotency = options.idempotency;
+        let body_channel = request.v5_body_channel();
+        let terminal_on_deadline = idempotency != protocol_v5::Idempotency::ReadOnly
+            || matches!(&request, RemoteRequest::Shutdown);
+        let request_reservation = reserve_v5_client_request_bytes(
+            &self.shared.request_budget,
+            method,
+            payload.len(),
+            body.len(),
+        )?;
+        let response_reservation = self.shared.response_budget.reservation();
+        let (sender, receiver) = mpsc::channel();
+        let deadline = V5RequestDeadline::new(context, Instant::now());
+
+        let stream_id = {
+            let mut session = self.shared.session.lock().map_err(v5_client_lock_error)?;
+            if self.shared.closed.load(Ordering::Acquire) {
+                return Err(RemoteClientError::Disconnected);
+            }
+            cancellation.check_cancelled(method)?;
+            if let Some(kind) = context.expired_at(Instant::now()) {
+                return Err(RemoteClientError::RequestDeadlineExceeded {
+                    method: method.to_string(),
+                    kind,
+                });
+            }
+            let stream_id = session.open_request_with_owned_payload_and_body(
+                method,
+                options,
+                payload,
+                body_channel,
+                body,
+            )?;
+            let pending = V5PendingResponse {
+                sender,
+                accumulator: V5ResponseAccumulator::default(),
+                response_reservation,
+                method,
+                idempotency,
+                terminal_on_deadline,
+                deadline,
+            };
+            self.shared
+                .outbound_request_reservations
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .insert(stream_id, request_reservation);
+            let mut waiters = match self.shared.waiters.lock() {
+                Ok(waiters) => waiters,
+                Err(error) => {
+                    let error = v5_client_lock_error(error);
+                    let reset_result = session.reset_stream(
+                        stream_id,
+                        protocol_v5::RESET_CANCELLED,
+                        "client could not register response waiter",
+                    );
+                    release_v5_outbound_request_reservation(&self.shared, stream_id);
+                    reset_result?;
+                    return Err(error);
+                }
+            };
+            waiters.insert(stream_id, pending);
+            stream_id
+        };
+
+        register_v5_client_cancellation(
+            &cancellation,
+            &self.shared,
+            stream_id,
+            V5ClientCancellation {
+                method,
+                mode: V5ClientCancellationMode::Stream,
+            },
+        );
+        signal_v5_client_deadlines(&self.shared);
+        let handle = RemoteWorkspaceV5RequestHandle {
+            shared: Arc::clone(&self.shared),
+            stream_id,
+            request,
+            receiver,
+            cancellation,
+            finished: false,
+        };
+
+        if self.shared.closed.load(Ordering::SeqCst) {
+            return Err(RemoteClientError::Disconnected);
+        }
+        self.wake_outbound()?;
+        Ok(handle)
+    }
+
     fn v5_method_payload_with_directory_cache(
         &self,
         request: &RemoteRequest,
@@ -5060,68 +5310,6 @@ where
         Ok((listing.generation, listing.fingerprint))
     }
 
-    fn apply_v5_directory_cache(
-        &self,
-        request: &RemoteRequest,
-        response: RemoteResponse,
-    ) -> std::result::Result<RemoteResponse, RemoteClientError> {
-        match (request, response) {
-            (RemoteRequest::ListDir { path }, RemoteResponse::ListDir(listing)) => {
-                let listing = self.resolve_v5_directory_listing_cache(path, listing)?;
-                Ok(RemoteResponse::ListDir(listing))
-            }
-            (RemoteRequest::ListDirs { .. }, RemoteResponse::ListDirs(mut response)) => {
-                for result in &mut response.results {
-                    if let Some(listing) = result.listing.take() {
-                        result.listing =
-                            Some(self.resolve_v5_directory_listing_cache(&result.path, listing)?);
-                    }
-                }
-                Ok(RemoteResponse::ListDirs(response))
-            }
-            (_, response) => Ok(response),
-        }
-    }
-
-    fn resolve_v5_directory_listing_cache(
-        &self,
-        cache_key: &Path,
-        mut listing: DirectoryListingResponse,
-    ) -> std::result::Result<DirectoryListingResponse, RemoteClientError> {
-        let mut cache = self
-            .shared
-            .directory_cache
-            .lock()
-            .map_err(v5_client_lock_error)?;
-        if listing.not_modified {
-            return cache.get(cache_key).cloned().ok_or_else(|| {
-                RemoteClientError::Protocol(format!(
-                    "v5 directory listing for {} was not_modified without a cached listing",
-                    cache_key.display()
-                ))
-            });
-        }
-        if let Some(delta) = listing.delta.take() {
-            let base = cache.get(cache_key).cloned().ok_or_else(|| {
-                RemoteClientError::Protocol(format!(
-                    "v5 directory listing for {} carried a delta without a cached base",
-                    cache_key.display()
-                ))
-            })?;
-            listing = apply_directory_listing_delta(cache_key, base, listing, delta)?;
-        }
-        if listing.complete && listing.generation.is_some() {
-            if !cache.contains_key(cache_key)
-                && cache.len() >= V5_DIRECTORY_DELTA_CACHE_LIMIT
-                && let Some(evicted) = cache.keys().next().cloned()
-            {
-                cache.remove(&evicted);
-            }
-            cache.insert(cache_key.to_path_buf(), listing.clone());
-        }
-        Ok(listing)
-    }
-
     pub fn start_v5_watch(
         &self,
         request: protocol_v5::WatchStart,
@@ -5135,7 +5323,26 @@ where
         request: protocol_v5::WatchStart,
         context: RemoteRequestContext,
     ) -> std::result::Result<RemoteWorkspaceV5Watch, RemoteClientError> {
-        let payload = self.request_v5_raw("watch.start", request.encode_to_vec(), context)?;
+        self.start_v5_watch_with_context_and_cancellation(
+            request,
+            context,
+            &RemoteRequestCancellation::new(),
+        )
+    }
+
+    fn start_v5_watch_with_context_and_cancellation(
+        &self,
+        request: protocol_v5::WatchStart,
+        context: RemoteRequestContext,
+        cancellation: &RemoteRequestCancellation,
+    ) -> std::result::Result<RemoteWorkspaceV5Watch, RemoteClientError> {
+        let payload = self.request_v5_raw_with_cancellation(
+            "watch.start",
+            request.encode_to_vec(),
+            context,
+            cancellation,
+        )?;
+        cancellation.check_cancelled("watch.start")?;
         let response =
             protocol_v5::WatchStartResponse::decode(payload.as_slice()).map_err(|error| {
                 RemoteClientError::Protocol(format!(
@@ -5188,6 +5395,10 @@ where
             self.remove_watch_sender(response.watch_id)?;
             return Err(RemoteClientError::Disconnected);
         }
+        if let Err(error) = cancellation.check_cancelled("watch.start") {
+            self.remove_watch_sender(response.watch_id)?;
+            return Err(error);
+        }
         Ok(RemoteWorkspaceV5Watch {
             watch_id: response.watch_id,
             event_stream_id: response.event_stream_id,
@@ -5201,10 +5412,19 @@ where
         &self,
         request: protocol_v5::WatchUpdate,
     ) -> std::result::Result<protocol_v5::WatchUpdateResponse, RemoteClientError> {
-        let payload = self.request_v5_raw(
+        self.update_v5_watch_with_cancellation(request, &RemoteRequestCancellation::new())
+    }
+
+    fn update_v5_watch_with_cancellation(
+        &self,
+        request: protocol_v5::WatchUpdate,
+        cancellation: &RemoteRequestCancellation,
+    ) -> std::result::Result<protocol_v5::WatchUpdateResponse, RemoteClientError> {
+        let payload = self.request_v5_raw_with_cancellation(
             "watch.update",
             request.encode_to_vec(),
             v5_watch_control_request_context(),
+            cancellation,
         )?;
         protocol_v5::WatchUpdateResponse::decode(payload.as_slice()).map_err(|error| {
             RemoteClientError::Protocol(format!(
@@ -5230,10 +5450,19 @@ where
     }
 
     pub fn stop_v5_watch(&self, watch_id: u64) -> std::result::Result<(), RemoteClientError> {
-        let _payload = self.request_v5_raw(
+        self.stop_v5_watch_with_cancellation(watch_id, &RemoteRequestCancellation::new())
+    }
+
+    fn stop_v5_watch_with_cancellation(
+        &self,
+        watch_id: u64,
+        cancellation: &RemoteRequestCancellation,
+    ) -> std::result::Result<(), RemoteClientError> {
+        let _payload = self.request_v5_raw_with_cancellation(
             "watch.stop",
             protocol_v5::WatchStop { watch_id }.encode_to_vec(),
             v5_watch_control_request_context(),
+            cancellation,
         )?;
         self.remove_watch_sender(watch_id)?;
         Ok(())
@@ -5267,10 +5496,26 @@ where
         payload: Vec<u8>,
         context: RemoteRequestContext,
     ) -> std::result::Result<Vec<u8>, RemoteClientError> {
+        self.request_v5_raw_with_cancellation(
+            method,
+            payload,
+            context,
+            &RemoteRequestCancellation::new(),
+        )
+    }
+
+    fn request_v5_raw_with_cancellation(
+        &self,
+        method: &'static str,
+        payload: Vec<u8>,
+        context: RemoteRequestContext,
+        cancellation: &RemoteRequestCancellation,
+    ) -> std::result::Result<Vec<u8>, RemoteClientError> {
         if self.shared.closed.load(Ordering::SeqCst) {
             return Err(RemoteClientError::Disconnected);
         }
 
+        cancellation.check_cancelled(method)?;
         if let Some(kind) = context.expired_at(Instant::now()) {
             return Err(RemoteClientError::RequestDeadlineExceeded {
                 method: method.to_string(),
@@ -5287,6 +5532,7 @@ where
             if self.shared.closed.load(Ordering::Acquire) {
                 return Err(RemoteClientError::Disconnected);
             }
+            cancellation.check_cancelled(method)?;
             if let Some(kind) = context.expired_at(Instant::now()) {
                 return Err(RemoteClientError::RequestDeadlineExceeded {
                     method: method.to_string(),
@@ -5335,15 +5581,25 @@ where
             waiters.insert(stream_id, pending);
             stream_id
         };
+        register_v5_client_cancellation(
+            cancellation,
+            &self.shared,
+            stream_id,
+            V5ClientCancellation {
+                method,
+                mode: V5ClientCancellationMode::Connection,
+            },
+        );
         signal_v5_client_deadlines(&self.shared);
 
         if self.shared.closed.load(Ordering::SeqCst) {
+            let cancellation_error = cancellation.check_cancelled(method).err();
             self.shared
                 .raw_waiters
                 .lock()
                 .map_err(v5_client_lock_error)?
                 .remove(&stream_id);
-            return Err(RemoteClientError::Disconnected);
+            return Err(cancellation_error.unwrap_or(RemoteClientError::Disconnected));
         }
 
         if let Err(error) = self.wake_outbound() {
@@ -5353,15 +5609,81 @@ where
                 .map(V5Budgeted::into_inner);
         }
 
-        receiver
+        let result = receiver
             .recv()
             .map_err(|_| RemoteClientError::Disconnected)?
-            .map(V5Budgeted::into_inner)
+            .map(V5Budgeted::into_inner);
+        cancellation.check_cancelled(method)?;
+        result
     }
 
     fn wake_outbound(&self) -> std::result::Result<(), RemoteClientError> {
         wake_v5_client_writer(&self.shared)
     }
+}
+
+fn apply_v5_directory_cache<W>(
+    shared: &RemoteWorkspaceV5Shared<W>,
+    request: &RemoteRequest,
+    response: RemoteResponse,
+) -> std::result::Result<RemoteResponse, RemoteClientError> {
+    match (request, response) {
+        (RemoteRequest::ListDir { path }, RemoteResponse::ListDir(listing)) => {
+            let listing = resolve_v5_directory_listing_cache(shared, path, listing)?;
+            Ok(RemoteResponse::ListDir(listing))
+        }
+        (RemoteRequest::ListDirs { .. }, RemoteResponse::ListDirs(mut response)) => {
+            for result in &mut response.results {
+                if let Some(listing) = result.listing.take() {
+                    result.listing = Some(resolve_v5_directory_listing_cache(
+                        shared,
+                        &result.path,
+                        listing,
+                    )?);
+                }
+            }
+            Ok(RemoteResponse::ListDirs(response))
+        }
+        (_, response) => Ok(response),
+    }
+}
+
+fn resolve_v5_directory_listing_cache<W>(
+    shared: &RemoteWorkspaceV5Shared<W>,
+    cache_key: &Path,
+    mut listing: DirectoryListingResponse,
+) -> std::result::Result<DirectoryListingResponse, RemoteClientError> {
+    let mut cache = shared
+        .directory_cache
+        .lock()
+        .map_err(v5_client_lock_error)?;
+    if listing.not_modified {
+        return cache.get(cache_key).cloned().ok_or_else(|| {
+            RemoteClientError::Protocol(format!(
+                "v5 directory listing for {} was not_modified without a cached listing",
+                cache_key.display()
+            ))
+        });
+    }
+    if let Some(delta) = listing.delta.take() {
+        let base = cache.get(cache_key).cloned().ok_or_else(|| {
+            RemoteClientError::Protocol(format!(
+                "v5 directory listing for {} carried a delta without a cached base",
+                cache_key.display()
+            ))
+        })?;
+        listing = apply_directory_listing_delta(cache_key, base, listing, delta)?;
+    }
+    if listing.complete && listing.generation.is_some() {
+        if !cache.contains_key(cache_key)
+            && cache.len() >= V5_DIRECTORY_DELTA_CACHE_LIMIT
+            && let Some(evicted) = cache.keys().next().cloned()
+        {
+            cache.remove(&evicted);
+        }
+        cache.insert(cache_key.to_path_buf(), listing.clone());
+    }
+    Ok(listing)
 }
 
 fn run_v5_client_reader<R, W>(
@@ -5442,9 +5764,13 @@ fn run_v5_client_reader<R, W>(
                                 .lock()
                                 .map_err(v5_client_lock_error)
                                 .and_then(|mut session| {
-                                    session
-                                        .acknowledge_data(stream_id, credit_bytes)
-                                        .map_err(RemoteClientError::Io)
+                                    if session.stream_tombstone(stream_id).is_some() {
+                                        Ok(())
+                                    } else {
+                                        session
+                                            .acknowledge_data(stream_id, credit_bytes)
+                                            .map_err(RemoteClientError::Io)
+                                    }
                                 });
                             if let Err(error) = result {
                                 let message = error.to_string();
@@ -5497,6 +5823,42 @@ fn run_v5_client_reader<R, W>(
 
 fn signal_v5_client_heartbeat<W>(shared: &RemoteWorkspaceV5Shared<W>) {
     let _ = shared.heartbeat_wake.try_send(());
+}
+
+fn register_v5_client_cancellation<W>(
+    cancellation: &RemoteRequestCancellation,
+    shared: &Arc<RemoteWorkspaceV5Shared<W>>,
+    stream_id: u64,
+    request: V5ClientCancellation,
+) where
+    W: 'static,
+{
+    let shared = Arc::downgrade(shared);
+    cancellation.register(move || {
+        let Some(shared) = shared.upgrade() else {
+            return;
+        };
+        if shared.closed.load(Ordering::Acquire) {
+            return;
+        }
+        let mut pending_cancellations = shared
+            .pending_cancellations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if shared.closed.load(Ordering::Acquire) {
+            return;
+        }
+        pending_cancellations
+            .entry(stream_id)
+            .and_modify(|pending| {
+                if request.mode == V5ClientCancellationMode::Connection {
+                    *pending = request;
+                }
+            })
+            .or_insert(request);
+        drop(pending_cancellations);
+        signal_v5_client_deadlines(&shared);
+    });
 }
 
 fn signal_v5_client_deadlines<W>(shared: &RemoteWorkspaceV5Shared<W>) {
@@ -5596,6 +5958,103 @@ where
     }
 }
 
+fn process_v5_client_cancellations<W>(
+    shared: &RemoteWorkspaceV5Shared<W>,
+) -> std::result::Result<bool, RemoteClientError> {
+    if shared.closed.load(Ordering::Acquire) {
+        return Ok(false);
+    }
+    let cancellations = std::mem::take(
+        &mut *shared
+            .pending_cancellations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+    );
+    if cancellations.is_empty() {
+        return Ok(true);
+    }
+
+    let terminal_streams = cancellations
+        .iter()
+        .filter_map(|(stream_id, cancellation)| {
+            (cancellation.mode == V5ClientCancellationMode::Connection).then_some(*stream_id)
+        })
+        .collect::<HashSet<_>>();
+    if !terminal_streams.is_empty() {
+        let response_pending = {
+            let mut waiters = shared.waiters.lock().map_err(v5_client_lock_error)?;
+            terminal_streams
+                .iter()
+                .filter_map(|stream_id| waiters.remove(stream_id))
+                .collect::<Vec<_>>()
+        };
+        for pending in response_pending {
+            let _ = pending
+                .sender
+                .send(Err(remote_request_cancelled_error(pending.method)));
+        }
+        let raw_pending = {
+            let mut waiters = shared.raw_waiters.lock().map_err(v5_client_lock_error)?;
+            terminal_streams
+                .iter()
+                .filter_map(|stream_id| waiters.remove(stream_id))
+                .collect::<Vec<_>>()
+        };
+        for pending in raw_pending {
+            let _ = pending
+                .sender
+                .send(Err(remote_request_cancelled_error(pending.method)));
+        }
+        if shared
+            .closed
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            finish_v5_connection_close(shared, || {
+                RemoteClientError::Io(io::Error::new(
+                    io::ErrorKind::ConnectionAborted,
+                    "v5 watch control request cancelled by caller",
+                ))
+            });
+        }
+        return Ok(false);
+    }
+
+    let cancelled = {
+        let mut waiters = shared.waiters.lock().map_err(v5_client_lock_error)?;
+        cancellations
+            .into_iter()
+            .map(|(stream_id, cancellation)| (stream_id, cancellation, waiters.remove(&stream_id)))
+            .collect::<Vec<_>>()
+    };
+    let mut reset_queued = false;
+    for (stream_id, cancellation, pending) in cancelled {
+        if let Some(pending) = pending {
+            let _ = pending
+                .sender
+                .send(Err(remote_request_cancelled_error(pending.method)));
+        }
+        match shared
+            .session
+            .lock()
+            .map_err(v5_client_lock_error)?
+            .reset_stream(
+                stream_id,
+                protocol_v5::RESET_CANCELLED,
+                format!("client dropped {} request handle", cancellation.method),
+            )
+            .map_err(RemoteClientError::Io)?
+        {
+            true => reset_queued = true,
+            false => release_v5_outbound_request_reservation(shared, stream_id),
+        }
+    }
+    if reset_queued {
+        wake_v5_client_writer(shared)?;
+    }
+    Ok(!shared.closed.load(Ordering::Acquire))
+}
+
 fn expire_v5_client_deadlines_at<W>(
     shared: &RemoteWorkspaceV5Shared<W>,
     now: Instant,
@@ -5604,6 +6063,9 @@ where
     W: Write,
 {
     if shared.closed.load(Ordering::Acquire) {
+        return Ok(None);
+    }
+    if !process_v5_client_cancellations(shared)? {
         return Ok(None);
     }
     let heartbeat = shared.heartbeat.lock().map_err(v5_client_lock_error)?;
@@ -6165,6 +6627,11 @@ where
         .terminate();
     shared
         .outbound_request_reservations
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clear();
+    shared
+        .pending_cancellations
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clear();
@@ -6777,6 +7244,20 @@ pub trait RemoteWorkspaceProtocolClient: Send + Sync {
         self.request(request, body)
     }
 
+    fn request_with_context_and_cancellation(
+        &self,
+        request: RemoteRequest,
+        body: Vec<u8>,
+        context: RemoteRequestContext,
+        cancellation: &RemoteRequestCancellation,
+    ) -> std::result::Result<(RemoteResponse, Vec<u8>), RemoteClientError> {
+        let method = request.v5_method();
+        cancellation.check_cancelled(method)?;
+        let result = self.request_with_context(request, body, context);
+        cancellation.check_cancelled(method)?;
+        result
+    }
+
     fn shutdown(&self) -> std::result::Result<(), RemoteClientError>;
 
     /// Closes the current transport without performing protocol I/O or waiting for the peer.
@@ -6797,6 +7278,18 @@ pub trait RemoteWorkspaceProtocolClient: Send + Sync {
         self.start_watch(request)
     }
 
+    fn start_watch_with_context_and_cancellation(
+        &self,
+        request: WorkspaceWatchRequest,
+        context: RemoteRequestContext,
+        cancellation: &RemoteRequestCancellation,
+    ) -> std::result::Result<Option<WorkspaceWatch>, RemoteClientError> {
+        cancellation.check_cancelled("watch.start")?;
+        let result = self.start_watch_with_context(request, context);
+        cancellation.check_cancelled("watch.start")?;
+        result
+    }
+
     fn update_watch(
         &self,
         _watch_id: u64,
@@ -6806,8 +7299,32 @@ pub trait RemoteWorkspaceProtocolClient: Send + Sync {
         Ok(None)
     }
 
+    fn update_watch_with_cancellation(
+        &self,
+        watch_id: u64,
+        add_roots: Vec<PathBuf>,
+        remove_roots: Vec<PathBuf>,
+        cancellation: &RemoteRequestCancellation,
+    ) -> std::result::Result<Option<WorkspaceWatchUpdate>, RemoteClientError> {
+        cancellation.check_cancelled("watch.update")?;
+        let result = self.update_watch(watch_id, add_roots, remove_roots);
+        cancellation.check_cancelled("watch.update")?;
+        result
+    }
+
     fn stop_watch(&self, _watch_id: u64) -> std::result::Result<(), RemoteClientError> {
         Ok(())
+    }
+
+    fn stop_watch_with_cancellation(
+        &self,
+        watch_id: u64,
+        cancellation: &RemoteRequestCancellation,
+    ) -> std::result::Result<(), RemoteClientError> {
+        cancellation.check_cancelled("watch.stop")?;
+        let result = self.stop_watch(watch_id);
+        cancellation.check_cancelled("watch.stop")?;
+        result
     }
 }
 
@@ -6966,19 +7483,41 @@ where
         body: Vec<u8>,
         context: RemoteRequestContext,
     ) -> std::result::Result<(RemoteResponse, Vec<u8>), RemoteClientError> {
+        self.request_with_context_and_cancellation(
+            request,
+            body,
+            context,
+            &RemoteRequestCancellation::new(),
+        )
+    }
+
+    fn request_with_context_and_cancellation(
+        &self,
+        request: RemoteRequest,
+        body: Vec<u8>,
+        context: RemoteRequestContext,
+        cancellation: &RemoteRequestCancellation,
+    ) -> std::result::Result<(RemoteResponse, Vec<u8>), RemoteClientError> {
         let method = request.v5_method();
+        cancellation.check_cancelled(method)?;
         let idempotency = request.v5_request_options().idempotency;
         let retry_allowed = request.v5_retry_after_reconnect_allowed();
         let retry_request = retry_allowed.then(|| request.clone());
         let retry_body = retry_allowed.then(|| body.clone());
         let client = self.current_client()?;
+        cancellation.check_cancelled(method)?;
 
-        match client.request_with_context(request, body, context) {
-            Ok(response) => Ok(response),
+        match client.request_with_context_and_cancellation(request, body, context, cancellation) {
+            Ok(response) => {
+                cancellation.check_cancelled(method)?;
+                Ok(response)
+            }
             Err(error) if remote_client_error_requires_reconnect(&error) => {
+                cancellation.check_cancelled(method)?;
                 let retry_safe =
                     retry_allowed && remote_client_error_allows_reconnect_retry(&error);
                 let recovery = self.reconnect_if_current(&client);
+                cancellation.check_cancelled(method)?;
                 if retry_safe {
                     let retry_request = retry_request.expect("retry request recorded");
                     let retry_body = retry_body.expect("retry body recorded");
@@ -6993,8 +7532,14 @@ where
                             kind,
                         });
                     }
-                    let result =
-                        retry_client.request_with_context(retry_request, retry_body, context);
+                    cancellation.check_cancelled(method)?;
+                    let result = retry_client.request_with_context_and_cancellation(
+                        retry_request,
+                        retry_body,
+                        context,
+                        cancellation,
+                    );
+                    cancellation.check_cancelled(method)?;
                     if let Err(retry_error) = &result
                         && remote_client_error_requires_reconnect(retry_error)
                         && let Err(close_error) = self.discard_if_current(&retry_client)
@@ -7026,7 +7571,10 @@ where
                     Err(error)
                 }
             }
-            Err(error) => Err(error),
+            Err(error) => {
+                cancellation.check_cancelled(method)?;
+                Err(error)
+            }
         }
     }
 
@@ -7064,22 +7612,51 @@ where
         request: WorkspaceWatchRequest,
         context: RemoteRequestContext,
     ) -> std::result::Result<Option<WorkspaceWatch>, RemoteClientError> {
+        self.start_watch_with_context_and_cancellation(
+            request,
+            context,
+            &RemoteRequestCancellation::new(),
+        )
+    }
+
+    fn start_watch_with_context_and_cancellation(
+        &self,
+        request: WorkspaceWatchRequest,
+        context: RemoteRequestContext,
+        cancellation: &RemoteRequestCancellation,
+    ) -> std::result::Result<Option<WorkspaceWatch>, RemoteClientError> {
+        cancellation.check_cancelled("watch.start")?;
         let client = self.current_client()?;
-        match client.start_watch_with_context(request.clone(), context) {
-            Ok(watch) => Ok(watch),
+        cancellation.check_cancelled("watch.start")?;
+        match client.start_watch_with_context_and_cancellation(
+            request.clone(),
+            context,
+            cancellation,
+        ) {
+            Ok(watch) => {
+                cancellation.check_cancelled("watch.start")?;
+                Ok(watch)
+            }
             Err(error) if remote_client_error_requires_reconnect(&error) => {
+                cancellation.check_cancelled("watch.start")?;
                 tracing::warn!(
                     error = %error,
                     "Retrying v5 watch.start after reconnect"
                 );
                 let retry_client = self.reconnect_if_current(&client)?;
+                cancellation.check_cancelled("watch.start")?;
                 if let Some(kind) = context.expired_at(Instant::now()) {
                     return Err(RemoteClientError::RequestDeadlineExceeded {
                         method: "watch.start".to_string(),
                         kind,
                     });
                 }
-                let result = retry_client.start_watch_with_context(request, context);
+                let result = retry_client.start_watch_with_context_and_cancellation(
+                    request,
+                    context,
+                    cancellation,
+                );
+                cancellation.check_cancelled("watch.start")?;
                 if let Err(retry_error) = &result
                     && remote_client_error_requires_reconnect(retry_error)
                     && let Err(close_error) = self.discard_if_current(&retry_client)
@@ -7092,7 +7669,10 @@ where
                 }
                 result
             }
-            Err(error) => Err(error),
+            Err(error) => {
+                cancellation.check_cancelled("watch.start")?;
+                Err(error)
+            }
         }
     }
 
@@ -7102,9 +7682,28 @@ where
         add_roots: Vec<PathBuf>,
         remove_roots: Vec<PathBuf>,
     ) -> std::result::Result<Option<WorkspaceWatchUpdate>, RemoteClientError> {
+        self.update_watch_with_cancellation(
+            watch_id,
+            add_roots,
+            remove_roots,
+            &RemoteRequestCancellation::new(),
+        )
+    }
+
+    fn update_watch_with_cancellation(
+        &self,
+        watch_id: u64,
+        add_roots: Vec<PathBuf>,
+        remove_roots: Vec<PathBuf>,
+        cancellation: &RemoteRequestCancellation,
+    ) -> std::result::Result<Option<WorkspaceWatchUpdate>, RemoteClientError> {
+        cancellation.check_cancelled("watch.update")?;
         let client = self.current_client()?;
-        match client.update_watch(watch_id, add_roots, remove_roots) {
+        cancellation.check_cancelled("watch.update")?;
+        match client.update_watch_with_cancellation(watch_id, add_roots, remove_roots, cancellation)
+        {
             Err(error) if remote_client_error_requires_reconnect(&error) => {
+                cancellation.check_cancelled("watch.update")?;
                 if let Err(reconnect_error) = self.reconnect_if_current(&client) {
                     tracing::warn!(
                         error = %reconnect_error,
@@ -7114,14 +7713,28 @@ where
                 }
                 Err(error)
             }
-            result => result,
+            result => {
+                cancellation.check_cancelled("watch.update")?;
+                result
+            }
         }
     }
 
     fn stop_watch(&self, watch_id: u64) -> std::result::Result<(), RemoteClientError> {
+        self.stop_watch_with_cancellation(watch_id, &RemoteRequestCancellation::new())
+    }
+
+    fn stop_watch_with_cancellation(
+        &self,
+        watch_id: u64,
+        cancellation: &RemoteRequestCancellation,
+    ) -> std::result::Result<(), RemoteClientError> {
+        cancellation.check_cancelled("watch.stop")?;
         let client = self.current_client()?;
-        match client.stop_watch(watch_id) {
+        cancellation.check_cancelled("watch.stop")?;
+        match client.stop_watch_with_cancellation(watch_id, cancellation) {
             Err(error) if remote_client_error_requires_reconnect(&error) => {
+                cancellation.check_cancelled("watch.stop")?;
                 if let Err(reconnect_error) = self.reconnect_if_current(&client) {
                     tracing::warn!(
                         error = %reconnect_error,
@@ -7131,7 +7744,10 @@ where
                 }
                 Err(error)
             }
-            result => result,
+            result => {
+                cancellation.check_cancelled("watch.stop")?;
+                result
+            }
         }
     }
 }
@@ -7236,6 +7852,8 @@ where
     where
         C: 'static,
     {
+        let mut cancel_on_drop = RemoteRequestCancelOnDrop::new();
+        let cancellation = cancel_on_drop.cancellation();
         let client = self.client.clone();
         let identity = self.identity.clone();
         let path = path.to_path_buf();
@@ -7282,6 +7900,7 @@ where
                     &worker_path,
                     request,
                     body,
+                    &cancellation,
                 );
                 let elapsed_ms = started_at.elapsed().as_millis() as u64;
                 match &result {
@@ -7324,12 +7943,18 @@ where
                 source,
             })?;
 
-        receiver.await.map_err(|_| WorkspaceError::Remote {
-            operation,
-            path,
-            message: "remote request worker exited before returning a response".to_string(),
-            diagnostic: None,
-        })?
+        match receiver.await {
+            Ok(result) => {
+                cancel_on_drop.disarm();
+                result
+            }
+            Err(_) => Err(WorkspaceError::Remote {
+                operation,
+                path,
+                message: "remote request worker exited before returning a response".to_string(),
+                diagnostic: None,
+            }),
+        }
     }
 }
 
@@ -7340,6 +7965,7 @@ fn request_with_client<C>(
     path: &Path,
     request: RemoteRequest,
     body: Vec<u8>,
+    cancellation: &RemoteRequestCancellation,
 ) -> nucleotide_workspace::Result<(RemoteResponse, Vec<u8>)>
 where
     C: RemoteWorkspaceProtocolClient,
@@ -7372,8 +7998,9 @@ where
             "Remote workspace request acquired transport"
         );
     }
+    let context = request.v5_request_context();
     client
-        .request(request, body)
+        .request_with_context_and_cancellation(request, body, context, cancellation)
         .map_err(|error| client_error_to_workspace(operation, path, error))
 }
 
@@ -7893,6 +8520,8 @@ where
         &self,
         request: WorkspaceWatchRequest,
     ) -> nucleotide_workspace::Result<Option<WorkspaceWatch>> {
+        let mut cancel_on_drop = RemoteRequestCancelOnDrop::new();
+        let cancellation = cancel_on_drop.cancellation();
         let client = self.client.clone();
         let path = request
             .roots
@@ -7904,21 +8533,34 @@ where
         std::thread::Builder::new()
             .name("nucleotide-remote-start-watch".to_string())
             .spawn(move || {
-                let _ = sender.send(client.start_watch(request).map_err(|error| {
-                    client_error_to_workspace("start watch", &worker_path, error)
-                }));
+                let result = client
+                    .start_watch_with_context_and_cancellation(
+                        request,
+                        v5_watch_control_request_context(),
+                        &cancellation,
+                    )
+                    .map_err(|error| client_error_to_workspace("start watch", &worker_path, error));
+                if let Err(Ok(Some(watch))) = sender.send(result) {
+                    let _ = client.stop_watch(watch.watch_id);
+                }
             })
             .map_err(|source| WorkspaceError::Io {
                 operation: "start watch",
                 path: path.clone(),
                 source,
             })?;
-        receiver.await.map_err(|_| WorkspaceError::Remote {
-            operation: "start watch",
-            path,
-            message: "remote watch worker exited before returning a response".to_string(),
-            diagnostic: None,
-        })?
+        match receiver.await {
+            Ok(result) => {
+                cancel_on_drop.disarm();
+                result
+            }
+            Err(_) => Err(WorkspaceError::Remote {
+                operation: "start watch",
+                path,
+                message: "remote watch worker exited before returning a response".to_string(),
+                diagnostic: None,
+            }),
+        }
     }
 
     async fn update_watch(
@@ -7927,6 +8569,8 @@ where
         add_roots: Vec<PathBuf>,
         remove_roots: Vec<PathBuf>,
     ) -> nucleotide_workspace::Result<Option<WorkspaceWatchUpdate>> {
+        let mut cancel_on_drop = RemoteRequestCancelOnDrop::new();
+        let cancellation = cancel_on_drop.cancellation();
         let client = self.client.clone();
         let path = add_roots
             .first()
@@ -7940,7 +8584,12 @@ where
             .spawn(move || {
                 let _ = sender.send(
                     client
-                        .update_watch(watch_id, add_roots, remove_roots)
+                        .update_watch_with_cancellation(
+                            watch_id,
+                            add_roots,
+                            remove_roots,
+                            &cancellation,
+                        )
                         .map_err(|error| {
                             client_error_to_workspace("update watch", &worker_path, error)
                         }),
@@ -7951,15 +8600,23 @@ where
                 path: path.clone(),
                 source,
             })?;
-        receiver.await.map_err(|_| WorkspaceError::Remote {
-            operation: "update watch",
-            path,
-            message: "remote watch worker exited before returning a response".to_string(),
-            diagnostic: None,
-        })?
+        match receiver.await {
+            Ok(result) => {
+                cancel_on_drop.disarm();
+                result
+            }
+            Err(_) => Err(WorkspaceError::Remote {
+                operation: "update watch",
+                path,
+                message: "remote watch worker exited before returning a response".to_string(),
+                diagnostic: None,
+            }),
+        }
     }
 
     async fn stop_watch(&self, watch_id: u64) -> nucleotide_workspace::Result<()> {
+        let mut cancel_on_drop = RemoteRequestCancelOnDrop::new();
+        let cancellation = cancel_on_drop.cancellation();
         let client = self.client.clone();
         let path = PathBuf::from(".");
         let worker_path = path.clone();
@@ -7967,22 +8624,31 @@ where
         std::thread::Builder::new()
             .name("nucleotide-remote-stop-watch".to_string())
             .spawn(move || {
-                let _ =
-                    sender.send(client.stop_watch(watch_id).map_err(|error| {
-                        client_error_to_workspace("stop watch", &worker_path, error)
-                    }));
+                let _ = sender.send(
+                    client
+                        .stop_watch_with_cancellation(watch_id, &cancellation)
+                        .map_err(|error| {
+                            client_error_to_workspace("stop watch", &worker_path, error)
+                        }),
+                );
             })
             .map_err(|source| WorkspaceError::Io {
                 operation: "stop watch",
                 path: path.clone(),
                 source,
             })?;
-        receiver.await.map_err(|_| WorkspaceError::Remote {
-            operation: "stop watch",
-            path,
-            message: "remote watch worker exited before returning a response".to_string(),
-            diagnostic: None,
-        })?
+        match receiver.await {
+            Ok(result) => {
+                cancel_on_drop.disarm();
+                result
+            }
+            Err(_) => Err(WorkspaceError::Remote {
+                operation: "stop watch",
+                path,
+                message: "remote watch worker exited before returning a response".to_string(),
+                diagnostic: None,
+            }),
+        }
     }
 }
 
@@ -16570,6 +17236,97 @@ mod tests {
     }
 
     #[test]
+    fn reconnecting_client_does_not_replay_cancelled_request() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let reconnects = Arc::new(AtomicUsize::new(0));
+        let reconnect_count = Arc::clone(&reconnects);
+        let client = ReconnectingRemoteWorkspaceProtocolClient::new(
+            CancelThenDisconnectProtocolClient {
+                calls: Arc::clone(&calls),
+            },
+            move || {
+                reconnect_count.fetch_add(1, Ordering::SeqCst);
+                Ok(CancelThenDisconnectProtocolClient {
+                    calls: Arc::new(AtomicUsize::new(0)),
+                })
+            },
+        );
+        let cancellation = RemoteRequestCancellation::new();
+
+        let error = client
+            .request_with_context_and_cancellation(
+                RemoteRequest::Stat {
+                    path: PathBuf::from("cancelled.rs"),
+                },
+                Vec::new(),
+                RemoteRequest::Stat {
+                    path: PathBuf::from("cancelled.rs"),
+                }
+                .v5_request_context(),
+                &cancellation,
+            )
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            RemoteClientError::Remote(RemoteError { ref code, .. })
+                if code == protocol_v5::RESET_CANCELLED
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(reconnects.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn reconnecting_client_does_not_replay_when_cancelled_during_recovery() {
+        let calls = Arc::new(StdMutex::new(Vec::new()));
+        let reconnects = Arc::new(AtomicUsize::new(0));
+        let cancellation = RemoteRequestCancellation::new();
+        let reconnect_cancellation = cancellation.clone();
+        let reconnect_calls = Arc::clone(&calls);
+        let reconnect_count = Arc::clone(&reconnects);
+        let client = ReconnectingRemoteWorkspaceProtocolClient::new(
+            FakeProtocolClient::new(Arc::clone(&calls), [FakeProtocolOutcome::Disconnected]),
+            move || {
+                reconnect_count.fetch_add(1, Ordering::SeqCst);
+                reconnect_cancellation.cancel();
+                Ok(FakeProtocolClient::new(
+                    Arc::clone(&reconnect_calls),
+                    [FakeProtocolOutcome::Ok(RemoteResponse::Stat(
+                        FileStatResponse {
+                            path: PathBuf::from("cancelled.rs"),
+                            kind: RemoteFileKind::File,
+                            size: 0,
+                            modified_unix_millis: None,
+                            modified_unix_nanos: None,
+                            readonly: false,
+                        },
+                    ))],
+                ))
+            },
+        );
+        let request = RemoteRequest::Stat {
+            path: PathBuf::from("cancelled.rs"),
+        };
+
+        let error = client
+            .request_with_context_and_cancellation(
+                request.clone(),
+                Vec::new(),
+                request.v5_request_context(),
+                &cancellation,
+            )
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            RemoteClientError::Remote(RemoteError { ref code, .. })
+                if code == protocol_v5::RESET_CANCELLED
+        ));
+        assert_eq!(reconnects.load(Ordering::SeqCst), 1);
+        assert_eq!(calls.lock().unwrap().as_slice(), &[request]);
+    }
+
+    #[test]
     fn reconnecting_client_reuses_exact_context_for_safe_replay() {
         let contexts = Arc::new(StdMutex::new(Vec::new()));
         let closes = Arc::new(AtomicUsize::new(0));
@@ -17038,6 +17795,80 @@ mod tests {
         assert_eq!(reconnects.load(Ordering::SeqCst), 0);
     }
 
+    #[test]
+    fn dropping_backend_request_future_cancels_and_releases_worker() {
+        let state = Arc::new((
+            StdMutex::new(CancellationObservingState::default()),
+            Condvar::new(),
+        ));
+        let backend = RemoteWorkspaceBackendImpl::from_protocol_client(
+            loopback_identity(),
+            CancellationObservingProtocolClient {
+                state: Arc::clone(&state),
+            },
+        );
+        let mut request = Box::pin(backend.stat(Path::new("pending.rs")));
+        let waker = futures::task::noop_waker();
+        let mut context = std::task::Context::from_waker(&waker);
+
+        assert!(
+            std::future::Future::poll(request.as_mut(), &mut context).is_pending(),
+            "the fake protocol request should block until cancellation"
+        );
+        wait_for_cancellation_observer(&state, |state| state.started, "worker start");
+
+        drop(request);
+
+        wait_for_cancellation_observer(&state, |state| state.finished, "worker cancellation");
+        let state = state.0.lock().unwrap();
+        assert!(state.cancelled);
+    }
+
+    #[test]
+    fn dropping_backend_watch_start_closes_ambiguous_control_connection() {
+        let input = BlockingRead::default();
+        let output = SharedWrite::default();
+        input.push(v5_server_input(Vec::new()));
+        let client = RemoteWorkspaceV5MultiplexedClient::connect(
+            protocol_v5::FramedIo::new(input.clone(), output.clone()),
+            protocol_v5::ClientHello::nucleotide("test-client"),
+        )
+        .unwrap();
+        let shared = Arc::clone(&client.shared);
+        let backend = RemoteWorkspaceBackendImpl::new(loopback_identity(), client);
+        let mut request = Box::pin(
+            backend.start_watch(WorkspaceWatchRequest::expanded_dirs([PathBuf::from("src")])),
+        );
+        let waker = futures::task::noop_waker();
+        let mut context = std::task::Context::from_waker(&waker);
+
+        assert!(std::future::Future::poll(request.as_mut(), &mut context).is_pending());
+        let stream_id = wait_for_v5_request_stream(&output, "watch.start");
+        assert!(shared.raw_waiters.lock().unwrap().contains_key(&stream_id));
+
+        drop(request);
+
+        let started = Instant::now();
+        loop {
+            let closed = shared.closed.load(Ordering::Acquire);
+            let cleaned = shared.raw_waiters.lock().unwrap().is_empty()
+                && shared.pending_cancellations.lock().unwrap().is_empty()
+                && shared.request_budget.used() == 0
+                && Arc::strong_count(&backend.client) == 1;
+            if closed && cleaned {
+                break;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "timed out waiting for dropped watch.start cleanup"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        drop(backend);
+        input.close();
+    }
+
     #[cfg(unix)]
     #[test]
     fn child_handshake_watchdog_physically_aborts_and_reaps_silent_helper() {
@@ -17064,6 +17895,121 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    #[test]
+    fn dropping_v5_request_handle_resets_stream_and_releases_response_budget() {
+        let input = BlockingRead::default();
+        let output = SharedWrite::default();
+        input.push(v5_server_input(Vec::new()));
+        let client = Arc::new(
+            RemoteWorkspaceV5MultiplexedClient::connect(
+                protocol_v5::FramedIo::new(input.clone(), output.clone()),
+                protocol_v5::ClientHello::nucleotide("test-client"),
+            )
+            .unwrap(),
+        );
+
+        let handle = client
+            .start_request(
+                RemoteRequest::Stat {
+                    path: PathBuf::from("cancelled.rs"),
+                },
+                Vec::new(),
+            )
+            .unwrap();
+        let cancelled_stream = handle.stream_id();
+        wait_for_v5_stream_frame(&output, cancelled_stream, protocol_v5::FrameType::EndStream);
+        input.push(v5_frames_bytes(vec![
+            protocol_v5::stream_data_frame(
+                cancelled_stream,
+                vec![0; 64],
+                protocol_v5::DataFrameOptions::new(protocol_v5::DataChannel::Unspecified),
+            )
+            .unwrap(),
+        ]));
+        let started = Instant::now();
+        while client.shared.response_budget.used() == 0 {
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "timed out waiting for partial response budget reservation"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        drop(handle);
+
+        wait_for_v5_stream_frame(
+            &output,
+            cancelled_stream,
+            protocol_v5::FrameType::ResetStream,
+        );
+        wait_for_v5_outbound_request_reservation_release(&client.shared, cancelled_stream);
+        let started = Instant::now();
+        loop {
+            let cleaned = client.shared.waiters.lock().unwrap().is_empty()
+                && client
+                    .shared
+                    .pending_cancellations
+                    .lock()
+                    .unwrap()
+                    .is_empty()
+                && client.shared.response_budget.used() == 0;
+            if cleaned {
+                break;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "timed out waiting for dropped request cleanup"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let resets = read_v5_complete_frames(output.bytes())
+            .into_iter()
+            .filter(|frame| {
+                frame.stream_id == cancelled_stream
+                    && frame.frame_type == protocol_v5::FrameType::ResetStream
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(resets.len(), 1);
+        assert_eq!(
+            resets[0]
+                .decode_control::<protocol_v5::ResetStream>()
+                .unwrap()
+                .code,
+            protocol_v5::RESET_CANCELLED
+        );
+        assert!(!client.shared.closed.load(Ordering::Acquire));
+
+        let healthy_client = Arc::clone(&client);
+        let healthy = std::thread::spawn(move || {
+            healthy_client.request(
+                RemoteRequest::Stat {
+                    path: PathBuf::from("healthy.rs"),
+                },
+                Vec::new(),
+            )
+        });
+        let healthy_stream = wait_for_v5_request_stream_after(&output, "fs.stat", cancelled_stream);
+        let response = RemoteResponse::Stat(FileStatResponse {
+            path: PathBuf::from("healthy.rs"),
+            kind: RemoteFileKind::File,
+            size: 7,
+            modified_unix_millis: None,
+            modified_unix_nanos: None,
+            readonly: false,
+        });
+        input.push(v5_frames_bytes(v5_response_frames(
+            healthy_stream,
+            "fs.stat",
+            response.clone(),
+            Vec::new(),
+        )));
+
+        assert_eq!(healthy.join().unwrap().unwrap(), (response, Vec::new()));
+        assert!(!client.shared.closed.load(Ordering::Acquire));
+        client.close();
+        input.close();
     }
 
     #[test]
@@ -18370,6 +19316,144 @@ mod tests {
         assert_eq!(client.shared.request_budget.used(), 0);
 
         client.close();
+        input.close();
+    }
+
+    #[test]
+    fn dropping_backend_future_after_early_response_purges_flow_blocked_body() {
+        let input = BlockingRead::default();
+        let output = SharedWrite::default();
+        input.push(v5_server_input(Vec::new()));
+        let client = RemoteWorkspaceV5MultiplexedClient::connect(
+            protocol_v5::FramedIo::new(input.clone(), output.clone()),
+            protocol_v5::ClientHello::nucleotide("test-client"),
+        )
+        .unwrap();
+        let shared = Arc::clone(&client.shared);
+        let backend = RemoteWorkspaceBackendImpl::new(loopback_identity(), client);
+        let body_len = protocol_v5::DEFAULT_STREAM_WINDOW as usize
+            + protocol_v5::DEFAULT_MAX_FRAME_BODY_LEN as usize;
+        let body = vec![7; body_len];
+        let mut request =
+            Box::pin(backend.write_file(Path::new("large.txt"), &body, WriteOptions::default()));
+        let waker = futures::task::noop_waker();
+        let mut context = std::task::Context::from_waker(&waker);
+
+        assert!(
+            std::future::Future::poll(request.as_mut(), &mut context).is_pending(),
+            "the early response must remain queued until the application polls again"
+        );
+        let stream_id = wait_for_v5_request_stream(&output, "fs.write");
+        let response = RemoteResponse::WriteFile(WriteResultResponse {
+            path: PathBuf::from("large.txt"),
+            size: body_len as u64,
+            modified_unix_millis: None,
+            modified_unix_nanos: None,
+        });
+        input.push(v5_frames_bytes(v5_response_frames(
+            stream_id,
+            "fs.write",
+            response,
+            Vec::new(),
+        )));
+
+        let started = Instant::now();
+        while Arc::strong_count(&backend.client) != 1
+            || shared.waiters.lock().unwrap().contains_key(&stream_id)
+        {
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "timed out waiting for the early response to reach the backend future"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            shared
+                .outbound_request_reservations
+                .lock()
+                .unwrap()
+                .contains_key(&stream_id)
+        );
+        assert!(shared.request_budget.used() > 0);
+        assert!(
+            !read_v5_complete_frames(output.bytes()).iter().any(|frame| {
+                frame.stream_id == stream_id
+                    && frame.frame_type == protocol_v5::FrameType::EndStream
+            })
+        );
+        let data_frames_before_drop = read_v5_complete_frames(output.bytes())
+            .into_iter()
+            .filter(|frame| {
+                frame.stream_id == stream_id && frame.frame_type == protocol_v5::FrameType::Data
+            })
+            .count();
+
+        drop(request);
+
+        wait_for_v5_outbound_request_reservation_release(&shared, stream_id);
+        assert_eq!(shared.request_budget.used(), 0);
+        let stream_frames = read_v5_complete_frames(output.bytes())
+            .into_iter()
+            .filter(|frame| frame.stream_id == stream_id)
+            .collect::<Vec<_>>();
+        let resets = stream_frames
+            .iter()
+            .filter(|frame| frame.frame_type == protocol_v5::FrameType::ResetStream)
+            .collect::<Vec<_>>();
+        assert!(resets.len() <= 1);
+        if let Some(reset) = resets.first() {
+            assert_eq!(
+                reset
+                    .decode_control::<protocol_v5::ResetStream>()
+                    .unwrap()
+                    .code,
+                protocol_v5::RESET_CANCELLED
+            );
+        }
+        assert_eq!(
+            stream_frames
+                .iter()
+                .filter(|frame| frame.frame_type == protocol_v5::FrameType::Data)
+                .count(),
+            data_frames_before_drop
+        );
+        assert!(
+            stream_frames
+                .iter()
+                .all(|frame| frame.frame_type != protocol_v5::FrameType::EndStream)
+        );
+        assert!(!shared.closed.load(Ordering::Acquire));
+
+        let healthy_client = Arc::clone(&backend.client);
+        let healthy = std::thread::spawn(move || {
+            healthy_client.request(
+                RemoteRequest::Stat {
+                    path: PathBuf::from("healthy.rs"),
+                },
+                Vec::new(),
+            )
+        });
+        let healthy_stream = wait_for_v5_request_stream_after(&output, "fs.stat", stream_id);
+        let healthy_response = RemoteResponse::Stat(FileStatResponse {
+            path: PathBuf::from("healthy.rs"),
+            kind: RemoteFileKind::File,
+            size: 7,
+            modified_unix_millis: None,
+            modified_unix_nanos: None,
+            readonly: false,
+        });
+        input.push(v5_frames_bytes(v5_response_frames(
+            healthy_stream,
+            "fs.stat",
+            healthy_response.clone(),
+            Vec::new(),
+        )));
+        assert_eq!(
+            healthy.join().unwrap().unwrap(),
+            (healthy_response, Vec::new())
+        );
+
+        drop(backend);
         input.close();
     }
 
@@ -23293,6 +24377,107 @@ mod tests {
                 .join(".bin")
                 .join("typescript-language-server")
         );
+    }
+
+    struct CancelThenDisconnectProtocolClient {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl RemoteWorkspaceProtocolClient for CancelThenDisconnectProtocolClient {
+        fn request(
+            &self,
+            _request: RemoteRequest,
+            _body: Vec<u8>,
+        ) -> std::result::Result<(RemoteResponse, Vec<u8>), RemoteClientError> {
+            Err(RemoteClientError::Disconnected)
+        }
+
+        fn request_with_context_and_cancellation(
+            &self,
+            _request: RemoteRequest,
+            _body: Vec<u8>,
+            _context: RemoteRequestContext,
+            cancellation: &RemoteRequestCancellation,
+        ) -> std::result::Result<(RemoteResponse, Vec<u8>), RemoteClientError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            cancellation.cancel();
+            Err(RemoteClientError::Disconnected)
+        }
+
+        fn shutdown(&self) -> std::result::Result<(), RemoteClientError> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct CancellationObservingState {
+        started: bool,
+        cancelled: bool,
+        finished: bool,
+    }
+
+    struct CancellationObservingProtocolClient {
+        state: Arc<(StdMutex<CancellationObservingState>, Condvar)>,
+    }
+
+    impl RemoteWorkspaceProtocolClient for CancellationObservingProtocolClient {
+        fn request(
+            &self,
+            _request: RemoteRequest,
+            _body: Vec<u8>,
+        ) -> std::result::Result<(RemoteResponse, Vec<u8>), RemoteClientError> {
+            Err(RemoteClientError::Disconnected)
+        }
+
+        fn request_with_context_and_cancellation(
+            &self,
+            request: RemoteRequest,
+            _body: Vec<u8>,
+            _context: RemoteRequestContext,
+            cancellation: &RemoteRequestCancellation,
+        ) -> std::result::Result<(RemoteResponse, Vec<u8>), RemoteClientError> {
+            let (state, wake) = &*self.state;
+            {
+                let mut state = state.lock().unwrap();
+                state.started = true;
+                wake.notify_all();
+            }
+            let callback_state = Arc::clone(&self.state);
+            cancellation.register(move || {
+                let (state, wake) = &*callback_state;
+                state.lock().unwrap().cancelled = true;
+                wake.notify_all();
+            });
+            let mut state = state.lock().unwrap();
+            while !state.cancelled {
+                state = wake.wait(state).unwrap();
+            }
+            state.finished = true;
+            wake.notify_all();
+            Err(remote_request_cancelled_error(request.v5_method()))
+        }
+
+        fn shutdown(&self) -> std::result::Result<(), RemoteClientError> {
+            Ok(())
+        }
+    }
+
+    fn wait_for_cancellation_observer(
+        state: &Arc<(StdMutex<CancellationObservingState>, Condvar)>,
+        predicate: impl Fn(&CancellationObservingState) -> bool,
+        label: &str,
+    ) {
+        let started = Instant::now();
+        let (state, wake) = &**state;
+        let mut state = state.lock().unwrap();
+        while !predicate(&state) {
+            let (next, _) = wake.wait_timeout(state, Duration::from_millis(20)).unwrap();
+            state = next;
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "timed out waiting for cancellation observer {label}"
+            );
+        }
     }
 
     #[derive(Clone)]
