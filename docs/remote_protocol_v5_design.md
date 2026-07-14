@@ -11,7 +11,7 @@ The user goal is a remote workspace that feels local: file tree changes appear q
 
 ## Current behaviour
 
-Protocol v5 is the active remote workspace protocol. It uses fixed binary frames, protobuf control messages and raw `DATA` bodies over SSH, WSL or local stdio. The client multiplexes requests through one reader and serialized writer. The server admits work through bounded class-specific pools and schedules response traffic by priority.
+Protocol v5 is the active remote workspace protocol. It uses fixed binary frames, protobuf control messages and raw `DATA` bodies over SSH, WSL or local stdio. The client multiplexes requests through one reader and a dedicated wake-driven writer. The server admits work through bounded class-specific pools and schedules response traffic by priority.
 
 The implementation includes:
 
@@ -25,7 +25,7 @@ The implementation includes:
 - Directory generations, fingerprints, `not_modified` responses, deltas and bounded server-side directory caching.
 - Safe read-only reconnect replay, configuration-derived startup options, bounded probe/handshake processes, OpenSSH connection reuse and transport keepalives.
 
-Post-v5 hardening also bounds the server producer-to-writer lanes, propagates validated priority through worker admission and response scheduling, and limits queued wire batches. The associated regression tests cover partial writes, blocked-flow resets, decompression bounds, watch storms, EOF cancellation and reconnect ambiguity.
+Post-v5 hardening also bounds the server producer-to-writer lanes, gives the client writer sole ownership of physical writes, propagates validated priority through worker admission and response scheduling, and limits queued wire batches. The associated regression tests cover partial writes, blocked-flow resets, decompression bounds, watch storms, EOF cancellation and reconnect ambiguity.
 
 Some architectural work remains. The synchronous workspace API still returns complete file/search/process results instead of exposing incremental consumers, so receive credit reflects transport demultiplexing rather than final UI consumption. Ordinary client requests do not yet have a default inactivity deadline or client-side heartbeat watchdog. Generic filesystem calls cannot be force-cancelled once blocked in the operating system. Reconnect does not yet restore watches, and UI cancellation does not yet propagate through every startup stage. Child handshakes and command probes have deadlines and reap their direct child; Unix probes also terminate descendants that remain in the child's process group. Windows needs job-object containment for the equivalent descendant guarantee, and no userspace deadline can force an uninterruptible operating-system wait to return. Browse-session handoff also remains future work. These are follow-up lifecycle and integration changes, not missing v5 wire primitives.
 
@@ -296,7 +296,7 @@ Priority values:
 
 Implementation model:
 
-- The client transport has one reader thread, a mutex-serialized writer and an in-flight stream map.
+- The client transport has one reader thread, one wake-driven writer thread and an in-flight stream map.
 - The server transport has one reader thread, a service-loop-owned writer and a scheduler.
 - Handlers run in bounded task pools by class: metadata, file body, search, git/env and process.
 - The writer picks frames using priority plus round-robin fairness so a single bulk stream cannot monopolize the connection.
