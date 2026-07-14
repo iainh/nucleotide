@@ -24028,6 +24028,73 @@ mod tests {
     }
 
     #[test]
+    fn v5_fragmented_duplex_retries_interruptions_end_to_end() {
+        let temp = tempfile::tempdir().unwrap();
+        let expected = (0_u8..=255).cycle().take(8 * 1024).collect::<Vec<_>>();
+        std::fs::write(temp.path().join("fragmented.bin"), &expected).unwrap();
+
+        let (client_endpoint, server_endpoint, controls) = fragmenting_duplex_pair();
+        let service =
+            WorkspaceService::new(LocalWorkspaceBackend, temp.path().to_path_buf()).unwrap();
+        let info = protocol_v5::ServerHandshakeInfo::current(temp.path().display().to_string());
+        let server_thread = std::thread::spawn(move || {
+            service.serve_v5_concurrent(
+                protocol_v5::FramedIo::new(server_endpoint.0, server_endpoint.1),
+                &info,
+            )
+        });
+
+        let mut hello = protocol_v5::ClientHello::nucleotide("fragmenting-test-client");
+        let mut settings = protocol_v5::ConnectionSettings::recommended();
+        settings.max_frame_body = 64;
+        hello.desired_settings = Some(settings);
+        let client = RemoteWorkspaceV5MultiplexedClient::connect(
+            protocol_v5::FramedIo::new(client_endpoint.0, client_endpoint.1),
+            hello,
+        )
+        .unwrap();
+
+        let read = client
+            .start_request(
+                RemoteRequest::ReadFile {
+                    path: PathBuf::from("fragmented.bin"),
+                    max_bytes: None,
+                },
+                Vec::new(),
+            )
+            .unwrap();
+        let stat = client
+            .start_request(
+                RemoteRequest::Stat {
+                    path: PathBuf::from("fragmented.bin"),
+                },
+                Vec::new(),
+            )
+            .unwrap();
+
+        let (stat_response, stat_body) = stat.wait().unwrap();
+        let RemoteResponse::Stat(stat) = stat_response else {
+            panic!("expected fragmented duplex stat response");
+        };
+        assert_eq!(stat.size, expected.len() as u64);
+        assert!(stat_body.is_empty());
+
+        let (read_response, read_body) = read.wait().unwrap();
+        let RemoteResponse::ReadFile(read) = read_response else {
+            panic!("expected fragmented duplex read response");
+        };
+        assert_eq!(read.size, expected.len() as u64);
+        assert_eq!(read_body, expected);
+
+        client.shutdown().unwrap();
+        server_thread.join().unwrap().unwrap();
+        for control in controls {
+            control.close();
+        }
+        client.close();
+    }
+
+    #[test]
     fn v5_service_shutdown_sends_goaway_after_final_response() {
         let temp = tempfile::tempdir().unwrap();
         let request = RemoteRequest::Shutdown;
@@ -26329,6 +26396,72 @@ mod tests {
     }
 
     #[test]
+    fn v5_shutdown_grace_cancels_blocked_filesystem_worker() {
+        let temp = tempfile::tempdir().unwrap();
+        let list = RemoteRequest::ListDirs {
+            paths: vec![PathBuf::from("first"), PathBuf::from("second")],
+        };
+        let shutdown = RemoteRequest::Shutdown;
+        let mut request_frames = v5_request_frames(1, &list, &[]);
+        request_frames.extend(v5_request_frames(3, &shutdown, &[]));
+
+        let mut settings = protocol_v5::ConnectionSettings::recommended();
+        settings.shutdown_grace_ms = 200;
+        let input = BlockingRead::default();
+        input.push(v5_client_input_with_settings(request_frames, settings));
+        let output = SharedWrite::default();
+        let backend = ConcurrentV5Backend::new();
+        let service = WorkspaceService::new(backend.clone(), temp.path().to_path_buf()).unwrap();
+        let service_thread = spawn_v5_concurrent_service(
+            service,
+            &input,
+            &output,
+            protocol_v5::ServerHandshakeInfo::current(temp.path().display().to_string()),
+        );
+        let cancellation = backend.wait_for_first_list_cancellation();
+
+        wait_for_v5_stream_frame(&output, 3, protocol_v5::FrameType::EndStream);
+        assert!(
+            !cancellation.is_cancelled(),
+            "shutdown should allow active work to drain during the negotiated grace"
+        );
+
+        let started = Instant::now();
+        while !cancellation.is_cancelled() {
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "shutdown grace expiry did not reach the filesystem cancellation token"
+            );
+            std::thread::yield_now();
+        }
+
+        backend.release_first_list();
+        input.close();
+        service_thread.join().unwrap();
+
+        assert_eq!(backend.list_dir_calls(), vec![temp.path().join("first")]);
+        let frames = read_v5_frames(output.bytes());
+        let (response, body, error) = decode_v5_service_response(&frames, 3);
+        assert_eq!(response, Some(RemoteResponse::Shutdown));
+        assert!(body.is_empty());
+        assert!(error.is_none());
+
+        let shutdown_response_index = v5_final_response_index(&frames, 3);
+        let goaway_index = frames
+            .iter()
+            .position(|frame| frame.frame_type == protocol_v5::FrameType::GoAway)
+            .expect("shutdown should emit GOAWAY");
+        assert!(goaway_index > shutdown_response_index);
+        assert!(!frames.iter().any(|frame| {
+            frame.stream_id == 1
+                && matches!(
+                    frame.frame_type,
+                    protocol_v5::FrameType::Headers | protocol_v5::FrameType::EndStream
+                )
+        }));
+    }
+
+    #[test]
     fn v5_peer_eof_cancels_blocked_filesystem_worker() {
         let temp = tempfile::tempdir().unwrap();
         let request = RemoteRequest::ListDirs {
@@ -27392,6 +27525,139 @@ mod tests {
             }
             Ok(len)
         }
+    }
+
+    #[derive(Default)]
+    struct FragmentingPipeState {
+        bytes: VecDeque<u8>,
+        closed: bool,
+    }
+
+    #[derive(Clone)]
+    struct FragmentingPipeControl {
+        state: Arc<(StdMutex<FragmentingPipeState>, Condvar)>,
+    }
+
+    impl FragmentingPipeControl {
+        fn close(&self) {
+            let (lock, cvar) = &*self.state;
+            let mut state = lock.lock().unwrap();
+            state.closed = true;
+            cvar.notify_all();
+        }
+    }
+
+    struct FragmentingRead {
+        state: Arc<(StdMutex<FragmentingPipeState>, Condvar)>,
+        calls: usize,
+    }
+
+    impl Read for FragmentingRead {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            if buf.is_empty() {
+                return Ok(0);
+            }
+            self.calls += 1;
+            if self.calls.is_multiple_of(7) {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "injected fragmented read interruption",
+                ));
+            }
+
+            let (lock, cvar) = &*self.state;
+            let mut state = lock.lock().unwrap();
+            while state.bytes.is_empty() && !state.closed {
+                state = cvar.wait(state).unwrap();
+            }
+            let Some(byte) = state.bytes.pop_front() else {
+                return Ok(0);
+            };
+            buf[0] = byte;
+            Ok(1)
+        }
+    }
+
+    struct FragmentingWrite {
+        state: Arc<(StdMutex<FragmentingPipeState>, Condvar)>,
+        calls: usize,
+    }
+
+    impl Write for FragmentingWrite {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            if buf.is_empty() {
+                return Ok(0);
+            }
+            self.calls += 1;
+            if self.calls.is_multiple_of(11) {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "injected fragmented write interruption",
+                ));
+            }
+
+            let (lock, cvar) = &*self.state;
+            let mut state = lock.lock().unwrap();
+            if state.closed {
+                return Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "fragmenting pipe is closed",
+                ));
+            }
+            state.bytes.push_back(buf[0]);
+            cvar.notify_one();
+            Ok(1)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    type FragmentingEndpoint = (FragmentingRead, FragmentingWrite);
+
+    fn fragmenting_duplex_pair() -> (
+        FragmentingEndpoint,
+        FragmentingEndpoint,
+        [FragmentingPipeControl; 2],
+    ) {
+        let client_inbound = Arc::new((
+            StdMutex::new(FragmentingPipeState::default()),
+            Condvar::new(),
+        ));
+        let server_inbound = Arc::new((
+            StdMutex::new(FragmentingPipeState::default()),
+            Condvar::new(),
+        ));
+        let client = (
+            FragmentingRead {
+                state: Arc::clone(&client_inbound),
+                calls: 0,
+            },
+            FragmentingWrite {
+                state: Arc::clone(&server_inbound),
+                calls: 0,
+            },
+        );
+        let server = (
+            FragmentingRead {
+                state: Arc::clone(&server_inbound),
+                calls: 0,
+            },
+            FragmentingWrite {
+                state: Arc::clone(&client_inbound),
+                calls: 0,
+            },
+        );
+        let controls = [
+            FragmentingPipeControl {
+                state: client_inbound,
+            },
+            FragmentingPipeControl {
+                state: server_inbound,
+            },
+        ];
+        (client, server, controls)
     }
 
     fn spawn_v5_concurrent_service<B>(
