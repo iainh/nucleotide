@@ -90,9 +90,9 @@ use nucleotide_terminal::TerminalBounds;
 use nucleotide_workspace::local_workspace_backend;
 use nucleotide_workspace::{
     FileKind, FileSearchQuery, FileSearchResult, FileStat, ProjectEnvironmentOrigin,
-    ProjectEnvironmentSnapshot, ReadOptions, TextSearchQuery, TextSearchResult, WorkspaceBackend,
-    WorkspaceBackendHandle, WorkspaceIdentity, WorkspaceLocation, absolutize_workspace_path,
-    classify_workspace_location, posix_path_string,
+    ProjectEnvironmentSnapshot, ReadOptions, TextSearchEvent, TextSearchQuery, TextSearchResult,
+    WorkspaceBackend, WorkspaceBackendHandle, WorkspaceIdentity, WorkspaceLocation,
+    absolutize_workspace_path, classify_workspace_location, posix_path_string,
 };
 use slotmap::KeyData;
 // (no direct Workspace v2 items used here)
@@ -2269,8 +2269,8 @@ async fn global_search_disk_matches_with_backend_async(
         return Ok(Vec::new());
     }
 
-    let disk_matches = backend
-        .text_search(global_search_text_query(
+    let mut disk_stream = backend
+        .text_search_stream(global_search_text_query(
             &root,
             &query,
             smart_case,
@@ -2283,7 +2283,21 @@ async fn global_search_disk_matches_with_backend_async(
         .map_err(|err| err.to_string())?;
 
     let mut matches = Vec::new();
-    append_global_search_text_matches(&mut matches, &root, disk_matches, limit);
+    while let Some(event) = disk_stream.next().await {
+        match event.map_err(|err| err.to_string())? {
+            TextSearchEvent::Batch(batch) => append_global_search_text_matches(
+                &mut matches,
+                &root,
+                TextSearchResult {
+                    root: root.clone(),
+                    matches: batch,
+                    truncated: false,
+                },
+                limit,
+            ),
+            TextSearchEvent::Complete { .. } => break,
+        }
+    }
     Ok(matches)
 }
 
@@ -15965,12 +15979,16 @@ async fn file_picker_search_result_from_backend(
     limit: usize,
     file_picker_config: helix_view::editor::FilePickerConfig,
 ) -> Result<FileSearchResult, String> {
-    backend
-        .file_search(file_picker_search_query(
+    let stream = backend
+        .file_search_stream(file_picker_search_query(
             &base_dir,
             limit,
             &file_picker_config,
         ))
+        .await
+        .map_err(|err| err.to_string())?;
+    stream
+        .collect_search(&base_dir)
         .await
         .map_err(|err| err.to_string())
 }
