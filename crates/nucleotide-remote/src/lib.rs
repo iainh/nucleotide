@@ -9307,8 +9307,51 @@ where
     where
         C: 'static,
     {
+        self.request_with_optional_workspace_cancellation(operation, path, request, body, None)
+            .await
+    }
+
+    async fn request_with_workspace_cancellation(
+        &self,
+        operation: &'static str,
+        path: &Path,
+        request: RemoteRequest,
+        body: Vec<u8>,
+        workspace_cancellation: &WorkspaceCancellationToken,
+    ) -> nucleotide_workspace::Result<(RemoteResponse, Vec<u8>)>
+    where
+        C: 'static,
+    {
+        self.request_with_optional_workspace_cancellation(
+            operation,
+            path,
+            request,
+            body,
+            Some(workspace_cancellation),
+        )
+        .await
+    }
+
+    async fn request_with_optional_workspace_cancellation(
+        &self,
+        operation: &'static str,
+        path: &Path,
+        request: RemoteRequest,
+        body: Vec<u8>,
+        workspace_cancellation: Option<&WorkspaceCancellationToken>,
+    ) -> nucleotide_workspace::Result<(RemoteResponse, Vec<u8>)>
+    where
+        C: 'static,
+    {
+        if let Some(cancellation) = workspace_cancellation {
+            cancellation.check_cancelled(operation, path)?;
+        }
         let mut cancel_on_drop = RemoteRequestCancelOnDrop::new();
         let cancellation = cancel_on_drop.cancellation();
+        let workspace_cancellation_registration = workspace_cancellation.map(|workspace| {
+            let cancellation = cancellation.clone();
+            workspace.on_cancel(move || cancellation.cancel())
+        });
         let client = self.client.clone();
         let identity = self.identity.clone();
         let path = path.to_path_buf();
@@ -9398,7 +9441,9 @@ where
                 source,
             })?;
 
-        match receiver.await {
+        let received = receiver.await;
+        drop(workspace_cancellation_registration);
+        match received {
             Ok(result) => {
                 cancel_on_drop.disarm();
                 result
@@ -9593,6 +9638,29 @@ where
         }
     }
 
+    async fn stat_with_cancellation(
+        &self,
+        path: &Path,
+        cancellation: &WorkspaceCancellationToken,
+    ) -> nucleotide_workspace::Result<FileStat> {
+        let (response, _) = self
+            .request_with_workspace_cancellation(
+                "stat",
+                path,
+                RemoteRequest::Stat {
+                    path: path.to_path_buf(),
+                },
+                Vec::new(),
+                cancellation,
+            )
+            .await?;
+        cancellation.check_cancelled("stat", path)?;
+        match response {
+            RemoteResponse::Stat(stat) => Ok(file_stat_from_response(stat)),
+            other => Err(unexpected_response_error("stat", path, other)),
+        }
+    }
+
     async fn list_dir(&self, path: &Path) -> nucleotide_workspace::Result<DirectoryListing> {
         let (response, _) = self
             .request(
@@ -9604,6 +9672,29 @@ where
                 Vec::new(),
             )
             .await?;
+        match response {
+            RemoteResponse::ListDir(listing) => Ok(directory_listing_from_response(listing)),
+            other => Err(unexpected_response_error("list directory", path, other)),
+        }
+    }
+
+    async fn list_dir_with_cancellation(
+        &self,
+        path: &Path,
+        cancellation: &WorkspaceCancellationToken,
+    ) -> nucleotide_workspace::Result<DirectoryListing> {
+        let (response, _) = self
+            .request_with_workspace_cancellation(
+                "list directory",
+                path,
+                RemoteRequest::ListDir {
+                    path: path.to_path_buf(),
+                },
+                Vec::new(),
+                cancellation,
+            )
+            .await?;
+        cancellation.check_cancelled("list directory", path)?;
         match response {
             RemoteResponse::ListDir(listing) => Ok(directory_listing_from_response(listing)),
             other => Err(unexpected_response_error("list directory", path, other)),
@@ -9709,6 +9800,37 @@ where
         }
     }
 
+    async fn find_ancestor_file_with_cancellation(
+        &self,
+        start: &Path,
+        file_name: &str,
+        limit: usize,
+        cancellation: &WorkspaceCancellationToken,
+    ) -> nucleotide_workspace::Result<Option<PathBuf>> {
+        let (response, _) = self
+            .request_with_workspace_cancellation(
+                "find ancestor file",
+                start,
+                RemoteRequest::FindAncestorFile {
+                    start: start.to_path_buf(),
+                    file_name: file_name.to_string(),
+                    limit,
+                },
+                Vec::new(),
+                cancellation,
+            )
+            .await?;
+        cancellation.check_cancelled("find ancestor file", start)?;
+        match response {
+            RemoteResponse::FindAncestorFile(path) => Ok(path),
+            other => Err(unexpected_response_error(
+                "find ancestor file",
+                start,
+                other,
+            )),
+        }
+    }
+
     async fn create_file(&self, path: &Path) -> nucleotide_workspace::Result<FileStat> {
         let (response, _) = self
             .request(
@@ -9726,6 +9848,28 @@ where
         }
     }
 
+    async fn create_file_with_cancellation(
+        &self,
+        path: &Path,
+        cancellation: &WorkspaceCancellationToken,
+    ) -> nucleotide_workspace::Result<FileStat> {
+        let (response, _) = self
+            .request_with_workspace_cancellation(
+                "create file",
+                path,
+                RemoteRequest::CreateFile {
+                    path: path.to_path_buf(),
+                },
+                Vec::new(),
+                cancellation,
+            )
+            .await?;
+        match response {
+            RemoteResponse::CreateFile(stat) => Ok(file_stat_from_response(stat)),
+            other => Err(unexpected_response_error("create file", path, other)),
+        }
+    }
+
     async fn create_dir(&self, path: &Path) -> nucleotide_workspace::Result<FileStat> {
         let (response, _) = self
             .request(
@@ -9735,6 +9879,28 @@ where
                     path: path.to_path_buf(),
                 },
                 Vec::new(),
+            )
+            .await?;
+        match response {
+            RemoteResponse::CreateDir(stat) => Ok(file_stat_from_response(stat)),
+            other => Err(unexpected_response_error("create directory", path, other)),
+        }
+    }
+
+    async fn create_dir_with_cancellation(
+        &self,
+        path: &Path,
+        cancellation: &WorkspaceCancellationToken,
+    ) -> nucleotide_workspace::Result<FileStat> {
+        let (response, _) = self
+            .request_with_workspace_cancellation(
+                "create directory",
+                path,
+                RemoteRequest::CreateDir {
+                    path: path.to_path_buf(),
+                },
+                Vec::new(),
+                cancellation,
             )
             .await?;
         match response {
@@ -9761,6 +9927,30 @@ where
         }
     }
 
+    async fn rename_path_with_cancellation(
+        &self,
+        from: &Path,
+        to: &Path,
+        cancellation: &WorkspaceCancellationToken,
+    ) -> nucleotide_workspace::Result<FileStat> {
+        let (response, _) = self
+            .request_with_workspace_cancellation(
+                "rename path",
+                from,
+                RemoteRequest::RenamePath {
+                    from: from.to_path_buf(),
+                    to: to.to_path_buf(),
+                },
+                Vec::new(),
+                cancellation,
+            )
+            .await?;
+        match response {
+            RemoteResponse::RenamePath(stat) => Ok(file_stat_from_response(stat)),
+            other => Err(unexpected_response_error("rename path", from, other)),
+        }
+    }
+
     async fn delete_path(&self, path: &Path) -> nucleotide_workspace::Result<FileStat> {
         let (response, _) = self
             .request(
@@ -9770,6 +9960,28 @@ where
                     path: path.to_path_buf(),
                 },
                 Vec::new(),
+            )
+            .await?;
+        match response {
+            RemoteResponse::DeletePath(stat) => Ok(file_stat_from_response(stat)),
+            other => Err(unexpected_response_error("delete path", path, other)),
+        }
+    }
+
+    async fn delete_path_with_cancellation(
+        &self,
+        path: &Path,
+        cancellation: &WorkspaceCancellationToken,
+    ) -> nucleotide_workspace::Result<FileStat> {
+        let (response, _) = self
+            .request_with_workspace_cancellation(
+                "delete path",
+                path,
+                RemoteRequest::DeletePath {
+                    path: path.to_path_buf(),
+                },
+                Vec::new(),
+                cancellation,
             )
             .await?;
         match response {
@@ -9788,6 +10000,30 @@ where
                     to: to.to_path_buf(),
                 },
                 Vec::new(),
+            )
+            .await?;
+        match response {
+            RemoteResponse::CopyPath(stat) => Ok(file_stat_from_response(stat)),
+            other => Err(unexpected_response_error("copy path", from, other)),
+        }
+    }
+
+    async fn copy_path_with_cancellation(
+        &self,
+        from: &Path,
+        to: &Path,
+        cancellation: &WorkspaceCancellationToken,
+    ) -> nucleotide_workspace::Result<FileStat> {
+        let (response, _) = self
+            .request_with_workspace_cancellation(
+                "copy path",
+                from,
+                RemoteRequest::CopyPath {
+                    from: from.to_path_buf(),
+                    to: to.to_path_buf(),
+                },
+                Vec::new(),
+                cancellation,
             )
             .await?;
         match response {
@@ -9819,6 +10055,32 @@ where
         }
     }
 
+    async fn read_file_with_cancellation(
+        &self,
+        path: &Path,
+        options: ReadOptions,
+        cancellation: &WorkspaceCancellationToken,
+    ) -> nucleotide_workspace::Result<FileRead> {
+        let (response, body) = self
+            .request_with_workspace_cancellation(
+                "read file",
+                path,
+                RemoteRequest::ReadFile {
+                    path: path.to_path_buf(),
+                    max_bytes: options.max_bytes,
+                },
+                Vec::new(),
+                cancellation,
+            )
+            .await?;
+        cancellation.check_cancelled("read file", path)?;
+        match response {
+            RemoteResponse::ReadFile(read) => file_read_from_response(read, body)
+                .map_err(|error| client_error_to_workspace("read file", path, error)),
+            other => Err(unexpected_response_error("read file", path, other)),
+        }
+    }
+
     async fn write_file(
         &self,
         path: &Path,
@@ -9840,6 +10102,37 @@ where
                         .and_then(system_time_unix_nanos),
                 },
                 bytes.to_vec(),
+            )
+            .await?;
+        match response {
+            RemoteResponse::WriteFile(result) => Ok(write_result_from_response(result)),
+            other => Err(unexpected_response_error("write file", path, other)),
+        }
+    }
+
+    async fn write_file_with_cancellation(
+        &self,
+        path: &Path,
+        bytes: &[u8],
+        options: WriteOptions,
+        cancellation: &WorkspaceCancellationToken,
+    ) -> nucleotide_workspace::Result<WriteResult> {
+        let (response, _) = self
+            .request_with_workspace_cancellation(
+                "write file",
+                path,
+                RemoteRequest::WriteFile {
+                    path: path.to_path_buf(),
+                    create_parent_dirs: options.create_parent_dirs,
+                    expected_modified_unix_millis: options
+                        .expected_modified
+                        .and_then(system_time_unix_millis),
+                    expected_modified_unix_nanos: options
+                        .expected_modified
+                        .and_then(system_time_unix_nanos),
+                },
+                bytes.to_vec(),
+                cancellation,
             )
             .await?;
         match response {
@@ -19743,6 +20036,46 @@ mod tests {
         wait_for_cancellation_observer(&state, |state| state.finished, "worker cancellation");
         let state = state.0.lock().unwrap();
         assert!(state.cancelled);
+    }
+
+    #[test]
+    fn explicit_workspace_cancellation_wakes_live_remote_request() {
+        let input = BlockingRead::default();
+        let output = SharedWrite::default();
+        input.push(v5_server_input(Vec::new()));
+        let client = RemoteWorkspaceV5MultiplexedClient::connect(
+            protocol_v5::FramedIo::new(input.clone(), output.clone()),
+            protocol_v5::ClientHello::nucleotide("test-client"),
+        )
+        .unwrap();
+        let shared = Arc::clone(&client.shared);
+        let backend = Arc::new(RemoteWorkspaceBackendImpl::new(loopback_identity(), client));
+        let cancellation = WorkspaceCancellationToken::new();
+        let request_backend = Arc::clone(&backend);
+        let request_cancellation = cancellation.clone();
+        let (result_sender, result_receiver) = mpsc::channel();
+        let request = std::thread::spawn(move || {
+            let result = futures::executor::block_on(
+                request_backend
+                    .stat_with_cancellation(Path::new("pending.rs"), &request_cancellation),
+            );
+            result_sender.send(result).unwrap();
+        });
+        let stream_id = wait_for_v5_request_stream(&output, "fs.stat");
+
+        cancellation.cancel();
+
+        let error = result_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("explicit workspace cancellation did not wake the request")
+            .unwrap_err();
+        assert!(matches!(error, WorkspaceError::Cancelled { .. }));
+        wait_for_v5_stream_frame(&output, stream_id, protocol_v5::FrameType::ResetStream);
+        assert!(shared.waiters.lock().unwrap().is_empty());
+
+        request.join().unwrap();
+        input.close();
+        drop(backend);
     }
 
     #[test]
