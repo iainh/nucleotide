@@ -1,6 +1,7 @@
 use std::{
     ffi::OsStr,
     io::{self, Read},
+    path::Path,
     process::{Child, Command, ExitStatus, Output, Stdio},
     sync::{
         Arc,
@@ -12,11 +13,129 @@ use std::{
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+#[cfg(windows)]
+const CREATE_SUSPENDED: u32 = 0x0000_0004;
 
 pub fn command(program: impl AsRef<OsStr>) -> Command {
     let mut command = Command::new(program);
     hide_window(&mut command);
     command
+}
+
+/// Builds a command whose Windows creation flags can be preserved during contained startup.
+///
+/// Use this builder with [`ContainedChild::spawn`], [`output_with_limits_contained`], or
+/// [`output_with_limits_contained_and_cancellation`]. The tracked flag mask lets the Windows path
+/// add `CREATE_SUSPENDED` for Job Object assignment and restore the exact caller-selected mask even
+/// when spawning fails.
+pub struct ContainedCommand {
+    command: Command,
+    #[cfg(windows)]
+    creation_flags: u32,
+}
+
+pub fn contained_command(program: impl AsRef<OsStr>) -> ContainedCommand {
+    let mut command = Command::new(program);
+    hide_window(&mut command);
+    ContainedCommand {
+        command,
+        #[cfg(windows)]
+        creation_flags: CREATE_NO_WINDOW,
+    }
+}
+
+impl ContainedCommand {
+    pub fn arg(&mut self, arg: impl AsRef<OsStr>) -> &mut Self {
+        self.command.arg(arg);
+        self
+    }
+
+    pub fn args<I, S>(&mut self, args: I) -> &mut Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        self.command.args(args);
+        self
+    }
+
+    pub fn env(&mut self, key: impl AsRef<OsStr>, value: impl AsRef<OsStr>) -> &mut Self {
+        self.command.env(key, value);
+        self
+    }
+
+    pub fn envs<I, K, V>(&mut self, vars: I) -> &mut Self
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: AsRef<OsStr>,
+        V: AsRef<OsStr>,
+    {
+        self.command.envs(vars);
+        self
+    }
+
+    pub fn env_remove(&mut self, key: impl AsRef<OsStr>) -> &mut Self {
+        self.command.env_remove(key);
+        self
+    }
+
+    pub fn env_clear(&mut self) -> &mut Self {
+        self.command.env_clear();
+        self
+    }
+
+    pub fn current_dir(&mut self, dir: impl AsRef<Path>) -> &mut Self {
+        self.command.current_dir(dir);
+        self
+    }
+
+    pub fn stdin(&mut self, stdin: impl Into<Stdio>) -> &mut Self {
+        self.command.stdin(stdin);
+        self
+    }
+
+    pub fn stdout(&mut self, stdout: impl Into<Stdio>) -> &mut Self {
+        self.command.stdout(stdout);
+        self
+    }
+
+    pub fn stderr(&mut self, stderr: impl Into<Stdio>) -> &mut Self {
+        self.command.stderr(stderr);
+        self
+    }
+
+    #[cfg(windows)]
+    /// Sets the Windows creation-flag mask preserved by contained startup.
+    ///
+    /// `CREATE_SUSPENDED` is reserved because contained startup adds and later resumes that state.
+    #[track_caller]
+    pub fn creation_flags(&mut self, flags: u32) -> &mut Self {
+        use std::os::windows::process::CommandExt as _;
+
+        assert_eq!(
+            flags & CREATE_SUSPENDED,
+            0,
+            "ContainedCommand reserves CREATE_SUSPENDED"
+        );
+        self.command.creation_flags(flags);
+        self.creation_flags = flags;
+        self
+    }
+
+    fn as_std_mut(&mut self) -> &mut Command {
+        &mut self.command
+    }
+
+    #[cfg(windows)]
+    fn spawn_suspended(&mut self) -> io::Result<Child> {
+        use std::os::windows::process::CommandExt as _;
+
+        self.command
+            .creation_flags(self.creation_flags | CREATE_SUSPENDED);
+        let child = self.command.spawn();
+        self.command.creation_flags(self.creation_flags);
+        child
+    }
 }
 
 pub fn hide_window(command: &mut Command) -> &mut Command {
@@ -48,19 +167,30 @@ impl OutputLimits {
 
 /// Runs a child with bounded output and kills and reaps it when the deadline expires.
 ///
-/// On Unix the child starts a new process group so descendants that retain an output pipe are
-/// terminated with the child. Other platforms fall back to terminating the direct child; a
-/// platform-specific job object is required to extend that guarantee to descendants on Windows.
-/// The caller remains responsible for configuring stdin, including setting it to [`Stdio::null`]
-/// for commands that should receive immediate EOF.
+/// On Unix the child starts a new process group. Other platforms terminate the direct child. Use
+/// [`output_with_limits_contained`] when Windows-side descendants must be contained as well. The
+/// caller remains responsible for configuring stdin, including setting it to [`Stdio::null`] for
+/// commands that should receive immediate EOF.
 pub fn output_with_limits(command: &mut Command, limits: OutputLimits) -> io::Result<Output> {
+    output_with_limits_inner(command, limits, None)
+}
+
+/// Runs a tracked command with bounded output and descendant containment.
+///
+/// On Unix the child starts a new process group. On Windows it starts suspended, enters an unnamed
+/// Job Object, and only then resumes. Successful completion releases containment so intentional
+/// detached descendants such as OpenSSH `ControlPersist` can remain alive.
+pub fn output_with_limits_contained(
+    command: &mut ContainedCommand,
+    limits: OutputLimits,
+) -> io::Result<Output> {
     output_with_limits_inner(command, limits, None)
 }
 
 /// Runs a child with bounded output and stops it when cancellation is requested.
 ///
-/// Cancellation is cooperative at a polling interval of at most 10 ms. The same containment and
-/// reaping guarantees as [`output_with_limits`] apply, including process-group cleanup on Unix.
+/// Cancellation is cooperative at a polling interval of at most 10 ms. The same reaping guarantees
+/// as [`output_with_limits`] apply.
 pub fn output_with_limits_and_cancellation(
     command: &mut Command,
     limits: OutputLimits,
@@ -69,17 +199,56 @@ pub fn output_with_limits_and_cancellation(
     output_with_limits_inner(command, limits, Some(cancellation))
 }
 
-fn output_with_limits_inner(
-    command: &mut Command,
+/// Runs a tracked command with bounded output, cancellation, and descendant containment.
+///
+/// Cancellation is cooperative at a polling interval of at most 10 ms. Timeout, cancellation and
+/// output-limit failures terminate the contained process tree and reap the direct child.
+pub fn output_with_limits_contained_and_cancellation(
+    command: &mut ContainedCommand,
+    limits: OutputLimits,
+    cancellation: &AtomicBool,
+) -> io::Result<Output> {
+    output_with_limits_inner(command, limits, Some(cancellation))
+}
+
+trait OutputCommand {
+    fn as_std_mut(&mut self) -> &mut Command;
+    fn spawn_output_child(&mut self) -> io::Result<OutputChildGuard>;
+}
+
+impl OutputCommand for Command {
+    fn as_std_mut(&mut self) -> &mut Command {
+        self
+    }
+
+    fn spawn_output_child(&mut self) -> io::Result<OutputChildGuard> {
+        OutputChildGuard::spawn_standard(self)
+    }
+}
+
+impl OutputCommand for ContainedCommand {
+    fn as_std_mut(&mut self) -> &mut Command {
+        self.as_std_mut()
+    }
+
+    fn spawn_output_child(&mut self) -> io::Result<OutputChildGuard> {
+        OutputChildGuard::spawn_contained(self)
+    }
+}
+
+fn output_with_limits_inner<C: OutputCommand>(
+    command: &mut C,
     limits: OutputLimits,
     cancellation: Option<&AtomicBool>,
 ) -> io::Result<Output> {
     if cancellation.is_some_and(|cancellation| cancellation.load(Ordering::Acquire)) {
         return Err(cancelled_output_error());
     }
-    command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    configure_output_child(command);
-    let mut child = ChildGuard::spawn(command)?;
+    command
+        .as_std_mut()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn_output_child()?;
     let stdout = child
         .child_mut()
         .stdout
@@ -150,7 +319,7 @@ fn output_with_limits_inner(
             "child output exceeded configured byte limit",
         ));
     }
-    child.disarm();
+    child.disarm()?;
     Ok(Output {
         status: status.expect("child status was observed before joining output readers"),
         stdout,
@@ -163,55 +332,214 @@ fn cancelled_output_error() -> io::Error {
 }
 
 #[cfg(unix)]
-fn configure_output_child(command: &mut Command) {
+fn configure_contained_child(command: &mut ContainedCommand) {
     use std::os::unix::process::CommandExt as _;
 
-    command.process_group(0);
+    command.as_std_mut().process_group(0);
 }
 
 #[cfg(not(unix))]
-fn configure_output_child(_command: &mut Command) {}
+fn configure_contained_child(_command: &mut ContainedCommand) {}
 
-struct ChildGuard {
-    child: Option<Child>,
+/// A child process whose local descendants are terminated with it.
+///
+/// Unix containment uses a process group. Windows containment uses a Job Object and starts the
+/// process suspended so user code cannot create descendants before assignment. Dropping this
+/// value requests termination but does not wait; callers that need reaping must call [`Self::wait`].
+pub struct ContainedChild {
+    child: Child,
     #[cfg(unix)]
     process_group_id: u32,
+    #[cfg(windows)]
+    job: WindowsJob,
+    containment_released: bool,
+    termination_requested: bool,
 }
 
-impl ChildGuard {
-    fn spawn(command: &mut Command) -> io::Result<Self> {
+impl ContainedChild {
+    /// Spawns a child inside the platform's descendant-containment primitive.
+    pub fn spawn(command: &mut ContainedCommand) -> io::Result<Self> {
+        configure_contained_child(command);
+
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle as _;
+
+            let job = WindowsJob::new()?;
+            let child = command.spawn_suspended()?;
+            let child_id = child.id();
+            let process_handle = child.as_raw_handle();
+            let mut contained = Self {
+                child,
+                job,
+                containment_released: false,
+                termination_requested: false,
+            };
+            let setup = contained
+                .job
+                .assign(process_handle)
+                .and_then(|()| resume_only_suspended_thread(child_id));
+            if let Err(setup_error) = setup {
+                let termination = contained.terminate();
+                let wait = wait_after_termination(contained.child_mut(), &termination);
+                return Err(combine_setup_cleanup_error(setup_error, termination, wait));
+            }
+            Ok(contained)
+        }
+
+        #[cfg(not(windows))]
+        {
+            let child = command.as_std_mut().spawn()?;
+            #[cfg(unix)]
+            let process_group_id = child.id();
+
+            Ok(Self {
+                child,
+                #[cfg(unix)]
+                process_group_id,
+                containment_released: false,
+                termination_requested: false,
+            })
+        }
+    }
+
+    pub fn id(&self) -> u32 {
+        self.child.id()
+    }
+
+    pub fn child_mut(&mut self) -> &mut Child {
+        &mut self.child
+    }
+
+    /// Requests termination of the child and its local descendants without waiting for exit.
+    pub fn terminate(&mut self) -> io::Result<()> {
+        if self.containment_released || self.termination_requested {
+            return Ok(());
+        }
+
+        #[cfg(unix)]
+        let termination = terminate_process_group(&mut self.child, self.process_group_id);
+        #[cfg(windows)]
+        let termination = if self.job.is_assigned() {
+            self.job
+                .terminate()
+                .or_else(|job_error| terminate_direct_child(&mut self.child).and(Err(job_error)))
+        } else {
+            terminate_direct_child(&mut self.child)
+        };
+        #[cfg(not(any(unix, windows)))]
+        let termination = terminate_direct_child(&mut self.child);
+
+        if termination.is_ok() {
+            self.termination_requested = true;
+        }
+        termination
+    }
+
+    /// Waits for and reaps the direct child.
+    pub fn wait(&mut self) -> io::Result<ExitStatus> {
+        self.child.wait()
+    }
+
+    fn release_containment(&mut self) -> io::Result<()> {
+        #[cfg(windows)]
+        self.job.release()?;
+
+        self.containment_released = true;
+        Ok(())
+    }
+}
+
+impl Drop for ContainedChild {
+    fn drop(&mut self) {
+        if !self.containment_released && !self.termination_requested {
+            let _ = self.terminate();
+        }
+    }
+}
+
+struct OutputChildGuard {
+    child: Option<OutputChild>,
+}
+
+enum OutputChild {
+    Standard {
+        child: Child,
+        #[cfg(unix)]
+        process_group_id: u32,
+    },
+    Contained(ContainedChild),
+}
+
+impl OutputChildGuard {
+    fn spawn_standard(command: &mut Command) -> io::Result<Self> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt as _;
+            command.process_group(0);
+        }
         let child = command.spawn()?;
         #[cfg(unix)]
         let process_group_id = child.id();
 
         Ok(Self {
-            child: Some(child),
-            #[cfg(unix)]
-            process_group_id,
+            child: Some(OutputChild::Standard {
+                child,
+                #[cfg(unix)]
+                process_group_id,
+            }),
+        })
+    }
+
+    fn spawn_contained(command: &mut ContainedCommand) -> io::Result<Self> {
+        Ok(Self {
+            child: Some(OutputChild::Contained(ContainedChild::spawn(command)?)),
         })
     }
 
     fn child_mut(&mut self) -> &mut Child {
-        self.child
+        match self
+            .child
             .as_mut()
             .expect("child guard was used after being disarmed")
+        {
+            OutputChild::Standard { child, .. } => child,
+            OutputChild::Contained(child) => child.child_mut(),
+        }
     }
 
-    fn disarm(&mut self) {
+    fn disarm(&mut self) -> io::Result<()> {
+        if let Some(OutputChild::Contained(child)) = self.child.as_mut() {
+            child.release_containment()?;
+        }
         self.child.take();
+        Ok(())
     }
 
     fn terminate_and_reap(&mut self) -> io::Result<ExitStatus> {
-        let Some(mut child) = self.child.take() else {
+        let Some(child) = self.child.take() else {
             return Err(io::Error::other("child guard was already disarmed"));
         };
 
-        #[cfg(unix)]
-        let termination = terminate_process_group(&mut child, self.process_group_id);
-        #[cfg(not(unix))]
-        let termination = terminate_direct_child(&mut child);
-
-        let wait = child.wait();
+        let (termination, wait) = match child {
+            OutputChild::Standard {
+                mut child,
+                #[cfg(unix)]
+                process_group_id,
+            } => {
+                #[cfg(unix)]
+                let termination = terminate_process_group(&mut child, process_group_id);
+                #[cfg(not(unix))]
+                let termination = terminate_direct_child(&mut child);
+                let wait = wait_after_termination(&mut child, &termination);
+                (termination, wait)
+            }
+            OutputChild::Contained(mut child) => {
+                let termination = child.terminate();
+                let wait = wait_after_termination(child.child_mut(), &termination);
+                (termination, wait)
+            }
+        };
         match (termination, wait) {
             (Ok(()), Ok(status)) => Ok(status),
             (Err(error), Ok(_)) | (Ok(()), Err(error)) => Err(error),
@@ -225,7 +553,7 @@ impl ChildGuard {
     }
 }
 
-impl Drop for ChildGuard {
+impl Drop for OutputChildGuard {
     fn drop(&mut self) {
         if self.child.is_some() {
             let _ = self.terminate_and_reap();
@@ -267,6 +595,264 @@ fn terminate_direct_child(child: &mut Child) -> io::Result<()> {
         child.kill()?;
     }
     Ok(())
+}
+
+fn wait_after_termination(
+    child: &mut Child,
+    termination: &io::Result<()>,
+) -> io::Result<ExitStatus> {
+    if termination.is_ok() {
+        child.wait()
+    } else {
+        child.try_wait()?.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "skipped blocking reap after child termination failed",
+            )
+        })
+    }
+}
+
+#[cfg(windows)]
+struct WindowsJob {
+    handle: std::os::windows::io::OwnedHandle,
+    assigned: bool,
+}
+
+#[cfg(windows)]
+impl WindowsJob {
+    fn new() -> io::Result<Self> {
+        use std::os::windows::io::FromRawHandle as _;
+        use windows_sys::Win32::System::JobObjects::CreateJobObjectW;
+
+        // SAFETY: Null security attributes and name request a private, non-inheritable Job Object.
+        let raw_handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+        if raw_handle.is_null() {
+            return Err(windows_last_error("failed to create child Job Object"));
+        }
+        // SAFETY: CreateJobObjectW returned a new owned handle and null was rejected above.
+        let handle = unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(raw_handle) };
+        let job = Self {
+            handle,
+            assigned: false,
+        };
+        job.set_kill_on_close(true)?;
+        Ok(job)
+    }
+
+    fn assign(&mut self, process_handle: std::os::windows::io::RawHandle) -> io::Result<()> {
+        use std::os::windows::io::AsRawHandle as _;
+        use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
+
+        // SAFETY: Both handles remain owned and live for the duration of this call. The process is
+        // still suspended, so it cannot create an escaping descendant before assignment finishes.
+        let assigned =
+            unsafe { AssignProcessToJobObject(self.handle.as_raw_handle(), process_handle) };
+        if assigned == 0 {
+            return Err(windows_last_error(
+                "failed to assign suspended child to Job Object",
+            ));
+        }
+        self.assigned = true;
+        Ok(())
+    }
+
+    fn is_assigned(&self) -> bool {
+        self.assigned
+    }
+
+    fn terminate(&self) -> io::Result<()> {
+        use std::os::windows::io::AsRawHandle as _;
+        use windows_sys::Win32::System::JobObjects::TerminateJobObject;
+
+        // SAFETY: The Job Object handle is valid and remains owned by self.
+        if unsafe { TerminateJobObject(self.handle.as_raw_handle(), 1) } == 0 {
+            Err(windows_last_error("failed to terminate child Job Object"))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn release(&self) -> io::Result<()> {
+        self.set_kill_on_close(false)
+    }
+
+    fn set_kill_on_close(&self, enabled: bool) -> io::Result<()> {
+        use std::mem::size_of_val;
+        use std::os::windows::io::AsRawHandle as _;
+        use windows_sys::Win32::System::JobObjects::{
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+            JobObjectExtendedLimitInformation, SetInformationJobObject,
+        };
+
+        let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        if enabled {
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        }
+        let limits_len = u32::try_from(size_of_val(&limits)).map_err(|_| {
+            io::Error::other(format!(
+                "Job Object limit structure exceeded u32: {} bytes",
+                size_of_val(&limits)
+            ))
+        })?;
+        // SAFETY: limits has the layout required by JobObjectExtendedLimitInformation and remains
+        // live for the call. The handle is a live Job Object owned by self.
+        let configured = unsafe {
+            SetInformationJobObject(
+                self.handle.as_raw_handle(),
+                JobObjectExtendedLimitInformation,
+                std::ptr::from_ref(&limits).cast(),
+                limits_len,
+            )
+        };
+        if configured == 0 {
+            Err(windows_last_error(if enabled {
+                "failed to enable kill-on-close for child Job Object"
+            } else {
+                "failed to release child Job Object after successful completion"
+            }))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[cfg(windows)]
+fn resume_only_suspended_thread(process_id: u32) -> io::Result<()> {
+    use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
+    use windows_sys::Win32::System::Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME};
+
+    const SNAPSHOT_ATTEMPTS: usize = 10;
+    const INVALID_RESUME_COUNT: u32 = u32::MAX;
+
+    let mut thread_id = None;
+    for attempt in 0..SNAPSHOT_ATTEMPTS {
+        thread_id = only_process_thread_id(process_id)?;
+        if thread_id.is_some() {
+            break;
+        }
+        if attempt + 1 < SNAPSHOT_ATTEMPTS {
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
+    let thread_id = thread_id.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("suspended child {process_id} did not expose its primary thread"),
+        )
+    })?;
+
+    // SAFETY: The discovered thread belongs to the child we just created and remains suspended.
+    let raw_thread = unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, thread_id) };
+    if raw_thread.is_null() {
+        return Err(windows_last_error(
+            "failed to open suspended child primary thread",
+        ));
+    }
+    // SAFETY: OpenThread returned a new owned handle and null was rejected above.
+    let thread_handle = unsafe { OwnedHandle::from_raw_handle(raw_thread) };
+    // SAFETY: The handle grants THREAD_SUSPEND_RESUME and is live for this call.
+    let previous_count = unsafe { ResumeThread(thread_handle.as_raw_handle()) };
+    match previous_count {
+        1 => Ok(()),
+        INVALID_RESUME_COUNT => Err(windows_last_error(
+            "failed to resume suspended child primary thread",
+        )),
+        count => Err(io::Error::other(format!(
+            "suspended child primary thread had unexpected suspend count {count}"
+        ))),
+    }
+}
+
+#[cfg(windows)]
+fn only_process_thread_id(process_id: u32) -> io::Result<Option<u32>> {
+    use std::mem::size_of;
+    use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
+    use windows_sys::Win32::{
+        Foundation::{ERROR_NO_MORE_FILES, INVALID_HANDLE_VALUE},
+        System::Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
+        },
+    };
+
+    // SAFETY: The snapshot flags and process identifier are plain values. A thread snapshot
+    // ignores the process identifier and enumerates threads system-wide.
+    let raw_snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+    if raw_snapshot == INVALID_HANDLE_VALUE {
+        return Err(windows_last_error(
+            "failed to snapshot suspended child threads",
+        ));
+    }
+    // SAFETY: CreateToolhelp32Snapshot returned a new owned handle and the invalid sentinel was
+    // rejected above.
+    let snapshot = unsafe { OwnedHandle::from_raw_handle(raw_snapshot) };
+    let mut entry = THREADENTRY32 {
+        dwSize: u32::try_from(size_of::<THREADENTRY32>()).expect("THREADENTRY32 size fits in u32"),
+        ..THREADENTRY32::default()
+    };
+    // SAFETY: entry has the documented size and remains writable for the call.
+    if unsafe { Thread32First(snapshot.as_raw_handle(), &mut entry) } == 0 {
+        let error = io::Error::last_os_error();
+        return if error.raw_os_error() == Some(ERROR_NO_MORE_FILES as i32) {
+            Ok(None)
+        } else {
+            Err(io::Error::new(
+                error.kind(),
+                format!("failed to enumerate suspended child threads: {error}"),
+            ))
+        };
+    }
+
+    let mut matching_thread = None;
+    loop {
+        if entry.th32OwnerProcessID == process_id
+            && matching_thread.replace(entry.th32ThreadID).is_some()
+        {
+            return Err(io::Error::other(format!(
+                "suspended child {process_id} exposed more than one thread before resume"
+            )));
+        }
+
+        // SAFETY: entry and snapshot satisfy the same invariants as Thread32First above.
+        if unsafe { Thread32Next(snapshot.as_raw_handle(), &mut entry) } == 0 {
+            let error = io::Error::last_os_error();
+            return if error.raw_os_error() == Some(ERROR_NO_MORE_FILES as i32) {
+                Ok(matching_thread)
+            } else {
+                Err(io::Error::new(
+                    error.kind(),
+                    format!("failed to continue suspended child thread enumeration: {error}"),
+                ))
+            };
+        }
+    }
+}
+
+#[cfg(windows)]
+fn windows_last_error(context: &str) -> io::Error {
+    let error = io::Error::last_os_error();
+    io::Error::new(error.kind(), format!("{context}: {error}"))
+}
+
+#[cfg(windows)]
+fn combine_setup_cleanup_error(
+    setup_error: io::Error,
+    termination: io::Result<()>,
+    wait: io::Result<ExitStatus>,
+) -> io::Error {
+    match (termination, wait) {
+        (Ok(()), Ok(_)) => setup_error,
+        (termination, wait) => {
+            let mut message = format!("{setup_error}");
+            if let Err(error) = termination {
+                message.push_str(&format!("; failed to terminate setup child: {error}"));
+            }
+            if let Err(error) = wait {
+                message.push_str(&format!("; failed to reap setup child: {error}"));
+            }
+            io::Error::new(setup_error.kind(), message)
+        }
+    }
 }
 
 fn spawn_bounded_reader<R>(
@@ -337,6 +923,235 @@ mod tests {
 
         assert_eq!(output, vec![7_u8; 10]);
         assert!(exceeded.load(Ordering::Acquire));
+    }
+
+    #[cfg(windows)]
+    const WINDOWS_HELPER_ROLE: &str = "NUCLEOTIDE_PROCESS_TEST_ROLE";
+    #[cfg(windows)]
+    const WINDOWS_HELPER_STARTED: &str = "NUCLEOTIDE_PROCESS_TEST_STARTED";
+    #[cfg(windows)]
+    const WINDOWS_HELPER_SURVIVED: &str = "NUCLEOTIDE_PROCESS_TEST_SURVIVED";
+    #[cfg(windows)]
+    const WINDOWS_HELPER_RELEASE: &str = "NUCLEOTIDE_PROCESS_TEST_RELEASE";
+
+    #[cfg(windows)]
+    #[test]
+    #[allow(clippy::zombie_processes)] // The helper deliberately leaves a Job-owned descendant.
+    fn windows_descendant_helper() {
+        let Ok(role) = std::env::var(WINDOWS_HELPER_ROLE) else {
+            return;
+        };
+        let started = std::env::var_os(WINDOWS_HELPER_STARTED)
+            .map(std::path::PathBuf::from)
+            .expect("Windows descendant helper requires a started marker");
+        let survived = std::env::var_os(WINDOWS_HELPER_SURVIVED)
+            .map(std::path::PathBuf::from)
+            .expect("Windows descendant helper requires a survived marker");
+        let release = std::env::var_os(WINDOWS_HELPER_RELEASE)
+            .map(std::path::PathBuf::from)
+            .expect("Windows descendant helper requires a release marker");
+
+        match role.as_str() {
+            "leader-piped" | "leader-detached" => {
+                let mut descendant =
+                    windows_raw_helper_command("descendant", &started, &survived, &release);
+                descendant.stdin(Stdio::null());
+                if role == "leader-detached" {
+                    descendant.stdout(Stdio::null()).stderr(Stdio::null());
+                } else {
+                    descendant.stdout(Stdio::inherit()).stderr(Stdio::inherit());
+                }
+                descendant.spawn().unwrap();
+            }
+            "descendant" => {
+                std::fs::write(&started, b"started").unwrap();
+                let deadline = Instant::now() + Duration::from_secs(10);
+                while !release.exists() && Instant::now() < deadline {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                if release.exists() {
+                    std::fs::write(&survived, b"survived").unwrap();
+                }
+            }
+            other => panic!("unknown Windows descendant helper role {other}"),
+        }
+    }
+
+    #[cfg(windows)]
+    fn windows_raw_helper_command(
+        role: &str,
+        started: &std::path::Path,
+        survived: &std::path::Path,
+        release: &std::path::Path,
+    ) -> Command {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args(["--exact", "tests::windows_descendant_helper", "--nocapture"])
+            .env(WINDOWS_HELPER_ROLE, role)
+            .env(WINDOWS_HELPER_STARTED, started)
+            .env(WINDOWS_HELPER_SURVIVED, survived)
+            .env(WINDOWS_HELPER_RELEASE, release);
+        command
+    }
+
+    #[cfg(windows)]
+    fn windows_contained_helper_command(
+        role: &str,
+        started: &std::path::Path,
+        survived: &std::path::Path,
+        release: &std::path::Path,
+    ) -> ContainedCommand {
+        let mut command = contained_command(std::env::current_exe().unwrap());
+        command
+            .args(["--exact", "tests::windows_descendant_helper", "--nocapture"])
+            .env(WINDOWS_HELPER_ROLE, role)
+            .env(WINDOWS_HELPER_STARTED, started)
+            .env(WINDOWS_HELPER_SURVIVED, survived)
+            .env(WINDOWS_HELPER_RELEASE, release);
+        command
+    }
+
+    #[cfg(windows)]
+    fn release_windows_descendant_and_assert_killed(
+        release: &std::path::Path,
+        survived: &std::path::Path,
+    ) {
+        std::fs::write(release, b"release").unwrap();
+        thread::sleep(Duration::from_secs(2));
+        assert!(
+            !survived.exists(),
+            "Windows descendant survived Job Object cleanup"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn output_with_limits_kills_windows_descendant_holding_pipe() {
+        let temp = tempfile::tempdir().unwrap();
+        let started_file = temp.path().join("descendant-started");
+        let survived_file = temp.path().join("descendant-survived");
+        let release_file = temp.path().join("release-descendant");
+        let mut child = windows_contained_helper_command(
+            "leader-piped",
+            &started_file,
+            &survived_file,
+            &release_file,
+        );
+
+        let error = output_with_limits_contained(
+            &mut child,
+            OutputLimits::new(Duration::from_secs(3), 4 * 1024, 4 * 1024),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(
+            started_file.exists(),
+            "Windows descendant did not start before the output deadline"
+        );
+        release_windows_descendant_and_assert_killed(&release_file, &survived_file);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn output_cancellation_kills_windows_descendant_holding_pipe() {
+        let temp = tempfile::tempdir().unwrap();
+        let started_file = temp.path().join("descendant-started");
+        let survived_file = temp.path().join("descendant-survived");
+        let release_file = temp.path().join("release-descendant");
+        let cancellation = Arc::new(AtomicBool::new(false));
+        let cancel = Arc::clone(&cancellation);
+        let observed_started = started_file.clone();
+        let canceller = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !observed_started.exists() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+            cancel.store(true, Ordering::Release);
+        });
+        let mut child = windows_contained_helper_command(
+            "leader-piped",
+            &started_file,
+            &survived_file,
+            &release_file,
+        );
+
+        let error = output_with_limits_contained_and_cancellation(
+            &mut child,
+            OutputLimits::new(Duration::from_secs(10), 4 * 1024, 4 * 1024),
+            cancellation.as_ref(),
+        )
+        .unwrap_err();
+        canceller.join().unwrap();
+
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        assert!(
+            started_file.exists(),
+            "Windows descendant did not start before cancellation"
+        );
+        release_windows_descendant_and_assert_killed(&release_file, &survived_file);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn successful_output_releases_windows_descendants() {
+        let temp = tempfile::tempdir().unwrap();
+        let started_file = temp.path().join("descendant-started");
+        let survived_file = temp.path().join("descendant-survived");
+        let release_file = temp.path().join("release-descendant");
+        let mut child = windows_contained_helper_command(
+            "leader-detached",
+            &started_file,
+            &survived_file,
+            &release_file,
+        );
+
+        let output = output_with_limits_contained(
+            &mut child,
+            OutputLimits::new(Duration::from_secs(5), 4 * 1024, 4 * 1024),
+        )
+        .unwrap();
+
+        assert!(output.status.success());
+        std::fs::write(&release_file, b"release").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !survived_file.exists() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            started_file.exists(),
+            "detached Windows descendant did not start"
+        );
+        assert!(
+            survived_file.exists(),
+            "successful output cleanup killed a released Windows descendant"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn contained_spawn_restores_command_creation_flags() {
+        let mut command = contained_command("cmd.exe");
+        command.args(["/D", "/Q", "/C", "exit 0"]);
+
+        let mut contained = ContainedChild::spawn(&mut command).unwrap();
+        assert!(contained.wait().unwrap().success());
+        drop(contained);
+
+        let mut reused = command.command.spawn().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(status) = reused.try_wait().unwrap() {
+                assert!(status.success());
+                break;
+            }
+            if Instant::now() >= deadline {
+                reused.kill().unwrap();
+                reused.wait().unwrap();
+                panic!("reused contained command remained suspended");
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
     }
 
     #[cfg(unix)]
