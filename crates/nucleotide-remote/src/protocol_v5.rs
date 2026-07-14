@@ -3473,6 +3473,7 @@ pub struct FramedIo<R, W> {
     reader: R,
     writer: W,
     limits: FrameLimits,
+    inbound_frame_sequence: InboundFrameSequence,
     next_frame_sequence: u64,
 }
 
@@ -3480,7 +3481,46 @@ pub struct FramedIoParts<R, W> {
     pub reader: R,
     pub writer: W,
     pub limits: FrameLimits,
+    pub inbound_frame_sequence: InboundFrameSequence,
     pub next_frame_sequence: u64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct InboundFrameSequence {
+    next_expected: u64,
+}
+
+impl Default for InboundFrameSequence {
+    fn default() -> Self {
+        Self { next_expected: 1 }
+    }
+}
+
+impl InboundFrameSequence {
+    pub fn read_frame<R: Read>(
+        &mut self,
+        reader: &mut R,
+        limits: FrameLimits,
+    ) -> io::Result<Option<Frame>> {
+        read_frame_with_limits_and_sequence(reader, limits, self)
+    }
+
+    fn validated_next(&self, actual: u64) -> io::Result<u64> {
+        if actual != self.next_expected {
+            return Err(protocol_error(format!(
+                "invalid v5 frame sequence: expected {}, got {}",
+                self.next_expected, actual
+            )));
+        }
+        self.next_expected
+            .checked_add(1)
+            .ok_or_else(|| protocol_error("v5 inbound frame sequence exhausted"))
+    }
+
+    #[cfg(test)]
+    fn next_expected(&self) -> u64 {
+        self.next_expected
+    }
 }
 
 impl<R, W> FramedIo<R, W> {
@@ -3493,6 +3533,7 @@ impl<R, W> FramedIo<R, W> {
             reader,
             writer,
             limits,
+            inbound_frame_sequence: InboundFrameSequence::default(),
             next_frame_sequence: 1,
         }
     }
@@ -3514,6 +3555,7 @@ impl<R, W> FramedIo<R, W> {
             reader: self.reader,
             writer: self.writer,
             limits: self.limits,
+            inbound_frame_sequence: self.inbound_frame_sequence,
             next_frame_sequence: self.next_frame_sequence,
         }
     }
@@ -3521,7 +3563,8 @@ impl<R, W> FramedIo<R, W> {
 
 impl<R: Read, W: Write> FramedIo<R, W> {
     pub fn read_frame(&mut self) -> io::Result<Option<Frame>> {
-        read_frame_with_limits(&mut self.reader, self.limits)
+        self.inbound_frame_sequence
+            .read_frame(&mut self.reader, self.limits)
     }
 
     pub fn read_required_frame(
@@ -3688,6 +3731,22 @@ pub fn read_frame_with_limits<R: Read>(
     reader: &mut R,
     limits: FrameLimits,
 ) -> io::Result<Option<Frame>> {
+    read_frame_with_limits_inner(reader, limits, None)
+}
+
+fn read_frame_with_limits_and_sequence<R: Read>(
+    reader: &mut R,
+    limits: FrameLimits,
+    sequence: &mut InboundFrameSequence,
+) -> io::Result<Option<Frame>> {
+    read_frame_with_limits_inner(reader, limits, Some(sequence))
+}
+
+fn read_frame_with_limits_inner<R: Read>(
+    reader: &mut R,
+    limits: FrameLimits,
+    mut sequence: Option<&mut InboundFrameSequence>,
+) -> io::Result<Option<Frame>> {
     let mut fixed = [0_u8; FRAME_HEADER_LEN];
     loop {
         match reader.read(&mut fixed[..1]) {
@@ -3733,6 +3792,10 @@ pub fn read_frame_with_limits<R: Read>(
     let frame_sequence = u64::from_be_bytes([
         fixed[20], fixed[21], fixed[22], fixed[23], fixed[24], fixed[25], fixed[26], fixed[27],
     ]);
+    let next_inbound_sequence = sequence
+        .as_ref()
+        .map(|sequence| sequence.validated_next(frame_sequence))
+        .transpose()?;
     let control_len = u32::from_be_bytes([fixed[28], fixed[29], fixed[30], fixed[31]]);
     let body_len = u32::from_be_bytes([fixed[32], fixed[33], fixed[34], fixed[35]]);
 
@@ -3749,6 +3812,12 @@ pub fn read_frame_with_limits<R: Read>(
     reader.read_exact(&mut control)?;
     let mut body = vec![0_u8; body_len as usize];
     reader.read_exact(&mut body)?;
+
+    if let (Some(sequence), Some(next_inbound_sequence)) =
+        (sequence.as_mut(), next_inbound_sequence)
+    {
+        sequence.next_expected = next_inbound_sequence;
+    }
 
     Ok(Some(Frame {
         frame_type,
@@ -4883,6 +4952,15 @@ mod tests {
         }
     }
 
+    fn encode_sequenced_frames(frames: impl IntoIterator<Item = Frame>) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        for (index, mut frame) in frames.into_iter().enumerate() {
+            frame.frame_sequence = u64::try_from(index).unwrap() + 1;
+            write_frame(&mut bytes, &frame).unwrap();
+        }
+        bytes
+    }
+
     fn headers_frame(stream_id: u64, envelope: StreamEnvelope) -> Frame {
         Frame::from_control(FrameType::Headers, stream_id, &envelope)
     }
@@ -5207,6 +5285,99 @@ mod tests {
         assert_eq!(second.frame_sequence, 2);
         assert_eq!(first.frame_type, FrameType::Ping);
         assert_eq!(second.frame_type, FrameType::Pong);
+    }
+
+    #[test]
+    fn framed_io_validates_contiguous_incoming_sequences_across_split() {
+        let bytes = encode_sequenced_frames([
+            Frame::new(FrameType::Ping, 0),
+            Frame::new(FrameType::Pong, 0),
+            Frame::new(FrameType::Ping, 0),
+        ]);
+        let mut io = FramedIo::new(Cursor::new(bytes), Vec::new());
+
+        assert_eq!(io.read_frame().unwrap().unwrap().frame_sequence, 1);
+        assert_eq!(io.read_frame().unwrap().unwrap().frame_sequence, 2);
+        let mut parts = io.into_parts();
+
+        assert_eq!(parts.inbound_frame_sequence.next_expected(), 3);
+        assert_eq!(
+            parts
+                .inbound_frame_sequence
+                .read_frame(&mut parts.reader, parts.limits)
+                .unwrap()
+                .unwrap()
+                .frame_sequence,
+            3
+        );
+        assert_eq!(parts.inbound_frame_sequence.next_expected(), 4);
+    }
+
+    #[test]
+    fn framed_io_rejects_zero_duplicate_and_gapped_incoming_sequences() {
+        for (sequences, expected, actual) in
+            [(vec![0], 1, 0), (vec![1, 1], 2, 1), (vec![1, 3], 2, 3)]
+        {
+            let mut bytes = Vec::new();
+            for (index, sequence) in sequences.iter().copied().enumerate() {
+                let mut frame = Frame::new(
+                    if index.is_multiple_of(2) {
+                        FrameType::Ping
+                    } else {
+                        FrameType::Pong
+                    },
+                    0,
+                );
+                frame.frame_sequence = sequence;
+                write_frame(&mut bytes, &frame).unwrap();
+            }
+            let mut io = FramedIo::new(Cursor::new(bytes), Vec::new());
+
+            let error = loop {
+                match io.read_frame() {
+                    Ok(Some(_)) => continue,
+                    Ok(None) => panic!("sequence case ended without an error: {sequences:?}"),
+                    Err(error) => break error,
+                }
+            };
+
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("expected {expected}, got {actual}")),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn inbound_sequence_advances_only_after_a_complete_frame() {
+        let mut frame = Frame::from_control(
+            FrameType::Ping,
+            0,
+            &PingPayload {
+                token: b"complete".to_vec(),
+            },
+        );
+        frame.frame_sequence = 1;
+        let mut bytes = Vec::new();
+        write_frame(&mut bytes, &frame).unwrap();
+        let truncated = &bytes[..bytes.len() - 1];
+        let mut sequence = InboundFrameSequence::default();
+
+        let error = sequence
+            .read_frame(&mut Cursor::new(truncated), FrameLimits::default())
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
+        assert_eq!(sequence.next_expected(), 1);
+
+        let decoded = sequence
+            .read_frame(&mut Cursor::new(bytes), FrameLimits::default())
+            .unwrap()
+            .unwrap();
+        assert_eq!(decoded.frame_sequence, 1);
+        assert_eq!(sequence.next_expected(), 2);
     }
 
     #[test]
@@ -8486,13 +8657,10 @@ mod tests {
     #[test]
     fn server_handshake_reads_client_hello_and_writes_server_frames() {
         let client = ClientHello::nucleotide("0.1.0");
-        let mut input = Vec::new();
-        write_frame(
-            &mut input,
-            &Frame::from_control(FrameType::Hello, 0, &client),
-        )
-        .unwrap();
-        write_frame(&mut input, &Frame::new(FrameType::SettingsAck, 0)).unwrap();
+        let input = encode_sequenced_frames([
+            Frame::from_control(FrameType::Hello, 0, &client),
+            Frame::new(FrameType::SettingsAck, 0),
+        ]);
         let info = ServerHandshakeInfo {
             helper_version: "helper".to_string(),
             os: "linux".to_string(),
@@ -8541,6 +8709,26 @@ mod tests {
     }
 
     #[test]
+    fn server_handshake_rejects_gapped_client_frame_sequence() {
+        let client = ClientHello::nucleotide("0.1.0");
+        let mut hello = Frame::from_control(FrameType::Hello, 0, &client);
+        hello.frame_sequence = 1;
+        let mut ack = Frame::new(FrameType::SettingsAck, 0);
+        ack.frame_sequence = 3;
+        let mut input = Vec::new();
+        write_frame(&mut input, &hello).unwrap();
+        write_frame(&mut input, &ack).unwrap();
+        let mut io = FramedIo::new(Cursor::new(input), Vec::new());
+
+        let error = server_handshake(&mut io, &ServerHandshakeInfo::current("/workspace"))
+            .err()
+            .expect("server handshake should reject a sequence gap");
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("expected 2, got 3"));
+    }
+
+    #[test]
     fn client_handshake_writes_hello_ack_and_applies_settings() {
         let client = ClientHello::nucleotide("0.1.0");
         let settings = ConnectionSettings {
@@ -8567,17 +8755,10 @@ mod tests {
             capabilities: vec!["multiplex".to_string()],
             accepted_settings: Some(settings.clone()),
         };
-        let mut input = Vec::new();
-        write_frame(
-            &mut input,
-            &Frame::from_control(FrameType::Hello, 0, &server_hello),
-        )
-        .unwrap();
-        write_frame(
-            &mut input,
-            &Frame::from_control(FrameType::Settings, 0, &settings),
-        )
-        .unwrap();
+        let input = encode_sequenced_frames([
+            Frame::from_control(FrameType::Hello, 0, &server_hello),
+            Frame::from_control(FrameType::Settings, 0, &settings),
+        ]);
         let mut io = FramedIo::new(Cursor::new(input), Vec::new());
 
         let handshake = client_handshake(&mut io, client).unwrap();
@@ -8601,6 +8782,38 @@ mod tests {
     }
 
     #[test]
+    fn client_handshake_rejects_duplicate_server_frame_sequence() {
+        let client = ClientHello::nucleotide("0.1.0");
+        let settings = ConnectionSettings::recommended();
+        let server_hello = ServerHello {
+            protocol_major: PROTOCOL_MAJOR,
+            protocol_minor: PROTOCOL_MINOR,
+            helper_version: "helper".to_string(),
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+            workspace_root: "/workspace".to_string(),
+            control_codec: "protobuf".to_string(),
+            capabilities: vec!["multiplex".to_string()],
+            accepted_settings: Some(settings.clone()),
+        };
+        let mut hello = Frame::from_control(FrameType::Hello, 0, &server_hello);
+        hello.frame_sequence = 1;
+        let mut settings_frame = Frame::from_control(FrameType::Settings, 0, &settings);
+        settings_frame.frame_sequence = 1;
+        let mut input = Vec::new();
+        write_frame(&mut input, &hello).unwrap();
+        write_frame(&mut input, &settings_frame).unwrap();
+        let mut io = FramedIo::new(Cursor::new(input), Vec::new());
+
+        let error = client_handshake(&mut io, client)
+            .err()
+            .expect("client handshake should reject a duplicate sequence");
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("expected 2, got 1"));
+    }
+
+    #[test]
     fn client_handshake_rejects_settings_that_differ_from_server_hello() {
         let client = ClientHello::nucleotide("0.1.0");
         let accepted_settings = ConnectionSettings::recommended();
@@ -8617,17 +8830,10 @@ mod tests {
             capabilities: vec!["multiplex".to_string()],
             accepted_settings: Some(accepted_settings),
         };
-        let mut input = Vec::new();
-        write_frame(
-            &mut input,
-            &Frame::from_control(FrameType::Hello, 0, &server_hello),
-        )
-        .unwrap();
-        write_frame(
-            &mut input,
-            &Frame::from_control(FrameType::Settings, 0, &settings_frame),
-        )
-        .unwrap();
+        let input = encode_sequenced_frames([
+            Frame::from_control(FrameType::Hello, 0, &server_hello),
+            Frame::from_control(FrameType::Settings, 0, &settings_frame),
+        ]);
         let mut io = FramedIo::new(Cursor::new(input), Vec::new());
 
         let error = match client_handshake(&mut io, client) {
@@ -8644,12 +8850,7 @@ mod tests {
     fn server_handshake_rejects_client_without_protobuf_codec() {
         let mut client = ClientHello::nucleotide("0.1.0");
         client.control_codecs = vec!["json".to_string()];
-        let mut input = Vec::new();
-        write_frame(
-            &mut input,
-            &Frame::from_control(FrameType::Hello, 0, &client),
-        )
-        .unwrap();
+        let input = encode_sequenced_frames([Frame::from_control(FrameType::Hello, 0, &client)]);
         let info = ServerHandshakeInfo::current("/workspace");
         let mut io = FramedIo::new(Cursor::new(input), Vec::new());
 
@@ -8666,12 +8867,7 @@ mod tests {
     fn server_handshake_rejects_unavailable_required_capability() {
         let mut client = ClientHello::nucleotide("0.1.0");
         client.required_capabilities = vec!["watch".to_string(), "future_capability".to_string()];
-        let mut input = Vec::new();
-        write_frame(
-            &mut input,
-            &Frame::from_control(FrameType::Hello, 0, &client),
-        )
-        .unwrap();
+        let input = encode_sequenced_frames([Frame::from_control(FrameType::Hello, 0, &client)]);
         let mut info = ServerHandshakeInfo::current("/workspace");
         info.capabilities = vec!["watch".to_string()];
         let mut io = FramedIo::new(Cursor::new(input), Vec::new());
@@ -8700,12 +8896,8 @@ mod tests {
             capabilities: Vec::new(),
             accepted_settings: Some(ConnectionSettings::recommended()),
         };
-        let mut input = Vec::new();
-        write_frame(
-            &mut input,
-            &Frame::from_control(FrameType::Hello, 0, &server_hello),
-        )
-        .unwrap();
+        let input =
+            encode_sequenced_frames([Frame::from_control(FrameType::Hello, 0, &server_hello)]);
         let mut io = FramedIo::new(Cursor::new(input), Vec::new());
 
         let error = match client_handshake(&mut io, client) {
@@ -8733,17 +8925,10 @@ mod tests {
             capabilities: vec!["multiplex".to_string()],
             accepted_settings: Some(settings.clone()),
         };
-        let mut input = Vec::new();
-        write_frame(
-            &mut input,
-            &Frame::from_control(FrameType::Hello, 0, &server_hello),
-        )
-        .unwrap();
-        write_frame(
-            &mut input,
-            &Frame::from_control(FrameType::Settings, 0, &settings),
-        )
-        .unwrap();
+        let input = encode_sequenced_frames([
+            Frame::from_control(FrameType::Hello, 0, &server_hello),
+            Frame::from_control(FrameType::Settings, 0, &settings),
+        ]);
         let mut io = FramedIo::new(Cursor::new(input), Vec::new());
 
         let error = match client_handshake(&mut io, client) {
