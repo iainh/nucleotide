@@ -14015,6 +14015,7 @@ fn remote_error_from_workspace(error: WorkspaceError) -> RemoteError {
         WorkspaceError::InvalidSearchPattern(_) => "invalid_search_pattern",
         WorkspaceError::CommandFailed { .. } => "command_failed",
         WorkspaceError::Remote { .. } => "remote",
+        WorkspaceError::Cancelled { .. } => protocol_v5::RESET_CANCELLED,
     };
 
     RemoteError {
@@ -14063,6 +14064,10 @@ fn remote_error_to_workspace(
             path: path.to_path_buf(),
         },
         "not_file" => WorkspaceError::NotFile {
+            path: path.to_path_buf(),
+        },
+        protocol_v5::RESET_CANCELLED => WorkspaceError::Cancelled {
+            operation,
             path: path.to_path_buf(),
         },
         _ => WorkspaceError::Remote {
