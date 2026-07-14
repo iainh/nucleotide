@@ -966,7 +966,7 @@ impl WorkspaceEventStream<FileSearchEvent> {
             match event? {
                 FileSearchEvent::Batch(batch) if completion.is_none() => files.extend(batch),
                 FileSearchEvent::Batch(_) => {
-                    return Err(search_stream_error(
+                    return Err(event_stream_error(
                         "file search stream",
                         request_root,
                         "received file-search results after completion",
@@ -976,7 +976,7 @@ impl WorkspaceEventStream<FileSearchEvent> {
                     completion = Some((root, truncated));
                 }
                 FileSearchEvent::Complete { .. } => {
-                    return Err(search_stream_error(
+                    return Err(event_stream_error(
                         "file search stream",
                         request_root,
                         "received duplicate file-search completion",
@@ -985,7 +985,7 @@ impl WorkspaceEventStream<FileSearchEvent> {
             }
         }
         let (root, truncated) = completion.ok_or_else(|| {
-            search_stream_error(
+            event_stream_error(
                 "file search stream",
                 request_root,
                 "file-search stream ended before completion",
@@ -1087,7 +1087,7 @@ impl WorkspaceEventStream<TextSearchEvent> {
             match event? {
                 TextSearchEvent::Batch(batch) if completion.is_none() => matches.extend(batch),
                 TextSearchEvent::Batch(_) => {
-                    return Err(search_stream_error(
+                    return Err(event_stream_error(
                         "text search stream",
                         request_root,
                         "received text-search results after completion",
@@ -1097,7 +1097,7 @@ impl WorkspaceEventStream<TextSearchEvent> {
                     completion = Some((root, truncated));
                 }
                 TextSearchEvent::Complete { .. } => {
-                    return Err(search_stream_error(
+                    return Err(event_stream_error(
                         "text search stream",
                         request_root,
                         "received duplicate text-search completion",
@@ -1106,7 +1106,7 @@ impl WorkspaceEventStream<TextSearchEvent> {
             }
         }
         let (root, truncated) = completion.ok_or_else(|| {
-            search_stream_error(
+            event_stream_error(
                 "text search stream",
                 request_root,
                 "text-search stream ended before completion",
@@ -1120,7 +1120,7 @@ impl WorkspaceEventStream<TextSearchEvent> {
     }
 }
 
-fn search_stream_error(
+fn event_stream_error(
     operation: &'static str,
     root: &Path,
     message: &'static str,
@@ -1221,6 +1221,100 @@ pub struct ProcessOutput {
     pub stdout_truncated: bool,
     pub stderr_truncated: bool,
     pub timed_out: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessCompletion {
+    pub status_code: Option<i32>,
+    pub success: bool,
+    pub stdout_truncated: bool,
+    pub stderr_truncated: bool,
+    pub timed_out: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProcessEvent {
+    Stdout(Vec<u8>),
+    Stderr(Vec<u8>),
+    Complete(ProcessCompletion),
+}
+
+pub type ProcessStream = WorkspaceEventStream<ProcessEvent>;
+
+impl WorkspaceEventStream<ProcessEvent> {
+    pub fn from_process_output(output: ProcessOutput) -> Self {
+        let ProcessOutput {
+            status_code,
+            success,
+            stdout,
+            stderr,
+            stdout_truncated,
+            stderr_truncated,
+            timed_out,
+        } = output;
+        let mut events = Vec::with_capacity(
+            usize::from(!stdout.is_empty()) + usize::from(!stderr.is_empty()) + 1,
+        );
+        if !stdout.is_empty() {
+            events.push(Ok(ProcessEvent::Stdout(stdout)));
+        }
+        if !stderr.is_empty() {
+            events.push(Ok(ProcessEvent::Stderr(stderr)));
+        }
+        events.push(Ok(ProcessEvent::Complete(ProcessCompletion {
+            status_code,
+            success,
+            stdout_truncated,
+            stderr_truncated,
+            timed_out,
+        })));
+        Self::new(futures::stream::iter(events))
+    }
+
+    pub async fn collect_output(mut self, cwd: &Path) -> Result<ProcessOutput> {
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let mut completion = None;
+        while let Some(event) = self.next().await {
+            match event? {
+                ProcessEvent::Stdout(chunk) if completion.is_none() => stdout.extend(chunk),
+                ProcessEvent::Stderr(chunk) if completion.is_none() => stderr.extend(chunk),
+                ProcessEvent::Stdout(_) | ProcessEvent::Stderr(_) => {
+                    return Err(event_stream_error(
+                        "process stream",
+                        cwd,
+                        "received process output after completion",
+                    ));
+                }
+                ProcessEvent::Complete(complete) if completion.is_none() => {
+                    completion = Some(complete);
+                }
+                ProcessEvent::Complete(_) => {
+                    return Err(event_stream_error(
+                        "process stream",
+                        cwd,
+                        "received duplicate process completion",
+                    ));
+                }
+            }
+        }
+        let completion = completion.ok_or_else(|| {
+            event_stream_error(
+                "process stream",
+                cwd,
+                "process stream ended before completion",
+            )
+        })?;
+        Ok(ProcessOutput {
+            status_code: completion.status_code,
+            success: completion.success,
+            stdout,
+            stderr,
+            stdout_truncated: completion.stdout_truncated,
+            stderr_truncated: completion.stderr_truncated,
+            timed_out: completion.timed_out,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1544,6 +1638,23 @@ pub trait WorkspaceBackend: Send + Sync {
     async fn git_status(&self, root: &Path, options: GitStatusOptions) -> Result<GitStatusResult>;
 
     async fn run_process(&self, spec: ProcessSpec) -> Result<ProcessOutput>;
+
+    async fn run_process_stream(&self, spec: ProcessSpec) -> Result<ProcessStream> {
+        self.run_process(spec)
+            .await
+            .map(ProcessStream::from_process_output)
+    }
+
+    async fn run_process_stream_with_cancellation(
+        &self,
+        spec: ProcessSpec,
+        cancellation: &WorkspaceCancellationToken,
+    ) -> Result<ProcessStream> {
+        cancellation.check_cancelled("run process", &spec.cwd)?;
+        let output = self.run_process(spec.clone()).await;
+        cancellation.check_cancelled("run process", &spec.cwd)?;
+        output.map(ProcessStream::from_process_output)
+    }
 
     async fn start_watch(&self, _request: WorkspaceWatchRequest) -> Result<Option<WorkspaceWatch>> {
         Ok(None)
@@ -2177,6 +2288,25 @@ impl WorkspaceBackend for PathMappedWorkspaceBackend {
     async fn run_process(&self, spec: ProcessSpec) -> Result<ProcessOutput> {
         self.inner
             .run_process(self.map_process_spec_to_native(spec))
+            .await
+    }
+
+    async fn run_process_stream(&self, spec: ProcessSpec) -> Result<ProcessStream> {
+        self.inner
+            .run_process_stream(self.map_process_spec_to_native(spec))
+            .await
+    }
+
+    async fn run_process_stream_with_cancellation(
+        &self,
+        spec: ProcessSpec,
+        cancellation: &WorkspaceCancellationToken,
+    ) -> Result<ProcessStream> {
+        self.inner
+            .run_process_stream_with_cancellation(
+                self.map_process_spec_to_native(spec),
+                cancellation,
+            )
             .await
     }
 
