@@ -83,3 +83,31 @@ $env:APPDATA\helix\nucleotide.toml
 
 GUI-specific settings live in `nucleotide.toml`; editor settings continue to use
 Helix's `config.toml` in the same directory.
+
+## Logs
+
+Nucleotide writes daily application logs to the local application data
+directory:
+
+```powershell
+$env:LOCALAPPDATA\Spiralpoint\Nucleotide\logs
+```
+
+Files use a UTC date suffix, such as `nucleotide.log.2026-07-15`. Nucleotide
+retains the five most recent daily log files by default.
+
+Set `NUCLEOTIDE_LOG_DIR` to override the log directory for troubleshooting or
+automated testing.
+
+`nucleotide-remote` also writes daily logs on the machine where the helper
+runs. On WSL and Linux SSH hosts, the directory is:
+
+```text
+$XDG_STATE_HOME/nucleotide/logs
+```
+
+If `XDG_STATE_HOME` is not set, the helper uses
+`~/.local/state/nucleotide/logs`. Remote files use names such as
+`nucleotide-remote.log.2026-07-15`. If the helper cannot create its log file,
+it falls back to stderr without writing diagnostic output to the protocol's
+stdout stream.

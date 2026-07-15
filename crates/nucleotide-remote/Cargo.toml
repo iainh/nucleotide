@@ -18,6 +18,7 @@ futures.workspace = true
 dirs.workspace = true
 ignore.workspace = true
 nucleotide-env.workspace = true
+nucleotide-logging.workspace = true
 nucleotide-process = { workspace = true, features = ["tokio"] }
 nucleotide-workspace.workspace = true
 notify.workspace = true

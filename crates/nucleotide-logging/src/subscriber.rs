@@ -7,6 +7,80 @@ use crate::config::LoggingConfig;
 use crate::layers::create_env_filter;
 use crate::reload::LoggingReloadHandle;
 
+fn create_file_appender(
+    config: &LoggingConfig,
+) -> Result<tracing_appender::rolling::RollingFileAppender> {
+    if let Some(parent) = config.file.path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create log directory: {}", parent.display()))?;
+    }
+
+    let file_name = config
+        .file
+        .path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("Invalid log file path")?;
+    let directory = config
+        .file
+        .path
+        .parent()
+        .context("Log file path has no parent directory")?;
+
+    tracing_appender::rolling::RollingFileAppender::builder()
+        .rotation(tracing_appender::rolling::Rotation::DAILY)
+        .filename_prefix(file_name)
+        .max_log_files(config.file.max_files)
+        .build(directory)
+        .with_context(|| {
+            format!(
+                "Failed to initialize log file in directory: {}",
+                directory.display()
+            )
+        })
+}
+
+fn create_file_writer(
+    config: &LoggingConfig,
+) -> Result<tracing_appender::non_blocking::NonBlocking> {
+    let (file_writer, guard) = tracing_appender::non_blocking(create_file_appender(config)?);
+    // The application subscriber lives for the process lifetime, so its worker must do the same.
+    Box::leak(Box::new(guard));
+    Ok(file_writer)
+}
+
+/// Initialize synchronous file logging for short-lived protocol helper processes.
+///
+/// This deliberately omits a console layer because `nucleotide-remote` owns stdout for protocol
+/// traffic. Synchronous writes ensure the helper's final error is persisted before it exits.
+pub fn init_file_subscriber(config: LoggingConfig) -> Result<()> {
+    use tracing_subscriber::{fmt, prelude::*, util::SubscriberInitExt};
+
+    let env_filter = create_env_filter(&config).context("Failed to create environment filter")?;
+    let file_appender = create_file_appender(&config)?;
+
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(
+            fmt::layer()
+                .with_ansi(false)
+                .with_target(true)
+                .with_thread_ids(true)
+                .with_thread_names(true)
+                .with_file(true)
+                .with_line_number(true)
+                .with_writer(file_appender),
+        )
+        .try_init()?;
+
+    tracing::info!(
+        log_level = %config.level.0,
+        file_path = %config.file.path.display(),
+        "Nucleotide remote host logging initialized"
+    );
+    Ok(())
+}
+
 /// Initialize the global tracing subscriber with the given configuration.
 pub fn init_subscriber(config: LoggingConfig) -> Result<()> {
     use tracing_subscriber::{fmt, prelude::*, util::SubscriberInitExt};
@@ -21,31 +95,7 @@ pub fn init_subscriber(config: LoggingConfig) -> Result<()> {
     // We'll create console output with optional file output
 
     if config.output.file {
-        // Setup file logging
-        if let Some(parent) = config.file.path.parent() {
-            std::fs::create_dir_all(parent).context(format!(
-                "Failed to create log directory: {}",
-                parent.display()
-            ))?;
-        }
-
-        let file_name = config
-            .file
-            .path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .context("Invalid log file path")?;
-
-        let directory = config
-            .file
-            .path
-            .parent()
-            .context("Log file path has no parent directory")?;
-
-        let file_appender = tracing_appender::rolling::daily(directory, file_name);
-        let (file_writer, guard) = tracing_appender::non_blocking(file_appender);
-        // Keep the guard alive by leaking it - this ensures the background thread stays alive
-        Box::leak(Box::new(guard));
+        let file_writer = create_file_writer(&config)?;
 
         // Console + File setup
         if config.output.console {
@@ -106,31 +156,7 @@ pub fn init_subscriber_with_reload(config: LoggingConfig) -> Result<LoggingReloa
 
     // Set up the same output configuration as the non-reloadable version
     if config.output.file {
-        // Setup file logging
-        if let Some(parent) = config.file.path.parent() {
-            std::fs::create_dir_all(parent).context(format!(
-                "Failed to create log directory: {}",
-                parent.display()
-            ))?;
-        }
-
-        let file_name = config
-            .file
-            .path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .context("Invalid log file path")?;
-
-        let directory = config
-            .file
-            .path
-            .parent()
-            .context("Log file path has no parent directory")?;
-
-        let file_appender = tracing_appender::rolling::daily(directory, file_name);
-        let (file_writer, guard) = tracing_appender::non_blocking(file_appender);
-        // Keep the guard alive by leaking it - this ensures the background thread stays alive
-        Box::leak(Box::new(guard));
+        let file_writer = create_file_writer(&config)?;
 
         // Console + File setup
         if config.output.console {
