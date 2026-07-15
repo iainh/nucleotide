@@ -878,20 +878,26 @@ jobs:
           test "$(jq -r '.isDraft' <<<"${release_json}")" = true
 
           assets="$(jq -r '.assets[].name' <<<"${release_json}")"
+          version="${RELEASE_VERSION#v}"
           for required in \
             releases.macos.json \
             releases.windows.json \
             nucleotide-linux-x86_64.tar.gz \
             nucleotide-remote-linux-x86_64 \
             nucleotide-remote-linux-aarch64 \
+            "org.spiralpoint.nucleotide.macos-${version}-macos-full.nupkg" \
+            org.spiralpoint.nucleotide.macos-macos-Portable.zip \
+            org.spiralpoint.nucleotide.macos-macos-Setup.pkg \
+            "org.spiralpoint.nucleotide.windows-${version}-windows-full.nupkg" \
+            org.spiralpoint.nucleotide.windows-windows-Portable.zip \
             SHA256SUMS; do
             grep -Fxq "${required}" <<<"${assets}"
           done
 
-          version="${RELEASE_VERSION#v}"
-          test "$(grep -Ec -- "-${version}-full[.]nupkg$" <<<"${assets}")" -ge 2
-          grep -Eq '[.]pkg$' <<<"${assets}"
-          grep -Eq 'Setup[.]exe$' <<<"${assets}"
+          if grep -Eq '(Setup[.]exe|[.]msi)$' <<<"${assets}"; then
+            echo "Draft contains a non-portable Windows installer" >&2
+            exit 1
+          fi
 
       - name: Publish verified release
         env:
