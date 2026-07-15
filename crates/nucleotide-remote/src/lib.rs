@@ -11503,8 +11503,33 @@ pub trait RemoteWorkspaceProtocolClient: Send + Sync {
     }
 }
 
-type ReconnectFactory<C> =
-    dyn Fn() -> std::result::Result<C, RemoteClientError> + Send + Sync + 'static;
+#[derive(Clone)]
+struct ReconnectAttempt {
+    method: &'static str,
+    context: RemoteRequestContext,
+    cancellation: RemoteRequestCancellation,
+}
+
+fn check_reconnect_attempt(
+    attempt: Option<&ReconnectAttempt>,
+) -> std::result::Result<(), RemoteClientError> {
+    let Some(attempt) = attempt else {
+        return Ok(());
+    };
+    attempt.cancellation.check_cancelled(attempt.method)?;
+    if let Some(kind) = attempt.context.expired_at(Instant::now()) {
+        return Err(RemoteClientError::RequestDeadlineExceeded {
+            method: attempt.method.to_string(),
+            kind,
+        });
+    }
+    Ok(())
+}
+
+type ReconnectFactory<C> = dyn Fn(Option<ReconnectAttempt>) -> std::result::Result<C, RemoteClientError>
+    + Send
+    + Sync
+    + 'static;
 
 const RECONNECTING_WATCH_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const RECONNECTING_WATCH_RETRY_MIN_DELAY: Duration = Duration::from_millis(100);
@@ -11542,6 +11567,16 @@ where
         client: C,
         reconnect: impl Fn() -> std::result::Result<C, RemoteClientError> + Send + Sync + 'static,
     ) -> Self {
+        Self::new_with_attempt(client, move |_| reconnect())
+    }
+
+    fn new_with_attempt(
+        client: C,
+        reconnect: impl Fn(Option<ReconnectAttempt>) -> std::result::Result<C, RemoteClientError>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
         Self {
             client: Arc::new(Mutex::new(Some(Arc::new(client)))),
             reconnect_gate: Arc::new(Mutex::new(())),
@@ -11562,6 +11597,26 @@ where
     }
 
     fn current_client(&self) -> std::result::Result<Arc<C>, RemoteClientError> {
+        self.current_client_with_attempt(None)
+    }
+
+    fn current_client_for_request(
+        &self,
+        method: &'static str,
+        context: RemoteRequestContext,
+        cancellation: &RemoteRequestCancellation,
+    ) -> std::result::Result<Arc<C>, RemoteClientError> {
+        self.current_client_with_attempt(Some(ReconnectAttempt {
+            method,
+            context,
+            cancellation: cancellation.clone(),
+        }))
+    }
+
+    fn current_client_with_attempt(
+        &self,
+        attempt: Option<ReconnectAttempt>,
+    ) -> std::result::Result<Arc<C>, RemoteClientError> {
         if self.closed.load(Ordering::Acquire) {
             return Err(RemoteClientError::Disconnected);
         }
@@ -11590,7 +11645,12 @@ where
         }
         drop(current);
 
-        let reconnected = Arc::new((self.reconnect)()?);
+        check_reconnect_attempt(attempt.as_ref())?;
+        let reconnected = Arc::new((self.reconnect)(attempt.clone())?);
+        if let Err(error) = check_reconnect_attempt(attempt.as_ref()) {
+            reconnected.close();
+            return Err(error);
+        }
         if self.closed.load(Ordering::Acquire) {
             reconnected.close();
             return Err(RemoteClientError::Disconnected);
@@ -11607,9 +11667,27 @@ where
         Ok(reconnected)
     }
 
-    fn reconnect_if_current(
+    fn reconnect_if_current_for_request(
         &self,
         stale: &Arc<C>,
+        method: &'static str,
+        context: RemoteRequestContext,
+        cancellation: &RemoteRequestCancellation,
+    ) -> std::result::Result<Arc<C>, RemoteClientError> {
+        self.reconnect_if_current_with_attempt(
+            stale,
+            Some(ReconnectAttempt {
+                method,
+                context,
+                cancellation: cancellation.clone(),
+            }),
+        )
+    }
+
+    fn reconnect_if_current_with_attempt(
+        &self,
+        stale: &Arc<C>,
+        attempt: Option<ReconnectAttempt>,
     ) -> std::result::Result<Arc<C>, RemoteClientError> {
         let _gate = self.reconnect_gate.lock().map_err(|_| {
             RemoteClientError::Protocol("remote reconnect gate is poisoned".to_string())
@@ -11633,7 +11711,12 @@ where
         if let Some(stale_client) = stale_client {
             stale_client.close();
         }
-        let reconnected = Arc::new((self.reconnect)()?);
+        check_reconnect_attempt(attempt.as_ref())?;
+        let reconnected = Arc::new((self.reconnect)(attempt.clone())?);
+        if let Err(error) = check_reconnect_attempt(attempt.as_ref()) {
+            reconnected.close();
+            return Err(error);
+        }
         if self.closed.load(Ordering::Acquire) {
             reconnected.close();
             return Err(RemoteClientError::Disconnected);
@@ -11677,7 +11760,7 @@ where
         cancellation: &RemoteRequestCancellation,
     ) -> std::result::Result<Option<WorkspaceWatch>, RemoteClientError> {
         cancellation.check_cancelled("watch.start")?;
-        let client = self.current_client()?;
+        let client = self.current_client_for_request("watch.start", context, cancellation)?;
         cancellation.check_cancelled("watch.start")?;
         match client.start_watch_with_context_and_cancellation(
             request.clone(),
@@ -11691,7 +11774,12 @@ where
             Err(error) if remote_client_error_requires_reconnect(&error) => {
                 cancellation.check_cancelled("watch.start")?;
                 tracing::warn!(error = %error, "Retrying v5 watch.start after reconnect");
-                let retry_client = self.reconnect_if_current(&client)?;
+                let retry_client = self.reconnect_if_current_for_request(
+                    &client,
+                    "watch.start",
+                    context,
+                    cancellation,
+                )?;
                 cancellation.check_cancelled("watch.start")?;
                 if let Some(kind) = context.expired_at(Instant::now()) {
                     return Err(RemoteClientError::RequestDeadlineExceeded {
@@ -11732,13 +11820,19 @@ where
         cancellation: &RemoteRequestCancellation,
     ) -> std::result::Result<Option<WorkspaceWatchUpdate>, RemoteClientError> {
         cancellation.check_cancelled("watch.update")?;
-        let client = self.current_client()?;
+        let context = v5_watch_control_request_context();
+        let client = self.current_client_for_request("watch.update", context, cancellation)?;
         cancellation.check_cancelled("watch.update")?;
         match client.update_watch_with_cancellation(watch_id, add_roots, remove_roots, cancellation)
         {
             Err(error) if remote_client_error_requires_reconnect(&error) => {
                 cancellation.check_cancelled("watch.update")?;
-                if let Err(reconnect_error) = self.reconnect_if_current(&client) {
+                if let Err(reconnect_error) = self.reconnect_if_current_for_request(
+                    &client,
+                    "watch.update",
+                    context,
+                    cancellation,
+                ) {
                     tracing::warn!(
                         error = %reconnect_error,
                         original_error = %error,
@@ -11761,12 +11855,18 @@ where
         cancellation: &RemoteRequestCancellation,
     ) -> std::result::Result<(), RemoteClientError> {
         cancellation.check_cancelled("watch.resync")?;
-        let client = self.current_client()?;
+        let context = v5_watch_control_request_context();
+        let client = self.current_client_for_request("watch.resync", context, cancellation)?;
         cancellation.check_cancelled("watch.resync")?;
         match client.resync_watch_with_cancellation(watch_id, roots, cancellation) {
             Err(error) if remote_client_error_requires_reconnect(&error) => {
                 cancellation.check_cancelled("watch.resync")?;
-                if let Err(reconnect_error) = self.reconnect_if_current(&client) {
+                if let Err(reconnect_error) = self.reconnect_if_current_for_request(
+                    &client,
+                    "watch.resync",
+                    context,
+                    cancellation,
+                ) {
                     tracing::warn!(
                         error = %reconnect_error,
                         original_error = %error,
@@ -11788,12 +11888,18 @@ where
         cancellation: &RemoteRequestCancellation,
     ) -> std::result::Result<(), RemoteClientError> {
         cancellation.check_cancelled("watch.stop")?;
-        let client = self.current_client()?;
+        let context = v5_watch_control_request_context();
+        let client = self.current_client_for_request("watch.stop", context, cancellation)?;
         cancellation.check_cancelled("watch.stop")?;
         match client.stop_watch_with_cancellation(watch_id, cancellation) {
             Err(error) if remote_client_error_requires_reconnect(&error) => {
                 cancellation.check_cancelled("watch.stop")?;
-                if let Err(reconnect_error) = self.reconnect_if_current(&client) {
+                if let Err(reconnect_error) = self.reconnect_if_current_for_request(
+                    &client,
+                    "watch.stop",
+                    context,
+                    cancellation,
+                ) {
                     tracing::warn!(
                         error = %reconnect_error,
                         original_error = %error,
@@ -12012,7 +12118,7 @@ where
         let retry_allowed = request.v5_retry_after_reconnect_allowed();
         let retry_request = retry_allowed.then(|| request.clone());
         let retry_body = retry_allowed.then(|| body.clone());
-        let client = self.current_client()?;
+        let client = self.current_client_for_request(method, context, cancellation)?;
         cancellation.check_cancelled(method)?;
 
         match client.request_with_context_and_cancellation(request, body, context, cancellation) {
@@ -12024,7 +12130,8 @@ where
                 cancellation.check_cancelled(method)?;
                 let retry_safe =
                     retry_allowed && remote_client_error_allows_reconnect_retry(&error);
-                let recovery = self.reconnect_if_current(&client);
+                let recovery =
+                    self.reconnect_if_current_for_request(&client, method, context, cancellation);
                 cancellation.check_cancelled(method)?;
                 if retry_safe {
                     let retry_request = retry_request.expect("retry request recorded");
@@ -12099,7 +12206,7 @@ where
             )));
         }
         cancellation.check_cancelled(method)?;
-        let client = self.current_client()?;
+        let client = self.current_client_for_request(method, context, cancellation)?;
         cancellation.check_cancelled(method)?;
         match client.read_file_stream_with_context_and_cancellation(
             request.clone(),
@@ -12121,7 +12228,8 @@ where
             Err(error) if remote_client_error_requires_reconnect(&error) => {
                 cancellation.check_cancelled(method)?;
                 let retry_safe = remote_client_error_allows_reconnect_retry(&error);
-                let retry_client = self.reconnect_if_current(&client)?;
+                let retry_client =
+                    self.reconnect_if_current_for_request(&client, method, context, cancellation)?;
                 cancellation.check_cancelled(method)?;
                 if !retry_safe {
                     return Err(error);
@@ -12165,7 +12273,7 @@ where
             )));
         }
         cancellation.check_cancelled(method)?;
-        let client = self.current_client()?;
+        let client = self.current_client_for_request(method, context, cancellation)?;
         cancellation.check_cancelled(method)?;
         match client.file_search_stream_with_context_and_cancellation(
             request.clone(),
@@ -12187,7 +12295,8 @@ where
             Err(error) if remote_client_error_requires_reconnect(&error) => {
                 cancellation.check_cancelled(method)?;
                 let retry_safe = remote_client_error_allows_reconnect_retry(&error);
-                let retry_client = self.reconnect_if_current(&client)?;
+                let retry_client =
+                    self.reconnect_if_current_for_request(&client, method, context, cancellation)?;
                 cancellation.check_cancelled(method)?;
                 if !retry_safe {
                     return Err(error);
@@ -12231,7 +12340,7 @@ where
             )));
         }
         cancellation.check_cancelled(method)?;
-        let client = self.current_client()?;
+        let client = self.current_client_for_request(method, context, cancellation)?;
         cancellation.check_cancelled(method)?;
         match client.text_search_stream_with_context_and_cancellation(
             request.clone(),
@@ -12253,7 +12362,8 @@ where
             Err(error) if remote_client_error_requires_reconnect(&error) => {
                 cancellation.check_cancelled(method)?;
                 let retry_safe = remote_client_error_allows_reconnect_retry(&error);
-                let retry_client = self.reconnect_if_current(&client)?;
+                let retry_client =
+                    self.reconnect_if_current_for_request(&client, method, context, cancellation)?;
                 cancellation.check_cancelled(method)?;
                 if !retry_safe {
                     return Err(error);
@@ -12298,7 +12408,7 @@ where
             )));
         }
         cancellation.check_cancelled(method)?;
-        let client = self.current_client()?;
+        let client = self.current_client_for_request(method, context, cancellation)?;
         cancellation.check_cancelled(method)?;
         match client.run_process_stream_with_context_and_cancellation(
             request,
@@ -12320,7 +12430,9 @@ where
             }
             Err(error) if remote_client_error_requires_reconnect(&error) => {
                 cancellation.check_cancelled(method)?;
-                if let Err(reconnect_error) = self.reconnect_if_current(&client) {
+                if let Err(reconnect_error) =
+                    self.reconnect_if_current_for_request(&client, method, context, cancellation)
+                {
                     tracing::warn!(
                         error = %reconnect_error,
                         original_error = %error,
@@ -13372,16 +13484,64 @@ fn spawn_child_process_workspace_backend_with_startup_context(
     let reconnect_command = command.clone();
     let reconnect_identity = identity.clone();
     let reconnecting_client: RemoteWorkspaceV5ReconnectingClient =
-        ReconnectingRemoteWorkspaceProtocolClient::new(client, move || {
+        ReconnectingRemoteWorkspaceProtocolClient::new_with_attempt(client, move |attempt| {
             tracing::info!(
                 remote_kind = ?reconnect_identity.kind,
                 remote_name = %reconnect_identity.name,
                 command = %reconnect_command.display_context(),
                 "Reconnecting v5 remote workspace service process"
             );
+            if let Some(attempt) = attempt.as_ref() {
+                attempt.cancellation.check_cancelled(attempt.method)?;
+                if let Some(kind) = attempt.context.expired_at(Instant::now()) {
+                    return Err(RemoteClientError::RequestDeadlineExceeded {
+                        method: attempt.method.to_string(),
+                        kind,
+                    });
+                }
+            }
             let (io, control) = spawn_child_process_v5_io(&reconnect_command)?;
             let client_hello = protocol_v5::ClientHello::nucleotide(env!("CARGO_PKG_VERSION"));
-            connect_child_process_v5_client(io, control, client_hello)
+            let Some(attempt) = attempt else {
+                return connect_child_process_v5_client(io, control, client_hello);
+            };
+            let startup_cancellation = WorkspaceCancellationToken::new();
+            let cancel_startup = startup_cancellation.clone();
+            attempt
+                .cancellation
+                .register(move || cancel_startup.cancel());
+            let timeout = attempt
+                .context
+                .absolute_deadline
+                .map(|deadline| deadline.saturating_duration_since(Instant::now()))
+                .unwrap_or(V5_CHILD_HANDSHAKE_TIMEOUT)
+                .min(V5_CHILD_HANDSHAKE_TIMEOUT);
+            if timeout.is_zero() {
+                control.abort();
+                return Err(RemoteClientError::RequestDeadlineExceeded {
+                    method: attempt.method.to_string(),
+                    kind: RemoteRequestDeadlineKind::Absolute,
+                });
+            }
+            let result = connect_child_process_v5_client_with_timeout_and_cancellation(
+                io,
+                Arc::clone(&control),
+                client_hello,
+                timeout,
+                Some(startup_cancellation),
+            );
+            if attempt.cancellation.is_cancelled() {
+                control.abort();
+                return Err(remote_request_cancelled_error(attempt.method));
+            }
+            if let Some(kind) = attempt.context.expired_at(Instant::now()) {
+                control.abort();
+                return Err(RemoteClientError::RequestDeadlineExceeded {
+                    method: attempt.method.to_string(),
+                    kind,
+                });
+            }
+            result
         });
     let backend =
         RemoteWorkspaceBackendImpl::from_protocol_client(identity.clone(), reconnecting_client);
@@ -23131,6 +23291,56 @@ mod tests {
     }
 
     #[test]
+    fn reconnect_factory_observes_request_context_and_cancellation() {
+        let calls = Arc::new(StdMutex::new(Vec::new()));
+        let initial =
+            FakeProtocolClient::new(Arc::clone(&calls), [FakeProtocolOutcome::Disconnected]);
+        let (started_sender, started_receiver) = mpsc::sync_channel(1);
+        let client = Arc::new(ReconnectingRemoteWorkspaceProtocolClient::new_with_attempt(
+            initial,
+            move |attempt| {
+                let attempt = attempt.expect("request reconnect should carry its attempt context");
+                started_sender
+                    .send((attempt.method, attempt.context))
+                    .unwrap();
+                while !attempt.cancellation.is_cancelled() {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(remote_request_cancelled_error(attempt.method))
+            },
+        ));
+        let request = RemoteRequest::Stat {
+            path: PathBuf::from("cancel-reconnect.rs"),
+        };
+        let context = request.v5_request_context();
+        let cancellation = RemoteRequestCancellation::new();
+        let request_client = Arc::clone(&client);
+        let request_cancellation = cancellation.clone();
+        let request_thread = std::thread::spawn(move || {
+            request_client.request_with_context_and_cancellation(
+                request,
+                Vec::new(),
+                context,
+                &request_cancellation,
+            )
+        });
+
+        let (method, factory_context) = started_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("reconnect factory did not start");
+        assert_eq!(method, "fs.stat");
+        assert_eq!(factory_context, context);
+        cancellation.cancel();
+
+        assert!(matches!(
+            request_thread.join().unwrap(),
+            Err(RemoteClientError::Remote(RemoteError { code, .. }))
+                if code == protocol_v5::RESET_CANCELLED
+        ));
+        assert_eq!(calls.lock().unwrap().len(), 1);
+    }
+
+    #[test]
     fn reconnecting_client_reuses_exact_context_for_safe_replay() {
         let contexts = Arc::new(StdMutex::new(Vec::new()));
         let closes = Arc::new(AtomicUsize::new(0));
@@ -23218,7 +23428,11 @@ mod tests {
         ));
         assert_eq!(contexts.lock().unwrap().as_slice(), &[context]);
         assert_eq!(reconnects.load(Ordering::SeqCst), 1);
-        assert_eq!(closes.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            closes.load(Ordering::SeqCst),
+            2,
+            "both the stale and post-deadline replacement transports should close"
+        );
     }
 
     #[test]
@@ -23489,7 +23703,11 @@ mod tests {
         ));
         assert_eq!(starts.load(Ordering::SeqCst), 1);
         assert_eq!(reconnects.load(Ordering::SeqCst), 1);
-        assert_eq!(closes.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            closes.load(Ordering::SeqCst),
+            2,
+            "both the stale and post-deadline replacement transports should close"
+        );
     }
 
     #[test]

@@ -348,7 +348,7 @@ Every production multiplexed-client request has one immutable request context th
 - The absolute deadline bounds every request attempt and any safe reconnect replay from one context creation point. It does not restart when a stream opens, makes progress or reconnects, and no new stream may open after it expires.
 - The inactivity deadline bounds one transport attempt. It restarts only after targeted progress on that stream. A safe replay starts a new inactivity interval but retains the original absolute deadline.
 
-For a finite absolute deadline, the client records a monotonic local deadline and derives `deadline_unix_ms` once when it creates the context. It sends that same wire deadline on every attempt. Wall-clock changes cannot extend the local budget, and reconnect must not calculate a new wire deadline. The inactivity limit is local client policy; it is not encoded in request metadata or negotiated with the helper. A reconnect or startup factory already in progress cannot yet be interrupted at the request deadline; the startup-cancellation work below must close that remaining outer-bound gap.
+For a finite absolute deadline, the client records a monotonic local deadline and derives `deadline_unix_ms` once when it creates the context. It sends that same wire deadline on every attempt. Wall-clock changes cannot extend the local budget, and reconnect does not calculate a new wire deadline. The inactivity limit is local client policy; it is not encoded in request metadata or negotiated with the helper. Reconnect startup receives the same immutable request context and cancellation token. Its child-handshake watchdog uses the remaining absolute budget and terminates the contained launcher when the caller cancels or the original deadline expires.
 
 The client uses these conservative defaults:
 
@@ -684,7 +684,7 @@ Why:
 Why:
 
 - The protocol should fail one stream when possible, not the whole connection.
-- The connection still needs clear fatal-error boundaries for malformed frames and incompatible peers.
+- The connection applies fatal-error boundaries to malformed frames and incompatible peers while keeping validated stream-local failures isolated.
 - Read retry safety differs from write retry safety.
 
 ## Security and containment
@@ -718,10 +718,9 @@ Current integration:
 - Existing remote polling remains as fallback and as low-frequency reconciliation when watching is active.
 - UI components receive the same domain-level events they receive today: directory refreshes, file system changed, VCS changed and process output.
 
-Next integration:
+Deferred integration:
 
-- Exercise the implemented bounded incremental consumers in real Linux SSH and Windows WSL fault/load environments.
-- Measure interactive request latency while a remote peer stalls file, search or process consumption.
+- Real Linux SSH and Windows WSL fault/load environments are intentionally outside this implementation. The existing Linux command shims and platform-independent real-helper loopback remain in CI.
 
 Why:
 
@@ -743,7 +742,7 @@ Why:
 - This separates protocol correctness from filesystem/search/git implementation.
 - It also gives tests clear seams: frame tests, scheduler tests, handler tests and watch tests.
 
-## Implementation status and remaining plan
+## Implementation status
 
 The v5 baseline is complete:
 
@@ -755,9 +754,7 @@ The v5 baseline is complete:
 
 The 2026-07-13 hardening pass adds executable failure and memory invariants around the baseline. It includes atomic stream teardown, decoded-data bounds, receive-window enforcement, bounded closed-stream receive-credit debt, lazy producers, bounded server and watch queues, dedicated client and server writers, owned aggregate-deadline startup attempts with descendant cleanup through Unix process groups and Windows Job Objects, child-handshake and client connection-heartbeat watchdogs, bidirectional heartbeat probes, terminal transport errors, typed recovery outcomes, reconnecting logical watches with mandatory resync, end-to-end priority propagation, cooperative filesystem cancellation, callback-driven explicit remote cancellation, cancellation-aware response production, cancel-on-drop client ownership, shutdown cleanup and containment-safe bootstrap reuse. File reads, searches and process execution additionally expose bounded incremental consumers: queued chunks and decoded batches retain connection budget, polling releases their exact receive credit, terminal metadata follows the data, and dropping a live or completed-but-unconsumed stream releases its receive debt without making the connection unusable. Successful bounded commands release their Windows Job Object before closing it so OpenSSH `ControlPersist` processes remain reusable; cancellation, timeout and failure retain kill-on-close containment. Compatibility fixtures pin additive protobuf-field handling, capability intersection and minor-version skew. A recurring short-read, short-write and interrupted-I/O duplex exercises framing end to end, while a platform-independent real-helper loopback fixture verifies that metadata and file requests remain responsive during a live process stream. Linux CI also executes the SSH and WSL command fixtures.
 
-The next integration work should:
-
-1. Expand the command-level fixtures into real Linux SSH and Windows WSL fault/load environments, including stalled-peer memory and latency assertions. The platform-independent local-service loopback and Linux SSH/WSL command shims now run in CI.
+Real Linux SSH and Windows WSL fault/load environments are deferred. They are not required for this hardening implementation; the platform-independent local-service loopback and Linux SSH/WSL command shims remain in CI.
 
 Multiplexing remains the foundation. Future encoding or daemon work should follow measured queue, latency and recovery results rather than replace the implemented v5 state machine.
 
