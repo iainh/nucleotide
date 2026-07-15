@@ -826,9 +826,7 @@ jobs:
               exit 1
             fi
 
-            release_id="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" --jq .id)"
-            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
-              -f target_commitish="${RELEASE_SHA}"
+            gh release edit "${RELEASE_TAG}" --target "${RELEASE_SHA}"
 
             jq -r '.assets[].name' <<<"${release_json}" | while IFS= read -r asset; do
               gh release delete-asset "${RELEASE_TAG}" "${asset}" --yes
@@ -903,8 +901,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.prepare-release.outputs.version }}
-        run: |
-          release_id="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" --jq .id)"
-          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
-            -f draft=false \
-            -f prerelease=false
+        run: gh release edit "${RELEASE_TAG}" --draft=false --prerelease=false
