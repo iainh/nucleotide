@@ -21,9 +21,9 @@ Examples:
   ./scripts/release.sh v0.2.0
 
 With no argument, the script increments the minor version. It requires a
-clean, up-to-date main branch, updates the workspace version and Cargo.lock,
-creates an annotated vX.Y.Z tag, then atomically pushes the release commit
-and tag to origin.
+clean, up-to-date main branch, updates the workspace version and all locked
+dependencies, creates an annotated vX.Y.Z tag, then atomically pushes the
+release commit and tag to origin.
 EOF
 }
 
@@ -184,10 +184,12 @@ fi
 printf 'Updating workspace version %s -> %s...\n' "${current_version}" "${version}"
 set_workspace_version "${version}"
 
-# Refresh first-party package versions in the committed lockfile without
-# compiling the workspace. The locked pass verifies that the result is stable.
-cargo metadata --format-version 1 --no-deps >/dev/null
-cargo metadata --format-version 1 --no-deps --locked >/dev/null
+# Refresh the complete lockfile, including first-party package versions and
+# every dependency allowed by the workspace's manifest constraints and Rust
+# version. Resolve the full graph again under --locked before creating an
+# immutable release tag.
+CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback cargo update
+cargo metadata --format-version 1 --locked >/dev/null
 
 updated_version="$(workspace_version)"
 if [[ "${updated_version}" != "${version}" ]]; then

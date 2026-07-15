@@ -15,6 +15,33 @@ git init --initial-branch=main "${worktree}" >/dev/null
 mkdir -p "${worktree}/app/src" "${worktree}/scripts"
 cp "${repo_root}/scripts/release.sh" "${worktree}/scripts/release.sh"
 
+real_cargo="$(command -v cargo)"
+cargo_log="${fixture_root}/cargo.log"
+mkdir -p "${fixture_root}/test-bin"
+cat > "${fixture_root}/test-bin/cargo" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "${NUCL_RELEASE_CARGO_LOG}"
+exec "${NUCL_RELEASE_REAL_CARGO}" "$@"
+EOF
+chmod +x "${fixture_root}/test-bin/cargo"
+
+lock_package_version() {
+  local package="$1"
+
+  awk -v package="${package}" '
+    $0 == "name = \"" package "\"" { in_package = 1; next }
+    in_package && /^version = "/ {
+      line = $0
+      sub(/^version = "/, "", line)
+      sub(/"$/, "", line)
+      print line
+      exit
+    }
+    in_package && /^\[\[package\]\]$/ { exit }
+  ' Cargo.lock
+}
+
 cat > "${worktree}/Cargo.toml" <<'EOF'
 [workspace]
 members = ["app"]
@@ -48,26 +75,34 @@ EOF
   git remote add origin "${remote}"
   git push --set-upstream origin main >/dev/null
 
+  export NUCL_RELEASE_CARGO_LOG="${cargo_log}"
+  export NUCL_RELEASE_REAL_CARGO="${real_cargo}"
+  export PATH="${fixture_root}/test-bin:${PATH}"
+
   ./scripts/release.sh >/dev/null
 
   test "$(git log -1 --format=%s)" = "chore(release): v0.2.0"
   test "$(git describe --tags --exact-match HEAD)" = "v0.2.0"
   grep -Fxq 'version = "0.2.0"' Cargo.toml
-  cargo metadata --format-version 1 --no-deps --locked >/dev/null
+  test "$(lock_package_version release-fixture)" = "0.2.0"
+  cargo metadata --format-version 1 --locked >/dev/null
 
   ./scripts/release.sh patch >/dev/null
 
   test "$(git log -1 --format=%s)" = "chore(release): v0.2.1"
   test "$(git describe --tags --exact-match HEAD)" = "v0.2.1"
   grep -Fxq 'version = "0.2.1"' Cargo.toml
-  cargo metadata --format-version 1 --no-deps --locked >/dev/null
+  test "$(lock_package_version release-fixture)" = "0.2.1"
+  cargo metadata --format-version 1 --locked >/dev/null
 
   ./scripts/release.sh major >/dev/null
 
   test "$(git log -1 --format=%s)" = "chore(release): v1.0.0"
   test "$(git describe --tags --exact-match HEAD)" = "v1.0.0"
   grep -Fxq 'version = "1.0.0"' Cargo.toml
-  cargo metadata --format-version 1 --no-deps --locked >/dev/null
+  test "$(lock_package_version release-fixture)" = "1.0.0"
+  cargo metadata --format-version 1 --locked >/dev/null
+  test "$(grep -c '^update$' "${cargo_log}")" -eq 3
 
   printf 'dirty\n' >> app/src/lib.rs
   if ./scripts/release.sh patch >/dev/null 2>&1; then
