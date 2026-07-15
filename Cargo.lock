@@ -2518,9 +2518,9 @@ dependencies = [
 
 [[package]]
 name = "gix-date"
-version = "0.15.5"
+version = "0.15.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d63f9e28b59ddeb1a1eb9e5cf986a9222b5d484947445edbc20473939cc7fd0"
+checksum = "7e47b9e8cdc688296609b706428de570f88b1e0eed7156dde7b4a89d26fa4567"
 dependencies = [
  "bstr",
  "gix-error",
@@ -2589,9 +2589,9 @@ dependencies = [
 
 [[package]]
 name = "gix-error"
-version = "0.2.4"
+version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e57831e199be480af90dcd7e459abed8a174c09ec9a6e2cc8f7ca6c54598b06b"
+checksum = "4a9292309fd944e71b2a3c96d3c03a6feb8852db646febdde7cbb9f79cb5f329"
 dependencies = [
  "bstr",
 ]
@@ -2823,9 +2823,9 @@ dependencies = [
 
 [[package]]
 name = "gix-path"
-version = "0.12.1"
+version = "0.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "afa6ac14cd14939ea94a496ce7460daa6511c09f5b84757e9cfc6f9c8d0f93a6"
+checksum = "cbbecb0f8dc5cdf6cbde69133f7072064dfc9da4cf0046913afb6857b07300fa"
 dependencies = [
  "bstr",
  "gix-trace",
@@ -3063,9 +3063,9 @@ dependencies = [
 
 [[package]]
 name = "gix-url"
-version = "0.36.1"
+version = "0.36.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "65bb01ec69d55e82ccb7a19e264501ead4e6aac38463a8cebfdd81e22bb67ab2"
+checksum = "57d68e70e96da0e5f9c871f1566349e0fd0e1a20bb483c7f54af1dd0b85b4b29"
 dependencies = [
  "bstr",
  "gix-path",
@@ -3075,12 +3075,13 @@ dependencies = [
 
 [[package]]
 name = "gix-utils"
-version = "0.3.3"
+version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "66c50966184123caf580ffa64e28031a878597f1c7fceb8fe19566c38eb1b771"
+checksum = "d773a906e39472c2b00aaf1993cd120d40198c1ff6db07c0ee9a44d4431b66c1"
 dependencies = [
  "bstr",
  "fastrand",
+ "getrandom 0.4.3",
  "unicode-normalization",
 ]
 
@@ -3148,9 +3149,9 @@ checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
 
 [[package]]
 name = "globset"
-version = "0.4.18"
+version = "0.4.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "52dfc19153a48bde0cbd630453615c8151bce3a5adfac7a0aebfbf0a1e1f57e3"
+checksum = "e47d37d2ae4464254884b60ab7071be2b876a9c35b696bd018ddcc76847309cd"
 dependencies = [
  "aho-corasick",
  "bstr",
@@ -3513,9 +3514,9 @@ dependencies = [
 
 [[package]]
 name = "grep-matcher"
-version = "0.1.8"
+version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "36d7b71093325ab22d780b40d7df3066ae4aebb518ba719d38c697a8228a8023"
+checksum = "f9417543f4870fc8f1c8e1af870afae2431007626d9e703fce6471c468d33847"
 dependencies = [
  "memchr",
 ]
@@ -3535,9 +3536,9 @@ dependencies = [
 
 [[package]]
 name = "grep-searcher"
-version = "0.1.16"
+version = "0.1.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ac63295322dc48ebb20a25348147905d816318888e64f531bfc2a2bc0577dc34"
+checksum = "72348823a0eafc4bc2e9051064f28b5b42cc100b571b3a35d67918d711efcbc6"
 dependencies = [
  "bstr",
  "encoding_rs",
@@ -3818,7 +3819,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "unicode-segmentation",
- "which 8.0.4",
+ "which 8.0.5",
  "windows-sys 0.61.2",
 ]
 
@@ -4166,9 +4167,9 @@ dependencies = [
 
 [[package]]
 name = "ignore"
-version = "0.4.28"
+version = "0.4.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2adf14691c72bcfc1058740436a35bdd3ae9c07d1a941ef00b749e9ea16aefa7"
+checksum = "d4ffa3a0547a138e59ddd6fa3b7c672ed47e6ad6a3cd177984ff1116aa5ba742"
 dependencies = [
  "crossbeam-deque",
  "globset",
@@ -5092,7 +5093,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -5155,7 +5156,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-appearance"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "gpui",
  "windows-sys 0.61.2",
@@ -5163,7 +5164,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-core"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "anyhow",
  "gpui",
@@ -5177,12 +5178,12 @@ dependencies = [
  "nucleotide-types",
  "tokio",
  "tracing",
- "which 8.0.4",
+ "which 8.0.5",
 ]
 
 [[package]]
 name = "nucleotide-editor"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "arc-swap",
  "criterion",
@@ -5209,12 +5210,12 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
- "which 8.0.4",
+ "which 8.0.5",
 ]
 
 [[package]]
 name = "nucleotide-events"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "helix-core",
  "helix-lsp",
@@ -5228,7 +5229,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-logging"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "anyhow",
  "dirs",
@@ -5243,7 +5244,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-lsp"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5262,12 +5263,12 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
- "which 8.0.4",
+ "which 8.0.5",
 ]
 
 [[package]]
 name = "nucleotide-lsp-proxy"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5279,7 +5280,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-process"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "libc",
  "tempfile",
@@ -5308,7 +5309,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-remote"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5333,7 +5334,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-terminal"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "anyhow",
  "libghostty-vt",
@@ -5343,7 +5344,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-terminal-panel"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "gpui",
  "nucleotide-events",
@@ -5353,7 +5354,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-terminal-view"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "gpui",
  "nucleotide-events",
@@ -5365,7 +5366,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-types"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "gpui",
  "helix-core",
@@ -5375,7 +5376,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-ui"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "anyhow",
  "gpui",
@@ -5414,7 +5415,7 @@ dependencies = [
 
 [[package]]
 name = "nucleotide-workspace"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "async-trait",
  "futures",
@@ -9322,9 +9323,9 @@ dependencies = [
 
 [[package]]
 name = "which"
-version = "8.0.4"
+version = "8.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "48d7cd18d4acb58fb3cdfe9ea54e6cd96a4e7d4cc45c56338b236e82dad47248"
+checksum = "8f3ef584124b911bcc3875c2f1472e80f24361ceb789bd1c62b3e9a3df9ff43c"
 dependencies = [
  "libc",
 ]
