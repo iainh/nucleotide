@@ -59,9 +59,16 @@ where
             .read_frame()
             .context("failed to read v5 protocol frame")?
         {
+            let frame_type = frame.frame_type;
+            let stream_id = frame.stream_id;
+            let frame_sequence = frame.frame_sequence;
             let event = session
                 .receive_frame(frame)
-                .context("failed to route v5 protocol frame")?;
+                .with_context(|| {
+                    format!(
+                        "failed to route v5 {frame_type:?} frame sequence {frame_sequence} on stream {stream_id}"
+                    )
+                })?;
             let data_credit = event.data_credit();
             let mut shutdown = false;
             let mut acknowledge_data = true;
@@ -436,6 +443,8 @@ where
                     match event {
                         V5ServeLoopEvent::Inbound(Ok(Some(frame))) => {
                             let frame_type = frame.frame_type;
+                            let stream_id = frame.stream_id;
+                            let frame_sequence = frame.frame_sequence;
                             let frame_control = frame.control.clone();
                             let event = match session.receive_frame(frame) {
                                 Ok(event) => event,
@@ -448,7 +457,11 @@ where
                                         &mut canceled_streams,
                                         &mut watches,
                                     );
-                                    return Err(error).context("failed to route v5 protocol frame");
+                                    return Err(error).with_context(|| {
+                                        format!(
+                                            "failed to route v5 {frame_type:?} frame sequence {frame_sequence} on stream {stream_id}"
+                                        )
+                                    });
                                 }
                             };
                             last_activity = Instant::now();
@@ -877,7 +890,9 @@ where
         body: Vec<u8>,
     ) -> Option<RemoteError> {
         if request.early_error.is_some() {
-            return None;
+            // Drain the peer's already-in-flight request frames through END_STREAM, but keep
+            // enforcing decoded byte limits without retaining their contents.
+            return request.reserve_data(channel, body.len(), false).err();
         }
         let streamed_file_body = request.method == "fs.write"
             && channel == protocol_v5::DataChannel::FileBody
@@ -889,7 +904,7 @@ where
         if streamed_file_body {
             if let Err(error) = self.append_v5_streaming_write_data(request, &body) {
                 request.streamed_write = None;
-                return Some(error);
+                request.early_error = Some(error);
             }
         } else {
             request.append_data(channel, body);

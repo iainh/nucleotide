@@ -640,6 +640,91 @@ fn v5_concurrent_service_streams_write_body_to_temp_file() {
 }
 
 #[test]
+fn v5_concurrent_service_drains_streaming_write_error_and_keeps_connection_usable() {
+    let temp = tempfile::tempdir().unwrap();
+    let target = temp.path().join("main.rs");
+    std::fs::write(&target, b"old").unwrap();
+    let write = RemoteRequest::WriteFile {
+        path: PathBuf::from("main.rs"),
+        create_parent_dirs: false,
+        expected_modified_unix_millis: Some(0),
+        expected_modified_unix_nanos: Some(0),
+    };
+    let (method, payload) = write.to_v5_method_payload().unwrap();
+    let mut frames = vec![
+        protocol_v5::Frame::from_control(
+            protocol_v5::FrameType::Headers,
+            1,
+            &protocol_v5::StreamEnvelope::request_with_options(
+                1,
+                method,
+                &write.v5_request_options(),
+            ),
+        ),
+        protocol_v5::stream_data_frame(
+            1,
+            payload,
+            protocol_v5::DataFrameOptions::new(protocol_v5::DataChannel::Unspecified),
+        )
+        .unwrap(),
+        protocol_v5::stream_data_frame(
+            1,
+            b"new ".to_vec(),
+            protocol_v5::DataFrameOptions::new(protocol_v5::DataChannel::FileBody),
+        )
+        .unwrap(),
+        protocol_v5::stream_data_frame(
+            1,
+            b"contents".to_vec(),
+            protocol_v5::DataFrameOptions::new(protocol_v5::DataChannel::FileBody),
+        )
+        .unwrap(),
+        protocol_v5::Frame::new(protocol_v5::FrameType::EndStream, 1),
+    ];
+    frames.extend(v5_request_frames(
+        3,
+        &RemoteRequest::Stat {
+            path: PathBuf::from("main.rs"),
+        },
+        &[],
+    ));
+    let input = BlockingRead::default();
+    input.push(v5_client_input(frames));
+    let output = SharedWrite::default();
+    let service = WorkspaceService::new(LocalWorkspaceBackend, temp.path().to_path_buf()).unwrap();
+    let service_thread = spawn_v5_concurrent_service(
+        service,
+        &input,
+        &output,
+        protocol_v5::ServerHandshakeInfo::current(temp.path().display().to_string()),
+    );
+    wait_for_v5_stream_frame(&output, 3, protocol_v5::FrameType::EndStream);
+    input.close();
+    service_thread.join().unwrap();
+
+    let frames = read_v5_frames(output.bytes());
+    assert!(
+        !frames.iter().any(|frame| {
+            frame.stream_id == 1 && frame.frame_type == protocol_v5::FrameType::ResetStream
+        }),
+        "ordinary write failures should be returned as typed final errors"
+    );
+    let (write_response, write_body, write_error) = decode_v5_service_response(&frames, 1);
+    assert!(write_response.is_none());
+    assert!(write_body.is_empty());
+    let write_error = write_error.expect("write should return a typed final error");
+    assert_eq!(write_error.code, "modified");
+    assert!(write_error.message.contains("modified externally"));
+    assert_eq!(std::fs::read(&target).unwrap(), b"old");
+    assert!(v5_write_temp_files(temp.path()).is_empty());
+
+    let (stat_response, stat_body, stat_error) = decode_v5_service_response(&frames, 3);
+    assert!(stat_error.is_none());
+    assert!(stat_body.is_empty());
+    assert!(matches!(stat_response, Some(RemoteResponse::Stat(_))));
+}
+
+#[test]
 fn v5_streaming_write_cancellation_before_commit_preserves_target() {
     let temp = tempfile::tempdir().unwrap();
     let target = temp.path().join("main.rs");
