@@ -17,14 +17,14 @@ use nucleotide_workspace::{
     DirectoryListing, FileKind, FileRead, FileReadEvent, FileReadMetadata, FileReadStream,
     FileSearchEvent, FileSearchQuery, FileSearchResult, FileSearchStream, FileStat, GitHeadResult,
     GitStatusEntry, GitStatusKind, GitStatusOptions, GitStatusResult, LocalWorkspaceBackend,
-    ProcessOutput, ProcessSpec, ProjectEnvironmentOrigin, ProjectEnvironmentSnapshot, ReadOptions,
-    RemoteWorkspaceIdentity, RemoteWorkspaceKind, SshWorkspaceTarget, TextSearchEvent,
-    TextSearchMatch, TextSearchQuery, TextSearchResult, TextSearchStream, WorkspaceBackend,
-    WorkspaceBackendHandle, WorkspaceCancellationToken, WorkspaceError, WorkspaceIdentity,
-    WorkspaceLocation, WorkspaceWatch, WorkspaceWatchBatch, WorkspaceWatchChange,
-    WorkspaceWatchChangeKind, WorkspaceWatchDirectoryGeneration, WorkspaceWatchRequest,
-    WorkspaceWatchUpdate, WriteOptions, WriteResult, local_workspace_backend,
-    path_mapped_workspace_backend, posix_path_string,
+    ProcessCompletion, ProcessEvent, ProcessOutput, ProcessSpec, ProcessStream,
+    ProjectEnvironmentOrigin, ProjectEnvironmentSnapshot, ReadOptions, RemoteWorkspaceIdentity,
+    RemoteWorkspaceKind, SshWorkspaceTarget, TextSearchEvent, TextSearchMatch, TextSearchQuery,
+    TextSearchResult, TextSearchStream, WorkspaceBackend, WorkspaceBackendHandle,
+    WorkspaceCancellationToken, WorkspaceError, WorkspaceIdentity, WorkspaceLocation,
+    WorkspaceWatch, WorkspaceWatchBatch, WorkspaceWatchChange, WorkspaceWatchChangeKind,
+    WorkspaceWatchDirectoryGeneration, WorkspaceWatchRequest, WorkspaceWatchUpdate, WriteOptions,
+    WriteResult, local_workspace_backend, path_mapped_workspace_backend, posix_path_string,
 };
 use prost::Message as ProstMessage;
 use regex::RegexBuilder;
@@ -4946,6 +4946,55 @@ pub struct ProcessOutputResponse {
     pub timed_out: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RemoteProcessEvent {
+    Stdout(Vec<u8>),
+    Stderr(Vec<u8>),
+    Complete(ProcessOutputResponse),
+}
+
+pub type RemoteProcessStream = RemoteEventStream<RemoteProcessEvent>;
+
+impl RemoteEventStream<RemoteProcessEvent> {
+    fn from_response(
+        response: ProcessOutputResponse,
+        body: Vec<u8>,
+    ) -> std::result::Result<Self, RemoteClientError> {
+        let stdout_len = response.stdout_len;
+        let stderr_len = response.stderr_len;
+        let output = process_output_from_response(response, body)?;
+        let ProcessOutput {
+            status_code,
+            success,
+            stdout,
+            stderr,
+            stdout_truncated,
+            stderr_truncated,
+            timed_out,
+        } = output;
+        let mut events = Vec::with_capacity(
+            usize::from(!stdout.is_empty()) + usize::from(!stderr.is_empty()) + 1,
+        );
+        if !stdout.is_empty() {
+            events.push(Ok(RemoteProcessEvent::Stdout(stdout)));
+        }
+        if !stderr.is_empty() {
+            events.push(Ok(RemoteProcessEvent::Stderr(stderr)));
+        }
+        events.push(Ok(RemoteProcessEvent::Complete(ProcessOutputResponse {
+            status_code,
+            success,
+            stdout_truncated,
+            stderr_truncated,
+            stdout_len,
+            stderr_len,
+            timed_out,
+        })));
+        Ok(Self::new(futures::stream::iter(events))
+            .with_terminal_predicate(|event| matches!(event, RemoteProcessEvent::Complete(_))))
+    }
+}
+
 #[derive(Debug)]
 pub enum RemoteClientError {
     Io(io::Error),
@@ -5299,8 +5348,10 @@ struct RemoteWorkspaceV5Shared<W> {
     waiters: Mutex<HashMap<u64, V5PendingResponse>>,
     file_waiters: Mutex<HashMap<u64, V5PendingFileRead>>,
     search_waiters: Mutex<HashMap<u64, V5PendingSearch>>,
+    process_waiters: Mutex<HashMap<u64, V5PendingProcess>>,
     completed_file_streams: Mutex<HashMap<u64, Arc<V5FileStreamMailbox>>>,
     completed_search_streams: Mutex<HashMap<u64, Arc<V5SearchStreamMailbox>>>,
+    completed_process_streams: Mutex<HashMap<u64, Arc<V5ProcessStreamMailbox>>>,
     raw_waiters: Mutex<HashMap<u64, V5PendingRawResponse>>,
     pending_cancellations: Mutex<HashMap<u64, V5ClientCancellation>>,
     pending_receive_credits: Mutex<HashMap<u64, u64>>,
@@ -5339,6 +5390,20 @@ struct V5PendingFileRead {
     final_method: Option<String>,
     final_error: Option<RemoteError>,
     file_bytes: usize,
+    method: &'static str,
+    deadline: V5RequestDeadline,
+}
+
+struct V5PendingProcess {
+    mailbox: Arc<V5ProcessStreamMailbox>,
+    payload: Vec<u8>,
+    payload_bytes: usize,
+    payload_credit: u64,
+    stdout_bytes: usize,
+    stderr_bytes: usize,
+    received_bytes: usize,
+    final_method: Option<String>,
+    final_error: Option<RemoteError>,
     method: &'static str,
     deadline: V5RequestDeadline,
 }
@@ -6036,6 +6101,312 @@ where
     }
 }
 
+struct V5ProcessStreamMailbox {
+    state: Mutex<V5ProcessStreamMailboxState>,
+    waker: AtomicWaker,
+    byte_limit: usize,
+}
+
+struct V5ProcessStreamMailboxState {
+    chunks: VecDeque<V5ProcessStreamChunk>,
+    queued_bytes: usize,
+    queued_credit: u64,
+    reservation: V5ByteReservation,
+    completion: Option<V5ProcessStreamCompletion>,
+    error: Option<RemoteClientError>,
+    terminal: bool,
+}
+
+struct V5ProcessStreamChunk {
+    channel: protocol_v5::DataChannel,
+    body: Vec<u8>,
+    credit_bytes: u64,
+}
+
+struct V5ProcessStreamCompletion {
+    response: ProcessOutputResponse,
+    retained_bytes: usize,
+    credit_bytes: u64,
+}
+
+struct V5ProcessStreamDelivery {
+    event: RemoteProcessEvent,
+    credit_bytes: u64,
+}
+
+impl V5ProcessStreamMailbox {
+    fn new(byte_limit: usize, reservation: V5ByteReservation) -> Self {
+        Self {
+            state: Mutex::new(V5ProcessStreamMailboxState {
+                chunks: VecDeque::new(),
+                queued_bytes: 0,
+                queued_credit: 0,
+                reservation,
+                completion: None,
+                error: None,
+                terminal: false,
+            }),
+            waker: AtomicWaker::new(),
+            byte_limit,
+        }
+    }
+
+    fn reserve_data(
+        &self,
+        retained_bytes: usize,
+        credit_bytes: u64,
+    ) -> std::result::Result<(), RemoteClientError> {
+        if usize::try_from(credit_bytes).ok() != Some(retained_bytes) {
+            return Err(RemoteClientError::Protocol(format!(
+                "v5 process DATA credit {credit_bytes} does not match decoded payload length {retained_bytes}"
+            )));
+        }
+        let mut state = self.state.lock().map_err(v5_client_lock_error)?;
+        if state.terminal {
+            return Err(RemoteClientError::ResponseIncomplete {
+                cause: "v5 process DATA arrived after terminal delivery".to_string(),
+            });
+        }
+        let queued_bytes = state
+            .queued_bytes
+            .checked_add(retained_bytes)
+            .ok_or_else(|| {
+                RemoteClientError::Protocol("v5 process delivery byte count overflowed".to_string())
+            })?;
+        if queued_bytes > self.byte_limit {
+            return Err(RemoteClientError::Protocol(format!(
+                "v5 process delivery exceeds negotiated stream window of {} bytes",
+                self.byte_limit
+            )));
+        }
+        let queued_credit = state
+            .queued_credit
+            .checked_add(credit_bytes)
+            .ok_or_else(|| {
+                RemoteClientError::Protocol("v5 process delivery credit overflowed".to_string())
+            })?;
+        state
+            .reservation
+            .try_grow(retained_bytes)
+            .map_err(|error| {
+                RemoteClientError::Protocol(format!(
+                    "v5 process delivery exceeds connection retained-byte budget: {error}"
+                ))
+            })?;
+        state.queued_bytes = queued_bytes;
+        state.queued_credit = queued_credit;
+        Ok(())
+    }
+
+    fn push_chunk(
+        &self,
+        channel: protocol_v5::DataChannel,
+        body: Vec<u8>,
+        credit_bytes: u64,
+    ) -> std::result::Result<(), RemoteClientError> {
+        let mut state = self.state.lock().map_err(v5_client_lock_error)?;
+        let coalesce = state.chunks.back().is_some_and(|chunk| {
+            chunk.channel == channel
+                && chunk.body.len().saturating_add(body.len()) <= V5_FILE_STREAM_CHUNK_TARGET_BYTES
+        });
+        if !coalesce && state.chunks.len() >= V5_FILE_STREAM_MAX_QUEUED_CHUNKS {
+            return Err(RemoteClientError::Protocol(format!(
+                "v5 process delivery exceeds {} queued chunks",
+                V5_FILE_STREAM_MAX_QUEUED_CHUNKS
+            )));
+        }
+        if coalesce {
+            let chunk = state
+                .chunks
+                .back_mut()
+                .expect("coalesced process chunk should exist");
+            chunk.body.extend(body);
+            chunk.credit_bytes = chunk
+                .credit_bytes
+                .checked_add(credit_bytes)
+                .ok_or_else(|| {
+                    RemoteClientError::Protocol("v5 process chunk credit overflowed".to_string())
+                })?;
+        } else {
+            state.chunks.push_back(V5ProcessStreamChunk {
+                channel,
+                body,
+                credit_bytes,
+            });
+        }
+        drop(state);
+        self.waker.wake();
+        Ok(())
+    }
+
+    fn complete(
+        &self,
+        response: ProcessOutputResponse,
+        retained_bytes: usize,
+        credit_bytes: u64,
+    ) -> std::result::Result<(), RemoteClientError> {
+        let mut state = self.state.lock().map_err(v5_client_lock_error)?;
+        if state.terminal {
+            return Err(RemoteClientError::Protocol(
+                "v5 process stream completed more than once".to_string(),
+            ));
+        }
+        state.completion = Some(V5ProcessStreamCompletion {
+            response,
+            retained_bytes,
+            credit_bytes,
+        });
+        state.terminal = true;
+        drop(state);
+        self.waker.wake();
+        Ok(())
+    }
+
+    fn queued_credit(&self) -> u64 {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .queued_credit
+    }
+
+    fn has_pending_delivery(&self) -> bool {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        !state.chunks.is_empty() || state.completion.is_some()
+    }
+
+    fn fail(&self, error: RemoteClientError) -> u64 {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.terminal
+            && state.error.is_none()
+            && state.chunks.is_empty()
+            && state.completion.is_none()
+        {
+            return 0;
+        }
+        let credit_bytes = state.queued_credit;
+        state.chunks.clear();
+        state.queued_bytes = 0;
+        state.queued_credit = 0;
+        state.reservation.release_all();
+        state.completion = None;
+        state.error = Some(error);
+        state.terminal = true;
+        drop(state);
+        self.waker.wake();
+        credit_bytes
+    }
+
+    fn poll_delivery(
+        &self,
+        context: &mut TaskContext<'_>,
+    ) -> Poll<Option<std::result::Result<V5ProcessStreamDelivery, RemoteClientError>>> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(chunk) = state.chunks.pop_front() {
+            state.queued_bytes = state.queued_bytes.saturating_sub(chunk.body.len());
+            state.queued_credit = state.queued_credit.saturating_sub(chunk.credit_bytes);
+            state.reservation.release(chunk.body.len());
+            let event = match chunk.channel {
+                protocol_v5::DataChannel::Stdout => RemoteProcessEvent::Stdout(chunk.body),
+                protocol_v5::DataChannel::Stderr => RemoteProcessEvent::Stderr(chunk.body),
+                _ => {
+                    return Poll::Ready(Some(Err(RemoteClientError::Protocol(
+                        "v5 process mailbox contained a non-output channel".to_string(),
+                    ))));
+                }
+            };
+            return Poll::Ready(Some(Ok(V5ProcessStreamDelivery {
+                event,
+                credit_bytes: chunk.credit_bytes,
+            })));
+        }
+        if let Some(completion) = state.completion.take() {
+            state.queued_bytes = state.queued_bytes.saturating_sub(completion.retained_bytes);
+            state.queued_credit = state.queued_credit.saturating_sub(completion.credit_bytes);
+            state.reservation.release(completion.retained_bytes);
+            return Poll::Ready(Some(Ok(V5ProcessStreamDelivery {
+                event: RemoteProcessEvent::Complete(completion.response),
+                credit_bytes: completion.credit_bytes,
+            })));
+        }
+        if let Some(error) = state.error.take() {
+            return Poll::Ready(Some(Err(error)));
+        }
+        if state.terminal {
+            return Poll::Ready(None);
+        }
+        self.waker.register(context.waker());
+        Poll::Pending
+    }
+}
+
+struct V5RemoteProcessSource<W> {
+    shared: Weak<RemoteWorkspaceV5Shared<W>>,
+    mailbox: Arc<V5ProcessStreamMailbox>,
+    stream_id: u64,
+    finished: bool,
+}
+
+impl<W> Stream for V5RemoteProcessSource<W>
+where
+    W: Write,
+{
+    type Item = std::result::Result<RemoteProcessEvent, RemoteClientError>;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        context: &mut TaskContext<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        if self.finished {
+            return Poll::Ready(None);
+        }
+        match self.mailbox.poll_delivery(context) {
+            Poll::Ready(Some(Ok(delivery))) => {
+                if delivery.credit_bytes > 0
+                    && let Some(shared) = self.shared.upgrade()
+                    && let Err(error) = queue_v5_released_receive_credit(
+                        &shared,
+                        self.stream_id,
+                        delivery.credit_bytes,
+                    )
+                {
+                    self.finished = true;
+                    fail_all_v5_waiters_for_error(&shared, &error);
+                    return Poll::Ready(Some(Err(error)));
+                }
+                if matches!(delivery.event, RemoteProcessEvent::Complete(_)) {
+                    self.finished = true;
+                    if let Some(shared) = self.shared.upgrade() {
+                        shared
+                            .completed_process_streams
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .remove(&self.stream_id);
+                    }
+                }
+                Poll::Ready(Some(Ok(delivery.event)))
+            }
+            Poll::Ready(Some(Err(error))) => {
+                self.finished = true;
+                Poll::Ready(Some(Err(error)))
+            }
+            Poll::Ready(None) => {
+                self.finished = true;
+                Poll::Ready(None)
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
 struct RemoteWorkspaceV5Writer<W> {
     writer: W,
     limits: protocol_v5::FrameLimits,
@@ -6552,6 +6923,199 @@ impl V5PendingFileRead {
     }
 }
 
+enum V5ProcessStreamObservation {
+    Continue { acknowledge_data: bool },
+    Complete,
+}
+
+impl V5PendingProcess {
+    fn reserve_data(
+        &mut self,
+        body_len: usize,
+        data_credit: Option<(u64, u64)>,
+    ) -> std::result::Result<u64, RemoteClientError> {
+        let (_, credit_bytes) = data_credit.ok_or_else(|| {
+            RemoteClientError::Protocol("v5 process DATA did not carry receive credit".to_string())
+        })?;
+        let received_bytes = self.received_bytes.checked_add(body_len).ok_or_else(|| {
+            RemoteClientError::Protocol("v5 process decoded byte count overflowed".to_string())
+        })?;
+        if received_bytes > V5_MAX_ACCUMULATED_RESPONSE_BYTES {
+            return Err(RemoteClientError::Protocol(format!(
+                "v5 process response exceeds decoded byte limit of {V5_MAX_ACCUMULATED_RESPONSE_BYTES}"
+            )));
+        }
+        self.mailbox.reserve_data(body_len, credit_bytes)?;
+        self.received_bytes = received_bytes;
+        Ok(credit_bytes)
+    }
+
+    fn observe(
+        &mut self,
+        event: protocol_v5::StreamEvent,
+        data_credit: Option<(u64, u64)>,
+    ) -> std::result::Result<V5ProcessStreamObservation, RemoteClientError> {
+        match event {
+            protocol_v5::StreamEvent::Headers {
+                role: protocol_v5::MessageRole::FinalResponse,
+                envelope,
+                ..
+            } => {
+                if self.final_method.is_some() || self.final_error.is_some() {
+                    return Err(RemoteClientError::Protocol(
+                        "v5 process stream received duplicate final headers".to_string(),
+                    ));
+                }
+                if envelope.method != self.method {
+                    return Err(RemoteClientError::Protocol(format!(
+                        "v5 process stream expected {} response, received {}",
+                        self.method, envelope.method
+                    )));
+                }
+                self.final_method = Some(envelope.method);
+                Ok(V5ProcessStreamObservation::Continue {
+                    acknowledge_data: true,
+                })
+            }
+            protocol_v5::StreamEvent::Headers {
+                role: protocol_v5::MessageRole::FinalError,
+                envelope,
+                ..
+            } => {
+                if self.final_method.is_some() || self.final_error.is_some() {
+                    return Err(RemoteClientError::Protocol(
+                        "v5 process stream received duplicate final headers".to_string(),
+                    ));
+                }
+                if envelope.method != self.method {
+                    return Err(RemoteClientError::Protocol(format!(
+                        "v5 process stream expected {} error, received {}",
+                        self.method, envelope.method
+                    )));
+                }
+                self.final_method = Some(envelope.method.clone());
+                self.final_error = Some(v5_final_error_from_envelope(envelope)?);
+                Ok(V5ProcessStreamObservation::Continue {
+                    acknowledge_data: true,
+                })
+            }
+            protocol_v5::StreamEvent::Data {
+                channel:
+                    channel @ (protocol_v5::DataChannel::Stdout | protocol_v5::DataChannel::Stderr),
+                body,
+                ..
+            } => {
+                let body_len = body.len();
+                let credit_bytes = self.reserve_data(body_len, data_credit)?;
+                let total = match channel {
+                    protocol_v5::DataChannel::Stdout => &mut self.stdout_bytes,
+                    protocol_v5::DataChannel::Stderr => &mut self.stderr_bytes,
+                    _ => unreachable!(),
+                };
+                *total = total.checked_add(body_len).ok_or_else(|| {
+                    RemoteClientError::Protocol(
+                        "v5 process output byte count overflowed".to_string(),
+                    )
+                })?;
+                self.mailbox.push_chunk(channel, body, credit_bytes)?;
+                Ok(V5ProcessStreamObservation::Continue {
+                    acknowledge_data: false,
+                })
+            }
+            protocol_v5::StreamEvent::Data {
+                channel: protocol_v5::DataChannel::Unspecified,
+                body,
+                ..
+            } => {
+                let body_len = body.len();
+                let credit_bytes = self.reserve_data(body_len, data_credit)?;
+                self.payload_bytes = self.payload_bytes.checked_add(body_len).ok_or_else(|| {
+                    RemoteClientError::Protocol(
+                        "v5 process metadata byte count overflowed".to_string(),
+                    )
+                })?;
+                self.payload_credit =
+                    self.payload_credit
+                        .checked_add(credit_bytes)
+                        .ok_or_else(|| {
+                            RemoteClientError::Protocol(
+                                "v5 process metadata credit overflowed".to_string(),
+                            )
+                        })?;
+                self.payload.extend(body);
+                Ok(V5ProcessStreamObservation::Continue {
+                    acknowledge_data: false,
+                })
+            }
+            protocol_v5::StreamEvent::EndStream { stream_id } => {
+                if let Some(error) = self.final_error.take() {
+                    return Err(RemoteClientError::Remote(error));
+                }
+                let Some(method) = self.final_method.take() else {
+                    return Err(RemoteClientError::Protocol(format!(
+                        "v5 process stream {stream_id} ended without final response"
+                    )));
+                };
+                let response = RemoteResponse::from_v5_payload(&method, &self.payload)
+                    .map_err(v5_method_error_to_client_error)?;
+                let RemoteResponse::RunProcess(response) = response else {
+                    return Err(RemoteClientError::Protocol(format!(
+                        "unexpected v5 process stream final response: {response:?}"
+                    )));
+                };
+                if response.stdout_len != self.stdout_bytes
+                    || response.stderr_len != self.stderr_bytes
+                {
+                    return Err(RemoteClientError::Protocol(format!(
+                        "malformed run_process stream: header declares stdout_len={} stderr_len={} but received stdout={} stderr={}",
+                        response.stdout_len,
+                        response.stderr_len,
+                        self.stdout_bytes,
+                        self.stderr_bytes
+                    )));
+                }
+                self.mailbox.complete(
+                    response,
+                    std::mem::take(&mut self.payload_bytes),
+                    std::mem::take(&mut self.payload_credit),
+                )?;
+                self.payload.clear();
+                Ok(V5ProcessStreamObservation::Complete)
+            }
+            protocol_v5::StreamEvent::ResetStream {
+                code, diagnostic, ..
+            } => {
+                let error = RemoteError {
+                    code,
+                    message: "v5 process stream reset".to_string(),
+                    diagnostic: (!diagnostic.is_empty()).then_some(diagnostic),
+                };
+                if error.code == protocol_v5::RESET_DEADLINE_EXCEEDED {
+                    if self.final_method.is_none() {
+                        Err(RemoteClientError::OutcomeUnknown {
+                            method: self.method.to_string(),
+                            cause: RemoteClientError::Remote(error).to_string(),
+                        })
+                    } else {
+                        Err(RemoteClientError::RequestDeadlineExceeded {
+                            method: self.method.to_string(),
+                            kind: RemoteRequestDeadlineKind::Absolute,
+                        })
+                    }
+                } else {
+                    Err(RemoteClientError::Remote(error))
+                }
+            }
+            protocol_v5::StreamEvent::Data { channel, .. } => Err(RemoteClientError::Protocol(
+                format!("unexpected {channel:?} DATA on v5 process stream"),
+            )),
+            protocol_v5::StreamEvent::Headers { role, .. } => Err(RemoteClientError::Protocol(
+                format!("unexpected {role:?} headers on v5 process stream"),
+            )),
+        }
+    }
+}
+
 enum V5SearchStreamObservation {
     Continue { acknowledge_data: bool },
     Complete,
@@ -7060,8 +7624,10 @@ where
             waiters: Mutex::new(HashMap::new()),
             file_waiters: Mutex::new(HashMap::new()),
             search_waiters: Mutex::new(HashMap::new()),
+            process_waiters: Mutex::new(HashMap::new()),
             completed_file_streams: Mutex::new(HashMap::new()),
             completed_search_streams: Mutex::new(HashMap::new()),
+            completed_process_streams: Mutex::new(HashMap::new()),
             raw_waiters: Mutex::new(HashMap::new()),
             pending_cancellations: Mutex::new(HashMap::new()),
             pending_receive_credits: Mutex::new(HashMap::new()),
@@ -7280,6 +7846,21 @@ where
         )
     }
 
+    fn run_process_stream_with_context_and_cancellation(
+        &self,
+        request: RemoteRequest,
+        stdin: Vec<u8>,
+        context: RemoteRequestContext,
+        cancellation: &RemoteRequestCancellation,
+    ) -> std::result::Result<RemoteProcessStream, RemoteClientError> {
+        self.start_process_stream_with_context_and_cancellation(
+            request,
+            stdin,
+            context,
+            cancellation.clone(),
+        )
+    }
+
     fn shutdown(&self) -> std::result::Result<(), RemoteClientError> {
         let (response, _) = self.request(RemoteRequest::Shutdown, Vec::new())?;
         match response {
@@ -7419,6 +8000,122 @@ impl<R, W> RemoteWorkspaceV5MultiplexedClient<R, W>
 where
     W: Write + 'static,
 {
+    fn start_process_stream_with_context_and_cancellation(
+        &self,
+        request: RemoteRequest,
+        stdin: Vec<u8>,
+        context: RemoteRequestContext,
+        cancellation: RemoteRequestCancellation,
+    ) -> std::result::Result<RemoteProcessStream, RemoteClientError> {
+        if self.shared.closed.load(Ordering::SeqCst) {
+            return Err(RemoteClientError::Disconnected);
+        }
+        if !matches!(&request, RemoteRequest::RunProcess(_)) {
+            return Err(RemoteClientError::Protocol(format!(
+                "{} is not a process request",
+                request.v5_method()
+            )));
+        }
+        let (method, payload) = self.v5_method_payload_with_directory_cache(&request)?;
+        cancellation.check_cancelled(method)?;
+        if let Some(kind) = context.expired_at(Instant::now()) {
+            return Err(RemoteClientError::RequestDeadlineExceeded {
+                method: method.to_string(),
+                kind,
+            });
+        }
+        let options = request.v5_request_options_with_context(context);
+        let request_reservation = reserve_v5_client_request_bytes(
+            &self.shared.request_budget,
+            method,
+            payload.len(),
+            stdin.len(),
+        )?;
+        let mailbox = Arc::new(V5ProcessStreamMailbox::new(
+            self.shared.file_stream_byte_limit,
+            self.shared.response_budget.reservation(),
+        ));
+        let deadline = V5RequestDeadline::new(context, Instant::now());
+
+        let stream_id = {
+            let mut session = self.shared.session.lock().map_err(v5_client_lock_error)?;
+            if self.shared.closed.load(Ordering::Acquire) {
+                return Err(RemoteClientError::Disconnected);
+            }
+            cancellation.check_cancelled(method)?;
+            if let Some(kind) = context.expired_at(Instant::now()) {
+                return Err(RemoteClientError::RequestDeadlineExceeded {
+                    method: method.to_string(),
+                    kind,
+                });
+            }
+            let stream_id = session.open_request_with_owned_payload_and_body(
+                method,
+                options,
+                payload,
+                protocol_v5::DataChannel::Stdin,
+                stdin,
+            )?;
+            let pending = V5PendingProcess {
+                mailbox: Arc::clone(&mailbox),
+                payload: Vec::new(),
+                payload_bytes: 0,
+                payload_credit: 0,
+                stdout_bytes: 0,
+                stderr_bytes: 0,
+                received_bytes: 0,
+                final_method: None,
+                final_error: None,
+                method,
+                deadline,
+            };
+            self.shared
+                .outbound_request_reservations
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .insert(stream_id, request_reservation);
+            let mut waiters = match self.shared.process_waiters.lock() {
+                Ok(waiters) => waiters,
+                Err(error) => {
+                    let error = v5_client_lock_error(error);
+                    let reset_result = session.reset_stream(
+                        stream_id,
+                        protocol_v5::RESET_CANCELLED,
+                        "client could not register process stream waiter",
+                    );
+                    release_v5_outbound_request_reservation(&self.shared, stream_id);
+                    reset_result?;
+                    return Err(error);
+                }
+            };
+            waiters.insert(stream_id, pending);
+            stream_id
+        };
+
+        register_v5_client_cancellation(
+            &cancellation,
+            &self.shared,
+            stream_id,
+            V5ClientCancellation {
+                method,
+                mode: V5ClientCancellationMode::Stream,
+            },
+        );
+        signal_v5_client_deadlines(&self.shared);
+        if self.shared.closed.load(Ordering::SeqCst) {
+            return Err(RemoteClientError::Disconnected);
+        }
+        self.wake_outbound()?;
+        Ok(RemoteProcessStream::new(V5RemoteProcessSource {
+            shared: Arc::downgrade(&self.shared),
+            mailbox,
+            stream_id,
+            finished: false,
+        })
+        .with_terminal_predicate(|event| matches!(event, RemoteProcessEvent::Complete(_)))
+        .with_cancellation(cancellation))
+    }
+
     fn start_file_read_stream_with_context_and_cancellation(
         &self,
         request: RemoteRequest,
@@ -8645,6 +9342,11 @@ fn process_v5_client_cancellations<W>(
             .lock()
             .map_err(v5_client_lock_error)?
             .remove(&stream_id);
+        let process_pending = shared
+            .process_waiters
+            .lock()
+            .map_err(v5_client_lock_error)?
+            .remove(&stream_id);
         let completed_file = shared
             .completed_file_streams
             .lock()
@@ -8652,6 +9354,11 @@ fn process_v5_client_cancellations<W>(
             .remove(&stream_id);
         let completed_search = shared
             .completed_search_streams
+            .lock()
+            .map_err(v5_client_lock_error)?
+            .remove(&stream_id);
+        let completed_process = shared
+            .completed_process_streams
             .lock()
             .map_err(v5_client_lock_error)?
             .remove(&stream_id);
@@ -8677,11 +9384,21 @@ fn process_v5_client_cancellations<W>(
                 .fail(remote_request_cancelled_error(search_pending.method));
             queue_v5_released_receive_credit(shared, stream_id, credit_bytes)?;
         }
+        if let Some(process_pending) = process_pending {
+            let credit_bytes = process_pending
+                .mailbox
+                .fail(remote_request_cancelled_error(process_pending.method));
+            queue_v5_released_receive_credit(shared, stream_id, credit_bytes)?;
+        }
         if let Some(mailbox) = completed_file {
             let credit_bytes = mailbox.fail(remote_request_cancelled_error(cancellation.method));
             queue_v5_released_receive_credit(shared, stream_id, credit_bytes)?;
         }
         if let Some(mailbox) = completed_search {
+            let credit_bytes = mailbox.fail(remote_request_cancelled_error(cancellation.method));
+            queue_v5_released_receive_credit(shared, stream_id, credit_bytes)?;
+        }
+        if let Some(mailbox) = completed_process {
             let credit_bytes = mailbox.fail(remote_request_cancelled_error(cancellation.method));
             queue_v5_released_receive_credit(shared, stream_id, credit_bytes)?;
         }
@@ -8754,8 +9471,19 @@ where
         .map_err(v5_client_lock_error)?
         .values()
         .any(|pending| pending.deadline.expired_at(now).is_some() && !peer_is_healthy);
-    let connection_terminal =
-        response_connection_terminal || file_connection_terminal || search_connection_terminal;
+    let process_connection_terminal = shared
+        .process_waiters
+        .lock()
+        .map_err(v5_client_lock_error)?
+        .values()
+        .any(|pending| {
+            pending.deadline.expired_at(now).is_some()
+                && (!peer_is_healthy || pending.final_method.is_none())
+        });
+    let connection_terminal = response_connection_terminal
+        || file_connection_terminal
+        || search_connection_terminal
+        || process_connection_terminal;
     let close_claimed = connection_terminal
         && shared
             .closed
@@ -8822,6 +9550,31 @@ where
             .into_iter()
             .filter_map(|(stream_id, kind)| {
                 search_waiters
+                    .remove(&stream_id)
+                    .map(|pending| (stream_id, kind, pending))
+            })
+            .collect::<Vec<_>>()
+    };
+    let process_expired = if connection_terminal {
+        Vec::new()
+    } else {
+        let mut process_waiters = shared
+            .process_waiters
+            .lock()
+            .map_err(v5_client_lock_error)?;
+        let expired = process_waiters
+            .iter()
+            .filter_map(|(stream_id, pending)| {
+                pending
+                    .deadline
+                    .expired_at(now)
+                    .map(|kind| (*stream_id, kind))
+            })
+            .collect::<Vec<_>>();
+        expired
+            .into_iter()
+            .filter_map(|(stream_id, kind)| {
+                process_waiters
                     .remove(&stream_id)
                     .map(|pending| (stream_id, kind, pending))
             })
@@ -8927,6 +9680,29 @@ where
         }
     }
 
+    for (stream_id, kind, pending) in process_expired {
+        let reset = shared
+            .session
+            .lock()
+            .map_err(v5_client_lock_error)?
+            .reset_stream(
+                stream_id,
+                protocol_v5::RESET_DEADLINE_EXCEEDED,
+                format!("client {kind} deadline expired"),
+            )
+            .map_err(RemoteClientError::Io);
+        let deadline_error = RemoteClientError::RequestDeadlineExceeded {
+            method: pending.method.to_string(),
+            kind,
+        };
+        let credit_bytes = pending.mailbox.fail(deadline_error);
+        queue_v5_released_receive_credit(shared, stream_id, credit_bytes)?;
+        match reset? {
+            true => wake_v5_client_writer(shared)?,
+            false => release_v5_outbound_request_reservation(shared, stream_id),
+        }
+    }
+
     next_v5_client_deadline_wait(shared, Instant::now())
 }
 
@@ -8962,11 +9738,19 @@ fn next_v5_client_deadline_wait<W>(
         .values()
         .filter_map(|pending| pending.deadline.next_expiry().map(|(deadline, _)| deadline))
         .min();
+    let process_deadline = shared
+        .process_waiters
+        .lock()
+        .map_err(v5_client_lock_error)?
+        .values()
+        .filter_map(|pending| pending.deadline.next_expiry().map(|(deadline, _)| deadline))
+        .min();
     Ok([
         response_deadline,
         raw_deadline,
         file_deadline,
         search_deadline,
+        process_deadline,
     ]
     .into_iter()
     .flatten()
@@ -9208,6 +9992,24 @@ fn observe_v5_client_request_progress<W>(
         .get_mut(&stream_id)
     {
         pending.deadline.observe_progress(now);
+        return Ok(());
+    }
+    if let Some(pending) = shared
+        .search_waiters
+        .lock()
+        .map_err(v5_client_lock_error)?
+        .get_mut(&stream_id)
+    {
+        pending.deadline.observe_progress(now);
+        return Ok(());
+    }
+    if let Some(pending) = shared
+        .process_waiters
+        .lock()
+        .map_err(v5_client_lock_error)?
+        .get_mut(&stream_id)
+    {
+        pending.deadline.observe_progress(now);
     }
     Ok(())
 }
@@ -9398,6 +10200,122 @@ where
     }
 }
 
+fn handle_v5_client_process_stream_event<W>(
+    shared: &RemoteWorkspaceV5Shared<W>,
+    event: protocol_v5::StreamEvent,
+    data_credit: Option<(u64, u64)>,
+) -> Option<bool>
+where
+    W: Write,
+{
+    let stream_id = event.stream_id();
+    let peer_reset = matches!(&event, protocol_v5::StreamEvent::ResetStream { .. });
+    let peer_deadline = matches!(
+        &event,
+        protocol_v5::StreamEvent::ResetStream { code, .. }
+            if code == protocol_v5::RESET_DEADLINE_EXCEEDED
+    );
+    let (pending, observation, credit_was_reserved, terminal_peer_deadline) = {
+        let mut waiters = match shared.process_waiters.lock() {
+            Ok(waiters) => waiters,
+            Err(_) => return Some(false),
+        };
+        let pending = waiters.get_mut(&stream_id)?;
+        let terminal_peer_deadline = peer_deadline && pending.final_method.is_none();
+        let credit_before = pending.mailbox.queued_credit();
+        let observation = pending.observe(event, data_credit);
+        let credit_after = pending.mailbox.queued_credit();
+        let current_credit = data_credit.map(|(_, credit)| credit).unwrap_or(0);
+        let credit_was_reserved = credit_after >= credit_before.saturating_add(current_credit);
+        match &observation {
+            Ok(V5ProcessStreamObservation::Continue { .. }) => (
+                None,
+                observation,
+                credit_was_reserved,
+                terminal_peer_deadline,
+            ),
+            Ok(V5ProcessStreamObservation::Complete) => {
+                let pending = waiters.remove(&stream_id);
+                let Some(pending_ref) = pending.as_ref() else {
+                    return Some(false);
+                };
+                match shared.completed_process_streams.lock() {
+                    Ok(mut completed) => {
+                        completed.insert(stream_id, Arc::clone(&pending_ref.mailbox));
+                        (
+                            pending,
+                            observation,
+                            credit_was_reserved,
+                            terminal_peer_deadline,
+                        )
+                    }
+                    Err(_) => (
+                        pending,
+                        Err(RemoteClientError::Protocol(
+                            "v5 completed process stream registry lock is poisoned".to_string(),
+                        )),
+                        credit_was_reserved,
+                        terminal_peer_deadline,
+                    ),
+                }
+            }
+            Err(_) => (
+                waiters.remove(&stream_id),
+                observation,
+                credit_was_reserved,
+                terminal_peer_deadline,
+            ),
+        }
+    };
+
+    match observation {
+        Ok(V5ProcessStreamObservation::Continue { acknowledge_data }) => Some(acknowledge_data),
+        Ok(V5ProcessStreamObservation::Complete) => {
+            let pending = pending.expect("completed v5 process waiter should be removed");
+            if let Ok(mut completed) = shared.completed_process_streams.lock() {
+                if !pending.mailbox.has_pending_delivery() {
+                    completed.remove(&stream_id);
+                }
+                Some(true)
+            } else {
+                Some(false)
+            }
+        }
+        Err(error) => {
+            let pending = pending.expect("failed v5 process waiter should be removed");
+            if !peer_reset {
+                reset_v5_client_stream_after_local_error(shared, stream_id);
+            }
+            let queued_credit = pending.mailbox.fail(error);
+            let unreserved_current_credit = if credit_was_reserved {
+                0
+            } else {
+                data_credit.map(|(_, credit)| credit).unwrap_or(0)
+            };
+            let Some(released_credit) = queued_credit.checked_add(unreserved_current_credit) else {
+                let error = RemoteClientError::Protocol(
+                    "v5 abandoned process stream credit overflowed".to_string(),
+                );
+                fail_all_v5_waiters_for_error(shared, &error);
+                return Some(false);
+            };
+            if let Err(error) = queue_v5_released_receive_credit(shared, stream_id, released_credit)
+            {
+                fail_all_v5_waiters_for_error(shared, &error);
+            }
+            if terminal_peer_deadline {
+                fail_all_v5_waiters(shared, || {
+                    RemoteClientError::Io(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "v5 peer expired an ambiguous process request",
+                    ))
+                });
+            }
+            Some(false)
+        }
+    }
+}
+
 fn handle_v5_client_stream_event<W>(
     shared: &RemoteWorkspaceV5Shared<W>,
     event: protocol_v5::StreamEvent,
@@ -9428,6 +10346,14 @@ where
         .unwrap_or(false);
     if is_search_stream {
         return handle_v5_client_search_stream_event(shared, event, data_credit).unwrap_or(false);
+    }
+    let is_process_stream = shared
+        .process_waiters
+        .lock()
+        .map(|waiters| waiters.contains_key(&stream_id))
+        .unwrap_or(false);
+    if is_process_stream {
+        return handle_v5_client_process_stream_event(shared, event, data_credit).unwrap_or(false);
     }
     let mut event = Some(event);
     let completed_response = {
@@ -9688,6 +10614,14 @@ where
         let error = transport_closed_before_final_error(make_error());
         pending.mailbox.fail(error);
     }
+    let process_waiters = match shared.process_waiters.lock() {
+        Ok(mut process_waiters) => std::mem::take(&mut *process_waiters),
+        Err(poisoned) => std::mem::take(&mut *poisoned.into_inner()),
+    };
+    for (_, pending) in process_waiters {
+        let error = transport_closed_before_final_error(make_error());
+        pending.mailbox.fail(error);
+    }
     let completed_file_streams = match shared.completed_file_streams.lock() {
         Ok(mut completed) => std::mem::take(&mut *completed),
         Err(poisoned) => std::mem::take(&mut *poisoned.into_inner()),
@@ -9700,6 +10634,13 @@ where
         Err(poisoned) => std::mem::take(&mut *poisoned.into_inner()),
     };
     for (_, mailbox) in completed_search_streams {
+        mailbox.fail(transport_closed_before_final_error(make_error()));
+    }
+    let completed_process_streams = match shared.completed_process_streams.lock() {
+        Ok(mut completed) => std::mem::take(&mut *completed),
+        Err(poisoned) => std::mem::take(&mut *poisoned.into_inner()),
+    };
+    for (_, mailbox) in completed_process_streams {
         mailbox.fail(transport_closed_before_final_error(make_error()));
     }
     shared
@@ -10423,6 +11364,49 @@ pub trait RemoteWorkspaceProtocolClient: Send + Sync {
             }
             other => Err(RemoteClientError::Protocol(format!(
                 "unexpected text-search response: {other:?}"
+            ))),
+        }
+    }
+
+    fn run_process_stream(
+        &self,
+        request: ProcessRequest,
+        stdin: Vec<u8>,
+    ) -> std::result::Result<RemoteProcessStream, RemoteClientError> {
+        let request = RemoteRequest::RunProcess(request);
+        let context = request.v5_request_context();
+        self.run_process_stream_with_context_and_cancellation(
+            request,
+            stdin,
+            context,
+            &RemoteRequestCancellation::new(),
+        )
+    }
+
+    fn run_process_stream_with_context_and_cancellation(
+        &self,
+        request: RemoteRequest,
+        stdin: Vec<u8>,
+        context: RemoteRequestContext,
+        cancellation: &RemoteRequestCancellation,
+    ) -> std::result::Result<RemoteProcessStream, RemoteClientError> {
+        let method = request.v5_method();
+        if !matches!(&request, RemoteRequest::RunProcess(_)) {
+            return Err(RemoteClientError::Protocol(format!(
+                "{method} is not a process request"
+            )));
+        }
+        cancellation.check_cancelled(method)?;
+        let (response, body) =
+            self.request_with_context_and_cancellation(request, stdin, context, cancellation)?;
+        cancellation.check_cancelled(method)?;
+        match response {
+            RemoteResponse::RunProcess(response) => {
+                RemoteProcessStream::from_response(response, body)
+                    .map(|stream| stream.with_cancellation(cancellation.clone()))
+            }
+            other => Err(RemoteClientError::Protocol(format!(
+                "unexpected process response: {other:?}"
             ))),
         }
     }
@@ -11300,6 +12284,58 @@ where
         }
     }
 
+    fn run_process_stream_with_context_and_cancellation(
+        &self,
+        request: RemoteRequest,
+        stdin: Vec<u8>,
+        context: RemoteRequestContext,
+        cancellation: &RemoteRequestCancellation,
+    ) -> std::result::Result<RemoteProcessStream, RemoteClientError> {
+        let method = request.v5_method();
+        if !matches!(&request, RemoteRequest::RunProcess(_)) {
+            return Err(RemoteClientError::Protocol(format!(
+                "{method} is not a process request"
+            )));
+        }
+        cancellation.check_cancelled(method)?;
+        let client = self.current_client()?;
+        cancellation.check_cancelled(method)?;
+        match client.run_process_stream_with_context_and_cancellation(
+            request,
+            stdin,
+            context,
+            cancellation,
+        ) {
+            Ok(stream) => {
+                let reconnecting = self.shared_handle();
+                let stale = Arc::clone(&client);
+                Ok(stream.with_terminal_error_callback(move || {
+                    if let Err(error) = reconnecting.discard_if_current(&stale) {
+                        tracing::warn!(
+                            error = %error,
+                            "Failed to invalidate v5 transport after process stream failure"
+                        );
+                    }
+                }))
+            }
+            Err(error) if remote_client_error_requires_reconnect(&error) => {
+                cancellation.check_cancelled(method)?;
+                if let Err(reconnect_error) = self.reconnect_if_current(&client) {
+                    tracing::warn!(
+                        error = %reconnect_error,
+                        original_error = %error,
+                        "Failed to heal v5 transport after process stream open failure"
+                    );
+                }
+                Err(RemoteClientError::OutcomeUnknown {
+                    method: method.to_string(),
+                    cause: error.to_string(),
+                })
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     fn shutdown(&self) -> std::result::Result<(), RemoteClientError> {
         self.current_client()?.shutdown()
     }
@@ -12109,6 +13145,107 @@ where
             },
         )))
     }
+
+    async fn run_process_stream_with_optional_workspace_cancellation(
+        &self,
+        spec: ProcessSpec,
+        workspace_cancellation: Option<&WorkspaceCancellationToken>,
+    ) -> nucleotide_workspace::Result<ProcessStream>
+    where
+        C: 'static,
+    {
+        let cwd = spec.cwd.clone();
+        if let Some(cancellation) = workspace_cancellation {
+            cancellation.check_cancelled("run process", &cwd)?;
+        }
+        let mut cancel_on_drop = RemoteRequestCancelOnDrop::new();
+        let cancellation = cancel_on_drop.cancellation();
+        let workspace_cancellation_registration = workspace_cancellation.map(|workspace| {
+            let cancellation = cancellation.clone();
+            workspace.on_cancel(move || cancellation.cancel())
+        });
+        let ProcessSpec {
+            program,
+            args,
+            cwd: request_cwd,
+            env,
+            clear_env,
+            inherit_project_environment,
+            stdin,
+            max_output_bytes,
+            timeout_ms,
+        } = spec;
+        let request = RemoteRequest::RunProcess(ProcessRequest {
+            program,
+            args,
+            cwd: request_cwd,
+            env,
+            clear_env,
+            inherit_project_environment,
+            max_output_bytes,
+            timeout_ms,
+        });
+        let context = request.v5_request_context();
+        let client = Arc::clone(&self.client);
+        let worker_cwd = cwd.clone();
+        let worker_cancellation = cancellation.clone();
+        let (sender, receiver) = oneshot::channel();
+        std::thread::Builder::new()
+            .name("nucleotide-remote-process-stream".to_string())
+            .spawn(move || {
+                let result = client
+                    .run_process_stream_with_context_and_cancellation(
+                        request,
+                        stdin,
+                        context,
+                        &worker_cancellation,
+                    )
+                    .map_err(|error| client_error_to_workspace("run process", &worker_cwd, error));
+                let _ = sender.send(result);
+            })
+            .map_err(|source| WorkspaceError::Io {
+                operation: "run process",
+                path: cwd.clone(),
+                source,
+            })?;
+
+        let remote_stream = match receiver.await {
+            Ok(result) => {
+                cancel_on_drop.disarm();
+                result?
+            }
+            Err(_) => {
+                return Err(WorkspaceError::Remote {
+                    operation: "run process",
+                    path: cwd,
+                    message: "remote process worker exited before returning a stream".to_string(),
+                    diagnostic: None,
+                });
+            }
+        };
+        let error_cwd = cwd;
+        Ok(ProcessStream::new(StreamExt::map(
+            remote_stream,
+            move |event| {
+                let _registration = &workspace_cancellation_registration;
+                event
+                    .map(|event| match event {
+                        RemoteProcessEvent::Stdout(bytes) => ProcessEvent::Stdout(bytes),
+                        RemoteProcessEvent::Stderr(bytes) => ProcessEvent::Stderr(bytes),
+                        RemoteProcessEvent::Complete(response) => {
+                            ProcessEvent::Complete(ProcessCompletion {
+                                status_code: response.status_code,
+                                success: response.success,
+                                stdout_truncated: response.stdout_truncated,
+                                stderr_truncated: response.stderr_truncated,
+                                timed_out: response.timed_out,
+                            })
+                        }
+                    })
+                    .map_err(|error| client_error_to_workspace("run process", &error_cwd, error))
+            },
+        )))
+    }
 }
 
 fn request_with_client<C>(
@@ -12915,29 +14052,27 @@ where
 
     async fn run_process(&self, spec: ProcessSpec) -> nucleotide_workspace::Result<ProcessOutput> {
         let cwd = spec.cwd.clone();
-        let request = ProcessRequest {
-            program: spec.program,
-            args: spec.args,
-            cwd: spec.cwd,
-            env: spec.env,
-            clear_env: spec.clear_env,
-            inherit_project_environment: spec.inherit_project_environment,
-            max_output_bytes: spec.max_output_bytes,
-            timeout_ms: spec.timeout_ms,
-        };
-        let (response, body) = self
-            .request(
-                "run process",
-                &cwd,
-                RemoteRequest::RunProcess(request),
-                spec.stdin,
-            )
-            .await?;
-        match response {
-            RemoteResponse::RunProcess(result) => process_output_from_response(result, body)
-                .map_err(|error| client_error_to_workspace("run process", &cwd, error)),
-            other => Err(unexpected_response_error("run process", &cwd, other)),
-        }
+        self.run_process_stream(spec)
+            .await?
+            .collect_output(&cwd)
+            .await
+    }
+
+    async fn run_process_stream(
+        &self,
+        spec: ProcessSpec,
+    ) -> nucleotide_workspace::Result<ProcessStream> {
+        self.run_process_stream_with_optional_workspace_cancellation(spec, None)
+            .await
+    }
+
+    async fn run_process_stream_with_cancellation(
+        &self,
+        spec: ProcessSpec,
+        cancellation: &WorkspaceCancellationToken,
+    ) -> nucleotide_workspace::Result<ProcessStream> {
+        self.run_process_stream_with_optional_workspace_cancellation(spec, Some(cancellation))
+            .await
     }
 
     async fn start_watch(
@@ -22793,6 +23928,56 @@ mod tests {
     }
 
     #[test]
+    fn explicit_workspace_cancellation_stays_attached_to_process_stream() {
+        let input = BlockingRead::default();
+        let output = SharedWrite::default();
+        input.push(v5_server_input(Vec::new()));
+        let client = RemoteWorkspaceV5MultiplexedClient::connect(
+            protocol_v5::FramedIo::new(input.clone(), output.clone()),
+            protocol_v5::ClientHello::nucleotide("test-client"),
+        )
+        .unwrap();
+        let shared = Arc::clone(&client.shared);
+        let backend = RemoteWorkspaceBackendImpl::new(loopback_identity(), client);
+        let cancellation = WorkspaceCancellationToken::new();
+        let cwd = PathBuf::from(".");
+        let mut stream = futures::executor::block_on(backend.run_process_stream_with_cancellation(
+            ProcessSpec {
+                program: "command".to_string(),
+                args: Vec::new(),
+                cwd: cwd.clone(),
+                env: BTreeMap::new(),
+                clear_env: false,
+                inherit_project_environment: false,
+                stdin: Vec::new(),
+                max_output_bytes: None,
+                timeout_ms: None,
+            },
+            &cancellation,
+        ))
+        .unwrap();
+        let stream_id = wait_for_v5_request_stream(&output, "process.run");
+
+        cancellation.cancel();
+
+        let error = futures::executor::block_on(stream.next())
+            .expect("cancelled process stream should return an error")
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            WorkspaceError::Cancelled {
+                operation: "run process",
+                path,
+            } if path == cwd
+        ));
+        wait_for_v5_stream_frame(&output, stream_id, protocol_v5::FrameType::ResetStream);
+        assert!(shared.process_waiters.lock().unwrap().is_empty());
+        assert!(shared.completed_process_streams.lock().unwrap().is_empty());
+        assert!(!shared.closed.load(Ordering::Acquire));
+        input.close();
+    }
+
+    #[test]
     fn dropping_backend_watch_start_closes_ambiguous_control_connection() {
         let input = BlockingRead::default();
         let output = SharedWrite::default();
@@ -24127,6 +25312,7 @@ mod tests {
                 let cleaned = client.shared.waiters.lock().unwrap().is_empty()
                     && client.shared.file_waiters.lock().unwrap().is_empty()
                     && client.shared.search_waiters.lock().unwrap().is_empty()
+                    && client.shared.process_waiters.lock().unwrap().is_empty()
                     && client
                         .shared
                         .completed_file_streams
@@ -24136,6 +25322,12 @@ mod tests {
                     && client
                         .shared
                         .completed_search_streams
+                        .lock()
+                        .unwrap()
+                        .is_empty()
+                    && client
+                        .shared
+                        .completed_process_streams
                         .lock()
                         .unwrap()
                         .is_empty()
@@ -24171,9 +25363,22 @@ mod tests {
                 "{label}"
             );
             assert!(
+                client.shared.process_waiters.lock().unwrap().is_empty(),
+                "{label}"
+            );
+            assert!(
                 client
                     .shared
                     .completed_file_streams
+                    .lock()
+                    .unwrap()
+                    .is_empty(),
+                "{label}"
+            );
+            assert!(
+                client
+                    .shared
+                    .completed_process_streams
                     .lock()
                     .unwrap()
                     .is_empty(),
@@ -27197,6 +28402,177 @@ mod tests {
     }
 
     #[test]
+    fn v5_process_stream_delivers_channels_and_credits_consumed_output() {
+        let input = BlockingRead::default();
+        let output = SharedWrite::default();
+        input.push(v5_server_input(Vec::new()));
+        let client = RemoteWorkspaceV5MultiplexedClient::connect(
+            protocol_v5::FramedIo::new(input.clone(), output.clone()),
+            protocol_v5::ClientHello::nucleotide("test-client"),
+        )
+        .unwrap();
+
+        let mut stream = client
+            .run_process_stream(
+                ProcessRequest {
+                    program: "command".to_string(),
+                    args: Vec::new(),
+                    cwd: PathBuf::from("."),
+                    env: BTreeMap::new(),
+                    clear_env: false,
+                    inherit_project_environment: false,
+                    max_output_bytes: None,
+                    timeout_ms: None,
+                },
+                Vec::new(),
+            )
+            .unwrap();
+        let stream_id = wait_for_v5_request_stream(&output, "process.run");
+        let response = ProcessOutputResponse {
+            status_code: Some(0),
+            success: true,
+            stdout_truncated: false,
+            stderr_truncated: false,
+            stdout_len: 6,
+            stderr_len: 6,
+            timed_out: false,
+        };
+        let payload = RemoteResponse::RunProcess(response.clone())
+            .to_v5_payload()
+            .unwrap();
+        let frames = vec![
+            protocol_v5::stream_data_frame(
+                stream_id,
+                b"stdout".to_vec(),
+                protocol_v5::DataFrameOptions::new(protocol_v5::DataChannel::Stdout),
+            )
+            .unwrap(),
+            protocol_v5::stream_data_frame(
+                stream_id,
+                b"stderr".to_vec(),
+                protocol_v5::DataFrameOptions::new(protocol_v5::DataChannel::Stderr),
+            )
+            .unwrap(),
+            protocol_v5::stream_data_frame(
+                stream_id,
+                payload.clone(),
+                protocol_v5::DataFrameOptions::new(protocol_v5::DataChannel::Unspecified),
+            )
+            .unwrap(),
+            protocol_v5::Frame::from_control(
+                protocol_v5::FrameType::Headers,
+                stream_id,
+                &protocol_v5::StreamEnvelope::response(
+                    stream_id,
+                    "process.run",
+                    protocol_v5::MessageRole::FinalResponse,
+                    true,
+                ),
+            ),
+            protocol_v5::Frame::new(protocol_v5::FrameType::EndStream, stream_id),
+        ];
+        input.push(v5_frames_bytes(frames));
+
+        let retained = 12 + payload.len();
+        let started = Instant::now();
+        while client.shared.response_budget.used() != retained {
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "timed out waiting for buffered process output"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let connection_credit = || {
+            read_v5_complete_frames(output.bytes())
+                .into_iter()
+                .filter(|frame| {
+                    frame.stream_id == 0 && frame.frame_type == protocol_v5::FrameType::WindowUpdate
+                })
+                .map(|frame| {
+                    frame
+                        .decode_control::<protocol_v5::WindowUpdate>()
+                        .unwrap()
+                        .credit_bytes
+                })
+                .sum::<u64>()
+        };
+        let before_poll = connection_credit();
+
+        assert_eq!(
+            futures::executor::block_on(stream.next()).unwrap().unwrap(),
+            RemoteProcessEvent::Stdout(b"stdout".to_vec())
+        );
+        assert_eq!(client.shared.response_budget.used(), retained - 6);
+        let started = Instant::now();
+        while connection_credit() < before_poll + 6 {
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "timed out waiting for stdout consumption credit"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            futures::executor::block_on(stream.next()).unwrap().unwrap(),
+            RemoteProcessEvent::Stderr(b"stderr".to_vec())
+        );
+        assert_eq!(
+            futures::executor::block_on(stream.next()).unwrap().unwrap(),
+            RemoteProcessEvent::Complete(response)
+        );
+        assert!(futures::executor::block_on(stream.next()).is_none());
+        assert_eq!(client.shared.response_budget.used(), 0);
+        input.close();
+    }
+
+    #[test]
+    fn v5_process_stream_peer_deadline_before_final_is_outcome_unknown() {
+        let input = BlockingRead::default();
+        let output = SharedWrite::default();
+        input.push(v5_server_input(Vec::new()));
+        let client = RemoteWorkspaceV5MultiplexedClient::connect(
+            protocol_v5::FramedIo::new(input.clone(), output.clone()),
+            protocol_v5::ClientHello::nucleotide("test-client"),
+        )
+        .unwrap();
+        let mut stream = client
+            .run_process_stream(
+                ProcessRequest {
+                    program: "command".to_string(),
+                    args: Vec::new(),
+                    cwd: PathBuf::from("."),
+                    env: BTreeMap::new(),
+                    clear_env: false,
+                    inherit_project_environment: false,
+                    max_output_bytes: None,
+                    timeout_ms: Some(1),
+                },
+                Vec::new(),
+            )
+            .unwrap();
+        let stream_id = wait_for_v5_request_stream(&output, "process.run");
+        input.push(v5_frames_bytes(vec![protocol_v5::reset_stream_frame(
+            stream_id,
+            protocol_v5::RESET_DEADLINE_EXCEEDED,
+            "process deadline",
+        )]));
+
+        assert!(matches!(
+            futures::executor::block_on(stream.next()),
+            Some(Err(RemoteClientError::OutcomeUnknown { method, .. }))
+                if method == "process.run"
+        ));
+        let started = Instant::now();
+        while !client.shared.closed.load(Ordering::Acquire) {
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "timed out waiting for ambiguous process deadline to close transport"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        input.close();
+    }
+
+    #[test]
     fn v5_file_search_stream_delivers_partials_and_credits_consumed_batches() {
         let input = BlockingRead::default();
         let output = SharedWrite::default();
@@ -27522,6 +28898,102 @@ mod tests {
             assert!(
                 started.elapsed() < Duration::from_secs(2),
                 "timed out releasing completed search debt"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!client.shared.closed.load(Ordering::Acquire));
+        input.close();
+    }
+
+    #[test]
+    fn dropping_completed_process_stream_releases_sealed_receive_debt() {
+        let input = BlockingRead::default();
+        let output = SharedWrite::default();
+        input.push(v5_server_input(Vec::new()));
+        let client = RemoteWorkspaceV5MultiplexedClient::connect(
+            protocol_v5::FramedIo::new(input.clone(), output.clone()),
+            protocol_v5::ClientHello::nucleotide("test-client"),
+        )
+        .unwrap();
+        let stream = client
+            .run_process_stream(
+                ProcessRequest {
+                    program: "command".to_string(),
+                    args: Vec::new(),
+                    cwd: PathBuf::from("."),
+                    env: BTreeMap::new(),
+                    clear_env: false,
+                    inherit_project_environment: false,
+                    max_output_bytes: None,
+                    timeout_ms: None,
+                },
+                Vec::new(),
+            )
+            .unwrap();
+        let stream_id = wait_for_v5_request_stream(&output, "process.run");
+        let response = RemoteResponse::RunProcess(ProcessOutputResponse {
+            status_code: Some(0),
+            success: true,
+            stdout_truncated: false,
+            stderr_truncated: false,
+            stdout_len: 3,
+            stderr_len: 0,
+            timed_out: false,
+        });
+        let payload_len = response.to_v5_payload().unwrap().len();
+        let retained = payload_len + 3;
+        input.push(v5_frames_bytes(v5_response_frames(
+            stream_id,
+            "process.run",
+            response,
+            b"out".to_vec(),
+        )));
+        let started = Instant::now();
+        while !client
+            .shared
+            .completed_process_streams
+            .lock()
+            .unwrap()
+            .contains_key(&stream_id)
+        {
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "timed out waiting for completed buffered process"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(client.shared.response_budget.used(), retained);
+
+        drop(stream);
+
+        let started = Instant::now();
+        loop {
+            let released = client.shared.response_budget.used() == 0
+                && client
+                    .shared
+                    .completed_process_streams
+                    .lock()
+                    .unwrap()
+                    .is_empty();
+            let credited = read_v5_complete_frames(output.bytes())
+                .into_iter()
+                .filter(|frame| {
+                    frame.stream_id == 0 && frame.frame_type == protocol_v5::FrameType::WindowUpdate
+                })
+                .map(|frame| {
+                    frame
+                        .decode_control::<protocol_v5::WindowUpdate>()
+                        .unwrap()
+                        .credit_bytes
+                })
+                .sum::<u64>()
+                >= retained as u64;
+            if released && credited {
+                break;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "timed out releasing completed process debt"
             );
             std::thread::sleep(Duration::from_millis(10));
         }

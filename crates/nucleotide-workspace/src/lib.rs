@@ -4907,6 +4907,48 @@ mod tests {
     }
 
     #[test]
+    fn process_stream_collector_preserves_channels_and_completion() {
+        let cwd = PathBuf::from("/project");
+        let stream = ProcessStream::new(futures::stream::iter(vec![
+            Ok(ProcessEvent::Stdout(b"one".to_vec())),
+            Ok(ProcessEvent::Stderr(b"warning".to_vec())),
+            Ok(ProcessEvent::Stdout(b"two".to_vec())),
+            Ok(ProcessEvent::Complete(ProcessCompletion {
+                status_code: Some(7),
+                success: false,
+                stdout_truncated: true,
+                stderr_truncated: false,
+                timed_out: false,
+            })),
+        ]));
+
+        assert_eq!(
+            block_on(stream.collect_output(&cwd)).unwrap(),
+            ProcessOutput {
+                status_code: Some(7),
+                success: false,
+                stdout: b"onetwo".to_vec(),
+                stderr: b"warning".to_vec(),
+                stdout_truncated: true,
+                stderr_truncated: false,
+                timed_out: false,
+            }
+        );
+
+        let incomplete = ProcessStream::new(futures::stream::iter(vec![Ok(ProcessEvent::Stdout(
+            b"partial".to_vec(),
+        ))]));
+        assert!(matches!(
+            block_on(incomplete.collect_output(&cwd)),
+            Err(WorkspaceError::Io {
+                operation: "process stream",
+                path,
+                source,
+            }) if path == cwd && source.kind() == std::io::ErrorKind::InvalidData
+        ));
+    }
+
+    #[test]
     fn path_mapped_search_streams_map_only_completion_roots() {
         let display_root = PathBuf::from("/remote/project");
         let native_root = PathBuf::from("/native/project");
