@@ -42,7 +42,11 @@ fn main() -> Result<()> {
     setup_logging()?;
     let result = nucleotide_remote::run_from_args(std::env::args().skip(1));
     if let Err(error) = &result {
-        tracing::error!(error = ?error, "nucleotide-remote command failed");
+        tracing::error!(
+            error = %error,
+            error_chain = %format_args!("{error:#}"),
+            "nucleotide-remote command failed"
+        );
     }
     result
 }

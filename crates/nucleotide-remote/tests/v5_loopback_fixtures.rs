@@ -50,6 +50,7 @@ fn remote_helper_persists_command_failures_on_the_helper_host() {
     let log = std::fs::read_to_string(log_path).unwrap();
     assert!(log.contains("Nucleotide remote host logging initialized"));
     assert!(log.contains("nucleotide-remote command failed"));
+    assert!(log.contains("error_chain"));
     assert!(log.contains("unknown nucleotide-remote command"));
 }
 
