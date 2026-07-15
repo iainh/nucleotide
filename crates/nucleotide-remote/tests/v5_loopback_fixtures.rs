@@ -6,6 +6,7 @@ use nucleotide_workspace::{
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -14,6 +15,43 @@ const PROCESS_HELPER_STARTED: &str = "NUCLEOTIDE_V5_LOOPBACK_PROCESS_STARTED";
 const PROCESS_HELPER_RELEASE: &str = "NUCLEOTIDE_V5_LOOPBACK_PROCESS_RELEASE";
 const PROCESS_READY_OUTPUT: &str = "nucleotide-v5-loopback-process-ready";
 const PROCESS_RELEASED_OUTPUT: &str = "nucleotide-v5-loopback-process-released";
+
+#[test]
+fn remote_helper_persists_command_failures_on_the_helper_host() {
+    let temp = tempfile::tempdir().unwrap();
+    let log_directory = temp.path().join("logs");
+    let helper = PathBuf::from(env!("CARGO_BIN_EXE_nucleotide-remote"));
+
+    let output = Command::new(helper)
+        .arg("invalid-test-command")
+        .env("NUCLEOTIDE_LOG_DIR", &log_directory)
+        .env("NUCLEOTIDE_LOG", "info")
+        .env_remove("NUCLEOTIDE_LOG_NO_FILE")
+        .env_remove("RUST_LOG")
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert!(
+        output.stdout.is_empty(),
+        "protocol stdout must remain clean"
+    );
+
+    let log_path = std::fs::read_dir(&log_directory)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("nucleotide-remote.log."))
+        })
+        .expect("nucleotide-remote should create a dated host log");
+    let log = std::fs::read_to_string(log_path).unwrap();
+    assert!(log.contains("Nucleotide remote host logging initialized"));
+    assert!(log.contains("nucleotide-remote command failed"));
+    assert!(log.contains("unknown nucleotide-remote command"));
+}
 
 #[test]
 fn v5_loopback_process_helper() {

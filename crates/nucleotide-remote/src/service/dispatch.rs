@@ -2173,6 +2173,15 @@ where
         let priority = session
             .stream_priority(stream_id)
             .unwrap_or(protocol_v5::Priority::Background);
+        tracing::warn!(
+            stream_id,
+            method,
+            error_code = %error.code,
+            error_message = %error.message,
+            diagnostic = ?error.diagnostic,
+            workspace_root = %self.workspace_root.display(),
+            "Remote workspace request failed"
+        );
         session
             .send_error_with_priority(
                 stream_id,

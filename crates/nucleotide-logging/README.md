@@ -9,7 +9,7 @@ This crate provides a comprehensive logging solution that replaces the basic `lo
 ## Features
 
 - **Structured logging** with contextual spans and fields
-- **Multiple output targets**: console, file (`~/.config/nucleotide/nucleotide.log`), JSON
+- **Multiple output targets**: console, daily files and JSON
 - **Configurable filtering** per component and log level  
 - **Performance optimized** with minimal overhead
 - **Environment variable support** (`NUCLEOTIDE_LOG`, `RUST_LOG`)
@@ -30,6 +30,12 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 ```
+
+On Windows, Nucleotide stores logs under
+`%LOCALAPPDATA%\Spiralpoint\Nucleotide\logs`. On Linux,
+`nucleotide-remote` stores helper logs under `$XDG_STATE_HOME/nucleotide/logs`,
+or `~/.local/state/nucleotide/logs` when `XDG_STATE_HOME` is not set. Set
+`NUCLEOTIDE_LOG_DIR` to override the directory.
 
 ## Architecture
 

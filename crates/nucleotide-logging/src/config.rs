@@ -5,6 +5,8 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
+#[cfg(any(windows, test))]
+use std::path::Path;
 use std::path::PathBuf;
 use tracing::Level;
 
@@ -86,7 +88,7 @@ pub struct OutputConfig {
 /// Configuration for file logging.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileConfig {
-    /// Path to log file (defaults to ~/.config/nucleotide/nucleotide.log)
+    /// Path prefix for daily log files.
     pub path: PathBuf,
 
     /// Maximum file size before rotation (in MB)
@@ -190,14 +192,60 @@ impl LoggingConfig {
     }
 }
 
-/// Get the default log file path: ~/.config/nucleotide/nucleotide.log
-fn default_log_file_path() -> PathBuf {
-    if let Some(config_dir) = dirs::config_dir() {
-        config_dir.join("nucleotide").join("nucleotide.log")
-    } else {
-        // Fallback to current directory if config dir not available
-        PathBuf::from("nucleotide.log")
+/// Get the default application log file path prefix.
+pub fn default_log_file_path() -> PathBuf {
+    if let Some(directory) = env::var_os("NUCLEOTIDE_LOG_DIR").map(PathBuf::from) {
+        return directory.join("nucleotide.log");
     }
+
+    #[cfg(windows)]
+    {
+        return windows_log_file_path(
+            &dirs::data_local_dir().unwrap_or_else(std::env::temp_dir),
+            "nucleotide.log",
+        );
+    }
+
+    #[cfg(not(windows))]
+    {
+        dirs::config_dir()
+            .map(|config_dir| config_dir.join("nucleotide").join("nucleotide.log"))
+            .unwrap_or_else(|| PathBuf::from("nucleotide.log"))
+    }
+}
+
+/// Get the default `nucleotide-remote` log file path prefix on the helper host.
+pub fn default_remote_log_file_path() -> PathBuf {
+    if let Some(directory) = env::var_os("NUCLEOTIDE_LOG_DIR").map(PathBuf::from) {
+        return directory.join("nucleotide-remote.log");
+    }
+
+    #[cfg(windows)]
+    {
+        return windows_log_file_path(
+            &dirs::data_local_dir().unwrap_or_else(std::env::temp_dir),
+            "nucleotide-remote.log",
+        );
+    }
+
+    #[cfg(not(windows))]
+    {
+        dirs::state_dir()
+            .or_else(dirs::data_local_dir)
+            .or_else(dirs::config_dir)
+            .unwrap_or_else(std::env::temp_dir)
+            .join("nucleotide")
+            .join("logs")
+            .join("nucleotide-remote.log")
+    }
+}
+
+#[cfg(any(windows, test))]
+fn windows_log_file_path(base: &Path, file_name: &str) -> PathBuf {
+    base.join("Spiralpoint")
+        .join("Nucleotide")
+        .join("logs")
+        .join(file_name)
 }
 
 /// Parse a log level string (case-insensitive).
@@ -244,6 +292,28 @@ mod tests {
     fn test_default_log_path() {
         let path = default_log_file_path();
         assert!(path.to_string_lossy().contains("nucleotide.log"));
+    }
+
+    #[test]
+    fn windows_log_path_uses_vendor_and_product_directories() {
+        let path = windows_log_file_path(Path::new("local-app-data"), "nucleotide.log");
+        assert_eq!(
+            path,
+            Path::new("local-app-data")
+                .join("Spiralpoint")
+                .join("Nucleotide")
+                .join("logs")
+                .join("nucleotide.log")
+        );
+    }
+
+    #[test]
+    fn remote_log_path_has_distinct_file_name() {
+        let path = default_remote_log_file_path();
+        assert_eq!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some("nucleotide-remote.log")
+        );
     }
 
     #[test]
