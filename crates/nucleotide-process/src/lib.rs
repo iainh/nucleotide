@@ -957,6 +957,7 @@ mod tests {
                     windows_raw_helper_command("descendant", &started, &survived, &release);
                 descendant.stdin(Stdio::null());
                 if role == "leader-detached" {
+                    make_windows_output_handles_non_inheritable();
                     descendant.stdout(Stdio::null()).stderr(Stdio::null());
                 } else {
                     descendant.stdout(Stdio::inherit()).stderr(Stdio::inherit());
@@ -974,6 +975,33 @@ mod tests {
                 }
             }
             other => panic!("unknown Windows descendant helper role {other}"),
+        }
+    }
+
+    #[cfg(windows)]
+    fn make_windows_output_handles_non_inheritable() {
+        use windows_sys::Win32::{
+            Foundation::{HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation},
+            System::Console::{GetStdHandle, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE},
+        };
+
+        // Windows Command spawning inherits every inheritable handle, not only the handles selected
+        // for the child's standard streams. Clear inheritance in this isolated helper process so
+        // the detached descendant cannot retain the leader's output pipes.
+        for standard_handle in [STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+            // SAFETY: GetStdHandle returns a borrowed process-global handle. SetHandleInformation
+            // changes only its inheritance flag and does not close or transfer ownership of it.
+            let handle = unsafe { GetStdHandle(standard_handle) };
+            assert!(!handle.is_null() && handle != INVALID_HANDLE_VALUE);
+            // SAFETY: The handle was returned by GetStdHandle and validated above. The mask changes
+            // only HANDLE_FLAG_INHERIT, and zero clears that flag without affecting ownership.
+            let updated = unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) };
+            assert_ne!(
+                updated,
+                0,
+                "failed to clear standard-output handle inheritance: {}",
+                io::Error::last_os_error()
+            );
         }
     }
 
