@@ -1,8 +1,8 @@
 use crate::types::RegexSelectionAction;
 use gpui::{
-    App, AppContext, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, Render, Styled, Window,
-    div, px,
+    App, AppContext, ClipboardItem, Context, DismissEvent, Entity, EventEmitter, FocusHandle,
+    Focusable, InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, Render, Styled,
+    Window, div, px,
 };
 use helix_stdx::rope::RopeSliceExt;
 use nucleotide_terminal::TerminalBounds;
@@ -2043,6 +2043,27 @@ impl Render for OverlayView {
                     .on_key_down(cx.listener(
                         move |this: &mut OverlayView, event: &gpui::KeyDownEvent, window, cx| {
                             if !panel_focus_for_keys.is_focused(window) {
+                                return;
+                            }
+                            if event.keystroke.modifiers.secondary()
+                                && event.keystroke.key.as_str() == "c"
+                                && let Some(text) = this
+                                    .terminal_panel
+                                    .as_ref()
+                                    .and_then(|panel| {
+                                        nucleotide_terminal_view::get_view_model(
+                                            panel.read(cx).active,
+                                        )
+                                    })
+                                    .and_then(|model| {
+                                        model
+                                            .lock()
+                                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                                            .selected_text()
+                                    })
+                            {
+                                cx.write_to_clipboard(ClipboardItem::new_string(text));
+                                cx.stop_propagation();
                                 return;
                             }
                             if let Some(core) = this.core.upgrade() {
