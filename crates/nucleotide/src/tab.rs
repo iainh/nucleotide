@@ -666,6 +666,12 @@ impl RenderOnce for Tab {
             show_file_icons,
             cx,
         );
+        // Align the active indicator with the leading edge of the file icon.
+        // The matching trailing inset keeps the pill balanced across the tab.
+        let active_indicator_inset = px(match close_position {
+            TabClosePosition::Left => END_TAB_SLOT_SIZE,
+            TabClosePosition::Right => START_TAB_SLOT_SIZE,
+        } + 2.0 * f32::from(tokens.sizes.space_2));
         root.group(tab_hover_group)
             .relative()
             .flex()
@@ -683,9 +689,19 @@ impl RenderOnce for Tab {
             .when(is_active, |tab| tab.border_l_1().border_r_1())
             .when(!is_active, |tab| tab.border_b_1())
             .when(is_active, |tab| {
-                tab.child(div().absolute().top_0().left_0().right_0().h(px(2.0)).bg(
-                    nucleotide_ui::tokens::with_alpha(tokens.editor.focus_ring, 0.9),
-                ))
+                tab.child(
+                    div()
+                        .absolute()
+                        .bottom_0()
+                        .left(active_indicator_inset)
+                        .right(active_indicator_inset)
+                        .h(px(3.0))
+                        .rounded_full()
+                        .bg(nucleotide_ui::tokens::with_alpha(
+                            tokens.editor.focus_ring,
+                            0.9,
+                        )),
+                )
             })
             .when(!disabled, |tab| {
                 tab.on_mouse_down(MouseButton::Left, {
