@@ -6,9 +6,12 @@ use nucleotide_events::v2::terminal::TerminalId;
 use gpui::AppContext;
 #[cfg(feature = "emulator")]
 use gpui::prelude::FluentBuilder;
-use gpui::{Context, FontWeight, IntoElement, ParentElement, Render, Styled, Window, div};
 #[cfg(feature = "emulator")]
-use gpui::{Hsla, InteractiveElement, hsla, rgb};
+use gpui::{
+    Bounds, Hsla, InteractiveElement, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    Pixels, hsla, rgb,
+};
+use gpui::{Context, FontWeight, IntoElement, ParentElement, Render, Styled, Window, div};
 #[cfg(feature = "emulator")]
 use nucleotide_terminal::frame::{
     Cell, DEFAULT_BACKGROUND, DEFAULT_FOREGROUND, FramePayload, GridDiff, GridSnapshot,
@@ -22,7 +25,11 @@ use nucleotide_ui::scrollbar::{Scrollbar, ScrollbarState};
 #[cfg(feature = "emulator")]
 use nucleotide_ui::{ColorTheory, ContrastRatios, DesignTokens};
 use once_cell::sync::Lazy;
+#[cfg(feature = "emulator")]
+use std::cell::Cell as LayoutCell;
 use std::collections::HashMap;
+#[cfg(feature = "emulator")]
+use std::rc::Rc;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 const DEFAULT_TERMINAL_TITLE: &str = "Terminal";
@@ -79,6 +86,44 @@ impl DirtyFlags {
     }
 }
 
+#[cfg(feature = "emulator")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TerminalCellPosition {
+    row: usize,
+    col: usize,
+}
+
+#[cfg(feature = "emulator")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TerminalSelection {
+    anchor: TerminalCellPosition,
+    head: TerminalCellPosition,
+}
+
+#[cfg(feature = "emulator")]
+impl TerminalSelection {
+    fn is_active(self) -> bool {
+        self.anchor != self.head
+    }
+
+    fn contains(self, position: TerminalCellPosition, cols: usize) -> bool {
+        if !self.is_active() || cols == 0 {
+            return false;
+        }
+
+        let anchor = self.anchor.row * cols + self.anchor.col;
+        let head = self.head.row * cols + self.head.col;
+        let position = position.row * cols + position.col;
+        let (start, end) = if anchor <= head {
+            (anchor, head)
+        } else {
+            (head, anchor)
+        };
+
+        (start..=end).contains(&position)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TerminalSpawnFailure {
     pub message: String,
@@ -118,6 +163,10 @@ pub struct TerminalViewModel {
     input_mode: TerminalInputMode,
     #[cfg(feature = "emulator")]
     input_tx: Option<std::sync::mpsc::Sender<Vec<u8>>>,
+    #[cfg(feature = "emulator")]
+    selection: Option<TerminalSelection>,
+    #[cfg(feature = "emulator")]
+    mouse_selecting: bool,
     window_title: Option<String>,
     spawn_failure: Option<TerminalSpawnFailure>,
     /// Set to true when the shell process has exited
@@ -158,6 +207,10 @@ impl TerminalViewModel {
             input_mode: TerminalInputMode::default(),
             #[cfg(feature = "emulator")]
             input_tx: None,
+            #[cfg(feature = "emulator")]
+            selection: None,
+            #[cfg(feature = "emulator")]
+            mouse_selecting: false,
             window_title: None,
             spawn_failure: None,
             exited: false,
@@ -180,6 +233,105 @@ impl TerminalViewModel {
     #[cfg(feature = "emulator")]
     pub fn clear_input_sender(&mut self) {
         self.input_tx = None;
+    }
+
+    #[cfg(feature = "emulator")]
+    fn cell_position_for_pointer(
+        &self,
+        bounds: Bounds<Pixels>,
+        position: gpui::Point<Pixels>,
+    ) -> Option<TerminalCellPosition> {
+        let cols = self.cols as usize;
+        let rows = self.grid.len();
+        if cols == 0 || rows == 0 {
+            return None;
+        }
+
+        let cell_width = self.cell_width.max(1.0);
+        let cell_height = self.cell_height.max(1.0);
+        let x = (f32::from(position.x) - f32::from(bounds.origin.x)).max(0.0);
+        let y = (f32::from(position.y) - f32::from(bounds.origin.y)).max(0.0);
+
+        Some(TerminalCellPosition {
+            row: ((y / cell_height).floor() as usize).min(rows - 1),
+            col: ((x / cell_width).floor() as usize).min(cols - 1),
+        })
+    }
+
+    #[cfg(feature = "emulator")]
+    fn start_mouse_selection(&mut self, position: TerminalCellPosition) {
+        self.selection = Some(TerminalSelection {
+            anchor: position,
+            head: position,
+        });
+        self.mouse_selecting = true;
+        self.dirty.mark_all();
+    }
+
+    #[cfg(feature = "emulator")]
+    fn extend_mouse_selection(&mut self, position: TerminalCellPosition) -> bool {
+        let Some(selection) = self.selection.as_mut() else {
+            return false;
+        };
+        if !self.mouse_selecting || selection.head == position {
+            return false;
+        }
+
+        selection.head = position;
+        self.dirty.mark_all();
+        true
+    }
+
+    #[cfg(feature = "emulator")]
+    fn finish_mouse_selection(&mut self) {
+        self.mouse_selecting = false;
+    }
+
+    #[cfg(feature = "emulator")]
+    pub fn selected_text(&self) -> Option<String> {
+        let selection = self.selection?;
+        if !selection.is_active() || self.cols == 0 {
+            return None;
+        }
+
+        let cols = self.cols as usize;
+        let anchor = selection.anchor.row * cols + selection.anchor.col;
+        let head = selection.head.row * cols + selection.head.col;
+        let (start, end) = if anchor <= head {
+            (anchor, head)
+        } else {
+            (head, anchor)
+        };
+        let start = TerminalCellPosition {
+            row: start / cols,
+            col: start % cols,
+        };
+        let end = TerminalCellPosition {
+            row: end / cols,
+            col: end % cols,
+        };
+
+        let mut text = String::new();
+        for row in start.row..=end.row.min(self.grid.len().saturating_sub(1)) {
+            let row_start = if row == start.row { start.col } else { 0 };
+            let row_end = if row == end.row { end.col } else { cols - 1 };
+            let Some(cells) = self.grid.get(row) else {
+                continue;
+            };
+
+            let line = cells
+                .iter()
+                .skip(row_start)
+                .take(row_end.saturating_sub(row_start) + 1)
+                .map(|cell| cell.ch)
+                .collect::<String>();
+            text.push_str(line.trim_end());
+            if row != end.row {
+                text.push('\n');
+            }
+        }
+
+        (!text.is_empty()).then_some(text)
     }
 
     #[cfg(feature = "emulator")]
@@ -711,6 +863,7 @@ impl Render for TerminalView {
         let wrapper = {
             // Add scroll wheel support (requires an id for interactive element)
             let scroll_model = self.model.clone();
+            let content_bounds = Rc::new(LayoutCell::new(None::<Bounds<Pixels>>));
             let interactive_content =
                 content
                     .id("terminal-content")
@@ -722,12 +875,71 @@ impl Render for TerminalView {
                         }
                         cx.stop_propagation();
                     });
+
+            let selection_model = self.model.clone();
+            let mouse_down_bounds = Rc::clone(&content_bounds);
+            let interactive_content = interactive_content.on_mouse_down(
+                MouseButton::Left,
+                move |event: &MouseDownEvent, _window, cx| {
+                    let Some(bounds) = mouse_down_bounds.get() else {
+                        return;
+                    };
+                    let mut model = lock_or_recover(selection_model.as_ref());
+                    if let Some(position) = model.cell_position_for_pointer(bounds, event.position)
+                    {
+                        model.start_mouse_selection(position);
+                        cx.stop_propagation();
+                    }
+                },
+            );
+
+            let selection_model = self.model.clone();
+            let mouse_move_bounds = Rc::clone(&content_bounds);
+            let interactive_content =
+                interactive_content.on_mouse_move(move |event: &MouseMoveEvent, _window, cx| {
+                    if !event.dragging() {
+                        return;
+                    }
+                    let Some(bounds) = mouse_move_bounds.get() else {
+                        return;
+                    };
+                    let mut model = lock_or_recover(selection_model.as_ref());
+                    if let Some(position) = model.cell_position_for_pointer(bounds, event.position)
+                        && model.extend_mouse_selection(position)
+                    {
+                        cx.stop_propagation();
+                    }
+                });
+
+            let selection_model = self.model.clone();
+            let interactive_content = interactive_content.on_mouse_up(
+                MouseButton::Left,
+                move |_event: &MouseUpEvent, _window, cx| {
+                    lock_or_recover(selection_model.as_ref()).finish_mouse_selection();
+                    cx.stop_propagation();
+                },
+            );
+
+            let selection_model = self.model.clone();
+            let interactive_content = interactive_content.on_mouse_up_out(
+                MouseButton::Left,
+                move |_event: &MouseUpEvent, _window, cx| {
+                    lock_or_recover(selection_model.as_ref()).finish_mouse_selection();
+                    cx.stop_propagation();
+                },
+            );
             div()
                 .relative()
                 .size_full()
                 .min_h(gpui::px(0.0))
                 .overflow_hidden()
                 .bg(default_bg)
+                .on_children_prepainted({
+                    let content_bounds = Rc::clone(&content_bounds);
+                    move |bounds, _window, _cx| {
+                        content_bounds.set(bounds.into_iter().next());
+                    }
+                })
                 .child(interactive_content)
                 .when_some(
                     self.scrollbar_state
@@ -1093,6 +1305,24 @@ mod tests {
         );
     }
 
+    #[test]
+    fn terminal_mouse_selection_returns_text_across_rows() {
+        let mut model = TerminalViewModel::new(TerminalId(1));
+        model.resize_grid(3, 2, Some((8.0, 16.0)));
+        model.grid[0][0].ch = 'a';
+        model.grid[0][1].ch = 'b';
+        model.grid[0][2].ch = 'c';
+        model.grid[1][0].ch = 'd';
+        model.grid[1][1].ch = 'e';
+        model.grid[1][2].ch = 'f';
+
+        model.start_mouse_selection(TerminalCellPosition { row: 0, col: 1 });
+        assert!(model.extend_mouse_selection(TerminalCellPosition { row: 1, col: 1 }));
+        model.finish_mouse_selection();
+
+        assert_eq!(model.selected_text().as_deref(), Some("bc\nde"));
+    }
+
     fn hue_distance(a: Hsla, b: Hsla) -> f32 {
         let raw = (a.h - b.h).abs();
         raw.min(1.0 - raw)
@@ -1131,7 +1361,7 @@ impl Render for TerminalRowView {
         let editor_font = cx.global::<nucleotide_types::EditorFontConfig>();
         let ansi_palette = TerminalAnsiPalette::from_tokens(tokens);
 
-        let (grid_row, cursor_row, cursor_col, cell_width, cell_height) = {
+        let (grid_row, cursor_row, cursor_col, cell_width, cell_height, selection, cols) = {
             let guard = lock_or_recover(self.model.as_ref());
             let row = if self.row_index < guard.grid.len() {
                 guard.grid[self.row_index].clone()
@@ -1144,6 +1374,8 @@ impl Render for TerminalRowView {
                 guard.cursor_col as usize,
                 guard.cell_width,
                 guard.cell_height,
+                guard.selection,
+                guard.cols as usize,
             )
         };
 
@@ -1181,6 +1413,7 @@ impl Render for TerminalRowView {
         let mut cur_italic = false;
         let mut cur_underline = false;
         let mut cur_inverse = false;
+        let mut cur_selected = false;
         let mut buf = String::new();
 
         let flush_run = |line_in: gpui::Div,
@@ -1190,18 +1423,23 @@ impl Render for TerminalRowView {
                          bold: bool,
                          italic: bool,
                          underline: bool,
-                         inverse: bool| {
+                         inverse: bool,
+                         selected: bool| {
             if text.is_empty() {
                 return line_in;
             }
             let (fg, bg) = if inverse { (bg, fg) } else { (fg, bg) };
             let mapped_bg = ansi_palette.background_for_code(bg);
-            let contrast_bg = mapped_bg.unwrap_or(ansi_palette.default_background);
-            let mapped_fg = ColorTheory::ensure_contrast(
+            let mut contrast_bg = mapped_bg.unwrap_or(ansi_palette.default_background);
+            let mut mapped_fg = ColorTheory::ensure_contrast(
                 contrast_bg,
                 ansi_palette.foreground_for_code(fg),
                 ContrastRatios::AA_NORMAL,
             );
+            if selected {
+                contrast_bg = tokens.editor.selection_primary;
+                mapped_fg = tokens.editor.text_on_primary;
+            }
 
             let cell_count = text.chars().count().max(1);
             let rendered_text = terminal_render_text(&std::mem::take(text));
@@ -1234,12 +1472,22 @@ impl Render for TerminalRowView {
                 cell.underline,
                 cell.inverse,
             );
+            let selected = selection.is_some_and(|selection| {
+                selection.contains(
+                    TerminalCellPosition {
+                        row: self.row_index,
+                        col: i,
+                    },
+                    cols,
+                )
+            });
             if fg != cur_fg
                 || bg != cur_bg
                 || bold != cur_bold
                 || italic != cur_italic
                 || underline != cur_underline
                 || inverse != cur_inverse
+                || selected != cur_selected
             {
                 // flush previous run
                 line = flush_run(
@@ -1251,6 +1499,7 @@ impl Render for TerminalRowView {
                     cur_italic,
                     cur_underline,
                     cur_inverse,
+                    cur_selected,
                 );
                 cur_fg = fg;
                 cur_bg = bg;
@@ -1258,6 +1507,7 @@ impl Render for TerminalRowView {
                 cur_italic = italic;
                 cur_underline = underline;
                 cur_inverse = inverse;
+                cur_selected = selected;
             }
             // Cursor rendering: render a block cursor at (cursor_row, cursor_col)
             if self.row_index == cursor_row && i == cursor_col {
@@ -1271,6 +1521,7 @@ impl Render for TerminalRowView {
                     cur_italic,
                     cur_underline,
                     cur_inverse,
+                    cur_selected,
                 );
                 // Render the cursor cell as a block using theme tokens
                 let mut run = div()
@@ -1299,6 +1550,7 @@ impl Render for TerminalRowView {
             cur_italic,
             cur_underline,
             cur_inverse,
+            cur_selected,
         );
 
         line
