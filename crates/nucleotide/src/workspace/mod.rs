@@ -15245,18 +15245,29 @@ impl Render for Workspace {
                             ),
                     );
                 } else {
-                    // No directory open: show a centered button to open a directory
+                    // No directory open: offer local and remote workspace choices.
                     let core = self.core.clone();
                     let handle = self.handle.clone();
-                    use nucleotide_ui::button::Button;
-                    let open_btn = Button::new("open-dir-btn", "Open a directory to view files")
-                        .icon("icons/folder-open.svg")
+                    let open_local_btn = Button::new("open-dir-btn", "Open Local Directory")
+                        .width(px(180.0))
                         .activate_on_mouse_down()
                         .on_click(cx.listener(
                             move |_: &mut Workspace, _ev: &gpui::ClickEvent, _window, cx| {
                                 open_directory(core.clone(), handle.clone(), cx);
                             },
                         ));
+                    let open_remote_btn =
+                        Button::new("open-remote-dir-btn", "Open Remote Directory")
+                            .width(px(180.0))
+                            .activate_on_mouse_down()
+                            .on_click(cx.listener(
+                                move |workspace: &mut Workspace,
+                                      _ev: &gpui::ClickEvent,
+                                      _window,
+                                      cx| {
+                                    workspace.show_open_remote_prompt(cx);
+                                },
+                            ));
 
                     file_tree_container = file_tree_container.child(
                         div()
@@ -15272,7 +15283,21 @@ impl Render for Workspace {
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .child(open_btn),
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_col()
+                                            .items_center()
+                                            .gap(cx.theme().tokens.sizes.space_3)
+                                            .child(
+                                                svg()
+                                                    .path("icons/folder-open.svg")
+                                                    .size(px(48.0))
+                                                    .text_color(file_tree_tokens.icon_color),
+                                            )
+                                            .child(open_local_btn)
+                                            .child(open_remote_btn),
+                                    ),
                             ),
                     );
                 }
