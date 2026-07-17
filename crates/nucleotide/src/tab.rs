@@ -12,8 +12,9 @@ use helix_view::DocumentId;
 use nucleotide_types::VcsStatus;
 use nucleotide_ui::ThemedContext;
 use nucleotide_ui::{
-    Component, ComponentFactory, ComponentState, Interactive, StyleVariant, Styled as UIStyled,
-    Tooltipped, VcsIcon, click_event_from_mouse_down, compute_component_state,
+    Component, ComponentFactory, ComponentState, IndeterminateProgressIndicator, Interactive,
+    StyleVariant, Styled as UIStyled, Tooltipped, VcsIcon, click_event_from_mouse_down,
+    compute_component_state,
 };
 use std::cmp::Ordering;
 use std::sync::Arc;
@@ -208,6 +209,8 @@ pub struct Tab {
     pub diagnostic_severity: Option<DiagnosticSeverity>,
     /// Whether this tab is currently active
     pub is_active: bool,
+    /// Whether the document contents are still loading
+    pub is_loading: bool,
     /// Component variant
     variant: TabVariant,
     /// Component size
@@ -284,6 +287,7 @@ impl Tab {
             git_status,
             diagnostic_severity,
             is_active,
+            is_loading: false,
             variant,
             size: TabSize::Medium,
             position: TabPosition::First,
@@ -346,6 +350,11 @@ impl Tab {
         self
     }
 
+    pub fn loading(mut self, loading: bool) -> Self {
+        self.is_loading = loading;
+        self
+    }
+
     #[cfg(test)]
     pub(crate) fn close_button_visibility(&self) -> TabCloseButtonVisibility {
         self.close_button_visibility
@@ -394,6 +403,11 @@ impl Tab {
     #[cfg(test)]
     pub(crate) fn is_deemphasized(&self) -> bool {
         self.deemphasized
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_loading(&self) -> bool {
+        self.is_loading
     }
 
     #[cfg(test)]
@@ -532,6 +546,7 @@ impl ComponentFactory for Tab {
             git_status: None,
             diagnostic_severity: None,
             is_active: false,
+            is_loading: false,
             variant: TabVariant::Default,
             size: TabSize::Medium,
             position: TabPosition::First,
@@ -609,6 +624,7 @@ impl RenderOnce for Tab {
         let is_deleted = self.is_deleted;
         let is_pinned = self.is_pinned;
         let is_preview = self.is_preview;
+        let is_loading = self.is_loading;
         let deemphasized = self.deemphasized;
         let close_button_visibility = self.close_button_visibility;
         let close_position = self.close_position;
@@ -635,6 +651,7 @@ impl RenderOnce for Tab {
             is_deleted,
             is_pinned,
             is_preview,
+            is_loading,
             disabled,
             git_status,
             diagnostic_severity,
@@ -1136,6 +1153,7 @@ impl Tab {
         is_deleted: bool,
         is_pinned: bool,
         is_preview: bool,
+        is_loading: bool,
         disabled: bool,
         git_status: Option<VcsStatus>,
         diagnostic_severity: Option<DiagnosticSeverity>,
@@ -1172,6 +1190,10 @@ impl Tab {
         let trailing_slot = div().flex_none().ml_auto().child(trailing_slot);
         let content_icon = Tab::content_icon_kind(is_readonly, show_file_icons);
         let readonly_diagnostic_severity = show_file_icons.then_some(diagnostic_severity).flatten();
+        let loading_indicator =
+            IndeterminateProgressIndicator::new(format!("tab-loading-{}", doc_id))
+                .size(TAB_SLOT_ICON_SIZE)
+                .text_color(Tab::content_icon_color(tokens));
 
         div()
             .flex()
@@ -1181,19 +1203,22 @@ impl Tab {
             .min_w(px(0.0))
             .gap(tokens.sizes.space_2)
             .child(leading_slot)
-            .when_some(content_icon, |row, content_icon| match content_icon {
-                TabContentIcon::File => row.child(Tab::build_icon(
-                    file_path,
-                    git_status,
-                    diagnostic_severity,
-                    tokens,
-                    cx,
-                )),
-                TabContentIcon::Readonly => row.child(Tab::build_readonly_icon(
-                    tokens,
-                    readonly_diagnostic_severity,
-                    on_toggle_readonly.clone(),
-                )),
+            .when(is_loading, |row| row.child(loading_indicator))
+            .when(!is_loading, |row| {
+                row.when_some(content_icon, |row, content_icon| match content_icon {
+                    TabContentIcon::File => row.child(Tab::build_icon(
+                        file_path,
+                        git_status,
+                        diagnostic_severity,
+                        tokens,
+                        cx,
+                    )),
+                    TabContentIcon::Readonly => row.child(Tab::build_readonly_icon(
+                        tokens,
+                        readonly_diagnostic_severity,
+                        on_toggle_readonly.clone(),
+                    )),
+                })
             })
             .child(Tab::build_label(
                 label,

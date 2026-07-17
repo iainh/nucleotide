@@ -9616,6 +9616,104 @@ pub(crate) fn open_workspace_document_from_read(
     Ok(doc_id)
 }
 
+/// Register a read-only placeholder immediately while a remote document read is in flight.
+pub(crate) fn open_loading_workspace_document(
+    editor: &mut Editor,
+    path: &Path,
+    action: helix_view::editor::Action,
+) -> Result<DocumentId, Error> {
+    let metadata = DocumentOpenMetadata {
+        readonly: true,
+        last_saved_time: Some(SystemTime::UNIX_EPOCH),
+        file_version: None,
+    };
+    let mut bytes = std::io::empty();
+    let mut doc = Document::open_from_reader(
+        path,
+        &mut bytes,
+        None,
+        true,
+        metadata,
+        editor.config.clone(),
+        editor.syn_loader.clone(),
+    )
+    .with_context(|| format!("failed to create workspace placeholder {}", path.display()))?;
+
+    set_remote_document_lsp_url(&mut doc, path);
+
+    Ok(editor.open_document_with_options(
+        path,
+        action,
+        doc,
+        helix_view::editor::OpenDocumentOptions {
+            local_diff: false,
+            launch_language_servers: false,
+        },
+    ))
+}
+
+/// Fill an existing placeholder without changing its document ID or stealing focus.
+pub(crate) fn hydrate_workspace_document_from_read(
+    editor: &mut Editor,
+    doc_id: DocumentId,
+    preferred_view_id: ViewId,
+    document_read: WorkspaceDocumentRead,
+) -> Result<ViewId, Error> {
+    let WorkspaceDocumentRead { read, diff_base } = document_read;
+    let path_matches = editor
+        .document(doc_id)
+        .with_context(|| format!("document {doc_id:?} is no longer open"))?
+        .path()
+        == Some(read.path.as_path());
+    if !path_matches {
+        bail!(
+            "document path changed while loading: expected {}, found {:?}",
+            read.path.display(),
+            editor.document(doc_id).and_then(Document::path)
+        );
+    }
+
+    let view_id = {
+        let doc = editor
+            .document(doc_id)
+            .with_context(|| format!("document {doc_id:?} is no longer open"))?;
+        if editor.tree.try_get(preferred_view_id).is_some()
+            && doc.selections().contains_key(&preferred_view_id)
+        {
+            preferred_view_id
+        } else {
+            doc.selections()
+                .keys()
+                .copied()
+                .find(|view_id| editor.tree.try_get(*view_id).is_some())
+                .unwrap_or(editor.tree.focus)
+        }
+    };
+
+    let metadata = DocumentOpenMetadata {
+        readonly: read.readonly,
+        last_saved_time: read.modified,
+        file_version: read.version.map(FileVersion::into_bytes),
+    };
+    let mut bytes = read.bytes.as_slice();
+    let tree = &mut editor.tree;
+    let documents = &mut editor.documents;
+    let view = tree.get_mut(view_id);
+    let doc = documents
+        .get_mut(&doc_id)
+        .with_context(|| format!("document {doc_id:?} is no longer open"))?;
+    doc.ensure_view_init(view_id);
+    doc.hydrate_from_reader(&mut bytes, view, metadata)
+        .with_context(|| format!("failed to decode workspace file {}", read.path.display()))?;
+    set_remote_document_lsp_url(doc, &read.path);
+
+    if let Some(diff_base) = diff_base {
+        doc.set_diff_base(diff_base);
+    }
+
+    Ok(view_id)
+}
+
 pub(crate) fn reload_workspace_document_from_read(
     editor: &mut Editor,
     doc_id: DocumentId,
@@ -11186,16 +11284,17 @@ mod tests {
         detect_project_type_from_workspace_backend, detect_project_type_from_workspace_listing,
         diagnostic_picker_path_label, diagnostic_severity_label,
         discover_project_languages_with_backend, file_picker_current_directory,
-        home_requires_login_shell_capture, is_workspace_diagnostic_refresh_method,
-        local_path_completion_context, lsp_completion_insert_text,
-        lsp_completion_insert_text_format, lsp_completion_items_from_response,
-        lsp_completion_items_from_response_for_server, lsp_completion_resolve_supported,
-        lsp_completion_response_is_incomplete, lsp_diagnostic_document_uri,
-        lsp_location_from_location, lsp_location_path_from_url, lsp_symbol_picker,
-        native_open_file_with_backend, native_symbol_item_from_lsp, navigation_display_path,
-        open_workspace_document, path_completion_items, path_completion_items_from_listing,
-        project_health_status, project_lsp_config, project_lsp_plan_from_names,
-        project_server_language_id, remote_lsp_project_root_for_document,
+        home_requires_login_shell_capture, hydrate_workspace_document_from_read,
+        is_workspace_diagnostic_refresh_method, local_path_completion_context,
+        lsp_completion_insert_text, lsp_completion_insert_text_format,
+        lsp_completion_items_from_response, lsp_completion_items_from_response_for_server,
+        lsp_completion_resolve_supported, lsp_completion_response_is_incomplete,
+        lsp_diagnostic_document_uri, lsp_location_from_location, lsp_location_path_from_url,
+        lsp_symbol_picker, native_open_file_with_backend, native_symbol_item_from_lsp,
+        navigation_display_path, open_loading_workspace_document, open_workspace_document,
+        path_completion_items, path_completion_items_from_listing, project_health_status,
+        project_lsp_config, project_lsp_plan_from_names, project_server_language_id,
+        read_workspace_document, remote_lsp_project_root_for_document,
         remote_lsp_root_uri_matches_document_workspace, remote_native_file_uri,
         should_stat_picker_root_with_backend, should_use_native_save_for_settings_file,
         should_use_workspace_syntax_symbol_fallback, startup_path_should_open_as_file,
@@ -11756,6 +11855,64 @@ mod tests {
             doc.file_version().expect("saved file version"),
             initial_file_version
         );
+    }
+
+    #[test]
+    fn remote_placeholders_hydrate_in_place_without_stealing_focus() {
+        let temp = tempdir().unwrap();
+        fs::create_dir_all(temp.path().join("src")).unwrap();
+        fs::write(temp.path().join("src").join("first.rs"), "fn first() {}\n").unwrap();
+        fs::write(
+            temp.path().join("src").join("second.rs"),
+            "fn second() {}\n",
+        )
+        .unwrap();
+
+        let display_root = PathBuf::from("ssh://me@example.com/home/me/project");
+        let first_path = display_root.join("src").join("first.rs");
+        let second_path = display_root.join("src").join("second.rs");
+        let backend = path_mapped_workspace_backend(
+            local_workspace_backend(),
+            WorkspacePathMapping::new(display_root, temp.path()),
+        );
+        let mut editor = new_test_editor();
+
+        let first_doc_id = open_loading_workspace_document(
+            &mut editor,
+            &first_path,
+            helix_view::editor::Action::VerticalSplit,
+        )
+        .unwrap();
+        let view_id = editor.tree.focus;
+        let second_doc_id = open_loading_workspace_document(
+            &mut editor,
+            &second_path,
+            helix_view::editor::Action::Replace,
+        )
+        .unwrap();
+
+        assert_eq!(editor.tree.get(view_id).doc, second_doc_id);
+        assert_eq!(editor.document(first_doc_id).unwrap().text().len_bytes(), 0);
+        assert!(editor.document(first_doc_id).unwrap().readonly);
+
+        let first_read =
+            TEST_RUNTIME.block_on(read_workspace_document(backend.clone(), first_path.clone()));
+        let hydrated_view_id = hydrate_workspace_document_from_read(
+            &mut editor,
+            first_doc_id,
+            view_id,
+            first_read.unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(hydrated_view_id, view_id);
+        assert_eq!(editor.tree.get(view_id).doc, second_doc_id);
+        let first_doc = editor.document(first_doc_id).unwrap();
+        assert_eq!(first_doc.path(), Some(first_path.as_path()));
+        assert_eq!(first_doc.text(), "fn first() {}\n");
+        assert!(!first_doc.readonly);
+        assert!(!first_doc.is_modified());
+        assert!(first_doc.file_version().is_some());
     }
 
     #[gpui::test]
