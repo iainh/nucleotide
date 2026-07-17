@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# This repository has no persistent local services. Fail quickly if a resumed
+# orb has lost either toolchain rather than hiding the problem until a build.
+export PATH="${HOME}/.cargo/bin:${PATH}"
+command -v cargo >/dev/null
+command -v zig >/dev/null
+
+echo "Orb resumed; no services require repair."

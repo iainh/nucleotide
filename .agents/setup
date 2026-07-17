@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "Installing Linux build dependencies..."
+sudo apt-get update
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+  build-essential \
+  ca-certificates \
+  clang \
+  curl \
+  git \
+  libfontconfig1-dev \
+  libfreetype6-dev \
+  libgl1-mesa-dev \
+  libssl-dev \
+  libvulkan-dev \
+  libwayland-dev \
+  libx11-dev \
+  libxcb-render0-dev \
+  libxcb-shape0-dev \
+  libxcb-xfixes0-dev \
+  libxcb1-dev \
+  libxi-dev \
+  libxkbcommon-dev \
+  libxkbcommon-x11-dev \
+  libxrandr-dev \
+  mesa-common-dev \
+  pkg-config \
+  xz-utils \
+  zlib1g-dev
+
+# Amp shells include ~/.local/bin by default, while rustup installs its proxies
+# under ~/.cargo/bin.
+export PATH="${HOME}/.cargo/bin:${PATH}"
+
+if ! command -v rustup >/dev/null 2>&1; then
+  echo "Installing rustup..."
+  curl --proto '=https' --tlsv1.2 -fsS https://sh.rustup.rs \
+    | sh -s -- -y --profile minimal --default-toolchain none --no-modify-path
+fi
+
+echo "Installing the repository's pinned Rust toolchain..."
+rustup toolchain install 1.95.0 \
+  --profile minimal \
+  --component clippy \
+  --component rustfmt \
+  --component rust-src
+
+mkdir -p "${HOME}/.local/bin"
+for proxy in "${HOME}"/.cargo/bin/*; do
+  ln -sfn "${proxy}" "${HOME}/.local/bin/$(basename "${proxy}")"
+done
+
+zig_version=0.15.2
+if ! command -v zig >/dev/null 2>&1 || [[ "$(zig version)" != "${zig_version}" ]]; then
+  echo "Installing Zig ${zig_version}..."
+  tmp_dir="$(mktemp -d)"
+  trap 'rm -rf "${tmp_dir}"' EXIT
+  curl -fsSL "https://ziglang.org/download/${zig_version}/zig-x86_64-linux-${zig_version}.tar.xz" \
+    | tar -xJ -C "${tmp_dir}"
+  sudo rm -rf "/opt/zig-${zig_version}"
+  sudo mv "${tmp_dir}/zig-x86_64-linux-${zig_version}" "/opt/zig-${zig_version}"
+  sudo ln -sfn "/opt/zig-${zig_version}/zig" /usr/local/bin/zig
+  rm -rf "${tmp_dir}"
+  trap - EXIT
+fi
+
+echo "Fetching locked Cargo dependencies..."
+cargo fetch --locked
+
+echo "Orb setup complete."
