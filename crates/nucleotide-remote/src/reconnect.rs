@@ -1514,21 +1514,23 @@ pub(crate) fn run_reconnecting_workspace_watch<C>(
 }
 
 pub(crate) fn remote_watch_restore_error_is_retryable(error: &RemoteClientError) -> bool {
-    matches!(
-        error,
+    match error {
         RemoteClientError::Disconnected
-            | RemoteClientError::TransportClosed { .. }
-            | RemoteClientError::Io(_)
-            | RemoteClientError::RequestDeadlineExceeded { .. }
-            | RemoteClientError::OutcomeUnknown { .. }
-            | RemoteClientError::ResponseIncomplete { .. }
-    )
+        | RemoteClientError::TransportClosed { .. }
+        | RemoteClientError::RequestDeadlineExceeded { .. }
+        | RemoteClientError::OutcomeUnknown { .. }
+        | RemoteClientError::ResponseIncomplete { .. } => true,
+        RemoteClientError::Io(error) => remote_io_error_is_transport_failure(error),
+        RemoteClientError::Json(_)
+        | RemoteClientError::Protocol(_)
+        | RemoteClientError::Remote(_) => false,
+    }
 }
 
 pub(crate) fn remote_client_error_allows_reconnect_retry(error: &RemoteClientError) -> bool {
     match error {
         RemoteClientError::Disconnected | RemoteClientError::TransportClosed { .. } => true,
-        RemoteClientError::Io(_) => true,
+        RemoteClientError::Io(error) => remote_io_error_is_transport_failure(error),
         RemoteClientError::Json(_)
         | RemoteClientError::RequestDeadlineExceeded { .. }
         | RemoteClientError::OutcomeUnknown { .. }
@@ -1542,10 +1544,15 @@ pub(crate) fn remote_client_error_requires_reconnect(error: &RemoteClientError) 
     remote_client_error_allows_reconnect_retry(error)
         || matches!(
             error,
-            RemoteClientError::Io(_)
-                | RemoteClientError::OutcomeUnknown { .. }
-                | RemoteClientError::ResponseIncomplete { .. }
+            RemoteClientError::OutcomeUnknown { .. } | RemoteClientError::ResponseIncomplete { .. }
         )
+}
+
+fn remote_io_error_is_transport_failure(error: &io::Error) -> bool {
+    // Protocol-session capacity and control-budget limits use OutOfMemory as a local resource
+    // signal. Replacing the SSH transport cannot create capacity and instead causes every
+    // queued read to replay at once, amplifying pressure into a reconnect storm.
+    error.kind() != io::ErrorKind::OutOfMemory
 }
 
 pub(crate) fn transport_closed_before_final_error(error: RemoteClientError) -> RemoteClientError {

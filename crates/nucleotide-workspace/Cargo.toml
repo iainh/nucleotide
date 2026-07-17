@@ -16,6 +16,7 @@ async-trait.workspace = true
 futures.workspace = true
 ignore.workspace = true
 regex.workspace = true
+sha2 = "0.10"
 tempfile.workspace = true
 thiserror.workspace = true
 

@@ -926,6 +926,7 @@ fn helper_version_command_writes_json_probe_payload() {
 
     let info: HelperVersionInfo = serde_json::from_slice(&output).unwrap();
     assert_eq!(info.helper_version, env!("CARGO_PKG_VERSION"));
+    assert_eq!(info.helper_revision, REMOTE_HELPER_REVISION);
     assert_eq!(info.protocol_version, PROTOCOL_VERSION);
     assert_eq!(info.frame_version, FRAME_VERSION);
     assert_eq!(info.os, std::env::consts::OS);
@@ -962,7 +963,7 @@ fn linux_helper_cache_path_includes_protocol_version_and_platform() {
     assert_eq!(
         remote_linux_helper_path(&probe),
         PathBuf::from(format!(
-            "/home/me/.cache/nucleotide/remote/protocol-{PROTOCOL_VERSION}/nucleotide-remote-{}-linux-x86_64",
+            "/home/me/.cache/nucleotide/remote/protocol-{PROTOCOL_VERSION}/revision-{REMOTE_HELPER_REVISION}/nucleotide-remote-{}-linux-x86_64",
             env!("CARGO_PKG_VERSION")
         ))
     );
@@ -976,6 +977,7 @@ fn helper_version_match_checks_protocol_version_and_platform() {
     };
     let mut info = HelperVersionInfo {
         helper_version: env!("CARGO_PKG_VERSION").to_string(),
+        helper_revision: REMOTE_HELPER_REVISION,
         protocol_version: PROTOCOL_VERSION,
         frame_version: FRAME_VERSION,
         os: "linux".to_string(),
@@ -984,7 +986,30 @@ fn helper_version_match_checks_protocol_version_and_platform() {
 
     assert!(helper_version_matches_current(&info, &platform));
 
+    info.helper_revision += 1;
+    assert!(!helper_version_matches_current(&info, &platform));
+    info.helper_revision = REMOTE_HELPER_REVISION;
+
     info.protocol_version += 1;
+    assert!(!helper_version_matches_current(&info, &platform));
+}
+
+#[test]
+fn helper_version_without_revision_is_treated_as_stale() {
+    let info: HelperVersionInfo = serde_json::from_value(serde_json::json!({
+        "helper_version": env!("CARGO_PKG_VERSION"),
+        "protocol_version": PROTOCOL_VERSION,
+        "frame_version": FRAME_VERSION,
+        "os": "linux",
+        "arch": "x86_64"
+    }))
+    .unwrap();
+    let platform = SshRemotePlatform {
+        os: "linux".to_string(),
+        arch: "x86_64".to_string(),
+    };
+
+    assert_eq!(info.helper_revision, 0);
     assert!(!helper_version_matches_current(&info, &platform));
 }
 

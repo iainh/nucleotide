@@ -81,6 +81,31 @@ pub fn init_file_subscriber(config: LoggingConfig) -> Result<()> {
     Ok(())
 }
 
+/// Initialize synchronous stderr-only logging for protocol helper processes.
+///
+/// Helpers reserve stdout for framed protocol traffic, so their logging fallback
+/// must never use the ordinary console subscriber (which writes to stdout).
+pub fn init_stderr_subscriber(config: LoggingConfig) -> Result<()> {
+    use tracing_subscriber::{fmt, prelude::*, util::SubscriberInitExt};
+
+    let env_filter = create_env_filter(&config).context("Failed to create environment filter")?;
+
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(
+            fmt::layer()
+                .with_target(true)
+                .with_thread_ids(true)
+                .with_thread_names(true)
+                .with_file(true)
+                .with_line_number(true)
+                .with_writer(std::io::stderr),
+        )
+        .try_init()?;
+
+    Ok(())
+}
+
 /// Initialize the global tracing subscriber with the given configuration.
 pub fn init_subscriber(config: LoggingConfig) -> Result<()> {
     use tracing_subscriber::{fmt, prelude::*, util::SubscriberInitExt};

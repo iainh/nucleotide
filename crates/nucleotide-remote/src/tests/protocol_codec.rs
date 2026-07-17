@@ -842,6 +842,7 @@ fn v5_method_payload_round_trips_existing_one_shot_requests() {
         RemoteRequest::WriteFile {
             path: PathBuf::from("src/main.rs"),
             create_parent_dirs: true,
+            expected_version: Some(vec![1, 2, 3, 4]),
             expected_modified_unix_millis: Some(123),
             expected_modified_unix_nanos: Some(456),
         },
@@ -878,6 +879,33 @@ fn v5_method_payload_round_trips_existing_one_shot_requests() {
         let decoded = RemoteRequest::from_v5_method_payload(method, &payload).unwrap();
         assert_eq!(decoded, request, "{method}");
     }
+}
+
+#[test]
+fn file_version_fields_default_when_decoding_legacy_payloads() {
+    let request = RemoteRequest::from_v5_method_payload(
+        "fs.write",
+        br#"{"path":"src/lib.rs","create_parent_dirs":false,"expected_modified_unix_millis":null,"expected_modified_unix_nanos":null}"#,
+    )
+    .unwrap();
+    assert!(matches!(
+        request,
+        RemoteRequest::WriteFile {
+            expected_version: None,
+            ..
+        }
+    ));
+
+    let response: FileReadResponse = serde_json::from_value(serde_json::json!({
+        "path": "src/lib.rs",
+        "size": 0,
+        "modified_unix_millis": null,
+        "modified_unix_nanos": null,
+        "readonly": false,
+        "truncated": false
+    }))
+    .unwrap();
+    assert!(response.version.is_none());
 }
 
 #[test]
@@ -928,6 +956,7 @@ fn v5_request_options_classify_priority_idempotency_and_body_channel() {
     let write = RemoteRequest::WriteFile {
         path: PathBuf::from("src/lib.rs"),
         create_parent_dirs: false,
+        expected_version: None,
         expected_modified_unix_millis: None,
         expected_modified_unix_nanos: None,
     };
@@ -1070,6 +1099,7 @@ fn v5_request_deadline_policy_covers_every_method() {
             RemoteRequest::WriteFile {
                 path: "a".into(),
                 create_parent_dirs: false,
+                expected_version: None,
                 expected_modified_unix_millis: None,
                 expected_modified_unix_nanos: None,
             },

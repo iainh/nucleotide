@@ -846,6 +846,7 @@ pub struct OutboundScheduler {
 #[derive(Debug, Clone)]
 struct QueuedItem {
     order: u64,
+    opens_stream: bool,
     item: OutboundItem,
 }
 
@@ -1061,6 +1062,19 @@ impl OutboundScheduler {
     }
 
     pub fn enqueue(&mut self, frame: Frame) -> io::Result<()> {
+        self.enqueue_frame(frame, false)
+    }
+
+    fn enqueue_stream_open(&mut self, frame: Frame) -> io::Result<()> {
+        if frame.frame_type != FrameType::Headers || frame.stream_id == 0 {
+            return Err(protocol_error(
+                "v5 stream opening requires non-zero HEADERS frame",
+            ));
+        }
+        self.enqueue_frame(frame, true)
+    }
+
+    fn enqueue_frame(&mut self, frame: Frame, opens_stream: bool) -> io::Result<()> {
         if frame.frame_type == FrameType::Data && frame.stream_id == 0 {
             return Err(protocol_error("DATA frames require a non-zero stream id"));
         }
@@ -1074,6 +1088,7 @@ impl OutboundScheduler {
             .ok_or_else(|| io::Error::other("v5 outbound scheduler order exhausted"))?;
         self.queues[index].push_back(QueuedItem {
             order,
+            opens_stream,
             item: OutboundItem::Frame(frame),
         });
         Ok(())
@@ -1089,6 +1104,7 @@ impl OutboundScheduler {
             .ok_or_else(|| io::Error::other("v5 outbound scheduler order exhausted"))?;
         self.queues[index].push_back(QueuedItem {
             order,
+            opens_stream: false,
             item: OutboundItem::Data(producer),
         });
         Ok(())
@@ -1115,6 +1131,7 @@ impl OutboundScheduler {
             self.next_enqueue_order += 1;
             self.queues[index].push_back(QueuedItem {
                 order,
+                opens_stream: false,
                 item: OutboundItem::Frame(frame),
             });
         }
@@ -1167,6 +1184,7 @@ impl OutboundScheduler {
         for (queue_index, order, frame) in queued_frames {
             self.queues[queue_index].push_back(QueuedItem {
                 order,
+                opens_stream: false,
                 item: OutboundItem::Frame(frame),
             });
         }
@@ -1237,9 +1255,18 @@ impl OutboundScheduler {
             return Ok(Some(frame));
         }
 
+        let earliest_stream_open_order = self
+            .queues
+            .iter()
+            .flat_map(|queue| queue.iter())
+            .filter(|queued| queued.opens_stream)
+            .map(|queued| queued.order)
+            .min();
         for _ in 0..PRIORITY_LEVELS {
             let queue_index = self.next_priority_queue;
-            if let Some(frame) = self.pop_from_priority_queue(queue_index)? {
+            if let Some(frame) =
+                self.pop_from_priority_queue(queue_index, earliest_stream_open_order)?
+            {
                 self.priority_quota_remaining = self.priority_quota_remaining.saturating_sub(1);
                 if self.priority_quota_remaining == 0 {
                     self.advance_priority_queue();
@@ -1274,13 +1301,24 @@ impl OutboundScheduler {
         None
     }
 
-    fn pop_from_priority_queue(&mut self, queue_index: usize) -> io::Result<Option<Frame>> {
+    fn pop_from_priority_queue(
+        &mut self,
+        queue_index: usize,
+        earliest_stream_open_order: Option<u64>,
+    ) -> io::Result<Option<Frame>> {
         let mut blocked_streams = HashSet::new();
         let items_to_scan = self.queues[queue_index].len();
         for _ in 0..items_to_scan {
             let mut queued = self.queues[queue_index]
                 .pop_front()
                 .expect("queue length was checked");
+            // A peer validates newly opened stream IDs monotonically. Priority scheduling may
+            // reorder traffic after a stream is open, but it must never let a later request or
+            // event HEADERS frame overtake an earlier opening HEADERS frame.
+            if queued.opens_stream && earliest_stream_open_order != Some(queued.order) {
+                self.queues[queue_index].push_back(queued);
+                continue;
+            }
             if self.is_blocked_by_earlier_stream_item(&queued, &blocked_streams) {
                 self.queues[queue_index].push_back(queued);
                 continue;
@@ -2470,7 +2508,7 @@ impl ProtocolSession {
             }
             Err(error) => return Err(error),
         };
-        let result = self.scheduler.enqueue(headers);
+        let result = self.scheduler.enqueue_stream_open(headers);
         if result.is_err() {
             self.rollback_stream(stream_id);
         }
@@ -3234,7 +3272,7 @@ impl ProtocolSession {
             Some(DataProducer::new(stream_id, body, self.limits, options)?)
         };
 
-        self.scheduler.enqueue(headers)?;
+        self.scheduler.enqueue_stream_open(headers)?;
         if let Some(producer) = payload_producer {
             self.scheduler.enqueue_data(producer)?;
         }
@@ -6341,6 +6379,52 @@ mod tests {
     }
 
     #[test]
+    fn protocol_session_peer_accepts_cross_priority_requests_in_stream_order() {
+        let settings = ConnectionSettings::recommended();
+        let mut client = ProtocolSession::new(StreamInitiator::Client, &settings);
+        let mut server = ProtocolSession::new(StreamInitiator::Server, &settings);
+
+        let first_stream_id = client
+            .open_request_with_body(
+                "fs.stat",
+                RequestOptions {
+                    priority: Priority::VisibleFileTree,
+                    ..RequestOptions::default()
+                },
+                DataChannel::Unspecified,
+                &[],
+            )
+            .unwrap();
+        let second_stream_id = client
+            .open_request_with_body(
+                "fs.read",
+                RequestOptions {
+                    priority: Priority::ForegroundDocument,
+                    ..RequestOptions::default()
+                },
+                DataChannel::Unspecified,
+                &[],
+            )
+            .unwrap();
+
+        let mut opened_streams = Vec::new();
+        while let Some(frame) = client.pop_next_frame().unwrap() {
+            let event = server.receive_frame(frame).unwrap();
+            if let Some(StreamEvent::Headers {
+                stream_id,
+                role: MessageRole::Request,
+                ..
+            }) = event.stream_event
+            {
+                opened_streams.push(stream_id);
+            }
+        }
+
+        assert_eq!((first_stream_id, second_stream_id), (1, 3));
+        assert_eq!(opened_streams, vec![first_stream_id, second_stream_id]);
+    }
+
+    #[test]
     fn protocol_session_queues_window_updates_after_data_acknowledgement() {
         let settings = ConnectionSettings {
             initial_stream_window: 10,
@@ -8096,6 +8180,44 @@ mod tests {
 
         assert_eq!(scheduler.pop_next().unwrap().unwrap().stream_id, 1);
         assert_eq!(scheduler.pop_next().unwrap().unwrap().stream_id, 3);
+    }
+
+    #[test]
+    fn outbound_scheduler_preserves_stream_open_order_across_priorities() {
+        let settings = ConnectionSettings::recommended();
+        let mut streams = StreamTable::new(StreamInitiator::Client, &settings);
+        let mut scheduler = OutboundScheduler::new(&settings);
+        let (first_stream_id, first_headers) = streams
+            .open_request_with_options(
+                "fs.stat",
+                RequestOptions {
+                    priority: Priority::VisibleFileTree,
+                    ..RequestOptions::default()
+                },
+            )
+            .unwrap();
+        let (second_stream_id, second_headers) = streams
+            .open_request_with_options(
+                "fs.read",
+                RequestOptions {
+                    priority: Priority::ForegroundDocument,
+                    ..RequestOptions::default()
+                },
+            )
+            .unwrap();
+        assert_eq!((first_stream_id, second_stream_id), (1, 3));
+
+        scheduler.enqueue_stream_open(first_headers).unwrap();
+        scheduler.enqueue_stream_open(second_headers).unwrap();
+
+        assert_eq!(
+            scheduler.pop_next().unwrap().unwrap().stream_id,
+            first_stream_id
+        );
+        assert_eq!(
+            scheduler.pop_next().unwrap().unwrap().stream_id,
+            second_stream_id
+        );
     }
 
     #[test]

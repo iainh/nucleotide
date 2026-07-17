@@ -29,6 +29,7 @@ fn v5_service_reads_file_through_protocol_session() {
         panic!("expected read_file response");
     };
     assert_eq!(read.path, temp.path().join("hello.txt"));
+    assert_eq!(read.version.as_deref().map(|version| version.len()), Some(32));
     assert_eq!(body, b"hello from v5");
     assert!(frames.iter().any(|frame| {
         frame.stream_id == 1 && frame.frame_type == protocol_v5::FrameType::EndStream
@@ -371,6 +372,7 @@ fn v5_service_writes_file_body_through_protocol_session() {
     let request = RemoteRequest::WriteFile {
         path: PathBuf::from("nested/out.txt"),
         create_parent_dirs: true,
+        expected_version: None,
         expected_modified_unix_millis: None,
         expected_modified_unix_nanos: None,
     };
@@ -401,6 +403,43 @@ fn v5_service_writes_file_body_through_protocol_session() {
 }
 
 #[test]
+fn v5_service_write_uses_opaque_version_from_payload() {
+    let temp = tempfile::tempdir().unwrap();
+    let target = temp.path().join("out.txt");
+    std::fs::write(&target, b"old").unwrap();
+    let expected_version = file_version_for_path(&target).unwrap();
+    let request = RemoteRequest::WriteFile {
+        path: PathBuf::from("out.txt"),
+        create_parent_dirs: false,
+        expected_version: Some(expected_version.as_bytes().to_vec()),
+        // Deliberately wrong: the version token must take precedence.
+        expected_modified_unix_millis: Some(0),
+        expected_modified_unix_nanos: Some(0),
+    };
+    let input = v5_client_input(v5_request_frames(1, &request, b"new"));
+    let service = WorkspaceService::new(LocalWorkspaceBackend, temp.path().to_path_buf()).unwrap();
+    let mut io = protocol_v5::FramedIo::new(Cursor::new(input), Vec::new());
+
+    service
+        .serve_v5(
+            &mut io,
+            &protocol_v5::ServerHandshakeInfo::current(temp.path().display().to_string()),
+        )
+        .unwrap();
+    let (_, output) = io.into_inner();
+    let frames = read_v5_frames(output);
+    let (response, body, error) = decode_v5_service_response(&frames, 1);
+
+    assert!(error.is_none());
+    assert!(body.is_empty());
+    let Some(RemoteResponse::WriteFile(write)) = response else {
+        panic!("expected write_file response");
+    };
+    assert_eq!(std::fs::read(&target).unwrap(), b"new");
+    assert_ne!(write.version.as_deref(), Some(expected_version.as_bytes()));
+}
+
+#[test]
 fn v5_service_commits_zero_byte_write_through_streaming_path() {
     let temp = tempfile::tempdir().unwrap();
     let target = temp.path().join("out.txt");
@@ -408,6 +447,7 @@ fn v5_service_commits_zero_byte_write_through_streaming_path() {
     let request = RemoteRequest::WriteFile {
         path: PathBuf::from("out.txt"),
         create_parent_dirs: false,
+        expected_version: None,
         expected_modified_unix_millis: None,
         expected_modified_unix_nanos: None,
     };
@@ -576,6 +616,7 @@ fn v5_concurrent_service_streams_write_body_to_temp_file() {
     let write = RemoteRequest::WriteFile {
         path: PathBuf::from("src/main.rs"),
         create_parent_dirs: true,
+        expected_version: None,
         expected_modified_unix_millis: None,
         expected_modified_unix_nanos: None,
     };
@@ -647,6 +688,7 @@ fn v5_concurrent_service_drains_streaming_write_error_and_keeps_connection_usabl
     let write = RemoteRequest::WriteFile {
         path: PathBuf::from("main.rs"),
         create_parent_dirs: false,
+        expected_version: None,
         expected_modified_unix_millis: Some(0),
         expected_modified_unix_nanos: Some(0),
     };
@@ -729,7 +771,7 @@ fn v5_streaming_write_cancellation_before_commit_preserves_target() {
     let temp = tempfile::tempdir().unwrap();
     let target = temp.path().join("main.rs");
     std::fs::write(&target, b"old").unwrap();
-    let mut write = V5StreamingWrite::create(target.clone(), false, None).unwrap();
+    let mut write = V5StreamingWrite::create(target.clone(), false, None, None).unwrap();
     write.write_chunk(b"new contents").unwrap();
     let cancellation = WorkspaceCancellationToken::new();
     cancellation.cancel();
@@ -742,6 +784,27 @@ fn v5_streaming_write_cancellation_before_commit_preserves_target() {
 }
 
 #[test]
+fn v5_streaming_write_prefers_opaque_version_over_legacy_timestamp() {
+    let temp = tempfile::tempdir().unwrap();
+    let target = temp.path().join("main.rs");
+    std::fs::write(&target, b"old").unwrap();
+    let expected_version = file_version_for_path(&target).unwrap();
+
+    let mut write = V5StreamingWrite::create(
+        target.clone(),
+        false,
+        Some(expected_version.clone()),
+        Some(SystemTime::UNIX_EPOCH),
+    )
+    .unwrap();
+    write.write_chunk(b"new").unwrap();
+    let result = write.finish(None).unwrap();
+
+    assert_eq!(std::fs::read(&target).unwrap(), b"new");
+    assert_ne!(result.version.as_ref(), Some(&expected_version));
+}
+
+#[test]
 fn v5_concurrent_service_cleans_streaming_write_temp_file_on_reset() {
     let temp = tempfile::tempdir().unwrap();
     let target = temp.path().join("main.rs");
@@ -749,6 +812,7 @@ fn v5_concurrent_service_cleans_streaming_write_temp_file_on_reset() {
     let write = RemoteRequest::WriteFile {
         path: PathBuf::from("main.rs"),
         create_parent_dirs: false,
+        expected_version: None,
         expected_modified_unix_millis: None,
         expected_modified_unix_nanos: None,
     };

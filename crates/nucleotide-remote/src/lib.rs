@@ -42,16 +42,17 @@ use notify::Watcher as _;
 use nucleotide_env::{EnvironmentOrigin, ProjectEnvironment, ShellEnvironmentError};
 use nucleotide_workspace::{
     DirectoryListing, FileKind, FileRead, FileReadEvent, FileReadMetadata, FileReadStream,
-    FileSearchEvent, FileSearchQuery, FileSearchResult, FileSearchStream, FileStat, GitHeadResult,
-    GitStatusEntry, GitStatusKind, GitStatusOptions, GitStatusResult, LocalWorkspaceBackend,
-    ProcessCompletion, ProcessEvent, ProcessOutput, ProcessSpec, ProcessStream,
-    ProjectEnvironmentOrigin, ProjectEnvironmentSnapshot, ReadOptions, RemoteWorkspaceIdentity,
-    RemoteWorkspaceKind, SshWorkspaceTarget, TextSearchEvent, TextSearchMatch, TextSearchQuery,
-    TextSearchResult, TextSearchStream, WorkspaceBackend, WorkspaceBackendHandle,
-    WorkspaceCancellationToken, WorkspaceError, WorkspaceIdentity, WorkspaceLocation,
-    WorkspaceWatch, WorkspaceWatchBatch, WorkspaceWatchChange, WorkspaceWatchChangeKind,
-    WorkspaceWatchDirectoryGeneration, WorkspaceWatchRequest, WorkspaceWatchUpdate, WriteOptions,
-    WriteResult, local_workspace_backend, path_mapped_workspace_backend, posix_path_string,
+    FileSearchEvent, FileSearchQuery, FileSearchResult, FileSearchStream, FileStat, FileVersion,
+    GitHeadResult, GitStatusEntry, GitStatusKind, GitStatusOptions, GitStatusResult,
+    LocalWorkspaceBackend, ProcessCompletion, ProcessEvent, ProcessOutput, ProcessSpec,
+    ProcessStream, ProjectEnvironmentOrigin, ProjectEnvironmentSnapshot, ReadOptions,
+    RemoteWorkspaceIdentity, RemoteWorkspaceKind, SshWorkspaceTarget, TextSearchEvent,
+    TextSearchMatch, TextSearchQuery, TextSearchResult, TextSearchStream, WorkspaceBackend,
+    WorkspaceBackendHandle, WorkspaceCancellationToken, WorkspaceError, WorkspaceIdentity,
+    WorkspaceLocation, WorkspaceWatch, WorkspaceWatchBatch, WorkspaceWatchChange,
+    WorkspaceWatchChangeKind, WorkspaceWatchDirectoryGeneration, WorkspaceWatchRequest,
+    WorkspaceWatchUpdate, WriteOptions, WriteResult, file_version_for_path, file_version_from_file,
+    local_workspace_backend, path_mapped_workspace_backend, posix_path_string,
 };
 use prost::Message as ProstMessage;
 use regex::RegexBuilder;
@@ -135,10 +136,14 @@ const DEFAULT_SSH_SERVER_ALIVE_INTERVAL_SECS: u32 = 15;
 const DEFAULT_SSH_SERVER_ALIVE_COUNT_MAX: u32 = 3;
 const DEFAULT_RELEASE_TAG_PREFIX: &str = "v";
 const RELEASE_CHECKSUMS_ASSET: &str = "SHA256SUMS";
+/// Bump when a same-package-version helper must be redeployed for compatibility.
+pub const REMOTE_HELPER_REVISION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HelperVersionInfo {
     pub helper_version: String,
+    #[serde(default)]
+    pub helper_revision: u32,
     pub protocol_version: u32,
     pub frame_version: u16,
     pub os: String,
@@ -149,6 +154,7 @@ impl HelperVersionInfo {
     pub fn current() -> Self {
         Self {
             helper_version: env!("CARGO_PKG_VERSION").to_string(),
+            helper_revision: REMOTE_HELPER_REVISION,
             protocol_version: PROTOCOL_VERSION,
             frame_version: FRAME_VERSION,
             os: std::env::consts::OS.to_string(),

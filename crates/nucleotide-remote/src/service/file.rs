@@ -52,6 +52,7 @@ pub(crate) fn v5_streamed_file_read_limit(requested: Option<u64>) -> u64 {
 pub(crate) struct V5StreamingWrite {
     original_path: PathBuf,
     target_path: PathBuf,
+    expected_version: Option<FileVersion>,
     expected_modified: Option<SystemTime>,
     existing_permissions: Option<std::fs::Permissions>,
     temp: tempfile::NamedTempFile,
@@ -61,6 +62,7 @@ impl V5StreamingWrite {
     pub(crate) fn create(
         path: PathBuf,
         create_parent_dirs: bool,
+        expected_version: Option<FileVersion>,
         expected_modified: Option<SystemTime>,
     ) -> std::result::Result<Self, WorkspaceError> {
         if let Some(parent) = path.parent()
@@ -73,7 +75,12 @@ impl V5StreamingWrite {
             })?;
         }
 
-        v5_validate_write_expected_modified(&path, expected_modified)?;
+        v5_validate_write_expectations(
+            &path,
+            expected_version.as_ref(),
+            expected_modified,
+            "before staging write",
+        )?;
         let target_path = v5_write_target_for_path(&path)?;
         let existing_permissions = match std::fs::metadata(&target_path) {
             Ok(metadata) if metadata.is_file() => Some(metadata.permissions()),
@@ -106,6 +113,7 @@ impl V5StreamingWrite {
         Ok(Self {
             original_path: path,
             target_path,
+            expected_version,
             expected_modified,
             existing_permissions,
             temp,
@@ -129,7 +137,6 @@ impl V5StreamingWrite {
         if v5_stream_cancelled_ref(cancellation) {
             return Err(v5_cancelled_write_error(&self.original_path));
         }
-        v5_validate_write_expected_modified(&self.original_path, self.expected_modified)?;
         self.temp.flush().map_err(|source| WorkspaceError::Io {
             operation: "write temporary file",
             path: self.target_path.clone(),
@@ -156,6 +163,12 @@ impl V5StreamingWrite {
         if v5_stream_cancelled_ref(cancellation) {
             return Err(v5_cancelled_write_error(&self.original_path));
         }
+        v5_validate_write_expectations(
+            &self.original_path,
+            self.expected_version.as_ref(),
+            self.expected_modified,
+            "before replacing file",
+        )?;
 
         let temp_path = self.temp.into_temp_path();
         std::fs::rename(&temp_path, &self.target_path).map_err(|source| WorkspaceError::Io {
@@ -167,6 +180,12 @@ impl V5StreamingWrite {
         let metadata =
             std::fs::metadata(&self.target_path).map_err(|source| WorkspaceError::Io {
                 operation: "stat written file",
+                path: self.target_path.clone(),
+                source,
+            })?;
+        let version =
+            file_version_for_path(&self.target_path).map_err(|source| WorkspaceError::Io {
+                operation: "version written file",
                 path: self.target_path,
                 source,
             })?;
@@ -175,6 +194,7 @@ impl V5StreamingWrite {
             path: self.original_path,
             size: metadata.len(),
             modified: metadata.modified().ok(),
+            version: Some(version),
         })
     }
 }
@@ -186,21 +206,61 @@ pub(crate) fn v5_cancelled_write_error(path: &Path) -> WorkspaceError {
     }
 }
 
-pub(crate) fn v5_validate_write_expected_modified(
+pub(crate) fn v5_validate_write_expectations(
     path: &Path,
+    expected_version: Option<&FileVersion>,
     expected_modified: Option<SystemTime>,
+    check: &'static str,
 ) -> std::result::Result<(), WorkspaceError> {
+    if expected_version.is_none() && expected_modified.is_none() {
+        return Ok(());
+    }
+    let metadata = std::fs::metadata(path).map_err(|source| WorkspaceError::Io {
+        operation: "stat file before write",
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let observed_modified = metadata.modified().ok();
+    if let Some(expected_version) = expected_version {
+        let observed_version =
+            file_version_for_path(path).map_err(|source| WorkspaceError::Io {
+                operation: "version file before write",
+                path: path.to_path_buf(),
+                source,
+            })?;
+        if observed_version == *expected_version {
+            return Ok(());
+        }
+        tracing::warn!(
+            path = %path.display(),
+            check,
+            observed_modified_unix_millis = ?observed_modified.and_then(system_time_unix_millis),
+            observed_modified_unix_nanos = ?observed_modified.and_then(system_time_unix_nanos),
+            "Remote write rejected because the file version token changed"
+        );
+        return Err(WorkspaceError::Modified {
+            path: path.to_path_buf(),
+        });
+    }
+
     let Some(expected_modified) = expected_modified else {
         return Ok(());
     };
-    let modified = std::fs::metadata(path)
-        .and_then(|metadata| metadata.modified())
-        .map_err(|source| WorkspaceError::Io {
-            operation: "stat file before write",
-            path: path.to_path_buf(),
-            source,
-        })?;
+    let modified = metadata.modified().map_err(|source| WorkspaceError::Io {
+        operation: "stat file before write",
+        path: path.to_path_buf(),
+        source,
+    })?;
     if modified != expected_modified {
+        tracing::warn!(
+            path = %path.display(),
+            check,
+            expected_modified_unix_millis = ?system_time_unix_millis(expected_modified),
+            expected_modified_unix_nanos = ?system_time_unix_nanos(expected_modified),
+            observed_modified_unix_millis = ?system_time_unix_millis(modified),
+            observed_modified_unix_nanos = ?system_time_unix_nanos(modified),
+            "Remote write rejected because the file modification time changed"
+        );
         return Err(WorkspaceError::Modified {
             path: path.to_path_buf(),
         });

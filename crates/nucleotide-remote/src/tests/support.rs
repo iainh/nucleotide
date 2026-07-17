@@ -1046,6 +1046,7 @@ impl WorkspaceBackend for ConcurrentV5Backend {
             path: path.to_path_buf(),
             kind: FileKind::File,
             size: 4,
+            version: None,
             modified: None,
             readonly: false,
         })
@@ -1139,6 +1140,7 @@ impl WorkspaceBackend for ConcurrentV5Backend {
             bytes: b"slow".to_vec(),
             size: 4,
             modified: None,
+            version: None,
             readonly: false,
             truncated: false,
         })

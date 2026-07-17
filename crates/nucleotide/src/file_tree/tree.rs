@@ -1756,6 +1756,7 @@ mod tests {
                 kind,
                 size: 0,
                 modified: Some(SystemTime::UNIX_EPOCH),
+                version: None,
                 readonly: false,
             },
             symlink_target: None,

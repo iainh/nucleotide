@@ -2629,6 +2629,7 @@ mod tests {
                             kind: *kind,
                             size: 0,
                             modified: None,
+                            version: None,
                             readonly: false,
                         },
                         symlink_target: None,

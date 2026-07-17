@@ -98,6 +98,7 @@ fn dropping_v5_request_handle_resets_stream_and_releases_response_budget() {
         path: PathBuf::from("healthy.rs"),
         kind: RemoteFileKind::File,
         size: 7,
+        version: None,
         modified_unix_millis: None,
         modified_unix_nanos: None,
         readonly: false,
@@ -463,6 +464,7 @@ fn v5_client_reader_routes_responses_while_writer_is_blocked() {
         path: PathBuf::from("responsive.rs"),
         kind: RemoteFileKind::File,
         size: 1,
+        version: None,
         modified_unix_millis: None,
         modified_unix_nanos: None,
         readonly: false,
@@ -1429,6 +1431,7 @@ fn v5_early_response_keeps_request_body_reserved_until_outbound_end_is_written()
     let request = RemoteRequest::WriteFile {
         path: PathBuf::from("large.txt"),
         create_parent_dirs: false,
+        expected_version: None,
         expected_modified_unix_millis: None,
         expected_modified_unix_nanos: None,
     };
@@ -1455,6 +1458,7 @@ fn v5_early_response_keeps_request_body_reserved_until_outbound_end_is_written()
     let response = RemoteResponse::WriteFile(WriteResultResponse {
         path: PathBuf::from("large.txt"),
         size: body_len as u64,
+        version: None,
         modified_unix_millis: None,
         modified_unix_nanos: None,
     });
@@ -1524,6 +1528,7 @@ fn dropping_backend_future_after_early_response_purges_flow_blocked_body() {
     let response = RemoteResponse::WriteFile(WriteResultResponse {
         path: PathBuf::from("large.txt"),
         size: body_len as u64,
+        version: None,
         modified_unix_millis: None,
         modified_unix_nanos: None,
     });
@@ -1614,6 +1619,7 @@ fn dropping_backend_future_after_early_response_purges_flow_blocked_body() {
         path: PathBuf::from("healthy.rs"),
         kind: RemoteFileKind::File,
         size: 7,
+        version: None,
         modified_unix_millis: None,
         modified_unix_nanos: None,
         readonly: false,
@@ -1697,6 +1703,7 @@ fn v5_malformed_early_end_releases_purged_request_reservation() {
     let request = RemoteRequest::WriteFile {
         path: PathBuf::from("malformed.txt"),
         create_parent_dirs: false,
+        expected_version: None,
         expected_modified_unix_millis: None,
         expected_modified_unix_nanos: None,
     };
@@ -1745,6 +1752,7 @@ fn v5_incoming_reset_releases_flow_blocked_request_reservation() {
     let request = RemoteRequest::WriteFile {
         path: PathBuf::from("cancelled.txt"),
         create_parent_dirs: false,
+        expected_version: None,
         expected_modified_unix_millis: None,
         expected_modified_unix_nanos: None,
     };
@@ -1920,6 +1928,7 @@ fn v5_over_limit_stream_resets_without_credit_or_harming_another_stream() {
             path: PathBuf::from("healthy.rs"),
             kind: RemoteFileKind::File,
             size: 1,
+            version: None,
             modified_unix_millis: None,
             modified_unix_nanos: None,
             readonly: false,
@@ -2094,6 +2103,7 @@ fn v5_client_inactivity_is_stream_targeted_and_read_timeout_is_local() {
         path: PathBuf::from("healthy.rs"),
         kind: RemoteFileKind::File,
         size: 7,
+        version: None,
         modified_unix_millis: None,
         modified_unix_nanos: None,
         readonly: false,
@@ -2585,6 +2595,7 @@ fn v5_response_method_matches_request_namespace() {
         RemoteResponse::ReadFile(FileReadResponse {
             path: PathBuf::from("README.md"),
             size: 0,
+            version: None,
             modified_unix_millis: None,
             modified_unix_nanos: None,
             readonly: false,
@@ -2600,12 +2611,14 @@ fn v5_client_writes_method_payload_body_and_decodes_write_response() {
     let request = RemoteRequest::WriteFile {
         path: PathBuf::from("src/lib.rs"),
         create_parent_dirs: true,
+        expected_version: Some(vec![1, 2, 3, 4]),
         expected_modified_unix_millis: Some(10),
         expected_modified_unix_nanos: Some(20),
     };
     let response = RemoteResponse::WriteFile(WriteResultResponse {
         path: PathBuf::from("src/lib.rs"),
         size: 7,
+        version: Some(vec![5, 6, 7, 8]),
         modified_unix_millis: Some(11),
         modified_unix_nanos: Some(21),
     });
@@ -2684,6 +2697,7 @@ fn v5_client_decodes_file_body_response() {
     let response = RemoteResponse::ReadFile(FileReadResponse {
         path: PathBuf::from("README.md"),
         size: 11,
+        version: None,
         modified_unix_millis: None,
         modified_unix_nanos: None,
         readonly: false,
@@ -2772,6 +2786,7 @@ fn v5_sync_client_keeps_connection_after_mutation_deadline_with_final_metadata()
         path: PathBuf::from("healthy.rs"),
         kind: RemoteFileKind::File,
         size: 1,
+        version: None,
         modified_unix_millis: None,
         modified_unix_nanos: None,
         readonly: false,
@@ -2822,6 +2837,7 @@ fn v5_backend_read_file_uses_shared_workspace_backend_impl() {
     let response = RemoteResponse::ReadFile(FileReadResponse {
         path: PathBuf::from("README.md"),
         size: 11,
+        version: Some(vec![9, 8, 7, 6]),
         modified_unix_millis: None,
         modified_unix_nanos: None,
         readonly: false,
@@ -2856,6 +2872,7 @@ fn v5_backend_read_file_uses_shared_workspace_backend_impl() {
     assert_eq!(hello.workspace_root, PathBuf::from("/workspace"));
     assert_eq!(read.path, PathBuf::from("README.md"));
     assert_eq!(read.bytes, b"hello world");
+    assert_eq!(read.version.unwrap().as_bytes(), [9, 8, 7, 6]);
     input.close();
 }
 
@@ -3225,6 +3242,7 @@ fn v5_multiplexed_client_uses_known_generation_and_cached_listing() {
                 path: PathBuf::from("src/lib.rs"),
                 kind: RemoteFileKind::File,
                 size: 12,
+                version: None,
                 modified_unix_millis: None,
                 modified_unix_nanos: None,
                 readonly: false,
@@ -3312,6 +3330,7 @@ fn v5_test_directory_entry(path: &str, size: u64) -> DirectoryEntryResponse {
             path,
             kind: RemoteFileKind::File,
             size,
+            version: None,
             modified_unix_millis: None,
             modified_unix_nanos: None,
             readonly: false,
@@ -3534,6 +3553,7 @@ fn v5_multiplexed_client_writes_window_updates_after_receiving_data() {
         RemoteResponse::ReadFile(FileReadResponse {
             path: PathBuf::from("README.md"),
             size: 11,
+            version: None,
             modified_unix_millis: None,
             modified_unix_nanos: None,
             readonly: false,
@@ -3582,6 +3602,7 @@ fn v5_file_stream_releases_body_credit_only_after_chunk_delivery() {
     let response = FileReadResponse {
         path: PathBuf::from("README.md"),
         size: 11,
+        version: None,
         modified_unix_millis: None,
         modified_unix_nanos: None,
         readonly: false,
@@ -4340,6 +4361,7 @@ fn dropping_v5_file_stream_resets_once_and_keeps_connection_usable() {
             path: PathBuf::from("healthy.rs"),
             kind: RemoteFileKind::File,
             size: 1,
+            version: None,
             modified_unix_millis: None,
             modified_unix_nanos: None,
             readonly: false,
@@ -4521,6 +4543,7 @@ fn v5_multiplexed_client_sends_second_request_before_first_completes() {
             path: PathBuf::from("fast.txt"),
             kind: RemoteFileKind::File,
             size: 4,
+            version: None,
             modified_unix_millis: None,
             modified_unix_nanos: None,
             readonly: false,
@@ -4539,6 +4562,7 @@ fn v5_multiplexed_client_sends_second_request_before_first_completes() {
         RemoteResponse::ReadFile(FileReadResponse {
             path: PathBuf::from("slow.txt"),
             size: 4,
+            version: None,
             modified_unix_millis: None,
             modified_unix_nanos: None,
             readonly: false,

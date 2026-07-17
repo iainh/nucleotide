@@ -44,7 +44,7 @@ use helix_stdx::path::{self as helix_path, get_path_suffix, get_relative_path};
 use helix_view::{
     document::{
         Document, DocumentInlayHints, DocumentInlayHintsId, DocumentOpenMetadata, DocumentSaveData,
-        Mode, from_reader, to_writer,
+        DocumentWriteResult, Mode, from_reader, to_writer,
     },
     input::KeyEvent,
     keyboard::{KeyCode, KeyModifiers},
@@ -56,7 +56,7 @@ use nucleotide_lsp::{
     ProjectLspManager, ProjectServerLifecycle, ServerStatus,
 };
 use nucleotide_workspace::{
-    DirectoryListing, FileKind, FileRead, FileStat, ProcessSpec, ReadOptions,
+    DirectoryListing, FileKind, FileRead, FileStat, FileVersion, ProcessSpec, ReadOptions,
     WorkspaceBackendHandle, WorkspaceError, WorkspaceIdentity, WorkspaceLocation, WriteOptions,
     absolutize_workspace_path, classify_workspace_location, local_workspace_backend,
     posix_path_string, remote_startup_workspace_root,
@@ -218,12 +218,16 @@ fn should_use_native_save_for_settings_file(
 async fn write_remote_document(
     workspace_backend: WorkspaceBackendHandle,
     save: DocumentSaveData,
-) -> anyhow::Result<SystemTime> {
+) -> anyhow::Result<DocumentWriteResult> {
     let mut bytes = Vec::new();
     to_writer(&mut bytes, save.encoding_with_bom_info, &save.text).await?;
     let expected_modified = (!save.force
         && save.previous_path.as_deref() == Some(save.path.as_path()))
     .then_some(save.last_saved_time);
+    let expected_version = (!save.force
+        && save.previous_path.as_deref() == Some(save.path.as_path()))
+    .then(|| save.file_version.map(FileVersion::from_bytes))
+    .flatten();
 
     let result = workspace_backend
         .write_file(
@@ -232,11 +236,15 @@ async fn write_remote_document(
             WriteOptions {
                 create_parent_dirs: save.force,
                 expected_modified,
+                expected_version,
             },
         )
         .await?;
 
-    Ok(result.modified.unwrap_or_else(SystemTime::now))
+    Ok(DocumentWriteResult {
+        save_time: result.modified.unwrap_or_else(SystemTime::now),
+        file_version: result.version.map(FileVersion::into_bytes),
+    })
 }
 
 const REMOTE_DIFF_BASE_READ_LIMIT_BYTES: usize = 4 * 1024 * 1024;
@@ -1093,6 +1101,12 @@ fn update_open_document_after_workspace_rename(
         Some(new_stat.readonly),
         new_stat.modified,
     );
+    doc.set_file_version(
+        new_stat
+            .version
+            .as_ref()
+            .map(|version| version.as_bytes().to_vec()),
+    );
     set_remote_document_lsp_url(doc, &new_stat.path);
 }
 
@@ -1115,6 +1129,7 @@ fn create_workspace_edit_file(
             WriteOptions {
                 create_parent_dirs: true,
                 expected_modified: None,
+                expected_version: None,
             },
         ))
         .map_err(workspace_error_to_apply_edit)?;
@@ -2323,6 +2338,7 @@ impl Application {
                                                 WriteOptions {
                                                     create_parent_dirs: true,
                                                     expected_modified: None,
+                                                    expected_version: None,
                                                 },
                                             )
                                             .await
@@ -5425,6 +5441,9 @@ impl Application {
 
         self.editor
             .set_doc_path(doc_save_event.doc_id, &doc_save_event.path);
+        if let Some(doc) = self.editor.document_mut(doc_save_event.doc_id) {
+            doc.set_file_version(doc_save_event.file_version.clone());
+        }
         self.editor.set_status(format!(
             "'{}' written, {}L {}B",
             get_relative_path(&doc_save_event.path).to_string_lossy(),
@@ -9561,6 +9580,7 @@ pub(crate) fn open_workspace_document_from_read(
     let metadata = DocumentOpenMetadata {
         readonly: read.readonly,
         last_saved_time: read.modified,
+        file_version: read.version.map(FileVersion::into_bytes),
     };
     let mut bytes = read.bytes.as_slice();
     let mut doc = Document::open_from_reader(
@@ -9643,6 +9663,11 @@ pub(crate) fn reload_workspace_document_from_read(
     }
 
     doc.set_path_with_metadata(Some(&read.path), Some(read.readonly), read.modified);
+    doc.set_file_version(
+        read.version
+            .as_ref()
+            .map(|version| version.as_bytes().to_vec()),
+    );
     set_remote_document_lsp_url(doc, &read.path);
     if !doc.apply(&transaction, view.id) {
         bail!(
@@ -11255,6 +11280,7 @@ mod tests {
                 kind,
                 size: 0,
                 modified: None,
+                version: None,
                 readonly: false,
             },
             symlink_target: None,
@@ -11703,6 +11729,7 @@ mod tests {
         assert_eq!(editor.language_servers.iter_clients().count(), 0);
         assert_eq!(doc.text(), "fn remote() {}\n");
         assert!(!doc.is_modified());
+        let initial_file_version = doc.file_version().expect("open file version").to_vec();
 
         let view_id = editor.tree.focus;
         {
@@ -11723,7 +11750,12 @@ mod tests {
             fs::read_to_string(temp.path().join("src").join("main.rs")).unwrap(),
             "updated\nfn remote() {}\n"
         );
-        assert!(!editor.document(doc_id).unwrap().is_modified());
+        let doc = editor.document(doc_id).unwrap();
+        assert!(!doc.is_modified());
+        assert_ne!(
+            doc.file_version().expect("saved file version"),
+            initial_file_version
+        );
     }
 
     #[gpui::test]
@@ -11985,6 +12017,7 @@ mod tests {
                 Some("file:///home/me/project/src/renamed.rs")
             );
             assert_eq!(doc.text(), "pub fn old() {}\n");
+            assert!(doc.file_version().is_some());
             assert!(!display_new.exists());
         });
 
