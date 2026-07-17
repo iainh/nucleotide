@@ -13,7 +13,7 @@ use helix_view::DocumentId;
 use nucleotide_types::VcsStatus;
 use nucleotide_ui::{ThemedContext, Tooltipped};
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -211,6 +211,8 @@ pub struct TabBar {
     start_children: Vec<AnyElement>,
     /// Controls rendered after the scrollable tab strip
     end_children: Vec<AnyElement>,
+    /// Documents whose contents are still being loaded
+    loading_documents: HashSet<TabId>,
 }
 
 impl TabBar {
@@ -260,7 +262,13 @@ impl TabBar {
             scroll_handle: None,
             start_children: Vec::new(),
             end_children: Vec::new(),
+            loading_documents: HashSet::new(),
         }
+    }
+
+    pub fn loading_documents(mut self, documents: impl IntoIterator<Item = TabId>) -> Self {
+        self.loading_documents = documents.into_iter().collect();
+        self
     }
 
     pub fn track_scroll(mut self, scroll_handle: &ScrollHandle) -> Self {
@@ -563,6 +571,7 @@ impl TabBar {
                 .readonly(doc_info.is_readonly)
                 .deleted(doc_info.is_deleted)
                 .preview(doc_info.is_preview)
+                .loading(self.loading_documents.contains(&doc_id))
                 .deemphasized(self.deemphasized)
                 .show_file_icons(self.file_icons)
                 .tooltip(self.document_tooltip(doc_info, &label));
@@ -1220,6 +1229,24 @@ mod tests {
 
         assert_eq!(tabs.len(), 1);
         assert!(tabs[0].is_deemphasized());
+    }
+
+    #[test]
+    fn build_tabs_propagates_loading_state() {
+        let document = doc(Some("/project/src/main.rs"), 0);
+        let loading_id = document.id;
+        let tab_bar = TabBar::new(
+            vec![document.clone()],
+            None,
+            Some(PathBuf::from("/project")),
+            |_, _, _| {},
+            |_, _, _| {},
+        )
+        .loading_documents([loading_id]);
+        let labels = tab_bar.document_labels(std::slice::from_ref(&document));
+        let tabs = tab_bar.build_tabs(std::slice::from_ref(&document), &labels, 0);
+
+        assert!(tabs[0].is_loading());
     }
 
     #[test]

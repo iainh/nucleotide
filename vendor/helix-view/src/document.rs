@@ -1416,6 +1416,41 @@ impl Document {
         Ok(())
     }
 
+    /// Replace a placeholder document with contents supplied by an external backend.
+    ///
+    /// Unlike [`Self::reload`], this does not read from `self.path()` and it re-detects the
+    /// encoding and language from the supplied contents. The document identity and selections
+    /// are preserved so frontends can register a document before an asynchronous read finishes.
+    pub fn hydrate_from_reader<R: io::Read + ?Sized>(
+        &mut self,
+        reader: &mut R,
+        view: &mut View,
+        metadata: DocumentOpenMetadata,
+    ) -> Result<(), io::Error> {
+        let (rope, encoding, has_bom) = from_reader(reader, None)?;
+        let transaction = helix_core::diff::compare_ropes(self.text(), &rope);
+
+        self.encoding = encoding;
+        self.has_bom = has_bom;
+        self.readonly = metadata.readonly;
+        self.last_saved_time = metadata.last_saved_time.unwrap_or_else(SystemTime::now);
+        self.file_version = metadata.file_version;
+
+        if !self.apply(&transaction, view.id) {
+            return Err(io::Error::other(
+                "failed to apply hydrated document contents",
+            ));
+        }
+        self.append_changes_to_history(view);
+        self.reset_modified();
+        self.detect_indent_and_line_ending();
+
+        let loader = self.syn_loader.load();
+        self.detect_language(&loader);
+
+        Ok(())
+    }
+
     /// Sets the [`Document`]'s encoding with the encoding correspondent to `label`.
     pub fn set_encoding(&mut self, label: &str) -> Result<(), Error> {
         let encoding =

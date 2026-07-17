@@ -115,6 +115,13 @@ enum RemoteDocumentReloadApply {
     Skipped,
 }
 
+#[derive(Clone)]
+struct LoadingDocument {
+    path: PathBuf,
+    view_id: ViewId,
+    initial_position: Option<Position>,
+}
+
 fn settings_file_open_backend() -> WorkspaceBackendHandle {
     local_workspace_backend()
 }
@@ -1037,6 +1044,7 @@ pub struct Workspace {
     lsp_menu_open: bool,
     lsp_menu_pos: (f32, f32),
     document_order: Vec<helix_view::DocumentId>, // Ordered list of documents in opening order
+    loading_documents: HashMap<DocumentId, LoadingDocument>,
     tab_bar_document_generation: u64,
     tab_bar_document_cache: Option<TabBarDocumentCache>,
     tab_bar_document_cache_hits: u64,
@@ -4348,6 +4356,9 @@ impl Workspace {
         }
 
         if !closed_doc_ids.is_empty() {
+            for doc_id in &closed_doc_ids {
+                self.loading_documents.remove(doc_id);
+            }
             self.unregister_preview_documents(closed_doc_ids.iter().copied(), cx);
             self.update_document_views(cx);
             cx.notify();
@@ -4476,6 +4487,7 @@ impl Workspace {
         }
 
         if closed {
+            self.loading_documents.remove(&doc_id);
             if activation_target.is_some() {
                 self.allow_tab_bar_auto_scroll();
             }
@@ -5379,6 +5391,7 @@ impl Workspace {
             lsp_menu_open: false,
             lsp_menu_pos: (0.0, 0.0),
             document_order: Vec::new(),
+            loading_documents: HashMap::new(),
             tab_bar_document_generation: 0,
             tab_bar_document_cache: None,
             tab_bar_document_cache_hits: 0,
@@ -8201,6 +8214,7 @@ impl Workspace {
     fn handle_document_closed(&mut self, doc_id: helix_view::DocumentId, cx: &mut Context<Self>) {
         // Document closed - the view will be cleaned up automatically
         info!("Document closed: {:?}", doc_id);
+        self.loading_documents.remove(&doc_id);
         self.document_order.retain(|candidate| *candidate != doc_id);
         self.pinned_documents.remove(&TabId::Document(doc_id));
         self.invalidate_tab_bar_documents();
@@ -9771,12 +9785,89 @@ impl Workspace {
         initial_position: Option<Position>,
         cx: &mut Context<Self>,
     ) {
+        let existing_doc_id = self.core.read(cx).editor.document_id_by_path(&path);
+        if let Some(doc_id) = existing_doc_id {
+            self.activate_open_document(
+                doc_id,
+                &path,
+                should_focus,
+                preview_from_project_panel,
+                initial_position,
+                cx,
+            );
+            return;
+        }
+
         let workspace_backend = self.core.read(cx).workspace_backend.clone();
-        let open_backend = workspace_backend.clone();
         let runtime_handle = self.handle.clone();
         let message = format!("Loading remote file: {}", path.display());
         self.set_run_status(message.clone(), Severity::Info, cx);
         let activity_id = self.start_background_activity(message, cx);
+
+        let placeholder = self.core.update(cx, |core, cx| {
+            let _guard = self.handle.enter();
+            let action = if core.editor.tree.views().count() == 0 {
+                helix_view::editor::Action::VerticalSplit
+            } else {
+                helix_view::editor::Action::Replace
+            };
+            let doc_id = crate::application::open_loading_workspace_document(
+                &mut core.editor,
+                &path,
+                action,
+            )?;
+            let view_id = core.editor.tree.focus;
+            if let Some(doc) = core.editor.document_mut(doc_id) {
+                doc.set_selection(view_id, Selection::point(0));
+            }
+            cx.emit(crate::Update::Redraw);
+            cx.notify();
+            Ok::<_, anyhow::Error>((doc_id, view_id))
+        });
+        let (doc_id, view_id) = match placeholder {
+            Ok(placeholder) => placeholder,
+            Err(error) => {
+                self.finish_background_activity(activity_id, cx);
+                self.set_run_status(
+                    format!("Failed to open remote file: {error}"),
+                    Severity::Error,
+                    cx,
+                );
+                return;
+            }
+        };
+
+        self.loading_documents.insert(
+            doc_id,
+            LoadingDocument {
+                path: path.clone(),
+                view_id,
+                initial_position,
+            },
+        );
+        self.ensure_document_in_order(doc_id);
+        self.invalidate_tab_bar_documents();
+        self.active_image_tab_id = None;
+        if should_create_project_panel_preview_tab(
+            self.core.read(cx).config.gui.preview_tabs.enabled,
+            preview_from_project_panel,
+            false,
+        ) {
+            self.replace_preview_tab_document(doc_id, view_id, true, cx);
+        } else if !preview_from_project_panel {
+            self.unregister_preview_document(doc_id, cx);
+        }
+        self.allow_tab_bar_auto_scroll();
+        self.update_document_views(cx);
+        if let Some(file_tree) = &self.file_tree {
+            file_tree.update(cx, |tree, cx| {
+                tree.sync_selection_with_file(Some(&path), cx);
+            });
+        }
+        if should_focus && self.view_manager.focused_view_id().is_some() {
+            self.view_manager.set_needs_focus_restore(true);
+        }
+        cx.notify();
 
         cx.spawn(async move |this, cx| {
             let path_for_read = path.clone();
@@ -9792,36 +9883,160 @@ impl Workspace {
             };
 
             if let Some(this) = this.upgrade() {
-                this.update(cx, |workspace, cx| match document_read {
-                    Ok(document_read) => {
-                        workspace.finish_background_activity(activity_id, cx);
-                        workspace.finish_open_file_internal(
-                            &path,
-                            should_focus,
-                            preview_from_project_panel,
-                            initial_position,
-                            Some(document_read),
-                            open_backend,
-                            cx,
-                        );
-                    }
-                    Err(error) => {
-                        nucleotide_logging::error!(
-                            path = ?path,
-                            error = %error,
-                            "Failed to open remote file"
-                        );
-                        workspace.finish_background_activity(activity_id, cx);
-                        workspace.set_run_status(
-                            format!("Failed to open remote file: {error}"),
-                            Severity::Error,
-                            cx,
-                        );
+                this.update(cx, |workspace, cx| {
+                    workspace.finish_background_activity(activity_id, cx);
+                    let Some(loading_document) = workspace
+                        .loading_documents
+                        .get(&doc_id)
+                        .filter(|loading_document| loading_document.path == path)
+                        .cloned()
+                    else {
+                        return;
+                    };
+
+                    match document_read {
+                        Ok(document_read) => {
+                            let hydrate_result = workspace.core.update(cx, |core, cx| {
+                                let hydrated_view_id =
+                                    crate::application::hydrate_workspace_document_from_read(
+                                        &mut core.editor,
+                                        doc_id,
+                                        loading_document.view_id,
+                                        document_read,
+                                    )?;
+                                if let Some(position) = loading_document.initial_position
+                                    && let Some(doc) = core.editor.document_mut(doc_id)
+                                {
+                                    let offset =
+                                        pos_at_coords(doc.text().slice(..), position, true);
+                                    doc.set_selection(hydrated_view_id, Selection::point(offset));
+                                }
+                                let is_visible = core
+                                    .editor
+                                    .tree
+                                    .try_get(hydrated_view_id)
+                                    .is_some_and(|view| view.doc == doc_id);
+                                if is_visible {
+                                    core.editor.ensure_cursor_in_view(hydrated_view_id);
+                                }
+                                cx.emit(crate::Update::Redraw);
+                                cx.notify();
+                                Ok::<_, anyhow::Error>(is_visible.then_some(hydrated_view_id))
+                            });
+
+                            workspace.loading_documents.remove(&doc_id);
+                            workspace.invalidate_tab_bar_documents();
+                            match hydrate_result {
+                                Ok(reveal_view_id) => {
+                                    workspace.update_document_views(cx);
+                                    if let Some(view_id) = reveal_view_id
+                                        && let Some(view_entity) =
+                                            workspace.view_manager.get_document_view(&view_id)
+                                    {
+                                        view_entity.update(cx, |view, cx| {
+                                            view.request_cursor_reveal();
+                                            cx.notify();
+                                        });
+                                    }
+                                    cx.notify();
+                                }
+                                Err(error) => {
+                                    nucleotide_logging::error!(
+                                        path = ?path,
+                                        error = %error,
+                                        "Failed to hydrate remote file"
+                                    );
+                                    workspace.close_single_tab_document_with_activation_target(
+                                        doc_id, None, true, cx,
+                                    );
+                                    workspace.set_run_status(
+                                        format!("Failed to open remote file: {error}"),
+                                        Severity::Error,
+                                        cx,
+                                    );
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            workspace.loading_documents.remove(&doc_id);
+                            workspace.invalidate_tab_bar_documents();
+                            nucleotide_logging::error!(
+                                path = ?path,
+                                error = %error,
+                                "Failed to open remote file"
+                            );
+                            workspace.close_single_tab_document_with_activation_target(
+                                doc_id, None, true, cx,
+                            );
+                            workspace.set_run_status(
+                                format!("Failed to open remote file: {error}"),
+                                Severity::Error,
+                                cx,
+                            );
+                        }
                     }
                 });
             }
         })
         .detach();
+    }
+
+    fn activate_open_document(
+        &mut self,
+        doc_id: DocumentId,
+        path: &Path,
+        should_focus: bool,
+        preview_from_project_panel: bool,
+        initial_position: Option<Position>,
+        cx: &mut Context<Self>,
+    ) {
+        let reveal_view_id = self.core.update(cx, |core, cx| {
+            core.editor
+                .switch(doc_id, helix_view::editor::Action::Replace);
+            let view_id = core.editor.tree.focus;
+            if let Some(position) = initial_position
+                && let Some(doc) = core.editor.document_mut(doc_id)
+            {
+                let offset = pos_at_coords(doc.text().slice(..), position, true);
+                doc.set_selection(view_id, Selection::point(offset));
+                core.editor.ensure_cursor_in_view(view_id);
+            }
+            cx.emit(crate::Update::Redraw);
+            cx.notify();
+            view_id
+        });
+
+        if let Some(loading_document) = self.loading_documents.get_mut(&doc_id) {
+            loading_document.view_id = reveal_view_id;
+            if initial_position.is_some() {
+                loading_document.initial_position = initial_position;
+            }
+        }
+
+        if !preview_from_project_panel {
+            self.unregister_preview_document(doc_id, cx);
+        }
+        self.active_image_tab_id = None;
+        self.allow_tab_bar_auto_scroll();
+        self.invalidate_tab_bar_documents();
+        self.update_document_views(cx);
+        if initial_position.is_some()
+            && let Some(view_entity) = self.view_manager.get_document_view(&reveal_view_id)
+        {
+            view_entity.update(cx, |view, cx| {
+                view.request_cursor_reveal();
+                cx.notify();
+            });
+        }
+        if let Some(file_tree) = &self.file_tree {
+            file_tree.update(cx, |tree, cx| {
+                tree.sync_selection_with_file(Some(path), cx);
+            });
+        }
+        if should_focus && self.view_manager.focused_view_id().is_some() {
+            self.view_manager.set_needs_focus_restore(true);
+        }
+        cx.notify();
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -10617,6 +10832,7 @@ impl Workspace {
         .file_icons(show_file_icons)
         .git_status(show_git_status)
         .show_diagnostics(show_diagnostics)
+        .loading_documents(self.loading_documents.keys().copied().map(TabId::Document))
         .deemphasized(!editor_pane_focused)
         .track_scroll(&self.tab_bar_scroll_handle)
         .with_scroll_wheel_handler({
