@@ -111,10 +111,10 @@ fn pre_cancelled_startup_does_not_spawn_remote_service() {
 #[test]
 fn helper_commands_share_one_startup_deadline() {
     let options = RemoteWorkspaceBackendOptions::default();
-    let startup = RemoteStartupContext::new(Duration::from_millis(250));
+    let startup = RemoteStartupContext::new(Duration::from_secs(2));
     let manager = RemoteHelperManager::with_progress_and_startup_context(&options, None, &startup);
     let mut first = nucleotide_process::contained_command("/bin/sleep");
-    first.arg("0.1");
+    first.arg("0.75");
     manager
         .run_bounded_command(
             &mut first,
@@ -142,7 +142,7 @@ fn helper_commands_share_one_startup_deadline() {
 
     assert!(remote_startup_deadline_was_exceeded(&error));
     assert!(
-        started.elapsed() < Duration::from_secs(1),
+        started.elapsed() < Duration::from_millis(1600),
         "second stage restarted the aggregate startup deadline"
     );
 }
