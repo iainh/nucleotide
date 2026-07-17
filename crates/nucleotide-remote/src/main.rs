@@ -3,7 +3,7 @@
 
 use anyhow::{Context, Result};
 use nucleotide_logging::{
-    LoggingConfig, default_remote_log_file_path, init_file_logging, init_logging_with_config,
+    LoggingConfig, default_remote_log_file_path, init_file_logging, init_stderr_logging,
 };
 
 fn setup_logging() -> Result<()> {
@@ -13,8 +13,7 @@ fn setup_logging() -> Result<()> {
     config.file.path = default_remote_log_file_path();
 
     if !config.output.file {
-        config.output.console = true;
-        return init_logging_with_config(config)
+        return init_stderr_logging(config)
             .context("failed to initialize nucleotide-remote stderr logging");
     }
 
@@ -26,8 +25,7 @@ fn setup_logging() -> Result<()> {
                 config.file.path.display()
             );
             config.output.file = false;
-            config.output.console = true;
-            init_logging_with_config(config)
+            init_stderr_logging(config)
                 .context("failed to initialize nucleotide-remote stderr logging")?;
             tracing::warn!(
                 error = %file_error,

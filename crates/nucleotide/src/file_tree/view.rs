@@ -3008,6 +3008,7 @@ mod tests {
                     kind: WorkspaceFileKind::File,
                     size: 12,
                     modified,
+                    version: None,
                     readonly: false,
                 },
                 symlink_target: None,

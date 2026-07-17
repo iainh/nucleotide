@@ -49,6 +49,7 @@ pub(crate) fn file_stat_response(stat: FileStat) -> FileStatResponse {
         path: stat.path,
         kind: remote_file_kind(stat.kind),
         size: stat.size,
+        version: stat.version.map(FileVersion::into_bytes),
         modified_unix_millis: stat.modified.and_then(system_time_unix_millis),
         modified_unix_nanos: stat.modified.and_then(system_time_unix_nanos),
         readonly: stat.readonly,
@@ -246,6 +247,7 @@ pub(crate) fn directory_listing_response_fingerprint(response: &DirectoryListing
         remote_file_kind_discriminant(&entry.stat.kind).hash(&mut hasher);
         entry.stat.path.hash(&mut hasher);
         entry.stat.size.hash(&mut hasher);
+        entry.stat.version.hash(&mut hasher);
         entry.stat.modified_unix_millis.hash(&mut hasher);
         entry.stat.modified_unix_nanos.hash(&mut hasher);
         entry.stat.readonly.hash(&mut hasher);
@@ -271,6 +273,7 @@ pub(crate) fn directory_listing_response_fingerprint_with_cancellation(
         remote_file_kind_discriminant(&entry.stat.kind).hash(&mut hasher);
         entry.stat.path.hash(&mut hasher);
         entry.stat.size.hash(&mut hasher);
+        entry.stat.version.hash(&mut hasher);
         entry.stat.modified_unix_millis.hash(&mut hasher);
         entry.stat.modified_unix_nanos.hash(&mut hasher);
         entry.stat.readonly.hash(&mut hasher);
@@ -295,6 +298,10 @@ pub(crate) fn file_read_response(read: &FileRead) -> FileReadResponse {
     FileReadResponse {
         path: read.path.clone(),
         size: read.size,
+        version: read
+            .version
+            .as_ref()
+            .map(|version| version.as_bytes().to_vec()),
         modified_unix_millis: read.modified.and_then(system_time_unix_millis),
         modified_unix_nanos: read.modified.and_then(system_time_unix_nanos),
         readonly: read.readonly,
@@ -306,6 +313,7 @@ pub(crate) fn write_result_response(result: WriteResult) -> WriteResultResponse 
     WriteResultResponse {
         path: result.path,
         size: result.size,
+        version: result.version.map(FileVersion::into_bytes),
         modified_unix_millis: result.modified.and_then(system_time_unix_millis),
         modified_unix_nanos: result.modified.and_then(system_time_unix_nanos),
     }
@@ -468,6 +476,7 @@ pub(crate) fn file_stat_from_response(stat: FileStatResponse) -> FileStat {
         path: stat.path,
         kind: file_kind_from_response(stat.kind),
         size: stat.size,
+        version: stat.version.map(FileVersion::from_bytes),
         modified: system_time_from_unix_millis_and_nanos(
             stat.modified_unix_millis,
             stat.modified_unix_nanos,
@@ -520,6 +529,7 @@ pub(crate) fn write_result_from_response(result: WriteResultResponse) -> WriteRe
     WriteResult {
         path: result.path,
         size: result.size,
+        version: result.version.map(FileVersion::from_bytes),
         modified: system_time_from_unix_millis_and_nanos(
             result.modified_unix_millis,
             result.modified_unix_nanos,

@@ -5,9 +5,10 @@ use async_trait::async_trait;
 use futures::{Stream, StreamExt};
 use ignore::WalkBuilder;
 use regex::RegexBuilder;
+use sha2::{Digest as _, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::{Child, Command, Stdio};
@@ -726,6 +727,7 @@ pub struct FileStat {
     pub kind: FileKind,
     pub size: u64,
     pub modified: Option<SystemTime>,
+    pub version: Option<FileVersion>,
     pub readonly: bool,
 }
 
@@ -750,12 +752,34 @@ pub struct ReadOptions {
     pub max_bytes: Option<u64>,
 }
 
+/// An opaque identifier for one observed version of a file.
+///
+/// Tokens are created and interpreted only by the workspace backend that owns
+/// the file. Callers must preserve and return the bytes unchanged.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FileVersion(Vec<u8>);
+
+impl FileVersion {
+    pub fn from_bytes(bytes: impl Into<Vec<u8>>) -> Self {
+        Self(bytes.into())
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.0
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileRead {
     pub path: PathBuf,
     pub bytes: Vec<u8>,
     pub size: u64,
     pub modified: Option<SystemTime>,
+    pub version: Option<FileVersion>,
     pub readonly: bool,
     pub truncated: bool,
 }
@@ -765,6 +789,7 @@ pub struct FileReadMetadata {
     pub path: PathBuf,
     pub size: u64,
     pub modified: Option<SystemTime>,
+    pub version: Option<FileVersion>,
     pub readonly: bool,
     pub truncated: bool,
 }
@@ -809,6 +834,7 @@ impl WorkspaceEventStream<FileReadEvent> {
             bytes,
             size,
             modified,
+            version,
             readonly,
             truncated,
         } = read;
@@ -820,6 +846,7 @@ impl WorkspaceEventStream<FileReadEvent> {
             path,
             size,
             modified,
+            version,
             readonly,
             truncated,
         })));
@@ -863,6 +890,7 @@ impl WorkspaceEventStream<FileReadEvent> {
             bytes,
             size: metadata.size,
             modified: metadata.modified,
+            version: metadata.version,
             readonly: metadata.readonly,
             truncated: metadata.truncated,
         })
@@ -885,6 +913,7 @@ fn file_stream_error(
 pub struct WriteOptions {
     pub create_parent_dirs: bool,
     pub expected_modified: Option<SystemTime>,
+    pub expected_version: Option<FileVersion>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -892,6 +921,7 @@ pub struct WriteResult {
     pub path: PathBuf,
     pub size: u64,
     pub modified: Option<SystemTime>,
+    pub version: Option<FileVersion>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2584,7 +2614,15 @@ fn local_stat(path: &Path) -> Result<FileStat> {
         path: path.to_path_buf(),
         source,
     })?;
-    Ok(file_stat_from_metadata(path.to_path_buf(), metadata))
+    let version = metadata
+        .is_file()
+        .then(|| file_version_for_path(path).ok())
+        .flatten();
+    Ok(file_stat_from_metadata(
+        path.to_path_buf(),
+        metadata,
+        version,
+    ))
 }
 
 fn local_list_dir(path: &Path) -> Result<DirectoryListing> {
@@ -2640,7 +2678,7 @@ fn local_list_dir_with_cancellation(
         listed_entries.push(DirectoryEntry {
             name: entry.file_name().to_string_lossy().into_owned(),
             path: entry_path.clone(),
-            stat: file_stat_from_metadata(entry_path, metadata),
+            stat: file_stat_from_metadata(entry_path, metadata, None),
             symlink_target,
             target_exists,
             ignored: None,
@@ -3220,13 +3258,110 @@ fn local_read_file(path: &Path, options: ReadOptions) -> Result<FileRead> {
     local_read_file_with_cancellation(path, options, None)
 }
 
+/// Builds a backend-owned version token for an open file.
+///
+/// The token deliberately uses native timestamp and identity fields instead
+/// of [`SystemTime`] so it can cross platforms without losing precision.
+pub fn file_version_from_file(file: &File) -> io::Result<FileVersion> {
+    let metadata = file.metadata()?;
+    file_version_from_file_metadata(file, &metadata)
+}
+
+/// Opens a file and builds its backend-owned version token.
+pub fn file_version_for_path(path: &Path) -> io::Result<FileVersion> {
+    let file = File::open(path)?;
+    file_version_from_file(&file)
+}
+
+fn file_version_from_file_metadata(
+    file: &File,
+    metadata: &fs::Metadata,
+) -> io::Result<FileVersion> {
+    let mut hasher = Sha256::new();
+    hasher.update(b"nucleotide-file-version-v1\0");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+
+        let _ = file;
+
+        hasher.update(b"unix\0");
+        hasher.update(metadata.dev().to_le_bytes());
+        hasher.update(metadata.ino().to_le_bytes());
+        hasher.update(metadata.size().to_le_bytes());
+        hasher.update(metadata.mtime().to_le_bytes());
+        hasher.update(metadata.mtime_nsec().to_le_bytes());
+        hasher.update(metadata.ctime().to_le_bytes());
+        hasher.update(metadata.ctime_nsec().to_le_bytes());
+    }
+
+    #[cfg(windows)]
+    {
+        use std::mem::MaybeUninit;
+        use std::os::windows::fs::MetadataExt as _;
+        use std::os::windows::io::AsRawHandle as _;
+        use windows_sys::Win32::Foundation::HANDLE;
+        use windows_sys::Win32::Storage::FileSystem::{
+            BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+        };
+
+        let mut information = MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
+        if unsafe {
+            GetFileInformationByHandle(file.as_raw_handle() as HANDLE, information.as_mut_ptr())
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        let information = unsafe { information.assume_init() };
+
+        hasher.update(b"windows\0");
+        hasher.update(information.dwVolumeSerialNumber.to_le_bytes());
+        hasher.update(information.nFileIndexHigh.to_le_bytes());
+        hasher.update(information.nFileIndexLow.to_le_bytes());
+        hasher.update(metadata.file_attributes().to_le_bytes());
+        hasher.update(metadata.creation_time().to_le_bytes());
+        hasher.update(metadata.last_write_time().to_le_bytes());
+        hasher.update(metadata.file_size().to_le_bytes());
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = file;
+        hasher.update(b"generic\0");
+        hasher.update(metadata.len().to_le_bytes());
+        if let Ok(modified) = metadata.modified() {
+            match modified.duration_since(SystemTime::UNIX_EPOCH) {
+                Ok(duration) => {
+                    hasher.update([0]);
+                    hasher.update(duration.as_secs().to_le_bytes());
+                    hasher.update(duration.subsec_nanos().to_le_bytes());
+                }
+                Err(error) => {
+                    let duration = error.duration();
+                    hasher.update([1]);
+                    hasher.update(duration.as_secs().to_le_bytes());
+                    hasher.update(duration.subsec_nanos().to_le_bytes());
+                }
+            }
+        }
+    }
+
+    Ok(FileVersion::from_bytes(hasher.finalize().to_vec()))
+}
+
 fn local_read_file_with_cancellation(
     path: &Path,
     options: ReadOptions,
     cancellation: Option<&WorkspaceCancellationToken>,
 ) -> Result<FileRead> {
     workspace_cancellation_checkpoint(cancellation, "read file", path)?;
-    let metadata = fs::metadata(path).map_err(|source| WorkspaceError::Io {
+    let mut file = File::open(path).map_err(|source| WorkspaceError::Io {
+        operation: "open file",
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let metadata = file.metadata().map_err(|source| WorkspaceError::Io {
         operation: "stat file",
         path: path.to_path_buf(),
         source,
@@ -3237,13 +3372,14 @@ fn local_read_file_with_cancellation(
         });
     }
 
+    let initial_version =
+        file_version_from_file_metadata(&file, &metadata).map_err(|source| WorkspaceError::Io {
+            operation: "version file",
+            path: path.to_path_buf(),
+            source,
+        })?;
     let size = metadata.len();
     let read_len = options.max_bytes.unwrap_or(size).min(size);
-    let mut file = File::open(path).map_err(|source| WorkspaceError::Io {
-        operation: "open file",
-        path: path.to_path_buf(),
-        source,
-    })?;
     let mut bytes = Vec::with_capacity(read_len.try_into().unwrap_or(0));
     let mut remaining = read_len;
     let mut buffer = vec![0_u8; LOCAL_FILE_IO_CHUNK_BYTES];
@@ -3266,12 +3402,38 @@ fn local_read_file_with_cancellation(
     }
     workspace_cancellation_checkpoint(cancellation, "read file", path)?;
 
+    let completed_file = File::open(path).map_err(|source| WorkspaceError::Io {
+        operation: "open file after read",
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let completed_metadata = completed_file
+        .metadata()
+        .map_err(|source| WorkspaceError::Io {
+            operation: "stat file after read",
+            path: path.to_path_buf(),
+            source,
+        })?;
+    let version = file_version_from_file_metadata(&completed_file, &completed_metadata).map_err(
+        |source| WorkspaceError::Io {
+            operation: "version file after read",
+            path: path.to_path_buf(),
+            source,
+        },
+    )?;
+    if version != initial_version {
+        return Err(WorkspaceError::Modified {
+            path: path.to_path_buf(),
+        });
+    }
+
     Ok(FileRead {
         path: path.to_path_buf(),
         bytes,
         size,
-        modified: metadata.modified().ok(),
-        readonly: metadata.permissions().readonly(),
+        modified: completed_metadata.modified().ok(),
+        version: Some(version),
+        readonly: completed_metadata.permissions().readonly(),
         truncated: read_len < size,
     })
 }
@@ -3297,20 +3459,12 @@ fn local_write_file_with_cancellation(
         })?;
     }
 
-    if let Some(expected_modified) = options.expected_modified {
-        let modified = fs::metadata(path)
-            .and_then(|metadata| metadata.modified())
-            .map_err(|source| WorkspaceError::Io {
-                operation: "stat file before write",
-                path: path.to_path_buf(),
-                source,
-            })?;
-        if modified != expected_modified {
-            return Err(WorkspaceError::Modified {
-                path: path.to_path_buf(),
-            });
-        }
-    }
+    validate_local_write_expectations(
+        path,
+        options.expected_version.as_ref(),
+        options.expected_modified,
+        "stat file before write",
+    )?;
 
     let target_path = write_target_for_path(path)?;
     let existing_permissions = match fs::metadata(&target_path) {
@@ -3376,6 +3530,13 @@ fn local_write_file_with_cancellation(
         })?;
     workspace_cancellation_checkpoint(cancellation, "write file", path)?;
 
+    validate_local_write_expectations(
+        path,
+        options.expected_version.as_ref(),
+        options.expected_modified,
+        "stat file before replacing",
+    )?;
+
     let temp_path = temp.into_temp_path();
     fs::rename(&temp_path, &target_path).map_err(|source| WorkspaceError::Io {
         operation: "replace file",
@@ -3383,17 +3544,68 @@ fn local_write_file_with_cancellation(
         source,
     })?;
 
-    let metadata = fs::metadata(&target_path).map_err(|source| WorkspaceError::Io {
-        operation: "stat written file",
-        path: target_path,
+    let written_file = File::open(&target_path).map_err(|source| WorkspaceError::Io {
+        operation: "open written file",
+        path: target_path.clone(),
         source,
+    })?;
+    let metadata = written_file
+        .metadata()
+        .map_err(|source| WorkspaceError::Io {
+            operation: "stat written file",
+            path: target_path.clone(),
+            source,
+        })?;
+    let version = file_version_from_file_metadata(&written_file, &metadata).map_err(|source| {
+        WorkspaceError::Io {
+            operation: "version written file",
+            path: target_path,
+            source,
+        }
     })?;
 
     Ok(WriteResult {
         path: path.to_path_buf(),
         size: metadata.len(),
         modified: metadata.modified().ok(),
+        version: Some(version),
     })
+}
+
+fn validate_local_write_expectations(
+    path: &Path,
+    expected_version: Option<&FileVersion>,
+    expected_modified: Option<SystemTime>,
+    operation: &'static str,
+) -> Result<()> {
+    if expected_version.is_none() && expected_modified.is_none() {
+        return Ok(());
+    }
+
+    let matches = if let Some(expected_version) = expected_version {
+        file_version_for_path(path).map_err(|source| WorkspaceError::Io {
+            operation,
+            path: path.to_path_buf(),
+            source,
+        })? == *expected_version
+    } else {
+        let metadata = fs::metadata(path).map_err(|source| WorkspaceError::Io {
+            operation,
+            path: path.to_path_buf(),
+            source,
+        })?;
+        metadata.modified().map_err(|source| WorkspaceError::Io {
+            operation,
+            path: path.to_path_buf(),
+            source,
+        })? == expected_modified.expect("missing write expectation")
+    };
+    if !matches {
+        return Err(WorkspaceError::Modified {
+            path: path.to_path_buf(),
+        });
+    }
+    Ok(())
 }
 
 fn local_file_search(query: FileSearchQuery) -> Result<FileSearchResult> {
@@ -3941,7 +4153,11 @@ fn is_conflict_pair(left: u8, right: u8) -> bool {
     )
 }
 
-fn file_stat_from_metadata(path: PathBuf, metadata: fs::Metadata) -> FileStat {
+fn file_stat_from_metadata(
+    path: PathBuf,
+    metadata: fs::Metadata,
+    version: Option<FileVersion>,
+) -> FileStat {
     let file_type = metadata.file_type();
     let kind = if file_type.is_file() {
         FileKind::File
@@ -3958,6 +4174,7 @@ fn file_stat_from_metadata(path: PathBuf, metadata: fs::Metadata) -> FileStat {
         kind,
         size: metadata.len(),
         modified: metadata.modified().ok(),
+        version,
         readonly: metadata.permissions().readonly(),
     }
 }
@@ -4816,6 +5033,7 @@ mod tests {
             bytes,
             size: 4,
             modified: None,
+            version: None,
             readonly: false,
             truncated: false,
         });
@@ -5233,6 +5451,19 @@ mod tests {
 
         let backend = LocalWorkspaceBackend;
         let listing = block_on(backend.list_dir(temp.path())).unwrap();
+        assert!(
+            listing
+                .entries
+                .iter()
+                .all(|entry| entry.stat.version.is_none())
+        );
+        let stat = block_on(backend.stat(&listing.entries[0].path)).unwrap();
+        assert_eq!(
+            stat.version
+                .as_ref()
+                .map(|version| version.as_bytes().len()),
+            Some(32)
+        );
 
         let names = listing
             .entries
@@ -5269,11 +5500,64 @@ mod tests {
             WriteOptions {
                 create_parent_dirs: false,
                 expected_modified: Some(SystemTime::UNIX_EPOCH),
+                expected_version: None,
             },
         ));
 
         assert!(matches!(result, Err(WorkspaceError::Modified { .. })));
         assert_eq!(fs::read_to_string(path).unwrap(), "old");
+    }
+
+    #[test]
+    fn local_backend_prefers_opaque_version_over_legacy_timestamp() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("main.rs");
+        fs::write(&path, "old").unwrap();
+
+        let backend = LocalWorkspaceBackend;
+        let read = block_on(backend.read_file(&path, ReadOptions::default())).unwrap();
+        let expected_version = read.version.expect("read version");
+        assert_eq!(expected_version.as_bytes().len(), 32);
+
+        let result = block_on(backend.write_file(
+            &path,
+            b"new",
+            WriteOptions {
+                create_parent_dirs: false,
+                // A valid opaque version takes precedence over this deliberately
+                // invalid compatibility timestamp.
+                expected_modified: Some(SystemTime::UNIX_EPOCH),
+                expected_version: Some(expected_version.clone()),
+            },
+        ))
+        .unwrap();
+
+        assert_ne!(result.version.as_ref(), Some(&expected_version));
+        assert_eq!(fs::read_to_string(path).unwrap(), "new");
+    }
+
+    #[test]
+    fn local_backend_rejects_stale_opaque_file_version() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("main.rs");
+        fs::write(&path, "old").unwrap();
+
+        let backend = LocalWorkspaceBackend;
+        let read = block_on(backend.read_file(&path, ReadOptions::default())).unwrap();
+        fs::write(&path, "external change").unwrap();
+
+        let result = block_on(backend.write_file(
+            &path,
+            b"editor change",
+            WriteOptions {
+                create_parent_dirs: false,
+                expected_modified: None,
+                expected_version: read.version,
+            },
+        ));
+
+        assert!(matches!(result, Err(WorkspaceError::Modified { .. })));
+        assert_eq!(fs::read_to_string(path).unwrap(), "external change");
     }
 
     #[test]
@@ -5288,6 +5572,7 @@ mod tests {
             WriteOptions {
                 create_parent_dirs: false,
                 expected_modified: None,
+                expected_version: None,
             },
         ))
         .unwrap();

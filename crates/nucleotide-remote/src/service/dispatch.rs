@@ -921,13 +921,18 @@ where
             let payload: V5WriteFilePayload = decode_v5_payload(&request.method, &request.payload)
                 .map_err(v5_method_error_to_remote_error)?;
             let path = self.resolve_path(&payload.path)?;
+            let expected_version = payload.expected_version.map(FileVersion::from_bytes);
             let expected_modified = system_time_from_unix_millis_and_nanos(
                 payload.expected_modified_unix_millis,
                 payload.expected_modified_unix_nanos,
             );
-            let streamed_write =
-                V5StreamingWrite::create(path, payload.create_parent_dirs, expected_modified)
-                    .map_err(remote_error_from_workspace)?;
+            let streamed_write = V5StreamingWrite::create(
+                path,
+                payload.create_parent_dirs,
+                expected_version,
+                expected_modified,
+            )
+            .map_err(remote_error_from_workspace)?;
             request.streamed_write = Some(streamed_write);
         }
 
@@ -1624,7 +1629,14 @@ where
         cancellation
             .check_cancelled("read file", &path)
             .map_err(remote_error_from_workspace)?;
-        let metadata = std::fs::metadata(&path).map_err(|source| {
+        let mut file = std::fs::File::open(&path).map_err(|source| {
+            remote_error_from_workspace(WorkspaceError::Io {
+                operation: "open file",
+                path: path.clone(),
+                source,
+            })
+        })?;
+        let metadata = file.metadata().map_err(|source| {
             remote_error_from_workspace(WorkspaceError::Io {
                 operation: "stat file",
                 path: path.clone(),
@@ -1640,15 +1652,15 @@ where
             }));
         }
 
-        let size = metadata.len();
-        let read_len = v5_streamed_file_read_limit(payload.max_bytes).min(size);
-        let mut file = std::fs::File::open(&path).map_err(|source| {
+        let initial_version = file_version_from_file(&file).map_err(|source| {
             remote_error_from_workspace(WorkspaceError::Io {
-                operation: "open file",
+                operation: "version file",
                 path: path.clone(),
                 source,
             })
         })?;
+        let size = metadata.len();
+        let read_len = v5_streamed_file_read_limit(payload.max_bytes).min(size);
         cancellation
             .check_cancelled("read file", &path)
             .map_err(remote_error_from_workspace)?;
@@ -1666,12 +1678,40 @@ where
                 .map_err(v5_queue_error_to_remote_error)
         })?;
 
+        let completed_file = std::fs::File::open(&path).map_err(|source| {
+            remote_error_from_workspace(WorkspaceError::Io {
+                operation: "open file after read",
+                path: path.clone(),
+                source,
+            })
+        })?;
+        let completed_metadata = completed_file.metadata().map_err(|source| {
+            remote_error_from_workspace(WorkspaceError::Io {
+                operation: "stat file after read",
+                path: path.clone(),
+                source,
+            })
+        })?;
+        let version = file_version_from_file(&completed_file).map_err(|source| {
+            remote_error_from_workspace(WorkspaceError::Io {
+                operation: "version file after read",
+                path: path.clone(),
+                source,
+            })
+        })?;
+        if version != initial_version {
+            return Err(remote_error_from_workspace(WorkspaceError::Modified {
+                path,
+            }));
+        }
+
         let read = FileRead {
             path,
             bytes: Vec::new(),
             size,
-            modified: metadata.modified().ok(),
-            readonly: metadata.permissions().readonly(),
+            modified: completed_metadata.modified().ok(),
+            version: Some(version),
+            readonly: completed_metadata.permissions().readonly(),
             truncated: read_len < size,
         };
         Ok(ServiceOutcome::continue_response(
@@ -2444,10 +2484,12 @@ where
             RemoteRequest::WriteFile {
                 path,
                 create_parent_dirs,
+                expected_version,
                 expected_modified_unix_millis,
                 expected_modified_unix_nanos,
             } => {
                 let path = self.resolve_path(&path)?;
+                let expected_version = expected_version.map(FileVersion::from_bytes);
                 let expected_modified = system_time_from_unix_millis_and_nanos(
                     expected_modified_unix_millis,
                     expected_modified_unix_nanos,
@@ -2458,6 +2500,7 @@ where
                     WriteOptions {
                         create_parent_dirs,
                         expected_modified,
+                        expected_version,
                     },
                     cancellation,
                 ))

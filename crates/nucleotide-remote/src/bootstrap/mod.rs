@@ -2360,6 +2360,7 @@ pub(crate) fn remote_linux_helper_path(probe: &SshRemoteProbe) -> PathBuf {
             "nucleotide",
             "remote",
             &format!("protocol-{PROTOCOL_VERSION}"),
+            &format!("revision-{REMOTE_HELPER_REVISION}"),
             &remote_helper_file_name(&probe.platform),
         ],
     ))
@@ -2391,6 +2392,7 @@ pub(crate) fn helper_version_matches_current(
     platform: &SshRemotePlatform,
 ) -> bool {
     info.helper_version == env!("CARGO_PKG_VERSION")
+        && info.helper_revision == REMOTE_HELPER_REVISION
         && info.protocol_version == PROTOCOL_VERSION
         && info.frame_version == FRAME_VERSION
         && info.os == platform.os

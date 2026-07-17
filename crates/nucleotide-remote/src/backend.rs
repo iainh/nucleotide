@@ -283,6 +283,7 @@ where
                             FileReadEvent::Complete(FileReadMetadata {
                                 path: read.path,
                                 size: read.size,
+                                version: read.version.map(FileVersion::from_bytes),
                                 modified: system_time_from_unix_millis_and_nanos(
                                     read.modified_unix_millis,
                                     read.modified_unix_nanos,
@@ -1262,6 +1263,10 @@ where
                 RemoteRequest::WriteFile {
                     path: path.to_path_buf(),
                     create_parent_dirs: options.create_parent_dirs,
+                    expected_version: options
+                        .expected_version
+                        .as_ref()
+                        .map(|version| version.as_bytes().to_vec()),
                     expected_modified_unix_millis: options
                         .expected_modified
                         .and_then(system_time_unix_millis),
@@ -1292,6 +1297,10 @@ where
                 RemoteRequest::WriteFile {
                     path: path.to_path_buf(),
                     create_parent_dirs: options.create_parent_dirs,
+                    expected_version: options
+                        .expected_version
+                        .as_ref()
+                        .map(|version| version.as_bytes().to_vec()),
                     expected_modified_unix_millis: options
                         .expected_modified
                         .and_then(system_time_unix_millis),

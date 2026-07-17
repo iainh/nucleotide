@@ -44,6 +44,8 @@ pub enum RemoteRequest {
     WriteFile {
         path: PathBuf,
         create_parent_dirs: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_version: Option<Vec<u8>>,
         expected_modified_unix_millis: Option<i64>,
         #[serde(default)]
         expected_modified_unix_nanos: Option<u32>,
@@ -524,6 +526,7 @@ impl RemoteRequest {
                 Ok(Self::WriteFile {
                     path: payload.path,
                     create_parent_dirs: payload.create_parent_dirs,
+                    expected_version: payload.expected_version,
                     expected_modified_unix_millis: payload.expected_modified_unix_millis,
                     expected_modified_unix_nanos: payload.expected_modified_unix_nanos,
                 })
@@ -579,11 +582,13 @@ impl RemoteRequest {
             Self::WriteFile {
                 path,
                 create_parent_dirs,
+                expected_version,
                 expected_modified_unix_millis,
                 expected_modified_unix_nanos,
             } => V5RequestPayloadRef::WriteFile {
                 path,
                 create_parent_dirs: *create_parent_dirs,
+                expected_version: expected_version.as_deref(),
                 expected_modified_unix_millis: *expected_modified_unix_millis,
                 expected_modified_unix_nanos: *expected_modified_unix_nanos,
             },
@@ -694,6 +699,8 @@ pub(crate) enum V5RequestPayloadRef<'a> {
         #[serde(serialize_with = "serialize_posix_path")]
         path: &'a PathBuf,
         create_parent_dirs: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        expected_version: Option<&'a [u8]>,
         expected_modified_unix_millis: Option<i64>,
         expected_modified_unix_nanos: Option<u32>,
     },
@@ -780,6 +787,8 @@ pub(crate) struct V5WriteFilePayload {
     #[serde(serialize_with = "serialize_posix_path")]
     pub(crate) path: PathBuf,
     pub(crate) create_parent_dirs: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) expected_version: Option<Vec<u8>>,
     pub(crate) expected_modified_unix_millis: Option<i64>,
     #[serde(default)]
     pub(crate) expected_modified_unix_nanos: Option<u32>,
@@ -938,6 +947,8 @@ pub struct FileStatResponse {
     pub path: PathBuf,
     pub kind: RemoteFileKind,
     pub size: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<Vec<u8>>,
     pub modified_unix_millis: Option<i64>,
     #[serde(default)]
     pub modified_unix_nanos: Option<u32>,
@@ -1005,6 +1016,8 @@ pub struct ListDirsResponse {
 pub struct FileReadResponse {
     pub path: PathBuf,
     pub size: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<Vec<u8>>,
     pub modified_unix_millis: Option<i64>,
     #[serde(default)]
     pub modified_unix_nanos: Option<u32>,
@@ -1136,6 +1149,8 @@ impl<E> Drop for RemoteEventStream<E> {
 pub struct WriteResultResponse {
     pub path: PathBuf,
     pub size: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<Vec<u8>>,
     pub modified_unix_millis: Option<i64>,
     #[serde(default)]
     pub modified_unix_nanos: Option<u32>,

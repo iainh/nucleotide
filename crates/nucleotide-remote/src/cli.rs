@@ -70,8 +70,13 @@ where
     } else {
         writeln!(
             writer,
-            "nucleotide-remote {} protocol {} frame {} {}-{}",
-            info.helper_version, info.protocol_version, info.frame_version, info.os, info.arch
+            "nucleotide-remote {} revision {} protocol {} frame {} {}-{}",
+            info.helper_version,
+            info.helper_revision,
+            info.protocol_version,
+            info.frame_version,
+            info.os,
+            info.arch
         )
     }
 }

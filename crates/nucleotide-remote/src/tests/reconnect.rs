@@ -31,6 +31,58 @@ fn reconnecting_client_retries_read_only_request_after_disconnect() {
     );
 }
 
+#[test]
+fn reconnecting_client_does_not_reconnect_local_stream_capacity_error() {
+    let calls = Arc::new(StdMutex::new(Vec::new()));
+    let reconnects = Arc::new(AtomicUsize::new(0));
+    let initial = FakeProtocolClient::new(
+        Arc::clone(&calls),
+        [FakeProtocolOutcome::Io(io::ErrorKind::OutOfMemory)],
+    );
+    let reconnect_count = Arc::clone(&reconnects);
+    let client = ReconnectingRemoteWorkspaceProtocolClient::new(initial, move || {
+        reconnect_count.fetch_add(1, Ordering::SeqCst);
+        Ok(FakeProtocolClient::new(
+            Arc::new(StdMutex::new(Vec::new())),
+            [FakeProtocolOutcome::Ok(RemoteResponse::Stat(
+                FileStatResponse {
+                    path: PathBuf::from("src/lib.rs"),
+                    kind: RemoteFileKind::File,
+                    size: 0,
+                    version: None,
+                    modified_unix_millis: None,
+                    modified_unix_nanos: None,
+                    readonly: false,
+                },
+            ))],
+        ))
+    });
+    let request = RemoteRequest::Stat {
+        path: PathBuf::from("src/lib.rs"),
+    };
+
+    let error = client.request(request.clone(), Vec::new()).unwrap_err();
+
+    assert!(matches!(
+        error,
+        RemoteClientError::Io(ref error) if error.kind() == io::ErrorKind::OutOfMemory
+    ));
+    assert_eq!(reconnects.load(Ordering::SeqCst), 0);
+    assert_eq!(calls.lock().unwrap().as_slice(), &[request]);
+}
+
+#[test]
+fn local_capacity_errors_are_not_classified_as_transport_failures() {
+    let error = RemoteClientError::Io(io::Error::new(
+        io::ErrorKind::OutOfMemory,
+        "v5 max concurrent streams exceeded",
+    ));
+
+    assert!(!remote_client_error_allows_reconnect_retry(&error));
+    assert!(!remote_client_error_requires_reconnect(&error));
+    assert!(!remote_watch_restore_error_is_retryable(&error));
+}
+
 // Reconnection, cancellation, replay, and watch restoration tests.
 
 #[test]
@@ -94,6 +146,7 @@ fn reconnecting_client_does_not_replay_when_cancelled_during_recovery() {
                         path: PathBuf::from("cancelled.rs"),
                         kind: RemoteFileKind::File,
                         size: 0,
+                        version: None,
                         modified_unix_millis: None,
                         modified_unix_nanos: None,
                         readonly: false,
@@ -371,6 +424,7 @@ fn reconnecting_client_heals_but_does_not_retry_mutation_after_disconnect() {
     let request = RemoteRequest::WriteFile {
         path: PathBuf::from("src/lib.rs"),
         create_parent_dirs: false,
+        expected_version: None,
         expected_modified_unix_millis: None,
         expected_modified_unix_nanos: None,
     };

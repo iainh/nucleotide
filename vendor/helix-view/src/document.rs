@@ -115,6 +115,7 @@ impl Serialize for Mode {
 pub struct DocumentSavedEvent {
     pub revision: usize,
     pub save_time: SystemTime,
+    pub file_version: Option<Vec<u8>>,
     pub doc_id: DocumentId,
     pub path: PathBuf,
     pub text: Rope,
@@ -127,7 +128,16 @@ pub struct DocumentSaveData {
     pub text: Rope,
     pub encoding_with_bom_info: (&'static Encoding, bool),
     pub last_saved_time: SystemTime,
+    pub file_version: Option<Vec<u8>>,
     pub force: bool,
+}
+
+/// Metadata returned by the storage backend after a successful document write.
+#[derive(Debug, Clone)]
+pub struct DocumentWriteResult {
+    pub save_time: SystemTime,
+    /// Opaque backend-owned file version bytes. Helix stores but never interprets them.
+    pub file_version: Option<Vec<u8>>,
 }
 
 pub type DocumentSavedEventResult = Result<DocumentSavedEvent, anyhow::Error>;
@@ -148,10 +158,12 @@ pub enum DocumentOpenError {
     IoError(#[from] io::Error),
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct DocumentOpenMetadata {
     pub readonly: bool,
     pub last_saved_time: Option<SystemTime>,
+    /// Opaque backend-owned file version bytes.
+    pub file_version: Option<Vec<u8>>,
 }
 
 pub struct Document {
@@ -215,6 +227,7 @@ pub struct Document {
     // Last time we wrote to the file. This will carry the time the file was last opened if there
     // were no saves.
     last_saved_time: SystemTime,
+    file_version: Option<Vec<u8>>,
 
     last_saved_revision: usize,
     version: i32, // should be usize?
@@ -727,7 +740,7 @@ pub async fn to_writer<'a, W: tokio::io::AsyncWriteExt + Unpin + ?Sized>(
 async fn save_to_local_path(
     save: DocumentSaveData,
     atomic_save: bool,
-) -> Result<SystemTime, anyhow::Error> {
+) -> Result<DocumentWriteResult, anyhow::Error> {
     use tokio::fs;
 
     let path = save.path;
@@ -854,7 +867,10 @@ async fn save_to_local_path(
 
     write_result?;
 
-    Ok(save_time)
+    Ok(DocumentWriteResult {
+        save_time,
+        file_version: None,
+    })
 }
 
 fn take_with<T, F>(mut_ref: &mut T, f: F)
@@ -907,6 +923,7 @@ impl Document {
             history: Cell::new(History::default()),
             savepoints: Vec::new(),
             last_saved_time: SystemTime::now(),
+            file_version: None,
             last_saved_revision: 0,
             modified_since_accessed: false,
             language_servers: HashMap::new(),
@@ -1012,6 +1029,7 @@ impl Document {
             Some(metadata.readonly),
             metadata.last_saved_time,
         );
+        doc.file_version = metadata.file_version;
         if detect_language {
             doc.detect_language(&loader);
         }
@@ -1179,8 +1197,8 @@ impl Document {
     /// Build a save future using a caller-supplied writer.
     ///
     /// The writer is responsible for persisting [`DocumentSaveData::text`] and
-    /// returning the file modification time that should become the document's
-    /// latest saved time. This method still owns Helix's save bookkeeping:
+    /// returning the file metadata that should become the document's latest
+    /// saved state. This method still owns Helix's save bookkeeping:
     /// revision capture, save event construction, and LSP didSave
     /// notifications.
     pub fn save_with<P, F, Fut>(
@@ -1195,7 +1213,7 @@ impl Document {
     where
         P: Into<PathBuf>,
         F: FnOnce(DocumentSaveData) -> Fut + Send + 'static,
-        Fut: Future<Output = Result<SystemTime, anyhow::Error>> + Send + 'static,
+        Fut: Future<Output = Result<DocumentWriteResult, anyhow::Error>> + Send + 'static,
     {
         log::debug!(
             "submitting save of doc '{:?}'",
@@ -1227,21 +1245,24 @@ impl Document {
 
         let encoding_with_bom_info = (self.encoding, self.has_bom);
         let last_saved_time = self.last_saved_time;
+        let file_version = self.file_version.clone();
 
         let future = async move {
-            let save_time = write(DocumentSaveData {
+            let write_result = write(DocumentSaveData {
                 path: path.clone(),
                 previous_path,
                 text: text.clone(),
                 encoding_with_bom_info,
                 last_saved_time,
+                file_version,
                 force,
             })
             .await?;
 
             let event = DocumentSavedEvent {
                 revision: current_rev,
-                save_time,
+                save_time: write_result.save_time,
+                file_version: write_result.file_version,
                 doc_id,
                 path,
                 text: text.clone(),
@@ -1422,6 +1443,16 @@ impl Document {
         self.last_saved_time
     }
 
+    /// Returns the opaque version supplied by the document's storage backend.
+    pub fn file_version(&self) -> Option<&[u8]> {
+        self.file_version.as_deref()
+    }
+
+    /// Replaces the opaque version supplied by the document's storage backend.
+    pub fn set_file_version(&mut self, file_version: Option<Vec<u8>>) {
+        self.file_version = file_version;
+    }
+
     /// sets the document path without sending events to various
     /// observers (like LSP), in most cases `Editor::set_doc_path`
     /// should be used instead
@@ -1441,6 +1472,7 @@ impl Document {
         last_saved_time: Option<SystemTime>,
     ) {
         let path = path.map(helix_stdx::path::canonicalize);
+        let path_changed = self.path != path;
 
         // `take` to remove any prior relative path that may have existed.
         // This will get set in `relative_path()`.
@@ -1452,6 +1484,9 @@ impl Document {
         // and error out when document is saved
         self.path = path;
         self.lsp_url = None;
+        if path_changed {
+            self.file_version = None;
+        }
 
         if let Some(readonly) = readonly {
             self.readonly = readonly;
@@ -2712,6 +2747,7 @@ mod test {
             DocumentOpenMetadata {
                 readonly: true,
                 last_saved_time: Some(save_time),
+                file_version: Some(vec![1, 2, 3, 4]),
             },
             Arc::new(ArcSwap::new(Arc::new(Config::default()))),
             Arc::new(ArcSwap::from_pointee(syntax::Loader::default())),
@@ -2722,8 +2758,47 @@ mod test {
         assert_eq!(doc.text(), "fn main() {}\n");
         assert_eq!(doc.encoding_with_bom_info(), (encoding::UTF_8, true));
         assert_eq!(doc.last_saved_time(), save_time);
+        assert_eq!(doc.file_version(), Some(&[1, 2, 3, 4][..]));
         assert!(doc.readonly);
         assert!(!doc.is_modified());
+    }
+
+    #[test]
+    fn save_with_carries_and_replaces_opaque_file_version() {
+        let path = Path::new("ssh://example.test/home/me/main.rs");
+        let save_time = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(42);
+        let next_save_time = save_time + std::time::Duration::from_secs(1);
+        let mut bytes = b"fn main() {}\n".as_slice();
+        let mut doc = Document::open_from_reader(
+            path,
+            &mut bytes,
+            None,
+            false,
+            DocumentOpenMetadata {
+                readonly: false,
+                last_saved_time: Some(save_time),
+                file_version: Some(vec![1, 2, 3, 4]),
+            },
+            Arc::new(ArcSwap::new(Arc::new(Config::default()))),
+            Arc::new(ArcSwap::from_pointee(syntax::Loader::default())),
+        )
+        .unwrap();
+
+        let future = doc
+            .save_with(Option::<PathBuf>::None, false, move |save| async move {
+                assert_eq!(save.file_version.as_deref(), Some(&[1, 2, 3, 4][..]));
+                Ok(DocumentWriteResult {
+                    save_time: next_save_time,
+                    file_version: Some(vec![5, 6, 7, 8]),
+                })
+            })
+            .unwrap();
+        let event = helix_lsp::block_on(future).unwrap();
+        doc.set_last_saved_revision(event.revision, event.save_time);
+        doc.set_file_version(event.file_version);
+
+        assert_eq!(doc.last_saved_time(), next_save_time);
+        assert_eq!(doc.file_version(), Some(&[5, 6, 7, 8][..]));
     }
 
     #[test]

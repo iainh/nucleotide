@@ -32,7 +32,9 @@ pub use config::{LoggingConfig, default_log_file_path, default_remote_log_file_p
 
 // Re-export initialization functions and reload handle
 pub use reload::LoggingReloadHandle;
-pub use subscriber::{init_file_subscriber, init_subscriber, init_subscriber_with_reload};
+pub use subscriber::{
+    init_file_subscriber, init_stderr_subscriber, init_subscriber, init_subscriber_with_reload,
+};
 
 // Re-export performance monitoring utilities
 pub use performance::{PerfStats, PerfTimer};
@@ -59,6 +61,11 @@ pub fn init_logging_with_config(config: LoggingConfig) -> Result<()> {
 /// Initialize synchronous file-only logging for a protocol helper process.
 pub fn init_file_logging(config: LoggingConfig) -> Result<()> {
     init_file_subscriber(config)
+}
+
+/// Initialize synchronous stderr-only logging for a protocol helper process.
+pub fn init_stderr_logging(config: LoggingConfig) -> Result<()> {
+    init_stderr_subscriber(config)
 }
 
 /// Initialize logging with hot-reload support using custom configuration.
