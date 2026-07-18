@@ -7,8 +7,8 @@ use helix_vcs::{DiffHandle, DiffProviderRegistry, Hunk};
 use nucleotide_logging::{debug, error, info, warn};
 use nucleotide_types::{DiffChangeType, DiffHunkInfo, VcsStatus};
 use nucleotide_workspace::{
-    FileKind, GitStatusEntry, GitStatusKind, GitStatusOptions, ProcessSpec, ReadOptions,
-    WorkspaceBackendHandle, WorkspaceIdentity, absolutize_workspace_path,
+    FileKind, GitHeadResult, GitStatusEntry, GitStatusKind, GitStatusOptions, ProcessSpec,
+    ReadOptions, WorkspaceBackendHandle, WorkspaceIdentity, absolutize_workspace_path,
 };
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
@@ -59,6 +59,20 @@ fn current_git_head(root_path: &Path) -> Option<String> {
     }
 
     parse_git_head_output(&output.stdout)
+}
+
+fn current_git_ref(root_path: &Path) -> Option<String> {
+    let output = nucleotide_process::command("git")
+        .args(["symbolic-ref", "--quiet", "--short", "HEAD"])
+        .current_dir(root_path)
+        .output()
+        .ok()?;
+
+    output
+        .status
+        .success()
+        .then(|| parse_git_head_output(&output.stdout))
+        .flatten()
 }
 
 fn parse_git_head_output(stdout: &[u8]) -> Option<String> {
@@ -144,6 +158,8 @@ pub struct VcsService {
     root_path: Option<PathBuf>,
     /// Last repository head observed through the workspace backend.
     repository_head: Option<String>,
+    /// Human-readable branch/ref for chrome; distinct from the diff base SHA.
+    repository_ref: Option<String>,
     /// Workspace backend used for repository operations.
     workspace_backend: Option<WorkspaceBackendHandle>,
     /// Current VCS status cache
@@ -190,6 +206,7 @@ impl VcsService {
         Self {
             root_path: None,
             repository_head: None,
+            repository_ref: None,
             workspace_backend: None,
             status_cache: HashMap::new(),
             status_revision: 0,
@@ -251,6 +268,7 @@ impl VcsService {
 
         self.root_path = Some(root_path.clone());
         self.repository_head = None;
+        self.repository_ref = None;
         self.is_monitoring = self.config.enabled;
 
         if self.is_monitoring {
@@ -278,6 +296,7 @@ impl VcsService {
         self.is_monitoring = false;
         self.root_path = None;
         self.repository_head = None;
+        self.repository_ref = None;
         if !self.status_cache.is_empty() {
             self.status_cache.clear();
             self.status_revision = self.status_revision.wrapping_add(1);
@@ -325,6 +344,10 @@ impl VcsService {
 
     pub fn repository_head(&self) -> Option<&str> {
         self.repository_head.as_deref()
+    }
+
+    pub fn repository_ref(&self) -> Option<&str> {
+        self.repository_ref.as_deref()
     }
 
     /// Get diff hunks for a specific file
@@ -905,7 +928,7 @@ impl VcsService {
                                 current_head = ?refresh.head,
                                 "VCS: Got async git status results"
                             );
-                            service.update_repository_head(refresh.head, cx);
+                            service.update_repository_state(refresh.head, refresh.display_ref, cx);
                             service.update_status_cache(refresh.status, cx);
                         }
                         Err(error) => {
@@ -945,6 +968,22 @@ impl VcsService {
                 },
                 cx,
             );
+        }
+    }
+
+    fn update_repository_state(
+        &mut self,
+        new_head: Option<String>,
+        display_ref: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let display_ref_changed = self.repository_ref != display_ref;
+        self.repository_ref = display_ref;
+        self.update_repository_head(new_head, cx);
+
+        if display_ref_changed {
+            self.status_revision = self.status_revision.wrapping_add(1);
+            cx.notify();
         }
     }
 
@@ -1018,6 +1057,7 @@ impl VcsService {
 struct GitRefreshResult {
     status: HashMap<PathBuf, VcsStatus>,
     head: Option<String>,
+    display_ref: Option<String>,
 }
 
 async fn read_diff_text_from_workspace(
@@ -1142,21 +1182,28 @@ async fn run_git_refresh_with_backend(
     let head = run_git_head_with_backend(backend.clone(), root_path).await?;
     let status = run_git_status_with_backend(backend, root_path, max_files).await?;
 
-    Ok(GitRefreshResult { status, head })
+    Ok(GitRefreshResult {
+        status,
+        head: head.head,
+        display_ref: head.display_ref,
+    })
 }
 
 async fn run_git_head_with_backend(
     backend: Option<WorkspaceBackendHandle>,
     root_path: &Path,
-) -> Result<Option<String>, String> {
+) -> Result<GitHeadResult, String> {
     let Some(backend) = backend else {
-        return Ok(current_git_head(root_path));
+        return Ok(GitHeadResult {
+            root: root_path.to_path_buf(),
+            head: current_git_head(root_path),
+            display_ref: current_git_ref(root_path),
+        });
     };
 
     backend
         .git_head(root_path)
         .await
-        .map(|result| result.head)
         .map_err(|error| format!("Workspace git head failed: {error}"))
 }
 
@@ -1342,6 +1389,13 @@ impl VcsServiceHandle {
         self.service
             .read(cx)
             .repository_head()
+            .map(ToOwned::to_owned)
+    }
+
+    pub fn repository_ref(&self, cx: &App) -> Option<String> {
+        self.service
+            .read(cx)
+            .repository_ref()
             .map(ToOwned::to_owned)
     }
 

@@ -1366,6 +1366,8 @@ pub struct GitStatusResponse {
 pub struct GitHeadResponse {
     pub root: PathBuf,
     pub head: Option<String>,
+    #[serde(default)]
+    pub display_ref: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

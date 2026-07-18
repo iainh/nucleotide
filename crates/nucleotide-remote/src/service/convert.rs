@@ -360,6 +360,7 @@ pub(crate) fn git_head_response(result: GitHeadResult) -> GitHeadResponse {
     GitHeadResponse {
         root: result.root,
         head: result.head,
+        display_ref: result.display_ref,
     }
 }
 
@@ -562,6 +563,7 @@ pub(crate) fn git_head_from_response(result: GitHeadResponse) -> GitHeadResult {
     GitHeadResult {
         root: result.root,
         head: result.head,
+        display_ref: result.display_ref,
     }
 }
 

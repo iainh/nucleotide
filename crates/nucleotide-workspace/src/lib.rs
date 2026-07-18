@@ -1227,6 +1227,7 @@ pub struct GitStatusResult {
 pub struct GitHeadResult {
     pub root: PathBuf,
     pub head: Option<String>,
+    pub display_ref: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -4015,6 +4016,7 @@ fn local_git_head(root: &Path) -> Result<GitHeadResult> {
         return Ok(GitHeadResult {
             root: root.to_path_buf(),
             head: None,
+            display_ref: None,
         });
     }
 
@@ -4023,10 +4025,20 @@ fn local_git_head(root: &Path) -> Result<GitHeadResult> {
         .map(str::trim)
         .filter(|head| !head.is_empty())
         .map(ToOwned::to_owned);
+    let display_ref = Command::new("git")
+        .args(["symbolic-ref", "--quiet", "--short", "HEAD"])
+        .current_dir(root)
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|branch| branch.trim().to_string())
+        .filter(|branch| !branch.is_empty());
 
     Ok(GitHeadResult {
         root: root.to_path_buf(),
         head,
+        display_ref,
     })
 }
 
@@ -5764,11 +5776,14 @@ mod tests {
         run_git(temp.path(), &["commit", "-m", "initial"]);
 
         let expected = git_output(temp.path(), &["rev-parse", "--verify", "HEAD"]);
+        let expected_branch =
+            git_output(temp.path(), &["symbolic-ref", "--quiet", "--short", "HEAD"]);
         let backend = LocalWorkspaceBackend;
         let head = block_on(backend.git_head(temp.path())).unwrap();
 
         assert_eq!(head.root, temp.path());
         assert_eq!(head.head, Some(expected.trim().to_string()));
+        assert_eq!(head.display_ref, Some(expected_branch.trim().to_string()));
     }
 
     #[test]
