@@ -153,6 +153,8 @@ pub enum SemanticShortcutIntent {
     ShowCodeActions,
     IncreaseFontSize,
     DecreaseFontSize,
+    ResetFontSize,
+    OpenSettings,
     ShowRunnables,
     RunNearest,
     RunLast,

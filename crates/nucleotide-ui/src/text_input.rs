@@ -13,8 +13,10 @@ use gpui::{
 };
 
 use crate::actions::text_input::{
-    Backspace, Cancel, Copy, Cut, Delete, MoveLeft, MoveRight, MoveToEnd, MoveToStart, Paste,
-    SelectAll, SelectLeft, SelectRight, Submit,
+    Backspace, Cancel, Copy, Cut, Delete, DeleteWordBackward, DeleteWordForward, MoveLeft,
+    MoveRight, MoveToEnd, MoveToStart, MoveWordLeft, MoveWordRight, Paste, Redo, SelectAll,
+    SelectLeft, SelectRight, SelectToEnd, SelectToStart, SelectWordLeft, SelectWordRight, Submit,
+    Undo,
 };
 use crate::{InputSize, InputVariant};
 
@@ -34,9 +36,57 @@ pub(crate) fn init(cx: &mut App) {
         KeyBinding::new("secondary-x", Cut, Some(TEXT_INPUT_CONTEXT)),
         KeyBinding::new("home", MoveToStart, Some(TEXT_INPUT_CONTEXT)),
         KeyBinding::new("end", MoveToEnd, Some(TEXT_INPUT_CONTEXT)),
+        KeyBinding::new("shift-home", SelectToStart, Some(TEXT_INPUT_CONTEXT)),
+        KeyBinding::new("shift-end", SelectToEnd, Some(TEXT_INPUT_CONTEXT)),
+        KeyBinding::new("secondary-z", Undo, Some(TEXT_INPUT_CONTEXT)),
+        KeyBinding::new("secondary-shift-z", Redo, Some(TEXT_INPUT_CONTEXT)),
         KeyBinding::new("enter", Submit, Some(TEXT_INPUT_CONTEXT)),
         KeyBinding::new("escape", Cancel, Some(TEXT_INPUT_CONTEXT)),
     ]);
+    #[cfg(target_os = "macos")]
+    cx.bind_keys([
+        KeyBinding::new("alt-left", MoveWordLeft, Some(TEXT_INPUT_CONTEXT)),
+        KeyBinding::new("alt-right", MoveWordRight, Some(TEXT_INPUT_CONTEXT)),
+        KeyBinding::new("alt-shift-left", SelectWordLeft, Some(TEXT_INPUT_CONTEXT)),
+        KeyBinding::new("alt-shift-right", SelectWordRight, Some(TEXT_INPUT_CONTEXT)),
+        KeyBinding::new(
+            "alt-backspace",
+            DeleteWordBackward,
+            Some(TEXT_INPUT_CONTEXT),
+        ),
+        KeyBinding::new("alt-delete", DeleteWordForward, Some(TEXT_INPUT_CONTEXT)),
+        KeyBinding::new("cmd-left", MoveToStart, Some(TEXT_INPUT_CONTEXT)),
+        KeyBinding::new("cmd-right", MoveToEnd, Some(TEXT_INPUT_CONTEXT)),
+        KeyBinding::new("cmd-shift-left", SelectToStart, Some(TEXT_INPUT_CONTEXT)),
+        KeyBinding::new("cmd-shift-right", SelectToEnd, Some(TEXT_INPUT_CONTEXT)),
+    ]);
+    #[cfg(not(target_os = "macos"))]
+    cx.bind_keys([
+        KeyBinding::new("ctrl-left", MoveWordLeft, Some(TEXT_INPUT_CONTEXT)),
+        KeyBinding::new("ctrl-right", MoveWordRight, Some(TEXT_INPUT_CONTEXT)),
+        KeyBinding::new("ctrl-shift-left", SelectWordLeft, Some(TEXT_INPUT_CONTEXT)),
+        KeyBinding::new(
+            "ctrl-shift-right",
+            SelectWordRight,
+            Some(TEXT_INPUT_CONTEXT),
+        ),
+        KeyBinding::new(
+            "ctrl-backspace",
+            DeleteWordBackward,
+            Some(TEXT_INPUT_CONTEXT),
+        ),
+        KeyBinding::new("ctrl-delete", DeleteWordForward, Some(TEXT_INPUT_CONTEXT)),
+        KeyBinding::new("ctrl-insert", Copy, Some(TEXT_INPUT_CONTEXT)),
+        KeyBinding::new("shift-insert", Paste, Some(TEXT_INPUT_CONTEXT)),
+        KeyBinding::new("shift-delete", Cut, Some(TEXT_INPUT_CONTEXT)),
+    ]);
+}
+
+#[derive(Clone)]
+struct EditSnapshot {
+    content: SharedString,
+    selected_range: Range<usize>,
+    selection_reversed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,6 +146,8 @@ pub struct TextInput {
     last_layout: Option<ShapedLine>,
     last_bounds: Option<Bounds<Pixels>>,
     is_selecting: bool,
+    undo_history: Vec<EditSnapshot>,
+    redo_history: Vec<EditSnapshot>,
 }
 
 impl TextInput {
@@ -117,6 +169,8 @@ impl TextInput {
             last_layout: None,
             last_bounds: None,
             is_selecting: false,
+            undo_history: Vec::new(),
+            redo_history: Vec::new(),
         }
     }
 
@@ -160,6 +214,8 @@ impl TextInput {
         self.marked_range = None;
         self.last_layout = None;
         self.last_bounds = None;
+        self.undo_history.clear();
+        self.redo_history.clear();
         if emit {
             cx.emit(TextInputEvent::Changed(self.content.clone()));
         }
@@ -247,6 +303,140 @@ impl TextInput {
 
     fn move_to_end(&mut self, _: &MoveToEnd, _: &mut Window, cx: &mut Context<Self>) {
         self.move_to(self.content.len(), cx);
+    }
+
+    fn select_to_start(&mut self, _: &SelectToStart, _: &mut Window, cx: &mut Context<Self>) {
+        self.select_to(0, cx);
+    }
+
+    fn select_to_end(&mut self, _: &SelectToEnd, _: &mut Window, cx: &mut Context<Self>) {
+        self.select_to(self.content.len(), cx);
+    }
+
+    fn word_class(ch: char) -> u8 {
+        if ch.is_whitespace() {
+            0
+        } else if ch.is_alphanumeric() || ch == '_' {
+            1
+        } else {
+            2
+        }
+    }
+
+    fn previous_word_boundary(&self, offset: usize) -> usize {
+        let chars: Vec<_> = self.content[..self.clamp_to_boundary(offset)]
+            .char_indices()
+            .collect();
+        let mut i = chars.len();
+        while i > 0 && Self::word_class(chars[i - 1].1) == 0 {
+            i -= 1;
+        }
+        if i == 0 {
+            return 0;
+        }
+        let class = Self::word_class(chars[i - 1].1);
+        while i > 0 && Self::word_class(chars[i - 1].1) == class {
+            i -= 1;
+        }
+        chars.get(i).map_or(0, |(offset, _)| *offset)
+    }
+
+    fn next_word_boundary(&self, offset: usize) -> usize {
+        let offset = self.clamp_to_boundary(offset);
+        let mut chars = self.content[offset..].char_indices().peekable();
+        let Some((_, first)) = chars.next() else {
+            return self.content.len();
+        };
+        let class = Self::word_class(first);
+        while chars
+            .peek()
+            .is_some_and(|(_, ch)| Self::word_class(*ch) == class)
+        {
+            chars.next();
+        }
+        if class != 0 {
+            while chars
+                .peek()
+                .is_some_and(|(_, ch)| Self::word_class(*ch) == 0)
+            {
+                chars.next();
+            }
+        }
+        chars
+            .peek()
+            .map_or(self.content.len(), |(index, _)| offset + *index)
+    }
+
+    fn move_word_left(&mut self, _: &MoveWordLeft, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_to(self.previous_word_boundary(self.cursor_offset()), cx);
+    }
+    fn move_word_right(&mut self, _: &MoveWordRight, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_to(self.next_word_boundary(self.cursor_offset()), cx);
+    }
+    fn select_word_left(&mut self, _: &SelectWordLeft, _: &mut Window, cx: &mut Context<Self>) {
+        self.select_to(self.previous_word_boundary(self.cursor_offset()), cx);
+    }
+    fn select_word_right(&mut self, _: &SelectWordRight, _: &mut Window, cx: &mut Context<Self>) {
+        self.select_to(self.next_word_boundary(self.cursor_offset()), cx);
+    }
+
+    fn delete_word_backward(
+        &mut self,
+        _: &DeleteWordBackward,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.selected_range.is_empty() {
+            self.select_to(self.previous_word_boundary(self.cursor_offset()), cx);
+        }
+        self.replace_text_in_range(None, "", window, cx);
+    }
+    fn delete_word_forward(
+        &mut self,
+        _: &DeleteWordForward,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.selected_range.is_empty() {
+            self.select_to(self.next_word_boundary(self.cursor_offset()), cx);
+        }
+        self.replace_text_in_range(None, "", window, cx);
+    }
+
+    fn snapshot(&self) -> EditSnapshot {
+        EditSnapshot {
+            content: self.content.clone(),
+            selected_range: self.selected_range.clone(),
+            selection_reversed: self.selection_reversed,
+        }
+    }
+    fn restore_snapshot(&mut self, snapshot: EditSnapshot, cx: &mut Context<Self>) {
+        self.content = snapshot.content;
+        self.selected_range = snapshot.selected_range;
+        self.selection_reversed = snapshot.selection_reversed;
+        self.marked_range = None;
+        self.reset_layout_cache();
+        cx.emit(TextInputEvent::Changed(self.content.clone()));
+        cx.notify();
+    }
+    fn record_edit(&mut self) {
+        self.undo_history.push(self.snapshot());
+        if self.undo_history.len() > 100 {
+            self.undo_history.remove(0);
+        }
+        self.redo_history.clear();
+    }
+    fn undo(&mut self, _: &Undo, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(snapshot) = self.undo_history.pop() {
+            self.redo_history.push(self.snapshot());
+            self.restore_snapshot(snapshot, cx);
+        }
+    }
+    fn redo(&mut self, _: &Redo, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(snapshot) = self.redo_history.pop() {
+            self.undo_history.push(self.snapshot());
+            self.restore_snapshot(snapshot, cx);
+        }
     }
 
     fn backspace(&mut self, _: &Backspace, window: &mut Window, cx: &mut Context<Self>) {
@@ -508,6 +698,8 @@ impl EntityInputHandler for TextInput {
             .or(self.marked_range.clone())
             .unwrap_or(self.selected_range.clone());
 
+        self.record_edit();
+
         self.content =
             (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
                 .into();
@@ -537,6 +729,8 @@ impl EntityInputHandler for TextInput {
             .map(|range_utf16| self.range_from_utf16(range_utf16))
             .or(self.marked_range.clone())
             .unwrap_or(self.selected_range.clone());
+
+        self.record_edit();
 
         self.content =
             (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
@@ -915,6 +1109,16 @@ impl Render for TextInput {
             .on_action(cx.listener(Self::select_all))
             .on_action(cx.listener(Self::move_to_start))
             .on_action(cx.listener(Self::move_to_end))
+            .on_action(cx.listener(Self::select_to_start))
+            .on_action(cx.listener(Self::select_to_end))
+            .on_action(cx.listener(Self::move_word_left))
+            .on_action(cx.listener(Self::move_word_right))
+            .on_action(cx.listener(Self::select_word_left))
+            .on_action(cx.listener(Self::select_word_right))
+            .on_action(cx.listener(Self::delete_word_backward))
+            .on_action(cx.listener(Self::delete_word_forward))
+            .on_action(cx.listener(Self::undo))
+            .on_action(cx.listener(Self::redo))
             .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::copy))
@@ -1183,6 +1387,76 @@ mod tests {
             cx.read_from_clipboard().and_then(|item| item.text()),
             Some("value".to_string())
         );
+    }
+
+    #[gpui::test]
+    fn undo_redo_and_fresh_edit_manage_history(cx: &mut TestAppContext) {
+        init_theme(cx);
+        let (harness, cx) = cx.add_window_view(|_, cx| TextInputHarness::new(cx));
+        let input = harness.read_with(cx, |harness, _| harness.input.clone());
+        let focus = input.read_with(cx, |input, cx| input.focus_handle(cx));
+
+        cx.update(|window, cx| {
+            window.focus(&focus, cx);
+            input.update(cx, |input, cx| {
+                input.replace_text_in_range(None, "one", window, cx);
+                input.replace_text_in_range(None, " two", window, cx);
+            });
+            focus.dispatch_action(&Undo, window, cx);
+            focus.dispatch_action(&Redo, window, cx);
+            focus.dispatch_action(&Undo, window, cx);
+            input.update(cx, |input, cx| {
+                input.replace_text_in_range(None, " fresh", window, cx);
+            });
+            focus.dispatch_action(&Redo, window, cx);
+        });
+
+        input.read_with(cx, |input, _| {
+            assert_eq!(input.value().as_ref(), "one fresh");
+            assert!(input.redo_history.is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn word_actions_preserve_unicode_boundaries(cx: &mut TestAppContext) {
+        init_theme(cx);
+        let (harness, cx) = cx.add_window_view(|_, cx| TextInputHarness::new(cx));
+        let input = harness.read_with(cx, |harness, _| harness.input.clone());
+        let focus = input.read_with(cx, |input, cx| input.focus_handle(cx));
+
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| input.set_value_silent("héllo 世界 💡", cx));
+            window.focus(&focus, cx);
+            focus.dispatch_action(&MoveWordLeft, window, cx);
+            focus.dispatch_action(&DeleteWordBackward, window, cx);
+        });
+
+        input.read_with(cx, |input, _| {
+            assert_eq!(input.value().as_ref(), "héllo 💡");
+            assert!(input.value().is_char_boundary(input.cursor_offset()));
+            assert!(input.value().is_char_boundary(input.selected_range().start));
+        });
+    }
+
+    #[gpui::test]
+    fn boundary_selection_actions_extend_from_cursor(cx: &mut TestAppContext) {
+        init_theme(cx);
+        let (harness, cx) = cx.add_window_view(|_, cx| TextInputHarness::new(cx));
+        let input = harness.read_with(cx, |harness, _| harness.input.clone());
+        let focus = input.read_with(cx, |input, cx| input.focus_handle(cx));
+
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                input.set_value_silent("abcdef", cx);
+                input.move_cursor_to(3, cx);
+            });
+            window.focus(&focus, cx);
+            focus.dispatch_action(&SelectToStart, window, cx);
+        });
+        input.read_with(cx, |input, _| {
+            assert_eq!(input.selected_range(), 0..3);
+            assert_eq!(input.cursor_offset(), 0);
+        });
     }
 
     #[test]

@@ -2123,6 +2123,8 @@ pub fn resolve_fallback_shortcut(
         ('+', primary | KeyModifiers::SHIFT, Intent::IncreaseFontSize),
         ('=', primary, Intent::IncreaseFontSize),
         ('-', primary, Intent::DecreaseFontSize),
+        ('0', primary, Intent::ResetFontSize),
+        (',', primary, Intent::OpenSettings),
     ];
     if let Some(intent) = standard
         .into_iter()
@@ -2195,6 +2197,13 @@ pub fn resolve_fallback_shortcut(
         {
             Some(EditorFallback(Editor::PreviousBuffer))
         }
+        (KeyCode::PageDown, KeyModifiers::CONTROL) if desktop => {
+            Some(EditorFallback(Editor::NextBuffer))
+        }
+        (KeyCode::PageUp, KeyModifiers::CONTROL) if desktop => {
+            Some(EditorFallback(Editor::PreviousBuffer))
+        }
+        (KeyCode::F(4), KeyModifiers::CONTROL) if desktop => Some(Workspace(Intent::CloseFile)),
         (KeyCode::Insert, KeyModifiers::CONTROL) if desktop => Some(EditorFallback(Editor::Copy)),
         (KeyCode::Insert, KeyModifiers::SHIFT) if desktop => Some(EditorFallback(Editor::Paste)),
         (KeyCode::Delete, KeyModifiers::SHIFT) if desktop => Some(EditorFallback(Editor::Cut)),
@@ -2630,6 +2639,19 @@ mod tests {
             ),
             Some(FallbackShortcut::Workspace(Intent::ShowCommandPrompt))
         );
+        for (key, platform, intent) in [
+            ("Meta-,", TargetPlatform::MacOS, Intent::OpenSettings),
+            ("Meta-0", TargetPlatform::MacOS, Intent::ResetFontSize),
+            ("C-,", TargetPlatform::Windows, Intent::OpenSettings),
+            ("C-0", TargetPlatform::Linux, Intent::ResetFontSize),
+            ("C-F4", TargetPlatform::Windows, Intent::CloseFile),
+        ] {
+            assert_eq!(
+                resolve_fallback_shortcut(Mode::Normal, KeyEvent::from_str(key).unwrap(), platform),
+                Some(FallbackShortcut::Workspace(intent)),
+                "failed shortcut {key} on {platform:?}"
+            );
+        }
     }
 
     #[test]
@@ -2646,6 +2668,8 @@ mod tests {
             ("S-F3", TargetPlatform::Windows, Action::FindPrevious),
             ("C-tab", TargetPlatform::Linux, Action::NextBuffer),
             ("C-S-tab", TargetPlatform::Windows, Action::PreviousBuffer),
+            ("C-pagedown", TargetPlatform::Linux, Action::NextBuffer),
+            ("C-pageup", TargetPlatform::Windows, Action::PreviousBuffer),
             ("C-ins", TargetPlatform::Linux, Action::Copy),
             ("S-ins", TargetPlatform::Windows, Action::Paste),
             ("S-del", TargetPlatform::Linux, Action::Cut),
