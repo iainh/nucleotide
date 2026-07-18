@@ -11444,7 +11444,8 @@ impl Workspace {
                 ui_theme.tokens.sizes,
             )
         };
-        let viewport_width = f32::from(window.viewport_size().width);
+        let viewport_width =
+            (f32::from(window.viewport_size().width) - f32::from(sizes.space_3) * 2.0).max(0.0);
         let geometry = StatusBarGeometry::new(
             viewport_width,
             self.show_file_tree,
@@ -13993,6 +13994,7 @@ impl Workspace {
 
         let tab_bar_height = self.visible_tab_bar_height(cx);
         let title_bar_height = self.rendered_titlebar_height(window, cx);
+        let content_inset = cx.theme().tokens.sizes.space_3;
 
         // Get actual file tree width (user may have resized it)
         let file_tree_width = if self.show_file_tree {
@@ -14007,6 +14009,8 @@ impl Workspace {
 
         let layout_info = WorkspaceLayoutInfo {
             file_tree_width,
+            content_inset_x: content_inset,
+            content_inset_y: content_inset,
             gutter_width,
             tab_bar_height,
             title_bar_height,
@@ -14236,7 +14240,11 @@ impl Render for Workspace {
             self.needs_file_tree_refresh = false;
         }
 
-        self.sync_file_tree_width_for_viewport(f32::from(window.viewport_size().width));
+        let workspace_content_inset = cx.theme().tokens.sizes.space_3;
+        let workspace_horizontal_inset = f32::from(workspace_content_inset) * 2.0;
+        self.sync_file_tree_width_for_viewport(
+            (f32::from(window.viewport_size().width) - workspace_horizontal_inset).max(0.0),
+        );
         self.sync_confirmation_modal(window, cx);
 
         // Failsafe: If the overlay is gone and no known element has focus, force-refocus.
@@ -14385,7 +14393,7 @@ impl Render for Workspace {
             if native_sidebar_enabled && self.show_file_tree && self.file_tree_width > 0.0 {
                 let file_tree_tokens = cx.theme().tokens.file_tree_tokens().translucent_sidebar();
                 Some((
-                    px(self.file_tree_width),
+                    px(self.file_tree_width + f32::from(workspace_content_inset)),
                     file_tree_tokens.background,
                     file_tree_tokens.separator,
                 ))
@@ -14397,13 +14405,17 @@ impl Render for Workspace {
         // Compute the editor content dimensions before reading Helix view areas,
         // so split panes use the current tree layout in this render pass.
         let ui_theme = cx.global::<nucleotide_ui::Theme>();
-        let status_bar_height = ui_theme.tokens.sizes.statusbar_height;
+        let workspace_tokens = ui_theme.tokens;
+        let status_bar_height = workspace_tokens.sizes.statusbar_height;
         let titlebar_height = self.rendered_titlebar_height(window, cx);
         let tab_bar_height = self.visible_tab_bar_height(cx);
         let viewport_h = window.viewport_size().height;
-        let available_h =
-            (f32::from(viewport_h) - f32::from(status_bar_height) - f32::from(titlebar_height))
-                .max(0.0);
+        let workspace_vertical_inset = f32::from(workspace_content_inset) * 2.0;
+        let available_h = (f32::from(viewport_h)
+            - f32::from(status_bar_height)
+            - f32::from(titlebar_height)
+            - workspace_vertical_inset)
+            .max(0.0);
         let content_max_h = px(available_h);
 
         let min_term = 80.0f32;
@@ -14416,7 +14428,8 @@ impl Render for Workspace {
         let line_h_value = f32::from(line_h_px).max(1.0);
         let char_w_value = f32::from(char_w_px).max(1.0);
 
-        let viewport_w_px = f32::from(window.viewport_size().width);
+        let viewport_w_px =
+            (f32::from(window.viewport_size().width) - workspace_horizontal_inset).max(1.0);
         let file_tree_w_px = if self.show_file_tree {
             self.file_tree_width
         } else {
@@ -15427,7 +15440,8 @@ impl Render for Workspace {
             };
 
             if self.show_file_tree {
-                let viewport_w = f32::from(window.viewport_size().width);
+                let viewport_w =
+                    (f32::from(window.viewport_size().width) - workspace_horizontal_inset).max(0.0);
                 let max_left = Self::max_file_tree_width(viewport_w);
                 let default_width = Self::clamped_file_tree_default_width(viewport_w);
                 let on_change_file_tree_width = {
@@ -15603,17 +15617,32 @@ impl Render for Workspace {
                     .w_full()
                     .flex_1()
                     .min_h(px(0.0))
-                    // Ensure content can shrink and never hide the status bar
+                    .p(workspace_content_inset)
+                    .when(!native_sidebar_enabled, |body| {
+                        body.bg(workspace_tokens.chrome.titlebar_background)
+                    })
                     .child(
                         div()
                             .flex()
                             .flex_col()
                             .flex_1()
                             .w_full()
-                            .min_h(px(0.0)) // allow vertical shrink in flex column
-                            .child(content_area),
-                    )
-                    .child(self.render_unified_status_bar(window, cx)), // Unified bottom status bar pinned at bottom
+                            .min_h(px(0.0))
+                            .rounded(workspace_tokens.sizes.radius_lg)
+                            .shadow(vec![workspace_tokens.chrome.shadow_sm.to_box_shadow(false)])
+                            .overflow_hidden()
+                            // Ensure content can shrink and never hide the status bar.
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .flex_1()
+                                    .w_full()
+                                    .min_h(px(0.0))
+                                    .child(content_area),
+                            )
+                            .child(self.render_unified_status_bar(window, cx)),
+                    ),
             )
             // Add Linux client-side resize hitboxes so the window can be resized
             .map(|root| {
