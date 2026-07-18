@@ -742,7 +742,7 @@ fn window_options(
     #[cfg(target_os = "macos")]
     let traffic_light_position =
         if config.ui_chrome_style() == nucleotide_appearance::UiChromeStyle::System {
-            gpui::point(px(16.0), px(19.0))
+            gpui::point(px(16.0), px(15.0))
         } else {
             gpui::point(px(9.0), px(9.0))
         };

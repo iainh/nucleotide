@@ -115,7 +115,8 @@ impl Render for PlatformTitleBar {
         #[cfg(debug_assertions)]
         debug!("TITLEBAR RENDER: Final titlebar height: {:?}", height);
 
-        // Reserve the native traffic-light cluster plus Finder-like breathing room.
+        // Reserve the native traffic-light cluster symmetrically so the title
+        // remains visually centered in compact unified chrome.
         const MAC_TRAFFIC_LIGHT_PADDING: f32 = 82.0;
 
         // Set window insets based on decoration type only once to avoid per-frame calls
@@ -164,7 +165,7 @@ impl Render for PlatformTitleBar {
                 if window.is_fullscreen() {
                     this.pl_2()
                 } else if native_macos_titlebar {
-                    this.pl(px(MAC_TRAFFIC_LIGHT_PADDING))
+                    this.px(px(MAC_TRAFFIC_LIGHT_PADDING))
                 } else if self.platform_style == PlatformStyle::Mac {
                     this.pl(px(71.0))
                 } else {
@@ -235,8 +236,7 @@ impl Render for PlatformTitleBar {
                     .w_full()
                     .h_full()
                     .items_center()
-                    .when(native_macos_titlebar, |content| content.justify_start())
-                    .when(!native_macos_titlebar, |content| content.justify_center())
+                    .justify_center()
                     .relative() // For absolute positioning of window controls
                     .px_2()
                     .when(self.show_title, |content| {
@@ -250,11 +250,7 @@ impl Render for PlatformTitleBar {
                                 );
                                 div()
                                     .text_size(cx.global::<crate::Theme>().tokens.sizes.text_md) // Themed titlebar font size
-                                    .font_weight(if native_macos_titlebar {
-                                        gpui::FontWeight::SEMIBOLD
-                                    } else {
-                                        gpui::FontWeight::MEDIUM
-                                    })
+                                    .font_weight(gpui::FontWeight::MEDIUM)
                                     .text_color(titlebar_tokens.foreground)
                                     .child(self.title.clone())
                             }),
