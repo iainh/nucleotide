@@ -6894,6 +6894,8 @@ impl Workspace {
             }
             Intent::IncreaseFontSize => self.adjust_font_size(1.0, cx),
             Intent::DecreaseFontSize => self.adjust_font_size(-1.0, cx),
+            Intent::ResetFontSize => self.reset_font_size(cx),
+            Intent::OpenSettings => self.open_settings_file(cx),
             Intent::ShowRunnables => self.show_runnables(cx),
             Intent::RunNearest => self.run_nearest(cx),
             Intent::RunLast => self.run_last(cx),
@@ -13693,6 +13695,15 @@ impl Workspace {
         self.update_document_views(cx);
 
         // Force redraw
+        cx.notify();
+    }
+
+    fn reset_font_size(&mut self, cx: &mut Context<Self>) {
+        let configured_size = self.core.read(cx).config.editor_font().size;
+        let mut font_config = cx.global::<crate::types::EditorFontConfig>().clone();
+        font_config.size = configured_size;
+        cx.set_global(font_config);
+        self.update_document_views(cx);
         cx.notify();
     }
 
