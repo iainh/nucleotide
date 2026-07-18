@@ -1638,13 +1638,15 @@ impl OverlayView {
                             cursor_pos.row.saturating_sub(view_offset.vertical_offset);
 
                         // Account for UI layout: file tree + gutter + character position
-                        let cursor_x = layout_info.file_tree_width
+                        let cursor_x = layout_info.content_inset_x
+                            + layout_info.file_tree_width
                             + layout_info.gutter_width
                             + layout_info.char_width * (cursor_pos.col as f32);
 
                         // Account for UI layout: title bar + tab bar + line position within document area
-                        let document_area_y =
-                            layout_info.title_bar_height + layout_info.tab_bar_height;
+                        let document_area_y = layout_info.title_bar_height
+                            + layout_info.content_inset_y
+                            + layout_info.tab_bar_height;
                         let cursor_y =
                             document_area_y + layout_info.line_height * (relative_row as f32);
 
@@ -1655,8 +1657,14 @@ impl OverlayView {
         }
 
         // Final fallback positioning
-        let fallback_x = layout_info.file_tree_width + layout_info.gutter_width + px(10.0);
-        let fallback_y = layout_info.title_bar_height + layout_info.tab_bar_height + px(20.0);
+        let fallback_x = layout_info.content_inset_x
+            + layout_info.file_tree_width
+            + layout_info.gutter_width
+            + px(10.0);
+        let fallback_y = layout_info.title_bar_height
+            + layout_info.content_inset_y
+            + layout_info.tab_bar_height
+            + px(20.0);
         println!(
             "DEBUG: Final fallback position: x={:?}, y={:?} (file_tree_width={:?}, gutter_width={:?}, title_bar_height={:?}, tab_bar_height={:?})",
             fallback_x,
@@ -1681,6 +1689,8 @@ impl OverlayView {
         // These values stay approximate when the user has resized panes.
         WorkspaceLayoutInfo {
             file_tree_width: px(250.0), // Default file tree width (user can resize)
+            content_inset_x: px(0.0),   // Full-bleed fallback for unknown workspace chrome
+            content_inset_y: px(0.0),
             gutter_width: px(60.0),     // Line number gutter width
             tab_bar_height: px(40.0),   // Tab bar height
             title_bar_height: px(30.0), // Much smaller - just window controls
@@ -1696,6 +1706,8 @@ impl OverlayView {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct WorkspaceLayoutInfo {
     pub file_tree_width: gpui::Pixels,
+    pub content_inset_x: gpui::Pixels,
+    pub content_inset_y: gpui::Pixels,
     pub gutter_width: gpui::Pixels,
     pub tab_bar_height: gpui::Pixels,
     pub title_bar_height: gpui::Pixels,
@@ -1955,7 +1967,8 @@ impl Render for OverlayView {
                     - nucleotide_terminal_panel::TERMINAL_PANEL_HEADER_HEIGHT_PX)
                     .max(line_h);
                 let file_tree_width = f32::from(layout.file_tree_width);
-                let usable_width = (window_width - file_tree_width).max(1.0);
+                let horizontal_inset = f32::from(layout.content_inset_x) * 2.0;
+                let usable_width = (window_width - horizontal_inset - file_tree_width).max(1.0);
                 let bounds = TerminalBounds::from_pixels(
                     char_w,
                     line_h,
