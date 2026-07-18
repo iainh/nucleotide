@@ -1706,6 +1706,7 @@ impl InputKeyEvent {
 #[derive(Debug, Clone)]
 pub enum InputEvent {
     Key(InputKeyEvent),
+    Semantic(editor_input::EditorSemanticAction),
 }
 
 impl InputEvent {
@@ -1715,6 +1716,10 @@ impl InputEvent {
 
     pub fn key_down(key: KeyEvent, is_held: bool) -> Self {
         Self::Key(InputKeyEvent::from_key_down(key, is_held))
+    }
+
+    pub fn semantic(action: editor_input::EditorSemanticAction) -> Self {
+        Self::Semantic(action)
     }
 }
 
@@ -5108,6 +5113,27 @@ impl Application {
     ) {
         let _guard = handle.enter();
         match event {
+            InputEvent::Semantic(action) => {
+                let outcome = self.editor_input.handle_semantic_action(
+                    action,
+                    &mut self.compositor,
+                    &mut self.editor,
+                    &mut self.jobs,
+                );
+                if outcome.selection_changed
+                    && let Some(doc_id) = outcome.focused_doc_id
+                {
+                    cx.emit(crate::Update::SelectionChanged {
+                        doc_id,
+                        view_id: outcome.focused_view_id,
+                    });
+                }
+                if let Some(request) = outcome.prompt_requested {
+                    cx.emit(crate::Update::Prompt(Self::create_native_prompt(request)));
+                }
+                self.emit_overlays(cx);
+                cx.emit(crate::Update::Redraw);
+            }
             InputEvent::Key(input) => {
                 let key = input.key;
                 let mode_before = self.editor.mode();
