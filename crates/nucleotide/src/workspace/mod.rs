@@ -3653,10 +3653,19 @@ impl Workspace {
         geometry: StatusBarGeometry,
         status_bar_tokens: &nucleotide_ui::tokens::StatusBarTokens,
     ) -> gpui::AnyElement {
-        let mode_color = match model.mode {
-            helix_view::document::Mode::Normal => status_bar_tokens.mode_normal,
-            helix_view::document::Mode::Insert => status_bar_tokens.mode_insert,
-            helix_view::document::Mode::Select => status_bar_tokens.mode_select,
+        let (mode_color, mode_text) = match model.mode {
+            helix_view::document::Mode::Normal => (
+                status_bar_tokens.mode_normal,
+                status_bar_tokens.mode_normal_text,
+            ),
+            helix_view::document::Mode::Insert => (
+                status_bar_tokens.mode_insert,
+                status_bar_tokens.mode_insert_text,
+            ),
+            helix_view::document::Mode::Select => (
+                status_bar_tokens.mode_select,
+                status_bar_tokens.mode_select_text,
+            ),
         };
         div()
             .flex_none()
@@ -3675,7 +3684,7 @@ impl Workspace {
                     .justify_center()
                     .rounded_full()
                     .bg(mode_color)
-                    .text_color(status_bar_tokens.mode_text)
+                    .text_color(mode_text)
                     .font_weight(FontWeight::MEDIUM)
                     .child(model.mode_label),
             )

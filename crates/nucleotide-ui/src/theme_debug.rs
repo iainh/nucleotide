@@ -491,20 +491,28 @@ impl Render for ThemeDebugView {
             color: status_bar.border,
         });
         items.push(DebugItem::Row {
-            label: SharedString::from("mode_text"),
-            color: status_bar.mode_text,
-        });
-        items.push(DebugItem::Row {
             label: SharedString::from("mode_normal"),
             color: status_bar.mode_normal,
+        });
+        items.push(DebugItem::Row {
+            label: SharedString::from("mode_normal_text"),
+            color: status_bar.mode_normal_text,
         });
         items.push(DebugItem::Row {
             label: SharedString::from("mode_insert"),
             color: status_bar.mode_insert,
         });
         items.push(DebugItem::Row {
+            label: SharedString::from("mode_insert_text"),
+            color: status_bar.mode_insert_text,
+        });
+        items.push(DebugItem::Row {
             label: SharedString::from("mode_select"),
             color: status_bar.mode_select,
+        });
+        items.push(DebugItem::Row {
+            label: SharedString::from("mode_select_text"),
+            color: status_bar.mode_select_text,
         });
 
         let tab_bar = tokens.tab_bar_tokens();
